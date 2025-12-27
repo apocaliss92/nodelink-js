@@ -1,0 +1,61 @@
+import { createCipheriv, createDecipheriv, createHash } from "node:crypto";
+import { BC_AES_IV, BC_XML_KEY } from "./constants.js";
+
+export type EncryptionProtocol =
+  | { kind: "none" }
+  | { kind: "bc" }
+  | { kind: "aes"; key: Buffer }
+  | { kind: "full_aes"; key: Buffer };
+
+export function md5HexUpper(input: string): string {
+  return createHash("md5").update(input, "utf8").digest("hex").toUpperCase();
+}
+
+/**
+ * MD5 "modern" formatting used by Baichuan:
+ * - MD5 hex uppercase
+ * - truncate to 31 chars
+ */
+export function md5StrModern(input: string): string {
+  return md5HexUpper(input).slice(0, 31);
+}
+
+/**
+ * AES key derivation used by Reolink:
+ * keyString = md5_str_modern(`${nonce}-${password}`).slice(0,16)
+ * keyBytes = UTF-8 bytes of that string (16 bytes)
+ */
+export function deriveAesKey(nonce: string, password: string): Buffer {
+  const keyStr = md5StrModern(`${nonce}-${password}`).slice(0, 16);
+  return Buffer.from(keyStr, "utf8");
+}
+
+export function bcEncrypt(buf: Buffer, offset: number): Buffer {
+  const off = offset & 0xff;
+  const out = Buffer.allocUnsafe(buf.length);
+  for (let i = 0; i < buf.length; i++) {
+    const key = BC_XML_KEY[(off + i) % BC_XML_KEY.length]!;
+    out[i] = buf[i]! ^ key ^ off;
+  }
+  return out;
+}
+
+export function bcDecrypt(buf: Buffer, offset: number): Buffer {
+  // XOR is symmetric
+  return bcEncrypt(buf, offset);
+}
+
+export function aesEncrypt(buf: Buffer, key: Buffer): Buffer {
+  if (buf.length === 0) return Buffer.alloc(0);
+  const cipher = createCipheriv("aes-128-cfb", key, BC_AES_IV);
+  cipher.setAutoPadding(false);
+  return Buffer.concat([cipher.update(buf), cipher.final()]);
+}
+
+export function aesDecrypt(buf: Buffer, key: Buffer): Buffer {
+  if (buf.length === 0) return Buffer.alloc(0);
+  const decipher = createDecipheriv("aes-128-cfb", key, BC_AES_IV);
+  decipher.setAutoPadding(false);
+  return Buffer.concat([decipher.update(buf), decipher.final()]);
+}
+
