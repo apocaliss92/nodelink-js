@@ -44,9 +44,9 @@ export function createRtspProxyServer(opts: RtspProxyServerOptions): http.Server
       res.end("Invalid channel");
       return;
     }
-    if (profile !== "main" && profile !== "sub") {
+    if (profile !== "main" && profile !== "sub" && profile !== "ext") {
       res.statusCode = 400;
-      res.end("Invalid profile");
+      res.end("Invalid profile (must be main, sub, or ext)");
       return;
     }
 

@@ -1,5 +1,6 @@
 node_modules
 dist
+dist-test
 _refs
 .DS_Store
 .env
@@ -8,4 +9,11 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+
+# Compiled JavaScript files (keep only TypeScript source)
+*.js
+!eslint.config.js
+
+# But allow JS files in specific locations if needed
+!node_modules/**/*.js
 

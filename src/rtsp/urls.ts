@@ -1,10 +1,18 @@
-export type RtspStreamProfile = "main" | "sub";
+export type RtspStreamProfile = "main" | "sub" | "ext";
 
 export function buildRtspPath(channel: number, stream: RtspStreamProfile): string {
   // Standard Reolink path:
   // - channel is 0-based in most APIs, but RTSP path is 1-based and 2-digit.
   const ch = String(channel + 1).padStart(2, "0");
-  const suffix = stream === "main" ? "main" : "sub";
+  let suffix: string;
+  if (stream === "main") {
+    suffix = "main";
+  } else if (stream === "sub") {
+    suffix = "sub";
+  } else {
+    // ext stream
+    suffix = "ext";
+  }
   return `/h264Preview_${ch}_${suffix}`;
 }
 

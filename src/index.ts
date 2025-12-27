@@ -8,6 +8,7 @@ export * from "./reolink/http/ReolinkHttpClient.js";
 export * from "./reolink/http/types.js";
 export * from "./reolink/cgi/ReolinkCgiApi.js";
 export * from "./reolink/baichuan/ReolinkBaichuanApi.js";
+export * from "./reolink/baichuan/types.js";
 export * from "./reolink/hybrid/ReolinkHybridApi.js";
 export * from "./reolink/nvr/ReolinkNvrCgiApi.js";
 export * from "./reolink/nvr/ReolinkNvrBaichuanApi.js";

@@ -16,6 +16,10 @@ export type BcUdpStreamOptions =
       mtu?: number;
       /** If true, enables UDP broadcast for discovery. */
       broadcast?: boolean;
+      /** Discovery timeout in milliseconds (default: 30000 for battery cameras that may be sleeping). */
+      discoveryTimeout?: number;
+      /** Interval between discovery retry packets in milliseconds (default: 500). */
+      discoveryRetryInterval?: number;
     }
   | {
       /** Direct connection with already-known parameters. */
@@ -96,6 +100,10 @@ export class BcUdpStream extends EventEmitter<{
     const port = this.opts.port ?? BCUDP_DISCOVERY_PORT_LOCAL_UID;
     const host = this.opts.host ?? "255.255.255.255";
     const broadcast = this.opts.broadcast ?? true;
+    // Longer timeout for battery cameras that may be sleeping (default 30s, was 5s)
+    const discoveryTimeout = this.opts.discoveryTimeout ?? 30_000;
+    // Retry interval for sending discovery packets to wake up sleeping cameras
+    const retryInterval = this.opts.discoveryRetryInterval ?? 500;
 
     if (broadcast) {
       sock.setBroadcast(true);
@@ -104,13 +112,19 @@ export class BcUdpStream extends EventEmitter<{
     const addr = sock.address();
     const localPort = typeof addr === "string" ? 0 : (addr as AddressInfo).port;
     const cid = (Math.floor(Math.random() * 0x7fffffff) | 0) || 82000;
-    const tid = (Math.floor(Math.random() * 255) | 0) >>> 0; // neolink often uses small values
 
+    // Build discovery packet (will be reused for retries)
     const xml = buildC2dC({ uid: this.opts.uid, clientPort: localPort, cid, mtu: this.mtu, os: "WIN" });
-    const packet = encodeDiscoveryPacket(tid, xml);
 
     const reply = await new Promise<{ cid: number; did: number; rhost: string; rport: number }>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error("BCUDP discovery timeout")), 5_000);
+      const timeout = setTimeout(() => {
+        if (retryTimer) clearInterval(retryTimer);
+        sock.off("message", onMsg);
+        reject(new Error(`BCUDP discovery timeout after ${discoveryTimeout}ms (camera may be sleeping or unreachable)`));
+      }, discoveryTimeout);
+
+      let retryTimer: NodeJS.Timeout | undefined;
+      let retryCount = 0;
 
       const onMsg = (msg: Buffer, rinfo: dgram.RemoteInfo) => {
         try {
@@ -119,8 +133,11 @@ export class BcUdpStream extends EventEmitter<{
           const parsed = parseD2cCr(p.xml);
           if (!parsed) return;
           if (parsed.rsp !== 0) return;
-          clearTimeout(t);
+          // Success! Camera responded
+          clearTimeout(timeout);
+          if (retryTimer) clearInterval(retryTimer);
           sock.off("message", onMsg);
+          this.emit("debug", "discovery_success", { retryCount, rhost: rinfo.address, rport: rinfo.port });
           resolve({ cid: parsed.cid, did: parsed.did, rhost: rinfo.address, rport: rinfo.port });
         } catch {
           // ignore
@@ -128,7 +145,27 @@ export class BcUdpStream extends EventEmitter<{
       };
       sock.on("message", onMsg);
 
-      sock.send(packet, port, host);
+      // Send initial discovery packet
+      const sendDiscovery = () => {
+        const tid = (Math.floor(Math.random() * 255) | 0) >>> 0;
+        const packet = encodeDiscoveryPacket(tid, xml);
+        try {
+          sock.send(packet, port, host);
+          retryCount++;
+          this.emit("debug", "discovery_send", { retryCount, host, port });
+        } catch (e) {
+          this.emit("error", e instanceof Error ? e : new Error(String(e)));
+        }
+      };
+
+      // Send initial packet immediately
+      sendDiscovery();
+
+      // Retry sending discovery packets at regular intervals to wake up sleeping cameras
+      // This mimics neolink behavior for battery cameras
+      retryTimer = setIntervalNode(() => {
+        sendDiscovery();
+      }, retryInterval);
     });
 
     this.clientId = reply.cid;

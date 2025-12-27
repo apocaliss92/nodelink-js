@@ -288,6 +288,18 @@ export class BaichuanClient extends EventEmitter<{
     const frame = await framePromise;
     if (this.opts.debug) this.emit("debug", "rx", { cmdId: frame.header.cmdId, responseCode: frame.header.responseCode, msgNum: frame.header.msgNum });
 
+    // Check responseCode for errors (400 = bad request/auth failure, 200 = success)
+    // Some cameras return 400 with empty body when authentication fails
+    if (frame.header.responseCode === 400) {
+      // Try to decrypt anyway in case there's an error message, but don't fail if body is empty
+      const body = frame.body;
+      if (body.length === 0) {
+        // Empty body with 400 typically means authentication failure
+        throw new Error("Baichuan authentication failed (responseCode 400, empty body) - check username/password");
+      }
+      // If body is not empty, try to decrypt and return it (might contain error details)
+    }
+
     // split + decrypt (extension/payload concatenated as in body)
     const body = frame.body;
     if (body.length === 0) return "";
@@ -296,6 +308,122 @@ export class BaichuanClient extends EventEmitter<{
     // (In practice extension and payload are separately encrypted but concatenation preserves it.)
     const xml = this.tryDecryptXml(body, frame.header.channelId, enc);
     return xml;
+  }
+
+  /**
+   * Sends a Baichuan command and returns the binary reply (for commands like Snap that return binary data).
+   * Similar to sendXml but returns raw Buffer instead of XML string.
+   */
+  async sendBinary(params: {
+    cmdId: number;
+    channel?: number;
+    payloadXml?: string;
+    extensionXml?: string;
+    messageClass?: number;
+    encryption?: EncryptionProtocol;
+    timeoutMs?: number;
+  }): Promise<Buffer> {
+    await this.connect();
+
+    const channel = params.channel ?? this.opts.channel ?? 0;
+    const channelId = params.channel == null ? 250 : channel + 1;
+
+    const msgNum = this.nextMsgNum();
+    const cmdId = params.cmdId;
+
+    const extXml = params.extensionXml ?? (params.channel != null ? buildChannelExtensionXml(channel) : "");
+    const payloadXml = params.payloadXml ?? "";
+
+    const messageClass = params.messageClass ?? BC_CLASS_MODERN_24;
+    const payloadOffset = Buffer.byteLength(extXml, "utf8");
+    const bodyLen = payloadOffset + Buffer.byteLength(payloadXml, "utf8");
+
+    const header = encodeHeader({
+      cmdId,
+      bodyLen,
+      channelId,
+      streamType: 0,
+      msgNum,
+      responseCode: 0,
+      messageClass,
+      payloadOffset,
+    });
+    const messageKey = header.readUInt32LE(12);
+    const pendingKey: PendingKey = `${cmdId}:${messageKey}`;
+
+    const enc = params.encryption ?? this.enc;
+    const bodyBytes = this.encodeBodyXml(extXml, payloadXml, channelId, enc);
+    const wire = Buffer.concat([header, bodyBytes]);
+
+    const timeoutMs = params.timeoutMs ?? 10_000;
+    const framePromise = new Promise<BaichuanFrame>((resolve, reject) => {
+      const t = setTimeout(() => {
+        this.pending.delete(pendingKey);
+        reject(new Error(`Baichuan timeout cmdId=${cmdId} msgNum=${msgNum}`));
+      }, timeoutMs);
+      this.pending.set(pendingKey, {
+        resolve: (f) => {
+          clearTimeout(t);
+          resolve(f);
+        },
+        reject: (e) => {
+          clearTimeout(t);
+          reject(e);
+        },
+      });
+    });
+
+    if (this.opts.debug) this.emit("debug", "tx", { cmdId, msgNum, channelId, messageClass, bodyLen, binary: true });
+    this.writeWire(wire);
+
+    const frame = await framePromise;
+    if (this.opts.debug) this.emit("debug", "rx", { cmdId: frame.header.cmdId, responseCode: frame.header.responseCode, msgNum: frame.header.msgNum, binary: true });
+
+    if (frame.header.responseCode === 400) {
+      const body = frame.body;
+      if (body.length === 0) {
+        throw new Error("Baichuan binary request failed (responseCode 400, empty body)");
+      }
+    }
+
+    // For binary responses, return raw decrypted body
+    const body = frame.body;
+    if (body.length === 0) return Buffer.alloc(0);
+
+    // Decrypt the body (binary data like JPEG)
+    const decrypted = this.tryDecryptBinary(body, frame.header.channelId, enc);
+    return decrypted;
+  }
+
+  /**
+   * Decrypts binary data (similar to tryDecryptXml but for binary responses).
+   */
+  private tryDecryptBinary(buf: Buffer, channelId: number, preferred: EncryptionProtocol): Buffer {
+    if (buf.length === 0) return buf;
+
+    const tryAs = (enc: EncryptionProtocol): Buffer | null => {
+      try {
+        if (enc.kind === "none") return buf;
+        if (enc.kind === "bc") {
+          return bcDecrypt(buf, channelId);
+        }
+        if (enc.kind === "aes" || enc.kind === "full_aes") {
+          return aesDecrypt(buf, enc.key);
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    };
+
+    // Try preferred encryption first, then fallback to current encryption, then BC, then none
+    return (
+      tryAs(preferred) ??
+      (preferred.kind !== "bc" && this.enc.kind !== "none" && (this.enc.kind === "aes" || this.enc.kind === "full_aes") ? tryAs(this.enc) : null) ??
+      (preferred.kind !== "bc" ? tryAs({ kind: "bc" }) : null) ??
+      tryAs({ kind: "none" }) ??
+      buf // Return as-is if decryption fails
+    );
   }
 
   /**
@@ -370,23 +498,49 @@ export class BaichuanClient extends EventEmitter<{
     const userHash = md5StrModern(`${this.opts.username}${nonce}`);
     const passHash = md5StrModern(`${this.opts.password}${nonce}`);
     const loginXml = buildLoginXml(userHash, passHash);
+    
+    if (this.opts.debug) {
+      this.emit("debug", "login_hash", { 
+        username: this.opts.username,
+        nonce,
+        userHash,
+        passHashLength: passHash.length,
+        loginXmlLength: loginXml.length,
+        loginXmlPreview: loginXml.substring(0, 200)
+      });
+    }
 
     const replyXml = await this.sendXml({
       cmdId: 1,
       payloadXml: loginXml,
       extensionXml: "",
       messageClass: BC_CLASS_MODERN_24,
-      // For the login message itself, some firmwares still expect BCEncrypt.
-      // We try preferred (negotiated) but the decrypt path is tolerant.
-      encryption: this.enc.kind === "aes" || this.enc.kind === "full_aes" ? this.enc : { kind: "bc" },
+      // For the login message itself, many firmwares expect BCEncrypt regardless of negotiated encryption.
+      // This matches neolink/reolink-aio behavior: always use BCEncrypt for login.
+      encryption: { kind: "bc" },
       timeoutMs: 10_000,
     });
 
     // If login succeeded, camera replies with 200 in responseCode on modern frames.
-    // We check the last received header via tolerant parsing by issuing a second time? Not needed:
-    // sendXml already waited for the correct frame; we can consider success if it looks like XML and doesn't contain empty payload with errors.
+    // responseCode 400 typically means authentication failed (bad credentials)
+    // responseCode 200 means success
+    if (this.opts.debug) {
+      this.emit("debug", "login_reply", { 
+        replyLength: replyXml.length, 
+        replyPreview: replyXml.substring(0, 200),
+        startsWithXml: replyXml.startsWith("<?xml")
+      });
+    }
+    
+    // Check if reply is empty - this often indicates authentication failure
+    // (responseCode 400 was seen in debug output, which typically means auth failure)
+    if (replyXml.length === 0) {
+      throw new Error("Baichuan login failed: empty reply (likely authentication failure - check username/password. Response code 400 indicates bad credentials)");
+    }
+    
     if (!replyXml.startsWith("<?xml")) {
-      throw new Error("Baichuan login: unexpected non-XML reply");
+      const preview = replyXml.length > 0 ? replyXml.substring(0, 100) : "(empty)";
+      throw new Error(`Baichuan login: unexpected non-XML reply (length: ${replyXml.length}, preview: ${preview})`);
     }
 
     this.loggedIn = true;
