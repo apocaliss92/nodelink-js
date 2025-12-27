@@ -5,6 +5,7 @@ import { aesDecrypt, aesEncrypt, bcDecrypt, bcEncrypt, deriveAesKey, md5StrModer
 import { BaichuanFrameParser, encodeHeader, type BaichuanFrame } from "../protocol/framing.js";
 import { buildChannelExtensionXml, buildLoginXml, getXmlText } from "../protocol/xml.js";
 import { BcUdpStream, type BcUdpStreamOptions } from "../bcudp/BcUdpStream.js";
+import type { ReolinkEvent } from "../reolink/baichuan/types.js";
 
 export type BaichuanClientOptions = {
   host: string;
@@ -39,6 +40,7 @@ export class BaichuanClient extends EventEmitter<{
   close: [];
   error: [Error];
   debug: [string, unknown?];
+  event: [ReolinkEvent]; // Parsed events (motion/AI)
 }> {
   private readonly opts: BaichuanClientOptions;
 
@@ -50,8 +52,9 @@ export class BaichuanClient extends EventEmitter<{
 
   private msgNum = 0;
   private loggedIn = false;
+  subscribed = false; // Public to allow ReolinkBaichuanApi to check subscription status
 
-  private enc: EncryptionProtocol = { kind: "none" };
+  enc: EncryptionProtocol = { kind: "none" }; // Public to allow ReolinkBaichuanApi to access for audio decryption
   private nonce?: string;
 
   constructor(options: BaichuanClientOptions) {
@@ -159,6 +162,84 @@ export class BaichuanClient extends EventEmitter<{
 
     // unrequested -> push/stream
     this.emit("push", frame);
+
+    // Parse events (cmd_id 33 = Motion/AI/Visitor events)
+    if (frame.header.cmdId === 33) {
+      try {
+        const event = this.parseEvent(frame);
+        if (event) {
+          this.emit("event", event);
+        }
+      } catch (error) {
+        if (this.opts.debug) {
+          this.emit("debug", "event_parse_error", error);
+        }
+      }
+    }
+  }
+
+  /**
+   * Parses event frame (cmd_id 33) into ReolinkEvent.
+   * Based on reolink-aio _parse_xml handling of cmd_id 33.
+   */
+  private parseEvent(frame: BaichuanFrame): ReolinkEvent | null {
+    const body = frame.body;
+    if (body.length === 0) return null;
+
+    const xml = this.tryDecryptXml(body, frame.header.channelId, this.enc);
+    if (!xml || !xml.startsWith("<?xml")) return null;
+
+    // Extract channel from frame (channelId 250 = host, 1+ = channels)
+    const channelId = frame.header.channelId;
+    const channel = channelId === 250 ? 0 : channelId - 1;
+
+    // Parse XML for event tags (motion, AI, visitor, etc.)
+    // Based on reolink-aio: <Event><status>MD</status><AItype>people</AItype>...</Event>
+    const eventMatch = xml.match(/<Event[^>]*>([\s\S]*?)<\/Event>/);
+    if (!eventMatch) return null;
+
+    const eventXml = eventMatch[1] ?? "";
+    const status = getXmlText(eventXml, "status") ?? "";
+    const aiType = getXmlText(eventXml, "AItype") ?? "";
+
+    // Motion detection
+    if (status && status.includes("MD")) {
+      return {
+        channel,
+        type: "motion",
+        motion: {
+          channel,
+          state: true,
+          timestamp: Date.now(),
+        },
+        timestamp: Date.now(),
+      };
+    }
+
+    // AI detection
+    if (aiType) {
+      const aiTypeMap: Record<string, "people" | "vehicle" | "dog_cat" | "face" | "package" | "other"> = {
+        people: "people",
+        vehicle: "vehicle",
+        dog_cat: "dog_cat",
+        face: "face",
+        package: "package",
+      };
+
+      return {
+        channel,
+        type: "ai",
+        ai: {
+          channel,
+          type: aiTypeMap[aiType.toLowerCase()] ?? "other",
+          detected: true,
+          timestamp: Date.now(),
+        },
+        timestamp: Date.now(),
+      };
+    }
+
+    return null;
   }
 
   private nextMsgNum(): number {
@@ -397,8 +478,9 @@ export class BaichuanClient extends EventEmitter<{
 
   /**
    * Decrypts binary data (similar to tryDecryptXml but for binary responses).
+   * Public method to allow ReolinkBaichuanApi to decrypt audio frames.
    */
-  private tryDecryptBinary(buf: Buffer, channelId: number, preferred: EncryptionProtocol): Buffer {
+  tryDecryptBinary(buf: Buffer, channelId: number, preferred: EncryptionProtocol): Buffer {
     if (buf.length === 0) return buf;
 
     const tryAs = (enc: EncryptionProtocol): Buffer | null => {

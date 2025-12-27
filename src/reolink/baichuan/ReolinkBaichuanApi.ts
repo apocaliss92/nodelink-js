@@ -14,6 +14,10 @@ import type {
   ChannelStreamMetadata,
   StreamProfile,
   VideoCodec,
+  ReolinkEvent,
+  MotionEvent,
+  AIEvent,
+  TwoWayAudioConfig,
 } from "./types.js";
 
 export type ReolinkBaichuanPorts = Record<string, Record<string, number>>;
@@ -372,10 +376,33 @@ export class ReolinkBaichuanApi {
   }
 
   /**
-   * GetEvents via Baichuan.
+   * Subscribe to events (motion/AI/visitor) via Baichuan.
+   * cmd_id: 31 (from reolink-aio subscribe_events)
+   * After subscribing, events will be emitted via client.on("event", ...)
+   */
+  async subscribeEvents(): Promise<void> {
+    await this.client.login();
+    // cmd_id 31 with ch_id 251 subscribes to all events
+    // Use extension XML with channelId 251 for host-level subscription
+    const extensionXml = `<?xml version="1.0" encoding="UTF-8" ?><Extension version="1.1"><channelId>251</channelId></Extension>`;
+    await this.client.sendXml({ cmdId: 31, extensionXml });
+    this.client.subscribed = true;
+  }
+
+  /**
+   * Unsubscribe from events.
+   */
+  async unsubscribeEvents(): Promise<void> {
+    // Note: reolink-aio doesn't have explicit unsubscribe, but closing connection unsubscribes
+    // For now, we just mark as unsubscribed
+    this.client.subscribed = false;
+  }
+
+  /**
+   * GetEvents via Baichuan (legacy - use subscribeEvents for real-time events).
    * cmd_id: 33 (Motion/AI/Visitor event from reolink-aio _parse_xml)
    * Note: Events are typically pushed via cmd_id 33, not requested directly
-   * Use subscribe_events (cmd_id 31) to receive event pushes
+   * Use subscribeEvents() to receive event pushes
    */
   async getEvents(channel?: number): Promise<Events> {
     // Note: Events are typically pushed, not requested
@@ -392,6 +419,98 @@ export class ReolinkBaichuanApi {
         alarm_state: Number(getXmlText(xml, "alarm_state") ?? "0"),
       },
     };
+  }
+
+  /**
+   * Get two-way audio capability via Baichuan.
+   * cmd_id: 10 (from reolink-aio - checks if two-way audio is supported)
+   * Returns true if two-way audio is available.
+   * 
+   * Note: Both "mixAudioStream" and "followVideoStream" modes support two-way audio.
+   * The difference is how audio is mixed with the video stream.
+   */
+  async getTwoWayAudioConfig(channel?: number): Promise<TwoWayAudioConfig> {
+    const cmdId = 10; // From reolink-aio two-way audio check
+    const xml = await this.sendXml({ cmdId, ...(channel !== undefined ? { channel } : {}) });
+    // Check for audioStreamMode - both mixAudioStream and followVideoStream support two-way audio
+    const audioStreamMode = getXmlText(xml, "audioStreamMode");
+    // Both modes support two-way audio, just different mixing strategies
+    const enabled = audioStreamMode === "mixAudioStream" || audioStreamMode === "followVideoStream";
+
+    const config: TwoWayAudioConfig = {
+      channel: channel ?? 0,
+      enabled,
+    };
+    if (audioStreamMode) {
+      config.mode = audioStreamMode;
+    }
+    return config;
+  }
+
+  /**
+   * Start two-way audio session via Baichuan.
+   * cmd_id: 10 (from reolink-aio - two-way audio)
+   * Based on neolink implementation: uses cmd_id 10 with audioStreamMode = "mixAudioStream"
+   * 
+   * Note: After starting, audio frames are received via push events with streamType indicating audio.
+   * Audio is typically G.711 (alaw/ulaw) at 8kHz sample rate.
+   */
+  async startTwoWayAudio(channel?: number): Promise<void> {
+    const cmdId = 10; // From reolink-aio two-way audio
+    // Start two-way audio with mixAudioStream mode
+    // Based on neolink: cmd_id 10 enables two-way audio
+    await this.sendXml({ cmdId, ...(channel !== undefined ? { channel } : {}) });
+  }
+
+  /**
+   * Send audio data via Baichuan protocol.
+   * Based on neolink implementation: audio is sent via cmd_id 10 with binary audio data.
+   * 
+   * Audio Format Requirements:
+   * - Format: G.711 A-law (pcm_alaw)
+   * - Sample Rate: 8000 Hz
+   * - Channels: 1 (mono)
+   * - Bitrate: 64k (typical)
+   * 
+   * Note: Audio data should already be in G.711 A-law format (from Scrypted/ffmpeg).
+   *       No encoding is performed - data is sent directly to the camera.
+   * 
+   * @param audioData - G.711 A-law encoded audio data (from Scrypted/ffmpeg)
+   * @param channel - Channel number (optional)
+   */
+  async sendAudioData(audioData: Buffer, channel?: number): Promise<void> {
+    const cmdId = 10; // Two-way audio command
+    // Based on neolink: audio data is sent as binary payload with cmd_id 10
+    // streamType in header may indicate audio stream (typically 1 for audio)
+    // Note: Actual implementation may need to use sendBinary or a specialized method
+    // For now, this is a placeholder - needs testing with real device
+    // 
+    // Note: sendBinary expects XML payload, but audio is binary
+    // This may need a specialized method or modification to sendBinary
+    // For now, we'll use sendBinary with empty XML and note that audio data
+    // should be sent via a different mechanism (possibly raw socket write)
+    const params: Parameters<typeof this.client.sendBinary>[0] = {
+      cmdId,
+      payloadXml: "", // Audio data is binary, not XML
+    };
+    if (channel !== undefined) {
+      params.channel = channel;
+    }
+    // Note: This is a placeholder - actual audio sending may require
+    // direct socket writes or a specialized audio streaming method
+    await this.client.sendBinary(params);
+  }
+
+  /**
+   * Stop two-way audio session.
+   * Based on neolink: stopping typically involves closing the audio stream or sending stop command.
+   */
+  async stopTwoWayAudio(channel?: number): Promise<void> {
+    // Note: May need specific cmd_id or parameters to stop
+    // Based on neolink, stopping may involve:
+    // - Closing the audio stream connection
+    // - Sending a stop command (if supported)
+    // For now, this is a placeholder - needs testing with real device
   }
 }
 

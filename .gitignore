@@ -13,6 +13,7 @@ pnpm-debug.log*
 # Compiled JavaScript files (keep only TypeScript source)
 *.js
 !eslint.config.js
+!test/audio-samples/generate-test-audio.js
 
 # But allow JS files in specific locations if needed
 !node_modules/**/*.js

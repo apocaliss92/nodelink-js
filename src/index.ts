@@ -15,4 +15,5 @@ export * from "./reolink/nvr/ReolinkNvrBaichuanApi.js";
 export * from "./reolink/nvr/ReolinkNvrHybridApi.js";
 export * from "./rtsp/urls.js";
 export * from "./rtsp/server.js";
+export * from "./scrypted/helpers.js";
 

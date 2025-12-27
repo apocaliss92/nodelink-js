@@ -105,3 +105,30 @@ export interface ChannelStreamMetadata {
   audioEnabled: boolean; // Overall audio enabled (AND of all streams)
 }
 
+export interface MotionEvent {
+  channel: number;
+  state: boolean; // true = motion detected
+  timestamp?: number;
+}
+
+export interface AIEvent {
+  channel: number;
+  type: "people" | "vehicle" | "dog_cat" | "face" | "package" | "other";
+  detected: boolean;
+  timestamp?: number;
+}
+
+export interface ReolinkEvent {
+  channel: number;
+  type: "motion" | "ai" | "visitor" | "daynight";
+  motion?: MotionEvent;
+  ai?: AIEvent;
+  timestamp?: number;
+}
+
+export interface TwoWayAudioConfig {
+  channel: number;
+  enabled: boolean;
+  mode?: "mixAudioStream" | string;
+}
+

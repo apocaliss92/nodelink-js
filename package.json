@@ -33,13 +33,17 @@
     "lint": "npx eslint .",
     "test:build": "npm run build && npx tsc -p tsconfig.test.json",
     "test:tcp": "npm run test:build && node dist/test/tcp/test-tcp.js",
+    "test:tcp:native": "npm run test:build && node dist/test/tcp/test-tcp-native-apis.js",
+    "test:tcp:audio": "npm run test:build && node dist/test/tcp/test-tcp-audio.js",
+    "test:tcp:streams": "npm run test:build && node dist/test/tcp/test-tcp-streams-record.js",
     "test:udp": "npm run test:build && node dist/test/udp/test-udp.js",
     "test:streams": "npm run test:build && node dist/test/streams/test-streams.js",
     "test:nvr:tcp": "npm run test:build && node dist/test/nvr/test-nvr-tcp.js",
     "test:nvr:udp": "npm run test:build && node dist/test/nvr/test-nvr-udp.js",
     "test:nvr:streams": "npm run test:build && node dist/test/nvr/test-nvr-streams.js",
     "test:nvr:all": "npm run test:nvr:tcp && npm run test:nvr:udp && npm run test:nvr:streams",
-    "test:all": "npm run test:tcp && npm run test:udp && npm run test:streams"
+    "test:all": "npm run test:tcp && npm run test:udp && npm run test:streams",
+    "test:native": "npm run test:tcp:native"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
@@ -50,6 +54,7 @@
     "typescript": "^5.8.0"
   },
   "dependencies": {
+    "alawmulaw": "^6.0.0",
     "dotenv": "^17.2.3",
     "undici": "^7.16.0"
   }
