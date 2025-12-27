@@ -1,8 +1,8 @@
-# Istruzioni per Cursor (IDE) — `baichuan-protocol`
+# Cursor (IDE) instructions — `baichuan-protocol`
 
-Questa guida serve a far lavorare Cursor in modo consistente su questo repository (libreria TypeScript/Node per Reolink Baichuan/BCUDP + CGI + RTSP proxy).
+This guide helps Cursor work consistently on this repository (TypeScript/Node library for Reolink Baichuan/BCUDP + CGI + RTSP proxy).
 
-## Setup rapido
+## Quick setup
 
 ```bash
 npm install
@@ -11,17 +11,17 @@ npm test
 npm run build
 ```
 
-## Struttura del progetto (dove intervenire)
+## Project structure (where to work)
 
 - **Baichuan (TCP/BCUDP)**: `src/client/BaichuanClient.ts`
 - **Framing Baichuan (20/24 byte)**: `src/protocol/framing.ts`
 - **Crypto Baichuan (BCEncrypt/AES)**: `src/protocol/crypto.ts`
-- **BCUDP (UDP affidabile con ACK/resend)**: `src/bcudp/*`
+- **BCUDP (reliable UDP with ACK/resend)**: `src/bcudp/*`
 - **API CGI (HTTP)**:
-  - client token/refresh: `src/reolink/http/ReolinkHttpClient.ts`
-  - API CGI: `src/reolink/cgi/ReolinkCgiApi.ts`
+  - token + refresh: `src/reolink/http/ReolinkHttpClient.ts`
+  - CGI API: `src/reolink/cgi/ReolinkCgiApi.ts`
 - **API Baichuan**: `src/reolink/baichuan/ReolinkBaichuanApi.ts`
-- **API Ibrida (Baichuan→fallback CGI)**: `src/reolink/hybrid/ReolinkHybridApi.ts`
+- **Hybrid API (Baichuan → CGI fallback)**: `src/reolink/hybrid/ReolinkHybridApi.ts`
 - **API NVR**:
   - CGI: `src/reolink/nvr/ReolinkNvrCgiApi.ts`
   - Baichuan: `src/reolink/nvr/ReolinkNvrBaichuanApi.ts`
@@ -29,10 +29,10 @@ npm run build
 - **RTSP URL builder**: `src/rtsp/urls.ts`
 - **RTSP proxy server (HTTP MPEG-TS via ffmpeg)**: `src/rtsp/server.ts`
 
-### Nota su `_refs/`
-La cartella `_refs/` contiene repository clonati di riferimento (neolink/reolink_aio) ed è **ignorata** da git. Non va usata come “codice prodotto”.
+### Note about `_refs/`
+The `_refs/` folder contains cloned reference repositories (neolink/reolink_aio) and is **git-ignored**. Do not use it as product code.
 
-## Comandi di qualità (da far eseguire a Cursor prima di chiudere una modifica)
+## Quality commands (run before finishing a change)
 
 ```bash
 npm run lint
@@ -41,25 +41,25 @@ npm test
 npm run build
 ```
 
-## Testing di integrazione con una camera locale (opt-in)
+## Integration testing with a local camera (opt-in)
 
-I test di integrazione sono in `test/integration/reolink.local.test.ts` e sono **skippati** se mancano le env.
+Integration tests are in `test/integration/reolink.local.test.ts` and are **skipped** unless env vars are provided.
 
-### Variabili d’ambiente
+### Environment variables
 
-Obbligatorie:
+Required:
 - `REOLINK_HOST`
 - `REOLINK_USER`
 - `REOLINK_PASS`
 
-Opzionali:
-- `REOLINK_CGI_PORT` (es. `80` o `443`)
-- `REOLINK_CGI_HTTPS=1` (abilita HTTPS per CGI)
+Optional:
+- `REOLINK_CGI_PORT` (e.g. `80` or `443`)
+- `REOLINK_CGI_HTTPS=1` (enable HTTPS for CGI)
 - `REOLINK_BC_TRANSPORT=tcp|udp|auto`
-- `REOLINK_UID` (necessario se usi BCUDP `mode: "uid"`)
-- `REOLINK_ALLOW_REBOOT=1` (abilita il reboot durante l’integrazione)
+- `REOLINK_UID` (required if you use BCUDP `mode: "uid"`)
+- `REOLINK_ALLOW_REBOOT=1` (allows reboot during integration tests)
 
-Esempio:
+Example:
 
 ```bash
 export REOLINK_HOST=192.168.1.50
@@ -70,28 +70,29 @@ export REOLINK_UID='XXXXXXXXXXXX'
 npm test
 ```
 
-## Debugging / logging consigliato
+## Recommended debugging / logging
 
-- **BaichuanClient**: usa `debug: true` nelle options e ascolta l’evento `debug`.
-- **BCUDP**: `BcUdpStream` emette `error` (e può essere esteso per log più verbosi).
-- **CGI**: gli errori includono status/response text; in caso di firmware “strani” controlla la risposta raw.
+- **BaichuanClient**: use `debug: true` and listen to the `debug` event.
+- **BCUDP**: `BcUdpStream` emits `error` (you can extend it for more verbose logs).
+- **CGI**: errors include status/response text; for odd firmwares inspect the raw response.
 
-## Linee guida per Cursor (prompt operativo)
+## Cursor guidelines (project instructions)
 
-Copia/incolla questo testo come “Project instructions” in Cursor se vuoi:
+Copy/paste this as "Project instructions" in Cursor:
 
-> Stai lavorando su una libreria TypeScript/Node per Reolink.
-> - Mantieni API separate per protocollo: Baichuan/BCUDP e CGI.
-> - L’API ibrida deve provare Baichuan e fare fallback a CGI per ogni operazione.
-> - Non introdurre breaking changes inutili: aggiungi metodi/option compatibili.
-> - Non toccare `_refs/` (solo consultazione).
-> - Dopo modifiche: esegui `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`.
-> - I test di integrazione devono essere opt-in via env e non devono fallire in CI se env non sono presenti.
+> You are working on a TypeScript/Node library for Reolink.
+> - Keep protocol-specific APIs separate: Baichuan/BCUDP and CGI.
+> - The hybrid API must try Baichuan first and fall back to CGI per operation.
+> - Avoid unnecessary breaking changes: add compatible methods/options.
+> - Do not modify `_refs/` (reference only).
+> - After changes run: `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`.
+> - Integration tests must be opt-in via env and must not fail in CI when env is missing.
+> - IMPORTANT: All repository text must be English (docs, comments, messages, tests). Do not add Italian text.
 
-## Roadmap tecnica suggerita (per espansioni future)
+## Suggested technical roadmap (future extensions)
 
-- Espandere `ReolinkBaichuanApi` con i `cmd_id` mancanti (snapshot binario, stream start/stop, PTZ completo, floodlight, PIR, battery, ecc.)
-- Espandere `ReolinkCgiApi` con wrapper fortemente tipizzati per i comandi più usati (Get/Set per rete, encoding, OSD, AI, motion, ecc.)
-- NVR: aggiungere helper “bulk” per stream/encoding su tutte le camere collegate
-- RTSP: aggiungere un proxy HLS opzionale e un healthcheck per ffmpeg
+- Expand `ReolinkBaichuanApi` with missing `cmd_id`s (binary snapshot, stream start/stop, full PTZ, floodlight, PIR, battery, etc.)
+- Expand `ReolinkCgiApi` with strongly-typed wrappers for common commands (Get/Set network, encoding, OSD, AI, motion, etc.)
+- NVR: add bulk helpers for stream/encoding across all connected cameras
+- RTSP: add optional HLS proxy and an ffmpeg healthcheck
 

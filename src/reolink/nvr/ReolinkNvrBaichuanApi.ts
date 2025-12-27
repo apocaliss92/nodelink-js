@@ -4,9 +4,9 @@ import type { BaichuanClientOptions } from "../../client/BaichuanClient.js";
 /**
  * API Baichuan specifica per NVR.
  *
- * Nota: l’enumerazione dei canali (camere collegate) è tipicamente più affidabile via CGI
- * (GetChannelstatus). Qui forniamo helper multi-canale assumendo che tu passi esplicitamente
- * i canali o li ottenga via CGI.
+ * Note: enumerating channels (connected cameras) is typically more reliable via CGI
+ * (GetChannelstatus). Here we provide multi-channel helpers assuming you pass channels explicitly
+ * (or obtain them via CGI).
  */
 export class ReolinkNvrBaichuanApi {
   readonly bc: ReolinkBaichuanApi;

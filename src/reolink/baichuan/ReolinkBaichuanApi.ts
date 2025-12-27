@@ -27,14 +27,14 @@ export class ReolinkBaichuanApi {
     await this.client.close();
   }
 
-  /** Bc cmd_id generico, ritorna XML (se presente). */
+  /** Generic Baichuan cmd_id call, returns XML (if any). */
   async sendXml(params: Parameters<BaichuanClient["sendXml"]>[0]): Promise<string> {
     await this.client.login();
     return await this.client.sendXml(params);
   }
 
   // --------------------
-  // Operazioni principali (da reolink_aio/baichuan.py)
+  // Main operations (from reolink_aio/baichuan.py)
   // --------------------
 
   /** GetNetPort via Baichuan: cmd_id 37 */
@@ -57,7 +57,7 @@ export class ReolinkBaichuanApi {
     return ports;
   }
 
-  /** SetNetPort via Baichuan: cmd_id 36 (abilita/disabilita rtsp/rtmp/onvif/http/https) */
+  /** SetNetPort via Baichuan: cmd_id 36 (enable/disable rtsp/rtmp/onvif/http/https) */
   async setPortEnabled(params: { port: "rtsp" | "rtmp" | "onvif" | "http" | "https"; enable: boolean }): Promise<void> {
     const tag = `${params.port[0]!.toUpperCase()}${params.port.slice(1)}Port`;
     const xml =
@@ -75,21 +75,21 @@ export class ReolinkBaichuanApi {
     const req: { cmdId: number; channel?: number } = { cmdId: channel == null ? 80 : 318 };
     if (channel !== undefined) req.channel = channel;
     const xml = await this.sendXml(req);
-    // chiavi che reolink_aio usa: type, hardwareVersion, firmwareVersion, itemNo, serialNumber, name
+    // Keys used by reolink_aio: type, hardwareVersion, firmwareVersion, itemNo, serialNumber, name
     return getXmlTexts(xml, ["type", "hardwareVersion", "firmwareVersion", "itemNo", "serialNumber", "name"]);
   }
 
-  /** GetEnc via Baichuan: cmd_id 56 (ritorna XML raw). */
+  /** GetEnc via Baichuan: cmd_id 56 (returns raw XML). */
   async getEncXml(channel: number): Promise<string> {
     return await this.sendXml({ cmdId: 56, channel });
   }
 
-  /** SetEnc via Baichuan: cmd_id 57 (invia XML raw). */
+  /** SetEnc via Baichuan: cmd_id 57 (sends raw XML). */
   async setEncXml(channel: number, encXml: string): Promise<void> {
     await this.sendXml({ cmdId: 57, channel, payloadXml: encXml });
   }
 
-  /** SetNetPort helper “bulk” come reolink_aio: accetta NetPort con onvifEnable/rtmpEnable/rtspEnable. */
+  /** Bulk SetNetPort helper (reolink_aio-style): accepts NetPort with onvifEnable/rtmpEnable/rtspEnable. */
   async setNetPort(netPort: { onvifEnable?: number; rtmpEnable?: number; rtspEnable?: number }): Promise<void> {
     if (netPort.onvifEnable != null) await this.setPortEnabled({ port: "onvif", enable: netPort.onvifEnable === 1 });
     if (netPort.rtmpEnable != null) await this.setPortEnabled({ port: "rtmp", enable: netPort.rtmpEnable === 1 });
@@ -108,7 +108,7 @@ export class ReolinkBaichuanApi {
     await this.sendXml({ cmdId: 93 });
   }
 
-  /** GetLocalLink via Baichuan: cmd_id 104 (general info) – in molte cam include MAC/rete. */
+  /** GetLocalLink via Baichuan: cmd_id 104 (general info) - on many models includes MAC/network info. */
   async getGeneralXml(channel?: number): Promise<string> {
     const req: { cmdId: number; channel?: number } = { cmdId: 104 };
     if (channel !== undefined) req.channel = channel;
@@ -120,7 +120,7 @@ export class ReolinkBaichuanApi {
     await this.sendXml({ cmdId: 105, ...(channel === undefined ? {} : { channel }), payloadXml: xml });
   }
 
-  /** Helper per costruire una Extension canale in XML (per payload che la richiede). */
+  /** Helper to build a channel Extension XML (for payloads that require it). */
   static buildChannelExtensionXml(channel: number): string {
     return `<?xml version="1.0" encoding="UTF-8" ?>` + `<Extension version="1.1"><channelId>${xmlEscape(String(channel))}</channelId></Extension>`;
   }

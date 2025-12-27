@@ -9,9 +9,9 @@ export type RtspProxyServerOptions = {
   password: string;
   rtspPort?: number;
   /**
-   * Trasporto RTSP verso la camera.
-   * - `tcp` è spesso più affidabile in LAN
-   * - `udp` può ridurre latenza ma è più fragile
+   * RTSP transport towards the camera.
+   * - `tcp` is often more reliable on LAN
+   * - `udp` can reduce latency but is more fragile
    */
   rtspTransport?: "tcp" | "udp";
 };

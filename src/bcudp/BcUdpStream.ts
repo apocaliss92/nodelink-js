@@ -8,17 +8,17 @@ import { buildC2dC, buildC2dHb, parseD2cCr } from "./xml.js";
 
 export type BcUdpStreamOptions =
   | {
-      /** Local discovery via UID (tipico per batteria). */
+      /** Local discovery via UID (typical for battery cameras). */
       mode: "uid";
       uid: string;
       host?: string;
       port?: number;
       mtu?: number;
-      /** Se true abilita UDP broadcast per discovery. */
+      /** If true, enables UDP broadcast for discovery. */
       broadcast?: boolean;
     }
   | {
-      /** Connessione diretta con parametri già noti. */
+      /** Direct connection with already-known parameters. */
       mode: "direct";
       host: string;
       port: number;
@@ -30,8 +30,8 @@ export type BcUdpStreamOptions =
 type SendEntry = { packetId: number; buf: Buffer; ts: number };
 
 /**
- * Implementa BCUDP come "byte stream" affidabile (ACK + resend),
- * come fa `neolink` (`UdpPayloadSource`).
+ * Implements BCUDP as a reliable "byte stream" (ACK + resend),
+ * following `neolink` (`UdpPayloadSource`).
  */
 export class BcUdpStream extends EventEmitter<{
   data: [Buffer];
@@ -104,7 +104,7 @@ export class BcUdpStream extends EventEmitter<{
     const addr = sock.address();
     const localPort = typeof addr === "string" ? 0 : (addr as AddressInfo).port;
     const cid = (Math.floor(Math.random() * 0x7fffffff) | 0) || 82000;
-    const tid = (Math.floor(Math.random() * 255) | 0) >>> 0; // neolink spesso usa valori piccoli
+    const tid = (Math.floor(Math.random() * 255) | 0) >>> 0; // neolink often uses small values
 
     const xml = buildC2dC({ uid: this.opts.uid, clientPort: localPort, cid, mtu: this.mtu, os: "WIN" });
     const packet = encodeDiscoveryPacket(tid, xml);
@@ -133,7 +133,7 @@ export class BcUdpStream extends EventEmitter<{
 
     this.clientId = reply.cid;
     this.cameraId = reply.did;
-    // Dopo la discovery, il peer è l'addr che ha risposto (porta può variare in base al modello).
+    // After discovery, the peer is the responder address (port may vary by model).
     this.remote = { host: reply.rhost, port: reply.rport };
   }
 
@@ -142,7 +142,7 @@ export class BcUdpStream extends EventEmitter<{
       throw new Error("BCUDP not ready");
     }
 
-    // ACK ogni 10ms (come client ufficiale / neolink)
+    // ACK every 10ms (official client / neolink behavior)
     this.ackTimer = setIntervalNode(() => {
       try {
         this.sendAck();
@@ -151,7 +151,7 @@ export class BcUdpStream extends EventEmitter<{
       }
     }, 10);
 
-    // resend ogni 500ms
+    // resend every 500ms
     this.resendTimer = setIntervalNode(() => {
       try {
         this.resendOutstanding();
@@ -160,7 +160,7 @@ export class BcUdpStream extends EventEmitter<{
       }
     }, 500);
 
-    // heartbeat ogni 1s
+    // heartbeat every 1s
     this.hbTimer = setIntervalNode(() => {
       try {
         this.sendHeartbeat();
@@ -197,7 +197,7 @@ export class BcUdpStream extends EventEmitter<{
     if (!this.sock || !this.remote || this.clientId == null || this.cameraId == null) return;
     const { packetId, payload } = this.buildAckPayload();
     const ack = encodeAckPacket({
-      connectionId: this.cameraId, // verso camera: did
+      connectionId: this.cameraId, // towards camera: did
       groupId: packetId === 0xffffffff ? 0xffffffff : 0,
       packetId,
       maybeLatency: 0,
@@ -261,7 +261,7 @@ export class BcUdpStream extends EventEmitter<{
       return;
     }
 
-    // discovery packets after connect (HB, disconnect, ecc.) -> ignoriamo per ora.
+    // discovery packets after connect (HB, disconnect, etc.) -> ignored for now.
     return;
   }
 

@@ -44,7 +44,7 @@ describeIf(hasIntegrationEnv())("integration: Reolink camera (local)", () => {
     await api.close();
   });
 
-  it("Hybrid: GetNetPort + Reboot (non esegue reboot se REOLINK_ALLOW_REBOOT!=1)", async () => {
+  it("Hybrid: GetNetPort + Reboot (does not reboot unless REOLINK_ALLOW_REBOOT=1)", async () => {
     const api = new ReolinkHybridApi({
       cgi: ((): any => {
         const o: any = { host, username, password, useHttps };

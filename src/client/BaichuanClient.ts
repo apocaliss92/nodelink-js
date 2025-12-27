@@ -19,13 +19,13 @@ export type BaichuanClientOptions = {
   /** If true, emits additional debug events. */
   debug?: boolean;
   /**
-   * Trasporto da usare:
-   * - `tcp`: Baichuan TCP (tipico per cam cablate)
-   * - `udp`: BCUDP (tipico per cam a batteria)
-   * - `auto`: prova `tcp`, poi `udp`
+   * Transport to use:
+   * - `tcp`: Baichuan TCP (typical for wired cameras)
+   * - `udp`: BCUDP (typical for battery cameras)
+   * - `auto`: try `tcp`, then fallback to `udp`
    */
   transport?: "tcp" | "udp" | "auto";
-  /** Opzioni BCUDP (necessarie se `transport: "udp"` o `auto` fallback). */
+  /** BCUDP options (required for `transport: "udp"` or `auto` fallback). */
   udp?: BcUdpStreamOptions;
 };
 
@@ -112,7 +112,7 @@ export class BaichuanClient extends EventEmitter<{
     }
     const udpOpts = this.opts.udp;
     if (!udpOpts) {
-      throw new Error("Baichuan UDP richiesto ma `options.udp` non è impostato (serve per BCUDP, tipico cam a batteria).");
+      throw new Error("Baichuan UDP requested but `options.udp` is not set (required for BCUDP, typical for battery cameras).");
     }
     const sock = new BcUdpStream(udpOpts);
     this.udpSocket = sock;
@@ -217,8 +217,8 @@ export class BaichuanClient extends EventEmitter<{
   }
 
   /**
-   * Invia un comando Baichuan e ritorna la risposta XML (se presente).
-   * Se la risposta non contiene body, ritorna stringa vuota.
+   * Sends a Baichuan command and returns the XML reply (if any).
+   * If the reply has no body, returns an empty string.
    */
   async sendXml(params: {
     cmdId: number;
