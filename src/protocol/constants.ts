@@ -24,3 +24,16 @@ export function bcHeaderHasPayloadOffset(messageClass: number): boolean {
   return messageClass === BC_CLASS_MODERN_24 || messageClass === BC_CLASS_MODERN_24_ALT;
 }
 
+/**
+ * Baichuan command IDs for video streaming.
+ * Based on neolink model.rs implementation.
+ * 
+ * Reference: https://github.com/QuantumEntangledAndy/neolink/blob/master/crates/core/src/bc/model.rs
+ * 
+ * Values verified from neolink crates/core/src/bc/model.rs:
+ * - MSG_ID_VIDEO = 3: Video and Audio Streams messages
+ * - MSG_ID_VIDEO_STOP = 4: ID used to stop the video stream
+ */
+export const BC_CMD_ID_VIDEO = 3; // MSG_ID_VIDEO - Video and Audio Streams messages
+export const BC_CMD_ID_VIDEO_STOP = 4; // MSG_ID_VIDEO_STOP - ID used to stop the video stream
+

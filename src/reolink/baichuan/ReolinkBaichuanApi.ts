@@ -1,5 +1,6 @@
 import { BaichuanClient, type BaichuanClientOptions } from "../../client/BaichuanClient.js";
-import { xmlEscape, getXmlText } from "../../protocol/xml.js";
+import { xmlEscape, getXmlText, buildPreviewXml, buildPreviewStopXml, buildChannelExtensionXml } from "../../protocol/xml.js";
+import { BC_CMD_ID_VIDEO, BC_CMD_ID_VIDEO_STOP, BC_CLASS_MODERN_24 } from "../../protocol/constants.js";
 import type {
   OsdConfig,
   AIState,
@@ -511,6 +512,122 @@ export class ReolinkBaichuanApi {
     // - Closing the audio stream connection
     // - Sending a stop command (if supported)
     // For now, this is a placeholder - needs testing with real device
+  }
+
+  /**
+   * Start video stream via Baichuan protocol.
+   * Based on neolink stream.rs implementation.
+   * 
+   * Reference: https://github.com/QuantumEntangledAndy/neolink/blob/master/crates/core/src/bc_protocol/stream.rs#L108
+   * 
+   * Uses MSG_ID_VIDEO command with Preview XML payload containing:
+   * - channelId: Channel ID (1-based)
+   * - handle: Stream handle (0 for main, 256 for sub, 1024 for extern)
+   * - streamType: Stream name ("mainStream", "subStream", "externStream")
+   * 
+   * @param channel - Channel number (0-based)
+   * @param profile - Stream profile ("main" | "sub" | "ext")
+   * @returns Promise that resolves when stream request is sent
+   */
+  async startVideoStream(channel: number, profile: StreamProfile = "sub"): Promise<void> {
+    const channelId = channel + 1; // Convert to 1-based for Baichuan protocol
+    
+    // Map profile to handle and stream_type values (from neolink stream.rs)
+    // handle: 0 for main, 256 for sub, 1024 for extern
+    // stream_type in header: 0 for main, 1 for sub, 0 for extern
+    const profileConfig: Record<StreamProfile, { handle: number; streamType: number; streamName: string }> = {
+      main: { handle: 0, streamType: 0, streamName: "mainStream" },
+      sub: { handle: 256, streamType: 1, streamName: "subStream" },
+      ext: { handle: 1024, streamType: 0, streamName: "externStream" },
+    };
+    
+    const config = profileConfig[profile];
+    
+    // Build Preview XML payload (from neolink stream.rs line 171-189)
+    // BcXml serializes as <body>...</body> with Preview inside
+    // IMPORTANT: channelId is NOT in Preview XML - it's handled via channelId in header
+    // The working format (response_code 200) is Preview WITHOUT channelId
+    const payloadXml = buildPreviewXml(config.handle, config.streamName);
+    
+    // Neolink uses connection.subscribe(MSG_ID_VIDEO, msg_num) BEFORE sending the command
+    // This creates a dedicated channel for video frames. In our implementation,
+    // we subscribe to the msgNum that will be used for the command.
+    const msgNum = this.client.peekNextMsgNum();
+    
+    // Subscribe to video stream frames with this msgNum (similar to neolink)
+    // This ensures we capture video frames that match this specific request
+    this.client.subscribeVideoStream(BC_CMD_ID_VIDEO, msgNum);
+    
+    // Send video stream start command
+    // Based on neolink stream.rs:
+    // - Uses BC_CLASS_MODERN_24 (0x6414) as in neolink
+    // - streamType in header must match the stream type (0 for main/ext, 1 for sub)
+    // - NO Extension XML - neolink doesn't use it in stream.rs (only BcXml with Preview)
+    // - Neolink expects response_code 200, otherwise it returns an error
+    const frameParams: Parameters<typeof this.client.sendFrame>[0] = {
+      cmdId: BC_CMD_ID_VIDEO,
+      channel,
+      payloadXml,
+      messageClass: BC_CLASS_MODERN_24,
+      streamType: config.streamType, // 0 for main/ext, 1 for sub
+    };
+    // Omit extensionXml - neolink doesn't use it for Preview command
+    const frame = await this.client.sendFrame(frameParams);
+    
+    // Check response_code (neolink expects 200 and rejects anything else)
+    // From neolink stream.rs line 194-202: if response_code is not 200, it returns an error
+    if (frame.header.responseCode !== 200) {
+      // Unsubscribe on error
+      this.client.unsubscribeVideoStream(BC_CMD_ID_VIDEO, msgNum);
+      throw new Error(`Video stream request rejected (response_code ${frame.header.responseCode}). Neolink expects response_code 200, camera returned ${frame.header.responseCode}`);
+    }
+    
+    // Success - stream should start and frames will arrive as push events with cmd_id 3
+    
+    // Check for response code 200 (success)
+    // neolink expects response_code: 200 in the reply
+    // If response_code is not 200, the stream request was rejected
+    // Note: sendXml doesn't expose response_code directly, but it throws on 400 errors
+    // For video streaming, we might need to check the actual frame response_code
+  }
+
+  /**
+   * Stop video stream via Baichuan protocol.
+   * Based on neolink stream.rs implementation.
+   * 
+   * Reference: https://github.com/QuantumEntangledAndy/neolink/blob/master/crates/core/src/bc_protocol/stream.rs
+   * 
+   * Uses MSG_ID_VIDEO_STOP command with Preview XML payload (without stream_type).
+   * 
+   * @param channel - Channel number (0-based)
+   * @param profile - Stream profile ("main" | "sub" | "ext")
+   */
+  async stopVideoStream(channel: number, profile: StreamProfile = "sub"): Promise<void> {
+    const channelId = channel + 1; // Convert to 1-based for Baichuan protocol
+    
+    // Map profile to handle value (from neolink stream.rs)
+    const profileConfig: Record<StreamProfile, { handle: number; streamType: number }> = {
+      main: { handle: 0, streamType: 0 },
+      sub: { handle: 256, streamType: 1 },
+      ext: { handle: 1024, streamType: 0 },
+    };
+    
+    const config = profileConfig[profile];
+    
+    // Build Preview XML payload for stop (without stream_type)
+    // channelId is NOT in Preview XML - it's handled via channelId in header
+    const payloadXml = buildPreviewStopXml(config.handle);
+    
+    // Send video stream stop command
+    // Uses BC_CLASS_MODERN_24 (0x6414) as in neolink
+    // streamType in header must match the stream type (0 for main/ext, 1 for sub)
+    await this.sendXml({
+      cmdId: BC_CMD_ID_VIDEO_STOP,
+      channel,
+      payloadXml,
+      messageClass: BC_CLASS_MODERN_24,
+      streamType: config.streamType, // 0 for main/ext, 1 for sub
+    });
   }
 }
 

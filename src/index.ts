@@ -1,6 +1,7 @@
 export * from "./protocol/constants.js";
 export * from "./protocol/crypto.js";
 export * from "./protocol/framing.js";
+export type { BaichuanFrame } from "./protocol/framing.js";
 export * from "./protocol/xml.js";
 export * from "./client/BaichuanClient.js";
 export * from "./bcudp/BcUdpStream.js";
@@ -16,4 +17,6 @@ export * from "./reolink/nvr/ReolinkNvrHybridApi.js";
 export * from "./rtsp/urls.js";
 export * from "./rtsp/server.js";
 export * from "./scrypted/helpers.js";
+export * from "./baichuan/stream/BaichuanVideoStream.js";
+export * from "./baichuan/stream/BaichuanRtspServer.js";
 

@@ -56,6 +56,10 @@ export class BaichuanClient extends EventEmitter<{
 
   enc: EncryptionProtocol = { kind: "none" }; // Public to allow ReolinkBaichuanApi to access for audio decryption
   private nonce?: string;
+  
+  // Video stream subscriptions: map of cmdId -> Set of msgNum that are subscribed
+  // Similar to neolink's connection.subscribe(MSG_ID_VIDEO, msg_num)
+  private videoSubscriptions = new Map<number, Set<number>>();
 
   constructor(options: BaichuanClientOptions) {
     super();
@@ -160,6 +164,15 @@ export class BaichuanClient extends EventEmitter<{
       return;
     }
 
+    // Check if this frame matches a video stream subscription
+    // Similar to neolink's subscribe mechanism: frames with matching cmdId and msgNum
+    const subscribedMsgNums = this.videoSubscriptions.get(frame.header.cmdId);
+    if (subscribedMsgNums && subscribedMsgNums.has(frame.header.msgNum)) {
+      // This is a subscribed video stream frame - emit as push
+      this.emit("push", frame);
+      return;
+    }
+
     // unrequested -> push/stream
     this.emit("push", frame);
 
@@ -175,6 +188,40 @@ export class BaichuanClient extends EventEmitter<{
           this.emit("debug", "event_parse_error", error);
         }
       }
+    }
+  }
+
+  /**
+   * Subscribe to video stream frames with a specific cmdId and msgNum.
+   * Similar to neolink's connection.subscribe(MSG_ID_VIDEO, msg_num).
+   * 
+   * @param cmdId - Command ID to subscribe to (e.g., 3 for MSG_ID_VIDEO)
+   * @param msgNum - Message number to subscribe to
+   */
+  subscribeVideoStream(cmdId: number, msgNum: number): void {
+    if (!this.videoSubscriptions.has(cmdId)) {
+      this.videoSubscriptions.set(cmdId, new Set());
+    }
+    this.videoSubscriptions.get(cmdId)!.add(msgNum);
+  }
+
+  /**
+   * Unsubscribe from video stream frames.
+   * 
+   * @param cmdId - Command ID to unsubscribe from
+   * @param msgNum - Message number to unsubscribe from (optional, if not provided, unsubscribes from all msgNum for this cmdId)
+   */
+  unsubscribeVideoStream(cmdId: number, msgNum?: number): void {
+    const subscribedMsgNums = this.videoSubscriptions.get(cmdId);
+    if (!subscribedMsgNums) return;
+    
+    if (msgNum !== undefined) {
+      subscribedMsgNums.delete(msgNum);
+      if (subscribedMsgNums.size === 0) {
+        this.videoSubscriptions.delete(cmdId);
+      }
+    } else {
+      this.videoSubscriptions.delete(cmdId);
     }
   }
 
@@ -247,6 +294,15 @@ export class BaichuanClient extends EventEmitter<{
     return this.msgNum;
   }
 
+  /**
+   * Get the next message number that will be used (without incrementing).
+   * Useful for subscribing to video streams before sending the command.
+   * Public to allow ReolinkBaichuanApi to subscribe before sending video stream commands.
+   */
+  public peekNextMsgNum(): number {
+    return (this.msgNum + 1) & 0xffff;
+  }
+
   private requireSocket(): net.Socket {
     if (this.transport !== "tcp") throw new Error("Internal: requireSocket called while not using TCP");
     if (!this.tcpSocket || this.tcpSocket.destroyed) throw new Error("Baichuan TCP socket is not connected");
@@ -308,6 +364,8 @@ export class BaichuanClient extends EventEmitter<{
     extensionXml?: string;
     /** Classe header: di default moderna 24 byte (0x6414). */
     messageClass?: number;
+    /** Stream type in header: 0 for main/ext, 1 for sub (used for video streaming). */
+    streamType?: number;
     /** Forza cifratura specifica per questo invio. */
     encryption?: EncryptionProtocol;
     /** Timeout ms. */
@@ -392,6 +450,78 @@ export class BaichuanClient extends EventEmitter<{
   }
 
   /**
+   * Sends a Baichuan command and returns the frame (for checking response_code).
+   * Similar to sendXml but returns the full frame instead of just the XML body.
+   */
+  async sendFrame(params: {
+    cmdId: number;
+    channel?: number;
+    payloadXml?: string;
+    extensionXml?: string;
+    messageClass?: number;
+    streamType?: number;
+    encryption?: EncryptionProtocol;
+    timeoutMs?: number;
+  }): Promise<BaichuanFrame> {
+    await this.connect();
+
+    const channel = params.channel ?? this.opts.channel ?? 0;
+    const channelId = params.channel == null ? 250 : channel + 1;
+
+    const msgNum = this.nextMsgNum();
+    const cmdId = params.cmdId;
+
+    const extXml = params.extensionXml ?? (params.channel != null ? buildChannelExtensionXml(channel) : "");
+    const payloadXml = params.payloadXml ?? "";
+
+    const messageClass = params.messageClass ?? BC_CLASS_MODERN_24;
+    const payloadOffset = Buffer.byteLength(extXml, "utf8");
+    const bodyLen = payloadOffset + Buffer.byteLength(payloadXml, "utf8");
+
+    const header = encodeHeader({
+      cmdId,
+      bodyLen,
+      channelId,
+      streamType: params.streamType ?? 0,
+      msgNum,
+      responseCode: 0,
+      messageClass,
+      payloadOffset,
+    });
+    const messageKey = header.readUInt32LE(12);
+    const pendingKey: PendingKey = `${cmdId}:${messageKey}`;
+
+    const enc = params.encryption ?? this.enc;
+    const bodyBytes = this.encodeBodyXml(extXml, payloadXml, channelId, enc);
+    const wire = Buffer.concat([header, bodyBytes]);
+
+    const timeoutMs = params.timeoutMs ?? 10_000;
+    const framePromise = new Promise<BaichuanFrame>((resolve, reject) => {
+      const t = setTimeout(() => {
+        this.pending.delete(pendingKey);
+        reject(new Error(`Baichuan timeout cmdId=${cmdId} msgNum=${msgNum}`));
+      }, timeoutMs);
+      this.pending.set(pendingKey, {
+        resolve: (f) => {
+          clearTimeout(t);
+          resolve(f);
+        },
+        reject: (e) => {
+          clearTimeout(t);
+          reject(e);
+        },
+      });
+    });
+
+    if (this.opts.debug) this.emit("debug", "tx", { cmdId, msgNum, channelId, messageClass, bodyLen });
+    this.writeWire(wire);
+
+    const frame = await framePromise;
+    if (this.opts.debug) this.emit("debug", "rx", { cmdId: frame.header.cmdId, responseCode: frame.header.responseCode, msgNum: frame.header.msgNum });
+    return frame;
+  }
+
+  /**
    * Sends a Baichuan command and returns the binary reply (for commands like Snap that return binary data).
    * Similar to sendXml but returns raw Buffer instead of XML string.
    */
@@ -401,6 +531,7 @@ export class BaichuanClient extends EventEmitter<{
     payloadXml?: string;
     extensionXml?: string;
     messageClass?: number;
+    streamType?: number;
     encryption?: EncryptionProtocol;
     timeoutMs?: number;
   }): Promise<Buffer> {
