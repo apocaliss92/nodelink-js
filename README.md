@@ -68,31 +68,32 @@ const client = new BaichuanClient({
 await client.login();
 ```
 
-## API “stile reolink_aio” (HTTP CGI + Baichuan)
+## API separate: Baichuan e CGI
 
-Per coprire l’ampio set di funzionalità di `reolink_aio` (network settings, stream, reboot, info, NVR/canali, …) è disponibile `ReolinkApi`:
+- `ReolinkBaichuanApi`: operazioni via Baichuan/BCUDP
+- `ReolinkCgiApi`: operazioni via HTTP CGI (stile reolink_aio)
+
+## API ibrida (Baichuan -> fallback CGI)
+
+Per ogni operazione prova prima Baichuan e poi fa fallback a CGI: `ReolinkHybridApi`.
 
 ```ts
-import { ReolinkApi } from "baichuan-protocol";
+import { ReolinkHybridApi } from "baichuan-protocol";
 
-const api = new ReolinkApi({
-  http: { host: "192.168.1.50", username: "admin", password: "••••••••", useHttps: false },
+const api = new ReolinkHybridApi({
+  cgi: { host: "192.168.1.50", username: "admin", password: "••••••••", useHttps: false },
   baichuan: { host: "192.168.1.50", username: "admin", password: "••••••••", transport: "tcp" },
 });
 
 await api.login();
-const devInfo = await api.getDevInfo();
-const channels = await api.listChannels(); // NVR
-await api.reboot(); // host reboot (o fallback Baichuan)
-await api.logout();
+const devInfo = await api.GetDevInfo();
+await api.Reboot();
+await api.close();
 ```
 
 ### Comandi arbitrari (copre “tutto” reolink_aio lato HTTP)
 
-```ts
-await api.call("GetNetPort", {});
-await api.call("SetNetPort", { NetPort: {/* ... */} });
-```
+Nota: per comandi arbitrari usa `ReolinkCgiApi.call(...)` (copre “tutto” reolink_aio lato HTTP).
 
 ## RTSP + server Node.js (proxy HTTP MPEG-TS)
 
