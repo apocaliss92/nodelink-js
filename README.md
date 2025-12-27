@@ -68,6 +68,51 @@ const client = new BaichuanClient({
 await client.login();
 ```
 
+## API “stile reolink_aio” (HTTP CGI + Baichuan)
+
+Per coprire l’ampio set di funzionalità di `reolink_aio` (network settings, stream, reboot, info, NVR/canali, …) è disponibile `ReolinkApi`:
+
+```ts
+import { ReolinkApi } from "baichuan-protocol";
+
+const api = new ReolinkApi({
+  http: { host: "192.168.1.50", username: "admin", password: "••••••••", useHttps: false },
+  baichuan: { host: "192.168.1.50", username: "admin", password: "••••••••", transport: "tcp" },
+});
+
+await api.login();
+const devInfo = await api.getDevInfo();
+const channels = await api.listChannels(); // NVR
+await api.reboot(); // host reboot (o fallback Baichuan)
+await api.logout();
+```
+
+### Comandi arbitrari (copre “tutto” reolink_aio lato HTTP)
+
+```ts
+await api.call("GetNetPort", {});
+await api.call("SetNetPort", { NetPort: {/* ... */} });
+```
+
+## RTSP + server Node.js (proxy HTTP MPEG-TS)
+
+La libreria include un helper per esporre RTSP via HTTP usando `ffmpeg`:
+
+```ts
+import { createRtspProxyServer } from "baichuan-protocol";
+
+const server = createRtspProxyServer({
+  listenPort: 8080,
+  host: "192.168.1.50",
+  username: "admin",
+  password: "••••••••",
+  rtspTransport: "tcp",
+});
+
+server.listen(8080);
+// poi: GET http://localhost:8080/stream?channel=0&profile=sub
+```
+
 ## Note sul protocollo (in breve)
 
 - **Header**: 20 o 24 byte (in base a `messageClass`), magic `f0debc0a`

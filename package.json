@@ -43,6 +43,8 @@
     "tsup": "^8.0.0",
     "typescript": "^5.8.0",
     "vitest": "^3.0.0"
+  },
+  "dependencies": {
+    "undici": "^7.16.0"
   }
 }
-
