@@ -15,8 +15,8 @@ function extractChannelsFromChannelStatus(rsp: ReolinkCmdResponse[]): number[] {
 }
 
 /**
- * API CGI specifica per NVR.
- * Fornisce helper multi-canale per ottenere info su tutte le camere collegate.
+ * NVR-specific CGI API.
+ * Provides multi-channel helpers to fetch info about all connected cameras.
  */
 export class ReolinkNvrCgiApi {
   readonly cgi: ReolinkCgiApi;
@@ -63,7 +63,7 @@ export class ReolinkNvrCgiApi {
   async rebootHost(): Promise<void> {
     const rsp = await this.cgi.Reboot(undefined);
     const first = rsp[0];
-    if (!first || first.code !== 0) throw new Error(`Reboot NVR fallito: ${JSON.stringify(rsp)}`);
+    if (!first || first.code !== 0) throw new Error(`NVR reboot failed: ${JSON.stringify(rsp)}`);
   }
 }
 

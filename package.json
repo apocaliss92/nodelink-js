@@ -1,7 +1,7 @@
 {
   "name": "baichuan-protocol",
   "version": "0.1.0",
-  "description": "Libreria TypeScript per il protocollo Baichuan (Reolink) per controllo e stream.",
+  "description": "TypeScript library implementing Reolink Baichuan (control + stream) with CGI and RTSP helpers.",
   "license": "MIT",
   "author": "",
   "repository": {

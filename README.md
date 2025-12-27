@@ -1,16 +1,16 @@
 # Baichuan (Reolink) Protocol — TypeScript Library
 
-Questa repository contiene una libreria **TypeScript/Node.js** per parlare il protocollo proprietario Reolink **Baichuan** (tipicamente su TCP porta `9000`) per:
+This repository contains a **TypeScript/Node.js** library that implements the proprietary Reolink **Baichuan** protocol (typically TCP port `9000`) for:
 
-- login/negoziazione cifratura (BCEncrypt / AES / FullAES)
-- invio comandi XML e parsing del framing
-- base per stream (video/audio) e push events
+- login / encryption negotiation (BCEncrypt / AES / FullAES)
+- sending XML commands and parsing the framing
+- foundations for streaming (video/audio) and push events
 
-Implementazione derivata da:
+Implementation based on:
 - `neolink` (Rust): `crates/core/src/bc/*` + `crates/core/src/bc_protocol/*`
 - `reolink_aio` (Python): `reolink_aio/baichuan/*`
 
-## Installazione
+## Installation
 
 ```bash
 npm install
@@ -23,7 +23,7 @@ npm run build
 npm test
 ```
 
-## Esempio (login + comando XML)
+## Example (login + XML command)
 
 ```ts
 import { BaichuanClient } from "baichuan-protocol";
@@ -46,10 +46,10 @@ console.log(xml);
 await client.close();
 ```
 
-## Camere a batteria (UDP / BCUDP)
+## Battery cameras (UDP / BCUDP)
 
-Molti modelli a batteria usano **BCUDP** (UDP con ACK/resend/heartbeat) invece del TCP.
-Puoi usare `transport: "udp"` e fornire `udp` in modalità `uid` (discovery locale):
+Many battery models use **BCUDP** (UDP with ACK/resend/heartbeat) instead of TCP.
+You can use `transport: "udp"` and provide `udp` in `uid` mode (local discovery):
 
 ```ts
 import { BaichuanClient } from "baichuan-protocol";
@@ -68,14 +68,14 @@ const client = new BaichuanClient({
 await client.login();
 ```
 
-## API separate: Baichuan e CGI
+## Separate APIs: Baichuan and CGI
 
-- `ReolinkBaichuanApi`: operazioni via Baichuan/BCUDP
-- `ReolinkCgiApi`: operazioni via HTTP CGI (stile reolink_aio)
+- `ReolinkBaichuanApi`: operations via Baichuan/BCUDP
+- `ReolinkCgiApi`: operations via HTTP CGI (reolink_aio-style)
 
-## API ibrida (Baichuan -> fallback CGI)
+## Hybrid API (Baichuan -> CGI fallback)
 
-Per ogni operazione prova prima Baichuan e poi fa fallback a CGI: `ReolinkHybridApi`.
+For each operation, it tries Baichuan first and falls back to CGI: `ReolinkHybridApi`.
 
 ```ts
 import { ReolinkHybridApi } from "baichuan-protocol";
@@ -91,13 +91,13 @@ await api.Reboot();
 await api.close();
 ```
 
-### Comandi arbitrari (copre “tutto” reolink_aio lato HTTP)
+### Arbitrary commands (covers “everything” supported by reolink_aio over HTTP)
 
-Nota: per comandi arbitrari usa `ReolinkCgiApi.call(...)` (copre “tutto” reolink_aio lato HTTP).
+Note: for arbitrary commands use `ReolinkCgiApi.call(...)` (covers everything reolink_aio supports over HTTP).
 
 ## RTSP + server Node.js (proxy HTTP MPEG-TS)
 
-La libreria include un helper per esporre RTSP via HTTP usando `ffmpeg`:
+The library includes a helper to expose RTSP over HTTP using `ffmpeg`:
 
 ```ts
 import { createRtspProxyServer } from "baichuan-protocol";
@@ -111,12 +111,16 @@ const server = createRtspProxyServer({
 });
 
 server.listen(8080);
-// poi: GET http://localhost:8080/stream?channel=0&profile=sub
+// then: GET http://localhost:8080/stream?channel=0&profile=sub
 ```
 
-## Note sul protocollo (in breve)
+## Cursor (IDE) — instructions
 
-- **Header**: 20 o 24 byte (in base a `messageClass`), magic `f0debc0a`
-- **Modern messages**: XML cifrato con **BCEncrypt (XOR)** o **AES-128-CFB** (IV fisso `0123456789abcdef`)
-- **Login**: richiesta legacy → risposta con `<nonce>` + tipo cifratura → login moderno con hash MD5 (troncato)
+See `CURSOR.md`.
+
+## Protocol notes (short)
+
+- **Header**: 20 or 24 bytes (depending on `messageClass`), magic `f0debc0a`
+- **Modern messages**: XML encrypted with **BCEncrypt (XOR)** or **AES-128-CFB** (fixed IV `0123456789abcdef`)
+- **Login**: legacy request → reply with `<nonce>` + encryption type → modern login with MD5 hashes (truncated)
 

@@ -10,10 +10,11 @@ export type ReolinkHybridApiOptions = {
 };
 
 /**
- * API “ibrida”: per ogni operazione prova prima Baichuan e poi fa fallback a CGI.
- * Gestisce autonomamente le sessioni:
- * - CGI: token + refresh (lease time) gestito da `ReolinkHttpClient`
- * - Baichuan: login idempotente e reconnessione gestita dal client
+ * Hybrid API: for each operation, try Baichuan first and fall back to CGI.
+ *
+ * Session handling:
+ * - CGI: token + refresh (lease time) handled by `ReolinkHttpClient`
+ * - Baichuan: idempotent login + reconnection handled by the client
  */
 export class ReolinkHybridApi {
   readonly cgi: ReolinkCgiApi | undefined;
@@ -35,7 +36,7 @@ export class ReolinkHybridApi {
   }
 
   // --------------------
-  // Wrapper: prova Baichuan -> fallback CGI
+  // Wrapper: Baichuan -> CGI fallback
   // --------------------
 
   async GetDevInfo(channel?: number): Promise<ReolinkCmdResponse[]> {
@@ -47,12 +48,12 @@ export class ReolinkHybridApi {
         // fallback
       }
     }
-    if (!this.cgi) throw new Error("Nessun backend disponibile (CGI non configurato)");
+    if (!this.cgi) throw new Error("No backend available (CGI not configured)");
     return await this.cgi.GetDevInfo(channel);
   }
 
   async GetChnTypeInfo(channel?: number): Promise<ReolinkCmdResponse[]> {
-    // Baichuan: getInfo(channel) usa cmd_id 318, che in reolink_aio è mappato a GetChnTypeInfo
+    // Baichuan: getInfo(channel) uses cmd_id 318, which reolink_aio maps to GetChnTypeInfo
     if (this.baichuan && channel != null) {
       try {
         const info = await this.baichuan.getInfo(channel);
@@ -61,7 +62,7 @@ export class ReolinkHybridApi {
         // fallback
       }
     }
-    if (!this.cgi) throw new Error("Nessun backend disponibile (CGI non configurato)");
+    if (!this.cgi) throw new Error("No backend available (CGI not configured)");
     return await this.cgi.GetChnTypeInfo(channel);
   }
 
@@ -74,21 +75,21 @@ export class ReolinkHybridApi {
         // fallback
       }
     }
-    if (!this.cgi) throw new Error("Nessun backend disponibile (CGI non configurato)");
+    if (!this.cgi) throw new Error("No backend available (CGI not configured)");
     return await this.cgi.GetNetPort();
   }
 
   async SetNetPort(netPort: unknown): Promise<ReolinkCmdResponse[]> {
     if (this.baichuan) {
       try {
-        // supporta subset: onvifEnable/rtmpEnable/rtspEnable
+        // Supports a subset: onvifEnable/rtmpEnable/rtspEnable
         await this.baichuan.setNetPort(netPort as any);
         return [{ cmd: "SetNetPort", code: 0, value: {} }];
       } catch {
         // fallback
       }
     }
-    if (!this.cgi) throw new Error("Nessun backend disponibile (CGI non configurato)");
+    if (!this.cgi) throw new Error("No backend available (CGI not configured)");
     return await this.cgi.SetNetPort(netPort);
   }
 
@@ -101,10 +102,10 @@ export class ReolinkHybridApi {
         // fallback
       }
     }
-    if (!this.cgi) throw new Error("Nessun backend disponibile (CGI non configurato)");
+    if (!this.cgi) throw new Error("No backend available (CGI not configured)");
     const rsp = await this.cgi.Reboot(channel);
     const first = rsp[0];
-    if (!first || first.code !== 0) throw new Error(`Reboot fallito: ${JSON.stringify(rsp)}`);
+    if (!first || first.code !== 0) throw new Error(`Reboot failed: ${JSON.stringify(rsp)}`);
   }
 }
 

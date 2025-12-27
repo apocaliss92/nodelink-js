@@ -9,9 +9,9 @@ export type ReolinkNvrHybridApiOptions = {
 };
 
 /**
- * API NVR ibrida:
- * - usa CGI per enumerare canali e per i comandi non coperti da Baichuan
- * - prova Baichuan per le operazioni per-canale quando possibile
+ * NVR hybrid API:
+ * - uses CGI to enumerate channels and for commands not covered by Baichuan
+ * - tries Baichuan for per-channel operations when possible
  */
 export class ReolinkNvrHybridApi {
   readonly cgi: ReolinkNvrCgiApi | undefined;
@@ -33,14 +33,14 @@ export class ReolinkNvrHybridApi {
   }
 
   async listChannels(): Promise<number[]> {
-    if (!this.cgi) throw new Error("NVR: CGI non configurato (necessario per enumerare canali)");
+    if (!this.cgi) throw new Error("NVR: CGI not configured (required to enumerate channels)");
     return await this.cgi.listChannels();
   }
 
   async getAllConnectedCamerasInfo(): Promise<Record<number, unknown>> {
     const channels = await this.listChannels();
 
-    // prefer Baichuan per le info per-canale, fallback a CGI
+    // Prefer Baichuan for per-channel info, fallback to CGI
     const out: Record<number, unknown> = {};
     for (const ch of channels) {
       if (this.baichuan) {
@@ -51,7 +51,7 @@ export class ReolinkNvrHybridApi {
           // fallback CGI
         }
       }
-      if (!this.cgi) throw new Error("NVR: CGI non configurato");
+      if (!this.cgi) throw new Error("NVR: CGI not configured");
       out[ch] = await this.cgi.cgi.GetDevInfo(ch);
     }
     return out;

@@ -7,7 +7,7 @@ export type ReolinkHttpClientOptions = {
   password: string;
   port?: number;
   useHttps?: boolean;
-  /** Disabilita verifica TLS per HTTPS (default: true, come reolink_aio). */
+  /** Disable TLS verification for HTTPS (default: true, like reolink_aio). */
   insecureTLS?: boolean;
   timeoutMs?: number;
 };
@@ -91,7 +91,7 @@ export class ReolinkHttpClient {
     const rsp = await this.sendJson<LoginResponseValue>(body, { cmd: "Login" }, { includeToken: false });
     const first = rsp[0];
     if (!first || first.code !== 0 || !first.value?.Token?.name) {
-      throw new Error(`Login fallito: ${JSON.stringify(rsp)}`);
+      throw new Error(`Login failed: ${JSON.stringify(rsp)}`);
     }
     const lease = Number(first.value.Token.leaseTime);
     const token = first.value.Token.name;
