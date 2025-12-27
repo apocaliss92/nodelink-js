@@ -114,6 +114,10 @@ server.listen(8080);
 // poi: GET http://localhost:8080/stream?channel=0&profile=sub
 ```
 
+## Cursor (IDE) — istruzioni
+
+Vedi `CURSOR.md`.
+
 ## Note sul protocollo (in breve)
 
 - **Header**: 20 o 24 byte (in base a `messageClass`), magic `f0debc0a`
