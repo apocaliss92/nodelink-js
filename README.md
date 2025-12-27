@@ -33,6 +33,7 @@ const client = new BaichuanClient({
   username: "admin",
   password: "••••••••",
   debug: true,
+  transport: "tcp",
 });
 
 await client.login("full_aes");
@@ -43,6 +44,28 @@ const xml = await client.sendXml({
 
 console.log(xml);
 await client.close();
+```
+
+## Camere a batteria (UDP / BCUDP)
+
+Molti modelli a batteria usano **BCUDP** (UDP con ACK/resend/heartbeat) invece del TCP.
+Puoi usare `transport: "udp"` e fornire `udp` in modalità `uid` (discovery locale):
+
+```ts
+import { BaichuanClient } from "baichuan-protocol";
+
+const client = new BaichuanClient({
+  host: "255.255.255.255",
+  username: "admin",
+  password: "••••••••",
+  transport: "udp",
+  udp: {
+    mode: "uid",
+    uid: "YOUR_CAMERA_UID",
+    broadcast: true,
+  },
+});
+await client.login();
 ```
 
 ## Note sul protocollo (in breve)

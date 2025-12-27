@@ -4,6 +4,7 @@ import { BC_TCP_DEFAULT_PORT, BC_CLASS_LEGACY, BC_CLASS_MODERN_24 } from "../pro
 import { aesDecrypt, aesEncrypt, bcDecrypt, bcEncrypt, deriveAesKey, md5StrModern, type EncryptionProtocol } from "../protocol/crypto.js";
 import { BaichuanFrameParser, encodeHeader, type BaichuanFrame } from "../protocol/framing.js";
 import { buildChannelExtensionXml, buildLoginXml, getXmlText } from "../protocol/xml.js";
+import { BcUdpStream, type BcUdpStreamOptions } from "../bcudp/BcUdpStream.js";
 
 export type BaichuanClientOptions = {
   host: string;
@@ -17,6 +18,15 @@ export type BaichuanClientOptions = {
   channel?: number;
   /** If true, emits additional debug events. */
   debug?: boolean;
+  /**
+   * Trasporto da usare:
+   * - `tcp`: Baichuan TCP (tipico per cam cablate)
+   * - `udp`: BCUDP (tipico per cam a batteria)
+   * - `auto`: prova `tcp`, poi `udp`
+   */
+  transport?: "tcp" | "udp" | "auto";
+  /** Opzioni BCUDP (necessarie se `transport: "udp"` o `auto` fallback). */
+  udp?: BcUdpStreamOptions;
 };
 
 export type MaxEncryption = "none" | "bc" | "aes" | "full_aes";
@@ -30,10 +40,11 @@ export class BaichuanClient extends EventEmitter<{
   error: [Error];
   debug: [string, unknown?];
 }> {
-  private readonly opts: Required<Omit<BaichuanClientOptions, "port" | "channel" | "debug">> &
-    Pick<BaichuanClientOptions, "port" | "channel" | "debug">;
+  private readonly opts: BaichuanClientOptions;
 
-  private socket: net.Socket | undefined;
+  private tcpSocket: net.Socket | undefined;
+  private udpSocket: BcUdpStream | undefined;
+  private transport: "tcp" | "udp" = "tcp";
   private readonly parser = new BaichuanFrameParser();
   private readonly pending = new Map<PendingKey, { resolve: (f: BaichuanFrame) => void; reject: (e: Error) => void }>();
 
@@ -49,11 +60,33 @@ export class BaichuanClient extends EventEmitter<{
   }
 
   async connect(): Promise<void> {
-    if (this.socket && !this.socket.destroyed) return;
+    const desired = this.opts.transport ?? "tcp";
+    if (desired === "tcp") {
+      await this.connectTcp();
+      return;
+    }
+    if (desired === "udp") {
+      await this.connectUdp();
+      return;
+    }
+    // auto
+    try {
+      await this.connectTcp();
+    } catch (e) {
+      this.emit("debug", "auto:tcp_failed", e);
+      await this.connectUdp();
+    }
+  }
 
+  private async connectTcp(): Promise<void> {
+    if (this.tcpSocket && !this.tcpSocket.destroyed) {
+      this.transport = "tcp";
+      return;
+    }
     const port = this.opts.port ?? BC_TCP_DEFAULT_PORT;
     const sock = net.createConnection({ host: this.opts.host, port });
-    this.socket = sock;
+    this.tcpSocket = sock;
+    this.transport = "tcp";
 
     sock.on("data", (chunk) => {
       const frames = this.parser.push(chunk);
@@ -61,7 +94,6 @@ export class BaichuanClient extends EventEmitter<{
     });
     sock.on("close", () => {
       this.emit("close");
-      // reject all pending
       for (const [, p] of this.pending) p.reject(new Error("Baichuan socket closed"));
       this.pending.clear();
     });
@@ -73,14 +105,45 @@ export class BaichuanClient extends EventEmitter<{
     });
   }
 
-  async close(): Promise<void> {
-    if (!this.socket) return;
-    const s = this.socket;
-    this.socket = undefined;
-    await new Promise<void>((resolve) => {
-      s.once("close", () => resolve());
-      s.destroy();
+  private async connectUdp(): Promise<void> {
+    if (this.udpSocket) {
+      this.transport = "udp";
+      return;
+    }
+    const udpOpts = this.opts.udp;
+    if (!udpOpts) {
+      throw new Error("Baichuan UDP richiesto ma `options.udp` non è impostato (serve per BCUDP, tipico cam a batteria).");
+    }
+    const sock = new BcUdpStream(udpOpts);
+    this.udpSocket = sock;
+    this.transport = "udp";
+
+    sock.on("data", (chunk) => {
+      const frames = this.parser.push(chunk);
+      for (const f of frames) this.handleFrame(f);
     });
+    sock.on("close", () => {
+      this.emit("close");
+      for (const [, p] of this.pending) p.reject(new Error("Baichuan UDP stream closed"));
+      this.pending.clear();
+    });
+    sock.on("error", (err) => this.emit("error", err));
+
+    await sock.connect();
+  }
+
+  async close(): Promise<void> {
+    const tcp = this.tcpSocket;
+    this.tcpSocket = undefined;
+    if (tcp) {
+      await new Promise<void>((resolve) => {
+        tcp.once("close", () => resolve());
+        tcp.destroy();
+      });
+    }
+    const udp = this.udpSocket;
+    this.udpSocket = undefined;
+    if (udp) await udp.close();
   }
 
   private handleFrame(frame: BaichuanFrame): void {
@@ -104,8 +167,18 @@ export class BaichuanClient extends EventEmitter<{
   }
 
   private requireSocket(): net.Socket {
-    if (!this.socket || this.socket.destroyed) throw new Error("Baichuan socket is not connected");
-    return this.socket;
+    if (this.transport !== "tcp") throw new Error("Internal: requireSocket called while not using TCP");
+    if (!this.tcpSocket || this.tcpSocket.destroyed) throw new Error("Baichuan TCP socket is not connected");
+    return this.tcpSocket;
+  }
+
+  private writeWire(wire: Buffer): void {
+    if (this.transport === "tcp") {
+      this.requireSocket().write(wire);
+      return;
+    }
+    if (!this.udpSocket) throw new Error("Baichuan UDP stream is not connected");
+    this.udpSocket.write(wire);
   }
 
   private encodeBodyXml(extXml: string, payloadXml: string, channelId: number, enc: EncryptionProtocol): Buffer {
@@ -160,7 +233,6 @@ export class BaichuanClient extends EventEmitter<{
     timeoutMs?: number;
   }): Promise<string> {
     await this.connect();
-    const socket = this.requireSocket();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
     const channelId = params.channel == null ? 250 : channel + 1; // segue reolink_aio: 250 host, 1..= canali
@@ -211,7 +283,7 @@ export class BaichuanClient extends EventEmitter<{
     });
 
     if (this.opts.debug) this.emit("debug", "tx", { cmdId, msgNum, channelId, messageClass, bodyLen });
-    socket.write(wire);
+    this.writeWire(wire);
 
     const frame = await framePromise;
     if (this.opts.debug) this.emit("debug", "rx", { cmdId: frame.header.cmdId, responseCode: frame.header.responseCode, msgNum: frame.header.msgNum });
@@ -238,7 +310,7 @@ export class BaichuanClient extends EventEmitter<{
       maxEncryption === "none" ? 0xdc00 : maxEncryption === "bc" ? 0xdc01 : maxEncryption === "aes" ? 0xdc02 : 0xdc12;
 
     await this.connect();
-    const socket = this.requireSocket();
+    // legacy login is supported on both transports
 
     const msgNum = this.nextMsgNum();
     const cmdId = 1;
@@ -273,7 +345,7 @@ export class BaichuanClient extends EventEmitter<{
       });
     });
 
-    socket.write(header); // header-only
+    this.writeWire(header); // header-only
     const nonceFrame = await framePromise;
 
     // This reply contains <Encryption><nonce>...</nonce></Encryption> and response_code 0xDD??
