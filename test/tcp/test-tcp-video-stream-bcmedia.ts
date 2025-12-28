@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 /**
- * Test per verificare il parsing dei frame BcMedia
- * Analizza i frame ricevuti con cmd_id 3 e verifica se contengono BcMedia packets
+ * Test script to validate parsing of BcMedia frames.
+ * Analyzes frames received with cmd_id 3 and checks whether they contain BcMedia packets.
  */
 
 // @ts-expect-error - Path resolution at runtime
 import { ReolinkBaichuanApi, type BaichuanFrame, parseBcMedia } from "../../index.js";
 import { config } from "../env.js";
 
-// Funzioni helper
+// Helper functions
 function log(message: string, data?: unknown) {
   console.log(`\n${"=".repeat(60)}`);
-  console.log(`📊 ${message}`);
+  console.log(`[INFO] ${message}`);
   if (data !== undefined) {
     console.log(JSON.stringify(data, null, 2));
   }
@@ -19,29 +19,29 @@ function log(message: string, data?: unknown) {
 }
 
 function logSuccess(message: string) {
-  console.log(`\n✅ ${message}`);
+  console.log(`\n[OK] ${message}`);
 }
 
 function logError(message: string, error: unknown) {
-  console.error(`\n❌ ERRORE: ${message}`);
+  console.error(`\n[ERROR] ${message}`);
   if (error instanceof Error) {
-    console.error(`   Messaggio: ${error.message}`);
+    console.error(`   Message: ${error.message}`);
   } else {
-    console.error(`   Dettagli: ${error}`);
+    console.error(`   Details: ${error}`);
   }
 }
 
 async function testBcMediaParsing() {
   console.log("\n");
   console.log("╔════════════════════════════════════════════════════════════╗");
-  console.log("║     TEST PARSING BCMEDIA PACKETS                          ║");
+  console.log("║     TEST: PARSE BCMEDIA PACKETS                           ║");
   console.log("╚════════════════════════════════════════════════════════════╝");
-  console.log(`\nConfigurazione:`);
+  console.log(`\nConfiguration:`);
   console.log(`  Host: ${config.tcp.host}`);
   console.log(`  Username: ${config.tcp.username}\n`);
 
   if (!config.tcp.host || !config.tcp.password) {
-    console.error("❌ ERRORE: Configurazione TCP non completa nel file .env");
+    console.error("[ERROR] TCP configuration is incomplete in the .env file");
     process.exit(1);
   }
 
@@ -58,7 +58,7 @@ async function testBcMediaParsing() {
   let bcMediaCount = 0;
   const bcMediaTypes = new Map<string, number>();
 
-  // Handler per frame con cmd_id 3
+  // Handler for cmd_id 3 frames.
   api.client.on("push", (frame: BaichuanFrame) => {
     if (frame.header.cmdId !== 3) return;
 
@@ -101,7 +101,7 @@ async function testBcMediaParsing() {
       const typeKey = media.type;
       bcMediaTypes.set(typeKey, (bcMediaTypes.get(typeKey) || 0) + 1);
 
-      // Log primi 5 BcMedia packets per debug
+      // Log the first 5 BcMedia packets for debugging.
       if (bcMediaCount <= 5) {
         if (media.type === "Iframe" || media.type === "Pframe") {
           log(`BcMedia #${bcMediaCount} - ${media.type}`, {
@@ -121,9 +121,9 @@ async function testBcMediaParsing() {
       offset += consumed;
     }
 
-    // Log ogni 100 frame
+    // Log every 100 frames.
     if (frameCount % 100 === 0) {
-      log(`Frame processati: ${frameCount}, BcMedia packets: ${bcMediaCount}`);
+      log(`Frames processed: ${frameCount}, BcMedia packets: ${bcMediaCount}`);
     }
   });
 
@@ -131,25 +131,25 @@ async function testBcMediaParsing() {
     // Login
     log("Login Baichuan TCP");
     await api.login();
-    logSuccess("Login completato");
+    logSuccess("Login completed");
 
     // Start video stream
-    log("Avvio stream video (sub stream)");
+    log("Starting video stream (sub stream)");
     await api.startVideoStream(channel, "sub");
-    logSuccess("Stream video avviato (response_code 200)");
+    logSuccess("Video stream started (response_code 200)");
 
-    // Attendi 30 secondi per raccogliere frame
-    logSuccess("Attendo 30 secondi per raccogliere e parsare frame BcMedia...");
+    // Wait 30 seconds to gather frames.
+    logSuccess("Waiting 30 seconds to gather and parse BcMedia frames...");
     await new Promise((resolve) => setTimeout(resolve, 30000));
 
-    // Analisi risultati
+    // Results
     console.log("\n");
     console.log("╔════════════════════════════════════════════════════════════╗");
-    console.log("║                    RISULTATI                                ║");
+    console.log("║                    RESULTS                                 ║");
     console.log("╚════════════════════════════════════════════════════════════╝");
-    console.log(`\n📊 Frame ricevuti (cmd_id 3): ${frameCount}`);
-    console.log(`📊 BcMedia packets parsati: ${bcMediaCount}`);
-    console.log(`\n📊 Tipi di BcMedia packets:`);
+    console.log(`\nFrames received (cmd_id 3): ${frameCount}`);
+    console.log(`BcMedia packets parsed: ${bcMediaCount}`);
+    console.log(`\nBcMedia packet types:`);
     
     for (const [type, count] of Array.from(bcMediaTypes.entries()).sort((a, b) => b[1] - a[1])) {
       const percentage = ((count / bcMediaCount) * 100).toFixed(2);
@@ -157,33 +157,34 @@ async function testBcMediaParsing() {
     }
 
     if (bcMediaCount > 0) {
-      logSuccess(`✅ TROVATI ${bcMediaCount} BcMedia packets!`);
-      logSuccess("✅ Il parser BcMedia funziona correttamente!");
+      logSuccess(`Found ${bcMediaCount} BcMedia packets`);
+      logSuccess("BcMedia parser appears to be working");
       
       const videoFrames = (bcMediaTypes.get("Iframe") || 0) + (bcMediaTypes.get("Pframe") || 0);
       if (videoFrames > 0) {
-        logSuccess(`✅ TROVATI ${videoFrames} frame video (Iframe + Pframe)!`);
+        logSuccess(`Found ${videoFrames} video frames (Iframe + Pframe)`);
       }
     } else {
-      logError("Nessun BcMedia packet parsato", new Error("No BcMedia packets found"));
+      logError("No BcMedia packets parsed", new Error("No BcMedia packets found"));
     }
 
   } catch (error) {
-    logError("Errore critico durante i test", error);
+    logError("Fatal error during test", error);
     process.exit(1);
   } finally {
     try {
       await api.close();
-      logSuccess("Connessione chiusa");
+      logSuccess("Connection closed");
     } catch (error) {
-      logError("Errore durante chiusura connessione", error);
+      logError("Error while closing connection", error);
     }
   }
 }
 
 testBcMediaParsing().catch((error) => {
-  console.error("Errore fatale:", error);
+  console.error("Fatal error:", error);
   process.exit(1);
 });
+
 
 

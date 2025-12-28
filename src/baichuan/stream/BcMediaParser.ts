@@ -318,7 +318,7 @@ function parseAdpcm(buf: Buffer): { media: BcMediaAdpcm; consumed: number } | nu
   const magicData = buf.readUInt16LE(8);
   if (magicData !== 0x0100) return null;
 
-  // half_block_size (neolink lo legge ma non lo usa per la lunghezza)
+  // half_block_size (neolink reads it but does not use it to compute the length)
   const halfBlockSize = buf.readUInt16LE(10);
   void halfBlockSize;
 

@@ -23,4 +23,5 @@ export * from "./baichuan/stream/BaichuanHttpStreamServer.js";
 export * from "./baichuan/stream/BcMediaParser.js";
 export * from "./baichuan/stream/BcMediaCodec.js";
 export * from "./baichuan/stream/H264Converter.js";
+export type { DebugOptions, DebugConfig } from "./debug/DebugConfig.js";
 

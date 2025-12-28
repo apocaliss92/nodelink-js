@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 /**
- * Test per identificare il cmd_id corretto per richiedere lo stream video
- * Prova vari cmd_id comuni e analizza le risposte
+ * Test script to identify the correct cmd_id to request the video stream.
+ * Tries multiple cmd_id values and analyzes responses.
  */
 
 // @ts-expect-error - Path resolution at runtime
 import { ReolinkBaichuanApi, type BaichuanFrame } from "../../index.js";
 import { config } from "../env.js";
 
-// Funzioni helper
+// Helper functions
 function log(message: string, data?: unknown) {
   console.log(`\n${"=".repeat(60)}`);
-  console.log(`📊 ${message}`);
+  console.log(`[INFO] ${message}`);
   if (data !== undefined) {
     console.log(JSON.stringify(data, null, 2));
   }
@@ -19,15 +19,15 @@ function log(message: string, data?: unknown) {
 }
 
 function logSuccess(message: string) {
-  console.log(`\n✅ ${message}`);
+  console.log(`\n[OK] ${message}`);
 }
 
 function logError(message: string, error: unknown) {
-  console.error(`\n❌ ERRORE: ${message}`);
+  console.error(`\n[ERROR] ${message}`);
   if (error instanceof Error) {
-    console.error(`   Messaggio: ${error.message}`);
+    console.error(`   Message: ${error.message}`);
   } else {
-    console.error(`   Dettagli: ${error}`);
+    console.error(`   Details: ${error}`);
   }
 }
 
@@ -40,15 +40,15 @@ interface StreamRequestTest {
 async function testStreamRequests() {
   console.log("\n");
   console.log("╔════════════════════════════════════════════════════════════╗");
-  console.log("║     TEST RICHIESTA STREAM VIDEO (TCP)                      ║");
+  console.log("║     TEST: VIDEO STREAM REQUEST (TCP)                       ║");
   console.log("╚════════════════════════════════════════════════════════════╝");
-  console.log(`\nConfigurazione:`);
+  console.log(`\nConfiguration:`);
   console.log(`  Host: ${config.tcp.host}`);
   console.log(`  Username: ${config.tcp.username}\n`);
 
   if (!config.tcp.host || !config.tcp.password) {
-    console.error("❌ ERRORE: Configurazione TCP non completa nel file .env");
-    console.error("   Assicurati di aver impostato TCP_HOST e TCP_PASSWORD");
+    console.error("[ERROR] TCP configuration is incomplete in the .env file");
+    console.error("Set TCP_HOST and TCP_PASSWORD");
     process.exit(1);
   }
 
@@ -61,39 +61,39 @@ async function testStreamRequests() {
   });
 
   const channel = 0;
-  const profile = "sub"; // Test con sub stream (più leggero)
+  const profile = "sub"; // Test with sub stream (lighter)
 
-  // Vari cmd_id da testare basati su pattern comuni
+  // cmd_id values to test based on common patterns
   const tests: StreamRequestTest[] = [
     {
-      cmdId: 56, // GetEnc - già usato per metadata
+      cmdId: 56, // GetEnc - already used for metadata
       payloadXml: `<body><subStream><enable>1</enable></subStream></body>`,
-      description: "cmd_id 56 (GetEnc) con enable subStream",
+      description: "cmd_id 56 (GetEnc) with subStream enable",
     },
     {
-      cmdId: 57, // SetEnc - già usato per set encoding
+      cmdId: 57, // SetEnc - already used to set encoding
       payloadXml: `<body><subStream><enable>1</enable></subStream></body>`,
-      description: "cmd_id 57 (SetEnc) con enable subStream",
+      description: "cmd_id 57 (SetEnc) with subStream enable",
     },
     {
       cmdId: 58, // Possibile cmd_id per streaming
       payloadXml: `<body><subStream><enable>1</enable></subStream></body>`,
-      description: "cmd_id 58 con enable subStream",
+      description: "cmd_id 58 with subStream enable",
     },
     {
       cmdId: 59, // Possibile cmd_id per streaming
       payloadXml: `<body><subStream><enable>1</enable></subStream></body>`,
-      description: "cmd_id 59 con enable subStream",
+      description: "cmd_id 59 with subStream enable",
     },
     {
       cmdId: 57,
       payloadXml: `<body><subStream><streamType>0</streamType></subStream></body>`,
-      description: "cmd_id 57 con streamType",
+      description: "cmd_id 57 with streamType",
     },
     {
       cmdId: 57,
       payloadXml: `<body><subStream><start>1</start></subStream></body>`,
-      description: "cmd_id 57 con start subStream",
+      description: "cmd_id 57 with subStream start",
     },
   ];
 
@@ -101,7 +101,7 @@ async function testStreamRequests() {
   let pushEventCount = 0;
 
   try {
-    // Registra handler PRIMA del login per catturare frame automatici
+    // Register handler BEFORE login to capture automatic frames.
     api.client.on("push", (frame: BaichuanFrame) => {
       pushEventCount++;
       
@@ -112,7 +112,7 @@ async function testStreamRequests() {
       
       if (isBinary && isLarge && isStreamType0) {
         videoFrames.push(frame);
-        log(`🎥 Frame video ricevuto!`, {
+        log(`Potential video frame received`, {
           cmdId: frame.header.cmdId,
           streamType: frame.header.streamType,
           channelId: frame.header.channelId,
@@ -124,17 +124,17 @@ async function testStreamRequests() {
     // Login
     log("Login Baichuan TCP");
     await api.login();
-    logSuccess("Login completato");
+    logSuccess("Login completed");
 
-    // Attendi un po' per vedere se arrivano frame automaticamente dopo login
-    log("Attendo 5 secondi per vedere se arrivano frame automaticamente dopo login...");
+    // Wait to see if frames arrive automatically after login.
+    log("Waiting 5 seconds to see if frames arrive automatically after login...");
     await new Promise((resolve) => setTimeout(resolve, 5000));
     
-    log(`Frame ricevuti durante attesa: ${pushEventCount} push events, ${videoFrames.length} possibili frame video`);
+    log(`Frames during wait: ${pushEventCount} push events, ${videoFrames.length} potential video frames`);
 
-    // Analizza i frame ricevuti automaticamente
+    // Analyze automatically received frames.
     if (videoFrames.length > 0) {
-      log(`Trovati ${videoFrames.length} frame automatici dopo login`);
+      log(`Found ${videoFrames.length} automatic frames after login`);
       for (const frame of videoFrames) {
         try {
           const decrypted = api.client.tryDecryptBinary(
@@ -149,33 +149,33 @@ async function testStreamRequests() {
             firstBytes: decrypted.subarray(0, Math.min(32, decrypted.length)).toString("hex"),
           });
           
-          // Cerca pattern NAL unit
+          // Look for NAL start codes
           const nalStart1 = decrypted.indexOf(Buffer.from([0x00, 0x00, 0x00, 0x01]));
           const nalStart2 = decrypted.indexOf(Buffer.from([0x00, 0x00, 0x01]));
           
           if (nalStart1 !== -1 || nalStart2 !== -1) {
-            logSuccess(`✅ Frame cmd_id ${frame.header.cmdId} contiene NAL units H.264/H.265!`);
+            logSuccess(`Frame cmd_id ${frame.header.cmdId} contains H.264/H.265 NAL units`);
             const nalPos = nalStart1 !== -1 ? nalStart1 + 4 : nalStart2 + 3;
             if (nalPos < decrypted.length) {
               const nalType = decrypted[nalPos]! & 0x1F;
               log(`NAL unit type: ${nalType} (${nalType === 1 ? "Non-IDR" : nalType === 5 ? "IDR" : nalType === 7 ? "SPS" : nalType === 8 ? "PPS" : "Other"})`);
             }
           } else {
-            // Controlla se è XML (non video)
+            // Check if it's XML (not video)
             const isXml = decrypted.toString("utf8", 0, Math.min(10, decrypted.length)).startsWith("<?xml");
             if (isXml) {
-              log(`⚠️  Frame cmd_id ${frame.header.cmdId} è XML, non video`);
+              log(`Frame cmd_id ${frame.header.cmdId} is XML, not video`);
             } else {
-              log(`⚠️  Frame cmd_id ${frame.header.cmdId} non contiene pattern NAL unit (potrebbe essere incapsulato)`);
+              log(`Frame cmd_id ${frame.header.cmdId} has no visible NAL start codes (may be encapsulated)`);
             }
           }
         } catch (error) {
-          logError(`Errore durante analisi frame cmd_id ${frame.header.cmdId}`, error);
+          logError(`Error while analyzing frame cmd_id ${frame.header.cmdId}`, error);
         }
       }
     }
 
-    // Handler già registrato sopra
+    // Handler already registered above
 
     // Test ogni cmd_id
     for (const test of tests) {
@@ -193,7 +193,7 @@ async function testStreamRequests() {
           payloadXml: test.payloadXml,
         });
 
-        // Attendi 3 secondi per vedere se arrivano frame video
+        // Wait 3 seconds to see if video frames arrive.
         await new Promise((resolve) => setTimeout(resolve, 3000));
 
         const elapsed = Date.now() - startTime;
@@ -209,9 +209,9 @@ async function testStreamRequests() {
         });
 
         if (newVideoFrames > 0) {
-          logSuccess(`✅ TROVATO! cmd_id ${test.cmdId} ha generato ${newVideoFrames} frame video!`);
+          logSuccess(`cmd_id ${test.cmdId} produced ${newVideoFrames} video frames`);
           
-          // Analizza tutti i nuovi frame video
+          // Analyze all new video frames
           for (let i = videoFrames.length - newVideoFrames; i < videoFrames.length; i++) {
             const frame = videoFrames[i];
             if (!frame) continue;
@@ -223,85 +223,85 @@ async function testStreamRequests() {
                 api.client.enc
               );
               
-              log(`Analisi frame cmd_id ${frame.header.cmdId}`, {
+              log(`Frame analysis cmd_id ${frame.header.cmdId}`, {
                 originalLen: frame.body.length,
                 decryptedLen: decrypted.length,
                 firstBytes: decrypted.subarray(0, Math.min(32, decrypted.length)).toString("hex"),
               });
               
-              // Cerca pattern NAL unit
+              // Look for NAL start codes
               const nalStart1 = decrypted.indexOf(Buffer.from([0x00, 0x00, 0x00, 0x01]));
               const nalStart2 = decrypted.indexOf(Buffer.from([0x00, 0x00, 0x01]));
               
               if (nalStart1 !== -1 || nalStart2 !== -1) {
-                logSuccess(`✅ Frame cmd_id ${frame.header.cmdId} contiene NAL units H.264/H.265!`);
+                logSuccess(`Frame cmd_id ${frame.header.cmdId} contains H.264/H.265 NAL units`);
                 const nalPos = nalStart1 !== -1 ? nalStart1 + 4 : nalStart2 + 3;
                 if (nalPos < decrypted.length) {
                   const nalType = decrypted[nalPos]! & 0x1F;
                   log(`NAL unit type: ${nalType} (${nalType === 1 ? "Non-IDR" : nalType === 5 ? "IDR" : "Other"})`);
                 }
               } else {
-                // Controlla se è XML (non video)
+                // Check if it's XML (not video)
                 const isXml = decrypted.toString("utf8", 0, Math.min(10, decrypted.length)).startsWith("<?xml");
                 if (isXml) {
-                  log(`⚠️  Frame cmd_id ${frame.header.cmdId} è XML, non video`);
+                  log(`Frame cmd_id ${frame.header.cmdId} is XML, not video`);
                 } else {
-                  log(`⚠️  Frame cmd_id ${frame.header.cmdId} non contiene pattern NAL unit (potrebbe essere incapsulato)`);
+                  log(`Frame cmd_id ${frame.header.cmdId} has no visible NAL start codes (may be encapsulated)`);
                 }
               }
             } catch (error) {
-              logError(`Errore durante analisi frame cmd_id ${frame.header.cmdId}`, error);
+              logError(`Error while analyzing frame cmd_id ${frame.header.cmdId}`, error);
             }
           }
         }
       } catch (error) {
-        logError(`Errore durante test cmd_id ${test.cmdId}`, error);
+        logError(`Error while testing cmd_id ${test.cmdId}`, error);
       }
 
-      // Pausa tra i test
+      // Pause between tests
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
 
-    // Riepilogo
+    // Summary
     console.log("\n");
     console.log("╔════════════════════════════════════════════════════════════╗");
-    console.log("║                    RIEPILOGO TEST                         ║");
+    console.log("║                    TEST SUMMARY                           ║");
     console.log("╚════════════════════════════════════════════════════════════╝");
-    console.log(`\n📊 Push events totali ricevuti: ${pushEventCount}`);
-    console.log(`📊 Frame video identificati: ${videoFrames.length}`);
+    console.log(`\nPush events received: ${pushEventCount}`);
+    console.log(`Video frames identified: ${videoFrames.length}`);
     
     if (videoFrames.length > 0) {
-      logSuccess(`✅ Trovati ${videoFrames.length} frame video!`);
-      console.log(`\n🎯 cmd_id che hanno generato frame video:`);
+      logSuccess(`Found ${videoFrames.length} video frames`);
+      console.log(`\ncmd_id values that generated video frames:`);
       const cmdIds = new Set(videoFrames.map((f) => f.header.cmdId));
       for (const cmdId of cmdIds) {
         const count = videoFrames.filter((f) => f.header.cmdId === cmdId).length;
-        console.log(`   - cmd_id ${cmdId}: ${count} frame`);
+        console.log(`   - cmd_id ${cmdId}: ${count} frames`);
       }
     } else {
-      console.log(`\n⚠️  Nessun frame video identificato.`);
-      console.log(`   Possibili cause:`);
-      console.log(`   - Il cmd_id corretto non è stato testato`);
-      console.log(`   - Lo stream video richiede parametri diversi`);
-      console.log(`   - Lo stream video arriva automaticamente senza comando esplicito`);
+      console.log(`\n[WARN] No video frames identified.`);
+      console.log(`Possible causes:`);
+      console.log(`- The correct cmd_id was not tested`);
+      console.log(`- The video stream requires different parameters`);
+      console.log(`- The video stream arrives automatically without an explicit command`);
     }
 
   } catch (error) {
-    logError("Errore critico durante i test", error);
+    logError("Fatal error during test", error);
     process.exit(1);
   } finally {
     try {
       await api.close();
-      logSuccess("Connessione chiusa");
+      logSuccess("Connection closed");
     } catch (error) {
-      logError("Errore durante chiusura connessione", error);
+      logError("Error while closing connection", error);
     }
   }
 }
 
-// Esegui i test
+// Run tests
 testStreamRequests().catch((error) => {
-  console.error("Errore fatale:", error);
+  console.error("Fatal error:", error);
   process.exit(1);
 });
 

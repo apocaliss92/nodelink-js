@@ -14,7 +14,7 @@ import { spawn } from "node:child_process";
 // Helper functions
 function log(message: string, data?: unknown) {
   console.log(`\n${"=".repeat(60)}`);
-  console.log(`📊 ${message}`);
+  console.log(`[INFO] ${message}`);
   if (data !== undefined) {
     console.log(JSON.stringify(data, null, 2));
   }
@@ -22,11 +22,11 @@ function log(message: string, data?: unknown) {
 }
 
 function logSuccess(message: string) {
-  console.log(`\n✅ ${message}`);
+  console.log(`\n[OK] ${message}`);
 }
 
 function logError(message: string, error: unknown) {
-  console.error(`\n❌ ERROR: ${message}`);
+  console.error(`\n[ERROR] ${message}`);
   if (error instanceof Error) {
     console.error(`   Message: ${error.message}`);
     if (error.stack) {
@@ -122,13 +122,13 @@ async function recordVideoFromUrl(inputUrl: string, outputFile: string, duration
       const output = data.toString();
       stderr += output;
       
-      // Log quando ffmpeg inizia a ricevere dati
+      // Mark when ffmpeg starts receiving/processing stream data.
       if (!hasStarted && (output.includes("Stream") || output.includes("frame="))) {
         hasStarted = true;
           console.log(`[FFmpeg Record] Stream started`);
       }
       
-      // Log errori critici (non warning di decodifica)
+      // Log critical errors (ignore common decode warnings).
       if (output.includes("error") && !output.includes("top block unavailable") && !output.includes("error while decoding MB")) {
         console.error(`[FFmpeg Record] ${output.trim()}`);
       }
@@ -139,7 +139,7 @@ async function recordVideoFromUrl(inputUrl: string, outputFile: string, duration
         logSuccess(`Recording completed: ${outputFile}`);
         ok();
       } else {
-        // Code 1 può essere normale se lo stream termina prima del timeout
+        // Exit code 1 can be normal if the stream ends early after producing output.
         if (code === 1 && hasStarted) {
           logSuccess(`Recording completed (exit code ${code}): ${outputFile}`);
           ok();
@@ -153,7 +153,7 @@ async function recordVideoFromUrl(inputUrl: string, outputFile: string, duration
       fail(new Error(`ffmpeg spawn error: ${error.message}`));
     });
     
-    // Mark started anche se ffmpeg non stampa “frame=” (controlla crescita file)
+    // Mark started even if ffmpeg doesn't print "frame=" (check output file growth)
     const markStartedIfOutputGrows = () => {
       if (hasStarted) return;
       try {
@@ -161,7 +161,7 @@ async function recordVideoFromUrl(inputUrl: string, outputFile: string, duration
           const s = fs.statSync(outputFile);
           if (s.size > 0) {
             hasStarted = true;
-            console.log(`[FFmpeg Record] Output file iniziato (size=${s.size} bytes)`);
+            console.log(`[FFmpeg Record] Output file started (size=${s.size} bytes)`);
           }
         }
       } catch {
@@ -172,11 +172,11 @@ async function recordVideoFromUrl(inputUrl: string, outputFile: string, duration
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     (startedPoll as any)?.unref?.();
 
-    // Timeout di sicurezza “soft”: fallisce solo se non parte davvero (né log né file).
+    // Soft safety timeout: fail only if it never really starts (no logs and no output file growth).
     timeout = setTimeout(() => {
       markStartedIfOutputGrows();
       if (!hasStarted) {
-        fail(new Error(`Timeout: ffmpeg non ha iniziato a produrre output dopo 10 secondi`));
+        fail(new Error(`Timeout: ffmpeg did not start producing output within 10 seconds`));
       }
     }, 10000);
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
@@ -205,7 +205,7 @@ async function recordVideoFromStream(
         "-r", String(inputFps),
         "-f", "h264",
         "-i", "pipe:0",
-        // NB: la durata la controlliamo lato JS (dopo il primo keyframe).
+        // NB: duration is controlled by JS (after the first keyframe).
         "-an",
         "-c:v", "copy",
         "-movflags", "+faststart",
@@ -265,12 +265,11 @@ async function recordVideoFromStream(
       }
     };
 
-    // Per debug/compat: possiamo registrare solo keyframe (intra-only) per ottenere un MP4 visibile
-    // anche quando i P-frame sono ancora corrotti.
+    // Debug/compat: keyframes-only recording (intra-only) can produce a viewable MP4 even when P-frames are corrupted.
     const keyframesOnly = process.env.BAICHUAN_RECORD_KEYFRAMES_ONLY === "1";
-    // Default ON: evita secondi iniziali "neri" partendo dal primo IDR.
+    // Default ON: avoids initial "black" seconds by starting at the first IDR.
     const waitForKeyframe = process.env.BAICHUAN_WAIT_FOR_KEYFRAME !== "0";
-    let started = !waitForKeyframe; // diventa true quando arriva il primo keyframe
+    let started = !waitForKeyframe; // becomes true when the first keyframe arrives
     let stopTimer: NodeJS.Timeout | undefined;
     let safetyTimer: NodeJS.Timeout | undefined;
     const onAccessUnit = (unit: any) => {
@@ -278,7 +277,7 @@ async function recordVideoFromStream(
       if (waitForKeyframe && !started) {
         if (!unit.isKeyframe) return;
         started = true;
-        console.log(`[FFmpeg Record] ✅ First keyframe received, starting recording (${durationSeconds}s)`);
+        console.log(`[FFmpeg Record] First keyframe received, starting recording (${durationSeconds}s)`);
         stopTimer = setTimeout(() => {
           videoStream.removeListener("videoAccessUnit" as any, onAccessUnit as any);
           if (useVideoFrameFallback) videoStream.removeListener("videoFrame", onVideo);
@@ -301,13 +300,13 @@ async function recordVideoFromStream(
     }
 
     videoStream.on("videoAccessUnit" as any, onAccessUnit as any);
-    // Fallback: evita doppie scritture (videoFrame + videoAccessUnit). Abilita solo se serve.
+    // Fallback: avoid double writes (videoFrame + videoAccessUnit). Enable only if needed.
     const useVideoFrameFallback = process.env.BAICHUAN_USE_VIDEOFRAME_FALLBACK === "1";
     if (useVideoFrameFallback) {
       videoStream.on("videoFrame", onVideo);
     }
 
-    // Se non aspettiamo il keyframe, parte subito il timer di stop.
+    // If we are not waiting for a keyframe, start the stop timer immediately.
     if (!waitForKeyframe) {
       stopTimer = setTimeout(() => {
         videoStream.removeListener("videoAccessUnit" as any, onAccessUnit as any);
@@ -320,7 +319,7 @@ async function recordVideoFromStream(
       (stopTimer as any)?.unref?.();
     }
 
-    // Safety: se il keyframe non arriva, chiudiamo comunque (il caller ha già un race-timeout).
+    // Safety: if the keyframe doesn't arrive, close anyway (caller already has a race-timeout).
     safetyTimer = setTimeout(() => {
       if (settled) return;
       if (!started) {
@@ -342,7 +341,7 @@ async function testVideoStreamRecording() {
   console.log(`  Username: ${config.tcp.username}\n`);
 
   if (!config.tcp.host || !config.tcp.password) {
-    console.error("❌ ERROR: Incomplete TCP configuration in .env");
+    console.error("[ERROR] Incomplete TCP configuration in .env");
     process.exit(1);
   }
 
@@ -356,40 +355,13 @@ async function testVideoStreamRecording() {
 
   const channel = 0;
   const recordingsDir = path.join(process.cwd(), "test", "recordings");
-  const duration = Number(process.env.BAICHUAN_RECORD_SECONDS ?? "10"); // default 10 seconds
-  if (process.env.BAICHUAN_RECORD_SECONDS && Number.isFinite(duration) && duration > 0 && duration < 10) {
-    console.warn(
-      `[Test] Warning: BAICHUAN_RECORD_SECONDS is set to ${duration}. ` +
-      `If you expect ~10s recordings, run with BAICHUAN_RECORD_SECONDS=10 (or unset it).`
-    );
-  }
+  // Deterministic default: always record 10 seconds for every available profile.
+  const duration = 10;
 
-  // Crea directory se non esiste
+  // Create directory if it doesn't exist
   if (!fs.existsSync(recordingsDir)) {
     fs.mkdirSync(recordingsDir, { recursive: true });
   }
-
-  const parseProfilesEnv = (v: string | undefined): Array<"main" | "sub" | "ext"> | null => {
-    if (!v) return null;
-    const raw = v.trim().toLowerCase();
-    if (!raw) return null;
-    if (raw === "all") return ["main", "sub", "ext"];
-    const parts = raw.split(",").map((p) => p.trim()).filter(Boolean);
-    const out: Array<"main" | "sub" | "ext"> = [];
-    for (const p of parts) {
-      if (p === "main" || p === "sub" || p === "ext") {
-        if (!out.includes(p)) out.push(p);
-      }
-    }
-    return out.length ? out : null;
-  };
-
-  // Profiles to test:
-  // - BAICHUAN_PROFILE=all            -> test all (main, sub, ext)
-  // - BAICHUAN_PROFILE=main           -> test only main
-  // - BAICHUAN_PROFILE=main,sub       -> test main + sub
-  // - unset                           -> test all available profiles from metadata (preferred)
-  const requestedProfiles = parseProfilesEnv(process.env.BAICHUAN_PROFILE);
 
   try {
     // Login
@@ -398,16 +370,16 @@ async function testVideoStreamRecording() {
     await api.login(maxEnc ?? "aes");
     logSuccess("Login completed");
 
-    // Verifica profili disponibili
+    // Check available profiles
     log("Checking available profiles");
     const streamMetadata = await api.getStreamMetadata(channel);
     logSuccess("Stream metadata fetched");
     log("Stream metadata", streamMetadata);
     
     const availableProfiles: Array<"main" | "sub" | "ext"> = [];
-    // streamMetadata potrebbe essere un array di stream o un oggetto
+    // streamMetadata can be an array or an object depending on camera/firmware
     if (Array.isArray(streamMetadata)) {
-      // Se è un array, ogni elemento ha un profile
+      // Array: each element includes a profile
       for (const stream of streamMetadata) {
         if (stream.profile === "main" || stream.profile === "sub" || stream.profile === "ext") {
           if (!availableProfiles.includes(stream.profile)) {
@@ -416,11 +388,11 @@ async function testVideoStreamRecording() {
         }
       }
     } else if (streamMetadata && typeof streamMetadata === "object") {
-      // Se è un oggetto, controlla le proprietà
+      // Object: check known properties
       if ("main" in streamMetadata && streamMetadata.main) availableProfiles.push("main");
       if ("sub" in streamMetadata && streamMetadata.sub) availableProfiles.push("sub");
       if ("ext" in streamMetadata && streamMetadata.ext) availableProfiles.push("ext");
-      // Potrebbe anche essere un array di stream nella proprietà "streams"
+      // Or an array under "streams"
       if ("streams" in streamMetadata && Array.isArray(streamMetadata.streams)) {
         for (const stream of streamMetadata.streams) {
           if (stream.profile === "main" || stream.profile === "sub" || stream.profile === "ext") {
@@ -434,19 +406,18 @@ async function testVideoStreamRecording() {
     
     log(`Available profiles: ${availableProfiles.length > 0 ? availableProfiles.join(", ") : "none (continuing anyway)"}`);
     
-    // Se nessun profilo è disponibile, prova comunque con "sub" come default
+    // If no profile is reported, still try with "sub" as a fallback.
     if (availableProfiles.length === 0) {
       log("No profiles found in metadata, continuing with 'sub' as default");
       availableProfiles.push("sub");
     }
 
-    // Decide which profiles to test.
-    // If BAICHUAN_PROFILE is set, honor it; otherwise use what's available.
+    // Deterministic: record every available profile (preferred order).
     const preferredOrder: Array<"main" | "sub" | "ext"> = ["main", "sub", "ext"];
-    const profiles = (requestedProfiles ?? preferredOrder.filter((p) => availableProfiles.includes(p)));
-    log(`Profiles to test: ${profiles.join(", ")}${requestedProfiles ? " (forced via BAICHUAN_PROFILE)" : ""}`);
+    const profiles = preferredOrder.filter((p) => availableProfiles.includes(p));
+    log(`Profiles to test: ${profiles.join(", ")}`);
 
-    // Testa ogni profilo disponibile
+    // Test and record each available profile
     for (const profile of profiles) {
       if (!availableProfiles.includes(profile)) {
         log(`Profile ${profile} not available, skipping`);
@@ -459,7 +430,7 @@ async function testVideoStreamRecording() {
       let inputFps = 25;
 
       try {
-        // Crea BaichuanVideoStream
+        // Create BaichuanVideoStream
         videoStream = new BaichuanVideoStream({
           client: api.client,
           api,
@@ -467,7 +438,7 @@ async function testVideoStreamRecording() {
           profile,
         });
 
-        // Conta frame ricevuti
+        // Count received frames
         let videoFrameCount = 0;
         let audioFrameCount = 0;
 
@@ -489,7 +460,7 @@ async function testVideoStreamRecording() {
           logError(`Error in video stream`, error);
         });
 
-        // Prova a ricavare FPS dai metadati dello stream (aiuta ffmpeg a generare PTS/DTS)
+        // Try to use FPS from metadata (helps ffmpeg generate PTS/DTS)
         if (Array.isArray(streamMetadata)) {
           const found = streamMetadata.find((s: any) => s?.profile === profile);
           if (found?.frameRate) inputFps = Number(found.frameRate) || inputFps;
@@ -500,12 +471,12 @@ async function testVideoStreamRecording() {
             if (found?.frameRate) inputFps = Number(found.frameRate) || inputFps;
           }
         }
-        // Avvio stream video
+        // Start stream
         log(`Starting video stream for profile ${profile}`);
         await videoStream.start();
         logSuccess(`Video stream started for profile ${profile}`);
         
-        // Attendi che arrivino alcuni frame video prima di registrare
+        // Wait for some video frames before recording
         let frameReceived = false;
         let totalFrames = 0;
         const frameTimeout = setTimeout(() => {
@@ -524,7 +495,7 @@ async function testVideoStreamRecording() {
         };
         videoStream.on("videoFrame", waitForFramesHandler);
         
-        // Attendi almeno 3 secondi per accumulare frame
+        // Wait a bit to accumulate frames before recording
         await new Promise((resolve) => setTimeout(resolve, 3000));
 
         // Rimuovi handler temporaneo
@@ -537,16 +508,16 @@ async function testVideoStreamRecording() {
         
         logSuccess(`Received ${totalFrames} video frames, starting recording (direct pipe)`);
         
-        // Registra direttamente dal videoStream usando ffmpeg stdin
+        // Record directly from the videoStream using ffmpeg stdin
         const outputFile = path.join(recordingsDir, `recording_${profile}_${Date.now()}.mp4`);
         log(`Recording ${duration}s for profile ${profile} (direct pipe)`);
         
-        // Aggiungi timeout per la registrazione
+        // Add a hard timeout for recording
         try {
           await Promise.race([
             recordVideoFromStream(videoStream, outputFile, duration, inputFps),
             new Promise((_, reject) => 
-              setTimeout(() => reject(new Error("Timeout registrazione direct pipe")), (duration + 8) * 1000)
+              setTimeout(() => reject(new Error("Timeout recording (direct pipe)")), (duration + 8) * 1000)
             ),
           ]);
         } catch (error) {
@@ -554,7 +525,7 @@ async function testVideoStreamRecording() {
           continue;
         }
         
-        // Verifica che il file sia stato creato
+        // Verify the file was created
         if (fs.existsSync(outputFile)) {
           const stats = fs.statSync(outputFile);
           logSuccess(`Recorded file: ${outputFile} (${stats.size} bytes)`);
@@ -578,12 +549,12 @@ async function testVideoStreamRecording() {
         }
         
 
-        // Attendi un po' prima del prossimo profilo
+        // Small delay before the next profile
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
     }
 
-    logSuccess("✅ All tests completed!");
+    logSuccess("All tests completed!");
 
   } catch (error) {
     logError("Critical error during tests", error);

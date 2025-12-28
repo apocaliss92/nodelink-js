@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Test per salvare frame video Baichuan in locale e poi unirli in un video
- * 
- * 1. Salva i frame video in una cartella per 10-15 secondi
- * 2. Prova diversi approcci per unire i frame in un video usando ffmpeg
+ * Test script to save Baichuan video frames locally and then merge them into a video.
+ *
+ * 1. Save video frames to a folder for 10-15 seconds
+ * 2. Try different approaches to merge frames into a video using ffmpeg
  */
 
 // @ts-expect-error - Path resolution at runtime
@@ -15,10 +15,10 @@ import { spawn } from "node:child_process";
 // @ts-expect-error - Path resolution at runtime
 import type { StreamProfile } from "../../index.js";
 
-// Funzioni helper
+// Helper functions
 function log(message: string, data?: unknown) {
   console.log(`\n${"=".repeat(60)}`);
-  console.log(`📊 ${message}`);
+  console.log(`[INFO] ${message}`);
   if (data !== undefined) {
     console.log(JSON.stringify(data, null, 2));
   }
@@ -26,23 +26,23 @@ function log(message: string, data?: unknown) {
 }
 
 function logSuccess(message: string) {
-  console.log(`\n✅ ${message}`);
+  console.log(`\n[OK] ${message}`);
 }
 
 function logError(message: string, error: unknown) {
-  console.error(`\n❌ ERRORE: ${message}`);
+  console.error(`\n[ERROR] ${message}`);
   if (error instanceof Error) {
-    console.error(`   Messaggio: ${error.message}`);
+    console.error(`   Message: ${error.message}`);
     if (error.stack) {
       console.error(`   Stack: ${error.stack.split("\n").slice(0, 5).join("\n")}`);
     }
   } else {
-    console.error(`   Dettagli: ${error}`);
+    console.error(`   Details: ${error}`);
   }
 }
 
 /**
- * Unisce frame video usando ffmpeg con diversi approcci
+ * Merges video frames using ffmpeg with different approaches.
  */
 async function mergeFramesWithFfmpeg(
   framesDir: string,
@@ -51,30 +51,30 @@ async function mergeFramesWithFfmpeg(
   fps: number = 10
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    log(`Unione frame con approccio: ${approach}`, { outputFile, fps });
+    log(`Merging frames (approach: ${approach})`, { outputFile, fps });
 
     let ffmpegArgs: string[] = [];
     
     if (approach === "concat") {
-      // Approccio 1: Concatena tutti i frame in un unico file e usa ffmpeg
+      // Approach 1: Concatenate all frames into a single file and run ffmpeg
       const frameFiles = fs.readdirSync(framesDir)
         .filter(f => f.startsWith("frame_") && f.endsWith(".h264"))
         .sort()
         .map(f => path.join(framesDir, f));
       
-      // Concatena tutti i frame in un unico buffer
+      // Concatenate all frames into a single buffer
       const allFrames = Buffer.concat(
         frameFiles.map(f => fs.readFileSync(f))
       );
       
-      // Salva file concatenato temporaneo
+      // Save temporary concatenated file
       const concatFile = path.join(framesDir, "all_frames.h264");
       fs.writeFileSync(concatFile, allFrames);
       
       ffmpegArgs = [
         "-f", "h264", // Input format H.264 raw
         "-i", concatFile,
-        "-c:v", "libx264", // Re-encode per garantire compatibilità
+        "-c:v", "libx264", // Re-encode to improve compatibility
         "-preset", "ultrafast",
         "-crf", "23",
         "-r", fps.toString(), // Frame rate
@@ -82,7 +82,7 @@ async function mergeFramesWithFfmpeg(
         outputFile,
       ];
     } else if (approach === "pipe") {
-      // Approccio 2: Pipa tutti i frame concatenati a ffmpeg
+      // Approach 2: Pipe all concatenated frames to ffmpeg
       const frameFiles = fs.readdirSync(framesDir)
         .filter(f => f.startsWith("frame_") && f.endsWith(".h264"))
         .sort()
@@ -95,7 +95,7 @@ async function mergeFramesWithFfmpeg(
       const ffmpeg = spawn("ffmpeg", [
         "-f", "h264", // Input format H.264 raw
         "-i", "pipe:0",
-        "-c:v", "libx264", // Re-encode per garantire compatibilità
+        "-c:v", "libx264", // Re-encode to improve compatibility
         "-preset", "ultrafast",
         "-crf", "23",
         "-r", fps.toString(), // Frame rate
@@ -115,7 +115,7 @@ async function mergeFramesWithFfmpeg(
       
       ffmpeg.on("close", (code) => {
         if (code === 0) {
-          logSuccess(`Video creato con approccio ${approach}: ${outputFile}`);
+          logSuccess(`Video created with approach ${approach}: ${outputFile}`);
           resolve();
         } else {
           reject(new Error(`ffmpeg exited with code ${code}\n${stderr}`));
@@ -126,31 +126,31 @@ async function mergeFramesWithFfmpeg(
         reject(new Error(`ffmpeg spawn error: ${error.message}`));
       });
       
-      return; // Early return per approccio pipe
+      return; // Early return for pipe approach
     } else if (approach === "image2") {
-      // Approccio 3: Tratta i frame come immagini (non applicabile per H.264 raw)
-      reject(new Error("Approccio image2 non applicabile per frame H.264 raw"));
+      // Approach 3: Treat frames as images (not applicable for raw H.264 frames)
+      reject(new Error("image2 approach is not applicable for raw H.264 frames"));
       return;
     } else if (approach === "h264") {
-      // Approccio 4: Concatena frame e usa -f h264 con copy (no re-encoding)
+      // Approach 4: Concatenate frames and use -f h264 with copy (no re-encoding)
       const frameFiles = fs.readdirSync(framesDir)
         .filter(f => f.startsWith("frame_") && f.endsWith(".h264"))
         .sort()
         .map(f => path.join(framesDir, f));
       
-      // Concatena tutti i frame in un unico buffer
+      // Concatenate all frames into a single buffer
       const allFrames = Buffer.concat(
         frameFiles.map(f => fs.readFileSync(f))
       );
       
-      // Salva file concatenato temporaneo
+      // Save temporary concatenated file
       const concatFile = path.join(framesDir, "all_frames.h264");
       fs.writeFileSync(concatFile, allFrames);
       
       ffmpegArgs = [
         "-f", "h264", // Input format H.264 raw
         "-i", concatFile,
-        "-c:v", "copy", // Copy codec (no re-encoding) - più veloce
+        "-c:v", "copy", // Copy codec (no re-encoding) - faster
         "-fflags", "+genpts", // Generate PTS
         "-r", fps.toString(), // Frame rate
         "-y",
@@ -169,7 +169,7 @@ async function mergeFramesWithFfmpeg(
 
     ffmpeg.on("close", (code) => {
       if (code === 0) {
-        logSuccess(`Video creato con approccio ${approach}: ${outputFile}`);
+        logSuccess(`Video created with approach ${approach}: ${outputFile}`);
         resolve();
       } else {
         reject(new Error(`ffmpeg exited with code ${code}\n${stderr}`));
@@ -185,14 +185,14 @@ async function mergeFramesWithFfmpeg(
 async function testSaveAndMerge() {
   console.log("\n");
   console.log("╔════════════════════════════════════════════════════════════╗");
-  console.log("║     TEST SALVATAGGIO E UNIONE FRAME VIDEO                 ║");
+  console.log("║     TEST: SAVE AND MERGE VIDEO FRAMES                     ║");
   console.log("╚════════════════════════════════════════════════════════════╝");
-  console.log(`\nConfigurazione:`);
+  console.log(`\nConfiguration:`);
   console.log(`  Host: ${config.tcp.host}`);
   console.log(`  Username: ${config.tcp.username}\n`);
 
   if (!config.tcp.host || !config.tcp.password) {
-    console.error("❌ ERRORE: Configurazione TCP non completa nel file .env");
+    console.error("[ERROR] TCP configuration is incomplete in the .env file");
     process.exit(1);
   }
 
@@ -207,11 +207,11 @@ async function testSaveAndMerge() {
 
   const channel = 0;
   const profile: StreamProfile = "sub";
-  const saveDuration = 15; // 15 secondi
+  const saveDuration = 15; // seconds
   const framesDir = path.join(process.cwd(), "test", "frames-save");
   const recordingsDir = path.join(process.cwd(), "test", "recordings");
 
-  // Crea directory se non esistono
+  // Create output directories if they don't exist
   if (!fs.existsSync(framesDir)) {
     fs.mkdirSync(framesDir, { recursive: true });
   }
@@ -219,7 +219,7 @@ async function testSaveAndMerge() {
     fs.mkdirSync(recordingsDir, { recursive: true });
   }
 
-  // Pulisci directory frame precedenti
+  // Clean up previous frame files
   const existingFrames = fs.readdirSync(framesDir);
   for (const file of existingFrames) {
     fs.unlinkSync(path.join(framesDir, file));
@@ -229,17 +229,17 @@ async function testSaveAndMerge() {
     // Login
     log("Login Baichuan TCP");
     await api.login();
-    logSuccess("Login completato");
+    logSuccess("Login completed");
 
-    // Verifica profili disponibili
-    log("Verifica profili disponibili");
+    // Check available profiles
+    log("Checking available profiles");
     const streamMetadata = await api.getStreamMetadata(channel);
-    logSuccess("Stream metadata ottenuta");
+    logSuccess("Stream metadata fetched");
     
     if (streamMetadata && streamMetadata.streams) {
       const stream = streamMetadata.streams.find((s: { profile: string }) => s.profile === profile);
       if (stream) {
-        log(`Profilo ${profile} trovato`, {
+          log(`Profile ${profile} found`, {
           width: stream.width,
           height: stream.height,
           fps: stream.frameRate,
@@ -247,8 +247,8 @@ async function testSaveAndMerge() {
       }
     }
 
-    // Crea BaichuanVideoStream
-    log(`Creazione stream video per profilo ${profile}`);
+    // Create BaichuanVideoStream
+    log(`Creating video stream for profile ${profile}`);
     const videoStream = new BaichuanVideoStream({
       client: api.client,
       api,
@@ -256,7 +256,7 @@ async function testSaveAndMerge() {
       profile,
     });
 
-    // Salva frame video
+    // Save video frames
     let frameCount = 0;
     let startTime = Date.now();
     const maxDuration = saveDuration * 1000; // Converti in millisecondi
@@ -266,7 +266,7 @@ async function testSaveAndMerge() {
     videoStream.on("videoFrame", (frame: Buffer) => {
       const elapsed = Date.now() - startTime;
       if (elapsed >= maxDuration) {
-        return; // Non salvare più frame dopo la durata massima
+        return; // Stop saving after max duration
       }
 
       frameCount++;
@@ -276,80 +276,80 @@ async function testSaveAndMerge() {
       lastFrameFile = frameFile;
 
       if (frameCount % 10 === 0 || frameCount <= 5) {
-        console.log(`[Save] Salvati ${frameCount} frame video (${(elapsed / 1000).toFixed(1)}s, ${(totalBytes / 1024).toFixed(1)} KB, avg: ${(totalBytes / frameCount / 1024).toFixed(2)} KB/frame)`);
+        console.log(`[Save] Saved ${frameCount} video frames (${(elapsed / 1000).toFixed(1)}s, ${(totalBytes / 1024).toFixed(1)} KB, avg: ${(totalBytes / frameCount / 1024).toFixed(2)} KB/frame)`);
       }
     });
 
     videoStream.on("error", (error: Error) => {
-      logError(`Errore nello stream video`, error);
+      logError(`Video stream error`, error);
     });
 
-    // Avvia stream video
-    log(`Avvio stream video per profilo ${profile}`);
+    // Start video stream
+    log(`Starting video stream for profile ${profile}`);
     await videoStream.start();
-    logSuccess("Stream video avviato");
+    logSuccess("Video stream started");
 
-    // Attendi che arrivino frame e che passi la durata richiesta
-    log(`Attendo ${saveDuration} secondi per salvare frame...`);
-    await new Promise((resolve) => setTimeout(resolve, maxDuration + 1000)); // +1s di margine
+    // Wait for frames for the requested duration.
+    log(`Waiting ${saveDuration} seconds to save frames...`);
+    await new Promise((resolve) => setTimeout(resolve, maxDuration + 1000)); // +1s margin
 
-    // Ferma stream video
+    // Stop video stream
     await videoStream.stop();
-    logSuccess(`Stream video fermato. Salvati ${frameCount} frame totali`);
+    logSuccess(`Video stream stopped. Saved ${frameCount} total frames`);
 
-    // Verifica frame salvati
+    // Verify saved frames
     const savedFrames = fs.readdirSync(framesDir)
       .filter(f => f.startsWith("frame_") && f.endsWith(".h264"))
       .sort();
     
     if (savedFrames.length === 0) {
-      logError("Nessun frame salvato", new Error("No frames saved"));
+      logError("No frames saved", new Error("No frames saved"));
       return;
     }
 
-    log(`Frame salvati: ${savedFrames.length}`);
+    log(`Saved frames: ${savedFrames.length}`);
     
-    // Calcola FPS approssimativo
+    // Estimate FPS
     const actualDuration = (Date.now() - startTime) / 1000;
     let estimatedFps = savedFrames.length / actualDuration;
     
-    // Se il FPS è troppo basso o 0, usa il valore dai metadati
+    // If FPS is too low/invalid, fall back to metadata.
     if (estimatedFps < 1 || isNaN(estimatedFps)) {
       if (streamMetadata && streamMetadata.streams) {
         const stream = streamMetadata.streams.find((s: { profile: string }) => s.profile === profile);
         if (stream && stream.frameRate) {
           estimatedFps = stream.frameRate;
-          log(`FPS troppo basso (${estimatedFps.toFixed(2)}), uso FPS dai metadati: ${estimatedFps}`);
+          log(`FPS too low/invalid, using metadata FPS: ${estimatedFps}`);
         } else {
           estimatedFps = 10; // Default fallback
-          log(`FPS non disponibile, uso default: ${estimatedFps}`);
+          log(`FPS not available, using default: ${estimatedFps}`);
         }
       } else {
         estimatedFps = 10; // Default fallback
-        log(`FPS non disponibile, uso default: ${estimatedFps}`);
+        log(`FPS not available, using default: ${estimatedFps}`);
       }
     }
     
-    log(`FPS finale: ${estimatedFps.toFixed(2)}`);
+    log(`Final FPS: ${estimatedFps.toFixed(2)}`);
 
-    // Prova diversi approcci per unire i frame
+    // Try different merge approaches
     const approaches: Array<"concat" | "pipe" | "h264"> = ["concat", "pipe", "h264"];
     
     for (const approach of approaches) {
       try {
         const outputFile = path.join(recordingsDir, `merged_${profile}_${approach}_${Date.now()}.mp4`);
-        log(`\n🎬 Provo approccio: ${approach}`);
+        log(`\nTrying approach: ${approach}`);
         
-        // Assicurati che il FPS sia almeno 1
+        // Ensure FPS is at least 1
         const fpsToUse = Math.max(1, Math.round(estimatedFps));
         await mergeFramesWithFfmpeg(framesDir, outputFile, approach, fpsToUse);
         
-        // Verifica file creato
+        // Verify created file
         if (fs.existsSync(outputFile)) {
           const stats = fs.statSync(outputFile);
-          logSuccess(`Video creato: ${outputFile} (${stats.size} bytes)`);
+          logSuccess(`Video created: ${outputFile} (${stats.size} bytes)`);
           
-          // Prova a verificare il video con ffprobe
+          // Verify with ffprobe
           try {
             const ffprobe = spawn("ffprobe", [
               "-v", "error",
@@ -374,7 +374,7 @@ async function testSaveAndMerge() {
                   const heightMatch = probeOutput.match(/height=(\d+)/);
                   
                   if (durationMatch || widthMatch || heightMatch) {
-                    log(`Info video`, {
+                    log(`Video info`, {
                       duration: durationMatch ? `${durationMatch[1]}s` : "unknown",
                       resolution: widthMatch && heightMatch ? `${widthMatch[1]}x${heightMatch[1]}` : "unknown",
                     });
@@ -386,31 +386,31 @@ async function testSaveAndMerge() {
               });
             });
           } catch (error) {
-            console.warn(`⚠️  Impossibile analizzare video: ${error}`);
+            console.warn(`[WARN] Could not analyze video: ${error}`);
           }
         }
       } catch (error) {
-        logError(`Errore con approccio ${approach}`, error);
+        logError(`Error with approach ${approach}`, error);
       }
     }
 
-    logSuccess("✅ Tutti i test completati!");
+    logSuccess("All tests completed!");
 
   } catch (error) {
-    logError("Errore critico durante i test", error);
+    logError("Fatal error during test", error);
     process.exit(1);
   } finally {
     try {
       await api.close();
-      logSuccess("Connessione chiusa");
+      logSuccess("Connection closed");
     } catch (error) {
-      logError("Errore durante chiusura connessione", error);
+      logError("Error while closing connection", error);
     }
   }
 }
 
 testSaveAndMerge().catch((error) => {
-  console.error("Errore fatale:", error);
+  console.error("Fatal error:", error);
   process.exit(1);
 });
 

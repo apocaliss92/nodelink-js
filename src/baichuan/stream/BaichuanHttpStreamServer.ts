@@ -119,18 +119,18 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
     }
 
     console.log(`[BaichuanHttpStreamServer] Starting Baichuan video stream...`);
-    // Avvia lo stream video Baichuan
+    // Start the Baichuan video stream.
     await this.videoStream.start();
-    console.log(`[BaichuanHttpStreamServer] Stream video Baichuan avviato`);
+    console.log(`[BaichuanHttpStreamServer] Baichuan video stream started`);
 
     // Crea server HTTP
     this.httpServer = http.createServer((req, res) => {
       if (req.url === this.path || req.url === `${this.path}.ts`) {
-        console.log(`[BaichuanHttpStreamServer] Nuovo client connesso: ${req.socket.remoteAddress}`);
+        console.log(`[BaichuanHttpStreamServer] New client connected: ${req.socket.remoteAddress}`);
         this.clients.add(res);
         this.emit("client", req.socket.remoteAddress || "unknown");
 
-        // Imposta headers per stream MPEG-TS
+        // Set headers for MPEG-TS streaming.
         res.writeHead(200, {
           "Content-Type": "video/mp2t",
           "Cache-Control": "no-cache",
@@ -138,10 +138,10 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
           "Access-Control-Allow-Origin": "*",
         });
 
-        // Quando il client si disconnette, rimuovilo
+        // Remove the client when it disconnects.
         req.on("close", () => {
           this.clients.delete(res);
-          console.log(`[BaichuanHttpStreamServer] Client disconnesso`);
+          console.log(`[BaichuanHttpStreamServer] Client disconnected`);
         });
       } else {
         res.writeHead(404);
@@ -149,10 +149,10 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
       }
     });
 
-    // Avvia server HTTP
+    // Start HTTP server.
     await new Promise<void>((resolve, reject) => {
       this.httpServer!.listen(this.listenPort, "127.0.0.1", () => {
-        console.log(`[BaichuanHttpStreamServer] Server HTTP avviato su porta ${this.listenPort}`);
+        console.log(`[BaichuanHttpStreamServer] HTTP server listening on port ${this.listenPort}`);
         resolve();
       });
       this.httpServer!.on("error", reject);
@@ -163,15 +163,15 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
     
     const ffmpeg = spawn("ffmpeg", [
       "-hide_banner",
-      // warning include spesso messaggi di decodifica non fatali (es. decode_slice_header),
-      // che non vogliamo trattare come errori applicativi.
+      // ffmpeg warnings often include non-fatal decode messages (e.g. decode_slice_header),
+      // which we don't want to treat as application errors.
       "-loglevel", "error",
       // Force a known frame rate on raw H.264 input so the muxer gets valid PTS/DTS.
       "-r", String(this.inputFps),
       "-fflags", "+genpts",
       "-use_wallclock_as_timestamps", "1",
       "-f", "h264", // Input format (H.264 Annex-B)
-      "-i", "pipe:0", // Legge da stdin
+      "-i", "pipe:0", // Read from stdin
       "-c:v", "copy", // Copy video codec (no re-encoding)
       "-muxpreload", "0",
       "-muxdelay", "0",
@@ -182,19 +182,19 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
     });
 
     this.ffmpegProcess = ffmpeg;
-    console.log(`[BaichuanHttpStreamServer] FFmpeg process avviato (PID: ${ffmpeg.pid})`);
+    console.log(`[BaichuanHttpStreamServer] FFmpeg process started (PID: ${ffmpeg.pid})`);
 
-    // Invia frame video a ffmpeg
+    // Feed video frames to ffmpeg.
     let frameCount = 0;
     const writeToFfmpeg = (videoData: Buffer) => {
       // Guardrail: if we feed non-Annex-B "frames", ffmpeg errors and the result is a black/corrupted video.
-      // In attesa di un parsing perfetto dei P-frame, scartiamo quelli non Annex-B.
+      // Until we have perfect P-frame parsing, drop non-Annex-B payloads.
       if (!hasAnnexBStart(videoData)) {
         return;
       }
       frameCount++;
       if (frameCount === 1) {
-        console.log(`[BaichuanHttpStreamServer] Primo frame video ricevuto (${videoData.length} bytes)`);
+        console.log(`[BaichuanHttpStreamServer] First video frame received (${videoData.length} bytes)`);
       }
       if (ffmpeg.stdin && !ffmpeg.stdin.destroyed) {
         try {
@@ -206,7 +206,7 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
       }
     };
 
-    // Preferiamo l’evento ricco (keyframe), ma restiamo compatibili con videoFrame.
+    // Prefer the richer event (keyframe metadata), but keep compatibility with `videoFrame`.
     this.seenKeyframe = false;
     this.usingAccessUnit = false;
     this.cachedSps = null;
@@ -217,15 +217,15 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
       const isKeyframe: boolean = Buffer.isBuffer(unit) ? isH264KeyframeFromAnnexB(data) : Boolean(unit?.isKeyframe);
       if (!Buffer.isBuffer(data)) return;
 
-      // Evita doppio feed: BaichuanVideoStream emette sia videoFrame che videoAccessUnit.
-      // Se stiamo ricevendo videoAccessUnit, ignoriamo i callback di videoFrame (Buffer).
+    // Avoid double-feeding: BaichuanVideoStream emits both `videoFrame` and `videoAccessUnit`.
+    // If we are receiving `videoAccessUnit`, ignore `videoFrame` (Buffer) callbacks.
       if (!Buffer.isBuffer(unit)) {
         this.usingAccessUnit = true;
       } else if (this.usingAccessUnit) {
         return;
       }
 
-      // Cache SPS/PPS (H.264) se presenti nell’access unit
+      // Cache SPS/PPS (H.264) if present in the access unit.
       const nals = splitAnnexBNals(data);
       for (const nal of nals) {
         const t = h264NalType(nal);
@@ -237,7 +237,7 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
       if (!this.seenKeyframe) {
         if (!isKeyframe) return;
         this.seenKeyframe = true;
-        console.log(`[BaichuanHttpStreamServer] ✅ Primo keyframe ricevuto: inizio a feedare ffmpeg`);
+        console.log(`[BaichuanHttpStreamServer] First keyframe received: starting ffmpeg feed`);
       }
 
       // If we have cached SPS/PPS, prepend them before keyframes for robustness (some muxers/players require it).
@@ -264,33 +264,33 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
       writeToFfmpeg(data);
     };
 
-    // Registriamo entrambi: se arriva videoAccessUnit lo useremo; videoFrame resta compatibile.
+    // Register both: if `videoAccessUnit` arrives we will use it; `videoFrame` remains for compatibility.
     this.videoStream.on("videoAccessUnit" as any, this.videoListener as any);
     this.videoStream.on("videoFrame", this.videoListener as any);
 
-    // Invia output MPEG-TS di ffmpeg ai client HTTP
+    // Broadcast ffmpeg MPEG-TS output to HTTP clients.
     ffmpeg.stdout.on("data", (data: Buffer) => {
-      // Invia a tutti i client connessi
+      // Send to all connected clients.
       for (const client of this.clients) {
         if (!client.destroyed) {
           try {
             client.write(data);
           } catch (error) {
-            // Client disconnesso, rimuovilo
+            // Client disconnected; remove it.
             this.clients.delete(client);
           }
         }
       }
     });
 
-    // Gestisci errori ffmpeg
+    // Handle ffmpeg stderr.
     let ffmpegOutput = "";
     ffmpeg.stderr.on("data", (data) => {
       const output = data.toString();
       ffmpegOutput += output;
       
-      // Con -loglevel error qui arrivano solo errori, ma molti sono comunque “non fatali”
-      // durante lo start-up o su frame corrotti. Evitiamo di crashare l’app (event 'error' non gestito).
+      // With -loglevel error we only get errors here, but many are still "non-fatal"
+      // during startup or on corrupted frames. Avoid crashing the app (unhandled 'error' event).
       const isKnownNonFatal =
         output.includes("top block unavailable") ||
         output.includes("error while decoding") ||
@@ -301,12 +301,12 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
         output.includes("bottom block unavailable");
 
       if (isKnownNonFatal) {
-        // teniamo traccia ma non emettiamo 'error'
+        // Track but do not emit 'error'
         console.warn(`[BaichuanHttpStreamServer] FFmpeg decode warning: ${output.trim()}`);
         return;
       }
 
-      // Errori davvero critici (input totalmente invalido / pipe rotta / muxer failure)
+      // Truly critical errors (invalid input / broken pipe / muxer failure).
       const isCriticalError =
         output.includes("Invalid data found") ||
         output.includes("Error opening") ||
@@ -318,7 +318,7 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
 
       if (isCriticalError) {
         console.error(`[BaichuanHttpStreamServer] FFmpeg critical error: ${output.trim()}`);
-        // Emettiamo 'error' solo per condizioni realmente terminali.
+        // Emit 'error' only for truly terminal conditions.
         this.emit("error", new Error(`FFmpeg error: ${output}`));
       } else {
         console.warn(`[BaichuanHttpStreamServer] FFmpeg stderr: ${output.trim()}`);
@@ -404,7 +404,7 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
     // Ferma server HTTP
     if (this.httpServer) {
       await new Promise<void>((resolve) => {
-        // best-effort: chiudi connessioni e poi il server (Node moderni)
+        // best-effort: close connections and then the server (modern Node versions)
         (this.httpServer as any)?.closeAllConnections?.();
         (this.httpServer as any)?.closeIdleConnections?.();
         this.httpServer!.close(() => resolve());

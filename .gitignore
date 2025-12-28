@@ -20,4 +20,9 @@ pnpm-debug.log*
 
 # Test frames (saved for offline testing)
 test/frames/
+test/diagnostics/
+test/recordings/
+test/diagnostics-dumps/
+test/frames-debug/*
+test/frames-save/
 

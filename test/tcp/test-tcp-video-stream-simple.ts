@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 /**
- * Test semplificato per lo streaming video via Baichuan
- * Focus su cmd_id 3 con diverse varianti di parametri
+ * Simplified test script for Baichuan video streaming.
+ * Focuses on cmd_id 3 with multiple parameter variants.
  */
 
 // @ts-expect-error - Path resolution at runtime
 import { ReolinkBaichuanApi, type BaichuanFrame, buildChannelExtensionXml } from "../../index.js";
 import { config } from "../env.js";
 
-// Funzioni helper
+// Helper functions
 function log(message: string, data?: unknown) {
   console.log(`\n${"=".repeat(60)}`);
-  console.log(`📊 ${message}`);
+  console.log(`[INFO] ${message}`);
   if (data !== undefined) {
     console.log(JSON.stringify(data, null, 2));
   }
@@ -19,29 +19,29 @@ function log(message: string, data?: unknown) {
 }
 
 function logSuccess(message: string) {
-  console.log(`\n✅ ${message}`);
+  console.log(`\n[OK] ${message}`);
 }
 
 function logError(message: string, error: unknown) {
-  console.error(`\n❌ ERRORE: ${message}`);
+  console.error(`\n[ERROR] ${message}`);
   if (error instanceof Error) {
-    console.error(`   Messaggio: ${error.message}`);
+    console.error(`   Message: ${error.message}`);
   } else {
-    console.error(`   Dettagli: ${error}`);
+    console.error(`   Details: ${error}`);
   }
 }
 
 async function testVideoStreamSimple() {
   console.log("\n");
   console.log("╔════════════════════════════════════════════════════════════╗");
-  console.log("║     TEST STREAM VIDEO BAICHUAN - VERSIONE SEMPLIFICATA    ║");
+  console.log("║     TEST: BAICHUAN VIDEO STREAM (SIMPLE)                  ║");
   console.log("╚════════════════════════════════════════════════════════════╝");
-  console.log(`\nConfigurazione:`);
+  console.log(`\nConfiguration:`);
   console.log(`  Host: ${config.tcp.host}`);
   console.log(`  Username: ${config.tcp.username}\n`);
 
   if (!config.tcp.host || !config.tcp.password) {
-    console.error("❌ ERRORE: Configurazione TCP non completa nel file .env");
+    console.error("[ERROR] TCP configuration is incomplete in the .env file");
     process.exit(1);
   }
 
@@ -59,7 +59,7 @@ async function testVideoStreamSimple() {
   const videoFrames: BaichuanFrame[] = [];
   let pushEventCount = 0;
 
-  // Handler per push events - cerca frame video con cmd_id 3
+  // Handler for push events - look for cmd_id 3 video frames.
   api.client.on("push", (frame: BaichuanFrame) => {
     pushEventCount++;
     
@@ -68,7 +68,7 @@ async function testVideoStreamSimple() {
       const isBinary = !frame.body.toString("utf8", 0, Math.min(10, frame.body.length)).startsWith("<?xml");
       if (isBinary) {
         videoFrames.push(frame);
-        log(`🎥 Frame video ricevuto!`, {
+        log(`Video frame received`, {
           cmdId: frame.header.cmdId,
           streamType: frame.header.streamType,
           channelId: frame.header.channelId,
@@ -77,12 +77,12 @@ async function testVideoStreamSimple() {
       }
     }
     
-    // Log primi 20 push events per debug
+    // Log first 20 push events for debugging.
     if (pushEventCount <= 20) {
       const bodyPreview = frame.body.toString("utf8", 0, Math.min(50, frame.body.length));
       const isXml = bodyPreview.startsWith("<?xml") || bodyPreview.startsWith("<");
       if (pushEventCount <= 10 || frame.header.cmdId === 3) {
-        log(`📨 Push #${pushEventCount}`, {
+        log(`Push #${pushEventCount}`, {
           cmdId: frame.header.cmdId,
           streamType: frame.header.streamType,
           channelId: frame.header.channelId,
@@ -97,11 +97,11 @@ async function testVideoStreamSimple() {
     // Login
     log("Login Baichuan TCP");
     await api.login();
-    logSuccess("Login completato");
+    logSuccess("Login completed");
 
-    // Test con cmd_id 3 (MSG_ID_VIDEO) - varianti di parametri
-    // Basato su neolink stream.rs: BcXml serializza come <body> con Preview dentro
-    // Prova con e senza extension XML (response_code 421 suggerisce che extension potrebbe servire)
+    // cmd_id 3 (MSG_ID_VIDEO) - parameter variants.
+    // Based on neolink stream.rs: BcXml serializes as <body> with Preview inside.
+    // Try with and without Extension XML (response_code 421 suggests extension may be needed).
     const testCases = [
       {
         name: "Sub stream - con extension XML (response_code 421)",
@@ -127,10 +127,10 @@ async function testVideoStreamSimple() {
     ];
 
     for (const testCase of testCases) {
-      log(`\n🔍 Test: ${testCase.name}`);
+      log(`\nTest: ${testCase.name}`);
       
-      // Basato su neolink: BcXml serializza come <body> con Preview dentro
-      // Preview ha version come attributo (@version in serde)
+      // Based on neolink: BcXml serializes as <body> with Preview inside.
+      // Preview has version as an attribute (@version in serde).
       const payloadXml = `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <Preview version="1.0">
@@ -153,57 +153,52 @@ async function testVideoStreamSimple() {
           streamType: testCase.streamType,
         });
 
-        log(`Risposta`, {
+        log(`Response`, {
           responseCode: frame.header.responseCode,
           success: frame.header.responseCode === 200,
-          note: frame.header.responseCode === 200 ? "✅ SUCCESS!" : frame.header.responseCode === 421 ? "⚠️  421 (diverso da 400)" : `❌ ${frame.header.responseCode}`,
+          note: frame.header.responseCode === 200 ? "SUCCESS" : frame.header.responseCode === 421 ? "421 (different from 400)" : `${frame.header.responseCode}`,
         });
 
         if (frame.header.responseCode === 200 || frame.header.responseCode === 421) {
-          // Anche se response_code è 421, potrebbe essere che lo stream sia comunque attivo
-          // (421 potrebbe significare "Misdirected Request" ma lo stream potrebbe funzionare)
-          logSuccess(`✅ Comando inviato (response_code ${frame.header.responseCode})! Attendo frame video...`);
+          // Even if response_code is 421, the stream might still be active.
+          logSuccess(`Command sent (response_code ${frame.header.responseCode}). Waiting for video frames...`);
           
-          // Dopo aver inviato il comando Preview, potrebbe essere necessario sottoscriversi esplicitamente
-          // ai frame video, come neolink fa alla linea 173 di stream.rs
-          // Prova a sottoscriversi ai frame video con cmd_id 3 (MSG_ID_VIDEO)
-          // Nota: Questo è un tentativo - potrebbe servire un cmd_id diverso o un formato diverso
-          log(`🔍 Tentativo sottoscrizione esplicita ai frame video...`);
+          // After sending Preview, it may be necessary to explicitly subscribe to video frames.
+          log(`Attempting explicit subscription to video frames...`);
           
           try {
-            // Prova a sottoscriversi ai frame video (simile a subscribeEvents ma per video)
-            // Potrebbe essere necessario inviare un comando con cmd_id 3 senza payload, o con un payload diverso
+            // Attempt to subscribe to video frames (best-effort).
             const subscribeFrame = await api.client.sendFrame({
               cmdId: 3, // MSG_ID_VIDEO - potrebbe servire per sottoscriversi
               channel,
-              payloadXml: "", // Prova senza payload
+              payloadXml: "",
               extensionXml: buildChannelExtensionXml(channelId),
               messageClass: 0x6414,
               streamType: testCase.streamType,
             });
             
-            log(`Risposta sottoscrizione`, {
+            log(`Subscription response`, {
               responseCode: subscribeFrame.header.responseCode,
-              note: subscribeFrame.header.responseCode === 200 ? "✅ Sottoscrizione accettata!" : `⚠️  ${subscribeFrame.header.responseCode}`,
+              note: subscribeFrame.header.responseCode === 200 ? "Subscription accepted" : `${subscribeFrame.header.responseCode}`,
             });
           } catch (error) {
-            log(`⚠️  Errore durante sottoscrizione: ${error instanceof Error ? error.message : String(error)}`);
+            log(`Subscription attempt error: ${error instanceof Error ? error.message : String(error)}`);
           }
           
-          // Attendi 20 secondi per vedere se arrivano frame video
+          // Wait 20 seconds to see if video frames arrive.
           await new Promise((resolve) => setTimeout(resolve, 20000));
           
           const newPushCount = pushEventCount - initialPushCount;
           const newVideoFrames = videoFrames.length - initialVideoFrames;
           
-          log(`Risultato`, {
+          log(`Result`, {
             pushEvents: newPushCount,
             videoFrames: newVideoFrames,
             success: newVideoFrames > 0,
           });
           
           if (newVideoFrames > 0) {
-            logSuccess(`✅ TROVATI ${newVideoFrames} frame video!`);
+            logSuccess(`Received ${newVideoFrames} video frames`);
             
             // Analizza il primo frame video
             const videoFrame = videoFrames[videoFrames.length - newVideoFrames];
@@ -220,68 +215,68 @@ async function testVideoStreamSimple() {
                 const nalStart2 = decrypted.indexOf(Buffer.from([0x00, 0x00, 0x01]));
                 
                 if (nalStart1 !== -1 || nalStart2 !== -1) {
-                  logSuccess(`✅ Frame contiene NAL units H.264/H.265!`);
+                  logSuccess(`Frame contains H.264/H.265 NAL units`);
                   const nalPos = nalStart1 !== -1 ? nalStart1 + 4 : nalStart2 + 3;
                   if (nalPos < decrypted.length) {
                     const nalType = decrypted[nalPos]! & 0x1F;
                     log(`NAL unit type: ${nalType} (${nalType === 1 ? "Non-IDR" : nalType === 5 ? "IDR" : nalType === 7 ? "SPS" : nalType === 8 ? "PPS" : "Other"})`);
                   }
                 } else {
-                  log(`⚠️  Nessun pattern NAL unit trovato`);
+                  log(`No NAL unit start code pattern found`);
                   log(`   Primi 128 bytes (hex): ${decrypted.subarray(0, Math.min(128, decrypted.length)).toString("hex")}`);
                 }
               } catch (error) {
-                logError(`Errore durante analisi frame`, error);
+                logError(`Error while analyzing frame`, error);
               }
             }
             
-            // Trovato! Esci
+            // Found! Exit.
             break;
           } else {
-            log(`⚠️  Nessun frame video ricevuto dopo 20 secondi`);
+            log(`No video frames received after 20 seconds`);
           }
         } else {
-          log(`⚠️  Comando rifiutato, response_code: ${frame.header.responseCode}`);
+          log(`Command rejected (response_code: ${frame.header.responseCode})`);
         }
         
-        // Pausa tra i test
+        // Pause between tests
         await new Promise((resolve) => setTimeout(resolve, 3000));
       } catch (error) {
-        logError(`Errore durante test`, error);
+        logError(`Error during test`, error);
       }
     }
 
-    // Riepilogo
+    // Summary
     console.log("\n");
     console.log("╔════════════════════════════════════════════════════════════╗");
-    console.log("║                    RIEPILOGO TEST                         ║");
+    console.log("║                    TEST SUMMARY                           ║");
     console.log("╚════════════════════════════════════════════════════════════╝");
-    console.log(`\n📊 Push events totali ricevuti: ${pushEventCount}`);
-    console.log(`📊 Frame video identificati: ${videoFrames.length}`);
+    console.log(`\nPush events received: ${pushEventCount}`);
+    console.log(`Video frames identified: ${videoFrames.length}`);
     
     if (videoFrames.length > 0) {
-      logSuccess(`✅ Trovati ${videoFrames.length} frame video!`);
+      logSuccess(`Found ${videoFrames.length} video frames`);
     } else {
-      console.log(`\n⚠️  Nessun frame video identificato.`);
-      console.log(`   Response code 421 con extension XML suggerisce che siamo vicini,`);
-      console.log(`   ma potrebbe servire un formato diverso o parametri aggiuntivi.`);
+      console.log(`\n[WARN] No video frames identified.`);
+      console.log(`Response code 421 with Extension XML suggests we are close,`);
+      console.log(`but a different format or additional parameters might be required.`);
     }
 
   } catch (error) {
-    logError("Errore critico durante i test", error);
+    logError("Fatal error during test", error);
     process.exit(1);
   } finally {
     try {
       await api.close();
-      logSuccess("Connessione chiusa");
+      logSuccess("Connection closed");
     } catch (error) {
-      logError("Errore durante chiusura connessione", error);
+      logError("Error while closing connection", error);
     }
   }
 }
 
 testVideoStreamSimple().catch((error) => {
-  console.error("Errore fatale:", error);
+  console.error("Fatal error:", error);
   process.exit(1);
 });
 

@@ -1,9 +1,9 @@
 /**
  * H.264 Format Converter
- * Converte i dati H.264 da formato length-prefixed (AVCC) a Annex-B (con start codes)
- * 
- * Basato su neolink: i dati BcMedia potrebbero essere in formato length-prefixed
- * e devono essere convertiti in Annex-B per ffmpeg/RTSP streaming.
+ * Converts H.264 data from length-prefixed (AVCC) to Annex-B (start codes).
+ *
+ * Based on neolink: BcMedia payloads can be length-prefixed and must be converted
+ * to Annex-B for ffmpeg/RTSP streaming.
  */
 
 // Annex-B start codes:
@@ -12,9 +12,7 @@
 const NAL_START_CODE_4B = Buffer.from([0x00, 0x00, 0x00, 0x01]);
 const NAL_START_CODE_3B = Buffer.from([0x00, 0x00, 0x01]);
 
-/**
- * Verifica se i dati H.264 hanno start codes (Annex-B format)
- */
+/** Returns true if the buffer starts with an Annex-B start code. */
 export function hasStartCodes(data: Buffer): boolean {
   if (data.length < 4) return false;
   
@@ -43,7 +41,7 @@ function tryConvertWithLengthReader(data: Buffer, readLen: (buf: Buffer, offset:
     nalCount++;
   }
 
-  // Richiedi almeno 1 NAL per considerare valida la conversione
+  // Require at least 1 NAL to consider the conversion valid.
   if (nalCount === 0) return null;
   return Buffer.concat(result);
 }
@@ -74,14 +72,14 @@ function looksLikeSingleH264Nal(nalPayload: Buffer): boolean {
   if (nalPayload.length < 1) return false;
   const b0 = nalPayload[0];
   if (b0 === undefined) return false;
-  if ((b0 & 0x80) !== 0) return false; // forbidden_zero_bit deve essere 0
+  if ((b0 & 0x80) !== 0) return false; // forbidden_zero_bit must be 0
   const nalType = b0 & 0x1f;
   return nalType >= 1 && nalType <= 23;
 }
 
 function depacketizeRtpAggregationToAnnexB(payload: Buffer): Buffer | null {
-  // Supporta alcuni payload H.264 "RTP-style" (STAP/MTAP) che possono comparire nello stream Baichuan.
-  // Riferimento: RFC 6184
+  // Supports some H.264 "RTP-style" aggregation payloads (STAP/MTAP) that can appear in Baichuan streams.
+  // Reference: RFC 6184
   if (payload.length < 1) return null;
   const nalHeader = payload[0]!;
   const nalType = nalHeader & 0x1f;
@@ -157,11 +155,11 @@ function depacketizeRtpAggregationToAnnexB(payload: Buffer): Buffer | null {
 }
 
 /**
- * Converte dati H.264 da formato length-prefixed (AVCC) a Annex-B (con start codes)
- * 
- * Il formato length-prefixed usa un intero big-endian di 4 byte per indicare
- * la lunghezza di ogni NAL unit, seguito dai dati del NAL unit.
- * 
+ * Converts H.264 data from length-prefixed (AVCC) to Annex-B (start codes).
+ *
+ * The length-prefixed format uses a 4-byte big-endian integer to indicate the size
+ * of each NAL unit, followed by the NAL unit bytes.
+ *
  * Annex-B uses start codes (0x00000001 or 0x000001) before each NAL unit.
  */
 export function convertToAnnexB(data: Buffer): Buffer {
@@ -170,7 +168,7 @@ export function convertToAnnexB(data: Buffer): Buffer {
     return data;
   }
 
-  // Altrimenti, prova conversione AVCC -> AnnexB.
+  // Otherwise, try AVCC -> AnnexB conversion.
   // In practice most sources use 4-byte big-endian, but some streams can be little-endian:
   // try both and take the first valid conversion.
   const be = tryConvertWithLengthReader(data, (b, o) => b.readUInt32BE(o));
@@ -178,18 +176,18 @@ export function convertToAnnexB(data: Buffer): Buffer {
   const le = tryConvertWithLengthReader(data, (b, o) => b.readUInt32LE(o));
   if (le) return le;
 
-  // Prova anche length-prefixed a 2 byte (alcuni stream lo fanno sui P-frame)
+  // Also try 2-byte length-prefixed (some streams do this on P-frames).
   const be16 = tryConvertWithLengthReader16(data, (b, o) => b.readUInt16BE(o));
   if (be16) return be16;
   const le16 = tryConvertWithLengthReader16(data, (b, o) => b.readUInt16LE(o));
   if (le16) return le16;
 
-  // Fallback: non riconosciuto
-  // Se sembra un payload RTP aggregation (STAP/MTAP), depacketizza in NAL Annex-B.
+  // Fallback: unrecognized.
+  // If it looks like an RTP aggregation payload (STAP/MTAP), depacketize into Annex-B NAL units.
   const agg = depacketizeRtpAggregationToAnnexB(data);
   if (agg) return agg;
 
-  // Se sembra un singolo NAL H.264 senza start code, premettiamo lo start code.
+  // If it looks like a single H.264 NAL without start codes, prepend a start code.
   if (looksLikeSingleH264Nal(data)) {
     return Buffer.concat([NAL_START_CODE_4B, data]);
   }
@@ -231,8 +229,8 @@ export function isValidH264AnnexBAccessUnit(annexB: Buffer): boolean {
     if (b0 === undefined) return false;
     if ((b0 & 0x80) !== 0) return false; // forbidden_zero_bit
     const nalType = b0 & 0x1f;
-    // In Annex-B dovrebbero comparire tipi 1..23 (VCL + SPS/PPS/SEI/AUD ecc).
-    // Tipi 24..29 sono payload RTP packetization, non NAL unit bytestream.
+    // In Annex-B we expect types 1..23 (VCL + SPS/PPS/SEI/AUD etc).
+    // Types 24..29 are RTP packetization payloads, not a NAL unit byte stream.
     if (nalType === 0 || nalType >= 24) return false;
   }
   return true;
@@ -253,10 +251,10 @@ export function isH264KeyframeAnnexB(annexB: Buffer): boolean {
 }
 
 /**
- * Depacketizer per payload H.264 "RTP-like" (RFC 6184) quando la camera invia NAL unit singoli,
- * STAP/MTAP o frammentazione FU-A/FU-B come payload di un frame BcMedia.
+ * Depacketizer for H.264 "RTP-like" payloads (RFC 6184) when the camera sends single NAL units,
+ * STAP/MTAP aggregation or FU-A/FU-B fragmentation inside a BcMedia frame payload.
  *
-   * Returns NAL already in Annex-B (with start codes).
+ * Returns NAL units already in Annex-B (with start codes).
  */
 export class H264RtpDepacketizer {
   private fuNalHeader: number | null = null;
@@ -276,7 +274,7 @@ export class H264RtpDepacketizer {
     if (hasStartCodes(payload)) return [payload];
 
     const b0 = payload[0]!;
-    if ((b0 & 0x80) !== 0) return []; // forbidden_zero_bit deve essere 0 per H.264
+    if ((b0 & 0x80) !== 0) return []; // forbidden_zero_bit must be 0 for H.264
     const nalType = b0 & 0x1f;
 
     // Single NAL unit

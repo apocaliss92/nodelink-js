@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Test per caricare e parsare frame video salvati in locale
- * Non richiede connessione alla camera
+ * Test script to load and parse locally saved Baichuan video frames.
+ * Does not require a camera connection.
  */
 
 // @ts-expect-error - Path resolution at runtime
@@ -9,10 +9,10 @@ import { parseBcMedia, BcMediaCodec } from "../../index.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-// Funzioni helper
+// Helper functions
 function log(message: string, data?: unknown) {
   console.log(`\n${"=".repeat(60)}`);
-  console.log(`📊 ${message}`);
+  console.log(`[INFO] ${message}`);
   if (data !== undefined) {
     console.log(JSON.stringify(data, null, 2));
   }
@@ -20,42 +20,42 @@ function log(message: string, data?: unknown) {
 }
 
 function logSuccess(message: string) {
-  console.log(`\n✅ ${message}`);
+  console.log(`\n[OK] ${message}`);
 }
 
 function logError(message: string, error: unknown) {
-  console.error(`\n❌ ERRORE: ${message}`);
+  console.error(`\n[ERROR] ${message}`);
   if (error instanceof Error) {
-    console.error(`   Messaggio: ${error.message}`);
+    console.error(`   Message: ${error.message}`);
   } else {
-    console.error(`   Dettagli: ${error}`);
+    console.error(`   Details: ${error}`);
   }
 }
 
 async function loadAndParseFrames() {
   console.log("\n");
   console.log("╔════════════════════════════════════════════════════════════╗");
-  console.log("║     TEST PARSING FRAME SALVATI IN LOCALE                  ║");
+  console.log("║     TEST: PARSE LOCALLY SAVED FRAMES                      ║");
   console.log("╚════════════════════════════════════════════════════════════╝");
 
   const framesDir = path.join(process.cwd(), "test", "frames");
   
   if (!fs.existsSync(framesDir)) {
-    logError("Directory frames non trovata", new Error(`Directory ${framesDir} non esiste. Esegui prima test-tcp-video-stream-save-frames.ts`));
+    logError("Frames directory not found", new Error(`Directory ${framesDir} does not exist. Run test-tcp-video-stream-save-frames.ts first.`));
     process.exit(1);
   }
 
-  // Trova tutti i file frame_*.bin
+  // Find all frame_*.bin files
   const frameFiles = fs.readdirSync(framesDir)
     .filter(f => f.startsWith("frame_") && f.endsWith(".bin"))
     .sort();
 
   if (frameFiles.length === 0) {
-    logError("Nessun frame trovato", new Error(`Nessun file frame_*.bin trovato in ${framesDir}`));
+    logError("No frames found", new Error(`No frame_*.bin files found in ${framesDir}`));
     process.exit(1);
   }
 
-  log(`Trovati ${frameFiles.length} frame da analizzare`);
+  log(`Found ${frameFiles.length} frames to analyze`);
 
   let totalBcMedia = 0;
   const bcMediaTypes = new Map<string, number>();
@@ -68,7 +68,7 @@ async function loadAndParseFrames() {
     const framePath = path.join(framesDir, frameFile);
     const frameData = fs.readFileSync(framePath);
     
-    // Carica metadati se disponibili
+    // Load metadata if available
     const metadataFile = frameFile.replace(".bin", ".json");
     const metadataPath = path.join(framesDir, metadataFile);
     let metadata: any = null;
@@ -76,7 +76,7 @@ async function loadAndParseFrames() {
       metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
     }
 
-    log(`Analizzando ${frameFile}`, {
+    log(`Analyzing ${frameFile}`, {
       size: frameData.length,
       metadata: metadata ? {
         cmdId: metadata.cmdId,
@@ -85,12 +85,12 @@ async function loadAndParseFrames() {
       } : null,
     });
 
-    // Prova anche a caricare il payload separato se esiste
+    // Also try loading the separate payload file if present.
     const payloadFile = frameFile.replace(".bin", "_payload.bin");
     let payloadData: Buffer | null = null;
     if (fs.existsSync(path.join(framesDir, payloadFile))) {
       payloadData = fs.readFileSync(path.join(framesDir, payloadFile));
-      log(`Trovato payload separato: ${payloadFile} (${payloadData.length} bytes)`);
+      log(`Found separate payload: ${payloadFile} (${payloadData.length} bytes)`);
     }
 
     // Find where BcMedia packets start (after XML if present)
@@ -117,7 +117,7 @@ async function loadAndParseFrames() {
       const typeKey = media.type;
       bcMediaTypes.set(typeKey, (bcMediaTypes.get(typeKey) || 0) + 1);
 
-      // Salva frame video per analisi
+      // Save video frames for analysis
       if (media.type === "Iframe" || media.type === "Pframe") {
         videoFrames.push({ frameFile, media });
         
@@ -132,9 +132,9 @@ async function loadAndParseFrames() {
     }
 
     if (parsedInFrame > 0) {
-      logSuccess(`Parsati ${parsedInFrame} BcMedia packets da ${frameFile}`);
+      logSuccess(`Parsed ${parsedInFrame} BcMedia packets from ${frameFile}`);
     } else {
-      log(`Nessun BcMedia packet trovato in ${frameFile}`);
+      log(`No BcMedia packets found in ${frameFile}`);
     }
   }
 
@@ -143,9 +143,9 @@ async function loadAndParseFrames() {
   console.log("╔════════════════════════════════════════════════════════════╗");
   console.log("║                    RISULTATI                                ║");
   console.log("╚════════════════════════════════════════════════════════════╝");
-  console.log(`\n📊 Frame analizzati: ${frameFiles.length}`);
-  console.log(`📊 BcMedia packets parsati: ${totalBcMedia}`);
-  console.log(`\n📊 Tipi di BcMedia packets:`);
+  console.log(`\nFrames analyzed: ${frameFiles.length}`);
+  console.log(`BcMedia packets parsed: ${totalBcMedia}`);
+  console.log(`\nBcMedia packet types:`);
   
   for (const [type, count] of Array.from(bcMediaTypes.entries()).sort((a, b) => b[1] - a[1])) {
     const percentage = totalBcMedia > 0 ? ((count / totalBcMedia) * 100).toFixed(2) : "0.00";
@@ -153,20 +153,20 @@ async function loadAndParseFrames() {
   }
 
   if (totalBcMedia > 0) {
-    logSuccess(`✅ TROVATI ${totalBcMedia} BcMedia packets!`);
-    logSuccess("✅ Il parser BcMedia funziona correttamente!");
+    logSuccess(`Found ${totalBcMedia} BcMedia packets`);
+    logSuccess("BcMedia parser appears to be working");
     
     const videoFramesCount = (bcMediaTypes.get("Iframe") || 0) + (bcMediaTypes.get("Pframe") || 0);
     if (videoFramesCount > 0) {
-      logSuccess(`✅ TROVATI ${videoFramesCount} frame video (Iframe + Pframe)!`);
+      logSuccess(`Found ${videoFramesCount} video frames (Iframe + Pframe)`);
     }
   } else {
-    logError("Nessun BcMedia packet parsato", new Error("No BcMedia packets found"));
+    logError("No BcMedia packets parsed", new Error("No BcMedia packets found"));
   }
 }
 
 loadAndParseFrames().catch((error) => {
-  console.error("Errore fatale:", error);
+  console.error("Fatal error:", error);
   process.exit(1);
 });
 

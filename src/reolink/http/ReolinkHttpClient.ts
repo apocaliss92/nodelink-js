@@ -110,7 +110,7 @@ export class ReolinkHttpClient {
 
   async call<TValue = unknown, TParam = unknown>(
     cmd: string,
-    opts?: { action?: number; param?: TParam; /** alcuni comandi sono host-level e non richiedono param */ },
+    opts?: { action?: number; param?: TParam; /** Some commands are host-level and do not require a param */ },
   ): Promise<ReolinkCmdResponse<TValue>[]> {
     await this.login();
     const body: ReolinkCmdRequest<TParam>[] = [

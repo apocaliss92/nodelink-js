@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 /**
- * Suite di test completa per protocollo Baichuan UDP (BCUDP)
- * Testa: login, ping, device info, network, ports, encoding, general info
+ * Full test suite for the Baichuan UDP protocol (BCUDP).
+ * Tests: login, ping, device info, network ports, encoding, general info.
  */
 
 import { ReolinkBaichuanApi } from "../../dist/index.js";
 import { config } from "../env.js";
 
-// Funzioni helper
+// Helper functions
 function log(message: string, data?: unknown) {
   console.log(`\n${"=".repeat(60)}`);
-  console.log(`📹 ${message}`);
+  console.log(`[INFO] ${message}`);
   if (data !== undefined) {
     console.log(JSON.stringify(data, null, 2));
   }
@@ -18,30 +18,30 @@ function log(message: string, data?: unknown) {
 }
 
 function logSuccess(message: string) {
-  console.log(`\n✅ ${message}`);
+  console.log(`\n[OK] ${message}`);
 }
 
 function logError(message: string, error: unknown) {
-  console.error(`\n❌ ERRORE: ${message}`);
+  console.error(`\n[ERROR] ${message}`);
   if (error instanceof Error) {
-    console.error(`   Messaggio: ${error.message}`);
+    console.error(`   Message: ${error.message}`);
   } else {
-    console.error(`   Dettagli: ${error}`);
+    console.error(`   Details: ${error}`);
   }
 }
 
 async function runUdpTests() {
   console.log("\n");
   console.log("╔════════════════════════════════════════════════════════════╗");
-  console.log("║         TEST SUITE UDP (BCUDP) - REOLINK BAICHUAN         ║");
+  console.log("║         UDP TEST SUITE (BCUDP) - REOLINK BAICHUAN         ║");
   console.log("╚════════════════════════════════════════════════════════════╝");
-  console.log(`\nConfigurazione:`);
+  console.log(`\nConfiguration:`);
   console.log(`  Host: ${config.udp.host}`);
   console.log(`  Username: ${config.udp.username}`);
   console.log(`  UID: ${config.udp.uid}\n`);
 
   const api = new ReolinkBaichuanApi({
-    host: "255.255.255.255", // broadcast per discovery
+    host: "255.255.255.255", // broadcast for discovery
     username: config.udp.username,
     password: config.udp.password,
     transport: "udp",
@@ -55,12 +55,12 @@ async function runUdpTests() {
     debug: false,
   });
 
-  // Gestisci errori
+  // Handle errors
   api.client.on("error", () => {
-    // Errori gestiti nei try-catch
+    // Errors are handled in try/catch blocks.
   });
 
-  // Debug per discovery
+  // Discovery debug
   api.client.on("debug", (event, data) => {
     if (event === "discovery_send" || event === "discovery_success") {
       console.log(`  [DEBUG UDP] ${event}:`, data);
@@ -73,51 +73,51 @@ async function runUdpTests() {
     // ========== TEST 1: LOGIN ==========
     log("Test 1: Login UDP");
     await api.login();
-    logSuccess("Login UDP riuscito!");
+    logSuccess("UDP login succeeded");
     results.login = true;
 
     // ========== TEST 2: PING ==========
     log("Test 2: Ping UDP");
     await api.ping();
-    logSuccess("Ping UDP riuscito!");
+    logSuccess("UDP ping succeeded");
     results.ping = true;
 
     // ========== TEST 3: DEVICE INFO ==========
-    log("Test 3: GetInfo - Informazioni dispositivo");
+    log("Test 3: GetInfo - Device information");
     const deviceInfo = await api.getInfo();
-    log("Informazioni dispositivo", deviceInfo);
-    logSuccess("GetInfo UDP riuscito!");
+    log("Device information", deviceInfo);
+    logSuccess("UDP GetInfo succeeded");
     results.deviceInfo = true;
 
     // ========== TEST 4: NETWORK PORTS ==========
-    log("Test 4: GetPorts - Porte di rete");
+    log("Test 4: GetPorts - Network ports");
     const ports = await api.getPorts();
-    log("Porte di rete", ports);
-    logSuccess("GetPorts UDP riuscito!");
+    log("Network ports", ports);
+    logSuccess("UDP GetPorts succeeded");
     results.ports = true;
 
     // ========== TEST 5: GENERAL INFO (Network, MAC, etc.) ==========
-    log("Test 5: GetGeneralXml - Informazioni generali (Network, MAC, etc.)");
+    log("Test 5: GetGeneralXml - General information (Network, MAC, etc.)");
     const generalXml = await api.getGeneralXml();
-    log("General XML (primi 500 caratteri)", generalXml.substring(0, 500));
-    logSuccess("GetGeneralXml UDP riuscito!");
+    log("General XML (first 500 chars)", generalXml.substring(0, 500));
+    logSuccess("UDP GetGeneralXml succeeded");
     results.generalInfo = true;
 
     // ========== TEST 6: ENCODING INFO ==========
-    log("Test 6: GetEncXml - Informazioni encoding");
+    log("Test 6: GetEncXml - Encoding information");
     const encXml = await api.getEncXml(0);
-    log("Encoding XML (primi 500 caratteri)", encXml.substring(0, 500));
-    logSuccess("GetEncXml UDP riuscito!");
+    log("Encoding XML (first 500 chars)", encXml.substring(0, 500));
+    logSuccess("UDP GetEncXml succeeded");
     results.encoding = true;
 
-    // Chiusura connessione
+    // Close connection
     await api.close();
-    logSuccess("Connessione UDP chiusa correttamente");
+    logSuccess("UDP connection closed");
 
-    // Riepilogo
+    // Summary
     console.log("\n\n");
     console.log("╔════════════════════════════════════════════════════════════╗");
-    console.log("║                    RIEPILOGO TEST UDP                     ║");
+    console.log("║                    UDP TEST SUMMARY                       ║");
     console.log("╚════════════════════════════════════════════════════════════╝");
     const testNames: Record<string, string> = {
       login: "Login",
@@ -128,18 +128,18 @@ async function runUdpTests() {
       encoding: "Encoding Info",
     };
     for (const [key, name] of Object.entries(testNames)) {
-      console.log(`${name.padEnd(30)}: ${results[key] ? "✅ SUCCESSO" : "❌ FALLITO"}`);
+      console.log(`${name.padEnd(30)}: ${results[key] ? "OK" : "FAILED"}`);
     }
     const successCount = Object.values(results).filter((r) => r).length;
-    console.log(`\nTest completati con successo: ${successCount}/${Object.keys(results).length}\n`);
+    console.log(`\nTests succeeded: ${successCount}/${Object.keys(results).length}\n`);
 
     return successCount === Object.keys(results).length;
   } catch (error) {
-    logError("Errore durante test UDP", error);
+    logError("Error while running UDP tests", error);
     try {
       await api.close();
     } catch {
-      // Ignora errori di chiusura
+      // Ignore close errors
     }
     return false;
   }
@@ -151,7 +151,7 @@ runUdpTests()
     process.exit(success ? 0 : 1);
   })
   .catch((error) => {
-    logError("Errore fatale", error);
+    logError("Fatal error", error);
     process.exit(1);
   });
 

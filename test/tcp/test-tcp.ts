@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 /**
- * Suite di test completa per protocollo Baichuan TCP
- * Testa: login, ping, device info, network, ports, encoding, general info
+ * Full test suite for the Baichuan TCP protocol.
+ * Tests: login, ping, device info, network ports, encoding, general info.
  */
 
 import { ReolinkBaichuanApi } from "../../dist/index.js";
 import { config } from "../env.js";
 
-// Funzioni helper
+// Helper functions
 function log(message: string, data?: unknown) {
   console.log(`\n${"=".repeat(60)}`);
-  console.log(`📹 ${message}`);
+  console.log(`[INFO] ${message}`);
   if (data !== undefined) {
     console.log(JSON.stringify(data, null, 2));
   }
@@ -18,24 +18,24 @@ function log(message: string, data?: unknown) {
 }
 
 function logSuccess(message: string) {
-  console.log(`\n✅ ${message}`);
+  console.log(`\n[OK] ${message}`);
 }
 
 function logError(message: string, error: unknown) {
-  console.error(`\n❌ ERRORE: ${message}`);
+  console.error(`\n[ERROR] ${message}`);
   if (error instanceof Error) {
-    console.error(`   Messaggio: ${error.message}`);
+    console.error(`   Message: ${error.message}`);
   } else {
-    console.error(`   Dettagli: ${error}`);
+    console.error(`   Details: ${error}`);
   }
 }
 
 async function runTcpTests() {
   console.log("\n");
   console.log("╔════════════════════════════════════════════════════════════╗");
-  console.log("║         TEST SUITE TCP - REOLINK BAICHUAN                ║");
+  console.log("║         TCP TEST SUITE - REOLINK BAICHUAN                 ║");
   console.log("╚════════════════════════════════════════════════════════════╝");
-  console.log(`\nConfigurazione:`);
+  console.log(`\nConfiguration:`);
   console.log(`  Host: ${config.tcp.host}`);
   console.log(`  Username: ${config.tcp.username}\n`);
 
@@ -47,9 +47,9 @@ async function runTcpTests() {
     debug: false,
   });
 
-  // Gestisci errori
+  // Handle errors
   api.client.on("error", () => {
-    // Errori gestiti nei try-catch
+    // Errors are handled in try/catch blocks.
   });
 
   const results: Record<string, boolean> = {};
@@ -58,51 +58,51 @@ async function runTcpTests() {
     // ========== TEST 1: LOGIN ==========
     log("Test 1: Login TCP");
     await api.login();
-    logSuccess("Login TCP riuscito!");
+    logSuccess("TCP login succeeded");
     results.login = true;
 
     // ========== TEST 2: PING ==========
     log("Test 2: Ping TCP");
     await api.ping();
-    logSuccess("Ping TCP riuscito!");
+    logSuccess("TCP ping succeeded");
     results.ping = true;
 
     // ========== TEST 3: DEVICE INFO ==========
-    log("Test 3: GetInfo - Informazioni dispositivo");
+    log("Test 3: GetInfo - Device information");
     const deviceInfo = await api.getInfo();
-    log("Informazioni dispositivo", deviceInfo);
-    logSuccess("GetInfo TCP riuscito!");
+    log("Device information", deviceInfo);
+    logSuccess("TCP GetInfo succeeded");
     results.deviceInfo = true;
 
     // ========== TEST 4: NETWORK PORTS ==========
-    log("Test 4: GetPorts - Porte di rete");
+    log("Test 4: GetPorts - Network ports");
     const ports = await api.getPorts();
-    log("Porte di rete", ports);
-    logSuccess("GetPorts TCP riuscito!");
+    log("Network ports", ports);
+    logSuccess("TCP GetPorts succeeded");
     results.ports = true;
 
     // ========== TEST 5: GENERAL INFO (Network, MAC, etc.) ==========
-    log("Test 5: GetGeneralXml - Informazioni generali (Network, MAC, etc.)");
+    log("Test 5: GetGeneralXml - General information (Network, MAC, etc.)");
     const generalXml = await api.getGeneralXml();
-    log("General XML (primi 500 caratteri)", generalXml.substring(0, 500));
-    logSuccess("GetGeneralXml TCP riuscito!");
+    log("General XML (first 500 chars)", generalXml.substring(0, 500));
+    logSuccess("TCP GetGeneralXml succeeded");
     results.generalInfo = true;
 
     // ========== TEST 6: ENCODING INFO ==========
-    log("Test 6: GetEncXml - Informazioni encoding");
+    log("Test 6: GetEncXml - Encoding information");
     const encXml = await api.getEncXml(0);
-    log("Encoding XML (primi 500 caratteri)", encXml.substring(0, 500));
-    logSuccess("GetEncXml TCP riuscito!");
+    log("Encoding XML (first 500 chars)", encXml.substring(0, 500));
+    logSuccess("TCP GetEncXml succeeded");
     results.encoding = true;
 
-    // Chiusura connessione
+    // Close connection
     await api.close();
-    logSuccess("Connessione TCP chiusa correttamente");
+    logSuccess("TCP connection closed");
 
-    // Riepilogo
+    // Summary
     console.log("\n\n");
     console.log("╔════════════════════════════════════════════════════════════╗");
-    console.log("║                    RIEPILOGO TEST TCP                     ║");
+    console.log("║                    TCP TEST SUMMARY                       ║");
     console.log("╚════════════════════════════════════════════════════════════╝");
     const testNames: Record<string, string> = {
       login: "Login",
@@ -113,30 +113,30 @@ async function runTcpTests() {
       encoding: "Encoding Info",
     };
     for (const [key, name] of Object.entries(testNames)) {
-      console.log(`${name.padEnd(30)}: ${results[key] ? "✅ SUCCESSO" : "❌ FALLITO"}`);
+      console.log(`${name.padEnd(30)}: ${results[key] ? "OK" : "FAILED"}`);
     }
     const successCount = Object.values(results).filter((r) => r).length;
-    console.log(`\nTest completati con successo: ${successCount}/${Object.keys(results).length}\n`);
+    console.log(`\nTests succeeded: ${successCount}/${Object.keys(results).length}\n`);
 
     return successCount === Object.keys(results).length;
   } catch (error) {
-    logError("Errore durante test TCP", error);
+    logError("Error while running TCP tests", error);
     try {
       await api.close();
     } catch {
-      // Ignora errori di chiusura
+      // Ignore close errors
     }
     return false;
   }
 }
 
-// Esegui i test
+// Run tests
 runTcpTests()
   .then((success) => {
     process.exit(success ? 0 : 1);
   })
   .catch((error) => {
-    logError("Errore fatale", error);
+    logError("Fatal error", error);
     process.exit(1);
   });
 

@@ -1,10 +1,10 @@
 /**
- * Utility per leggere le variabili d'ambiente dal file .env usando dotenv
+ * Utility to load environment variables from .env using dotenv.
  */
 
 import { config as dotenvConfig } from "dotenv";
 
-// Carica le variabili d'ambiente dal file .env
+// Load environment variables from .env
 dotenvConfig();
 
 export interface TestConfig {

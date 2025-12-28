@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 /**
- * Suite di test per streaming RTSP
- * Testa: main stream e sub stream su TCP e UDP
+ * RTSP streaming test suite.
+ * Tests: main/sub stream over TCP and UDP.
  */
 
 import { createRtspProxyServer } from "../../dist/index.js";
 import { spawn } from "node:child_process";
 import { config } from "../env.js";
 
-// Funzioni helper
+// Helper functions
 function log(message: string, data?: unknown) {
   console.log(`\n${"=".repeat(60)}`);
-  console.log(`📹 ${message}`);
+  console.log(`[INFO] ${message}`);
   if (data !== undefined) {
     console.log(JSON.stringify(data, null, 2));
   }
@@ -19,15 +19,15 @@ function log(message: string, data?: unknown) {
 }
 
 function logSuccess(message: string) {
-  console.log(`\n✅ ${message}`);
+  console.log(`\n[OK] ${message}`);
 }
 
 function logError(message: string, error: unknown) {
-  console.error(`\n❌ ERRORE: ${message}`);
+  console.error(`\n[ERROR] ${message}`);
   if (error instanceof Error) {
-    console.error(`   Messaggio: ${error.message}`);
+    console.error(`   Message: ${error.message}`);
   } else {
-    console.error(`   Dettagli: ${error}`);
+    console.error(`   Details: ${error}`);
   }
 }
 
@@ -42,7 +42,7 @@ async function testStream(host: string, username: string, password: string, tran
     });
 
     server.on("error", (err) => {
-      logError(`Errore server RTSP (${transport}/${profile})`, err);
+      logError(`RTSP server error (${transport}/${profile})`, err);
       resolve(false);
     });
 
@@ -50,7 +50,7 @@ async function testStream(host: string, username: string, password: string, tran
       const streamUrl = `http://localhost:${config.rtsp.proxyPort}/stream?channel=${channel}&profile=${profile}`;
       const outputFile = `test-${transport}-${profile}-${Date.now()}.mp4`;
 
-      console.log(`\n  📺 Testando ${transport.toUpperCase()} ${profile} stream...`);
+      console.log(`\n  Testing ${transport.toUpperCase()} ${profile} stream...`);
       console.log(`  URL: ${streamUrl}`);
 
       const ffmpeg = spawn("ffmpeg", [
@@ -75,17 +75,17 @@ async function testStream(host: string, username: string, password: string, tran
       ffmpeg.on("close", (code) => {
         server.close(() => {
           if (code === 0) {
-            logSuccess(`${transport.toUpperCase()} ${profile} stream: registrazione completata (${outputFile})`);
+            logSuccess(`${transport.toUpperCase()} ${profile} stream: recording completed (${outputFile})`);
             resolve(true);
           } else {
-            logError(`${transport.toUpperCase()} ${profile} stream: errore registrazione`, ffmpegError);
+            logError(`${transport.toUpperCase()} ${profile} stream: recording error`, ffmpegError);
             resolve(false);
           }
         });
       });
 
       ffmpeg.on("error", (err) => {
-        logError(`${transport.toUpperCase()} ${profile} stream: errore ffmpeg`, err);
+        logError(`${transport.toUpperCase()} ${profile} stream: ffmpeg error`, err);
         server.close(() => resolve(false));
       });
     });
@@ -95,13 +95,13 @@ async function testStream(host: string, username: string, password: string, tran
 async function runStreamTests() {
   console.log("\n");
   console.log("╔════════════════════════════════════════════════════════════╗");
-  console.log("║         TEST SUITE STREAMS - REOLINK RTSP                ║");
+  console.log("║         STREAM TEST SUITE - REOLINK RTSP                  ║");
   console.log("╚════════════════════════════════════════════════════════════╝");
-  console.log(`\nConfigurazione:`);
+  console.log(`\nConfiguration:`);
   console.log(`  TCP Host: ${config.tcp.host}`);
   console.log(`  UDP Host: ${config.udp.host}`);
   console.log(`  Proxy Port: ${config.rtsp.proxyPort}`);
-  console.log(`  Record Duration: ${config.rtsp.recordDuration} secondi\n`);
+  console.log(`  Record Duration: ${config.rtsp.recordDuration} seconds\n`);
 
   const results: Record<string, boolean> = {};
 
@@ -118,7 +118,7 @@ async function runStreamTests() {
       0
     );
 
-    // Piccola pausa tra i test
+    // Small pause between tests
     await new Promise((resolve) => setTimeout(resolve, 2000));
 
     results["tcp-sub"] = await testStream(
@@ -130,14 +130,14 @@ async function runStreamTests() {
       0
     );
   } else {
-    console.log("⚠️  Configurazione TCP non completa, salto test TCP streams");
+    console.log("[WARN] TCP configuration is incomplete, skipping TCP stream tests");
   }
 
-  // Test UDP streams (se disponibile)
+  // Test UDP streams (if available)
   if (config.udp.host && config.udp.password) {
     log("TEST STREAMS UDP");
     
-    // Piccola pausa tra i test
+    // Small pause between tests
     await new Promise((resolve) => setTimeout(resolve, 2000));
 
     results["udp-main"] = await testStream(
@@ -149,7 +149,7 @@ async function runStreamTests() {
       0
     );
 
-    // Piccola pausa tra i test
+    // Small pause between tests
     await new Promise((resolve) => setTimeout(resolve, 2000));
 
     results["udp-sub"] = await testStream(
@@ -161,17 +161,17 @@ async function runStreamTests() {
       0
     );
   } else {
-    console.log("⚠️  Configurazione UDP non completa, salto test UDP streams");
+    console.log("[WARN] UDP configuration is incomplete, skipping UDP stream tests");
   }
 
-  // Riepilogo
+  // Summary
   console.log("\n\n");
   console.log("╔════════════════════════════════════════════════════════════╗");
-  console.log("║                  RIEPILOGO TEST STREAMS                    ║");
+  console.log("║                  STREAM TEST SUMMARY                       ║");
   console.log("╚════════════════════════════════════════════════════════════╝");
   for (const [key, success] of Object.entries(results)) {
     const name = key.replace("-", " ").toUpperCase();
-    console.log(`${name.padEnd(30)}: ${success ? "✅ SUCCESSO" : "❌ FALLITO"}`);
+    console.log(`${name.padEnd(30)}: ${success ? "OK" : "FAILED"}`);
   }
   const successCount = Object.values(results).filter((r) => r).length;
   console.log(`\nTest completati con successo: ${successCount}/${Object.keys(results).length}\n`);
@@ -185,7 +185,7 @@ runStreamTests()
     process.exit(success ? 0 : 1);
   })
   .catch((error) => {
-    logError("Errore fatale", error);
+    logError("Fatal error", error);
     process.exit(1);
   });
 

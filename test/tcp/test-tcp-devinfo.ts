@@ -9,7 +9,7 @@ import { config } from "../env.js";
 
 async function main() {
   if (!config.tcp.host || !config.tcp.password) {
-    console.error("❌ ERRORE: Configurazione TCP non completa nel file .env");
+    console.error("[ERROR] TCP configuration is incomplete in the .env file");
     process.exit(1);
   }
 

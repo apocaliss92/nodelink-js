@@ -1,7 +1,8 @@
 /**
- * Baichuan Video Stream - Costruisce uno stream RTSP dal protocollo Baichuan nativo
- * Basato su neolink: riceve frame video via push events e li serve come stream RTSP
- * 
+ * Baichuan Video Stream - Builds a video stream from the native Baichuan protocol.
+ *
+ * Based on neolink: receives video frames via `push` events and exposes them as access units.
+ *
  * Reference: neolink crates/core/src/bc_protocol/*
  */
 
@@ -10,11 +11,10 @@ import type { BaichuanFrame } from "../../protocol/framing.js";
 import { EventEmitter } from "node:events";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { createDecipheriv } from "node:crypto";
 import type { StreamProfile } from "../../reolink/baichuan/types.js";
 import type { ReolinkBaichuanApi } from "../../reolink/baichuan/ReolinkBaichuanApi.js";
-import { BC_AES_IV } from "../../protocol/constants.js";
 import type { EncryptionProtocol } from "../../protocol/crypto.js";
+import { ensureDumpDir } from "../../debug/DebugConfig.js";
 import { BcMediaCodec } from "./BcMediaCodec.js";
 import { convertToAnnexB, hasStartCodes, H264RtpDepacketizer, isValidH264AnnexBAccessUnit, isH264KeyframeAnnexB, splitAnnexBToNalPayloads } from "./H264Converter.js";
 
@@ -148,7 +148,6 @@ export class BaichuanVideoStream extends EventEmitter<{
   // "RTP-like" depacketizer (some models encapsulate NAL units in FU-A/STAP)
   private readonly depacketizer = new H264RtpDepacketizer();
   private dumpChunkIdx = 0;
-  private pframeStreamDecipher: ReturnType<typeof createDecipheriv> | null = null;
   private spsById = new Map<number, Buffer>(); // NAL payload (without start code)
   private ppsById = new Map<number, { nal: Buffer; spsId: number }>(); // NAL payload + mapping
   private lastSps: Buffer | null = null;
@@ -199,10 +198,11 @@ export class BaichuanVideoStream extends EventEmitter<{
     this.channel = options.channel;
     this.profile = options.profile;
     this.bcMediaCodec = new BcMediaCodec(false); // non-strict mode for error recovery
-    this.debugH264LogsLeft = process.env.BAICHUAN_DEBUG_H264 === "1" ? 200 : 0;
+    // Debug is configured on the client; the library must not read env vars.
+    const dbg = this.client.getDebugConfig();
+    this.debugH264LogsLeft = dbg.debugH264 ? 200 : 0;
     this.debugSavedSamples = false;
     this.dumpChunkIdx = 0;
-    this.pframeStreamDecipher = null;
     this.spsById = new Map();
     this.ppsById = new Map();
     this.lastSps = null;
@@ -212,10 +212,7 @@ export class BaichuanVideoStream extends EventEmitter<{
 
   /**
    * Start video stream.
-   * Ascolta i push events e identifica i frame video.
-   * 
-   * Note: Il cmd_id per richiedere lo stream video deve essere identificato.
-   * Per ora, ascoltiamo tutti i push events e filtriamo i frame video.
+   * Listens to `push` events and processes cmd_id=3 frames carrying BcMedia packets.
    */
   async start(): Promise<void> {
     if (this.active) {
@@ -232,12 +229,11 @@ export class BaichuanVideoStream extends EventEmitter<{
       }
     }
 
-    // Ascolta i push events per frame video
-    // I frame con cmd_id 3 contengono BcMedia packets (video/audio)
+    // Listen to push events carrying BcMedia packets (cmd_id=3).
     let totalFramesReceived = 0;
     let totalMediaPackets = 0;
     this.videoFrameHandler = (frame: BaichuanFrame) => {
-      // Solo frame con cmd_id 3 sono video stream
+      // Only cmd_id=3 frames carry the media stream.
       if (frame.header.cmdId !== 3) return;
       
       totalFramesReceived++;
@@ -254,7 +250,7 @@ export class BaichuanVideoStream extends EventEmitter<{
       const enc = this.client.enc;
       const rawCandidate = frame.payload.length > 0 ? frame.payload : frame.body;
 
-      // Se il payload contiene ancora XML+binary (payloadOffset mancante), togliamo l'XML come fallback.
+      // If the payload still contains XML+binary (missing payloadOffset), strip XML as a fallback.
       let dataToParse = rawCandidate;
       if (frame.payload.length === 0) {
         let searchStart = 0;
@@ -265,7 +261,7 @@ export class BaichuanVideoStream extends EventEmitter<{
         dataToParse = rawCandidate.subarray(searchStart);
       }
 
-      // Se la sessione usa cifratura, alcuni modelli inviano lo stream cifrato “a livello frame”.
+      // If the session uses encryption, some models send an encrypted stream at the frame level.
       // If we find a BcMedia magic in the raw payload, it's not a guarantee the content is NOT encrypted
       // (it can be a false positive). So we also try stateless decryption and pick
       // the most "BcMedia-like" candidate (neolink decrypts before deserializing).
@@ -279,12 +275,13 @@ export class BaichuanVideoStream extends EventEmitter<{
         console.log(`[BaichuanVideoStream] Data after XML: ${dataAfterXml.length} bytes, first 32 bytes: ${dataAfterXml.subarray(0, Math.min(32, dataAfterXml.length)).toString("hex")}`);
       }
 
-      // Dump dei chunk esatti che vengono passati al decoder BCMedia (stile neolink payload_stream()).
-      // Abilita con BAICHUAN_DUMP_BCMEDIA=1. Output sotto test/frames-debug/.
-      if (process.env.BAICHUAN_DUMP_BCMEDIA === "1" && this.dumpChunkIdx < 200) {
+      const dbg = this.client.getDebugConfig();
+      if (dbg.dumpEnabled) ensureDumpDir(dbg);
+
+      // Dumps the exact chunks fed to the BcMedia decoder (neolink-style payload_stream()).
+      if (dbg.dumpBcMedia && this.dumpChunkIdx < 200) {
         try {
-          const outDir = path.join(process.cwd(), "test", "frames-debug");
-          fs.mkdirSync(outDir, { recursive: true });
+          const outDir = dbg.dumpDir;
           const idx = String(this.dumpChunkIdx).padStart(4, "0");
           fs.writeFileSync(path.join(outDir, `bcmedia_chunk_${idx}.bin`), dataAfterXml);
           if (this.dumpChunkIdx === 0) {
@@ -326,16 +323,14 @@ export class BaichuanVideoStream extends EventEmitter<{
       
       // Process complete BcMedia packets.
       // In neolink, each BcMedia::Iframe/Pframe already contains a complete frame (access unit).
-      // Il BcMediaCodec gestisce solo frammentazione a livello trasporto, non “mezzi frame”.
+      // BcMediaCodec only handles transport fragmentation, not "half frames".
       let videoFramesEmitted = 0;
       let audioFramesEmitted = 0;
       
       for (const media of mediaPackets) {
         const maybeCacheParamSets = (annexB: Buffer, source: "Iframe" | "Pframe") => {
-          // Guardrail: alcuni modelli mandano SPS/PPS anche fuori dagli I-frame (es. update param set).
-          // Default: consenti cache anche da P-frame, ma puoi disattivare con BAICHUAN_CACHE_PARAMSETS_FROM_PFRAMES=0.
-          const allowFromPframe = process.env.BAICHUAN_CACHE_PARAMSETS_FROM_PFRAMES !== "0";
-          if (source === "Pframe" && !allowFromPframe) return;
+          // Some models send SPS/PPS outside of I-frames (e.g. parameter set updates),
+          // so we always allow caching from both I-frames and P-frames.
 
           const nals = splitAnnexBToNalPayloads(annexB);
           for (const nal of nals) {
@@ -345,8 +340,8 @@ export class BaichuanVideoStream extends EventEmitter<{
               if (id != null) {
                 if (!isPlausibleH264Sps(nal)) continue;
                 this.spsById.set(id, nal);
-                if (process.env.BAICHUAN_DEBUG_PARAMSETS === "1") {
-                  console.warn(`[BaichuanVideoStream] Cache SPS id=${id} len=${nal.length}`);
+                if (dbg.debugParamSets) {
+                  console.warn(`[BaichuanVideoStream] Cached SPS id=${id} len=${nal.length}`);
                 }
               }
               if (isPlausibleH264Sps(nal)) this.lastSps = nal;
@@ -354,12 +349,12 @@ export class BaichuanVideoStream extends EventEmitter<{
             if (t === 8) {
               const ids = parsePpsIdsFromNal(nal);
               if (ids) {
-                // Se il PPS punta a uno SPS “assurdo” o non plausibile, scartalo.
+                // If the PPS points to an implausible SPS, drop it.
                 const sps = this.spsById.get(ids.spsId);
                 if (sps && !isPlausibleH264Sps(sps)) continue;
                 this.ppsById.set(ids.ppsId, { nal, spsId: ids.spsId });
-                if (process.env.BAICHUAN_DEBUG_PARAMSETS === "1") {
-                  console.warn(`[BaichuanVideoStream] Cache PPS id=${ids.ppsId} (spsId=${ids.spsId}) len=${nal.length}`);
+                if (dbg.debugParamSets) {
+                  console.warn(`[BaichuanVideoStream] Cached PPS id=${ids.ppsId} (spsId=${ids.spsId}) len=${nal.length}`);
                 }
               }
               this.lastPps = nal;
@@ -367,29 +362,13 @@ export class BaichuanVideoStream extends EventEmitter<{
           }
         };
 
-        const filterAnnexBByNalTypes = (annexB: Buffer, source: "Iframe" | "Pframe"): Buffer | null => {
-          // Opzionale: drop access-unit che contengono NAL types “anomali” (spesso sintomo di decrypt/depacketize errato).
-          // Per questa camera (sub), in pratica ci aspettiamo 1/5 + 6/7/8/9.
-          if (process.env.BAICHUAN_STRICT_NAL_TYPES !== "1") return annexB;
-          const allowed = source === "Iframe" ? new Set([5, 6, 7, 8, 9]) : new Set([1, 6, 7, 8, 9]);
-          const nals = splitAnnexBToNalPayloads(annexB);
-          if (nals.length === 0) return null;
-          for (const nal of nals) {
-            const t = (nal[0] ?? 0) & 0x1f;
-            if (!allowed.has(t)) return null;
-            if (t === 7 && !isPlausibleH264Sps(nal)) return null;
-          }
-          return annexB;
-        };
-
         const prependParamSetsIfNeeded = (annexB: Buffer): Buffer => {
-          if (process.env.BAICHUAN_PREPEND_SPS_PPS !== "1") return annexB;
           const nals = splitAnnexBToNalPayloads(annexB);
           if (nals.length === 0) return annexB;
           const types = nals.map((n) => ((n[0] ?? 0) & 0x1f));
           // If it already includes SPS/PPS, do not prepend
           if (types.includes(7) && types.includes(8)) return annexB;
-          // Se non include VCL, non ha senso prependere
+          // If there is no VCL, there's nothing to prepend to.
           const hasVcl = types.some((t) => t === 1 || t === 5 || t === 19 || t === 20);
           if (!hasVcl) return annexB;
 
@@ -402,11 +381,11 @@ export class BaichuanVideoStream extends EventEmitter<{
               break;
             }
           }
-          if (process.env.BAICHUAN_DEBUG_PARAMSETS === "1") {
+          if (dbg.debugParamSets) {
             console.warn(`[BaichuanVideoStream] Slice references ppsId=${ppsId ?? "?"} lastPrepended=${this.lastPrependedPpsId ?? "?"}`);
           }
 
-          // Se non riesco a leggerlo, non rischiare: usa fallback (se disponibile) solo all'inizio
+          // If we can't parse it, be conservative: only use the last seen SPS/PPS once at the beginning.
           if (ppsId == null || ppsId > 255) {
             if (this.lastPrependedPpsId != null) return annexB;
             if (!this.lastSps || !this.lastPps) return annexB;
@@ -425,22 +404,16 @@ export class BaichuanVideoStream extends EventEmitter<{
               return Buffer.concat([NAL_START_CODE_4B, sps, NAL_START_CODE_4B, pps.nal, annexB]);
             }
           }
-          // Se la slice referenzia un PPS che non abbiamo, NON possiamo “inventarlo”.
-          // Better to drop this access unit until the correct PPS arrives; otherwise ffmpeg will error and you may get a "gray screen".
-          const dropIfMissing = process.env.BAICHUAN_DROP_IF_PPS_MISSING !== "0";
-          if (dropIfMissing) return Buffer.alloc(0);
-
-          // fallback (sconsigliato): last seen
-          if (!this.lastSps || !this.lastPps) return annexB;
-          this.lastPrependedPpsId = ppsId;
-          return Buffer.concat([NAL_START_CODE_4B, this.lastSps, NAL_START_CODE_4B, this.lastPps, annexB]);
+          // If the slice references a PPS we don't have, we cannot "invent it".
+          // Drop the access unit until the correct PPS arrives (prevents black/garbled video).
+          return Buffer.alloc(0);
         };
 
         const dumpNalSummary = (annexB: Buffer, label: string, microseconds: number) => {
-          if (process.env.BAICHUAN_DUMP_NALS !== "1") return;
+          if (!dbg.dumpNals) return;
           try {
-            const outDir = path.join(process.cwd(), "test", "frames-debug");
-            fs.mkdirSync(outDir, { recursive: true });
+            if (dbg.dumpEnabled) ensureDumpDir(dbg);
+            const outDir = dbg.dumpDir;
             const nals = splitAnnexBToNalPayloads(annexB);
             const types = nals.map((n) => ((n[0] ?? 0) & 0x1f));
             let slicePpsId: number | null = null;
@@ -480,29 +453,8 @@ export class BaichuanVideoStream extends EventEmitter<{
           }
         };
 
-        const decryptMediaPayloadIfEnabled = (buf: Buffer): Buffer => {
-          if (process.env.BAICHUAN_DECRYPT_MEDIA_PAYLOAD !== "1") return buf;
-          if (!(this.client.enc.kind === "full_aes" || this.client.enc.kind === "aes")) return buf;
-          try {
-            const dec = createDecipheriv("aes-128-cfb", this.client.enc.key, BC_AES_IV);
-            dec.setAutoPadding(false);
-            return Buffer.concat([dec.update(buf), dec.final()]);
-          } catch {
-            return buf;
-          }
-        };
-        const scoreAnnexB = (annex: Buffer): number => {
-          if (!isValidH264AnnexBAccessUnit(annex)) return -1;
-          const nals = splitAnnexBToNalPayloads(annex);
-          if (nals.length === 0) return -1;
-          const types = nals.map((n) => ((n[0] ?? 0) & 0x1f));
-          let score = nals.length;
-          if (types.includes(7)) score += 5;
-          if (types.includes(8)) score += 5;
-          if (types.includes(5)) score += 5;
-          if (types.includes(1)) score += 2;
-          return score;
-        };
+        // Media payloads are expected to be plaintext here because we select the best
+        // raw vs decrypted candidate before running BcMedia decoding (neolink-style).
         const isPlausibleH264Sps = (nal: Buffer): boolean => {
           // nal is a payload without a start code. nal[0] is the NAL header (type=7)
           if (nal.length < 4) return false;
@@ -514,141 +466,33 @@ export class BaichuanVideoStream extends EventEmitter<{
           if (levelIdc === 0 || levelIdc > 255) return false;
           return true;
         };
-        const isPlausibleKeyframe = (annex: Buffer): boolean => {
-          if (!isValidH264AnnexBAccessUnit(annex)) return false;
-          const nals = splitAnnexBToNalPayloads(annex);
-          if (nals.length < 2) return false;
-          let sps: Buffer | null = null;
-          let pps = false;
-          let idr = false;
-          for (const n of nals) {
-            const t = (n[0] ?? 0) & 0x1f;
-            if (t === 7 && !sps) sps = n;
-            if (t === 8) pps = true;
-            if (t === 5) idr = true;
-          }
-          if (!sps || !pps || !idr) return false;
-          return isPlausibleH264Sps(sps);
-        };
-        const isPlausiblePframe = (annex: Buffer): boolean => {
-          if (!isValidH264AnnexBAccessUnit(annex)) return false;
-          const nals = splitAnnexBToNalPayloads(annex);
-          if (nals.length === 0) return false;
-          const types = nals.map((n) => ((n[0] ?? 0) & 0x1f));
-          // alcuni stream possono includere SPS/PPS anche fuori dai keyframe (update parametri).
-          if (types.includes(5)) return false; // IDR non dovrebbe arrivare come Pframe
-          // accettiamo solo un sottoinsieme “normale” per non prendere falsi positivi su ciphertext
-          for (const t of types) {
-            if (![1, 6, 7, 8, 9].includes(t)) return false;
-          }
-          // deve esserci almeno una slice non-IDR o un aggiornamento SPS/PPS
-          if (!(types.includes(1) || types.includes(7) || types.includes(8))) return false;
-          // if we have an SPS, it must be plausible
-          const sps = nals.find((n) => (((n[0] ?? 0) & 0x1f) === 7));
-          if (sps && !isPlausibleH264Sps(sps)) return false;
-          return true;
-        };
-        const tryDecryptH264 = (buf: Buffer, wantKeyframe: boolean, additionalHeader?: Buffer): { data: Buffer; annex: Buffer; used: boolean } => {
-          if (!(this.client.enc.kind === "aes" || this.client.enc.kind === "full_aes")) {
-            const annex = convertToAnnexB(buf);
-            return { data: buf, annex, used: false };
-          }
-          const key = this.client.enc.key;
-          const ivCandidates: Buffer[] = [];
-          if (Buffer.isBuffer(additionalHeader) && additionalHeader.length >= 16) {
-            // try multiple windows because we don't know where the IV is
-            ivCandidates.push(additionalHeader.subarray(0, 16));
-            if (additionalHeader.length >= 32) ivCandidates.push(additionalHeader.subarray(16, 32));
-            ivCandidates.push(additionalHeader.subarray(Math.max(0, additionalHeader.length - 16)));
-          }
-          ivCandidates.push(BC_AES_IV);
-
-          const baseAnnex = convertToAnnexB(buf);
-          const baseScore = scoreAnnexB(baseAnnex);
-          let best: { data: Buffer; annex: Buffer; score: number; iv?: Buffer } = { data: buf, annex: baseAnnex, score: baseScore };
-          let bestKeyframe: { data: Buffer; annex: Buffer; score: number; iv: Buffer } | null = null;
-          let bestPframe: { data: Buffer; annex: Buffer; score: number; iv: Buffer } | null = null;
-          for (const iv of ivCandidates) {
-            try {
-              const dec = createDecipheriv("aes-128-cfb", key, iv);
-              dec.setAutoPadding(false);
-              const decrypted = Buffer.concat([dec.update(buf), dec.final()]);
-              const annex = convertToAnnexB(decrypted);
-              const score = scoreAnnexB(annex);
-              if (score > best.score) {
-                best = { data: decrypted, annex, score, iv };
-              }
-              if (score >= 3) {
-                if (wantKeyframe && isPlausibleKeyframe(annex)) {
-                  if (!bestKeyframe || score > bestKeyframe.score) bestKeyframe = { data: decrypted, annex, score, iv };
-                }
-                if (!wantKeyframe) {
-                  if (isPlausiblePframe(annex)) {
-                    if (!bestPframe || score > bestPframe.score) bestPframe = { data: decrypted, annex, score, iv };
-                  }
-                }
-              }
-            } catch {
-              // ignore
-            }
-          }
-
-          // Explicitly prefer decrypted payload when requested (useful with full_aes where base data "looks" Annex-B but is corrupted).
-          const preferDecrypted = process.env.BAICHUAN_PREFER_DECRYPTED_MEDIA === "1";
-          if (wantKeyframe && bestKeyframe) {
-            if (preferDecrypted || bestKeyframe.score > baseScore) {
-              if (process.env.BAICHUAN_DEBUG_H264 === "1") {
-                console.warn(`[BaichuanVideoStream] ✅ Iframe decrypt(bestKeyframe) iv=${bestKeyframe.iv.toString("hex").slice(0, 8)}... score=${bestKeyframe.score} baseScore=${baseScore}`);
-              }
-              return { data: bestKeyframe.data, annex: bestKeyframe.annex, used: true };
-            }
-          }
-          if (!wantKeyframe && bestPframe) {
-            if (preferDecrypted || bestPframe.score > baseScore) {
-              const types = splitAnnexBToNalPayloads(bestPframe.annex).map((n) => ((n[0] ?? 0) & 0x1f));
-              if (process.env.BAICHUAN_DEBUG_H264 === "1") {
-                console.warn(`[BaichuanVideoStream] ✅ Pframe decrypt(bestPframe) iv=${bestPframe.iv.toString("hex").slice(0, 8)}... score=${bestPframe.score} baseScore=${baseScore} nalTypes=${types.slice(0, 6).join(",")}`);
-              }
-              return { data: bestPframe.data, annex: bestPframe.annex, used: true };
-            }
-          }
-
-          return { data: buf, annex: convertToAnnexB(buf), used: false };
-        };
-
         if (media.type === "Iframe") {
-          const addHdr = Buffer.isBuffer((media as any).additionalHeader) ? (media as any).additionalHeader : undefined;
-          const raw = decryptMediaPayloadIfEnabled(media.data);
-          const annexBData =
-            process.env.BAICHUAN_TRY_DECRYPT_IFRAMES === "1"
-              ? tryDecryptH264(raw, true, addHdr).annex
-              : convertToAnnexB(raw);
+          const annexBData = convertToAnnexB(media.data);
           const isKeyframe = true;
 
           maybeCacheParamSets(annexBData, "Iframe");
-          const outAnnex0 = prependParamSetsIfNeeded(annexBData);
-          const outAnnex = filterAnnexBByNalTypes(outAnnex0, "Iframe");
-          if (!outAnnex) continue;
+          const outAnnex = prependParamSetsIfNeeded(annexBData);
+          if (outAnnex.length === 0) continue;
           dumpNalSummary(outAnnex, "Iframe", media.microseconds);
 
           // Guard rail: do not emit invalid keyframes (prevents cascading SPS/PPS "out of range")
           if (!isValidH264AnnexBAccessUnit(outAnnex) || !isH264KeyframeAnnexB(outAnnex)) {
-            if (process.env.BAICHUAN_DEBUG_H264 === "1") {
-              console.warn(`[BaichuanVideoStream] Drop Iframe non valido (Annex-B) len=${outAnnex.length}`);
+            if (dbg.debugH264) {
+              console.warn(`[BaichuanVideoStream] Dropping invalid Iframe (Annex-B) len=${outAnnex.length}`);
             }
             continue;
           }
 
-          // Salva 1 volta campioni utili per analisi offline
-          if (process.env.BAICHUAN_DEBUG_H264 === "1" && !this.debugSavedSamples) {
+          // Save a one-off sample for offline analysis
+          if (dbg.debugH264 && !this.debugSavedSamples) {
             try {
-              const outDir = path.join(process.cwd(), "test", "frames-debug");
+              const outDir = dbg.dumpDir;
               fs.mkdirSync(outDir, { recursive: true });
               if (media.type === "Iframe" && hasStartCodes(annexBData)) {
                 fs.writeFileSync(path.join(outDir, "iframe_annexb.bin"), annexBData);
               }
             } catch {
-              // non bloccare lo streaming per debug
+              // do not block streaming for debug
             }
           }
 
@@ -693,62 +537,12 @@ export class BaichuanVideoStream extends EventEmitter<{
             );
           }
         } else if (media.type === "Pframe") {
-          let chunk = decryptMediaPayloadIfEnabled(media.data);
-
-          // Tentativo “best effort” di deoffuscazione: alcuni stream mostrano P-frame che NON sembrano
-          // H.264 bytestream (often forbidden bit=1, no start code). In neolink there is
-          // il concetto di payload binario con decrypt + encryptLen: qui proviamo una decifratura CFB
-          // usando IV dall'additionalHeader (se presente) oppure l'IV default.
-          //
-          // Abilita questo tentativo con BAICHUAN_TRY_DECRYPT_PFRAMES=1.
-          const startsWithStartCode = hasStartCodes(chunk);
-          const looksAnnexBValid = startsWithStartCode && isValidH264AnnexBAccessUnit(chunk);
-          let looksLikeHasVcl = false;
-          if (startsWithStartCode) {
-            const nals = splitAnnexBToNalPayloads(chunk);
-            looksLikeHasVcl = nals.some((n) => {
-              const t = (n[0] ?? 0) & 0x1f;
-              return t === 1 || t === 5;
-            });
-          }
-
-          if (
-            process.env.BAICHUAN_TRY_DECRYPT_PFRAMES === "1" &&
-            media.videoType === "H264" &&
-            (this.client.enc.kind === "aes" || this.client.enc.kind === "full_aes") &&
-            // try even if it "looks" Annex-B but is invalid / has no VCL (often a false positive on encrypted data)
-            (!startsWithStartCode || !looksAnnexBValid || !looksLikeHasVcl)
-          ) {
-            const addHdr = Buffer.isBuffer((media as any).additionalHeader) ? (media as any).additionalHeader : undefined;
-            const out = tryDecryptH264(chunk, false, addHdr);
-            if (out.used) chunk = out.data;
-          } else if (
-            process.env.BAICHUAN_TRY_STREAM_PFRAME_CFB === "1" &&
-            media.videoType === "H264" &&
-            (this.client.enc.kind === "aes" || this.client.enc.kind === "full_aes") &&
-            this.pframeStreamDecipher &&
-            !hasStartCodes(chunk)
-          ) {
-            // Fallback: decrypt “streaming” (CFB stateful) solo sui P-frame che sembrano random.
-            // Questo aiuta se la camera cifra i soli P-frame come stream continuo.
-            try {
-              const b0 = chunk[0];
-              const forbidden = b0 === undefined ? 0 : b0 & 0x80;
-              if (forbidden !== 0) {
-                chunk = this.pframeStreamDecipher.update(chunk);
-                if (process.env.BAICHUAN_DEBUG_H264 === "1") {
-                  console.warn(`[BaichuanVideoStream] Pframe stream-decrypt applied len=${chunk.length}`);
-                }
-              }
-            } catch {
-              // ignore
-            }
-          }
+          const chunk = media.data;
 
           // P-frame: often not a complete access unit but an "RTP-like" payload (FU-A/STAP)
           // which must be depacketized with state. Do NOT run AVCC heuristics before depacketizing.
-          // Prima prova conversione AVCC -> AnnexB (alcuni modelli mandano P-frame length-prefixed).
-          // Se non otteniamo start code, proviamo il depacketizer RFC6184 (FU-A/STAP).
+          // First try AVCC -> AnnexB (some models send P-frames length-prefixed).
+          // If we still don't get start codes, try RFC6184 depacketizer (FU-A/STAP).
           const annexBOrRaw = hasStartCodes(chunk) ? chunk : convertToAnnexB(chunk);
           const parts = hasStartCodes(annexBOrRaw) ? [annexBOrRaw] : this.depacketizer.push(chunk);
           if (parts.length === 0) {
@@ -760,15 +554,14 @@ export class BaichuanVideoStream extends EventEmitter<{
             maybeCacheParamSets(p, "Pframe");
             const outP0 = prependParamSetsIfNeeded(p);
             if (outP0.length === 0) continue;
-            const outP = filterAnnexBByNalTypes(outP0, "Pframe");
-            if (!outP) continue;
+            const outP = outP0;
             dumpNalSummary(outP, "Pframe", media.microseconds);
             // Guard rail: drop only if the full NAL is invalid
             if (!isValidH264AnnexBAccessUnit(outP)) {
-              if (process.env.BAICHUAN_DEBUG_H264 === "1" && this.debugH264LogsLeft > 0) {
+              if (dbg.debugH264 && this.debugH264LogsLeft > 0) {
                 this.debugH264LogsLeft--;
                 const head = outP.subarray(0, Math.min(24, outP.length)).toString("hex");
-                console.warn(`[BaichuanVideoStream] Drop Pframe non valido: len=${outP.length} head=${head}`);
+                console.warn(`[BaichuanVideoStream] Dropping invalid Pframe: len=${outP.length} head=${head}`);
               }
               continue;
             }
@@ -808,18 +601,6 @@ export class BaichuanVideoStream extends EventEmitter<{
     };
 
     this.client.on("push", this.videoFrameHandler);
-    // Init decipher persistente (opzionale) per P-frame
-    if (
-      process.env.BAICHUAN_TRY_STREAM_PFRAME_CFB === "1" &&
-      (this.client.enc.kind === "aes" || this.client.enc.kind === "full_aes")
-    ) {
-      try {
-        this.pframeStreamDecipher = createDecipheriv("aes-128-cfb", this.client.enc.key, BC_AES_IV);
-        this.pframeStreamDecipher.setAutoPadding(false);
-      } catch {
-        this.pframeStreamDecipher = null;
-      }
-    }
     this.active = true;
   }
 
@@ -837,11 +618,10 @@ export class BaichuanVideoStream extends EventEmitter<{
     }
     this.videoFrameHandler = undefined;
     
-    // (streamAesDecipher rimosso: lo stream video viene trattato come non cifrato, come in neolink)
+    // Note: stream-level decipher is not used here; we pick decrypted/raw before BcMedia decoding.
     
     // Clear codec buffer
     this.bcMediaCodec.clear();
-    this.pframeStreamDecipher = null;
 
     // Stop the video stream if the API is available
     if (this.api) {

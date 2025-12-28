@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 /**
- * Test dettagliato per identificare i frame video Baichuan
- * Analizza tutti i push events dopo aver inviato il comando Preview
+ * Detailed test script to identify Baichuan video frames.
+ * Analyzes all push events after sending the Preview command.
  */
 
 // @ts-expect-error - Path resolution at runtime
 import { ReolinkBaichuanApi, type BaichuanFrame, buildChannelExtensionXml } from "../../index.js";
 import { config } from "../env.js";
 
-// Funzioni helper
+// Helper functions
 function log(message: string, data?: unknown) {
   console.log(`\n${"=".repeat(60)}`);
-  console.log(`📊 ${message}`);
+  console.log(`[INFO] ${message}`);
   if (data !== undefined) {
     console.log(JSON.stringify(data, null, 2));
   }
@@ -19,15 +19,15 @@ function log(message: string, data?: unknown) {
 }
 
 function logSuccess(message: string) {
-  console.log(`\n✅ ${message}`);
+  console.log(`\n[OK] ${message}`);
 }
 
 function logError(message: string, error: unknown) {
-  console.error(`\n❌ ERRORE: ${message}`);
+  console.error(`\n[ERROR] ${message}`);
   if (error instanceof Error) {
-    console.error(`   Messaggio: ${error.message}`);
+    console.error(`   Message: ${error.message}`);
   } else {
-    console.error(`   Dettagli: ${error}`);
+    console.error(`   Details: ${error}`);
   }
 }
 
@@ -47,14 +47,14 @@ interface FrameAnalysis {
 async function testVideoStreamDetailed() {
   console.log("\n");
   console.log("╔════════════════════════════════════════════════════════════╗");
-  console.log("║     TEST DETTAGLIATO STREAM VIDEO BAICHUAN                ║");
+  console.log("║     TEST: DETAILED BAICHUAN VIDEO STREAM                  ║");
   console.log("╚════════════════════════════════════════════════════════════╝");
-  console.log(`\nConfigurazione:`);
+  console.log(`\nConfiguration:`);
   console.log(`  Host: ${config.tcp.host}`);
   console.log(`  Username: ${config.tcp.username}\n`);
 
   if (!config.tcp.host || !config.tcp.password) {
-    console.error("❌ ERRORE: Configurazione TCP non completa nel file .env");
+    console.error("[ERROR] TCP configuration is incomplete in the .env file");
     process.exit(1);
   }
 
@@ -73,7 +73,7 @@ async function testVideoStreamDetailed() {
   const frameAnalysis = new Map<string, FrameAnalysis>();
   let pushEventCount = 0;
 
-  // Handler per TUTTI i push events - analizza tutto
+  // Handler for ALL push events - analyze everything.
   api.client.on("push", (frame: BaichuanFrame) => {
     pushEventCount++;
     allFrames.push(frame);
@@ -96,7 +96,7 @@ async function testVideoStreamDetailed() {
       });
     }
 
-    // Analizza TUTTI i frame binari (non solo quelli grandi) - potrebbero essere frame video
+    // Analyze ALL binary frames (not only big ones) - they could be video frames.
     if (isBinary && frame.body.length > 0) {
       try {
         const decrypted = api.client.tryDecryptBinary(
@@ -107,47 +107,47 @@ async function testVideoStreamDetailed() {
 
         const analysis = frameAnalysis.get(key)!;
         
-        // Per frame con cmdId=3, mostra più dettagli
+        // For cmdId=3 frames, show more details.
         if (frame.header.cmdId === 3 && frame.body.length > 100) {
-          // Mostra i primi 512 bytes per capire la struttura
+          // Show the first 512 bytes to understand the structure.
           analysis.decryptedPreview = decrypted.subarray(0, Math.min(512, decrypted.length)).toString("hex");
           
-          // Mostra anche come stringa per vedere se c'è XML
+          // Also show as string to check for embedded XML.
           const asString = decrypted.toString("utf8", 0, Math.min(200, decrypted.length));
           if (asString.includes("<?xml") || asString.includes("<Extension")) {
-            // C'è XML - trova dove finisce
+            // XML present - find where it ends.
             const xmlEnd = decrypted.indexOf(Buffer.from("</Extension>"));
             if (xmlEnd === -1) {
               const bodyEnd = decrypted.indexOf(Buffer.from("</body>"));
               if (bodyEnd !== -1) {
-                // Mostra i primi bytes dopo </body>
+                // Show bytes after </body>
                 const afterBody = decrypted.subarray(bodyEnd + 7, Math.min(bodyEnd + 100, decrypted.length));
-                analysis.decryptedPreview = `XML fino a </body>, poi: ${afterBody.toString("hex").substring(0, 128)}`;
+                analysis.decryptedPreview = `XML until </body>, then: ${afterBody.toString("hex").substring(0, 128)}`;
               }
             } else {
-              // Mostra i primi bytes dopo </Extension>
+              // Show bytes after </Extension>
               const afterExt = decrypted.subarray(xmlEnd + 13, Math.min(xmlEnd + 100, decrypted.length));
-              analysis.decryptedPreview = `XML fino a </Extension>, poi: ${afterExt.toString("hex").substring(0, 128)}`;
+              analysis.decryptedPreview = `XML until </Extension>, then: ${afterExt.toString("hex").substring(0, 128)}`;
             }
           }
         } else {
           analysis.decryptedPreview = decrypted.subarray(0, Math.min(256, decrypted.length)).toString("hex");
         }
 
-        // Cerca pattern NAL unit (H.264/H.265)
+        // Search for NAL unit patterns (H.264/H.265).
         const nalStart1 = decrypted.indexOf(Buffer.from([0x00, 0x00, 0x00, 0x01]));
         const nalStart2 = decrypted.indexOf(Buffer.from([0x00, 0x00, 0x01]));
 
         if (nalStart1 !== -1 || nalStart2 !== -1) {
           analysis.hasNalUnits = true;
 
-          // Analizza NAL unit types
+          // Analyze NAL unit types.
           const nalTypes: number[] = [];
           let searchPos = nalStart1 !== -1 ? nalStart1 + 4 : nalStart2 + 3;
           while (searchPos < decrypted.length && nalTypes.length < 5) {
             const nalType = decrypted[searchPos]! & 0x1F;
             nalTypes.push(nalType);
-            // Cerca prossimo NAL unit
+            // Find next NAL unit.
             const nextNal1 = decrypted.indexOf(Buffer.from([0x00, 0x00, 0x00, 0x01]), searchPos + 1);
             const nextNal2 = decrypted.indexOf(Buffer.from([0x00, 0x00, 0x01]), searchPos + 1);
             if (nextNal1 !== -1 || nextNal2 !== -1) {
@@ -158,17 +158,17 @@ async function testVideoStreamDetailed() {
           }
           analysis.nalUnitTypes = nalTypes;
         } else {
-          // I frame video Baichuan potrebbero avere Extension XML prima dei dati video
-          // Cerca NAL units dopo l'XML Extension o body
+          // Baichuan video frames may include XML Extension before video data.
+          // Search for NAL units after Extension/body XML.
           let searchStart = 0;
           const extensionEnd = decrypted.indexOf(Buffer.from("</Extension>"));
           const bodyEnd = decrypted.indexOf(Buffer.from("</body>"));
           
           if (extensionEnd !== -1) {
-            // C'è Extension XML - cerca NAL units dopo
+            // Extension XML present - search after it.
             searchStart = extensionEnd + Buffer.from("</Extension>").length;
           } else if (bodyEnd !== -1) {
-            // C'è body XML - cerca NAL units dopo
+            // Body XML present - search after it.
             searchStart = bodyEnd + Buffer.from("</body>").length;
           }
           
@@ -183,13 +183,13 @@ async function testVideoStreamDetailed() {
               const videoData = afterXml.subarray(nalStart1 !== -1 ? nalStart1 : nalStart2);
               analysis.decryptedPreview = videoData.subarray(0, Math.min(256, videoData.length)).toString("hex");
               
-              // Analizza NAL unit types
+              // Analyze NAL unit types.
               const nalTypes: number[] = [];
               let searchPos = nalPos;
               while (searchPos < afterXml.length && nalTypes.length < 5) {
                 const nalType = afterXml[searchPos]! & 0x1F;
                 nalTypes.push(nalType);
-                // Cerca prossimo NAL unit
+                // Find next NAL unit.
                 const nextNal1 = afterXml.indexOf(Buffer.from([0x00, 0x00, 0x00, 0x01]), searchPos + 1);
                 const nextNal2 = afterXml.indexOf(Buffer.from([0x00, 0x00, 0x01]), searchPos + 1);
                 if (nextNal1 !== -1 || nextNal2 !== -1) {
@@ -200,21 +200,21 @@ async function testVideoStreamDetailed() {
               }
               analysis.nalUnitTypes = nalTypes;
             } else {
-              // Nessun NAL unit trovato dopo XML - mostra i primi bytes dopo XML per debug
+              // No NAL units after XML - show bytes after XML for debugging.
               analysis.decryptedPreview = afterXml.subarray(0, Math.min(512, afterXml.length)).toString("hex");
             }
           }
           
-          // Anche se non ci sono NAL units visibili, potrebbe essere un frame video incapsulato
-          // Cerca pattern comuni nei frame video (magic bytes, header patterns, etc.)
+          // Even without visible NAL units, it could still be an encapsulated video frame.
+          // Look for common patterns (magic bytes, headers, etc.).
           const startsWithZeros = decrypted[0] === 0x00 && decrypted[1] === 0x00;
           if (startsWithZeros && decrypted.length > 10) {
-            // Potrebbe essere un frame video con header personalizzato
+            // Could be a video frame with a custom header.
             analysis.decryptedPreview = decrypted.subarray(0, Math.min(512, decrypted.length)).toString("hex");
           }
         }
       } catch (error) {
-        // Ignora errori di decriptazione
+        // Ignore decryption errors.
       }
     }
   });
@@ -223,15 +223,15 @@ async function testVideoStreamDetailed() {
     // Login
     log("Login Baichuan TCP");
     await api.login();
-    logSuccess("Login completato");
+    logSuccess("Login completed");
 
-    // Invia comando Preview (sub stream)
-    // Nota: Neolink fa connection.subscribe(MSG_ID_VIDEO, msg_num) PRIMA di inviare il comando
-    // Questo crea un canale dedicato. Nel nostro caso, i frame arrivano come push events.
-    log("Invio comando Preview per sub stream");
+    // Send Preview command (sub stream).
+    // Note: neolink calls connection.subscribe(MSG_ID_VIDEO, msg_num) BEFORE sending the command.
+    // This creates a dedicated channel. In our case, frames arrive as push events.
+    log("Sending Preview command for sub stream");
     
-    // Testa diverse varianti del formato XML
-    // Variante 1: Preview con channelId + extension XML (response_code 421)
+    // Test different XML variants
+    // Variant 1: Preview with channelId + extension XML (response_code 421)
     const payloadXml1 = `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <Preview version="1.0">
@@ -241,7 +241,7 @@ async function testVideoStreamDetailed() {
 </Preview>
 </body>`;
 
-    // Variante 2: Preview senza channelId (solo in extension) + extension XML
+    // Variant 2: Preview without channelId (only in extension) + extension XML
     const payloadXml2 = `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <Preview version="1.0">
@@ -250,7 +250,7 @@ async function testVideoStreamDetailed() {
 </Preview>
 </body>`;
 
-    // Variante 3: Preview senza version attribute
+    // Variant 3: Preview without version attribute
     const payloadXml3 = `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <Preview>
@@ -260,20 +260,20 @@ async function testVideoStreamDetailed() {
 </Preview>
 </body>`;
 
-    // Neolink NON usa Extension XML per il comando Preview
-    // Testa varianti senza extension XML (come neolink)
+    // neolink does NOT use Extension XML for the Preview command.
+    // Test variants without extension XML (like neolink).
     const variants = [
-      { name: "Preview con channelId SENZA extension (come neolink)", payload: payloadXml1, extension: undefined },
-      { name: "Preview senza channelId SENZA extension", payload: payloadXml2, extension: undefined },
-      { name: "Preview senza version SENZA extension", payload: payloadXml3, extension: undefined },
-      // Testa anche con extension per confronto
-      { name: "Preview con channelId + extension (per confronto)", payload: payloadXml1, extension: buildChannelExtensionXml(channelId) },
+      { name: "Preview with channelId WITHOUT extension (like neolink)", payload: payloadXml1, extension: undefined },
+      { name: "Preview without channelId WITHOUT extension", payload: payloadXml2, extension: undefined },
+      { name: "Preview without version WITHOUT extension", payload: payloadXml3, extension: undefined },
+      // Also test with extension for comparison
+      { name: "Preview with channelId + extension (comparison)", payload: payloadXml1, extension: buildChannelExtensionXml(channelId) },
     ];
 
     let bestFrame: { frame: any; variant: string } | undefined;
 
     for (const variant of variants) {
-      log(`Test variante: ${variant.name}`);
+      log(`Testing variant: ${variant.name}`);
       
       try {
         const frame = await api.client.sendFrame({
@@ -285,54 +285,54 @@ async function testVideoStreamDetailed() {
           streamType: 1, // sub stream
         });
 
-        log(`Risposta variante "${variant.name}"`, {
+        log(`Variant response "${variant.name}"`, {
           responseCode: frame.header.responseCode,
           cmdId: frame.header.cmdId,
           streamType: frame.header.streamType,
           channelId: frame.header.channelId,
           bodyLen: frame.body.length,
-          note: frame.header.responseCode === 200 ? "✅ SUCCESS!" : frame.header.responseCode === 421 ? "⚠️  421" : `❌ ${frame.header.responseCode}`,
+          note: frame.header.responseCode === 200 ? "SUCCESS" : frame.header.responseCode === 421 ? "421" : `${frame.header.responseCode}`,
         });
 
         if (frame.header.responseCode === 200) {
-          logSuccess(`✅ TROVATO! Variante "${variant.name}" funziona con response_code 200!`);
+          logSuccess(`Found a working variant: "${variant.name}" (response_code 200)`);
           bestFrame = { frame, variant: variant.name };
-          break; // Trovato, esci
+          break; // Found, exit
         } else if (frame.header.responseCode === 421 && !bestFrame) {
-          // 421 è meglio di 400, ma non ideale
+          // 421 is better than 400, but not ideal.
           bestFrame = { frame, variant: variant.name };
         }
 
-        // Pausa tra i test
+        // Pause between tests
         await new Promise((resolve) => setTimeout(resolve, 2000));
       } catch (error) {
-        logError(`Errore variante "${variant.name}"`, error);
+        logError(`Variant error "${variant.name}"`, error);
       }
     }
 
     if (!bestFrame) {
-      logError("Nessuna variante ha funzionato", new Error("All variants failed"));
+      logError("No variant worked", new Error("All variants failed"));
       return;
     }
 
-    log(`Migliore variante: "${bestFrame.variant}" con response_code ${bestFrame.frame.header.responseCode}`);
+    log(`Best variant: "${bestFrame.variant}" (response_code ${bestFrame.frame.header.responseCode})`);
     
-    // Anche con response_code 421, potrebbe funzionare - continuiamo ad ascoltare
+    // Even with response_code 421 it might still work - keep listening.
 
-    // Attendi 30 secondi per raccogliere tutti i frame
-    logSuccess("Attendo 30 secondi per raccogliere frame video...");
-    log("⚠️  Assicurati che ci sia attività video sulla camera (movimento, etc.)");
-    log("⚠️  Analizzerò TUTTI i frame ricevuti, non solo quelli con cmd_id 3");
+    // Wait 30 seconds to gather frames.
+    logSuccess("Waiting 30 seconds to gather video frames...");
+    log("Make sure there is video activity on the camera (motion, etc.)");
+    log("Analyzing ALL received frames, not only cmd_id=3");
     
     await new Promise((resolve) => setTimeout(resolve, 30000));
 
     // Analisi risultati
     console.log("\n");
     console.log("╔════════════════════════════════════════════════════════════╗");
-    console.log("║                    ANALISI FRAME                            ║");
+    console.log("║                    FRAME ANALYSIS                          ║");
     console.log("╚════════════════════════════════════════════════════════════╝");
-    console.log(`\n📊 Push events totali ricevuti: ${pushEventCount}`);
-    console.log(`📊 Tipi di frame unici: ${frameAnalysis.size}\n`);
+    console.log(`\nPush events received: ${pushEventCount}`);
+    console.log(`Unique frame types: ${frameAnalysis.size}\n`);
 
     // Ordina per frequenza
     const frameCounts = new Map<string, number>();
@@ -363,7 +363,7 @@ async function testVideoStreamDetailed() {
       });
 
       if (analysis.hasNalUnits) {
-        logSuccess(`✅ TROVATO! Frame video con NAL units!`);
+        logSuccess(`Found video frames with NAL units`);
         log(`   NAL unit types: ${analysis.nalUnitTypes?.map(t => {
           const names: Record<number, string> = {
             1: "Non-IDR",
@@ -386,7 +386,7 @@ async function testVideoStreamDetailed() {
 
     const videoFrames = sortedFrames.filter(([_, a]) => a.hasNalUnits);
     if (videoFrames.length > 0) {
-      logSuccess(`Trovati ${videoFrames.length} tipi di frame video con NAL units!`);
+      logSuccess(`Found ${videoFrames.length} frame types with NAL units`);
       for (const [key, analysis] of videoFrames) {
         log(`Frame Video`, {
           cmdId: analysis.cmdId,
@@ -397,28 +397,28 @@ async function testVideoStreamDetailed() {
         });
       }
     } else {
-      logError("Nessun frame video identificato con NAL units.", new Error("No video frames found"));
-      console.log("\n💡 Suggerimenti:");
-      console.log("   - I frame video potrebbero essere incapsulati in un formato diverso");
-      console.log("   - Potrebbe servire un meccanismo di subscribe come in neolink");
-      console.log("   - Verifica se i frame con cmd_id 3 contengono dati video");
+      logError("No video frames identified with NAL units", new Error("No video frames found"));
+      console.log("\nHints:");
+      console.log("   - Video frames may be encapsulated in a different format");
+      console.log("   - A subscribe mechanism (like neolink) may be required");
+      console.log("   - Verify whether cmd_id 3 frames contain video data");
     }
 
   } catch (error) {
-    logError("Errore critico durante i test", error);
+    logError("Fatal error during test", error);
     process.exit(1);
   } finally {
     try {
       await api.close();
-      logSuccess("Connessione chiusa");
+      logSuccess("Connection closed");
     } catch (error) {
-      logError("Errore durante chiusura connessione", error);
+      logError("Error while closing connection", error);
     }
   }
 }
 
 testVideoStreamDetailed().catch((error) => {
-  console.error("Errore fatale:", error);
+  console.error("Fatal error:", error);
   process.exit(1);
 });
 

@@ -6,6 +6,7 @@ import { BaichuanFrameParser, encodeHeader, type BaichuanFrame } from "../protoc
 import { buildChannelExtensionXml, buildLoginXml, getXmlText } from "../protocol/xml.js";
 import { BcUdpStream, type BcUdpStreamOptions } from "../bcudp/BcUdpStream.js";
 import type { ReolinkEvent } from "../reolink/baichuan/types.js";
+import { normalizeDebugOptions, traceLog, type DebugOptions, type DebugConfig } from "../debug/DebugConfig.js";
 
 export type BaichuanClientOptions = {
   host: string;
@@ -19,6 +20,8 @@ export type BaichuanClientOptions = {
   channel?: number;
   /** If true, emits additional debug events. */
   debug?: boolean;
+  /** Structured debug/tracing/dump options (preferred over env-based toggles). */
+  debugOptions?: DebugOptions;
   /**
    * Transport to use:
    * - `tcp`: Baichuan TCP (typical for wired cameras)
@@ -43,6 +46,7 @@ export class BaichuanClient extends EventEmitter<{
   event: [ReolinkEvent]; // Parsed events (motion/AI)
 }> {
   private readonly opts: BaichuanClientOptions;
+  private readonly debugCfg: DebugConfig;
 
   private tcpSocket: net.Socket | undefined;
   private udpSocket: BcUdpStream | undefined;
@@ -64,6 +68,12 @@ export class BaichuanClient extends EventEmitter<{
   constructor(options: BaichuanClientOptions) {
     super();
     this.opts = options;
+    // Back-compat: `debug: true` enables generic debug logs.
+    this.debugCfg = normalizeDebugOptions({ ...(options.debug ? { enabled: true } : {}), ...(options.debugOptions ?? {}) });
+  }
+
+  getDebugConfig(): DebugConfig {
+    return this.debugCfg;
   }
 
   async connect(): Promise<void> {
@@ -168,9 +178,12 @@ export class BaichuanClient extends EventEmitter<{
     // Similar to neolink's subscribe mechanism: frames with matching cmdId and msgNum
     const subscribedMsgNums = this.videoSubscriptions.get(frame.header.cmdId);
     if (subscribedMsgNums && subscribedMsgNums.size > 0) {
-      // Se ci sono subscription attive per questo cmdId (tipicamente MSG_ID_VIDEO=3),
-      // emettiamo solo i frame che matchano msgNum. Questo evita mixing di stream vecchi/paralleli.
+      // If there are active subscriptions for this cmdId (typically MSG_ID_VIDEO=3),
+      // emit only frames that match msgNum. This prevents mixing old/parallel streams.
       if (subscribedMsgNums.has(frame.header.msgNum)) {
+        if (this.debugCfg.traceStream && frame.header.cmdId === 3) {
+          traceLog(this.debugCfg, "BaichuanTrace", `rx stream frame cmdId=3 msgNum=${frame.header.msgNum} channelId=${frame.header.channelId} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`);
+        }
         this.emit("push", frame);
       }
       return;
@@ -365,11 +378,11 @@ export class BaichuanClient extends EventEmitter<{
     channel?: number;
     payloadXml?: string;
     extensionXml?: string;
-    /** Classe header: di default moderna 24 byte (0x6414). */
+    /** Header class; defaults to modern 24-byte header (0x6414). */
     messageClass?: number;
     /** Stream type in header: 0 for main/ext, 1 for sub (used for video streaming). */
     streamType?: number;
-    /** Forza cifratura specifica per questo invio. */
+    /** Force a specific encryption protocol for this call. */
     encryption?: EncryptionProtocol;
     /** Timeout ms. */
     timeoutMs?: number;
@@ -425,10 +438,16 @@ export class BaichuanClient extends EventEmitter<{
     });
 
     if (this.opts.debug) this.emit("debug", "tx", { cmdId, msgNum, channelId, messageClass, bodyLen });
+    if (this.debugCfg.traceStream && (cmdId === 3 || cmdId === 4)) {
+      traceLog(this.debugCfg, "BaichuanTrace", `tx cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=0 class=0x${messageClass.toString(16)} bodyLen=${bodyLen} payloadOffset=${payloadOffset}`);
+    }
     this.writeWire(wire);
 
     const frame = await framePromise;
     if (this.opts.debug) this.emit("debug", "rx", { cmdId: frame.header.cmdId, responseCode: frame.header.responseCode, msgNum: frame.header.msgNum });
+    if (this.debugCfg.traceStream && (cmdId === 3 || cmdId === 4)) {
+      traceLog(this.debugCfg, "BaichuanTrace", `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`);
+    }
 
     // Check responseCode for errors (400 = bad request/auth failure, 200 = success)
     // Some cameras return 400 with empty body when authentication fails
@@ -517,10 +536,16 @@ export class BaichuanClient extends EventEmitter<{
     });
 
     if (this.opts.debug) this.emit("debug", "tx", { cmdId, msgNum, channelId, messageClass, bodyLen });
+    if (this.debugCfg.traceStream && (cmdId === 3 || cmdId === 4)) {
+      traceLog(this.debugCfg, "BaichuanTrace", `tx cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=${params.streamType ?? 0} class=0x${messageClass.toString(16)} bodyLen=${bodyLen} payloadOffset=${payloadOffset}`);
+    }
     this.writeWire(wire);
 
     const frame = await framePromise;
     if (this.opts.debug) this.emit("debug", "rx", { cmdId: frame.header.cmdId, responseCode: frame.header.responseCode, msgNum: frame.header.msgNum });
+    if (this.debugCfg.traceStream && (cmdId === 3 || cmdId === 4)) {
+      traceLog(this.debugCfg, "BaichuanTrace", `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`);
+    }
     return frame;
   }
 

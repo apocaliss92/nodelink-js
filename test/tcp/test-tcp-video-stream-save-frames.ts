@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Test per salvare frame video in locale per testing successivo
- * Salva i frame decriptati con cmd_id 3 in file binari
+ * Test script to save video frames locally for later offline testing.
+ * Saves decrypted cmd_id 3 frames to binary files.
  */
 
 // @ts-expect-error - Path resolution at runtime
@@ -10,10 +10,10 @@ import { config } from "../env.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-// Funzioni helper
+// Helper functions
 function log(message: string, data?: unknown) {
   console.log(`\n${"=".repeat(60)}`);
-  console.log(`📊 ${message}`);
+  console.log(`[INFO] ${message}`);
   if (data !== undefined) {
     console.log(JSON.stringify(data, null, 2));
   }
@@ -21,29 +21,29 @@ function log(message: string, data?: unknown) {
 }
 
 function logSuccess(message: string) {
-  console.log(`\n✅ ${message}`);
+  console.log(`\n[OK] ${message}`);
 }
 
 function logError(message: string, error: unknown) {
-  console.error(`\n❌ ERRORE: ${message}`);
+  console.error(`\n[ERROR] ${message}`);
   if (error instanceof Error) {
-    console.error(`   Messaggio: ${error.message}`);
+    console.error(`   Message: ${error.message}`);
   } else {
-    console.error(`   Dettagli: ${error}`);
+    console.error(`   Details: ${error}`);
   }
 }
 
 async function saveFrames() {
   console.log("\n");
   console.log("╔════════════════════════════════════════════════════════════╗");
-  console.log("║     SALVATAGGIO FRAME VIDEO IN LOCALE                      ║");
+  console.log("║     SAVE VIDEO FRAMES LOCALLY                              ║");
   console.log("╚════════════════════════════════════════════════════════════╝");
-  console.log(`\nConfigurazione:`);
+  console.log(`\nConfiguration:`);
   console.log(`  Host: ${config.tcp.host}`);
   console.log(`  Username: ${config.tcp.username}\n`);
 
   if (!config.tcp.host || !config.tcp.password) {
-    console.error("❌ ERRORE: Configurazione TCP non completa nel file .env");
+    console.error("[ERROR] TCP configuration is incomplete in the .env file");
     process.exit(1);
   }
 
@@ -58,28 +58,28 @@ async function saveFrames() {
   const channel = 0;
   const framesDir = path.join(process.cwd(), "test", "frames");
   
-  // Crea directory se non esiste
+  // Create directory if it doesn't exist.
   if (!fs.existsSync(framesDir)) {
     fs.mkdirSync(framesDir, { recursive: true });
   }
 
   let frameCount = 0;
-  const maxFrames = 50; // Salva più frame per trovare frame video completi
+  const maxFrames = 50; // Save more frames to increase chances of complete video frames.
 
-  // Handler per frame con cmd_id 3
+  // Handler for cmd_id 3 frames.
   api.client.on("push", (frame: BaichuanFrame) => {
     if (frame.header.cmdId !== 3) return;
     if (frameCount >= maxFrames) return;
 
-    // Per i frame video, extension e payload potrebbero essere criptati separatamente
-    // Salva sia il body completo decriptato che extension e payload separati
+    // For video frames, extension and payload might be encrypted separately.
+    // Save the full decrypted body, plus decrypted extension/payload separately.
     const decryptedBody = api.client.tryDecryptBinary(
       frame.body,
       frame.header.channelId,
       api.client.enc
     );
     
-    // Decripta anche extension e payload separatamente (potrebbero essere criptati diversamente)
+    // Decrypt extension/payload separately (they might be encrypted differently).
     const decryptedExtension = frame.extension.length > 0 
       ? api.client.tryDecryptBinary(frame.extension, frame.header.channelId, api.client.enc)
       : Buffer.alloc(0);
@@ -87,15 +87,15 @@ async function saveFrames() {
       ? api.client.tryDecryptBinary(frame.payload, frame.header.channelId, api.client.enc)
       : Buffer.alloc(0);
 
-    // Salva body completo decriptato
+    // Save full decrypted body.
     const frameFile = path.join(framesDir, `frame_${frameCount.toString().padStart(3, "0")}.bin`);
     fs.writeFileSync(frameFile, decryptedBody);
     
-    // Salva anche payload separato (potrebbe contenere i BcMedia packets)
+    // Save the decrypted payload too (it may contain BcMedia packets).
     const payloadFile = path.join(framesDir, `frame_${frameCount.toString().padStart(3, "0")}_payload.bin`);
     fs.writeFileSync(payloadFile, decryptedPayload);
     
-    // Salva anche metadati del frame
+    // Save frame metadata.
     const metadata = {
       frameIndex: frameCount,
       cmdId: frame.header.cmdId,
@@ -117,7 +117,7 @@ async function saveFrames() {
     frameCount++;
     
     if (frameCount % 5 === 0) {
-      logSuccess(`Salvati ${frameCount} frame`);
+      logSuccess(`Saved ${frameCount} frames`);
     }
   });
 
@@ -125,46 +125,46 @@ async function saveFrames() {
     // Login
     log("Login Baichuan TCP");
     await api.login();
-    logSuccess("Login completato");
+    logSuccess("Login completed");
 
     // Start video stream
-    log("Avvio stream video (sub stream)");
+    log("Starting video stream (sub stream)");
     await api.startVideoStream(channel, "sub");
-    logSuccess("Stream video avviato (response_code 200)");
+    logSuccess("Video stream started (response_code 200)");
 
-    // Attendi fino a raccogliere maxFrames frame
-    logSuccess(`Attendo fino a raccogliere ${maxFrames} frame...`);
+    // Wait until we gather maxFrames.
+    logSuccess(`Waiting until ${maxFrames} frames are collected...`);
     while (frameCount < maxFrames) {
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
 
-    logSuccess(`✅ Salvati ${frameCount} frame in ${framesDir}`);
-    console.log(`\n📁 Frame salvati:`);
+    logSuccess(`Saved ${frameCount} frames to ${framesDir}`);
+    console.log(`\nSaved frames:`);
     for (let i = 0; i < frameCount; i++) {
       const idx = i.toString().padStart(3, "0");
-      console.log(`   - frame_${idx}.bin (dati binari)`);
-      console.log(`   - frame_${idx}.json (metadati)`);
+      console.log(`   - frame_${idx}.bin (binary data)`);
+      console.log(`   - frame_${idx}.json (metadata)`);
     }
 
   } catch (error) {
-    logError("Errore critico durante il salvataggio", error);
+    logError("Fatal error while saving frames", error);
     if (error instanceof Error && error.stack) {
-      console.error("\nStack trace completo:");
+      console.error("\nFull stack trace:");
       console.error(error.stack);
     }
     process.exit(1);
   } finally {
     try {
       await api.close();
-      logSuccess("Connessione chiusa");
+      logSuccess("Connection closed");
     } catch (error) {
-      logError("Errore durante chiusura connessione", error);
+      logError("Error while closing connection", error);
     }
   }
 }
 
 saveFrames().catch((error) => {
-  console.error("Errore fatale:", error);
+  console.error("Fatal error:", error);
   process.exit(1);
 });
 

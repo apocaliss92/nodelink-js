@@ -50,7 +50,7 @@ async function main() {
 
   const chunks = listChunks(dir);
   if (chunks.length === 0) {
-    console.error(`Nessun chunk trovato in ${dir} (attesi bcmedia_chunk_*.bin)`);
+    console.error(`No chunks found in ${dir} (expected bcmedia_chunk_*.bin)`);
     process.exit(2);
   }
 

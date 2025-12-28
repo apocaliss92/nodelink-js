@@ -127,10 +127,10 @@ export class BaichuanRtspServer extends EventEmitter<{
       if (!this.seenKeyframe) {
         if (!isKeyframe) return;
         this.seenKeyframe = true;
-        console.log(`[BaichuanRtspServer] ✅ Primo keyframe ricevuto: inizio a feedare ffmpeg`);
+        console.log(`[BaichuanRtspServer] First keyframe received: starting ffmpeg feed`);
       }
 
-      // Mitigazione: scarta frame non Annex-B per evitare corruzione/nero.
+      // Mitigation: drop non-Annex-B frames to avoid corrupted/black output.
       if (!hasAnnexBStart(data)) {
         return;
       }
@@ -147,7 +147,7 @@ export class BaichuanRtspServer extends EventEmitter<{
     this.videoStream.on("videoAccessUnit" as any, this.videoListener as any);
     this.videoStream.on("videoFrame", this.videoListener as any);
 
-    // Gestisci output ffmpeg (stderr contiene log)
+    // Handle ffmpeg output (stderr contains logs).
     let ffmpegOutput = "";
     let ffmpegReady = false;
     const serverUrl = `rtsp://127.0.0.1:${this.listenPort}${this.path}`;
@@ -156,15 +156,15 @@ export class BaichuanRtspServer extends EventEmitter<{
       const output = data.toString();
       ffmpegOutput += output;
       
-    // Log when ffmpeg is ready
+      // Log when ffmpeg is ready
       if (!ffmpegReady && (output.includes("Stream") || output.includes("rtsp") || output.includes("listening"))) {
         ffmpegReady = true;
-        console.log(`[BaichuanRtspServer] ✅ FFmpeg RTSP server pronto: ${serverUrl}`);
+        console.log(`[BaichuanRtspServer] FFmpeg RTSP server ready: ${serverUrl}`);
       }
       
-      // Log solo errori critici (non warning di decodifica H.264 che sono normali)
-      // Gli errori "top block unavailable" e "error while decoding MB" sono warning normali
-      // quando alcuni frame sono frammentati, non errori critici
+      // Log only critical errors (ignore H.264 decode warnings which are normal).
+      // "top block unavailable" and "error while decoding MB" are common warnings
+      // when some frames are fragmented, not critical errors.
       const isCriticalError = 
         (output.includes("error") || output.includes("Error") || output.includes("Invalid")) &&
         !output.includes("top block unavailable") &&
@@ -209,7 +209,7 @@ export class BaichuanRtspServer extends EventEmitter<{
   async stop(): Promise<void> {
     if (!this.active) return;
 
-    // Ferma lo stream video
+    // Stop the video stream.
     await this.videoStream.stop();
 
     if (this.videoListener) {
@@ -218,7 +218,7 @@ export class BaichuanRtspServer extends EventEmitter<{
     }
     this.videoListener = undefined;
 
-    // Ferma ffmpeg
+    // Stop ffmpeg.
     if (this.ffmpegProcess) {
       this.ffmpegProcess.kill("SIGTERM");
     }
@@ -233,11 +233,11 @@ export class BaichuanRtspServer extends EventEmitter<{
 }
 
 /**
- * Helper function per creare uno stream RTSP da Baichuan.
- * 
- * @param options - Opzioni per lo stream video Baichuan
- * @param rtspPort - Porta RTSP (default: 8554)
- * @param rtspPath - Path RTSP (default: "/{profile}")
+ * Helper function to create an RTSP stream from Baichuan.
+ *
+ * @param options - Baichuan video stream options
+ * @param rtspPort - RTSP port (default: 8554)
+ * @param rtspPath - RTSP path (default: "/{profile}")
  */
 export async function createBaichuanRtspStream(
   options: BaichuanVideoStreamOptions,

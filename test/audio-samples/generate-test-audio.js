@@ -1,19 +1,19 @@
 #!/usr/bin/env node
 /**
- * Genera un file audio di test in formato WAV (PCM 16-bit, 8kHz, mono)
- * Genera un tono di test di 1 secondo
+ * Generates a test audio file in WAV format (PCM 16-bit, 8kHz, mono).
+ * Generates a 1-second test tone.
  */
 
 import { writeFileSync } from "node:fs";
 
-// Genera un tono sinusoidale a 440Hz (La) per 1 secondo
+// Generate a 440Hz sine tone for 1 second.
 // Sample rate: 8000 Hz
 // Bit depth: 16-bit
 // Channels: 1 (mono)
 
 const sampleRate = 8000;
-const duration = 1; // secondi
-const frequency = 440; // Hz (La)
+const duration = 1; // seconds
+const frequency = 440; // Hz (A4)
 const amplitude = 0.3; // Volume (30%)
 
 const numSamples = sampleRate * duration;
@@ -22,12 +22,12 @@ const samples = [];
 for (let i = 0; i < numSamples; i++) {
   const t = i / sampleRate;
   const sample = Math.sin(2 * Math.PI * frequency * t) * amplitude;
-  // Converti a 16-bit PCM (-32768 a 32767)
+  // Convert to 16-bit PCM (-32768 to 32767)
   const pcmSample = Math.max(-32768, Math.min(32767, Math.round(sample * 32767)));
   samples.push(pcmSample);
 }
 
-// Crea header WAV
+// Create WAV header
 const header = Buffer.alloc(44);
 let offset = 0;
 
@@ -50,20 +50,20 @@ header.writeUInt16LE(16, offset); offset += 2; // Bits per sample
 header.write("data", offset); offset += 4;
 header.writeUInt32LE(samples.length * 2, offset); offset += 4; // Data size
 
-// Converti samples a buffer (little-endian 16-bit)
+// Convert samples to buffer (little-endian 16-bit)
 const audioData = Buffer.alloc(samples.length * 2);
 for (let i = 0; i < samples.length; i++) {
   audioData.writeInt16LE(samples[i], i * 2);
 }
 
-// Combina header e dati
+// Combine header + data
 const wavFile = Buffer.concat([header, audioData]);
 
-// Salva file
+// Write file
 writeFileSync("test-tone.wav", wavFile);
-console.log(`✅ Creato test-tone.wav: ${wavFile.length} bytes`);
+console.log(`[OK] Created test-tone.wav: ${wavFile.length} bytes`);
 console.log(`   Sample rate: ${sampleRate} Hz`);
-console.log(`   Durata: ${duration} secondi`);
-console.log(`   Frequenza: ${frequency} Hz`);
-console.log(`   Formato: PCM 16-bit mono`);
+console.log(`   Duration: ${duration} seconds`);
+console.log(`   Frequency: ${frequency} Hz`);
+console.log(`   Format: PCM 16-bit mono`);
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Test TCP: Lista stream disponibili e registra 5 secondi da ognuno
+ * TCP test: list available streams and record 5 seconds from each one.
  */
 
 // @ts-expect-error - Path resolution at runtime
@@ -10,10 +10,10 @@ import { spawn } from "node:child_process";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-// Funzioni helper
+// Helper functions
 function log(message: string, data?: unknown) {
   console.log(`\n${"=".repeat(60)}`);
-  console.log(`📹 ${message}`);
+  console.log(`[INFO] ${message}`);
   if (data !== undefined) {
     console.log(JSON.stringify(data, null, 2));
   }
@@ -21,23 +21,23 @@ function log(message: string, data?: unknown) {
 }
 
 function logSuccess(message: string) {
-  console.log(`\n✅ ${message}`);
+  console.log(`\n[OK] ${message}`);
 }
 
 function logError(message: string, error: unknown) {
-  console.error(`\n❌ ERRORE: ${message}`);
+  console.error(`\n[ERROR] ${message}`);
   if (error instanceof Error) {
-    console.error(`   Messaggio: ${error.message}`);
+    console.error(`   Message: ${error.message}`);
     if (error.stack) {
       console.error(`   Stack: ${error.stack.split("\n").slice(0, 3).join("\n")}`);
     }
   } else {
-    console.error(`   Dettagli: ${error}`);
+    console.error(`   Details: ${error}`);
   }
 }
 
 /**
- * Registra uno stream RTSP per 5 secondi usando ffmpeg
+ * Records an RTSP stream using ffmpeg.
  */
 async function recordStream(
   rtspUrl: string,
@@ -45,9 +45,9 @@ async function recordStream(
   duration: number = 5
 ): Promise<boolean> {
   return new Promise((resolve) => {
-    log(`Registrazione stream: ${rtspUrl}`);
-    log(`File output: ${outputFile}`);
-    log(`Durata: ${duration} secondi`);
+    log(`Recording stream: ${rtspUrl}`);
+    log(`Output file: ${outputFile}`);
+    log(`Duration: ${duration} seconds`);
 
     const ffmpeg = spawn("ffmpeg", [
       "-hide_banner",
@@ -80,16 +80,16 @@ async function recordStream(
 
     ffmpeg.on("close", (code) => {
       if (code === 0) {
-        logSuccess(`Registrazione completata: ${outputFile}`);
+        logSuccess(`Recording completed: ${outputFile}`);
         resolve(true);
       } else {
-        logError(`Errore durante registrazione`, ffmpegError);
+        logError(`Recording error`, ffmpegError);
         resolve(false);
       }
     });
 
     ffmpeg.on("error", (err) => {
-      logError(`Errore ffmpeg`, err);
+      logError(`ffmpeg error`, err);
       resolve(false);
     });
   });
@@ -98,15 +98,15 @@ async function recordStream(
 async function runStreamRecordTest() {
   console.log("\n");
   console.log("╔════════════════════════════════════════════════════════════╗");
-  console.log("║     TEST STREAM DISPONIBILI E REGISTRAZIONE (TCP)         ║");
+  console.log("║     TEST: AVAILABLE STREAMS + RECORDING (TCP)             ║");
   console.log("╚════════════════════════════════════════════════════════════╝");
-  console.log(`\nConfigurazione:`);
+  console.log(`\nConfiguration:`);
   console.log(`  Host: ${config.tcp.host}`);
   console.log(`  Username: ${config.tcp.username}\n`);
 
   if (!config.tcp.host || !config.tcp.password) {
-    console.error("❌ ERRORE: Configurazione TCP non completa nel file .env");
-    console.error("   Assicurati di aver impostato TCP_HOST e TCP_PASSWORD");
+    console.error("[ERROR] TCP configuration is incomplete in the .env file");
+    console.error("Set TCP_HOST and TCP_PASSWORD");
     process.exit(1);
   }
 
@@ -119,26 +119,26 @@ async function runStreamRecordTest() {
   });
 
   const channel = 0;
-  const recordDuration = 5; // secondi
+  const recordDuration = 5; // seconds
   const outputDir = join(process.cwd(), "test", "recordings");
 
   try {
-    // Crea directory per le registrazioni
+    // Create output directory
     try {
       mkdirSync(outputDir, { recursive: true });
     } catch (error) {
-      // Directory già esistente, ok
+      // Directory already exists, ok
     }
 
     // Login
     log("Login Baichuan TCP");
     await api.login();
-    logSuccess("Login completato");
+    logSuccess("Login completed");
 
-    // Ottieni metadati degli stream
-    log(`Ottengo metadati stream per channel ${channel}`);
+    // Fetch stream metadata
+    log(`Fetching stream metadata for channel ${channel}`);
     const metadata = await api.getStreamMetadata(channel);
-    logSuccess(`Stream disponibili: ${metadata.streams.length}`);
+    logSuccess(`Available streams: ${metadata.streams.length}`);
 
     // Mostra informazioni su ogni stream
     for (const stream of metadata.streams) {
@@ -148,11 +148,11 @@ async function runStreamRecordTest() {
         fps: stream.frameRate,
         codec: stream.videoEncType,
         bitrate: `${stream.bitRate} kbps`,
-        audio: stream.audio === 1 ? "Sì" : "No",
+        audio: stream.audio === 1 ? "Yes" : "No",
       });
     }
 
-    // Registra ogni stream disponibile
+    // Record each available stream
     const results: Record<string, boolean> = {};
 
     for (const stream of metadata.streams) {
@@ -167,20 +167,20 @@ async function runStreamRecordTest() {
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
       const outputFile = join(outputDir, `tcp-${stream.profile}-${timestamp}.mp4`);
 
-      log(`\n📹 Registrazione stream ${stream.profile.toUpperCase()}`);
+      log(`\nRecording stream ${stream.profile.toUpperCase()}`);
       const success = await recordStream(rtspUrl, outputFile, recordDuration);
       results[stream.profile] = success;
 
-      // Attendi un po' tra le registrazioni
+      // Small pause between recordings
       if (metadata.streams.length > 1) {
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
     }
 
-    // Riepilogo
+    // Summary
     console.log("\n");
     console.log("╔════════════════════════════════════════════════════════════╗");
-    console.log("║                    RIEPILOGO REGISTRAZIONI                 ║");
+    console.log("║                    RECORDING SUMMARY                       ║");
     console.log("╚════════════════════════════════════════════════════════════╝");
     console.log("\n");
 
@@ -188,34 +188,33 @@ async function runStreamRecordTest() {
     const total = Object.keys(results).length;
 
     for (const [streamProfile, result] of Object.entries(results)) {
-      const icon = result ? "✅" : "❌";
-      console.log(`${icon} Stream ${streamProfile.toUpperCase()}: ${result ? "SUCCESS" : "FAIL"}`);
+      console.log(`Stream ${streamProfile.toUpperCase()}: ${result ? "OK" : "FAILED"}`);
     }
 
-    console.log(`\n📊 Risultati: ${passed}/${total} stream registrati con successo`);
-    console.log(`📁 File salvati in: ${outputDir}\n`);
+    console.log(`\nResults: ${passed}/${total} streams recorded successfully`);
+    console.log(`Files saved in: ${outputDir}\n`);
 
     if (passed === total) {
-      console.log("🎉 Tutte le registrazioni completate con successo!");
+      console.log("All recordings completed successfully");
     } else {
-      console.log(`⚠️  ${total - passed} registrazioni fallite`);
+      console.log(`[WARN] ${total - passed} recordings failed`);
     }
   } catch (error) {
-    logError("Errore critico durante i test", error);
+    logError("Fatal error during test", error);
     process.exit(1);
   } finally {
     try {
       await api.close();
-      logSuccess("Connessione chiusa");
+      logSuccess("Connection closed");
     } catch (error) {
-      logError("Errore durante chiusura connessione", error);
+      logError("Error while closing connection", error);
     }
   }
 }
 
-// Esegui i test
+// Run tests
 runStreamRecordTest().catch((error) => {
-  console.error("Errore fatale:", error);
+  console.error("Fatal error:", error);
   process.exit(1);
 });
 

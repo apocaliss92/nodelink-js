@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Suite di test per le API audio (2-way audio)
- * Testa: getTwoWayAudioConfig, startTwoWayAudio, sendAudioData, stopTwoWayAudio
- * Include test per encoding/decoding G.711
+ * Test suite for audio APIs (2-way audio).
+ * Tests: getTwoWayAudioConfig, startTwoWayAudio, sendAudioData, stopTwoWayAudio.
+ * Includes G.711 encode/decode tests.
  */
 
 // @ts-expect-error - Path resolution at runtime
@@ -14,10 +14,10 @@ import { join } from "node:path";
 import alawmulaw from "alawmulaw";
 const { alaw, mulaw } = alawmulaw;
 
-// Funzioni helper
+// Helper functions
 function log(message: string, data?: unknown) {
   console.log(`\n${"=".repeat(60)}`);
-  console.log(`🔊 ${message}`);
+  console.log(`[INFO] ${message}`);
   if (data !== undefined) {
     if (data instanceof Buffer) {
       console.log(`   Buffer: ${data.length} bytes`);
@@ -30,18 +30,18 @@ function log(message: string, data?: unknown) {
 }
 
 function logSuccess(message: string) {
-  console.log(`\n✅ ${message}`);
+  console.log(`\n[OK] ${message}`);
 }
 
 function logError(message: string, error: unknown) {
-  console.error(`\n❌ ERRORE: ${message}`);
+  console.error(`\n[ERROR] ${message}`);
   if (error instanceof Error) {
-    console.error(`   Messaggio: ${error.message}`);
+    console.error(`   Message: ${error.message}`);
     if (error.stack) {
       console.error(`   Stack: ${error.stack.split("\n").slice(0, 3).join("\n")}`);
     }
   } else {
-    console.error(`   Dettagli: ${error}`);
+    console.error(`   Details: ${error}`);
   }
 }
 
@@ -49,12 +49,12 @@ async function testG711Encoding() {
   try {
     log("Test encoding/decoding G.711");
 
-    // Crea dati PCM di test (silenzio - tutti zeri)
-    // 160 bytes = 10ms a 8kHz, 16-bit (80 campioni)
+    // Create test PCM data (silence - all zeros).
+    // 160 bytes = 10ms at 8kHz, 16-bit (80 samples).
     const pcmData = Buffer.alloc(160);
     log("PCM Input", pcmData);
 
-    // Converti Buffer a Int16Array per alawmulaw
+    // Convert Buffer to Int16Array for alawmulaw
     const pcmInt16 = new Int16Array(pcmData.length / 2);
     for (let i = 0; i < pcmInt16.length; i++) {
       pcmInt16[i] = pcmData.readInt16LE(i * 2);
@@ -72,97 +72,95 @@ async function testG711Encoding() {
     }
     log("G.711 A-law Decoded", g711aDecoded);
 
-    // Verifica che la decodifica sia corretta (può avere piccole differenze)
+    // Verify decode output shape (can have small quantization differences).
     if (g711aDecoded.length !== pcmData.length) {
-      logError("Lunghezza mismatch dopo decode", new Error(`Atteso ${pcmData.length}, ottenuto ${g711aDecoded.length}`));
+      logError("Length mismatch after decode", new Error(`Expected ${pcmData.length}, got ${g711aDecoded.length}`));
       return false;
     }
 
-    logSuccess("G.711 encoding/decoding funziona correttamente");
+    logSuccess("G.711 encoding/decoding looks correct");
     return true;
   } catch (error) {
-    logError("Errore durante test G.711 encoding", error);
+    logError("Error while running G.711 encode/decode test", error);
     return false;
   }
 }
 
 async function testTwoWayAudioConfig(api: ReolinkBaichuanApi, channel: number = 0) {
   try {
-    log(`Test getTwoWayAudioConfig per channel ${channel}`);
+    log(`Testing getTwoWayAudioConfig (channel ${channel})`);
     const audioConfig = await api.getTwoWayAudioConfig(channel);
-    logSuccess(`Two-way audio config ottenuto per channel ${channel}`);
+    logSuccess(`Two-way audio config fetched (channel ${channel})`);
     log("Two-Way Audio Config", audioConfig);
 
-    // Verifica struttura
+    // Validate shape
     if (audioConfig.channel !== channel) {
-      logError(`Channel mismatch: atteso ${channel}, ottenuto ${audioConfig.channel}`, new Error("Channel mismatch"));
+      logError(`Channel mismatch: expected ${channel}, got ${audioConfig.channel}`, new Error("Channel mismatch"));
       return false;
     }
 
     if (typeof audioConfig.enabled !== "boolean") {
-      logError(`Enabled deve essere boolean, ottenuto ${typeof audioConfig.enabled}`, new Error("Type mismatch"));
+      logError(`enabled must be boolean, got ${typeof audioConfig.enabled}`, new Error("Type mismatch"));
       return false;
     }
 
-    logSuccess("Two-way audio config valido");
+    logSuccess("Two-way audio config is valid");
     if (audioConfig.enabled) {
-      logSuccess("✅ Two-way audio è supportato su questo dispositivo!");
+      logSuccess("Two-way audio is supported on this device");
     } else {
-      log("⚠️  Two-way audio non è supportato su questo dispositivo");
+      log("Two-way audio is not supported on this device");
     }
     return true;
   } catch (error) {
-    logError("Errore durante test getTwoWayAudioConfig", error);
+    logError("Error while running getTwoWayAudioConfig test", error);
     return false;
   }
 }
 
 async function testStartStopTwoWayAudio(api: ReolinkBaichuanApi, channel: number = 0) {
   try {
-    log(`Test startTwoWayAudio / stopTwoWayAudio per channel ${channel}`);
+    log(`Testing startTwoWayAudio / stopTwoWayAudio (channel ${channel})`);
 
-    // Verifica se è supportato
+    // Check if supported
     const config = await api.getTwoWayAudioConfig(channel);
     if (!config.enabled) {
-      log("⚠️  Two-way audio non supportato, saltando test");
-      return true; // Non è un errore
+      log("Two-way audio not supported, skipping test");
+      return true; // Not an error
     }
 
-    // Avvia two-way audio
+    // Start two-way audio
     await api.startTwoWayAudio(channel);
-    logSuccess("Two-way audio avviato");
+    logSuccess("Two-way audio started");
 
-    // Attendi un po' per stabilizzare
+    // Give it some time to stabilize
     await new Promise((resolve) => setTimeout(resolve, 1000));
 
-    // Ferma two-way audio
+    // Stop two-way audio
     await api.stopTwoWayAudio(channel);
-    logSuccess("Two-way audio fermato");
+    logSuccess("Two-way audio stopped");
 
     return true;
   } catch (error) {
-    logError("Errore durante test start/stop two-way audio", error);
+    logError("Error while running start/stop two-way audio test", error);
     return false;
   }
 }
 
 /**
- * Estrae dati PCM da file WAV (per test - in produzione i dati arrivano già PCM da ffmpeg)
- * Nota: Per il caso d'uso reale, i dati audio arriveranno già in formato PCM da ffmpeg,
- * quindi questa funzione è solo per i test con file WAV.
+ * Extracts PCM data from a WAV file (test helper).
+ * In production, audio should already arrive as PCM from ffmpeg.
  */
 function extractPCMFromWav(wavBuffer: Buffer): { pcmData: Buffer; sampleRate: number } {
-  // WAV header è 44 bytes standard
-  // Cerca il chunk "data"
+  // Standard WAV header is 44 bytes; locate the "data" chunk.
   const dataOffset = wavBuffer.indexOf(Buffer.from("data"));
   if (dataOffset === -1) {
-    throw new Error("WAV file non valido: chunk 'data' non trovato");
+    throw new Error("Invalid WAV file: 'data' chunk not found");
   }
   
-  // Leggi sample rate dal header WAV (offset 24)
+  // Sample rate is at offset 24
   const sampleRate = wavBuffer.readUInt32LE(24);
   
-  // Offset: "data" (4) + size (4) = 8 bytes dopo "data"
+  // Offset: "data" (4) + size (4) = 8 bytes after "data"
   const pcmStart = dataOffset + 8;
   const pcmData = wavBuffer.subarray(pcmStart);
   
@@ -171,101 +169,99 @@ function extractPCMFromWav(wavBuffer: Buffer): { pcmData: Buffer; sampleRate: nu
 
 async function testSendAudioData(api: ReolinkBaichuanApi, channel: number = 0) {
   try {
-    log(`Test sendAudioData per channel ${channel}`);
+    log(`Testing sendAudioData (channel ${channel})`);
 
-    // Verifica se è supportato
+    // Check if supported
     const audioConfig = await api.getTwoWayAudioConfig(channel);
     if (!audioConfig.enabled) {
-      log("⚠️  Two-way audio non supportato, saltando test");
-      return true; // Non è un errore
+      log("Two-way audio not supported, skipping test");
+      return true; // Not an error
     }
 
-    // Avvia two-way audio
+    // Start two-way audio
     await api.startTwoWayAudio(channel);
-    logSuccess("Two-way audio avviato");
+    logSuccess("Two-way audio started");
 
-    // Carica file audio di test (WAV PCM)
-    // Nota: In produzione, i dati arriveranno già in formato PCM da ffmpeg
-    //       quindi non serve alcun decode, solo encoding G.711
+    // Load test audio file (WAV PCM).
+    // In production, PCM comes from ffmpeg, so only G.711 encoding is needed.
     const audioSamplePath = join(process.cwd(), "test", "audio-samples", "test-tone.wav");
     let pcmData: Buffer;
     
     try {
       const wavData = readFileSync(audioSamplePath);
-      log(`File audio caricato: ${audioSamplePath}`);
+      log(`Audio file loaded: ${audioSamplePath}`);
       
-      // Estrai PCM dal WAV (solo per test - in produzione i dati sono già PCM)
+      // Extract PCM from WAV (test only)
       const extracted = extractPCMFromWav(wavData);
       pcmData = extracted.pcmData;
       
       log(`PCM Audio Data: ${pcmData.length} bytes (${(pcmData.length / 2 / extracted.sampleRate).toFixed(2)}s a ${extracted.sampleRate}Hz)`);
       
-      // Se il sample rate non è 8kHz, avvisa
+      // Warn if sample rate is not 8kHz
       if (extracted.sampleRate !== 8000) {
-        log(`⚠️  Sample rate è ${extracted.sampleRate}Hz, non 8kHz. In produzione, ffmpeg dovrebbe essere configurato per 8kHz.`);
+        log(`Sample rate is ${extracted.sampleRate}Hz (not 8kHz). In production, configure ffmpeg to output 8kHz.`);
       }
     } catch (error) {
-      logError("Errore durante caricamento file audio", error);
-      log("⚠️  Impossibile caricare file audio, uso dati di test (silenzio)");
+      logError("Error while loading audio file", error);
+      log("Could not load audio file; using test data (silence)");
       // Fallback: usa silenzio
-      pcmData = Buffer.alloc(1600); // 100ms di silenzio
+      pcmData = Buffer.alloc(1600); // 100ms silence
     }
 
-    // Invia audio in chunk (es. 160 bytes = 10ms per chunk)
+    // Send audio in chunks (160 bytes = 10ms per chunk)
     const chunkSize = 160; // 10ms a 8kHz, 16-bit
     const numChunks = Math.ceil(pcmData.length / chunkSize);
     
-    log(`Invio audio in ${numChunks} chunk da ${chunkSize} bytes (10ms ciascuno)`);
+    log(`Sending audio in ${numChunks} chunks of ${chunkSize} bytes (10ms each)`);
 
     for (let i = 0; i < numChunks; i++) {
       const start = i * chunkSize;
       const end = Math.min(start + chunkSize, pcmData.length);
       const chunk = pcmData.subarray(start, end);
       
-      // Encode to G.711 A-law usando libreria moderna
-      // Nota: In produzione, i dati arrivano già PCM da ffmpeg, quindi serve solo encoding
+      // Encode to G.711 A-law.
       const pcmInt16 = new Int16Array(chunk.length / 2);
       for (let i = 0; i < pcmInt16.length; i++) {
         pcmInt16[i] = chunk.readInt16LE(i * 2);
       }
       const g711Chunk = Buffer.from(alaw.encode(pcmInt16));
       
-      // Invia chunk
+      // Send chunk
       await api.sendAudioData(g711Chunk, channel);
       
-      // Attendi 10ms tra i chunk (simula real-time streaming)
+      // Wait 10ms between chunks (simulate realtime)
       await new Promise((resolve) => setTimeout(resolve, 10));
       
       if ((i + 1) % 10 === 0) {
-        log(`   Inviati ${i + 1}/${numChunks} chunk`);
+        log(`   Sent ${i + 1}/${numChunks} chunks`);
       }
     }
 
-    logSuccess(`Audio data inviato (${pcmData.length} bytes PCM = ${(pcmData.length / 2 / 8000).toFixed(2)}s)`);
+    logSuccess(`Audio data sent (${pcmData.length} bytes PCM = ${(pcmData.length / 2 / 8000).toFixed(2)}s)`);
 
-    // Attendi un po' per completare la trasmissione
+    // Give it time to flush
     await new Promise((resolve) => setTimeout(resolve, 500));
 
-    // Ferma two-way audio
+    // Stop two-way audio
     await api.stopTwoWayAudio(channel);
-    logSuccess("Two-way audio fermato");
+    logSuccess("Two-way audio stopped");
 
     return true;
   } catch (error) {
-    logError("Errore durante test sendAudioData", error);
+    logError("Error while running sendAudioData test", error);
     return false;
   }
 }
 
 async function testScryptedIntercom(api: ReolinkBaichuanApi, channel: number = 0) {
   try {
-    log(`Test ScryptedIntercom per channel ${channel}`);
+    log(`Testing ScryptedIntercom (channel ${channel})`);
 
-    // Verifica se è supportato
+    // Check if supported
     const audioConfig = await api.getTwoWayAudioConfig(channel);
     if (!audioConfig.enabled) {
-      log("⚠️  Two-way audio non supportato, saltando test");
-      return true; // Non è un errore
+      log("Two-way audio not supported, skipping test");
+      return true; // Not an error
     }
 
     let audioReceived = false;
@@ -274,64 +270,64 @@ async function testScryptedIntercom(api: ReolinkBaichuanApi, channel: number = 0
       audioReceived = true;
       audioChunksReceived++;
       if (audioChunksReceived <= 3) {
-        log(`📢 Audio ricevuto dalla camera (chunk ${audioChunksReceived})!`, data);
+        log(`Audio received from camera (chunk ${audioChunksReceived})`, data);
       }
     };
 
-    // Crea intercom
+    // Create intercom
     const intercom = new ScryptedIntercom({
       channel,
       api,
       onAudioData: audioCallback,
     });
 
-    // Avvia intercom
+    // Start intercom
     await intercom.start();
-    logSuccess("ScryptedIntercom avviato");
+    logSuccess("ScryptedIntercom started");
 
-    // Carica e decodifica file audio di test
+    // Load test audio file (WAV PCM)
     const audioSamplePath = join(process.cwd(), "test", "audio-samples", "test-tone.wav");
     let pcmData: Buffer;
     
     try {
       const audioFileData = readFileSync(audioSamplePath);
-      log(`File audio caricato per ScryptedIntercom: ${audioSamplePath}`);
+      log(`Audio file loaded for ScryptedIntercom: ${audioSamplePath}`);
       
-      // Estrai PCM dal WAV (solo per test - in produzione i dati sono già PCM da ffmpeg)
+      // Extract PCM from WAV (test only)
       const extracted = extractPCMFromWav(audioFileData);
       pcmData = extracted.pcmData;
       
       log(`PCM Audio Data: ${pcmData.length} bytes (${extracted.sampleRate}Hz)`);
       
       if (extracted.sampleRate !== 8000) {
-        log(`⚠️  Sample rate è ${extracted.sampleRate}Hz, non 8kHz. In produzione, ffmpeg dovrebbe essere configurato per 8kHz.`);
+        log(`Sample rate is ${extracted.sampleRate}Hz (not 8kHz). In production, configure ffmpeg to output 8kHz.`);
       }
     } catch (error) {
-      logError("Errore durante decodifica audio", error);
-      log("⚠️  Impossibile caricare/decodificare file audio, uso dati di test");
-      pcmData = Buffer.alloc(1600); // 100ms di silenzio
+      logError("Error while decoding audio", error);
+      log("Could not load/decode audio file; using test data");
+      pcmData = Buffer.alloc(1600); // 100ms silence
     }
 
-    // Invia audio tramite ScryptedIntercom (gestisce encoding automaticamente)
+    // Send audio via ScryptedIntercom (handles encoding internally)
     await intercom.sendAudio(pcmData);
-    logSuccess(`Audio inviato tramite ScryptedIntercom (${pcmData.length} bytes PCM)`);
+    logSuccess(`Audio sent via ScryptedIntercom (${pcmData.length} bytes PCM)`);
 
-    // Attendi un po' per eventuali risposte audio
+    // Wait a bit for any audio coming back
     await new Promise((resolve) => setTimeout(resolve, 2000));
 
     if (!audioReceived) {
-      log("⚠️  Nessun audio ricevuto (normale se la camera non sta trasmettendo)");
+      log("No audio received (normal if the camera is not sending audio)");
     } else {
-      logSuccess(`Ricevuti ${audioChunksReceived} chunk audio dalla camera`);
+      logSuccess(`Received ${audioChunksReceived} audio chunks from camera`);
     }
 
-    // Ferma intercom
+    // Stop intercom
     await intercom.stop();
-    logSuccess("ScryptedIntercom fermato");
+    logSuccess("ScryptedIntercom stopped");
 
     return true;
   } catch (error) {
-    logError("Errore durante test ScryptedIntercom", error);
+    logError("Error while running ScryptedIntercom test", error);
     return false;
   }
 }
@@ -339,15 +335,15 @@ async function testScryptedIntercom(api: ReolinkBaichuanApi, channel: number = 0
 async function runAudioTests() {
   console.log("\n");
   console.log("╔════════════════════════════════════════════════════════════╗");
-  console.log("║         TEST SUITE AUDIO - REOLINK BAICHUAN              ║");
+  console.log("║         AUDIO TEST SUITE - REOLINK BAICHUAN               ║");
   console.log("╚════════════════════════════════════════════════════════════╝");
-  console.log(`\nConfigurazione:`);
+  console.log(`\nConfiguration:`);
   console.log(`  Host: ${config.tcp.host}`);
   console.log(`  Username: ${config.tcp.username}\n`);
 
   if (!config.tcp.host || !config.tcp.password) {
-    console.error("❌ ERRORE: Configurazione TCP non completa nel file .env");
-    console.error("   Assicurati di aver impostato TCP_HOST e TCP_PASSWORD");
+    console.error("[ERROR] TCP configuration is incomplete in the .env file");
+    console.error("Set TCP_HOST and TCP_PASSWORD");
     process.exit(1);
   }
 
@@ -366,7 +362,7 @@ async function runAudioTests() {
     // Login
     log("Login Baichuan TCP");
     await api.login();
-    logSuccess("Login completato");
+    logSuccess("Login completed");
 
     // Test G.711 encoding/decoding (offline)
     results.g711Encoding = await testG711Encoding();
@@ -383,10 +379,10 @@ async function runAudioTests() {
     // Test ScryptedIntercom
     results.scryptedIntercom = await testScryptedIntercom(api, channel);
 
-    // Riepilogo
+    // Summary
     console.log("\n");
     console.log("╔════════════════════════════════════════════════════════════╗");
-    console.log("║                    RIEPILOGO TEST AUDIO                  ║");
+    console.log("║                    AUDIO TEST SUMMARY                     ║");
     console.log("╚════════════════════════════════════════════════════════════╝");
     console.log("\n");
 
@@ -394,33 +390,32 @@ async function runAudioTests() {
     const total = Object.keys(results).length;
 
     for (const [testName, result] of Object.entries(results)) {
-      const icon = result ? "✅" : "❌";
-      console.log(`${icon} ${testName}: ${result ? "PASS" : "FAIL"}`);
+      console.log(`${testName}: ${result ? "OK" : "FAILED"}`);
     }
 
-    console.log(`\n📊 Risultati: ${passed}/${total} test passati\n`);
+    console.log(`\nResults: ${passed}/${total} tests passed\n`);
 
     if (passed === total) {
-      console.log("🎉 Tutti i test audio sono passati!");
+      console.log("All audio tests passed");
     } else {
-      console.log(`⚠️  ${total - passed} test falliti`);
+      console.log(`[WARN] ${total - passed} tests failed`);
     }
   } catch (error) {
-    logError("Errore critico durante i test", error);
+    logError("Fatal error during test", error);
     process.exit(1);
   } finally {
     try {
       await api.close();
-      logSuccess("Connessione chiusa");
+      logSuccess("Connection closed");
     } catch (error) {
-      logError("Errore durante chiusura connessione", error);
+      logError("Error while closing connection", error);
     }
   }
 }
 
-// Esegui i test
+// Run tests
 runAudioTests().catch((error) => {
-  console.error("Errore fatale:", error);
+  console.error("Fatal error:", error);
   process.exit(1);
 });
 

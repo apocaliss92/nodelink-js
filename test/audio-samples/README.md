@@ -1,52 +1,54 @@
-# Audio Samples per Test 2-Way Audio
+# Audio Samples for 2-Way Audio Tests
 
-Questa cartella contiene file audio di test per i test 2-way audio.
+This folder contains audio sample files used by the 2-way audio tests.
 
-## File disponibili
+## Available files
 
-- `test-tone.wav`: Tono di test generato (440Hz, 1 secondo, PCM 16-bit, 8kHz, mono)
-- `generate-test-audio.js`: Script per generare il file audio di test
+- `test-tone.wav`: Generated test tone (440Hz, 1 second, PCM 16-bit, 8kHz, mono)
+- `generate-test-audio.js`: Script to generate the test audio file
 
-## Supporto formati audio
+## Supported audio formats
 
-I test utilizzano la libreria `audio-decode` che supporta automaticamente:
-- **WAV** (qualsiasi sample rate)
+The tests use the `audio-decode` library, which can decode:
+
+- **WAV** (any sample rate)
 - **MP3**
 - **OGG Vorbis**
 - **FLAC**
 - **Opus**
-- E altri formati comuni
+- And other common formats
 
-**Nessun parsing manuale richiesto!** La libreria gestisce automaticamente la decodifica.
+No manual parsing is required; the library handles decoding.
 
-## Formato output
+## Output format
 
-L'audio viene automaticamente convertito a:
-- **Sample rate**: 8000 Hz (se diverso, viene avvisato - resampling richiederebbe libreria aggiuntiva)
+Audio is converted to:
+
+- **Sample rate**: 8000 Hz (if different, a warning is printed; resampling would require an additional library)
 - **Bit depth**: 16-bit PCM
-- **Channels**: 1 (mono) - solo il primo canale viene utilizzato
+- **Channels**: 1 (mono) - only the first channel is used
 
-## Generazione file audio
+## Generate the test audio file
 
-Per generare un nuovo file audio di test:
+To generate a new test audio file:
 
 ```bash
 node generate-test-audio.js
 ```
 
-## Conversione con ffmpeg (opzionale)
+## ffmpeg conversion (optional)
 
-Per convertire un file audio esistente al formato ottimale (8kHz, mono, 16-bit):
+To convert an existing audio file into the optimal format (8kHz, mono, 16-bit):
 
 ```bash
 ffmpeg -i input.mp3 -ar 8000 -ac 1 -sample_fmt s16 -f wav output.wav
 ```
 
-**Nota**: Non è necessario - `audio-decode` gestisce automaticamente la conversione!
+Note: this is not required; `audio-decode` handles decoding.
 
-## Utilizzo nei test
+## Usage in tests
 
-I test caricano automaticamente `test-tone.wav` se disponibile, altrimenti usano dati di test (silenzio).
+Tests automatically load `test-tone.wav` if present; otherwise they fall back to generated test data (silence).
 
-Puoi anche usare file MP3, OGG, FLAC, etc. - basta rinominarli o modificare il percorso nel test.
+You can also use MP3, OGG, FLAC, etc. by renaming or adjusting the path in the test script.
 

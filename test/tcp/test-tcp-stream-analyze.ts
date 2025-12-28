@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 /**
- * Analisi stream video Baichuan - Analizza i push events per identificare i frame video
- * Questo script si connette al dispositivo TCP e analizza tutti i frame ricevuti
- * per capire come funziona lo streaming video via Baichuan.
+ * Baichuan video stream analysis.
+ * Connects to the TCP device and analyzes all received frames to understand
+ * how Baichuan video streaming works and to identify candidate video frames.
  */
 
 // @ts-expect-error - Path resolution at runtime
 import { ReolinkBaichuanApi, type BaichuanFrame } from "../../index.js";
 import { config } from "../env.js";
 
-// Funzioni helper
+// Helper functions
 function log(message: string, data?: unknown) {
   console.log(`\n${"=".repeat(60)}`);
-  console.log(`📊 ${message}`);
+  console.log(`[INFO] ${message}`);
   if (data !== undefined) {
     if (data instanceof Buffer) {
       console.log(`   Buffer: ${data.length} bytes`);
@@ -25,18 +25,18 @@ function log(message: string, data?: unknown) {
 }
 
 function logSuccess(message: string) {
-  console.log(`\n✅ ${message}`);
+  console.log(`\n[OK] ${message}`);
 }
 
 function logError(message: string, error: unknown) {
-  console.error(`\n❌ ERRORE: ${message}`);
+  console.error(`\n[ERROR] ${message}`);
   if (error instanceof Error) {
-    console.error(`   Messaggio: ${error.message}`);
+    console.error(`   Message: ${error.message}`);
     if (error.stack) {
       console.error(`   Stack: ${error.stack.split("\n").slice(0, 3).join("\n")}`);
     }
   } else {
-    console.error(`   Dettagli: ${error}`);
+    console.error(`   Details: ${error}`);
   }
 }
 
@@ -55,15 +55,15 @@ interface FrameStats {
 async function analyzeBaichuanStream() {
   console.log("\n");
   console.log("╔════════════════════════════════════════════════════════════╗");
-  console.log("║     ANALISI STREAM VIDEO BAICHUAN (TCP)                  ║");
+  console.log("║     BAICHUAN VIDEO STREAM ANALYSIS (TCP)                  ║");
   console.log("╚════════════════════════════════════════════════════════════╝");
-  console.log(`\nConfigurazione:`);
+  console.log(`\nConfiguration:`);
   console.log(`  Host: ${config.tcp.host}`);
   console.log(`  Username: ${config.tcp.username}\n`);
 
   if (!config.tcp.host || !config.tcp.password) {
-    console.error("❌ ERRORE: Configurazione TCP non completa nel file .env");
-    console.error("   Assicurati di aver impostato TCP_HOST e TCP_PASSWORD");
+    console.error("[ERROR] TCP configuration is incomplete in the .env file");
+    console.error("Set TCP_HOST and TCP_PASSWORD");
     process.exit(1);
   }
 
@@ -77,18 +77,18 @@ async function analyzeBaichuanStream() {
 
   const channel = 0;
   const frameStats = new Map<string, FrameStats>();
-  const analysisDuration = 30000; // 30 secondi di analisi (più tempo per catturare frame video)
+  const analysisDuration = 30000; // 30 seconds (more time to capture video frames)
 
   try {
     // Login
     log("Login Baichuan TCP");
     await api.login();
-    logSuccess("Login completato");
+    logSuccess("Login completed");
 
-    // Ottieni metadati stream per capire quali stream sono disponibili
-    log(`Ottengo metadati stream per channel ${channel}`);
+    // Fetch stream metadata to see which profiles are available.
+    log(`Fetching stream metadata for channel ${channel}`);
     const metadata = await api.getStreamMetadata(channel);
-    logSuccess(`Stream disponibili: ${metadata.streams.length}`);
+    logSuccess(`Available streams: ${metadata.streams.length}`);
     for (const stream of metadata.streams) {
       log(`Stream ${stream.profile.toUpperCase()}`, {
         profile: stream.profile,
@@ -96,13 +96,13 @@ async function analyzeBaichuanStream() {
         fps: stream.frameRate,
         codec: stream.videoEncType,
         bitrate: `${stream.bitRate} kbps`,
-        audio: stream.audio === 1 ? "Sì" : "No",
+        audio: stream.audio === 1 ? "Yes" : "No",
       });
     }
 
-    // Ascolta tutti i push events
-    log(`Inizio analisi push events per ${analysisDuration / 1000} secondi...`);
-    log("⚠️  Assicurati che ci sia attività video sulla camera (movimento, etc.)");
+    // Listen to all push events.
+    log(`Starting push-event analysis for ${analysisDuration / 1000} seconds...`);
+    log("Make sure there is video activity on the camera (motion, etc.)");
     
     const startTime = Date.now();
     let totalFrames = 0;
@@ -132,24 +132,24 @@ async function analyzeBaichuanStream() {
       const stats = frameStats.get(key)!;
       stats.count++;
       
-      // Mantieni solo i primi 3 campioni per ogni tipo di frame
+      // Keep only the first 3 samples per frame type.
       if (stats.samples.length < 3) {
         stats.samples.push(frame);
       }
     });
 
-    // Attendi per la raccolta dati
+    // Wait for data collection
     await new Promise((resolve) => setTimeout(resolve, analysisDuration));
 
-    // Risultati analisi
+    // Results
     console.log("\n");
     console.log("╔════════════════════════════════════════════════════════════╗");
-    console.log("║              RISULTATI ANALISI FRAME                      ║");
+    console.log("║              FRAME ANALYSIS RESULTS                       ║");
     console.log("╚════════════════════════════════════════════════════════════╝");
-    console.log(`\n📊 Frame totali ricevuti: ${totalFrames}`);
-    console.log(`📊 Tipi di frame unici: ${frameStats.size}\n`);
+    console.log(`\nTotal frames received: ${totalFrames}`);
+    console.log(`Unique frame types: ${frameStats.size}\n`);
 
-    // Ordina per count (più frequenti prima)
+    // Sort by frequency (most frequent first)
     const sortedStats = Array.from(frameStats.values()).sort((a, b) => b.count - a.count);
 
     for (const stats of sortedStats) {
@@ -161,14 +161,13 @@ async function analyzeBaichuanStream() {
         percentage: `${((stats.count / totalFrames) * 100).toFixed(2)}%`,
       });
 
-      // Analisi più dettagliata per frame binari (probabilmente video)
-      // Analizza tutti i frame binari per capire meglio
+      // More detailed analysis for binary frames (likely video).
       if (stats.isBinary && stats.bodyLen > 50) {
-        log(`   🔍 Analisi dettagliata frame binario (possibile video)`);
+        log(`Detailed analysis of binary frame (possible video)`);
         
         const sample = stats.samples[0];
         if (sample) {
-          // Prova a decriptare
+          // Try decrypting
           try {
             const decrypted = api.client.tryDecryptBinary(
               sample.body,
@@ -179,46 +178,46 @@ async function analyzeBaichuanStream() {
             log(`   Decrypted body length: ${decrypted.length} bytes`);
             log(`   Decrypted first 64 bytes (hex): ${decrypted.subarray(0, Math.min(64, decrypted.length)).toString("hex")}`);
             
-            // Cerca pattern H.264/H.265 (NAL unit start codes: 0x00000001 o 0x000001)
+            // Look for H.264/H.265 start codes (0x00000001 or 0x000001).
             const nalStart1 = decrypted.indexOf(Buffer.from([0x00, 0x00, 0x00, 0x01]));
             const nalStart2 = decrypted.indexOf(Buffer.from([0x00, 0x00, 0x01]));
             
             if (nalStart1 !== -1 || nalStart2 !== -1) {
-              logSuccess(`   ✅ Trovato pattern NAL unit (possibile frame video H.264/H.265)!`);
-              log(`   NAL start code posizione: ${nalStart1 !== -1 ? nalStart1 : nalStart2}`);
+              logSuccess(`Found NAL start code pattern (possible H.264/H.265 video frame)`);
+              log(`NAL start code position: ${nalStart1 !== -1 ? nalStart1 : nalStart2}`);
               
-              // Analizza NAL unit type
+              // Analyze NAL unit type
               const nalPos = nalStart1 !== -1 ? nalStart1 + 4 : nalStart2 + 3;
               if (nalPos < decrypted.length) {
                 const nalType = decrypted[nalPos]! & 0x1F;
                 log(`   NAL unit type: ${nalType} (${nalType === 1 ? "Non-IDR" : nalType === 5 ? "IDR" : "Other"})`);
               }
             } else {
-              log(`   ⚠️  Nessun pattern NAL unit trovato (potrebbe essere incapsulato)`);
+              log(`No NAL start code pattern found (may be encapsulated)`);
             }
           } catch (error) {
-            logError(`   Errore durante decriptazione`, error);
+            logError(`Decryption error`, error);
           }
         }
       }
     }
 
-    // Identifica possibili frame video
+    // Identify possible video frames
     console.log("\n");
     console.log("╔════════════════════════════════════════════════════════════╗");
-    console.log("║           IDENTIFICAZIONE FRAME VIDEO                     ║");
+    console.log("║           VIDEO FRAME IDENTIFICATION                      ║");
     console.log("╚════════════════════════════════════════════════════════════╝");
     
     const possibleVideoFrames = sortedStats.filter((s) => {
       return s.isBinary && 
-             s.bodyLen > 50 && // Ridotto threshold per catturare più frame
-             s.streamType === 0; // streamType 0 probabilmente è video
+             s.bodyLen > 50 && // Lower threshold to capture more frames
+             s.streamType === 0; // streamType 0 is likely video
     });
 
     if (possibleVideoFrames.length > 0) {
-      logSuccess(`Trovati ${possibleVideoFrames.length} possibili tipi di frame video:`);
+      logSuccess(`Found ${possibleVideoFrames.length} candidate video frame types:`);
       for (const frame of possibleVideoFrames) {
-        log(`Frame Video Candidato`, {
+        log(`Candidate video frame`, {
           cmdId: frame.cmdId,
           streamType: frame.streamType,
           channelId: frame.channelId,
@@ -227,44 +226,44 @@ async function analyzeBaichuanStream() {
         });
       }
     } else {
-      log("⚠️  Nessun frame video identificato. Prova ad aumentare il tempo di analisi o assicurati che ci sia attività video.");
+      log("No video frames identified. Try increasing the analysis duration or ensure there is video activity.");
     }
 
-    // Suggerimenti
+    // Suggestions
     console.log("\n");
     console.log("╔════════════════════════════════════════════════════════════╗");
-    console.log("║                    SUGGERIMENTI                            ║");
+    console.log("║                    SUGGESTIONS                            ║");
     console.log("╚════════════════════════════════════════════════════════════╝");
-    console.log("\nPer identificare lo stream video:");
-    console.log("1. I frame video hanno probabilmente:");
+    console.log("\nTo identify the video stream:");
+    console.log("1. Video frames likely have:");
     console.log("   - streamType = 0 (video)");
-    console.log("   - body binario (non XML)");
-    console.log("   - dimensione significativa (>100 bytes)");
-    console.log("   - cmd_id specifico (da identificare)");
-    console.log("\n2. I frame video contengono NAL units H.264/H.265");
-    console.log("   - Pattern: 0x00000001 o 0x000001");
-    console.log("   - Potrebbero essere incapsulati in un header Baichuan");
-    console.log("\n3. Per richiedere lo stream video, potrebbe essere necessario:");
-    console.log("   - Inviare un comando specifico (cmd_id da identificare)");
-    console.log("   - Specificare il profilo stream (main/sub/ext)");
-    console.log("   - I frame video arrivano poi come push events\n");
+    console.log("   - binary body (not XML)");
+    console.log("   - significant size (>100 bytes)");
+    console.log("   - a specific cmd_id (to be identified)");
+    console.log("\n2. Video frames contain H.264/H.265 NAL units");
+    console.log("   - Pattern: 0x00000001 or 0x000001");
+    console.log("   - They may be encapsulated in a Baichuan header");
+    console.log("\n3. To request the video stream, you may need to:");
+    console.log("   - Send a specific command (cmd_id to be identified)");
+    console.log("   - Specify the stream profile (main/sub/ext)");
+    console.log("   - Then receive video frames via push events\n");
 
   } catch (error) {
-    logError("Errore critico durante l'analisi", error);
+    logError("Fatal error during analysis", error);
     process.exit(1);
   } finally {
     try {
       await api.close();
-      logSuccess("Connessione chiusa");
+      logSuccess("Connection closed");
     } catch (error) {
-      logError("Errore durante chiusura connessione", error);
+      logError("Error while closing connection", error);
     }
   }
 }
 
-// Esegui l'analisi
+// Run analysis
 analyzeBaichuanStream().catch((error) => {
-  console.error("Errore fatale:", error);
+  console.error("Fatal error:", error);
   process.exit(1);
 });
 
