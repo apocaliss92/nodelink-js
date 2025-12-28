@@ -18,3 +18,6 @@ pnpm-debug.log*
 # But allow JS files in specific locations if needed
 !node_modules/**/*.js
 
+# Test frames (saved for offline testing)
+test/frames/
+

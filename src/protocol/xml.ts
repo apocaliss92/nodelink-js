@@ -1,4 +1,10 @@
-export function xmlEscape(text: string): string {
+export function xmlEscape(text: string | undefined | null): string {
+  if (text === undefined || text === null || typeof text !== "string") {
+    const error = new Error(`xmlEscape: expected string but got ${typeof text}: ${text}`);
+    console.error("[xmlEscape] Error:", error.message);
+    console.error("[xmlEscape] Stack:", error.stack);
+    throw error;
+  }
   return text
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
@@ -23,7 +29,10 @@ export function buildLoginXml(userNameHash: string, passwordHash: string): strin
 </body>`;
 }
 
-export function buildChannelExtensionXml(channelId: number): string {
+export function buildChannelExtensionXml(channelId: number | string | undefined | null): string {
+  if (channelId === undefined || channelId === null) {
+    return `<?xml version="1.0" encoding="UTF-8" ?><Extension version="1.1"></Extension>`;
+  }
   return `<?xml version="1.0" encoding="UTF-8" ?>
 <Extension version="1.1">
 <channelId>${channelId}</channelId>
@@ -36,22 +45,25 @@ export function buildChannelExtensionXml(channelId: number): string {
  * 
  * Reference: https://github.com/QuantumEntangledAndy/neolink/blob/master/crates/core/src/bc_protocol/stream.rs#L108
  * 
- * @param channelId - Channel ID (1-based for Baichuan protocol)
  * @param handle - Handle value: 0 for main, 256 for sub, 1024 for extern
  * @param streamType - Stream type name: "mainStream", "subStream", or "externStream"
+ * @param channelId - Channel ID (optional, not used in working format)
  * @returns XML string for Preview element
  */
-export function buildPreviewXml(handle: number, streamType: string, channelId?: number): string {
+export function buildPreviewXml(handle: number, streamType: string | undefined | null, channelId?: number): string {
   // Based on neolink stream.rs line 171-189:
   // BcXml has #[serde(rename = "body")], so it serializes as <body>...</body>
   // Preview is inside BcXml, with version as an attribute (@version)
   // IMPORTANT: channelId is NOT in Preview XML - it's handled via channelId in header/extension
   // The working format (response_code 200) is Preview WITHOUT channelId
-  const channelIdXml = channelId !== undefined ? `<channelId>${channelId}</channelId>\n` : "";
+  // Note: channelId parameter is kept for backward compatibility but not used in XML
+  if (!streamType || typeof streamType !== "string") {
+    throw new Error(`buildPreviewXml: streamType is required (string) but got: ${typeof streamType} = ${streamType}`);
+  }
   return `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <Preview version="1.0">
-${channelIdXml}<handle>${handle}</handle>
+<handle>${handle}</handle>
 <streamType>${xmlEscape(streamType)}</streamType>
 </Preview>
 </body>`;

@@ -542,12 +542,23 @@ export class ReolinkBaichuanApi {
     };
     
     const config = profileConfig[profile];
+    if (!config) {
+      throw new Error(`Invalid stream profile: ${profile}`);
+    }
+    if (!config.streamName) {
+      throw new Error(`Stream name not found for profile: ${profile}, config: ${JSON.stringify(config)}`);
+    }
     
     // Build Preview XML payload (from neolink stream.rs line 171-189)
     // BcXml serializes as <body>...</body> with Preview inside
     // IMPORTANT: channelId is NOT in Preview XML - it's handled via channelId in header
     // The working format (response_code 200) is Preview WITHOUT channelId
-    const payloadXml = buildPreviewXml(config.handle, config.streamName);
+    const streamName = config.streamName;
+    // Debug: verify streamName is defined
+    if (typeof streamName !== "string") {
+      throw new Error(`streamName is not a string: ${typeof streamName}, value: ${streamName}, config: ${JSON.stringify(config)}`);
+    }
+    const payloadXml = buildPreviewXml(config.handle, streamName);
     
     // Neolink uses connection.subscribe(MSG_ID_VIDEO, msg_num) BEFORE sending the command
     // This creates a dedicated channel for video frames. In our implementation,

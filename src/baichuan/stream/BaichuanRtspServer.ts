@@ -80,11 +80,23 @@ export class BaichuanRtspServer extends EventEmitter<{
       }
     });
 
-    // Gestisci errori ffmpeg
+    // Gestisci output ffmpeg (stderr contiene log)
+    let ffmpegOutput = "";
     ffmpeg.stderr.on("data", (data) => {
       const output = data.toString();
-      if (output.includes("error") || output.includes("Error")) {
+      ffmpegOutput += output;
+      // Log solo errori critici
+      if (output.includes("error") || output.includes("Error") || output.includes("Invalid")) {
+        console.error(`[BaichuanRtspServer] FFmpeg: ${output.trim()}`);
         this.emit("error", new Error(`FFmpeg error: ${output}`));
+      }
+    });
+    
+    // Log quando ffmpeg è pronto
+    ffmpeg.stdout.on("data", (data) => {
+      const output = data.toString();
+      if (output.includes("Stream") || output.includes("rtsp")) {
+        console.log(`[BaichuanRtspServer] FFmpeg: ${output.trim()}`);
       }
     });
 

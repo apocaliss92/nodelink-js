@@ -10,6 +10,7 @@ import type { BaichuanFrame } from "../../protocol/framing.js";
 import { EventEmitter } from "node:events";
 import type { StreamProfile } from "../../reolink/baichuan/types.js";
 import type { ReolinkBaichuanApi } from "../../reolink/baichuan/ReolinkBaichuanApi.js";
+import { BcMediaCodec } from "./BcMediaCodec.js";
 
 export interface BaichuanVideoStreamOptions {
   client: BaichuanClient;
@@ -41,6 +42,7 @@ export class BaichuanVideoStream extends EventEmitter<{
   private profile: StreamProfile;
   private active = false;
   private videoFrameHandler: ((frame: BaichuanFrame) => void) | undefined;
+  private bcMediaCodec: BcMediaCodec;
 
   constructor(options: BaichuanVideoStreamOptions) {
     super();
@@ -48,6 +50,7 @@ export class BaichuanVideoStream extends EventEmitter<{
     this.api = options.api;
     this.channel = options.channel;
     this.profile = options.profile;
+    this.bcMediaCodec = new BcMediaCodec(false); // non-strict mode for error recovery
   }
 
   /**
@@ -73,41 +76,86 @@ export class BaichuanVideoStream extends EventEmitter<{
     }
 
     // Ascolta i push events per frame video
+    // I frame con cmd_id 3 contengono BcMedia packets (video/audio)
+    let totalFramesReceived = 0;
+    let totalMediaPackets = 0;
     this.videoFrameHandler = (frame: BaichuanFrame) => {
-      // Identifica frame video:
-      // - streamType = 0 per video (probabilmente)
-      // - body contiene dati binari (non XML)
-      // - cmd_id specifico per video stream (da identificare)
+      // Solo frame con cmd_id 3 sono video stream
+      if (frame.header.cmdId !== 3) return;
       
-      const isVideoFrame = this.isVideoFrame(frame);
-      
-      if (isVideoFrame && frame.body.length > 0) {
-        // Decrypt video data
-        const decryptedVideo = this.client.tryDecryptBinary(
-          frame.body,
-          frame.header.channelId,
-          this.client.enc
-        );
-
-        // Estrai frame video (H.264/H.265 NAL units)
-        // I frame video Baichuan sono incapsulati in un header personalizzato
-        // Deve essere rimosso per ottenere i NAL units puri
-        const videoData = this.extractVideoData(decryptedVideo);
-        
-        if (videoData.length > 0) {
-          this.emit("videoFrame", videoData);
-        }
+      totalFramesReceived++;
+      if (totalFramesReceived === 1) {
+        console.log(`[BaichuanVideoStream] Primo frame cmd_id 3 ricevuto (bodyLen: ${frame.body.length}, channelId: ${frame.header.channelId})`);
       }
 
-      // Identifica frame audio (se presente nello stream)
-      const isAudioFrame = this.isAudioFrame(frame);
-      if (isAudioFrame && frame.body.length > 0) {
-        const decryptedAudio = this.client.tryDecryptBinary(
+      // Per i frame video, extension e payload sono separati
+      // Il payload contiene i dati BcMedia, ma potrebbe essere ancora criptato
+      // Decripta il payload separatamente
+      let dataToParse: Buffer;
+      
+      if (frame.payload.length > 0) {
+        // Decripta il payload separatamente
+        dataToParse = this.client.tryDecryptBinary(
+          frame.payload,
+          frame.header.channelId,
+          this.client.enc
+        );
+        if (totalFramesReceived === 1) {
+          console.log(`[BaichuanVideoStream] Payload decriptato: ${dataToParse.length} bytes, first 32 bytes: ${dataToParse.subarray(0, Math.min(32, dataToParse.length)).toString("hex")}`);
+        }
+      } else {
+        // Fallback: decripta il body completo e cerca i dati dopo XML
+        const decrypted = this.client.tryDecryptBinary(
           frame.body,
           frame.header.channelId,
           this.client.enc
         );
-        this.emit("audioFrame", decryptedAudio);
+        
+        // Find where BcMedia packets start (after XML if present)
+        let searchStart = 0;
+        const extensionEnd = decrypted.indexOf(Buffer.from("</Extension>"));
+        const bodyEnd = decrypted.indexOf(Buffer.from("</body>"));
+        
+        if (extensionEnd !== -1) {
+          searchStart = extensionEnd + Buffer.from("</Extension>").length;
+        } else if (bodyEnd !== -1) {
+          searchStart = bodyEnd + Buffer.from("</body>").length;
+        }
+        
+        dataToParse = decrypted.subarray(searchStart);
+      }
+
+      // Use BcMediaCodec to handle fragmented packets
+      // The codec buffers incomplete packets and assembles them when complete
+      const dataAfterXml = dataToParse;
+      if (totalFramesReceived === 1) {
+        console.log(`[BaichuanVideoStream] Data after XML: ${dataAfterXml.length} bytes, first 32 bytes: ${dataAfterXml.subarray(0, Math.min(32, dataAfterXml.length)).toString("hex")}`);
+      }
+      
+      const mediaPackets = this.bcMediaCodec.decode(dataAfterXml);
+      totalMediaPackets += mediaPackets.length;
+      
+      if (totalFramesReceived <= 5 && mediaPackets.length > 0) {
+        console.log(`[BaichuanVideoStream] Frame #${totalFramesReceived}: parsati ${mediaPackets.length} BcMedia packets (total: ${totalMediaPackets})`);
+      }
+      
+      // Process complete BcMedia packets
+      for (const media of mediaPackets) {
+        // Emit video frames (Iframe/Pframe)
+        if (media.type === "Iframe" || media.type === "Pframe") {
+          // The data field contains raw H.264/H.265 NAL units
+          this.emit("videoFrame", media.data);
+        }
+        
+        // Emit audio frames
+        if (media.type === "Aac" || media.type === "Adpcm") {
+          this.emit("audioFrame", media.data);
+        }
+
+        // Emit info frames for metadata
+        if (media.type === "InfoV1" || media.type === "InfoV2") {
+          // Could emit metadata event if needed
+        }
       }
     };
 
@@ -115,69 +163,8 @@ export class BaichuanVideoStream extends EventEmitter<{
     this.active = true;
   }
 
-  /**
-   * Identifica se un frame è un frame video.
-   * Basato su neolink: i frame video arrivano come BcMedia packets con cmd_id 3 (MSG_ID_VIDEO).
-   * I frame video contengono NAL units H.264/H.265 incapsulati.
-   */
-  private isVideoFrame(frame: BaichuanFrame): boolean {
-    // I frame video hanno:
-    // - cmd_id = 3 (MSG_ID_VIDEO) - questo è il cmd_id per lo stream video
-    // - body contiene dati binari (non XML)
-    // - dimensione significativa (>100 bytes tipicamente)
-    // - streamType può variare (0 per video, 1 per audio nello stesso stream)
-    
-    if (frame.header.cmdId !== 3) {
-      return false; // Solo cmd_id 3 è per video stream
-    }
-    
-    const bodyStr = frame.body.toString("utf8", 0, Math.min(100, frame.body.length));
-    const isXml = bodyStr.startsWith("<?xml") || bodyStr.startsWith("<");
-    
-    // Frame video: non XML, dimensione significativa
-    return !isXml && frame.body.length > 100;
-  }
-
-  /**
-   * Identifica se un frame è un frame audio.
-   * Basato su neolink: i frame audio arrivano nello stesso stream video con cmd_id 3.
-   * Potrebbero avere streamType = 1 o essere identificati dalla dimensione/pattern.
-   */
-  private isAudioFrame(frame: BaichuanFrame): boolean {
-    // Frame audio nello stesso stream video:
-    // - cmd_id = 3 (stesso dello stream video)
-    // - streamType potrebbe essere 1 (audio) o identificato da dimensione/pattern
-    // - body binario, dimensione tipicamente più piccola dei frame video
-    
-    if (frame.header.cmdId !== 3) {
-      return false; // Solo cmd_id 3 può contenere audio nello stream
-    }
-    
-    const bodyStr = frame.body.toString("utf8", 0, Math.min(100, frame.body.length));
-    const isXml = bodyStr.startsWith("<?xml") || bodyStr.startsWith("<");
-    
-    // Frame audio: non XML, dimensione tipicamente più piccola (ma non sempre)
-    // Potrebbe essere identificato meglio analizzando il contenuto
-    return !isXml && frame.body.length > 0 && frame.body.length < 10000; // Audio tipicamente più piccolo
-  }
-
-  /**
-   * Estrae dati video dai frame Baichuan.
-   * I frame video Baichuan sono incapsulati in un header personalizzato.
-   * Deve essere rimosso per ottenere i NAL units H.264/H.265 puri.
-   * 
-   * Basato su neolink: i frame video hanno un header Baichuan che deve essere rimosso.
-   */
-  private extractVideoData(encryptedData: Buffer): Buffer {
-    // TODO: Implementare estrazione dati video basata su neolink
-    // I frame video Baichuan hanno un header personalizzato che incapsula i NAL units
-    // Deve essere rimosso per ottenere i dati video puri
-    
-    // Per ora, restituiamo i dati così come sono (potrebbe essere necessario rimuovere header)
-    // Neolink probabilmente ha una funzione per estrarre i NAL units
-    
-    return encryptedData;
-  }
+  // isVideoFrame, isAudioFrame, and extractVideoData are no longer needed
+  // BcMediaParser handles all frame parsing and extraction
 
   /**
    * Stop video stream.
@@ -189,6 +176,9 @@ export class BaichuanVideoStream extends EventEmitter<{
       this.client.removeListener("push", this.videoFrameHandler);
     }
     this.videoFrameHandler = undefined;
+    
+    // Clear codec buffer
+    this.bcMediaCodec.clear();
 
     // Ferma lo stream video se API è disponibile
     if (this.api) {
