@@ -2,9 +2,9 @@ import dgram from "node:dgram";
 import { EventEmitter } from "node:events";
 import { type AddressInfo } from "node:net";
 import { setInterval as setIntervalNode } from "node:timers";
-import { BCUDP_DATA_HEADER_SIZE, BCUDP_DEFAULT_MTU, BCUDP_DISCOVERY_PORT_LOCAL_UID } from "./constants.js";
-import { decodeBcUdpPacket, encodeAckPacket, encodeDataPacket, encodeDiscoveryPacket } from "./packets.js";
-import { buildC2dC, buildC2dHb, parseD2cCr } from "./xml.js";
+import { BCUDP_DATA_HEADER_SIZE, BCUDP_DEFAULT_MTU, BCUDP_DISCOVERY_PORT_LOCAL_UID } from "./constants";
+import { decodeBcUdpPacket, encodeAckPacket, encodeDataPacket, encodeDiscoveryPacket } from "./packets";
+import { buildC2dC, buildC2dHb, parseD2cCr } from "./xml";
 
 export type BcUdpStreamOptions =
   | {

@@ -1,6 +1,6 @@
-import { BCUDP_MAGIC_ACK, BCUDP_MAGIC_DATA, BCUDP_MAGIC_NEGO } from "./constants.js";
-import { bcudpCrc32 } from "./crc.js";
-import { bcudpXmlDecrypt, bcudpXmlEncrypt } from "./xmlCrypto.js";
+import { BCUDP_MAGIC_ACK, BCUDP_MAGIC_DATA, BCUDP_MAGIC_NEGO } from "./constants";
+import { bcudpCrc32 } from "./crc";
+import { bcudpXmlDecrypt, bcudpXmlEncrypt } from "./xmlCrypto";
 
 export type BcUdpPacket =
   | { kind: "discovery"; tid: number; xml: string }

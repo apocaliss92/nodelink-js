@@ -5,7 +5,7 @@
  */
 
 // @ts-expect-error - Path resolution at runtime
-import { parseBcMedia, BcMediaCodec } from "../../index.js";
+import { parseBcMedia, BcMediaCodec } from "../../index";
 import * as fs from "node:fs";
 import * as path from "node:path";
 

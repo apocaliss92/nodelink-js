@@ -5,8 +5,8 @@
  */
 
 // @ts-expect-error - Path resolution at runtime
-import { ReolinkBaichuanApi, type BaichuanFrame } from "../../index.js";
-import { config } from "../env.js";
+import { ReolinkBaichuanApi, type BaichuanFrame } from "../../index";
+import { config } from "../env";
 
 // Helper functions
 function log(message: string, data?: unknown) {

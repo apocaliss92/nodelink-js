@@ -4,9 +4,9 @@
  * Tests: main/sub stream over TCP and UDP.
  */
 
-import { createRtspProxyServer } from "../../dist/index.js";
+import { createRtspProxyServer } from "../../dist/index";
 import { spawn } from "node:child_process";
-import { config } from "../env.js";
+import { config } from "../env";
 
 // Helper functions
 function log(message: string, data?: unknown) {

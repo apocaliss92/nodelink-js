@@ -6,8 +6,8 @@
  */
 
 // @ts-expect-error - Path resolution at runtime
-import { ReolinkBaichuanApi, ScryptedIntercom } from "../../index.js";
-import { config } from "../env.js";
+import { ReolinkBaichuanApi, ScryptedIntercom } from "../../index";
+import { config } from "../env";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 // Modern G.711 A-law library (CommonJS, use default import)

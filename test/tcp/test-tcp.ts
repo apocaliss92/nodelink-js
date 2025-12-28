@@ -4,8 +4,8 @@
  * Tests: login, ping, device info, network ports, encoding, general info.
  */
 
-import { ReolinkBaichuanApi } from "../../dist/index.js";
-import { config } from "../env.js";
+import { ReolinkBaichuanApi } from "../../dist/index";
+import { config } from "../env";
 
 // Helper functions
 function log(message: string, data?: unknown) {

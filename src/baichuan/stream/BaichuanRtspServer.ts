@@ -6,10 +6,10 @@
  * In Node.js, we can use ffmpeg (as done here) or a dedicated RTSP server implementation.
  */
 
-import { BaichuanVideoStream, type BaichuanVideoStreamOptions } from "./BaichuanVideoStream.js";
+import { BaichuanVideoStream, type BaichuanVideoStreamOptions } from "./BaichuanVideoStream";
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
-import type { StreamProfile } from "../../reolink/baichuan/types.js";
+import type { StreamProfile } from "../../reolink/baichuan/types";
 
 const NAL_START_CODE_4B = Buffer.from([0x00, 0x00, 0x00, 0x01]);
 const NAL_START_CODE_3B = Buffer.from([0x00, 0x00, 0x01]);

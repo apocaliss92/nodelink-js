@@ -4,8 +4,8 @@
  */
 
 // @ts-expect-error - Path resolution at runtime
-import { ReolinkBaichuanApi, buildRtspUrl } from "../../index.js";
-import { config } from "../env.js";
+import { ReolinkBaichuanApi, buildRtspUrl } from "../../index";
+import { config } from "../env";
 import { spawn } from "node:child_process";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";

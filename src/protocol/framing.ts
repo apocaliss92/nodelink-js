@@ -1,4 +1,4 @@
-import { BC_MAGIC, BC_MAGIC_REV, bcHeaderHasPayloadOffset } from "./constants.js";
+import { BC_MAGIC, BC_MAGIC_REV, bcHeaderHasPayloadOffset } from "./constants";
 
 export type AnyBuffer = Buffer<ArrayBufferLike>;
 

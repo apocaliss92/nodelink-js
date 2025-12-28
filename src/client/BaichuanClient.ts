@@ -1,12 +1,12 @@
 import { EventEmitter } from "node:events";
 import net from "node:net";
-import { BC_TCP_DEFAULT_PORT, BC_CLASS_LEGACY, BC_CLASS_MODERN_24 } from "../protocol/constants.js";
-import { aesDecrypt, aesEncrypt, bcDecrypt, bcEncrypt, deriveAesKey, md5StrModern, type EncryptionProtocol } from "../protocol/crypto.js";
-import { BaichuanFrameParser, encodeHeader, type BaichuanFrame } from "../protocol/framing.js";
-import { buildChannelExtensionXml, buildLoginXml, getXmlText } from "../protocol/xml.js";
-import { BcUdpStream, type BcUdpStreamOptions } from "../bcudp/BcUdpStream.js";
-import type { ReolinkEvent } from "../reolink/baichuan/types.js";
-import { normalizeDebugOptions, traceLog, type DebugOptions, type DebugConfig } from "../debug/DebugConfig.js";
+import { BC_TCP_DEFAULT_PORT, BC_CLASS_LEGACY, BC_CLASS_MODERN_24 } from "../protocol/constants";
+import { aesDecrypt, aesEncrypt, bcDecrypt, bcEncrypt, deriveAesKey, md5StrModern, type EncryptionProtocol } from "../protocol/crypto";
+import { BaichuanFrameParser, encodeHeader, type BaichuanFrame } from "../protocol/framing";
+import { buildChannelExtensionXml, buildLoginXml, getXmlText } from "../protocol/xml";
+import { BcUdpStream, type BcUdpStreamOptions } from "../bcudp/BcUdpStream";
+import type { ReolinkEvent } from "../reolink/baichuan/types";
+import { normalizeDebugOptions, traceLog, type DebugOptions, type DebugConfig } from "../debug/DebugConfig";
 
 export type BaichuanClientOptions = {
   host: string;

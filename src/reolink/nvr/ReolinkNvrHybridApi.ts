@@ -1,7 +1,7 @@
-import { ReolinkNvrCgiApi } from "./ReolinkNvrCgiApi.js";
-import { ReolinkNvrBaichuanApi } from "./ReolinkNvrBaichuanApi.js";
-import type { ReolinkHttpClientOptions } from "../http/ReolinkHttpClient.js";
-import type { BaichuanClientOptions } from "../../client/BaichuanClient.js";
+import { ReolinkNvrCgiApi } from "./ReolinkNvrCgiApi";
+import { ReolinkNvrBaichuanApi } from "./ReolinkNvrBaichuanApi";
+import type { ReolinkHttpClientOptions } from "../http/ReolinkHttpClient";
+import type { BaichuanClientOptions } from "../../client/BaichuanClient";
 
 export type ReolinkNvrHybridApiOptions = {
   cgi?: ReolinkHttpClientOptions;

@@ -5,7 +5,7 @@
  * Inspired by neolink: neolink uses GStreamer for RTSP; here we use HTTP for simplicity.
  */
 
-import { BaichuanVideoStream } from "./BaichuanVideoStream.js";
+import { BaichuanVideoStream } from "./BaichuanVideoStream";
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
 import * as http from "node:http";

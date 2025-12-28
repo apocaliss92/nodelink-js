@@ -1,5 +1,5 @@
-import { ReolinkHttpClient, type ReolinkHttpClientOptions } from "../http/ReolinkHttpClient.js";
-import type { ReolinkCmdRequest, ReolinkCmdResponse } from "../http/types.js";
+import { ReolinkHttpClient, type ReolinkHttpClientOptions } from "../http/ReolinkHttpClient";
+import type { ReolinkCmdRequest, ReolinkCmdResponse } from "../http/types";
 
 export class ReolinkCgiApi {
   readonly client: ReolinkHttpClient;
@@ -58,6 +58,14 @@ export class ReolinkCgiApi {
   async Reboot(channel?: number): Promise<ReolinkCmdResponse[]> {
     const param = channel == null ? {} : { channel };
     return await this.call("Reboot", param);
+  }
+
+  async GetAbility(username: string): Promise<ReolinkCmdResponse[]> {
+    return await this.call("GetAbility", {
+      User: {
+        userName: username,
+      },
+    });
   }
 }
 

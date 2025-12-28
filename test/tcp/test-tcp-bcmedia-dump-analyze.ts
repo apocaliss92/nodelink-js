@@ -8,7 +8,7 @@
  *  2) npm run test:build && node dist/test/tcp/test-tcp-bcmedia-dump-analyze.js
  */
 // @ts-expect-error - Path resolution at runtime
-import { parseBcMedia, hasStartCodes, convertToAnnexB } from "../../index.js";
+import { parseBcMedia, hasStartCodes, convertToAnnexB } from "../../index";
 import * as fs from "node:fs";
 import * as path from "node:path";
 

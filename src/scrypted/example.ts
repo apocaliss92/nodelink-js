@@ -7,10 +7,10 @@
  * - tapo plugin: https://github.com/koush/scrypted/blob/2cc7ab08fd6fc58638dba82e0fd83c4cb7d0bb87/plugins/tapo/src/main.ts
  */
 
-import { ReolinkBaichuanApi } from "../reolink/baichuan/ReolinkBaichuanApi.js";
-import { getVideoStream, getConstructedVideoStreamOptions, ScryptedIntercom, ScryptedEventEmitter } from "./helpers.js";
-import type { ReolinkEvent, StreamProfile } from "../reolink/baichuan/types.js";
-import type { ResponseMediaStreamOptions } from "./helpers.js";
+import { ReolinkBaichuanApi } from "../reolink/baichuan/ReolinkBaichuanApi";
+import { getVideoStream, getConstructedVideoStreamOptions, ScryptedIntercom, ScryptedEventEmitter } from "./helpers";
+import type { ReolinkEvent, StreamProfile } from "../reolink/baichuan/types";
+import type { ResponseMediaStreamOptions } from "./helpers";
 
 /**
  * Example Scrypted VideoCamera implementation

@@ -1,8 +1,8 @@
-import { ReolinkCgiApi } from "../cgi/ReolinkCgiApi.js";
-import { ReolinkBaichuanApi } from "../baichuan/ReolinkBaichuanApi.js";
-import type { ReolinkHttpClientOptions } from "../http/ReolinkHttpClient.js";
-import type { BaichuanClientOptions } from "../../client/BaichuanClient.js";
-import type { ReolinkCmdResponse } from "../http/types.js";
+import { ReolinkCgiApi } from "../cgi/ReolinkCgiApi";
+import { ReolinkBaichuanApi } from "../baichuan/ReolinkBaichuanApi";
+import type { ReolinkHttpClientOptions } from "../http/ReolinkHttpClient";
+import type { BaichuanClientOptions } from "../../client/BaichuanClient";
+import type { ReolinkCmdResponse } from "../http/types";
 
 export type ReolinkHybridApiOptions = {
   cgi?: ReolinkHttpClientOptions;

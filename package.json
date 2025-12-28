@@ -1,13 +1,24 @@
 {
-  "name": "baichuan-protocol",
+  "name": "@reolink/baichuan-js",
   "version": "0.1.0",
-  "description": "TypeScript library implementing Reolink Baichuan (control + stream) with CGI and RTSP helpers.",
+  "description": "TypeScript library implementing Reolink Baichuan protocol (control + streaming) with CGI and RTSP helpers. Full TypeScript support with comprehensive type definitions.",
   "license": "MIT",
   "author": "",
   "repository": {
     "type": "git",
     "url": ""
   },
+  "keywords": [
+    "reolink",
+    "baichuan",
+    "camera",
+    "security",
+    "ip-camera",
+    "rtsp",
+    "streaming",
+    "typescript",
+    "nvr"
+  ],
   "type": "module",
   "exports": {
     ".": {
@@ -21,7 +32,8 @@
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
-    "src"
+    "README.md",
+    "LICENSE"
   ],
   "sideEffects": false,
   "engines": {
@@ -47,6 +59,8 @@
     "test:tcp:video-stream-record": "npm run test:build && node dist/test/tcp/test-tcp-video-stream-record.js",
     "test:tcp:diagnostics": "npm run test:build && node dist/test/tcp/test-tcp-diagnostics-bundle.js",
     "test:tcp:video-save-merge": "npm run test:build && node dist/test/tcp/test-tcp-video-save-and-merge.js",
+    "test:tcp:new-apis": "npm run test:build && node dist/test/tcp/test-tcp-new-apis.js",
+    "test:tcp:ability-comparison": "npm run test:build && node dist/test/tcp/test-ability-comparison.js",
     "test:udp": "npm run test:build && node dist/test/udp/test-udp.js",
     "test:streams": "npm run test:build && node dist/test/streams/test-streams.js",
     "test:nvr:tcp": "npm run test:build && node dist/test/nvr/test-nvr-tcp.js",

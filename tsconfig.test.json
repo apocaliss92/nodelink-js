@@ -5,7 +5,7 @@
     "rootDir": "test",
     "module": "ES2022",
     "target": "ES2022",
-    "moduleResolution": "bundler",
+    "moduleResolution": "node",
     "esModuleInterop": true,
     "skipLibCheck": true,
     "resolveJsonModule": true

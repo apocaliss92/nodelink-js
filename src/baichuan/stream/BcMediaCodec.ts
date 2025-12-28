@@ -6,7 +6,7 @@
  * This codec buffers incomplete packets and assembles them when complete.
  */
 
-import { parseBcMedia, type BcMedia } from "./BcMediaParser.js";
+import { parseBcMedia, type BcMedia } from "./BcMediaParser";
 
 export class BcMediaCodec {
   private buffer: Buffer = Buffer.alloc(0);

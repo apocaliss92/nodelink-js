@@ -1,4 +1,4 @@
-import { xmlEscape } from "../protocol/xml.js";
+import { xmlEscape } from "../protocol/xml";
 
 export function buildP2pXml(inner: string): string {
   return `<P2P>${inner}</P2P>`;

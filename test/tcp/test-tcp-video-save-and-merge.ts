@@ -7,13 +7,13 @@
  */
 
 // @ts-expect-error - Path resolution at runtime
-import { ReolinkBaichuanApi, BaichuanVideoStream } from "../../index.js";
-import { config } from "../env.js";
+import { ReolinkBaichuanApi, BaichuanVideoStream } from "../../index";
+import { config } from "../env";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
 // @ts-expect-error - Path resolution at runtime
-import type { StreamProfile } from "../../index.js";
+import type { StreamProfile } from "../../index";
 
 // Helper functions
 function log(message: string, data?: unknown) {

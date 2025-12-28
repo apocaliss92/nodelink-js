@@ -1,5 +1,5 @@
-import { ReolinkBaichuanApi } from "../baichuan/ReolinkBaichuanApi.js";
-import type { BaichuanClientOptions } from "../../client/BaichuanClient.js";
+import { ReolinkBaichuanApi } from "../baichuan/ReolinkBaichuanApi";
+import type { BaichuanClientOptions } from "../../client/BaichuanClient";
 
 /**
  * API Baichuan specifica per NVR.

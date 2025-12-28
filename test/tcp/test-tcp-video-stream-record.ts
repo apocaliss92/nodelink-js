@@ -5,8 +5,8 @@
  */
 
 // @ts-expect-error - Path resolution at runtime
-import { ReolinkBaichuanApi, BaichuanVideoStream, BaichuanHttpStreamServer } from "../../index.js";
-import { config } from "../env.js";
+import { ReolinkBaichuanApi, BaichuanVideoStream, BaichuanHttpStreamServer } from "../../index";
+import { config } from "../env";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawn } from "node:child_process";

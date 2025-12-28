@@ -6,17 +6,17 @@
  * Reference: neolink crates/core/src/bc_protocol/*
  */
 
-import { BaichuanClient } from "../../client/BaichuanClient.js";
-import type { BaichuanFrame } from "../../protocol/framing.js";
+import { BaichuanClient } from "../../client/BaichuanClient";
+import type { BaichuanFrame } from "../../protocol/framing";
 import { EventEmitter } from "node:events";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { StreamProfile } from "../../reolink/baichuan/types.js";
-import type { ReolinkBaichuanApi } from "../../reolink/baichuan/ReolinkBaichuanApi.js";
-import type { EncryptionProtocol } from "../../protocol/crypto.js";
-import { ensureDumpDir } from "../../debug/DebugConfig.js";
-import { BcMediaCodec } from "./BcMediaCodec.js";
-import { convertToAnnexB, hasStartCodes, H264RtpDepacketizer, isValidH264AnnexBAccessUnit, isH264KeyframeAnnexB, splitAnnexBToNalPayloads } from "./H264Converter.js";
+import type { StreamProfile } from "../../reolink/baichuan/types";
+import type { ReolinkBaichuanApi } from "../../reolink/baichuan/ReolinkBaichuanApi";
+import type { EncryptionProtocol } from "../../protocol/crypto";
+import { ensureDumpDir } from "../../debug/DebugConfig";
+import { BcMediaCodec } from "./BcMediaCodec";
+import { convertToAnnexB, hasStartCodes, H264RtpDepacketizer, isValidH264AnnexBAccessUnit, isH264KeyframeAnnexB, splitAnnexBToNalPayloads } from "./H264Converter";
 
 const NAL_START_CODE_4B = Buffer.from([0x00, 0x00, 0x00, 0x01]);
 

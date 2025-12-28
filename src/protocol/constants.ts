@@ -37,3 +37,36 @@ export function bcHeaderHasPayloadOffset(messageClass: number): boolean {
 export const BC_CMD_ID_VIDEO = 3; // MSG_ID_VIDEO - Video and Audio Streams messages
 export const BC_CMD_ID_VIDEO_STOP = 4; // MSG_ID_VIDEO_STOP - ID used to stop the video stream
 
+// PTZ Control command IDs (from neolink model.rs)
+export const BC_CMD_ID_PTZ_CONTROL = 18; // MSG_ID_PTZ_CONTROL - Pan/tilt/zoom control
+export const BC_CMD_ID_PTZ_CONTROL_PRESET = 19; // MSG_ID_PTZ_CONTROL_PRESET - Set/move to preset
+export const BC_CMD_ID_GET_PTZ_PRESET = 190; // MSG_ID_GET_PTZ_PRESET - Get preset list
+export const BC_CMD_ID_GET_PTZ_POSITION = 433; // Get current PTZ position (from reolink_aio)
+
+// Battery Info command IDs
+export const BC_CMD_ID_GET_BATTERY_INFO = 252; // MSG_ID_BATTERY_INFO_LIST - Get battery info
+
+// PIR State command IDs (from neolink model.rs)
+export const BC_CMD_ID_GET_PIR_INFO = 212; // MSG_ID_GET_PIR_ALARM - Get PIR settings
+export const BC_CMD_ID_SET_PIR_INFO = 213; // MSG_ID_START_PIR_ALARM - Set PIR settings
+
+// Motion Detection command IDs
+export const BC_CMD_ID_GET_MOTION_ALARM = 46; // GetMdAlarm - Get motion detection state
+export const BC_CMD_ID_SET_MOTION_ALARM = 47; // SetMdAlarm - Set motion detection
+
+// AI Detection command IDs
+export const BC_CMD_ID_GET_AI_ALARM = 342; // GetAiAlarm - Get AI detection state
+export const BC_CMD_ID_SET_AI_ALARM = 343; // SetAiAlarm - Set AI detection
+
+// Siren/Audio Alarm command IDs
+export const BC_CMD_ID_GET_AUDIO_ALARM = 547; // GetAudioAlarm - Get siren status (push event)
+export const BC_CMD_ID_AUDIO_ALARM_PLAY = 263; // MSG_ID_PLAY_AUDIO - Play siren/audio alarm
+
+// White LED/Floodlight command IDs
+export const BC_CMD_ID_GET_WHITE_LED = 289; // GetWhiteLed/Floodlight - Get floodlight state
+export const BC_CMD_ID_SET_WHITE_LED_STATE = 288; // SetWhiteLed state
+export const BC_CMD_ID_SET_WHITE_LED_TASK = 290; // SetWhiteLed task (brightness, mode, etc.)
+
+// Ability Info command ID
+export const BC_CMD_ID_ABILITY_INFO = 151; // MSG_ID_ABILITY_INFO - Get device capabilities/abilities
+

@@ -1,0 +1,47 @@
+# Source files (not needed in published package)
+src/
+test/
+_refs/
+docs/
+
+# Build artifacts (only dist/ should be published)
+*.tsbuildinfo
+
+# Development files
+.env
+.env.*
+!.env.template
+*.log
+*.tmp
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test outputs
+recordings/
+diagnostics/
+diagnostics-dumps/
+frames-debug/
+frames-save/
+
+# Dependencies
+node_modules/
+
+# Git
+.git/
+.gitignore
+
+# Config files (keep only what's needed)
+tsconfig.json
+tsconfig.test.json
+tsup.config.ts
+eslint.config.js
+

@@ -1,6 +1,25 @@
-import { BaichuanClient, type BaichuanClientOptions } from "../../client/BaichuanClient.js";
-import { xmlEscape, getXmlText, buildPreviewXml, buildPreviewStopXml, buildChannelExtensionXml } from "../../protocol/xml.js";
-import { BC_CMD_ID_VIDEO, BC_CMD_ID_VIDEO_STOP, BC_CLASS_MODERN_24 } from "../../protocol/constants.js";
+import { BaichuanClient, type BaichuanClientOptions } from "../../client/BaichuanClient";
+import { xmlEscape, getXmlText, buildPreviewXml, buildPreviewStopXml, buildChannelExtensionXml, buildPtzControlXml, buildPtzPresetXml, buildSirenManualXml, buildSirenTimesXml, buildWhiteLedStateXml, buildAbilityInfoExtensionXml } from "../../protocol/xml";
+import { 
+  BC_CMD_ID_VIDEO, 
+  BC_CMD_ID_VIDEO_STOP, 
+  BC_CLASS_MODERN_24,
+  BC_CMD_ID_PTZ_CONTROL,
+  BC_CMD_ID_PTZ_CONTROL_PRESET,
+  BC_CMD_ID_GET_PTZ_PRESET,
+  BC_CMD_ID_GET_PTZ_POSITION,
+  BC_CMD_ID_GET_BATTERY_INFO,
+  BC_CMD_ID_GET_PIR_INFO,
+  BC_CMD_ID_SET_PIR_INFO,
+  BC_CMD_ID_SET_MOTION_ALARM,
+  BC_CMD_ID_SET_AI_ALARM,
+  BC_CMD_ID_GET_AUDIO_ALARM,
+  BC_CMD_ID_AUDIO_ALARM_PLAY,
+  BC_CMD_ID_GET_WHITE_LED,
+  BC_CMD_ID_SET_WHITE_LED_STATE,
+  BC_CMD_ID_SET_WHITE_LED_TASK,
+  BC_CMD_ID_ABILITY_INFO,
+} from "../../protocol/constants";
 import type {
   OsdConfig,
   AIState,
@@ -19,7 +38,7 @@ import type {
   MotionEvent,
   AIEvent,
   TwoWayAudioConfig,
-} from "./types.js";
+} from "./types";
 
 export type ReolinkBaichuanPorts = Record<string, Record<string, number>>;
 
@@ -639,6 +658,740 @@ export class ReolinkBaichuanApi {
       messageClass: BC_CLASS_MODERN_24,
       streamType: config.streamType, // 0 for main/ext, 1 for sub
     });
+  }
+
+  // --------------------
+  // PTZ Control APIs
+  // --------------------
+
+  /**
+   * Get PTZ preset list via Baichuan.
+   * cmd_id: 190 (MSG_ID_GET_PTZ_PRESET from neolink)
+   * 
+   * @param channel - Channel number (0-based)
+   * @returns Array of PTZ presets
+   */
+  async getPtzPresets(channel: number): Promise<PtzPreset[]> {
+    const channelId = channel + 1; // Convert to 1-based
+    const xml = await this.sendXml({ 
+      cmdId: BC_CMD_ID_GET_PTZ_PRESET, 
+      channel,
+      messageClass: BC_CLASS_MODERN_24,
+    });
+    
+    // Parse preset list from XML
+    // Expected format: <PtzPreset><presetList><preset><id>...</id><name>...</name></preset>...</presetList></PtzPreset>
+    const presets: PtzPreset[] = [];
+    const presetMatches = xml.matchAll(/<preset[^>]*>([\s\S]*?)<\/preset>/g);
+    
+    for (const match of presetMatches) {
+      const presetXml = match[1] ?? "";
+      const id = getXmlText(presetXml, "id");
+      const name = getXmlText(presetXml, "name");
+      const enable = getXmlText(presetXml, "enable");
+      
+      // Only include enabled presets (enable="1" or not present)
+      if (enable === undefined || enable === "1") {
+        if (id !== undefined) {
+          presets.push({
+            id: Number(id),
+            name: name ?? `Preset ${id}`,
+          });
+        }
+      }
+    }
+    
+    return presets;
+  }
+
+  /**
+   * Send PTZ control command (pan/tilt/zoom).
+   * cmd_id: 18 (MSG_ID_PTZ_CONTROL from neolink)
+   * 
+   * @param channel - Channel number (0-based)
+   * @param command - PTZ command
+   * @returns Promise that resolves when command is sent
+   */
+  async ptz(channel: number, command: PtzCommand): Promise<void> {
+    // Neolink uses channel_id in both extension and PtzControl XML
+    // channel_id is 1-based (0 becomes 1, but 0 can also be valid for host commands)
+    const channelId = channel + 1;
+    
+    // Map command.action + command.command to neolink direction strings
+    // Neolink only supports: "up", "down", "left", "right", "stop"
+    let direction: string;
+    if (command.action === "stop") {
+      direction = "stop";
+    } else {
+      // Map Scrypted command format to neolink format (lowercase only)
+      const cmdMap: Record<string, string> = {
+        "Left": "left",
+        "Right": "right",
+        "Up": "up",
+        "Down": "down",
+        // Zoom and Focus are not standard PTZ control commands in neolink
+        // They may require different cmd_id or not be supported via PTZ_CONTROL
+        "ZoomIn": "zoomIn", // May not work - camera may not support
+        "ZoomOut": "zoomOut", // May not work - camera may not support
+        "FocusNear": "focusNear", // May not work - camera may not support
+        "FocusFar": "focusFar", // May not work - camera may not support
+      };
+      direction = cmdMap[command.command] ?? command.command.toLowerCase();
+    }
+    
+    // Neolink uses speed as f32 (float), not as integer
+    // Use the speed directly (0.0-1.0 range) or convert to a reasonable float value
+    // For stop command, speed should be 0 (as per neolink implementation)
+    const speed = direction === "stop" ? 0 : (command.speed ?? 0.5);
+    
+    const payloadXml = buildPtzControlXml(channelId, direction, speed);
+    
+    // Neolink includes extension with channel_id for PTZ commands
+    // Extension channelId must match the channel_id in PtzControl XML (both 1-based)
+    // buildChannelExtensionXml expects 0-based, but we need 1-based here
+    const extensionXml = `<?xml version="1.0" encoding="UTF-8" ?>
+<Extension version="1.1">
+<channelId>${channelId}</channelId>
+</Extension>`;
+    
+    // Neolink does subscribe before sending PTZ commands
+    // However, sendFrame already handles the response via pending map using cmdId:messageKey
+    // The subscribe in neolink is for routing responses, which sendFrame already does
+    // So we don't need explicit subscribeVideoStream here
+    
+    // Use sendFrame to check response_code (neolink expects 200)
+    // Enable debug to see exact XML being sent
+    if (this.client.getDebugConfig().debugH264 || process.env.BAICHUAN_DEBUG_PTZ) {
+      console.log("[DEBUG] PTZ XML:", payloadXml);
+      console.log("[DEBUG] Extension XML:", extensionXml);
+      console.log("[DEBUG] Channel (0-based):", channel, "ChannelId (1-based):", channelId);
+    }
+    
+    // sendFrame converts channel (0-based) to channelId (1-based) for header
+    // This matches neolink where self.channel_id is used in both meta.header.channel_id 
+    // and extension/payload XML channelId
+    const frame = await this.client.sendFrame({
+      cmdId: BC_CMD_ID_PTZ_CONTROL,
+      channel, // 0-based - sendFrame will convert to channelId (1-based) for header
+      extensionXml,
+      payloadXml,
+      messageClass: BC_CLASS_MODERN_24,
+    });
+    
+    if (frame.header.responseCode !== 200) {
+      // Try to get error details from body if available
+      let errorDetails = "";
+      if (frame.body.length > 0) {
+        try {
+          // Access private method via type assertion (needed for error details)
+          const tryDecryptXml = (this.client as any).tryDecryptXml;
+          if (tryDecryptXml) {
+            const errorXml = tryDecryptXml.call(this.client, frame.body, frame.header.channelId, this.client.enc);
+            if (errorXml) {
+              errorDetails = ` - Error details: ${errorXml.substring(0, 200)}`;
+            }
+          }
+        } catch (e) {
+          // Ignore decryption errors, but log them in debug
+          if (this.client.getDebugConfig().debugH264 || process.env.BAICHUAN_DEBUG_PTZ) {
+            console.log("[DEBUG] Could not decrypt error body:", e);
+          }
+        }
+      }
+      throw new Error(`PTZ control rejected (response_code ${frame.header.responseCode})${errorDetails}`);
+    }
+    
+    // If action is "start", we need to send a stop command after a short delay
+    // This matches Scrypted's behavior: pan/tilt commands are momentary
+    if (command.action === "start" && direction !== "stop") {
+      // Schedule stop after 500ms (similar to Scrypted behavior)
+      setTimeout(() => {
+        this.ptz(channel, { action: "stop", command: command.command }).catch(() => {
+          // Ignore errors on stop
+        });
+      }, 500);
+    }
+  }
+
+  /**
+   * Move to PTZ preset position.
+   * cmd_id: 19 (MSG_ID_PTZ_CONTROL_PRESET from neolink)
+   * 
+   * @param channel - Channel number (0-based)
+   * @param presetId - Preset ID
+   */
+  async moveToPtzPreset(channel: number, presetId: number): Promise<void> {
+    const channelId = channel + 1; // Convert to 1-based
+    const payloadXml = buildPtzPresetXml(channelId, presetId, "toPos");
+    
+    // Neolink includes extension with channel_id for PTZ preset commands
+    const extensionXml = `<?xml version="1.0" encoding="UTF-8" ?>
+<Extension version="1.1">
+<channelId>${channelId}</channelId>
+</Extension>`;
+    
+    const frame = await this.client.sendFrame({
+      cmdId: BC_CMD_ID_PTZ_CONTROL_PRESET,
+      channel,
+      extensionXml,
+      payloadXml,
+      messageClass: BC_CLASS_MODERN_24,
+    });
+    
+    if (frame.header.responseCode !== 200) {
+      throw new Error(`PTZ preset move rejected (response_code ${frame.header.responseCode})`);
+    }
+  }
+
+  /**
+   * Save current position as PTZ preset.
+   * cmd_id: 19 (MSG_ID_PTZ_CONTROL_PRESET from neolink)
+   * 
+   * @param channel - Channel number (0-based)
+   * @param presetId - Preset ID
+   * @param name - Preset name
+   */
+  async setPtzPreset(channel: number, presetId: number, name: string): Promise<void> {
+    const channelId = channel + 1; // Convert to 1-based
+    const payloadXml = buildPtzPresetXml(channelId, presetId, "setPos", name);
+    
+    // Neolink includes extension with channel_id for PTZ preset commands
+    const extensionXml = `<?xml version="1.0" encoding="UTF-8" ?>
+<Extension version="1.1">
+<channelId>${channelId}</channelId>
+</Extension>`;
+    
+    const frame = await this.client.sendFrame({
+      cmdId: BC_CMD_ID_PTZ_CONTROL_PRESET,
+      channel,
+      extensionXml,
+      payloadXml,
+      messageClass: BC_CLASS_MODERN_24,
+    });
+    
+    if (frame.header.responseCode !== 200) {
+      throw new Error(`PTZ preset save rejected (response_code ${frame.header.responseCode})`);
+    }
+  }
+
+  /**
+   * Get current PTZ position.
+   * cmd_id: 433 (from reolink_aio)
+   * 
+   * @param channel - Channel number (0-based)
+   * @returns PTZ position (pan and tilt)
+   */
+  async getPtzPosition(channel: number): Promise<{ pan?: number; tilt?: number }> {
+    const xml = await this.sendXml({ cmdId: BC_CMD_ID_GET_PTZ_POSITION, channel });
+    
+    const panText = getXmlText(xml, "pPos");
+    const tiltText = getXmlText(xml, "tPos");
+    
+    const result: { pan?: number; tilt?: number } = {};
+    if (panText !== undefined) {
+      result.pan = Number(panText);
+    }
+    if (tiltText !== undefined) {
+      result.tilt = Number(tiltText);
+    }
+    
+    return result;
+  }
+
+  // --------------------
+  // Battery Info API
+  // --------------------
+
+  /**
+   * Get battery information via Baichuan.
+   * cmd_id: 252 (MSG_ID_BATTERY_INFO_LIST from neolink)
+   * 
+   * Note: Battery info is typically pushed via events (cmd_id 252), but can also be requested.
+   * 
+   * @param channel - Channel number (0-based)
+   * @returns Battery information
+   */
+  async getBatteryInfo(channel: number): Promise<BatteryInfo> {
+    const xml = await this.sendXml({ cmdId: BC_CMD_ID_GET_BATTERY_INFO, channel });
+    
+    // Parse battery info from XML
+    // Expected format: <Battery><batteryPercent>...</batteryPercent><chargeStatus>...</chargeStatus></Battery>
+    const batteryPercentText = getXmlText(xml, "batteryPercent");
+    const chargeStatus = getXmlText(xml, "chargeStatus");
+    
+    // chargeStatus: 0=charging, 1=discharging, 2=full
+    // Note: sleep status is typically from GetChannelstatus (cmd_id 145), not from battery info
+    
+    const result: BatteryInfo = {
+      channel,
+    };
+    if (batteryPercentText !== undefined) {
+      result.batteryPercent = Number(batteryPercentText);
+    }
+    // Note: sleeping state is not directly in battery info, may need separate API call
+    
+    return result;
+  }
+
+  // --------------------
+  // PIR State APIs
+  // --------------------
+
+  /**
+   * Get PIR (Passive Infrared) detection settings via Baichuan.
+   * cmd_id: 212 (MSG_ID_GET_PIR_ALARM from neolink)
+   * 
+   * @param channel - Channel number (0-based)
+   * @returns PIR state information
+   */
+  async getPirInfo(channel: number): Promise<PirState> {
+    const xml = await this.sendXml({ cmdId: BC_CMD_ID_GET_PIR_INFO, channel });
+    
+    const enable = getXmlText(xml, "enable");
+    const sensitive = getXmlText(xml, "sensiValue");
+    const reduceAlarm = getXmlText(xml, "reduceFalseAlarm");
+    const interval = getXmlText(xml, "interval");
+    const intervalMax = getXmlText(xml, "intervalSecMax");
+    
+    const state: PirState["state"] = {
+      channel,
+    };
+    if (enable !== undefined) {
+      state.enable = Number(enable);
+    }
+    if (sensitive !== undefined) {
+      state.sensitive = Number(sensitive);
+    }
+    if (reduceAlarm !== undefined) {
+      state.reduceAlarm = Number(reduceAlarm);
+    }
+    if (interval !== undefined) {
+      state.interval = Number(interval);
+    }
+    if (intervalMax !== undefined) {
+      state.intervalMax = Number(intervalMax);
+    }
+    
+    return {
+      enabled: enable === "1",
+      state,
+    };
+  }
+
+  /**
+   * Set PIR (Passive Infrared) detection settings via Baichuan.
+   * cmd_id: 213 (MSG_ID_START_PIR_ALARM from neolink)
+   * 
+   * @param channel - Channel number (0-based)
+   * @param params - PIR settings (enable is required)
+   */
+  async setPirInfo(channel: number, params: { enable: number; sensitive?: number; reduceAlarm?: number; interval?: number }): Promise<void> {
+    // First get current settings to modify
+    const currentXml = await this.sendXml({ cmdId: BC_CMD_ID_GET_PIR_INFO, channel });
+    
+    // Parse and modify XML
+    let modifiedXml = currentXml;
+    
+    if (params.enable !== undefined) {
+      modifiedXml = modifiedXml.replace(/<enable>[^<]*<\/enable>/, `<enable>${params.enable}</enable>`);
+    }
+    if (params.sensitive !== undefined) {
+      modifiedXml = modifiedXml.replace(/<sensiValue>[^<]*<\/sensiValue>/, `<sensiValue>${params.sensitive}</sensiValue>`);
+    }
+    if (params.reduceAlarm !== undefined) {
+      modifiedXml = modifiedXml.replace(/<reduceFalseAlarm>[^<]*<\/reduceFalseAlarm>/, `<reduceFalseAlarm>${params.reduceAlarm}</reduceFalseAlarm>`);
+    }
+    if (params.interval !== undefined) {
+      modifiedXml = modifiedXml.replace(/<interval>[^<]*<\/interval>/, `<interval>${params.interval}</interval>`);
+    }
+    
+    await this.sendXml({ 
+      cmdId: BC_CMD_ID_SET_PIR_INFO, 
+      channel, 
+      payloadXml: modifiedXml,
+    });
+  }
+
+  // --------------------
+  // Motion Detection Set API
+  // --------------------
+
+  /**
+   * Set motion detection settings via Baichuan.
+   * cmd_id: 47 (SetMdAlarm from reolink_aio)
+   * 
+   * @param channel - Channel number (0-based)
+   * @param enabled - Enable/disable motion detection
+   * @param sensitivity - Sensitivity level (optional)
+   */
+  async setMotionDetection(channel: number, enabled: boolean, sensitivity?: number): Promise<void> {
+    // First get current settings
+    const currentXml = await this.sendXml({ cmdId: 46, channel }); // GetMdAlarm
+    
+    // Parse and modify XML
+    // Expected format: <sensInfoNew><enable>...</enable><sensitivityDefault>...</sensitivityDefault></sensInfoNew>
+    let modifiedXml = currentXml;
+    
+    if (enabled !== undefined) {
+      modifiedXml = modifiedXml.replace(/<enable>[^<]*<\/enable>/, `<enable>${enabled ? "1" : "0"}</enable>`);
+    }
+    if (sensitivity !== undefined) {
+      modifiedXml = modifiedXml.replace(/<sensitivityDefault>[^<]*<\/sensitivityDefault>/, `<sensitivityDefault>${sensitivity}</sensitivityDefault>`);
+    }
+    
+    await this.sendXml({ 
+      cmdId: BC_CMD_ID_SET_MOTION_ALARM, 
+      channel, 
+      payloadXml: modifiedXml,
+    });
+  }
+
+  // --------------------
+  // AI Detection Set API
+  // --------------------
+
+  /**
+   * Set AI detection settings via Baichuan.
+   * cmd_id: 343 (SetAiAlarm from reolink_aio)
+   * 
+   * @param channel - Channel number (0-based)
+   * @param aiType - AI type (e.g., "people", "vehicle", "dog_cat", "face", "package")
+   * @param sensitivity - Sensitivity level (optional)
+   * @param stayTime - Stay time/delay (optional)
+   */
+  async setAiDetection(channel: number, aiType: string, sensitivity?: number, stayTime?: number): Promise<void> {
+    // First get current settings for this AI type
+    // Note: GetAiAlarm requires ai_type parameter, we need to build the request XML
+    const getXml = `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<GetAiAlarm version="1.1">
+<channelId>${channel + 1}</channelId>
+<aiType>${xmlEscape(aiType)}</aiType>
+</GetAiAlarm>
+</body>`;
+    
+    const currentXml = await this.sendXml({ 
+      cmdId: 342, // GetAiAlarm
+      channel,
+      payloadXml: getXml,
+    });
+    
+    // Parse and modify XML
+    let modifiedXml = currentXml;
+    
+    if (sensitivity !== undefined) {
+      modifiedXml = modifiedXml.replace(/<sensitivity>[^<]*<\/sensitivity>/, `<sensitivity>${sensitivity}</sensitivity>`);
+    }
+    if (stayTime !== undefined) {
+      modifiedXml = modifiedXml.replace(/<stayTime>[^<]*<\/stayTime>/, `<stayTime>${stayTime}</stayTime>`);
+    }
+    
+    await this.sendXml({ 
+      cmdId: BC_CMD_ID_SET_AI_ALARM, 
+      channel, 
+      payloadXml: modifiedXml,
+    });
+  }
+
+  // --------------------
+  // Siren/Audio Alarm APIs
+  // --------------------
+
+  /**
+   * Get siren/audio alarm status via Baichuan.
+   * cmd_id: 547 (GetAudioAlarm - push event, not a request)
+   * 
+   * Note: Siren status is typically pushed via events (cmd_id 547), not requested directly.
+   * This method attempts to get the status, but it may not work on all cameras.
+   * 
+   * @param channel - Channel number (0-based)
+   * @returns Siren status
+   */
+  async getSiren(channel?: number): Promise<{ enabled: boolean }> {
+    // Note: cmd_id 547 is typically a push event, not a request
+    // We try to get it, but it may not work on all cameras
+    try {
+      const xml = await this.sendXml({ 
+        cmdId: BC_CMD_ID_GET_AUDIO_ALARM, 
+        ...(channel !== undefined ? { channel } : {}),
+      });
+      
+      // Parse siren status from XML
+      // Expected format: <SirenStatus><status>...</status></SirenStatus>
+      const status = getXmlText(xml, "status");
+      return {
+        enabled: status === "1",
+      };
+    } catch {
+      // If request fails, return default (siren status is typically pushed, not requested)
+      return { enabled: false };
+    }
+  }
+
+  /**
+   * Play siren/audio alarm via Baichuan.
+   * cmd_id: 263 (MSG_ID_PLAY_AUDIO from neolink)
+   * 
+   * @param channel - Channel number (0-based, optional for hub-level)
+   * @param on - Enable/disable siren (for manual mode)
+   * @param duration - Number of times to play (for times mode)
+   */
+  async setSiren(channel: number | undefined, on?: boolean, duration?: number): Promise<void> {
+    const channelId = channel !== undefined ? channel + 1 : undefined;
+    let payloadXml: string;
+    
+    if (duration !== undefined) {
+      // Times mode: play siren a specific number of times
+      payloadXml = buildSirenTimesXml(channelId, duration);
+    } else {
+      // Manual mode: turn siren on/off
+      const enable = on ? 1 : 0;
+      payloadXml = buildSirenManualXml(channelId, enable);
+    }
+    
+    try {
+      await this.sendXml({ 
+        cmdId: BC_CMD_ID_AUDIO_ALARM_PLAY, 
+        ...(channel !== undefined ? { channel } : {}),
+        payloadXml,
+      });
+    } catch (error) {
+      // If manual mode fails, try times mode with 2 times (reolink_aio fallback)
+      if (on === true && duration === undefined) {
+        payloadXml = buildSirenTimesXml(channelId, 2);
+        await this.sendXml({ 
+          cmdId: BC_CMD_ID_AUDIO_ALARM_PLAY, 
+          ...(channel !== undefined ? { channel } : {}),
+          payloadXml,
+        });
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  // --------------------
+  // White LED/Floodlight APIs
+  // --------------------
+
+  /**
+   * Get white LED/floodlight state via Baichuan.
+   * cmd_id: 289 (GetWhiteLed/Floodlight from reolink_aio)
+   * 
+   * @param channel - Channel number (0-based)
+   * @returns White LED state
+   */
+  async getWhiteLedState(channel: number): Promise<WhiteLedState> {
+    const xml = await this.sendXml({ cmdId: BC_CMD_ID_GET_WHITE_LED, channel });
+    
+    // Parse white LED state from XML
+    // Expected format: <FloodlightTask><state>...</state><brightness_cur>...</brightness_cur></FloodlightTask>
+    const state = getXmlText(xml, "state");
+    const brightnessText = getXmlText(xml, "brightness_cur");
+    
+    const result: WhiteLedState = {
+      enabled: state === "1",
+    };
+    if (brightnessText !== undefined) {
+      result.brightness = Number(brightnessText);
+    }
+    
+    return result;
+  }
+
+  /**
+   * Set white LED/floodlight state via Baichuan.
+   * cmd_id: 288 (SetWhiteLed state) or 290 (SetWhiteLed task)
+   * 
+   * @param channel - Channel number (0-based)
+   * @param on - Enable/disable white LED
+   * @param brightness - Brightness level (optional)
+   */
+  async setWhiteLedState(channel: number, on?: boolean, brightness?: number): Promise<void> {
+    if (on !== undefined) {
+      // Set state using cmd_id 288
+      const channelId = channel + 1;
+      const payloadXml = buildWhiteLedStateXml(channelId, on ? 1 : 0);
+      
+      await this.sendXml({ 
+        cmdId: BC_CMD_ID_SET_WHITE_LED_STATE, 
+        channel, 
+        payloadXml,
+      });
+    }
+    
+    if (brightness !== undefined) {
+      // Set brightness using cmd_id 290 (requires getting current settings first)
+      const currentXml = await this.sendXml({ cmdId: BC_CMD_ID_GET_WHITE_LED, channel });
+      
+      // Parse and modify XML
+      let modifiedXml = currentXml;
+      modifiedXml = modifiedXml.replace(/<brightness_cur>[^<]*<\/brightness_cur>/, `<brightness_cur>${brightness}</brightness_cur>`);
+      
+      await this.sendXml({ 
+        cmdId: BC_CMD_ID_SET_WHITE_LED_TASK, 
+        channel, 
+        payloadXml: modifiedXml,
+      });
+    }
+  }
+
+  // --------------------
+  // Ability Info API
+  // --------------------
+
+  /**
+   * Get device abilities/capabilities via Baichuan.
+   * cmd_id: 151 (MSG_ID_ABILITY_INFO from neolink)
+   * 
+   * Returns a dictionary of device capabilities and their version numbers.
+   * This is used to determine what features are supported by the device.
+   * 
+   * The token used requests all available sections: system, streaming, PTZ, IO, security, 
+   * replay, disk, network, alarm, record, video, image (based on neolink implementation).
+   * 
+   * @param username - Username for the request (required)
+   * @returns Dictionary of capability names to version numbers or values, keyed by channel number or "Host"
+   */
+  async getAbilityInfo(username: string): Promise<Partial<Record<number | "Host", Record<string, number | string | undefined>>>> {
+    // Return type matches DeviceAbilities from types.ts
+    const user = username;
+    const extensionXml = buildAbilityInfoExtensionXml(user);
+    
+    const xml = await this.sendXml({ 
+      cmdId: BC_CMD_ID_ABILITY_INFO,
+      extensionXml,
+    });
+    
+    // Debug: Log raw XML if debug is enabled
+    if (this.client.getDebugConfig().debugH264 || process.env.BAICHUAN_DEBUG_ABILITY) {
+      console.log("[DEBUG] Raw AbilityInfo XML:", xml);
+    }
+    
+    // Parse AbilityInfo XML
+    // Expected format based on neolink: multiple token sections (system, network, alarm, image, video, security, replay, PTZ, IO, streaming, disk, record)
+    // Each section can contain subModule elements with channelId and abilityValue
+    // <AbilityInfo>
+    //   <system><subModule>...</subModule></system>
+    //   <network><subModule>...</subModule></network>
+    //   <alarm><subModule>...</subModule></alarm>
+    //   <image><subModule><channelId>0</channelId><abilityValue>ispBasic_rw, ledState_rw</abilityValue></subModule></image>
+    //   <video><subModule><channelId>0</channelId><abilityValue>osdName_rw, osdTime_rw</abilityValue></subModule></video>
+    //   <PTZ><subModule>...</subModule></PTZ>
+    //   ... etc
+    // </AbilityInfo>
+    const abilities: Partial<Record<number | "Host", Record<string, number | string | undefined>>> = {};
+    
+    // List of all possible token sections (based on neolink implementation)
+    const tokenSections = [
+      "system", "streaming", "PTZ", "IO", "security", "replay", 
+      "disk", "network", "alarm", "record", "video", "image"
+    ];
+    
+    // Parse each token section
+    for (const tokenSection of tokenSections) {
+      // Use case-insensitive matching and handle both lowercase and mixed case
+      const sectionRegex = new RegExp(`<${tokenSection}[^>]*>([\\s\\S]*?)<\\/${tokenSection}>`, "i");
+      const sectionMatch = xml.match(sectionRegex);
+      
+      if (sectionMatch) {
+        const sectionXml = sectionMatch[1] ?? "";
+        const subModuleMatches = sectionXml.matchAll(/<subModule[^>]*>([\s\S]*?)<\/subModule>/g);
+        
+        for (const match of subModuleMatches) {
+          const subModuleXml = match[1] ?? "";
+          const channelIdText = getXmlText(subModuleXml, "channelId") || getXmlText(subModuleXml, "chnID");
+          const abilityValue = getXmlText(subModuleXml, "abilityValue");
+          
+          if (abilityValue) {
+            const channelKey: number | "Host" = channelIdText ? Number(channelIdText) : "Host";
+            
+            if (!abilities[channelKey]) {
+              abilities[channelKey] = {};
+            }
+            
+            // Parse abilityValue string - contains comma-separated capability names
+            // Capabilities already include their full name (e.g., "preview_rw", "general_rw")
+            const capabilities = abilityValue.split(",").map(c => c.trim()).filter(Boolean);
+            for (const capability of capabilities) {
+              // Mark as available (value 1 means supported)
+              // Capabilities typically end with _rw (read-write) or _ro (read-only)
+              abilities[channelKey]![capability] = 1;
+            }
+          }
+        }
+      }
+    }
+    
+    // Note: The token section parsing above already handles image and video,
+    // so we don't need separate parsing for them
+    
+    // Also check for top-level AbilityInfo items (host-level metadata like userName)
+    const abilityInfoMatch = xml.match(/<AbilityInfo[^>]*>([\s\S]*?)<\/AbilityInfo>/);
+    if (abilityInfoMatch) {
+      const abilityInfoXml = abilityInfoMatch[1] ?? "";
+      
+      // Find direct child elements that aren't image/video/subModule
+      const directChildren = abilityInfoXml.matchAll(/<([A-Za-z]+)[^>]*>([^<]*)<\/\1>/g);
+      
+      if (!abilities["Host"]) {
+        abilities["Host"] = {};
+      }
+      
+      for (const childMatch of directChildren) {
+        const tagName = childMatch[1];
+        const textValue = childMatch[2];
+        
+        // Only store metadata, not parsed ability values (those are already in channel entries)
+        if (tagName && textValue !== undefined && !["image", "video", "subModule"].includes(tagName)) {
+          // Skip internal parsing artifacts
+          if (tagName !== "channelId" && tagName !== "abilityValue") {
+            // Store as string or number
+            const numValue = Number(textValue);
+            abilities["Host"]![tagName] = Number.isNaN(numValue) ? textValue : numValue;
+          }
+        }
+      }
+    }
+    
+    // Clean up: remove empty Host entry if it only has metadata
+    if (abilities["Host"] && Object.keys(abilities["Host"]).length === 0) {
+      delete abilities["Host"];
+    }
+    
+    return abilities;
+  }
+
+  /**
+   * Get ability/capability version for a specific capability and channel.
+   * This is a convenience method that wraps getAbilityInfo.
+   * 
+   * @param username - Username for the request
+   * @param capability - Capability name (e.g., "reboot", "rtsp", "netPort")
+   * @param channel - Channel number (optional, None/null for host-level)
+   * @returns Version number (0 = not supported, >0 = supported with that version)
+   */
+  async getAbilityVersion(username: string, capability: string, channel?: number | null): Promise<number> {
+    const abilities = await this.getAbilityInfo(username);
+    const channelKey: number | "Host" = channel !== undefined && channel !== null ? channel : "Host";
+    const channelAbilities = abilities[channelKey];
+    
+    if (!channelAbilities) {
+      return 0;
+    }
+    
+    const value = channelAbilities[capability];
+    if (typeof value === "number") {
+      return value;
+    }
+    
+    // If value is a string, try to extract version number
+    if (typeof value === "string") {
+      const numValue = Number(value);
+      return Number.isNaN(numValue) ? 0 : numValue;
+    }
+    
+    return 0;
   }
 }
 

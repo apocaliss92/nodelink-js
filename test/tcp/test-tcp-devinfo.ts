@@ -4,8 +4,8 @@
  * Serve per identificare modello/firmware direttamente dalla camera (stesso IP).
  */
 // @ts-expect-error - Path resolution at runtime
-import { ReolinkBaichuanApi } from "../../index.js";
-import { config } from "../env.js";
+import { ReolinkBaichuanApi } from "../../index";
+import { config } from "../env";
 
 async function main() {
   if (!config.tcp.host || !config.tcp.password) {

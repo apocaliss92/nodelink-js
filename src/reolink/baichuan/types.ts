@@ -132,3 +132,22 @@ export interface TwoWayAudioConfig {
   mode?: "mixAudioStream" | string;
 }
 
+/**
+ * Device ability/capability information for a specific channel or host.
+ * 
+ * Keys are capability names (e.g., "preview_rw", "control_rw", "motion_rw", "reboot_rw").
+ * Values are:
+ * - 1 = capability is supported (typically with _rw suffix for read-write, _ro for read-only)
+ * - 0 or undefined = capability is not supported
+ * - string = metadata values (e.g., "userName")
+ */
+export type AbilityInfo = Record<string, number | string | undefined>;
+
+/**
+ * Complete device abilities structure returned by getAbilityInfo.
+ * 
+ * - Channel numbers (0, 1, 2, etc.): Channel-specific abilities
+ * - "Host": Host-level/system abilities
+ */
+export type DeviceAbilities = Partial<Record<number | "Host", AbilityInfo>>;
+

@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash } from "node:crypto";
-import { BC_AES_IV, BC_XML_KEY } from "./constants.js";
+import { BC_AES_IV, BC_XML_KEY } from "./constants";
 
 export type EncryptionProtocol =
   | { kind: "none" }

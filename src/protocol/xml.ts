@@ -98,3 +98,139 @@ export function getXmlText(xml: string, tagName: string): string | undefined {
   return m?.[1];
 }
 
+/**
+ * Build PTZ Control XML for pan/tilt/zoom commands.
+ * Based on neolink ptz.rs implementation.
+ * 
+ * @param channelId - Channel ID (1-based)
+ * @param command - PTZ command: "up", "down", "left", "right", "stop"
+ * @param speed - Movement speed (0.0 to 1.0, typically converted to 1-10)
+ * @returns XML string for PtzControl element
+ */
+export function buildPtzControlXml(channelId: number, command: string, speed: number): string {
+  // Neolink uses xml_ver() which returns "1.1" (checked in crates/core/src/bc/xml.rs:1619)
+  // Based on neolink PtzControl struct: channel_id (u8), speed (f32), command (String)
+  // No timeout or id fields in neolink implementation
+  return `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<PtzControl version="1.1">
+<channelId>${channelId}</channelId>
+<command>${xmlEscape(command)}</command>
+<speed>${speed}</speed>
+</PtzControl>
+</body>`;
+}
+
+/**
+ * Build PTZ Preset XML for setting or moving to preset.
+ * Based on neolink ptz.rs implementation.
+ * 
+ * @param channelId - Channel ID (1-based)
+ * @param presetId - Preset ID (1-255)
+ * @param command - "setPos" to save current position, "toPos" to move to preset
+ * @param name - Preset name (optional, required for setPos)
+ * @returns XML string for PtzPreset element
+ */
+export function buildPtzPresetXml(channelId: number, presetId: number, command: "setPos" | "toPos", name?: string): string {
+  let nameXml = "";
+  if (command === "setPos" && name) {
+    nameXml = `<name>${xmlEscape(name)}</name>`;
+  }
+  return `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<PtzPreset version="1.0">
+<channelId>${channelId}</channelId>
+<presetList>
+<preset>
+<id>${presetId}</id>
+<command>${command}</command>
+${nameXml}
+</preset>
+</presetList>
+</PtzPreset>
+</body>`;
+}
+
+/**
+ * Build Siren/Audio Alarm XML for manual control.
+ * Based on reolink_aio xmls.py SirenManual template.
+ * 
+ * @param channelId - Channel ID (1-based, optional for hub-level)
+ * @param enable - Enable/disable siren (1 or 0)
+ * @returns XML string for audioPlayInfo element
+ */
+export function buildSirenManualXml(channelId: number | undefined, enable: number): string {
+  const channelXml = channelId !== undefined ? `<channelId>${channelId}</channelId>` : "";
+  return `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<audioPlayInfo version="1.1">
+${channelXml}
+<playMode>2</playMode>
+<playDuration>10</playDuration>
+<playTimes>1</playTimes>
+<onOff>${enable}</onOff>
+</audioPlayInfo>
+</body>`;
+}
+
+/**
+ * Build Siren/Audio Alarm XML for times-based control.
+ * Based on reolink_aio xmls.py SirenTimes template.
+ * 
+ * @param channelId - Channel ID (1-based, optional for hub-level)
+ * @param times - Number of times to play
+ * @returns XML string for audioPlayInfo element
+ */
+export function buildSirenTimesXml(channelId: number | undefined, times: number): string {
+  const channelXml = channelId !== undefined ? `<channelId>${channelId}</channelId>` : "";
+  return `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<audioPlayInfo version="1.1">
+${channelXml}
+<playMode>0</playMode>
+<playDuration>10</playDuration>
+<playTimes>${times}</playTimes>
+<onOff>1</onOff>
+</audioPlayInfo>
+</body>`;
+}
+
+/**
+ * Build White LED/Floodlight state XML.
+ * Based on reolink_aio floodlight implementation.
+ * 
+ * @param channelId - Channel ID (1-based)
+ * @param state - State (1 = on, 0 = off)
+ * @returns XML string for WhiteLed element
+ */
+export function buildWhiteLedStateXml(channelId: number, state: number): string {
+  return `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<WhiteLed version="1.1">
+<channelId>${channelId}</channelId>
+<state>${state}</state>
+</WhiteLed>
+</body>`;
+}
+
+/**
+ * Build AbilityInfo extension XML for requesting device capabilities.
+ * Based on neolink crates/core/src/bc_protocol/abilityinfo.rs which requests:
+ * "system, streaming, PTZ, IO, security, replay, disk, network, alarm, record, video, image"
+ * 
+ * Note: reolink_aio only requests "image, video", but neolink requests all available tokens
+ * to get complete ability information.
+ * 
+ * @param username - Username for the request
+ * @returns XML string for Extension element with AbilityInfo request
+ */
+export function buildAbilityInfoExtensionXml(username: string): string {
+  // Request all available ability tokens (based on neolink implementation)
+  // This provides much more comprehensive ability information than just "image, video"
+  return `<?xml version="1.0" encoding="UTF-8" ?>
+<Extension version="1.1">
+<userName>${xmlEscape(username)}</userName>
+<token>system, streaming, PTZ, IO, security, replay, disk, network, alarm, record, video, image</token>
+</Extension>`;
+}
+

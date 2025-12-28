@@ -1,6 +1,6 @@
-import { ReolinkCgiApi } from "../cgi/ReolinkCgiApi.js";
-import type { ReolinkHttpClientOptions } from "../http/ReolinkHttpClient.js";
-import type { ReolinkCmdResponse } from "../http/types.js";
+import { ReolinkCgiApi } from "../cgi/ReolinkCgiApi";
+import type { ReolinkHttpClientOptions } from "../http/ReolinkHttpClient";
+import type { ReolinkCmdResponse } from "../http/types";
 
 function extractChannelsFromChannelStatus(rsp: ReolinkCmdResponse[]): number[] {
   if (!rsp || rsp.length === 0) return [];

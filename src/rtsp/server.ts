@@ -1,6 +1,6 @@
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { buildRtspUrl, type RtspStreamProfile } from "./urls.js";
+import { buildRtspUrl, type RtspStreamProfile } from "./urls";
 
 export type RtspProxyServerOptions = {
   listenPort: number;

@@ -8,9 +8,9 @@
  * - https://github.com/koush/scrypted/blob/2cc7ab08fd6fc58638dba82e0fd83c4cb7d0bb87/plugins/onvif/src/onvif-intercom.ts
  */
 
-import type { ReolinkBaichuanApi } from "../reolink/baichuan/ReolinkBaichuanApi.js";
-import type { ReolinkEvent, StreamProfile } from "../reolink/baichuan/types.js";
-import { buildRtspUrl } from "../rtsp/urls.js";
+import type { ReolinkBaichuanApi } from "../reolink/baichuan/ReolinkBaichuanApi";
+import type { ReolinkEvent, StreamProfile } from "../reolink/baichuan/types";
+import { buildRtspUrl } from "../rtsp/urls";
 import { spawn } from "node:child_process";
 
 /**

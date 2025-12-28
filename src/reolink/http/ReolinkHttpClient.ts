@@ -1,5 +1,5 @@
 import { Agent } from "undici";
-import { ReolinkCmdRequest, type LoginResponseValue, type ReolinkCmdResponse } from "./types.js";
+import { ReolinkCmdRequest, type LoginResponseValue, type ReolinkCmdResponse } from "./types";
 
 export type ReolinkHttpClientOptions = {
   host: string;
