@@ -200,7 +200,7 @@ async function testVideoStreamSimple() {
           if (newVideoFrames > 0) {
             logSuccess(`Received ${newVideoFrames} video frames`);
             
-            // Analizza il primo frame video
+            // Analyze the first video frame
             const videoFrame = videoFrames[videoFrames.length - newVideoFrames];
             if (videoFrame) {
               try {

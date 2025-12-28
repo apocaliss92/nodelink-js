@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Analizza i dump in test/frames-debug/bcmedia_chunk_*.bin e prova a ricostruire
- * la sequenza di pacchetti BCMedia esattamente come fa il runtime.
+ * Analyzes dumps in test/frames-debug/bcmedia_chunk_*.bin and tries to reconstruct
+ * the BCMedia packet sequence exactly like the runtime does.
  *
- * Uso:
+ * Usage:
  *  1) BAICHUAN_DUMP_BCMEDIA=1 npm run test:tcp:video-stream-record
  *  2) npm run test:build && node dist/test/tcp/test-tcp-bcmedia-dump-analyze.js
  */

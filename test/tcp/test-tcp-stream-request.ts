@@ -143,7 +143,7 @@ async function testStreamRequests() {
             api.client.enc
           );
           
-          log(`Analisi frame automatico cmd_id ${frame.header.cmdId}`, {
+          log(`Automatic frame analysis cmd_id ${frame.header.cmdId}`, {
             originalLen: frame.body.length,
             decryptedLen: decrypted.length,
             firstBytes: decrypted.subarray(0, Math.min(32, decrypted.length)).toString("hex"),

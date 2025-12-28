@@ -326,7 +326,7 @@ async function testVideoStreamDetailed() {
     
     await new Promise((resolve) => setTimeout(resolve, 30000));
 
-    // Analisi risultati
+    // Results
     console.log("\n");
     console.log("╔════════════════════════════════════════════════════════════╗");
     console.log("║                    FRAME ANALYSIS                          ║");
