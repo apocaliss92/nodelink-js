@@ -4,7 +4,8 @@
  * Tests: main/sub stream over TCP and UDP.
  */
 
-import { createRtspProxyServer } from "../../dist/index";
+// @ts-expect-error - Path resolution at runtime
+import { createRtspProxyServer } from "../../index.js";
 import { spawn } from "node:child_process";
 import { config } from "../env";
 
@@ -41,7 +42,7 @@ async function testStream(host: string, username: string, password: string, tran
       rtspTransport: transport,
     });
 
-    server.on("error", (err) => {
+    server.on("error", (err: Error) => {
       logError(`RTSP server error (${transport}/${profile})`, err);
       resolve(false);
     });

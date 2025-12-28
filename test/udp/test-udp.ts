@@ -4,8 +4,9 @@
  * Tests: login, ping, device info, network ports, encoding, general info.
  */
 
-import { ReolinkBaichuanApi } from "../../dist/index";
-import { config } from "../env";
+// @ts-expect-error - Path resolution at runtime
+import { ReolinkBaichuanApi } from "../../index.js";
+import { config } from "../env.js";
 
 // Helper functions
 function log(message: string, data?: unknown) {
@@ -40,19 +41,22 @@ async function runUdpTests() {
   console.log(`  Username: ${config.udp.username}`);
   console.log(`  UID: ${config.udp.uid}\n`);
 
+  // Try broadcast first (as per neolink behavior for battery cameras)
+  const useBroadcast = true; // Force broadcast for discovery
   const api = new ReolinkBaichuanApi({
-    host: "255.255.255.255", // broadcast for discovery
+    host: useBroadcast ? "255.255.255.255" : (config.udp.host ?? "255.255.255.255"),
     username: config.udp.username,
     password: config.udp.password,
     transport: "udp",
     udp: {
       mode: "uid",
       uid: config.udp.uid,
-      broadcast: true,
+      host: useBroadcast ? undefined : config.udp.host, // Don't pass host for broadcast
+      broadcast: useBroadcast, // Use broadcast for discovery
       discoveryTimeout: 30_000,
       discoveryRetryInterval: 500,
     },
-    debug: false,
+    debug: true, // Enable debug to see what's happening
   });
 
   // Handle errors
@@ -60,11 +64,9 @@ async function runUdpTests() {
     // Errors are handled in try/catch blocks.
   });
 
-  // Discovery debug
-  api.client.on("debug", (event, data) => {
-    if (event === "discovery_send" || event === "discovery_success") {
-      console.log(`  [DEBUG UDP] ${event}:`, data);
-    }
+  // Discovery debug - show all UDP debug events
+  api.client.on("debug", (event: string, data?: unknown) => {
+    console.log(`  [DEBUG UDP] ${event}:`, data);
   });
 
   const results: Record<string, boolean> = {};

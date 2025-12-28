@@ -55,7 +55,7 @@ export class BaichuanClient extends EventEmitter<{
   private readonly pending = new Map<PendingKey, { resolve: (f: BaichuanFrame) => void; reject: (e: Error) => void }>();
 
   private msgNum = 0;
-  private loggedIn = false;
+  loggedIn = false; // Public to allow ReolinkBaichuanApi to check login status
   subscribed = false; // Public to allow ReolinkBaichuanApi to check subscription status
 
   enc: EncryptionProtocol = { kind: "none" }; // Public to allow ReolinkBaichuanApi to access for audio decryption
@@ -86,11 +86,19 @@ export class BaichuanClient extends EventEmitter<{
       await this.connectUdp();
       return;
     }
-    // auto
+    // auto: try TCP first, then fallback to UDP (like neolink)
     try {
-      await this.connectTcp();
+      // Neolink uses a timeout for TCP discovery (TCP_WAIT = 4 seconds)
+      // We use Promise.race to timeout TCP connection attempt
+      await Promise.race([
+        this.connectTcp(),
+        new Promise<void>((_, reject) => 
+          setTimeout(() => reject(new Error("TCP connection timeout (falling back to UDP)")), 4000)
+        )
+      ]);
     } catch (e) {
       this.emit("debug", "auto:tcp_failed", e);
+      // Fallback to UDP discovery (like neolink "local discovery")
       await this.connectUdp();
     }
   }
@@ -145,6 +153,11 @@ export class BaichuanClient extends EventEmitter<{
       this.pending.clear();
     });
     sock.on("error", (err) => this.emit("error", err));
+    
+    // Forward BcUdpStream debug events
+    sock.on("debug", (event: string, data?: unknown) => {
+      this.emit("debug", `udp_${event}`, data);
+    });
 
     await sock.connect();
   }
@@ -757,7 +770,12 @@ export class BaichuanClient extends EventEmitter<{
       });
     }
 
-    const replyXml = await this.sendXml({
+    // For login, explicitly use channelId 250 (host) and no extension XML
+    // This ensures correct BCEncrypt channelId offset (channelId 250 = 0xFA = offset 250)
+    // Use sendFrame directly (not sendXml from ReolinkBaichuanApi) to avoid recursion
+    // since sendXml might call login() which would cause infinite recursion
+    // Don't pass channel to use channelId 250 (host)
+    const replyFrame = await this.sendFrame({
       cmdId: 1,
       payloadXml: loginXml,
       extensionXml: "",
@@ -767,6 +785,8 @@ export class BaichuanClient extends EventEmitter<{
       encryption: { kind: "bc" },
       timeoutMs: 10_000,
     });
+    
+    const replyXml = this.tryDecryptXml(replyFrame.body, replyFrame.header.channelId, { kind: "bc" });
 
     // If login succeeded, camera replies with 200 in responseCode on modern frames.
     // responseCode 400 typically means authentication failed (bad credentials)

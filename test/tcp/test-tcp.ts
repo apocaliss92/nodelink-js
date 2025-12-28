@@ -4,7 +4,8 @@
  * Tests: login, ping, device info, network ports, encoding, general info.
  */
 
-import { ReolinkBaichuanApi } from "../../dist/index";
+// @ts-expect-error - Path resolution at runtime
+import { ReolinkBaichuanApi } from "../../index.js";
 import { config } from "../env";
 
 // Helper functions

@@ -5,7 +5,8 @@ export function buildP2pXml(inner: string): string {
 }
 
 export function buildC2dC(params: { uid: string; clientPort: number; cid: number; mtu: number; os?: string }): string {
-  const os = params.os ?? "WIN";
+  // Neolink uses "MAC" as OS for discovery (see discovery.rs:361)
+  const os = params.os ?? "MAC";
   return buildP2pXml(
     `<C2D_C>` +
       `<uid>${xmlEscape(params.uid)}</uid>` +

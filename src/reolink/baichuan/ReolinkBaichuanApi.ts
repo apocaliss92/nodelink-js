@@ -67,9 +67,39 @@ export class ReolinkBaichuanApi {
   }
 
   /** Generic Baichuan cmd_id call, returns XML (if any). */
-  async sendXml(params: Parameters<BaichuanClient["sendXml"]>[0]): Promise<string> {
-    await this.client.login();
-    return await this.client.sendXml(params);
+  async sendXml(params: Parameters<BaichuanClient["sendXml"]>[0], retry = 1): Promise<string> {
+    // Only call login() if not already logged in (avoid recursion if called from login itself)
+    if (!this.client.loggedIn) {
+      await this.client.login();
+    }
+    try {
+      // Use sendFrame to check responseCode and handle 400 errors with retry
+      const frame = await this.client.sendFrame(params);
+      
+      // Retry logic for 400 errors (camera might be sleeping, need to wake up)
+      // Based on reolink_aio: if we get a 400 error, wait 1.5s and retry once
+      // This gives battery cameras time to wake up from sleep mode
+      if (frame.header.responseCode === 400 && retry > 0) {
+        if (this.client.getDebugConfig().debugH264) {
+          console.log(`[DEBUG] Got 400 error (responseCode=${frame.header.responseCode}), retrying in 1.5s (camera may be sleeping)...`);
+        }
+        await new Promise(resolve => setTimeout(resolve, 1500)); // Give camera time to wake
+        return await this.sendXml(params, retry - 1);
+      }
+      
+      // Check for empty body with 400 (authentication failure)
+      if (frame.header.responseCode === 400 && frame.body.length === 0) {
+        throw new Error("Baichuan authentication failed (responseCode 400, empty body) - check username/password");
+      }
+      
+      // Decrypt and return XML
+      if (frame.body.length === 0) return "";
+      const xml = (this.client as any).tryDecryptXml(frame.body, frame.header.channelId, this.client.enc);
+      return xml;
+    } catch (error) {
+      // If it's already an Error from sendFrame (timeout, etc.), just throw it
+      throw error;
+    }
   }
 
   /** Generic Baichuan cmd_id call, returns binary data (for commands like Snap). */
@@ -931,6 +961,71 @@ export class ReolinkBaichuanApi {
     // Note: sleeping state is not directly in battery info, may need separate API call
     
     return result;
+  }
+
+  /**
+   * Wake up a sleeping battery camera by sending a "waking command".
+   * Based on reolink_aio: WAKING_COMMANDS like GetEnc (cmd_id 56) can wake up sleeping cameras.
+   * 
+   * Reference: reolink_aio/const.py - WAKING_COMMANDS includes "GetEnc"
+   * 
+   * @param channel - Channel number (0-based)
+   * @param waitAfterWake - Optional delay in milliseconds after sending wake command (default: 1500ms, as in reolink_aio)
+   */
+  async wakeUp(channel: number, waitAfterWake?: number): Promise<void> {
+    // Use GetEnc (cmd_id 56) which is a WAKING_COMMAND per reolink_aio
+    // This command will wake up the camera if it's sleeping
+    try {
+      await this.getEncXml(channel);
+      // Give the camera time to wake up (reolink_aio waits 1.5s after 400 errors)
+      const delay = waitAfterWake ?? 1500;
+      if (delay > 0) {
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    } catch (error) {
+      // If GetEnc fails (e.g., camera is still sleeping), that's OK - we tried
+      // The caller should handle this gracefully
+      if (this.client.getDebugConfig().debugH264) {
+        console.log(`[DEBUG] Wake-up command failed for channel ${channel}:`, error);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Check if a camera is sleeping.
+   * 
+   * This is difficult to determine directly. The method attempts to:
+   * 1. Check if we can successfully get battery info (non-waking command)
+   * 2. If that fails with timeout or connection error, the camera might be sleeping
+   * 
+   * Note: GetBatteryInfo is a NONE_WAKING_COMMAND, so it won't wake up the camera.
+   * However, if the camera is sleeping, it may timeout or fail to respond.
+   * 
+   * @param channel - Channel number (0-based)
+   * @returns true if camera appears to be sleeping, false otherwise
+   */
+  async isSleeping(channel: number): Promise<boolean> {
+    try {
+      // Try to get battery info (non-waking command)
+      // If camera is sleeping, this should timeout or fail
+      await Promise.race([
+        this.getBatteryInfo(channel),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error("Timeout")), 5000)
+        )
+      ]);
+      // If we got a response, camera is not sleeping
+      return false;
+    } catch (error) {
+      // If we get a timeout or connection error, camera might be sleeping
+      // However, it could also be a network issue or camera offline
+      if (this.client.getDebugConfig().debugH264) {
+        console.log(`[DEBUG] isSleeping check for channel ${channel} failed:`, error);
+      }
+      // We can't be 100% sure, but a timeout suggests sleeping
+      return true;
+    }
   }
 
   // --------------------

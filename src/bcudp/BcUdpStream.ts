@@ -2,7 +2,7 @@ import dgram from "node:dgram";
 import { EventEmitter } from "node:events";
 import { type AddressInfo } from "node:net";
 import { setInterval as setIntervalNode } from "node:timers";
-import { BCUDP_DATA_HEADER_SIZE, BCUDP_DEFAULT_MTU, BCUDP_DISCOVERY_PORT_LOCAL_UID } from "./constants";
+import { BCUDP_DATA_HEADER_SIZE, BCUDP_DEFAULT_MTU, BCUDP_DISCOVERY_PORT_LOCAL_UID, BCUDP_DISCOVERY_PORT_LOCAL_ANY } from "./constants";
 import { decodeBcUdpPacket, encodeAckPacket, encodeDataPacket, encodeDiscoveryPacket } from "./packets";
 import { buildC2dC, buildC2dHb, parseD2cCr } from "./xml";
 
@@ -97,7 +97,8 @@ export class BcUdpStream extends EventEmitter<{
 
   private async discoveryUid(sock: dgram.Socket): Promise<void> {
     if (this.opts.mode !== "uid") throw new Error("Internal: discoveryUid called for non-uid mode");
-    const port = this.opts.port ?? BCUDP_DISCOVERY_PORT_LOCAL_UID;
+    // Neolink sends to both ports 2015 and 2018 (see discovery.rs:1119)
+    const ports = this.opts.port ? [this.opts.port] : [BCUDP_DISCOVERY_PORT_LOCAL_ANY, BCUDP_DISCOVERY_PORT_LOCAL_UID];
     const host = this.opts.host ?? "255.255.255.255";
     const broadcast = this.opts.broadcast ?? true;
     // Longer timeout for battery cameras that may be sleeping (default 30s, was 5s)
@@ -114,7 +115,8 @@ export class BcUdpStream extends EventEmitter<{
     const cid = (Math.floor(Math.random() * 0x7fffffff) | 0) || 82000;
 
     // Build discovery packet (will be reused for retries)
-    const xml = buildC2dC({ uid: this.opts.uid, clientPort: localPort, cid, mtu: this.mtu, os: "WIN" });
+    // Neolink uses "MAC" as OS for discovery (see discovery.rs:361)
+    const xml = buildC2dC({ uid: this.opts.uid, clientPort: localPort, cid, mtu: this.mtu });
 
     const reply = await new Promise<{ cid: number; did: number; rhost: string; rport: number }>((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -145,16 +147,18 @@ export class BcUdpStream extends EventEmitter<{
       };
       sock.on("message", onMsg);
 
-      // Send initial discovery packet
+      // Send initial discovery packet to all ports (neolink behavior)
       const sendDiscovery = () => {
         const tid = (Math.floor(Math.random() * 255) | 0) >>> 0;
         const packet = encodeDiscoveryPacket(tid, xml);
-        try {
-          sock.send(packet, port, host);
-          retryCount++;
-          this.emit("debug", "discovery_send", { retryCount, host, port });
-        } catch (e) {
-          this.emit("error", e instanceof Error ? e : new Error(String(e)));
+        for (const port of ports) {
+          try {
+            sock.send(packet, port, host);
+            retryCount++;
+            this.emit("debug", "discovery_send", { retryCount, host, port });
+          } catch (e) {
+            this.emit("error", e instanceof Error ? e : new Error(String(e)));
+          }
         }
       };
 
