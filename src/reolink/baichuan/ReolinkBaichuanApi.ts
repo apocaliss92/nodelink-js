@@ -39,8 +39,8 @@ export class ReolinkBaichuanApi {
     this.client = new BaichuanClient(opts);
   }
 
-  async login(): Promise<void> {
-    await this.client.login();
+  async login(maxEncryption?: import("../../client/BaichuanClient.js").MaxEncryption): Promise<void> {
+    await this.client.login(maxEncryption);
   }
 
   async close(): Promise<void> {

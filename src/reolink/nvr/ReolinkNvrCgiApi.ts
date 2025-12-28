@@ -8,20 +8,20 @@ function extractChannelsFromChannelStatus(rsp: ReolinkCmdResponse[]): number[] {
   const v: any = rsp[0]?.value;
   if (!v) return [];
   
-  // Prova diverse varianti del nome del campo
-  // Nota: alcuni NVR usano "status" invece di "Channelstatus"
+  // Try different variants of the field name.
+  // Note: some NVRs use "status" instead of "Channelstatus".
   let status = v?.status ?? v?.Channelstatus ?? v?.ChannelStatus ?? v?.channelStatus ?? v?.channelstatus;
   
-  // Se non è un array, potrebbe essere che il valore stesso sia l'array
+  // If it's not an array, the value itself might be the array.
   if (!Array.isArray(status)) {
-    // Prova se v stesso è un array
+    // Check if v itself is an array.
     if (Array.isArray(v)) {
       status = v;
     } else {
-      // Prova altri campi comuni
+      // Try other common fields.
       status = v?.channels ?? v?.Channels ?? v?.channel ?? v?.Channel;
       if (!Array.isArray(status)) {
-        // Prova se ci sono campi numerici che indicano canali (es. channel0, channel1, etc.)
+        // Try numeric keys that indicate channels (e.g. channel0, channel1, ...).
         const channelKeys = Object.keys(v).filter(k => 
           /^channel\d+$/i.test(k) || /^ch\d+$/i.test(k)
         );
@@ -39,12 +39,12 @@ function extractChannelsFromChannelStatus(rsp: ReolinkCmdResponse[]): number[] {
   
   const out: number[] = [];
   for (const ch of status) {
-    // Se ch è un numero direttamente
+    // If ch is a number directly.
     if (typeof ch === "number" && Number.isFinite(ch)) {
       out.push(ch);
       continue;
     }
-    // Se ch è un oggetto, cerca il campo channel/id/channelId
+    // If ch is an object, look for channel/id/channelId.
     if (typeof ch === "object" && ch !== null) {
       const id = ch?.channel ?? ch?.id ?? ch?.channelId ?? ch?.Channel ?? ch?.ID ?? ch?.ChannelId;
       if (typeof id === "number" && Number.isFinite(id)) {

@@ -30,7 +30,7 @@ export class BcMediaCodec {
     const results: BcMedia[] = [];
 
     // Try to parse packets from buffer
-    while (this.buffer.length > 0) {
+    while (this.buffer.length >= 4) { // Need at least 4 bytes for magic
       const result = parseBcMedia(this.buffer);
       
       if (result) {
@@ -39,6 +39,8 @@ export class BcMediaCodec {
           // Log recovery if we had to skip data
           if (this.strict) {
             console.warn(`[BcMediaCodec] Recovered stream after skipping ${this.amountSkipped} bytes`);
+          } else {
+            console.warn(`[BcMediaCodec] Recovered stream after skipping ${this.amountSkipped} bytes`);
           }
           this.amountSkipped = 0;
         }
@@ -46,47 +48,34 @@ export class BcMediaCodec {
         results.push(result.media);
         this.buffer = this.buffer.subarray(result.consumed);
       } else {
-        // No complete packet found - check if we have enough data to determine if it's incomplete
-        // For now, if buffer is small (< 100 bytes), wait for more data
-        // If buffer is large but no magic found, might be corrupted
-        if (this.buffer.length < 100) {
-          // Likely incomplete - wait for more data
+        // No complete packet yet.
+        // Follow neolink's approach: if the buffer does NOT start with a known magic,
+        // in non-strict mode we drop the whole buffer (prevents desync and "fake" packets).
+        const magic = this.buffer.readUInt32LE(0);
+        const isInfoV1 = magic === 0x31303031;
+        const isInfoV2 = magic === 0x32303031;
+        const isIFrame = magic >= 0x63643030 && magic <= 0x63643039;
+        const isPFrame = magic >= 0x63643130 && magic <= 0x63643139;
+        const isAac = magic === 0x62773530;
+        const isAdpcm = magic === 0x62773130;
+        const isKnownMagic = isInfoV1 || isInfoV2 || isIFrame || isPFrame || isAac || isAdpcm;
+
+        if (isKnownMagic) {
+          // Likely incomplete: wait for more data.
           break;
         }
-        
-        // Check if buffer starts with a known magic header
-        if (this.buffer.length >= 4) {
-          const magic = this.buffer.readUInt32LE(0);
-          const knownMagics = [
-            0x31303031, // InfoV1
-            0x32303031, // InfoV2
-            0x63643030, // IFrame start
-            0x63643039, // IFrame end
-            0x63643130, // PFrame start
-            0x63643139, // PFrame end
-            0x62773530, // AAC
-            0x62773130, // ADPCM
-          ];
-          
-          const isKnownMagic = knownMagics.some(m => magic >= m && magic <= m + 9);
-          
-          if (isKnownMagic) {
-            // Looks like a valid magic but packet is incomplete - wait for more data
-            break;
-          }
-        }
-        
-        // No valid magic found - might be corrupted
+
+        // Doesn't start with a valid magic: corrupted or misaligned stream.
         if (this.strict) {
-          throw new Error(`[BcMediaCodec] Invalid data in stream (no valid magic found), buffer length: ${this.buffer.length}`);
-        } else {
-          // Skip one byte and try again (similar to neolink's error recovery)
-          if (this.amountSkipped === 0) {
-            console.warn(`[BcMediaCodec] Error in stream, attempting to recover...`);
-          }
-          this.amountSkipped += 1;
-          this.buffer = this.buffer.subarray(1);
+          throw new Error(`[BcMediaCodec] Invalid data in stream (no valid magic at buffer start, len=${this.buffer.length})`);
         }
+
+        if (this.amountSkipped === 0) {
+          console.warn(`[BcMediaCodec] Error in stream, attempting to recover...`);
+        }
+        this.amountSkipped += this.buffer.length;
+        this.buffer = Buffer.alloc(0);
+        break;
       }
     }
 

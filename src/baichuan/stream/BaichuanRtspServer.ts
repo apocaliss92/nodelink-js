@@ -1,9 +1,9 @@
 /**
- * Baichuan RTSP Server - Costruisce un server RTSP che serve stream video Baichuan
- * Basato su neolink: riceve frame video da BaichuanVideoStream e li serve come RTSP
- * 
- * Reference: neolink utilizza GStreamer per costruire il server RTSP
- * Per Node.js, possiamo usare node-rtsp-stream o costruire un server RTSP custom
+ * Baichuan RTSP Server - Builds an RTSP server that serves a Baichuan video stream.
+ * Inspired by neolink: receives frames from BaichuanVideoStream and serves them via RTSP.
+ *
+ * Reference: neolink uses GStreamer to build the RTSP server.
+ * In Node.js, we can use ffmpeg (as done here) or a dedicated RTSP server implementation.
  */
 
 import { BaichuanVideoStream, type BaichuanVideoStreamOptions } from "./BaichuanVideoStream.js";
@@ -11,19 +11,26 @@ import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
 import type { StreamProfile } from "../../reolink/baichuan/types.js";
 
+const NAL_START_CODE_4B = Buffer.from([0x00, 0x00, 0x00, 0x01]);
+const NAL_START_CODE_3B = Buffer.from([0x00, 0x00, 0x01]);
+function hasAnnexBStart(data: Buffer): boolean {
+  if (data.length < 4) return false;
+  return data.subarray(0, 4).equals(NAL_START_CODE_4B) || data.subarray(0, 3).equals(NAL_START_CODE_3B);
+}
+
 export interface BaichuanRtspServerOptions {
   videoStream: BaichuanVideoStream;
   listenPort?: number;
-  path?: string; // RTSP path (es. "/main" o "/sub")
+  path?: string; // RTSP path (e.g. "/main" or "/sub")
 }
 
 /**
- * BaichuanRtspServer - Server RTSP che serve stream video Baichuan
- * 
- * Riceve frame video da BaichuanVideoStream e li serve come stream RTSP.
- * Utilizza ffmpeg per costruire lo stream RTSP dai frame video.
- * 
- * Basato su neolink: neolink usa GStreamer, qui usiamo ffmpeg come alternativa.
+ * BaichuanRtspServer - RTSP server that serves a Baichuan video stream.
+ *
+ * Receives video frames from BaichuanVideoStream and serves them as RTSP.
+ * Uses ffmpeg to build the RTSP stream from raw H.264 frames.
+ *
+ * Inspired by neolink: neolink uses GStreamer, here we use ffmpeg as an alternative.
  */
 export class BaichuanRtspServer extends EventEmitter<{
   client: [string]; // Client connesso
@@ -35,6 +42,9 @@ export class BaichuanRtspServer extends EventEmitter<{
   private path: string;
   private ffmpegProcess: ReturnType<typeof spawn> | undefined;
   private active = false;
+  private videoListener: ((unit: any) => void) | undefined;
+  private seenKeyframe = false;
+  private usingAccessUnit = false;
 
   constructor(options: BaichuanRtspServerOptions) {
     super();
@@ -45,59 +55,134 @@ export class BaichuanRtspServer extends EventEmitter<{
 
   /**
    * Start RTSP server.
-   * Avvia ffmpeg che riceve frame video e li serve come stream RTSP.
+   * Starts ffmpeg which receives video frames and serves them as an RTSP stream.
    */
   async start(): Promise<void> {
     if (this.active) {
       throw new Error("RTSP server already active");
     }
 
-    // Avvia lo stream video Baichuan
+    // Start Baichuan video stream
     await this.videoStream.start();
 
-    // Avvia ffmpeg per servire lo stream RTSP
-    // ffmpeg riceve frame video via stdin e li serve come RTSP
+    // Start ffmpeg to serve RTSP.
+    // ffmpeg receives video frames via stdin and serves them over RTSP.
     const ffmpeg = spawn("ffmpeg", [
       "-hide_banner",
-      "-loglevel", "error",
-      "-f", "h264", // Input format (H.264, potrebbe essere H.265)
-      "-i", "pipe:0", // Legge da stdin
+      "-loglevel", "warning",
+      "-fflags", "+genpts", // Generate PTS
+      "-f", "h264", // Input format (H.264 Annex-B)
+      "-i", "pipe:0", // Read from stdin
       "-c:v", "copy", // Copy video codec (no re-encoding)
-      "-f", "rtsp", // Output format RTSP
+      "-f", "rtsp", // RTSP output format
+      "-rtsp_transport", "tcp", // Use TCP for RTSP (more reliable)
+      "-rtsp_flags", "listen", // RTSP server listen mode
       `rtsp://127.0.0.1:${this.listenPort}${this.path}`, // RTSP URL
-    ]);
+    ], {
+      stdio: ["pipe", "pipe", "pipe"], // stdin, stdout, stderr
+    });
 
     this.ffmpegProcess = ffmpeg;
 
-    // Invia frame video a ffmpeg
-    this.videoStream.on("videoFrame", (videoData: Buffer) => {
+    // Send video frames to ffmpeg
+    this.seenKeyframe = false;
+    this.usingAccessUnit = false;
+    this.videoListener = (unit: any) => {
+      const data: Buffer = Buffer.isBuffer(unit) ? unit : unit?.data;
+      const isKeyframeFromBuffer = (annexB: Buffer): boolean => {
+        for (let i = 0; i < annexB.length; i++) {
+          // 00 00 01
+          if (
+            i + 3 < annexB.length &&
+            annexB[i] === 0x00 &&
+            annexB[i + 1] === 0x00 &&
+            annexB[i + 2] === 0x01
+          ) {
+            const nalHeader = annexB[i + 3];
+            if (((nalHeader ?? 0) & 0x1f) === 5) return true; // IDR
+          }
+          // 00 00 00 01
+          if (
+            i + 4 < annexB.length &&
+            annexB[i] === 0x00 &&
+            annexB[i + 1] === 0x00 &&
+            annexB[i + 2] === 0x00 &&
+            annexB[i + 3] === 0x01
+          ) {
+            const nalHeader = annexB[i + 4];
+            if (((nalHeader ?? 0) & 0x1f) === 5) return true; // IDR
+          }
+        }
+        return false;
+      };
+      const isKeyframe: boolean = Buffer.isBuffer(unit) ? isKeyframeFromBuffer(data) : Boolean(unit?.isKeyframe);
+      if (!Buffer.isBuffer(data)) return;
+
+      if (!Buffer.isBuffer(unit)) {
+        this.usingAccessUnit = true;
+      } else if (this.usingAccessUnit) {
+        return;
+      }
+
+      if (!this.seenKeyframe) {
+        if (!isKeyframe) return;
+        this.seenKeyframe = true;
+        console.log(`[BaichuanRtspServer] ✅ Primo keyframe ricevuto: inizio a feedare ffmpeg`);
+      }
+
+      // Mitigazione: scarta frame non Annex-B per evitare corruzione/nero.
+      if (!hasAnnexBStart(data)) {
+        return;
+      }
+
       if (ffmpeg.stdin && !ffmpeg.stdin.destroyed) {
         try {
-          ffmpeg.stdin.write(videoData);
+          ffmpeg.stdin.write(data);
         } catch (error) {
           this.emit("error", error instanceof Error ? error : new Error(String(error)));
         }
       }
-    });
+    };
+
+    this.videoStream.on("videoAccessUnit" as any, this.videoListener as any);
+    this.videoStream.on("videoFrame", this.videoListener as any);
 
     // Gestisci output ffmpeg (stderr contiene log)
     let ffmpegOutput = "";
+    let ffmpegReady = false;
+    const serverUrl = `rtsp://127.0.0.1:${this.listenPort}${this.path}`;
+    
     ffmpeg.stderr.on("data", (data) => {
       const output = data.toString();
       ffmpegOutput += output;
-      // Log solo errori critici
-      if (output.includes("error") || output.includes("Error") || output.includes("Invalid")) {
-        console.error(`[BaichuanRtspServer] FFmpeg: ${output.trim()}`);
+      
+    // Log when ffmpeg is ready
+      if (!ffmpegReady && (output.includes("Stream") || output.includes("rtsp") || output.includes("listening"))) {
+        ffmpegReady = true;
+        console.log(`[BaichuanRtspServer] ✅ FFmpeg RTSP server pronto: ${serverUrl}`);
+      }
+      
+      // Log solo errori critici (non warning di decodifica H.264 che sono normali)
+      // Gli errori "top block unavailable" e "error while decoding MB" sono warning normali
+      // quando alcuni frame sono frammentati, non errori critici
+      const isCriticalError = 
+        (output.includes("error") || output.includes("Error") || output.includes("Invalid")) &&
+        !output.includes("top block unavailable") &&
+        !output.includes("error while decoding MB") &&
+        !output.includes("concealing") &&
+        !output.includes("left block unavailable") &&
+        !output.includes("bottom block unavailable");
+      
+      if (isCriticalError) {
+        console.error(`[BaichuanRtspServer] FFmpeg critical error: ${output.trim()}`);
         this.emit("error", new Error(`FFmpeg error: ${output}`));
       }
     });
     
-    // Log quando ffmpeg è pronto
+    // Log when ffmpeg is ready (stdout)
     ffmpeg.stdout.on("data", (data) => {
       const output = data.toString();
-      if (output.includes("Stream") || output.includes("rtsp")) {
-        console.log(`[BaichuanRtspServer] FFmpeg: ${output.trim()}`);
-      }
+      console.log(`[BaichuanRtspServer] FFmpeg stdout: ${output.trim()}`);
     });
 
     ffmpeg.on("close", (code) => {
@@ -126,6 +211,12 @@ export class BaichuanRtspServer extends EventEmitter<{
 
     // Ferma lo stream video
     await this.videoStream.stop();
+
+    if (this.videoListener) {
+      this.videoStream.removeListener("videoAccessUnit" as any, this.videoListener as any);
+      this.videoStream.removeListener("videoFrame", this.videoListener as any);
+    }
+    this.videoListener = undefined;
 
     // Ferma ffmpeg
     if (this.ffmpegProcess) {

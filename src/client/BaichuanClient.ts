@@ -167,13 +167,16 @@ export class BaichuanClient extends EventEmitter<{
     // Check if this frame matches a video stream subscription
     // Similar to neolink's subscribe mechanism: frames with matching cmdId and msgNum
     const subscribedMsgNums = this.videoSubscriptions.get(frame.header.cmdId);
-    if (subscribedMsgNums && subscribedMsgNums.has(frame.header.msgNum)) {
-      // This is a subscribed video stream frame - emit as push
-      this.emit("push", frame);
+    if (subscribedMsgNums && subscribedMsgNums.size > 0) {
+      // Se ci sono subscription attive per questo cmdId (tipicamente MSG_ID_VIDEO=3),
+      // emettiamo solo i frame che matchano msgNum. Questo evita mixing di stream vecchi/paralleli.
+      if (subscribedMsgNums.has(frame.header.msgNum)) {
+        this.emit("push", frame);
+      }
       return;
     }
 
-    // unrequested -> push/stream
+    // No subscription: behave as before (generic push)
     this.emit("push", frame);
 
     // Parse events (cmd_id 33 = Motion/AI/Visitor events)
@@ -647,8 +650,14 @@ export class BaichuanClient extends EventEmitter<{
     if (this.loggedIn) return;
 
     // 1) legacy header-only login upgrade to obtain nonce + encryption type
+    // IMPORTANT (neolink): AES request uses 0xdc12.
+    // Some cameras will close the socket if you request an unsupported enc byte (es. 0xdc02).
     const encByte =
-      maxEncryption === "none" ? 0xdc00 : maxEncryption === "bc" ? 0xdc01 : maxEncryption === "aes" ? 0xdc02 : 0xdc12;
+      maxEncryption === "none"
+        ? 0xdc00
+        : maxEncryption === "bc"
+          ? 0xdc01
+          : /* aes/full_aes */ 0xdc12;
 
     await this.connect();
     // legacy login is supported on both transports

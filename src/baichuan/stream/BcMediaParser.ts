@@ -18,6 +18,12 @@ export interface BcMediaIframe {
   videoType: "H264" | "H265";
   microseconds: number;
   time?: number;
+  /** Header addizionale raw (se presente) */
+  additionalHeader?: Buffer;
+  /** Dimensione header addizionale */
+  additionalHeaderSize?: number;
+  /** Unknown u32 field after microseconds (neolink ignores it) */
+  unknown?: number;
   data: Buffer; // Raw video data (H.264/H.265 NAL units)
 }
 
@@ -25,6 +31,12 @@ export interface BcMediaPframe {
   type: "Pframe";
   videoType: "H264" | "H265";
   microseconds: number;
+  /** Header addizionale raw (se presente) */
+  additionalHeader?: Buffer;
+  /** Dimensione header addizionale */
+  additionalHeaderSize?: number;
+  /** Unknown u32 field after microseconds (neolink ignores it) */
+  unknown?: number;
   data: Buffer; // Raw video data (H.264/H.265 NAL units)
 }
 
@@ -191,15 +203,14 @@ function parseIframe(buf: Buffer): { media: BcMediaIframe; consumed: number } | 
   offset += 4;
 
   let time: number | undefined;
+  // In neolink, I-frame ha time (u32) dentro l'additional header, ma per alcuni modelli
+  // l'intero additional header potrebbe essere rilevante (es. IV/flags). Quindi lo conserviamo COMPLETO.
+  if (buf.length < offset + additionalHeaderSize) return null;
+  const additionalHeader = buf.subarray(offset, offset + additionalHeaderSize);
   if (additionalHeaderSize >= 4) {
-    time = buf.readUInt32LE(offset);
-    offset += 4;
+    time = additionalHeader.readUInt32LE(0);
   }
-
-  // Skip remaining additional header
-  if (additionalHeaderSize > 4) {
-    offset += additionalHeaderSize - 4;
-  }
+  offset += additionalHeaderSize;
 
   // Read payload data
   if (buf.length < offset + payloadSize) return null;
@@ -216,6 +227,9 @@ function parseIframe(buf: Buffer): { media: BcMediaIframe; consumed: number } | 
     videoType,
     microseconds,
     ...(time !== undefined ? { time } : {}),
+    additionalHeader,
+    additionalHeaderSize,
+    unknown,
     data,
   };
 
@@ -241,6 +255,7 @@ function parsePframe(buf: Buffer): { media: BcMediaPframe; consumed: number } | 
 
   // Skip additional header
   if (buf.length < offset + additionalHeaderSize) return null;
+  const additionalHeader = buf.subarray(offset, offset + additionalHeaderSize);
   offset += additionalHeaderSize;
 
   // Read payload data
@@ -257,6 +272,9 @@ function parsePframe(buf: Buffer): { media: BcMediaPframe; consumed: number } | 
     type: "Pframe",
     videoType,
     microseconds,
+    additionalHeader,
+    additionalHeaderSize,
+    unknown,
     data,
   };
 
@@ -271,19 +289,25 @@ function parseAac(buf: Buffer): { media: BcMediaAac; consumed: number } | null {
 
   if (payloadSize !== payloadSizeB) return null;
 
-  if (buf.length < 8 + payloadSize) return null;
-  const data = buf.subarray(8, 8 + payloadSize);
+  // In neolink, after the payload there is 8-byte alignment padding (based on payloadSize)
+  const headerLen = 8; // magic(4) + size(2) + sizeB(2)
+  const padSize = payloadSize % PAD_SIZE === 0 ? 0 : PAD_SIZE - (payloadSize % PAD_SIZE);
+  const totalLen = headerLen + payloadSize + padSize;
+  if (buf.length < totalLen) return null;
+  const data = buf.subarray(headerLen, headerLen + payloadSize);
 
   const media: BcMediaAac = {
     type: "Aac",
     data,
   };
 
-  return { media, consumed: 8 + payloadSize };
+  return { media, consumed: totalLen };
 }
 
 function parseAdpcm(buf: Buffer): { media: BcMediaAdpcm; consumed: number } | null {
-  if (buf.length < 10) return null;
+  // neolink:
+  // magic(4) + payload_size(u16) + payload_size_b(u16) + magic_data(u16=0x0100) + half_block_size(u16) + data(block_size) + padding
+  if (buf.length < 12) return null;
 
   const payloadSize = buf.readUInt16LE(4);
   const payloadSizeB = buf.readUInt16LE(6);
@@ -294,14 +318,27 @@ function parseAdpcm(buf: Buffer): { media: BcMediaAdpcm; consumed: number } | nu
   const magicData = buf.readUInt16LE(8);
   if (magicData !== 0x0100) return null;
 
-  if (buf.length < 10 + payloadSize) return null;
-  const data = buf.subarray(10, 10 + payloadSize);
+  // half_block_size (neolink lo legge ma non lo usa per la lunghezza)
+  const halfBlockSize = buf.readUInt16LE(10);
+  void halfBlockSize;
+
+  // payloadSize include SUB_HEADER_SIZE (4 bytes: magicData + halfBlockSize)
+  const subHeaderSize = 4;
+  if (payloadSize < subHeaderSize) return null;
+  const blockSize = payloadSize - subHeaderSize;
+
+  const headerLen = 12; // magic+sizes+magicData+halfBlockSize
+  const padSize = payloadSize % PAD_SIZE === 0 ? 0 : PAD_SIZE - (payloadSize % PAD_SIZE);
+  const totalLen = headerLen + blockSize + padSize;
+  if (buf.length < totalLen) return null;
+
+  const data = buf.subarray(headerLen, headerLen + blockSize);
 
   const media: BcMediaAdpcm = {
     type: "Adpcm",
     data,
   };
 
-  return { media, consumed: 10 + payloadSize };
+  return { media, consumed: totalLen };
 }
 

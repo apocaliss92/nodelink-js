@@ -19,6 +19,8 @@ export * from "./rtsp/server.js";
 export * from "./scrypted/helpers.js";
 export * from "./baichuan/stream/BaichuanVideoStream.js";
 export * from "./baichuan/stream/BaichuanRtspServer.js";
+export * from "./baichuan/stream/BaichuanHttpStreamServer.js";
 export * from "./baichuan/stream/BcMediaParser.js";
 export * from "./baichuan/stream/BcMediaCodec.js";
+export * from "./baichuan/stream/H264Converter.js";
 
