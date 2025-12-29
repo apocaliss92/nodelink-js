@@ -1,52 +1,51 @@
-import { BaichuanClient, type BaichuanClientOptions } from "../../client/BaichuanClient";
-import { BaichuanVideoStream, type BaichuanVideoStreamOptions } from "../../baichuan/stream/BaichuanVideoStream";
+import { EventEmitter } from "node:events";
 import { BaichuanRtspServer, type BaichuanRtspServerOptions } from "../../baichuan/stream/BaichuanRtspServer";
-import { createNativeStream } from "../../scrypted/helpers";
-import { xmlEscape, getXmlText, buildPreviewXml, buildPreviewStopXml, buildChannelExtensionXml, buildBinaryExtensionXml, buildPtzControlXml, buildPtzPresetXml, buildStartZoomFocusXml, buildSirenManualXml, buildSirenTimesXml, buildWhiteLedStateXml, buildAbilityInfoExtensionXml } from "../../protocol/xml";
-import { 
-  BC_CMD_ID_VIDEO, 
-  BC_CMD_ID_VIDEO_STOP, 
+import { BaichuanClient, type BaichuanClientOptions } from "../../client/BaichuanClient";
+import {
   BC_CLASS_MODERN_24,
-  BC_CMD_ID_TALK_ABILITY,
-  BC_CMD_ID_TALK_CONFIG,
-  BC_CMD_ID_TALK,
-  BC_CMD_ID_TALK_RESET,
-  BC_CMD_ID_PTZ_CONTROL,
-  BC_CMD_ID_PTZ_CONTROL_PRESET,
-  BC_CMD_ID_GET_PTZ_PRESET,
-  BC_CMD_ID_GET_PTZ_POSITION,
-  BC_CMD_ID_GET_ZOOM_FOCUS,
-  BC_CMD_ID_SET_ZOOM_FOCUS,
+  BC_CMD_ID_ABILITY_INFO,
+  BC_CMD_ID_AUDIO_ALARM_PLAY,
+  BC_CMD_ID_GET_AUDIO_ALARM,
   BC_CMD_ID_GET_BATTERY_INFO,
   BC_CMD_ID_GET_PIR_INFO,
-  BC_CMD_ID_SET_PIR_INFO,
-  BC_CMD_ID_SET_MOTION_ALARM,
-  BC_CMD_ID_SET_AI_ALARM,
-  BC_CMD_ID_GET_AUDIO_ALARM,
-  BC_CMD_ID_AUDIO_ALARM_PLAY,
+  BC_CMD_ID_GET_PTZ_POSITION,
+  BC_CMD_ID_GET_PTZ_PRESET,
   BC_CMD_ID_GET_WHITE_LED,
+  BC_CMD_ID_GET_ZOOM_FOCUS,
+  BC_CMD_ID_PTZ_CONTROL,
+  BC_CMD_ID_PTZ_CONTROL_PRESET,
+  BC_CMD_ID_SET_AI_ALARM,
+  BC_CMD_ID_SET_MOTION_ALARM,
+  BC_CMD_ID_SET_PIR_INFO,
   BC_CMD_ID_SET_WHITE_LED_STATE,
   BC_CMD_ID_SET_WHITE_LED_TASK,
-  BC_CMD_ID_ABILITY_INFO,
+  BC_CMD_ID_SET_ZOOM_FOCUS,
+  BC_CMD_ID_TALK,
+  BC_CMD_ID_TALK_ABILITY,
+  BC_CMD_ID_TALK_CONFIG,
+  BC_CMD_ID_TALK_RESET,
+  BC_CMD_ID_VIDEO,
+  BC_CMD_ID_VIDEO_STOP,
 } from "../../protocol/constants";
+import { buildAbilityInfoExtensionXml, buildBinaryExtensionXml, buildChannelExtensionXml, buildPreviewStopXml, buildPreviewXml, buildPtzControlXml, buildPtzPresetXml, buildSirenManualXml, buildSirenTimesXml, buildStartZoomFocusXml, buildWhiteLedStateXml, getXmlText, xmlEscape } from "../../protocol/xml";
 import {
-  type OsdConfig,
-  type AIState,
-  type PtzPreset,
-  type PtzCommand,
-  type BatteryInfo,
-  type PirState,
-  type WhiteLedState,
-  type AudioAlarmParams,
-  type Events,
-  type StreamMetadata,
-  type ChannelStreamMetadata,
-  type StreamProfile,
-  type VideoCodec,
-  type ReolinkEvent,
-  type MotionEvent,
   type AIEvent,
+  type AIState,
+  type BatteryInfo,
+  type ChannelStreamMetadata,
+  type Events,
+  type OsdConfig,
+  type PirState,
+  type PtzCommand,
+  type PtzPreset,
+  type ReolinkEvent,
+  type ReolinkSimpleEvent,
+  type ReolinkSimpleEventType,
+  type StreamMetadata,
+  type StreamProfile,
   type TwoWayAudioConfig,
+  type VideoCodec,
+  type WhiteLedState
 } from "./types";
 
 type TalkAbility = import("./types").TalkAbility;
@@ -136,6 +135,45 @@ function parseTalkAbilityXml(xml: string): TalkAbility {
   };
 }
 
+function mapToSimpleEvent(event: ReolinkEvent): ReolinkSimpleEvent | null {
+  const timestamp = event.timestamp ?? Date.now();
+
+  if (event.type === "motion") {
+    return { type: "motion", channel: event.channel, timestamp };
+  }
+
+  if (event.type === "visitor") {
+    // Common use-case: doorbells/visitor notifications.
+    return { type: "doorbell", channel: event.channel, timestamp };
+  }
+
+  if (event.type === "daynight") {
+    return { type: "daynight", channel: event.channel, timestamp };
+  }
+
+  if (event.type === "ai") {
+    const ai = event.ai;
+    const aiType = ai?.type;
+
+    const map: Record<NonNullable<AIEvent["type"]>, ReolinkSimpleEventType> = {
+      people: "people",
+      vehicle: "vehicle",
+      dog_cat: "animal",
+      face: "face",
+      package: "package",
+      other: "other",
+    };
+
+    return {
+      type: aiType ? map[aiType] : "other",
+      channel: event.channel,
+      timestamp,
+    };
+  }
+
+  return null;
+}
+
 function buildTalkConfigPayloadXml(config: TalkConfig): string {
   const audio = config.audioConfig;
   return `<?xml version="1.0" encoding="UTF-8" ?>
@@ -178,10 +216,21 @@ function encodeBcMediaAdpcmBlock(block: Buffer, halfBlockSize: number): Buffer {
 
 export class ReolinkBaichuanApi {
   readonly client: BaichuanClient;
+  /**
+   * Minimal event emitter: emits only `{ type, channel, timestamp }`.
+   * Useful for integrations that only need high-level event categories.
+   */
+  readonly simpleEvents = new EventEmitter<{ event: [ReolinkSimpleEvent] }>();
   private rtspServers = new Set<BaichuanRtspServer>(); // Track all RTSP servers for cleanup
 
   constructor(opts: BaichuanClientOptions) {
     this.client = new BaichuanClient(opts);
+
+    // Re-emit parsed events in a minimal, stable shape.
+    this.client.on("event", (event) => {
+      const mapped = mapToSimpleEvent(event);
+      if (mapped) this.simpleEvents.emit("event", mapped);
+    });
   }
 
   async login(maxEncryption?: import("../../client/BaichuanClient.js").MaxEncryption): Promise<void> {

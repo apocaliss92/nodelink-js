@@ -101,12 +101,34 @@ export interface AIEvent {
     detected: boolean;
     timestamp?: number;
 }
-export interface ReolinkEvent {
+export interface ReolinkMotionNotification {
     channel: number;
-    type: "motion" | "ai" | "visitor" | "daynight";
-    motion?: MotionEvent;
-    ai?: AIEvent;
+    type: "motion";
+    motion: MotionEvent;
     timestamp?: number;
+}
+export interface ReolinkAiNotification {
+    channel: number;
+    type: "ai";
+    ai: AIEvent;
+    timestamp?: number;
+}
+export interface ReolinkVisitorNotification {
+    channel: number;
+    type: "visitor";
+    timestamp?: number;
+}
+export interface ReolinkDayNightNotification {
+    channel: number;
+    type: "daynight";
+    timestamp?: number;
+}
+export type ReolinkEvent = ReolinkMotionNotification | ReolinkAiNotification | ReolinkVisitorNotification | ReolinkDayNightNotification;
+export type ReolinkSimpleEventType = "motion" | "doorbell" | "people" | "vehicle" | "animal" | "face" | "package" | "daynight" | "other";
+export interface ReolinkSimpleEvent {
+    type: ReolinkSimpleEventType;
+    channel: number;
+    timestamp: number;
 }
 export interface TwoWayAudioConfig {
     channel: number;

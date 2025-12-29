@@ -55,7 +55,7 @@ async function main(): Promise<void> {
   try {
     await api.subscribeEvents();
 
-    api.client.on("event", (event: any) => {
+    const onRichEvent = (event: any) => {
       if (event.type === "motion") {
         console.log("[EVENT] motion", {
           channel: event.channel,
@@ -75,11 +75,24 @@ async function main(): Promise<void> {
         return;
       }
       console.log("[EVENT]", event);
-    });
+    };
+
+    const onSimpleEvent = (event: any) => {
+      console.log("[SIMPLE]", {
+        type: event.type,
+        channel: event.channel,
+        timestamp: event.timestamp,
+      });
+    };
+
+    api.client.on("event", onRichEvent);
+    api.simpleEvents.on("event", onSimpleEvent);
 
     await new Promise<void>((resolve) => setTimeout(resolve, seconds * 1000));
     console.log("\n[OK] Events test completed (timeout)");
   } finally {
+    api.client.removeAllListeners("event");
+    api.simpleEvents.removeAllListeners("event");
     await api.close();
   }
 }

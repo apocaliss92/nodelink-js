@@ -108,7 +108,7 @@ async function main(): Promise<void> {
   let motionEvents = 0;
   let aiEvents = 0;
 
-  const onEvent = (event: any) => {
+  const onRichEvent = (event: any) => {
     totalEvents++;
 
     if (event?.type === "motion") {
@@ -136,10 +136,19 @@ async function main(): Promise<void> {
     console.log("[EVENT]", event);
   };
 
+  const onSimpleEvent = (event: any) => {
+    console.log("[SIMPLE]", {
+      type: event.type,
+      channel: event.channel,
+      timestamp: event.timestamp,
+    });
+  };
+
   const startedAt = Date.now();
 
   try {
-    api.client.on("event", onEvent);
+    api.client.on("event", onRichEvent);
+    api.simpleEvents.on("event", onSimpleEvent);
 
     console.log("[INFO] Subscribing to events...");
     await api.subscribeEvents();
@@ -179,7 +188,8 @@ async function main(): Promise<void> {
     console.log("\n[OK] Events+PTZ trigger test completed (timeout)");
     console.log("[INFO] Counters", { totalEvents, motionEvents, aiEvents });
   } finally {
-    api.client.off("event", onEvent);
+    api.client.off("event", onRichEvent);
+    api.simpleEvents.off("event", onSimpleEvent);
     await api.close();
   }
 }
