@@ -16,6 +16,8 @@ import * as dgram from "node:dgram";
 import type { StreamProfile } from "../../reolink/baichuan/types";
 import type { ReolinkBaichuanApi } from "../../reolink/baichuan/ReolinkBaichuanApi";
 import { createNativeStream } from "../../scrypted/helpers";
+import { splitAnnexBToNalPayloads } from "./H264Converter";
+import { extractVpsFromAnnexB, extractSpsFromAnnexB, extractPpsFromAnnexB } from "./H265Converter";
 
 export interface BaichuanRtspServerOptions {
   /** API instance (required) */
@@ -66,6 +68,24 @@ export class BaichuanRtspServer extends EventEmitter<{
     udpSocket: dgram.Socket | null;
     rtspSocket: net.Socket | null;
   }>();
+  // Track when first frame arrives from camera
+  private firstFramePromise: Promise<void> | null = null;
+  private firstFrameResolve: (() => void) | null = null;
+  private firstFrameReceived = false;
+  // Parameter sets for SDP (extracted from first frame)
+  private h264Sps: Buffer | null = null;
+  private h264Pps: Buffer | null = null;
+  private h265Vps: Buffer | null = null;
+  private h265Sps: Buffer | null = null;
+  private h265Pps: Buffer | null = null;
+  // Temporary stream for extracting parameter sets during DESCRIBE
+  private tempStreamGenerator: AsyncGenerator<{
+    audio: boolean;
+    data: Buffer;
+    codec: string | null;
+    sampleRate: number | null;
+    videoType?: "H264" | "H265";
+  }, void, unknown> | null = null;
 
   constructor(options: BaichuanRtspServerOptions) {
     super();
@@ -250,13 +270,46 @@ export class BaichuanRtspServer extends EventEmitter<{
             "Public": "DESCRIBE, SETUP, TEARDOWN, PLAY, PAUSE, OPTIONS",
           });
         } else if (method === "DESCRIBE") {
-          // Generate SDP
+          // For first client, start native stream and wait for parameter sets
+          // This ensures SDP includes parameter sets for proper decoding
+          if (!this.firstFrameReceived && this.connectedClients.size === 0) {
+            // Start native stream to get first frame with parameter sets
+            if (!this.nativeStreamActive) {
+              await this.startNativeStream();
+            }
+            // Wait for first frame (with timeout to avoid blocking too long)
+            // This ensures parameter sets are extracted before SDP is generated
+            try {
+              await Promise.race([
+                this.firstFramePromise || Promise.resolve(),
+                new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout waiting for first frame")), 10000))
+              ]);
+              console.log(`[BaichuanRtspServer] First frame received, parameter sets extracted for SDP`);
+            } catch (error) {
+              console.warn(`[BaichuanRtspServer] Timeout waiting for first frame for SDP: ${error}`);
+              // Continue anyway - SDP will be generated without parameter sets
+              // Frames should have parameter sets prepended anyway
+            }
+          }
+          
+          // Generate SDP (parameter sets will be included if available)
           const sdp = this.generateSdp();
           sendResponse(200, "OK", {
             "Content-Type": "application/sdp",
             "Content-Base": `rtsp://${this.listenHost}:${this.listenPort}${this.path}/`,
           }, sdp);
         } else if (method === "SETUP") {
+          // We currently serve video only (track0). An audio track is not implemented yet.
+          // Some RTSP clients (ffmpeg) will issue one SETUP per track advertised in SDP.
+          // If we accepted track1 without actually sending it, clients may teardown early.
+          const isTrack0 = url?.includes("track0");
+          if (!isTrack0) {
+            sendResponse(404, "Not Found", {
+              "Session": sessionId || `session_${Date.now()}_${Math.random().toString(36).substring(7)}`,
+            });
+            continue;
+          }
+
           // Add client first
           this.connectedClients.add(clientId);
           this.emit("client", clientId);
@@ -281,16 +334,18 @@ export class BaichuanRtspServer extends EventEmitter<{
             rtspSocket: socket,
           });
           
-          // Start ffmpeg for this client
-          await this.startClientFfmpeg(clientId, socket, useTcpInterleaved, (proc, udpSock) => {
-            clientFfmpeg = proc;
-            clientUdpSocket = udpSock;
-            const resources = this.clientResources.get(clientId);
-            if (resources) {
-              resources.ffmpeg = proc;
-              resources.udpSocket = udpSock;
-            }
-          });
+          // Start ffmpeg for this client once (track0).
+          if (!clientFfmpeg) {
+            await this.startClientFfmpeg(clientId, socket, useTcpInterleaved, (proc, udpSock) => {
+              clientFfmpeg = proc;
+              clientUdpSocket = udpSock;
+              const resources = this.clientResources.get(clientId);
+              if (resources) {
+                resources.ffmpeg = proc;
+                resources.udpSocket = udpSock;
+              }
+            });
+          }
 
           if (useTcpInterleaved) {
             sendResponse(200, "OK", {
@@ -326,17 +381,50 @@ export class BaichuanRtspServer extends EventEmitter<{
    */
   private generateSdp(): string {
     const codec = this.detectedVideoType === "H265" ? "H265" : "H264";
-    const payloadType = 96;
+    const videoPayloadType = 96;
     
     let sdp = "v=0\r\n";
     sdp += `o=- ${Date.now()} ${Date.now()} IN IP4 ${this.listenHost}\r\n`;
     sdp += "s=Baichuan Stream\r\n";
     sdp += `c=IN IP4 ${this.listenHost}\r\n`;
     sdp += "t=0 0\r\n";
-    sdp += `m=video 0 RTP/AVP/TCP ${payloadType}\r\n`;
-    sdp += `a=rtpmap:${payloadType} ${codec}/90000\r\n`;
+    
+    // Video track
+    sdp += `m=video 0 RTP/AVP/TCP ${videoPayloadType}\r\n`;
+    sdp += `a=rtpmap:${videoPayloadType} ${codec}/90000\r\n`;
     sdp += `a=control:track0\r\n`;
-    sdp += `a=fmtp:${payloadType} packetization-mode=1\r\n`;
+    
+    // Add parameter sets to fmtp
+    let fmtp = `packetization-mode=1`;
+    
+    if (this.detectedVideoType === "H264") {
+      // H.264: sprop-parameter-sets contains SPS and PPS in base64
+      if (this.h264Sps && this.h264Pps) {
+        const spsBase64 = this.h264Sps.toString("base64");
+        const ppsBase64 = this.h264Pps.toString("base64");
+        fmtp += `;sprop-parameter-sets=${spsBase64},${ppsBase64}`;
+        console.log(`[BaichuanRtspServer] SDP includes H.264 parameter sets (SPS: ${this.h264Sps.length} bytes, PPS: ${this.h264Pps.length} bytes)`);
+      } else {
+        console.warn(`[BaichuanRtspServer] SDP missing H.264 parameter sets (SPS: ${this.h264Sps ? 'yes' : 'no'}, PPS: ${this.h264Pps ? 'yes' : 'no'})`);
+      }
+    } else if (this.detectedVideoType === "H265") {
+      // H.265: sprop-vps, sprop-sps, sprop-pps contain VPS, SPS, PPS in base64
+      if (this.h265Vps && this.h265Sps && this.h265Pps) {
+        const vpsBase64 = this.h265Vps.toString("base64");
+        const spsBase64 = this.h265Sps.toString("base64");
+        const ppsBase64 = this.h265Pps.toString("base64");
+        fmtp += `;sprop-vps=${vpsBase64};sprop-sps=${spsBase64};sprop-pps=${ppsBase64}`;
+        console.log(`[BaichuanRtspServer] SDP includes H.265 parameter sets (VPS: ${this.h265Vps.length} bytes, SPS: ${this.h265Sps.length} bytes, PPS: ${this.h265Pps.length} bytes)`);
+      } else {
+        console.warn(`[BaichuanRtspServer] SDP missing H.265 parameter sets (VPS: ${this.h265Vps ? 'yes' : 'no'}, SPS: ${this.h265Sps ? 'yes' : 'no'}, PPS: ${this.h265Pps ? 'yes' : 'no'})`);
+      }
+    }
+    
+    sdp += `a=fmtp:${videoPayloadType} ${fmtp}\r\n`;
+
+    // Note: audio track intentionally omitted for now.
+    // The server currently runs ffmpeg with -an and does not packetize audio to RTP.
+
     sdp += `a=setup:passive\r\n`;
     sdp += `a=connection:new\r\n`;
     
@@ -427,7 +515,7 @@ export class BaichuanRtspServer extends EventEmitter<{
     const ffmpegArgs = [
       "-hide_banner",
       "-loglevel", "error",
-      "-fflags", "+genpts",
+      "-fflags", "+genpts+igndts", // Generate PTS, ignore DTS from input
     ];
     
     // Set input frame rate if available (before -f and -i)
@@ -440,10 +528,11 @@ export class BaichuanRtspServer extends EventEmitter<{
     
     ffmpegArgs.push(
       "-f", ffmpegFormat,
-      "-use_wallclock_as_timestamps", "1", // Use wallclock time as timestamps for better accuracy
       "-i", "pipe:0",
       "-c:v", "copy",
+      "-an", // Disable audio for now (will be added later with proper RTP handling)
       "-vsync", "cfr", // Constant frame rate - generate timestamps based on input frame rate
+      "-avoid_negative_ts", "make_zero", // Ensure timestamps are non-negative
     );
     
     // Note: For RTP output, we don't need to specify output frame rate
@@ -471,9 +560,22 @@ export class BaichuanRtspServer extends EventEmitter<{
     });
     
     onProcess(ffmpeg, udpSocket);
+
+    // Prevent unhandled errors on the writable side when the client disconnects or the server stops.
+    // We treat these as normal shutdown signals.
+    ffmpeg.stdin?.on("error", (error: NodeJS.ErrnoException) => {
+      const code = (error as any)?.code;
+      if (code === "EPIPE" || code === "ERR_STREAM_WRITE_AFTER_END") {
+        console.log(`[BaichuanRtspServer] FFmpeg stdin error (${code}) for client ${clientId}`);
+        return;
+      }
+      console.error(`[BaichuanRtspServer] FFmpeg stdin error for client ${clientId}:`, error);
+    });
     
     // Each client gets its own native stream generator
     // This ensures that each client receives all frames independently
+    // Note: The native stream is shared, but each client gets its own generator instance
+    // to ensure independent frame delivery
     console.log(`[BaichuanRtspServer] Creating native stream generator for client ${clientId}`);
     const clientGenerator = createNativeStream(this.api, this.channel, this.profile);
     
@@ -487,13 +589,40 @@ export class BaichuanRtspServer extends EventEmitter<{
     const feedFrames = async () => {
       try {
         console.log(`[BaichuanRtspServer] Starting to feed frames to client ${clientId} (target FPS: ${streamMetadata?.frameRate || 25}, interval: ${targetFrameInterval}ms)`);
+        let audioFrameCount = 0;
         for await (const frame of clientGenerator) {
-          if (!ffmpeg.stdin || ffmpeg.stdin.destroyed) {
+          // Check if client is still connected before processing frame
+          if (!this.connectedClients.has(clientId)) {
+            console.log(`[BaichuanRtspServer] Client ${clientId} disconnected, stopping frame feed`);
+            break;
+          }
+          
+          const stdin = ffmpeg.stdin;
+          if (!stdin || stdin.destroyed || stdin.writableEnded || stdin.writableFinished) {
             console.log(`[BaichuanRtspServer] FFmpeg stdin closed for client ${clientId}`);
             break;
           }
-          if (frame.audio) continue;
+          
           if (frame.data.length === 0) continue;
+          
+          // Handle audio frames - log but skip for now (requires proper RTP packetization)
+          if (frame.audio) {
+            audioFrameCount++;
+            if (audioFrameCount === 1) {
+              console.log(`[BaichuanRtspServer] Audio frames detected (codec: ${frame.codec || 'unknown'}, sampleRate: ${frame.sampleRate || 'unknown'})`);
+            }
+            if (audioFrameCount % 100 === 0) {
+              console.log(`[BaichuanRtspServer] Received ${audioFrameCount} audio frames (not sent to RTSP yet)`);
+            }
+            // TODO: Add proper audio RTP packetization and include in RTSP stream
+            continue;
+          }
+          
+          // Mark first frame received and extract parameter sets (only once, for the first client)
+          if (frameCount === 0) {
+            this.extractParameterSets(frame.data);
+            this.markFirstFrameReceived();
+          }
           
           frameCount++;
           if (frameCount % 100 === 0) {
@@ -512,20 +641,21 @@ export class BaichuanRtspServer extends EventEmitter<{
           lastFrameTime = Date.now();
           
           try {
-            if (ffmpeg.stdin) {
-              const written = ffmpeg.stdin.write(frame.data);
+            if (stdin && !stdin.destroyed && !stdin.writableEnded && !stdin.writableFinished) {
+              const written = stdin.write(frame.data);
               if (!written) {
                 await new Promise<void>((resolve) => {
-                  if (ffmpeg.stdin) {
-                    ffmpeg.stdin.once("drain", () => resolve());
+                  if (stdin) {
+                    stdin.once("drain", () => resolve());
                   } else {
                     resolve();
                   }
                 });
               }
             }
-        } catch (error) {
-            if (error && typeof error === 'object' && 'code' in error && error.code === 'EPIPE') {
+          } catch (error) {
+            const code = (error as any)?.code;
+            if (code === "EPIPE" || code === "ERR_STREAM_WRITE_AFTER_END") {
               console.log(`[BaichuanRtspServer] EPIPE writing to ffmpeg for client ${clientId}`);
               break;
             }
@@ -560,9 +690,97 @@ export class BaichuanRtspServer extends EventEmitter<{
       return;
     }
 
-    console.log(`[BaichuanRtspServer] Starting native stream for profile ${this.profile}`);
     this.nativeStreamActive = true;
-    // Note: Each client creates its own generator in startClientFfmpeg, so we don't need a shared one here
+    this.firstFrameReceived = false;
+    
+    // Create promise that resolves when first frame arrives
+    this.firstFramePromise = new Promise<void>((resolve) => {
+      this.firstFrameResolve = resolve;
+    });
+    
+    console.log(`[BaichuanRtspServer] Starting native stream for profile ${this.profile} (waiting for camera to start transmitting...)`);
+    
+    // Start a temporary stream to extract parameter sets for SDP
+    // This stream will be used to get the first frame with parameter sets
+    const tempGen = createNativeStream(this.api, this.channel, this.profile);
+    this.tempStreamGenerator = tempGen;
+    
+    // Consume first frame to extract parameter sets
+    (async () => {
+      try {
+        console.log(`[BaichuanRtspServer] Waiting for first frame in temporary stream to extract parameter sets...`);
+        for await (const frame of tempGen) {
+          if (frame.audio) continue;
+          if (frame.data.length === 0) continue;
+          
+          console.log(`[BaichuanRtspServer] First frame received in temporary stream (${frame.data.length} bytes), extracting parameter sets...`);
+          // Extract parameter sets from first frame
+          this.extractParameterSets(frame.data);
+          this.markFirstFrameReceived();
+          console.log(`[BaichuanRtspServer] Parameter sets extracted from temporary stream`);
+          
+          // Stop consuming after first frame (we just needed parameter sets)
+          // The generator will be cleaned up when clients start using their own generators
+          break;
+        }
+      } catch (error) {
+        console.warn(`[BaichuanRtspServer] Error in temporary stream for parameter sets: ${error}`);
+      }
+    })().catch(() => {
+      // Ignore errors in background task
+    });
+  }
+  
+  /**
+   * Mark that the first frame has been received from the camera.
+   * This is called when a frame arrives in feedFrames.
+   */
+  /**
+   * Extract parameter sets from first frame for SDP.
+   */
+  private extractParameterSets(frameData: Buffer): void {
+    if (this.detectedVideoType === "H264") {
+      const nals = splitAnnexBToNalPayloads(frameData);
+      for (const nal of nals) {
+        if (nal.length < 1) continue;
+        const nalType = (nal[0] ?? 0) & 0x1f;
+        if (nalType === 7 && !this.h264Sps) {
+          // SPS
+          this.h264Sps = nal;
+          console.log(`[BaichuanRtspServer] Extracted H.264 SPS for SDP (${nal.length} bytes)`);
+        } else if (nalType === 8 && !this.h264Pps) {
+          // PPS
+          this.h264Pps = nal;
+          console.log(`[BaichuanRtspServer] Extracted H.264 PPS for SDP (${nal.length} bytes)`);
+        }
+        if (this.h264Sps && this.h264Pps) break;
+      }
+    } else if (this.detectedVideoType === "H265") {
+      const vps = extractVpsFromAnnexB(frameData);
+      const sps = extractSpsFromAnnexB(frameData);
+      const pps = extractPpsFromAnnexB(frameData);
+      if (vps && !this.h265Vps) {
+        this.h265Vps = vps;
+        console.log(`[BaichuanRtspServer] Extracted H.265 VPS for SDP (${vps.length} bytes)`);
+      }
+      if (sps && !this.h265Sps) {
+        this.h265Sps = sps;
+        console.log(`[BaichuanRtspServer] Extracted H.265 SPS for SDP (${sps.length} bytes)`);
+      }
+      if (pps && !this.h265Pps) {
+        this.h265Pps = pps;
+        console.log(`[BaichuanRtspServer] Extracted H.265 PPS for SDP (${pps.length} bytes)`);
+      }
+    }
+  }
+
+  private markFirstFrameReceived(): void {
+    if (!this.firstFrameReceived && this.firstFrameResolve) {
+      this.firstFrameReceived = true;
+      console.log(`[BaichuanRtspServer] First frame received from camera for profile ${this.profile}`);
+      this.firstFrameResolve();
+      this.firstFrameResolve = null;
+    }
   }
 
   /**
@@ -575,6 +793,12 @@ export class BaichuanRtspServer extends EventEmitter<{
 
     console.log(`[BaichuanRtspServer] Stopping native stream`);
     this.nativeStreamActive = false;
+    this.firstFrameReceived = false;
+    this.firstFramePromise = null;
+    if (this.firstFrameResolve) {
+      // Reject the promise if it's still pending
+      this.firstFrameResolve = null;
+    }
     // Note: Individual client generators are cleaned up when clients disconnect
   }
 
@@ -595,9 +819,11 @@ export class BaichuanRtspServer extends EventEmitter<{
   }
 
   /**
-   * Wait until RTSP server is ready to accept connections.
+   * Wait until RTSP server is ready to accept connections AND camera starts transmitting frames.
+   * This ensures that the server is fully ready, including waiting for the camera to wake up
+   * and start sending video frames (important for battery-powered cameras).
    */
-  async waitUntilReady(): Promise<void> {
+  async waitUntilReady(timeoutMs: number = 30000): Promise<void> {
     return new Promise((resolve, reject) => {
       if (!this.clientConnectionServer) {
         reject(new Error("RTSP server not started"));
@@ -605,17 +831,32 @@ export class BaichuanRtspServer extends EventEmitter<{
       }
 
       const timeout = setTimeout(() => {
-        reject(new Error("Timeout waiting for RTSP server to be ready"));
-      }, 10000);
+        reject(new Error(`Timeout waiting for RTSP server to be ready (${timeoutMs}ms). Camera may be sleeping or not responding.`));
+      }, timeoutMs);
 
-      // Check if port is listening
+      // First, check if port is listening
       const checkPort = () => {
         const socket = new net.Socket();
         socket.setTimeout(1000);
         socket.on("connect", () => {
           socket.destroy();
-          clearTimeout(timeout);
-          resolve();
+          // Port is listening, now wait for first frame if native stream is active
+          if (this.nativeStreamActive && this.firstFramePromise) {
+            console.log(`[BaichuanRtspServer] Port is listening, waiting for camera to start transmitting frames...`);
+            this.firstFramePromise
+              .then(() => {
+                clearTimeout(timeout);
+                resolve();
+              })
+              .catch((error) => {
+                clearTimeout(timeout);
+                reject(error);
+              });
+          } else {
+            // No native stream active yet, just wait for port
+            clearTimeout(timeout);
+            resolve();
+          }
         });
         socket.on("timeout", () => {
           socket.destroy();

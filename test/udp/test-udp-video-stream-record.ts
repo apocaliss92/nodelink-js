@@ -50,6 +50,12 @@ async function recordVideoFromRtsp(
   return new Promise((resolve, reject) => {
     log(`Recording from RTSP stream`, { rtspUrl, outputFile, durationSeconds });
 
+    // First, wait for the stream to be ready (first frame received)
+    // We'll use ffprobe to check if the stream is ready, then start recording
+    let recordingStarted = false;
+    let firstFrameTime: number | null = null;
+    let recordingEndTime: number | null = null;
+
     const ffmpeg = spawn("ffmpeg", [
       "-hide_banner",
       "-loglevel", "info", // Changed to info to see more details
@@ -57,7 +63,7 @@ async function recordVideoFromRtsp(
       "-rtsp_flags", "prefer_tcp", // Prefer TCP for RTSP
       "-timeout", "5000000", // 5 second timeout for RTSP connection (in microseconds)
       "-i", rtspUrl,
-      "-t", String(durationSeconds), // Duration
+      // Don't use -t here, we'll control duration manually based on first frame
       "-c:v", "copy", // Copy video codec (no re-encoding)
       "-c:a", "copy", // Copy audio codec if present
       "-movflags", "+faststart",
@@ -72,6 +78,10 @@ async function recordVideoFromRtsp(
     const doneOk = () => {
       if (settled) return;
       settled = true;
+      if (durationCheckInterval) {
+        clearInterval(durationCheckInterval);
+        durationCheckInterval = null;
+      }
       try { 
         if (ffmpeg.stdin && !ffmpeg.stdin.destroyed) {
           ffmpeg.stdin.end();
@@ -84,6 +94,10 @@ async function recordVideoFromRtsp(
     const doneErr = (e: Error) => {
       if (settled) return;
       settled = true;
+      if (durationCheckInterval) {
+        clearInterval(durationCheckInterval);
+        durationCheckInterval = null;
+      }
       try { 
         if (ffmpeg.stdin && !ffmpeg.stdin.destroyed) {
           ffmpeg.stdin.end();
@@ -98,9 +112,33 @@ async function recordVideoFromRtsp(
       reject(e);
     };
 
+    // Monitor recording duration based on first frame
+    let durationCheckInterval: NodeJS.Timeout | null = null;
+    
     ffmpeg.stderr?.on("data", (d: Buffer) => { 
       const output = d.toString();
       stderr += output;
+      
+      // Detect when first frame arrives (ffmpeg starts processing)
+      if (!recordingStarted && (output.includes("frame=") || output.includes("time=") || output.includes("Stream #"))) {
+        recordingStarted = true;
+        firstFrameTime = Date.now();
+        recordingEndTime = firstFrameTime + (durationSeconds * 1000);
+        console.log(`[FFmpeg Recording] First frame detected at ${new Date(firstFrameTime).toISOString()}, recording will stop at ${new Date(recordingEndTime).toISOString()} (${durationSeconds}s duration)`);
+        
+        // Start checking duration periodically
+        durationCheckInterval = setInterval(() => {
+          if (recordingEndTime && Date.now() >= recordingEndTime) {
+            console.log(`[FFmpeg Recording] Target duration reached (${durationSeconds}s), stopping recording`);
+            if (durationCheckInterval) {
+              clearInterval(durationCheckInterval);
+              durationCheckInterval = null;
+            }
+            doneOk();
+          }
+        }, 100); // Check every 100ms
+      }
+      
       // Log important messages
       if (output.includes("Connection refused") || 
           output.includes("Connection timed out") ||
@@ -133,13 +171,26 @@ async function recordVideoFromRtsp(
       doneErr(new Error(`ffmpeg exited with code ${code}\n${stderr}`));
     });
 
-    // Safety timeout
+    // Safety timeout - extended to account for camera wake-up time
     const timeout = setTimeout(() => {
       if (!settled) {
-        console.error(`[FFmpeg Recording] Timeout after ${durationSeconds + 5} seconds`);
-        doneErr(new Error(`Recording timeout after ${durationSeconds + 5} seconds`));
+        if (recordingStarted && firstFrameTime && recordingEndTime) {
+          // If recording started, wait until target duration
+          const remaining = recordingEndTime - Date.now();
+          if (remaining > 0) {
+            setTimeout(() => {
+              if (!settled) {
+                console.log(`[FFmpeg Recording] Target duration reached, stopping`);
+                doneOk();
+              }
+            }, remaining);
+            return;
+          }
+        }
+        console.error(`[FFmpeg Recording] Timeout after ${durationSeconds + 20} seconds`);
+        doneErr(new Error(`Recording timeout after ${durationSeconds + 20} seconds`));
       }
-    }, (durationSeconds + 10) * 1000); // Increased timeout
+    }, (durationSeconds + 20) * 1000); // Extended timeout to account for camera wake-up
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     (timeout as any)?.unref?.();
   });
@@ -202,8 +253,8 @@ async function testUdpVideoStreamRecording() {
 
   const channel = 0;
   const recordingsDir = path.join(process.cwd(), "test", "recordings", "udp");
-  // Deterministic default: always record 10 seconds for every available profile
-  const duration = 10;
+  // Deterministic default: record RECORD_DURATION seconds for every available profile.
+  const duration = config.rtsp.recordDuration;
 
   // Create directory if it doesn't exist
   if (!fs.existsSync(recordingsDir)) {
@@ -313,35 +364,21 @@ async function testUdpVideoStreamRecording() {
         logSuccess(`RTSP stream created: ${rtspUrl}`);
         log(`Waiting for RTSP server to be ready...`);
         
-        // Wait for RTSP server to be ready
+        // Wait for RTSP server to be ready (this will wait for port to be listening AND first frame from camera)
         try {
-          await rtspServer.waitUntilReady(15000);
+          await rtspServer.waitUntilReady(30000); // 30 seconds timeout for battery cameras that may be sleeping
           logSuccess(`RTSP server is ready: ${rtspUrl}`);
         } catch (error) {
           logError(`RTSP server not ready after timeout`, error);
           continue;
         }
         
-        // Simulate a client connecting (this will start the native stream and wait for first keyframe)
-        const clientId = `ffmpeg-recorder-${profile}`;
-        log(`Simulating client connection: ${clientId}`);
-        log(`This will start the native stream and wait for first keyframe...`);
-        
-        try {
-          await rtspServer.addClient(clientId);
-          logSuccess(`Client connected and native stream is ready (clients: ${rtspServer.getConnectedClientsCount()})`);
-        } catch (error) {
-          logError(`Error connecting client or starting native stream`, error);
-          continue;
-        }
-        
-        if (!rtspServer.isNativeStreamActive()) {
-          logError(`Native stream did not start after client connection`, new Error("Stream not active"));
-          rtspServer.removeClient(clientId);
-          continue;
-        }
+        // Wait a bit more to ensure RTSP server is fully ready to accept connections
+        log(`Waiting for RTSP server to be fully ready...`);
+        await new Promise((resolve) => setTimeout(resolve, 2000));
         
         // Record from RTSP stream using ffmpeg (emulating a user connecting to the stream)
+        // The server will automatically start the native stream when ffmpeg connects
         const outputFile = path.join(recordingsDir, `recording_udp_${profile}_${Date.now()}.mp4`);
         log(`Recording ${duration}s from RTSP stream: ${rtspUrl}`);
         log(`This emulates a user (ffmpeg) connecting to the RTSP stream`);
@@ -373,13 +410,11 @@ async function testUdpVideoStreamRecording() {
         } catch (error) {
           clearKeepAlive();
           logError(`Error during recording from RTSP`, error);
-          rtspServer.removeClient(clientId);
           continue;
         }
         
-        // Simulate client disconnection (this will stop the native stream if no other clients)
-        log(`Simulating client disconnection: ${clientId}`);
-        rtspServer.removeClient(clientId);
+        // No explicit client disconnection needed, ffmpeg client will close its connection
+        // and the server will handle native stream stopping automatically
         
         // Verify the file was created
         if (fs.existsSync(outputFile)) {

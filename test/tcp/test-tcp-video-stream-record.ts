@@ -11,6 +11,42 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
 
+async function probeVideoDurationSeconds(filePath: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const ffprobe = spawn(
+      "ffprobe",
+      [
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=nk=1:nw=1",
+        filePath,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] }
+    );
+
+    let stdout = "";
+    let stderr = "";
+    ffprobe.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
+    ffprobe.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
+    ffprobe.on("error", (e) => reject(new Error(`ffprobe spawn error: ${e.message}`)));
+    ffprobe.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`ffprobe exited with code ${code}\n${stderr}`));
+        return;
+      }
+      const value = Number.parseFloat(stdout.trim());
+      if (!Number.isFinite(value)) {
+        reject(new Error(`ffprobe returned invalid duration: ${stdout.trim()}`));
+        return;
+      }
+      resolve(value);
+    });
+  });
+}
+
 // Helper functions
 function log(message: string, data?: unknown) {
   console.log(`\n${"=".repeat(60)}`);
@@ -50,19 +86,27 @@ async function recordVideoFromUrl(inputUrl: string, outputFile: string, duration
 
     // ffmpeg -i <url> -t 5 -c copy output.mp4
     // Note: ffmpeg can be "quiet" and not print frame=; we also track the output file growth.
-    const ffmpeg = spawn("ffmpeg", [
-      ...inputArgs,
-      "-hide_banner",
-      "-loglevel", "warning",
-      "-stats",
-      "-i", inputUrl,
-      "-t", duration.toString(),
-      "-c", "copy", // Copy codec (no re-encoding)
-      "-y", // Overwrite output file
-      outputFile,
-    ], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const ffmpeg = spawn(
+      "ffmpeg",
+      [
+        ...inputArgs,
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-stats",
+        "-i",
+        inputUrl,
+        "-t",
+        duration.toString(),
+        "-c",
+        "copy", // Copy codec (no re-encoding)
+        "-y", // Overwrite output file
+        outputFile,
+      ],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+      }
+    );
 
     let settled = false;
     let stderr = "";
@@ -187,8 +231,13 @@ async function recordVideoFromUrl(inputUrl: string, outputFile: string, duration
 async function recordVideoFromRtsp(rtspUrl: string, outputFile: string, durationSeconds: number): Promise<void> {
   return new Promise((resolve, reject) => {
     log(`Recording video from RTSP`, { rtspUrl, outputFile, durationSeconds });
+
+    let recordingStarted = false;
+    let stopRequested = false;
     
-    // ffmpeg -i <rtsp_url> -t <duration> -c copy output.mp4
+    // ffmpeg -i <rtsp_url> -c copy output.mp4
+    // We stop ffmpeg via wallclock timer once output starts, because some streams may not have
+    // reliable timestamps for ffmpeg's -t.
     const ffmpeg = spawn("ffmpeg", [
       "-hide_banner",
       "-loglevel", "warning",
@@ -208,6 +257,7 @@ async function recordVideoFromRtsp(rtspUrl: string, outputFile: string, duration
     let timeout: NodeJS.Timeout | undefined;
     let killTimer: NodeJS.Timeout | undefined;
     let startedPoll: NodeJS.Timeout | undefined;
+    let safetyKill: NodeJS.Timeout | undefined;
 
     const cleanup = () => {
       if (timeout) clearTimeout(timeout);
@@ -216,6 +266,8 @@ async function recordVideoFromRtsp(rtspUrl: string, outputFile: string, duration
       killTimer = undefined;
       if (startedPoll) clearInterval(startedPoll);
       startedPoll = undefined;
+      if (safetyKill) clearTimeout(safetyKill);
+      safetyKill = undefined;
       ffmpeg.removeAllListeners();
       ffmpeg.stderr?.removeAllListeners();
       ffmpeg.stdout?.removeAllListeners();
@@ -257,9 +309,11 @@ async function recordVideoFromRtsp(rtspUrl: string, outputFile: string, duration
       const output = data.toString();
       stderr += output;
       
-      if (!hasStarted && (output.includes("Stream") || output.includes("frame="))) {
+      // Detect when first frame arrives (ffmpeg starts processing)
+      if (!recordingStarted && (output.includes("frame=") || output.includes("time=") || output.includes("Stream #"))) {
+        recordingStarted = true;
         hasStarted = true;
-        console.log(`[FFmpeg Recording] Stream started`);
+        console.log(`[FFmpeg Recording] Stream started; target duration ${durationSeconds}s`);
       }
       
       // Log all ffmpeg output for debugging
@@ -281,7 +335,7 @@ async function recordVideoFromRtsp(rtspUrl: string, outputFile: string, duration
         logSuccess(`Recording completed: ${outputFile}`);
         ok();
       } else {
-        if (code === 1 && hasStarted) {
+        if ((code === 1 && hasStarted) || (stopRequested && hasStarted)) {
           logSuccess(`Recording completed (exit code ${code}): ${outputFile}`);
           ok();
         } else {
@@ -320,6 +374,15 @@ async function recordVideoFromRtsp(rtspUrl: string, outputFile: string, duration
     }, 10000);
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     (timeout as any)?.unref?.();
+
+    // Hard safety kill: if timestamps are weird and -t doesn't terminate, avoid hanging forever.
+    safetyKill = setTimeout(() => {
+      stopRequested = true;
+      console.log(`[FFmpeg Recording] Safety stop reached, stopping ffmpeg`);
+      killFfmpeg();
+    }, (durationSeconds + 15) * 1000);
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    (safetyKill as any)?.unref?.();
   });
 }
 
@@ -494,8 +557,8 @@ async function testVideoStreamRecording() {
 
   const channel = 0;
   const recordingsDir = path.join(process.cwd(), "test", "recordings", "tcp");
-  // Deterministic default: always record 10 seconds for every available profile.
-  const duration = 10;
+  // Deterministic default: record RECORD_DURATION seconds for every available profile.
+  const duration = config.rtsp.recordDuration;
 
   // Create directory if it doesn't exist
   if (!fs.existsSync(recordingsDir)) {
@@ -625,6 +688,18 @@ async function testVideoStreamRecording() {
         if (fs.existsSync(outputFile)) {
           const stats = fs.statSync(outputFile);
           logSuccess(`Recorded file: ${outputFile} (${stats.size} bytes)`);
+
+          try {
+            const recordedDuration = await probeVideoDurationSeconds(outputFile);
+            console.log(`[FFprobe] Duration: ${recordedDuration.toFixed(3)}s (target ${duration}s)`);
+            const toleranceSeconds = 0.75;
+            if (Math.abs(recordedDuration - duration) > toleranceSeconds) {
+              throw new Error(`Recorded duration out of tolerance: ${recordedDuration}s (target ${duration}s)`);
+            }
+          } catch (e) {
+            logError(`Duration verification failed for ${profile}`, e);
+            continue;
+          }
         } else {
           logError(`File not created: ${outputFile}`, new Error("File not found"));
         }

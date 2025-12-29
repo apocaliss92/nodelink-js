@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * TCP test: list available streams and record 5 seconds from each one.
+ * TCP test: list available streams and record a fixed duration from each one.
+ * Duration is controlled via RECORD_DURATION in .env.
  */
 
 // @ts-expect-error - Path resolution at runtime
@@ -42,7 +43,7 @@ function logError(message: string, error: unknown) {
 async function recordStream(
   rtspUrl: string,
   outputFile: string,
-  duration: number = 5
+  duration: number = config.rtsp.recordDuration
 ): Promise<boolean> {
   return new Promise((resolve) => {
     log(`Recording stream: ${rtspUrl}`);
@@ -119,7 +120,7 @@ async function runStreamRecordTest() {
   });
 
   const channel = 0;
-  const recordDuration = 5; // seconds
+  const recordDuration = config.rtsp.recordDuration;
   const outputDir = join(process.cwd(), "test", "recordings");
 
   try {

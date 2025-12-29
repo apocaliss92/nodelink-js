@@ -17,6 +17,7 @@ import type { EncryptionProtocol } from "../../protocol/crypto";
 import { ensureDumpDir } from "../../debug/DebugConfig";
 import { BcMediaCodec } from "./BcMediaCodec";
 import { convertToAnnexB, hasStartCodes, H264RtpDepacketizer, isValidH264AnnexBAccessUnit, isH264KeyframeAnnexB, splitAnnexBToNalPayloads } from "./H264Converter";
+import { convertToAnnexB as convertH265ToAnnexB, isValidH265AnnexBAccessUnit, isH265KeyframeAnnexB, splitAnnexBToNalPayloads as splitH265AnnexBToNalPayloads, extractVpsFromAnnexB, extractSpsFromAnnexB, extractPpsFromAnnexB, getH265NalType } from "./H265Converter";
 
 const NAL_START_CODE_4B = Buffer.from([0x00, 0x00, 0x00, 0x01]);
 
@@ -148,11 +149,16 @@ export class BaichuanVideoStream extends EventEmitter<{
   // "RTP-like" depacketizer (some models encapsulate NAL units in FU-A/STAP)
   private readonly depacketizer = new H264RtpDepacketizer();
   private dumpChunkIdx = 0;
-  private spsById = new Map<number, Buffer>(); // NAL payload (without start code)
-  private ppsById = new Map<number, { nal: Buffer; spsId: number }>(); // NAL payload + mapping
-  private lastSps: Buffer | null = null;
-  private lastPps: Buffer | null = null;
-  private lastPrependedPpsId: number | null = null;
+  private spsById = new Map<number, Buffer>(); // NAL payload (without start code) - H.264
+  private ppsById = new Map<number, { nal: Buffer; spsId: number }>(); // NAL payload + mapping - H.264
+  private lastSps: Buffer | null = null; // H.264
+  private lastPps: Buffer | null = null; // H.264
+  private lastPrependedPpsId: number | null = null; // H.264
+  // H.265 parameter sets
+  private lastVps: Buffer | null = null; // H.265 VPS
+  private lastSpsH265: Buffer | null = null; // H.265 SPS
+  private lastPpsH265: Buffer | null = null; // H.265 PPS
+  private lastPrependedParamSetsH265 = false; // Track if we've prepended H.265 param sets
   // Note: reassembly happens at the BcMediaCodec transport level, so we do not
   // accumulate frames here (same approach as neolink).
 
@@ -208,6 +214,11 @@ export class BaichuanVideoStream extends EventEmitter<{
     this.lastSps = null;
     this.lastPps = null;
     this.lastPrependedPpsId = null;
+    // H.265 parameter sets
+    this.lastVps = null;
+    this.lastSpsH265 = null;
+    this.lastPpsH265 = null;
+    this.lastPrependedParamSetsH265 = false;
   }
 
   /**
@@ -328,85 +339,142 @@ export class BaichuanVideoStream extends EventEmitter<{
       let audioFramesEmitted = 0;
       
       for (const media of mediaPackets) {
-        const maybeCacheParamSets = (annexB: Buffer, source: "Iframe" | "Pframe") => {
-          // Some models send SPS/PPS outside of I-frames (e.g. parameter set updates),
+        const maybeCacheParamSets = (annexB: Buffer, source: "Iframe" | "Pframe", videoType: "H264" | "H265") => {
+          // Some models send parameter sets outside of I-frames (e.g. parameter set updates),
           // so we always allow caching from both I-frames and P-frames.
 
-          const nals = splitAnnexBToNalPayloads(annexB);
-          for (const nal of nals) {
-            const t = (nal[0] ?? 0) & 0x1f;
-            if (t === 7) {
-              const id = parseSpsIdFromNal(nal);
-              if (id != null) {
-                if (!isPlausibleH264Sps(nal)) continue;
-                this.spsById.set(id, nal);
-                if (dbg.debugParamSets) {
-                  console.warn(`[BaichuanVideoStream] Cached SPS id=${id} len=${nal.length}`);
+          if (videoType === "H264") {
+            const nals = splitAnnexBToNalPayloads(annexB);
+            for (const nal of nals) {
+              const t = (nal[0] ?? 0) & 0x1f;
+              if (t === 7) {
+                const id = parseSpsIdFromNal(nal);
+                if (id != null) {
+                  if (!isPlausibleH264Sps(nal)) continue;
+                  this.spsById.set(id, nal);
+                  if (dbg.debugParamSets) {
+                    console.warn(`[BaichuanVideoStream] Cached H.264 SPS id=${id} len=${nal.length}`);
+                  }
                 }
+                if (isPlausibleH264Sps(nal)) this.lastSps = nal;
               }
-              if (isPlausibleH264Sps(nal)) this.lastSps = nal;
+              if (t === 8) {
+                const ids = parsePpsIdsFromNal(nal);
+                if (ids) {
+                  // If the PPS points to an implausible SPS, drop it.
+                  const sps = this.spsById.get(ids.spsId);
+                  if (sps && !isPlausibleH264Sps(sps)) continue;
+                  this.ppsById.set(ids.ppsId, { nal, spsId: ids.spsId });
+                  if (dbg.debugParamSets) {
+                    console.warn(`[BaichuanVideoStream] Cached H.264 PPS id=${ids.ppsId} (spsId=${ids.spsId}) len=${nal.length}`);
+                  }
+                }
+                this.lastPps = nal;
+              }
             }
-            if (t === 8) {
-              const ids = parsePpsIdsFromNal(nal);
-              if (ids) {
-                // If the PPS points to an implausible SPS, drop it.
-                const sps = this.spsById.get(ids.spsId);
-                if (sps && !isPlausibleH264Sps(sps)) continue;
-                this.ppsById.set(ids.ppsId, { nal, spsId: ids.spsId });
-                if (dbg.debugParamSets) {
-                  console.warn(`[BaichuanVideoStream] Cached PPS id=${ids.ppsId} (spsId=${ids.spsId}) len=${nal.length}`);
-                }
+          } else if (videoType === "H265") {
+            // Cache H.265 parameter sets (VPS, SPS, PPS)
+            const vps = extractVpsFromAnnexB(annexB);
+            if (vps) {
+              this.lastVps = vps;
+              if (dbg.debugParamSets) {
+                console.warn(`[BaichuanVideoStream] Cached H.265 VPS len=${vps.length}`);
               }
-              this.lastPps = nal;
+            }
+            const sps = extractSpsFromAnnexB(annexB);
+            if (sps) {
+              this.lastSpsH265 = sps;
+              if (dbg.debugParamSets) {
+                console.warn(`[BaichuanVideoStream] Cached H.265 SPS len=${sps.length}`);
+              }
+            }
+            const pps = extractPpsFromAnnexB(annexB);
+            if (pps) {
+              this.lastPpsH265 = pps;
+              if (dbg.debugParamSets) {
+                console.warn(`[BaichuanVideoStream] Cached H.265 PPS len=${pps.length}`);
+              }
             }
           }
         };
 
-        const prependParamSetsIfNeeded = (annexB: Buffer): Buffer => {
-          const nals = splitAnnexBToNalPayloads(annexB);
-          if (nals.length === 0) return annexB;
-          const types = nals.map((n) => ((n[0] ?? 0) & 0x1f));
-          // If it already includes SPS/PPS, do not prepend
-          if (types.includes(7) && types.includes(8)) return annexB;
-          // If there is no VCL, there's nothing to prepend to.
-          const hasVcl = types.some((t) => t === 1 || t === 5 || t === 19 || t === 20);
-          if (!hasVcl) return annexB;
+        const prependParamSetsIfNeeded = (annexB: Buffer, videoType: "H264" | "H265"): Buffer => {
+          if (videoType === "H264") {
+            const nals = splitAnnexBToNalPayloads(annexB);
+            if (nals.length === 0) return annexB;
+            const types = nals.map((n) => ((n[0] ?? 0) & 0x1f));
+            // If it already includes SPS/PPS, do not prepend
+            if (types.includes(7) && types.includes(8)) return annexB;
+            // If there is no VCL, there's nothing to prepend to.
+            const hasVcl = types.some((t) => t === 1 || t === 5 || t === 19 || t === 20);
+            if (!hasVcl) return annexB;
 
-          // Determine pps_id referenced by the first slice (if present)
-          let ppsId: number | null = null;
-          for (const nal of nals) {
-            const t = (nal[0] ?? 0) & 0x1f;
-            if (t === 1 || t === 5) {
-              ppsId = parseSlicePpsIdFromNal(nal);
-              break;
+            // Determine pps_id referenced by the first slice (if present)
+            let ppsId: number | null = null;
+            for (const nal of nals) {
+              const t = (nal[0] ?? 0) & 0x1f;
+              if (t === 1 || t === 5) {
+                ppsId = parseSlicePpsIdFromNal(nal);
+                break;
+              }
             }
-          }
-          if (dbg.debugParamSets) {
-            console.warn(`[BaichuanVideoStream] Slice references ppsId=${ppsId ?? "?"} lastPrepended=${this.lastPrependedPpsId ?? "?"}`);
-          }
-
-          // If we can't parse it, be conservative: only use the last seen SPS/PPS once at the beginning.
-          if (ppsId == null || ppsId > 255) {
-            if (this.lastPrependedPpsId != null) return annexB;
-            if (!this.lastSps || !this.lastPps) return annexB;
-            this.lastPrependedPpsId = -1;
-            return Buffer.concat([NAL_START_CODE_4B, this.lastSps, NAL_START_CODE_4B, this.lastPps, annexB]);
-          }
-
-          // Only prepend when ppsId changes (reduces duplication and instability)
-          if (this.lastPrependedPpsId === ppsId) return annexB;
-
-          const pps = this.ppsById.get(ppsId);
-          if (pps) {
-            const sps = this.spsById.get(pps.spsId);
-            if (sps) {
-              this.lastPrependedPpsId = ppsId;
-              return Buffer.concat([NAL_START_CODE_4B, sps, NAL_START_CODE_4B, pps.nal, annexB]);
+            if (dbg.debugParamSets) {
+              console.warn(`[BaichuanVideoStream] Slice references ppsId=${ppsId ?? "?"} lastPrepended=${this.lastPrependedPpsId ?? "?"}`);
             }
+
+            // If we can't parse it, be conservative: only use the last seen SPS/PPS once at the beginning.
+            if (ppsId == null || ppsId > 255) {
+              if (this.lastPrependedPpsId != null) return annexB;
+              if (!this.lastSps || !this.lastPps) return annexB;
+              this.lastPrependedPpsId = -1;
+              return Buffer.concat([NAL_START_CODE_4B, this.lastSps, NAL_START_CODE_4B, this.lastPps, annexB]);
+            }
+
+            // Only prepend when ppsId changes (reduces duplication and instability)
+            if (this.lastPrependedPpsId === ppsId) return annexB;
+
+            const pps = this.ppsById.get(ppsId);
+            if (pps) {
+              const sps = this.spsById.get(pps.spsId);
+              if (sps) {
+                this.lastPrependedPpsId = ppsId;
+                return Buffer.concat([NAL_START_CODE_4B, sps, NAL_START_CODE_4B, pps.nal, annexB]);
+              }
+            }
+            // If the slice references a PPS we don't have, we cannot "invent it".
+            // Drop the access unit until the correct PPS arrives (prevents black/garbled video).
+            return Buffer.alloc(0);
+          } else if (videoType === "H265") {
+            // For H.265, prepend VPS, SPS, PPS if not already present
+            const nals = splitH265AnnexBToNalPayloads(annexB);
+            if (nals.length === 0) return annexB;
+            
+            const types = nals.map((n) => getH265NalType(n)).filter((t): t is number => t !== null);
+            // If it already includes VPS/SPS/PPS, do not prepend
+            if (types.includes(32) && types.includes(33) && types.includes(34)) return annexB;
+            
+            // If there is no VCL (IRAP or non-IRAP picture), there's nothing to prepend to.
+            const hasVcl = types.some((t) => (t >= 0 && t <= 9) || (t >= 16 && t <= 23));
+            if (!hasVcl) return annexB;
+            
+            // Only prepend once to avoid duplication
+            if (this.lastPrependedParamSetsH265) return annexB;
+            
+            // Prepend VPS, SPS, PPS if we have them
+            if (!this.lastVps || !this.lastSpsH265 || !this.lastPpsH265) return annexB;
+            
+            this.lastPrependedParamSetsH265 = true;
+            if (dbg.debugParamSets) {
+              console.warn(`[BaichuanVideoStream] Prepending H.265 VPS/SPS/PPS to frame`);
+            }
+            return Buffer.concat([
+              NAL_START_CODE_4B, this.lastVps,
+              NAL_START_CODE_4B, this.lastSpsH265,
+              NAL_START_CODE_4B, this.lastPpsH265,
+              annexB
+            ]);
           }
-          // If the slice references a PPS we don't have, we cannot "invent it".
-          // Drop the access unit until the correct PPS arrives (prevents black/garbled video).
-          return Buffer.alloc(0);
+          return annexB;
         };
 
         const dumpNalSummary = (annexB: Buffer, label: string, microseconds: number) => {
@@ -467,16 +535,18 @@ export class BaichuanVideoStream extends EventEmitter<{
           return true;
         };
         if (media.type === "Iframe") {
-          const annexBData = convertToAnnexB(media.data);
+          // Convert to Annex-B format (different converters for H.264 and H.265)
+          const annexBData = media.videoType === "H265" 
+            ? convertH265ToAnnexB(media.data)
+            : convertToAnnexB(media.data);
           const isKeyframe = true;
 
-          maybeCacheParamSets(annexBData, "Iframe");
-          const outAnnex = prependParamSetsIfNeeded(annexBData);
+          maybeCacheParamSets(annexBData, "Iframe", media.videoType);
+          const outAnnex = prependParamSetsIfNeeded(annexBData, media.videoType);
           if (outAnnex.length === 0) continue;
           dumpNalSummary(outAnnex, "Iframe", media.microseconds);
 
-          // Guard rail: do not emit invalid keyframes (prevents cascading SPS/PPS "out of range")
-          // Skip H.264 validation for H.265 frames (they use different NAL unit types)
+          // Guard rail: do not emit invalid keyframes (prevents cascading parameter set issues)
           if (media.videoType === "H264") {
             if (!isValidH264AnnexBAccessUnit(outAnnex) || !isH264KeyframeAnnexB(outAnnex)) {
               if (dbg.debugH264) {
@@ -485,12 +555,19 @@ export class BaichuanVideoStream extends EventEmitter<{
               continue;
             }
           } else if (media.videoType === "H265") {
-            // For H.265, just check that we have start codes (basic validation)
-            if (!hasStartCodes(outAnnex)) {
+            // For H.265, validate access unit and check for keyframe (IRAP with VPS/SPS/PPS)
+            if (!isValidH265AnnexBAccessUnit(outAnnex)) {
               if (dbg.debugH264) {
-                console.warn(`[BaichuanVideoStream] Dropping H.265 Iframe without start codes len=${outAnnex.length}`);
+                console.warn(`[BaichuanVideoStream] Dropping invalid H.265 Iframe (Annex-B) len=${outAnnex.length}`);
               }
               continue;
+            }
+            // Check if it's a proper keyframe (should have VPS/SPS/PPS and IRAP)
+            if (!isH265KeyframeAnnexB(outAnnex)) {
+              if (dbg.debugH264) {
+                console.warn(`[BaichuanVideoStream] H.265 Iframe missing VPS/SPS/PPS or IRAP, but continuing len=${outAnnex.length}`);
+              }
+              // Continue anyway - the parameter sets might be prepended
             }
           }
 
@@ -552,18 +629,26 @@ export class BaichuanVideoStream extends EventEmitter<{
 
           // P-frame: often not a complete access unit but an "RTP-like" payload (FU-A/STAP)
           // which must be depacketized with state. Do NOT run AVCC heuristics before depacketizing.
-          // First try AVCC -> AnnexB (some models send P-frames length-prefixed).
-          // If we still don't get start codes, try RFC6184 depacketizer (FU-A/STAP).
-          const annexBOrRaw = hasStartCodes(chunk) ? chunk : convertToAnnexB(chunk);
-          const parts = hasStartCodes(annexBOrRaw) ? [annexBOrRaw] : this.depacketizer.push(chunk);
+          // First try AVCC/HVCC -> AnnexB (some models send P-frames length-prefixed).
+          // If we still don't get start codes, try RFC6184 depacketizer (FU-A/STAP) for H.264.
+          // Note: H.265 RTP depacketization is similar but uses different NAL unit types.
+          const annexBOrRaw = hasStartCodes(chunk) 
+            ? chunk 
+            : (media.videoType === "H265" ? convertH265ToAnnexB(chunk) : convertToAnnexB(chunk));
+          
+          // For H.264, use the depacketizer. For H.265, we might need a similar depacketizer in the future.
+          const parts = hasStartCodes(annexBOrRaw) 
+            ? [annexBOrRaw] 
+            : (media.videoType === "H265" ? [annexBOrRaw] : this.depacketizer.push(chunk));
+          
           if (parts.length === 0) {
             // incomplete fragment (FU-A mid) or unrecognized payload: wait for more packets
             continue;
           }
 
           for (const p of parts) {
-            maybeCacheParamSets(p, "Pframe");
-            const outP0 = prependParamSetsIfNeeded(p);
+            maybeCacheParamSets(p, "Pframe", media.videoType);
+            const outP0 = prependParamSetsIfNeeded(p, media.videoType);
             if (outP0.length === 0) continue;
             const outP = outP0;
             dumpNalSummary(outP, "Pframe", media.microseconds);
