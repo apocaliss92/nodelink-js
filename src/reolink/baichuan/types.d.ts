@@ -40,6 +40,7 @@ export interface PtzCommand {
 }
 export interface BatteryInfo {
     batteryPercent?: number;
+    chargeStatus?: string;
     sleeping?: boolean;
     channel?: number;
 }
@@ -91,6 +92,8 @@ export interface MotionEvent {
     channel: number;
     state: boolean;
     timestamp?: number;
+    /** Origin of motion trigger when known (e.g. PIR-only cameras). */
+    source?: "md" | "pir" | "unknown";
 }
 export interface AIEvent {
     channel: number;
@@ -110,4 +113,59 @@ export interface TwoWayAudioConfig {
     enabled: boolean;
     mode?: "mixAudioStream" | string;
 }
+export interface TalkAudioConfig {
+    priority?: number;
+    audioType: string;
+    sampleRate: number;
+    samplePrecision: number;
+    lengthPerEncoder: number;
+    soundTrack: string;
+}
+export interface TalkAbility {
+    version?: string;
+    duplexList: string[];
+    audioStreamModeList: string[];
+    audioConfigList: TalkAudioConfig[];
+}
+export interface TalkConfig {
+    channel: number;
+    duplex: string;
+    audioStreamMode: string;
+    audioConfig: TalkAudioConfig;
+}
+export interface TalkSessionInfo {
+    channel: number;
+    audioConfig: TalkAudioConfig;
+    /** ADPCM bytes per block excluding the 4-byte predictor state. */
+    blockSize: number;
+    /** ADPCM bytes per block including the 4-byte predictor state. */
+    fullBlockSize: number;
+}
+export interface TalkSession {
+    readonly info: TalkSessionInfo;
+    /**
+     * Enqueue ADPCM DVI4 bytes (raw blocks, including the 4-byte predictor header per block).
+     * The session will packetize into BcMedia ADPCM and pace delivery.
+     */
+    sendAudio(adpcm: Buffer): Promise<void>;
+    /** Flush remaining audio and stop the talk session. */
+    stop(): Promise<void>;
+}
+/**
+ * Device ability/capability information for a specific channel or host.
+ *
+ * Keys are capability names (e.g., "preview_rw", "control_rw", "motion_rw", "reboot_rw").
+ * Values are:
+ * - 1 = capability is supported (typically with _rw suffix for read-write, _ro for read-only)
+ * - 0 or undefined = capability is not supported
+ * - string = metadata values (e.g., "userName")
+ */
+export type AbilityInfo = Record<string, number | string | undefined>;
+/**
+ * Complete device abilities structure returned by getAbilityInfo.
+ *
+ * - Channel numbers (0, 1, 2, etc.): Channel-specific abilities
+ * - "Host": Host-level/system abilities
+ */
+export type DeviceAbilities = Partial<Record<number | "Host", AbilityInfo>>;
 //# sourceMappingURL=types.d.ts.map

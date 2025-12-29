@@ -39,6 +39,26 @@ function clamp16(x: number): number {
   return x | 0;
 }
 
+function applyGainToPcm(pcm: Int16Array, gain: number, softClip: boolean): Int16Array {
+  if (!Number.isFinite(gain) || gain <= 0) return pcm;
+
+  // Soft-clip keeps loud samples audible without turning into harsh square waves.
+  // This isn't "hi-fi" but helps with talkback speakers/mics and ADPCM.
+  const drive = 2.25;
+  const norm = softClip ? Math.tanh(drive) : 1;
+
+  const out = new Int16Array(pcm.length);
+  for (let i = 0; i < pcm.length; i++) {
+    const v = (pcm[i] ?? 0) / 32768;
+    let x = v * gain;
+    if (softClip) {
+      x = Math.tanh(x * drive) / norm;
+    }
+    out[i] = clamp16(Math.round(x * 32767));
+  }
+  return out;
+}
+
 const imaIndexTable = Int8Array.from([
   -1, -1, -1, -1, 2, 4, 6, 8,
   -1, -1, -1, -1, 2, 4, 6, 8,
@@ -152,10 +172,84 @@ function generateSinePcm(sampleRate: number, seconds: number, hz = 1000, amplitu
   return pcm;
 }
 
+function midiToHz(noteNumber: number): number {
+  // A4 = 69 = 440Hz
+  return 440 * Math.pow(2, (noteNumber - 69) / 12);
+}
+
+function generateMelodyPcm(sampleRate: number, seconds: number): Int16Array {
+  // Simple original arpeggio melody, deterministic and copyright-safe.
+  // Two octaves around C major-ish, with a light envelope to reduce clicks.
+  const total = Math.max(1, Math.floor(sampleRate * seconds));
+  const pcm = new Int16Array(total);
+
+  type Note = { midi: number; durMs: number; amp: number };
+
+  // C4=60. Progression-like arpeggio: C-E-G-E | A-C-E-C | F-A-C-A | G-B-D-B
+  const pattern: Note[] = [
+    { midi: 60, durMs: 220, amp: 0.95 },
+    { midi: 64, durMs: 220, amp: 0.95 },
+    { midi: 67, durMs: 220, amp: 0.95 },
+    { midi: 64, durMs: 220, amp: 0.95 },
+    { midi: 69, durMs: 220, amp: 0.95 },
+    { midi: 72, durMs: 220, amp: 0.95 },
+    { midi: 76, durMs: 220, amp: 0.95 },
+    { midi: 72, durMs: 220, amp: 0.95 },
+    { midi: 65, durMs: 220, amp: 0.95 },
+    { midi: 69, durMs: 220, amp: 0.95 },
+    { midi: 72, durMs: 220, amp: 0.95 },
+    { midi: 69, durMs: 220, amp: 0.95 },
+    { midi: 67, durMs: 220, amp: 0.95 },
+    { midi: 71, durMs: 220, amp: 0.95 },
+    { midi: 74, durMs: 220, amp: 0.95 },
+    { midi: 71, durMs: 220, amp: 0.95 },
+  ];
+
+  const attackMs = 8;
+  const releaseMs = 25;
+  const globalAmp = 1.0;
+
+  let i = 0;
+  let noteIndex = 0;
+  while (i < total) {
+    const note = pattern[noteIndex % pattern.length]!;
+    noteIndex++;
+
+    const durSamples = Math.max(1, Math.floor((note.durMs / 1000) * sampleRate));
+    const start = i;
+    const end = Math.min(total, start + durSamples);
+    const hz = midiToHz(note.midi);
+
+    const attackSamples = Math.max(1, Math.floor((attackMs / 1000) * sampleRate));
+    const releaseSamples = Math.max(1, Math.floor((releaseMs / 1000) * sampleRate));
+    const noteLen = end - start;
+
+    for (let s = 0; s < noteLen; s++) {
+      const t = (start + s) / sampleRate;
+
+      // Fundamental + 2nd harmonic, gentle.
+      const wave = Math.sin(2 * Math.PI * hz * t) + 0.25 * Math.sin(2 * Math.PI * hz * 2 * t);
+
+      // Linear attack/release envelope.
+      let env = 1;
+      if (s < attackSamples) env = s / attackSamples;
+      const relStart = Math.max(0, noteLen - releaseSamples);
+      if (s >= relStart) env *= Math.max(0, (noteLen - s) / releaseSamples);
+
+      const v = wave * (note.amp * globalAmp) * env;
+      pcm[start + s] = clamp16(Math.round(v * 32767));
+    }
+
+    i = end;
+  }
+
+  return pcm;
+}
+
 async function main(): Promise<void> {
-  const host = config.tcp.host;
-  const username = config.tcp.username;
-  const password = config.tcp.password;
+  const host = config.tcp265.host;
+  const username = config.tcp265.username;
+  const password = config.tcp265.password;
 
   if (!host) throw new Error("Missing TCP_HOST in .env");
   if (!password) throw new Error("Missing TCP_PASSWORD in .env");
@@ -182,15 +276,25 @@ async function main(): Promise<void> {
     const session = await api.createTalkSession(0);
     log("Talk session created", session.info);
 
-    const sampleSeconds = 3.5;
+    const sampleSeconds = Number.parseFloat(process.env.TALK_SECONDS ?? "8") || 8;
     const sampleRate = session.info.audioConfig.sampleRate;
     const blockSizeBytes = session.info.blockSize;
 
-    const pcm = generateSinePcm(sampleRate, sampleSeconds);
+    const sampleType = (process.env.TALK_SAMPLE ?? "melody").trim().toLowerCase();
+    const talkGain = Number.parseFloat(process.env.TALK_GAIN ?? "2.0") || 2.0;
+    const talkSoftClip = envBool(process.env.TALK_SOFTCLIP, true);
+
+    const pcmRaw = sampleType === "sine"
+      ? generateSinePcm(sampleRate, sampleSeconds, 900, 0.95)
+      : generateMelodyPcm(sampleRate, sampleSeconds);
+    const pcm = applyGainToPcm(pcmRaw, talkGain, talkSoftClip);
     const adpcm = encodeImaAdpcm(pcm, blockSizeBytes);
 
     log("Uploading audio", {
       seconds: sampleSeconds,
+      sampleType,
+      talkGain,
+      talkSoftClip,
       sampleRate,
       blockSizeBytes,
       fullBlockSizeBytes: session.info.fullBlockSize,

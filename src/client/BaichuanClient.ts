@@ -259,13 +259,11 @@ export class BaichuanClient extends EventEmitter<{
     // No subscription: behave as before (generic push)
     this.emit("push", frame);
 
-    // Parse events (cmd_id 33 = Motion/AI/Visitor events)
+    // Parse events (cmd_id 33 = AlarmEventList push)
     if (frame.header.cmdId === 33) {
       try {
-        const event = this.parseEvent(frame);
-        if (event) {
-          this.emit("event", event);
-        }
+        const events = this.parseEvents(frame);
+        for (const event of events) this.emit("event", event);
       } catch (error) {
         if (this.opts.debug) {
           this.emit("debug", "event_parse_error", error);
@@ -309,44 +307,128 @@ export class BaichuanClient extends EventEmitter<{
   }
 
   /**
-   * Parses event frame (cmd_id 33) into ReolinkEvent.
-   * Based on reolink-aio _parse_xml handling of cmd_id 33.
+   * Parses event frame (cmd_id 33) into one or more ReolinkEvent.
+   * Primary format (neolink): <AlarmEventList><AlarmEvent>...</AlarmEvent>...</AlarmEventList>
+   * Fallback format (seen on some firmwares): <Event>...</Event>
    */
-  private parseEvent(frame: BaichuanFrame): ReolinkEvent | null {
+  private parseEvents(frame: BaichuanFrame): ReolinkEvent[] {
     const body = frame.body;
-    if (body.length === 0) return null;
+    if (body.length === 0) return [];
 
     const xml = this.tryDecryptXml(body, frame.header.channelId, this.enc);
-    if (!xml || !xml.startsWith("<?xml")) return null;
+    if (!xml || !xml.startsWith("<?xml")) return [];
 
-    // Extract channel from frame (channelId 250 = host, 1+ = channels)
-    const channelId = frame.header.channelId;
-    const channel = channelId === 250 ? 0 : channelId - 1;
+    // Default channel from frame header (channelId 250 = host, 1+ = channels)
+    const fallbackChannelId = frame.header.channelId;
+    const fallbackChannel = fallbackChannelId === 250 ? 0 : Math.max(0, fallbackChannelId - 1);
 
-    // Parse XML for event tags (motion, AI, visitor, etc.)
-    // Based on reolink-aio: <Event><status>MD</status><AItype>people</AItype>...</Event>
-    const eventMatch = xml.match(/<Event[^>]*>([\s\S]*?)<\/Event>/);
-    if (!eventMatch) return null;
+    const now = Date.now();
 
-    const eventXml = eventMatch[1] ?? "";
-    const status = getXmlText(eventXml, "status") ?? "";
-    const aiType = getXmlText(eventXml, "AItype") ?? "";
+    // 1) Neolink format: AlarmEventList
+    if (xml.includes("<AlarmEventList")) {
+      const out: ReolinkEvent[] = [];
+      const alarmEventMatches = xml.matchAll(/<AlarmEvent\b[^>]*>([\s\S]*?)<\/AlarmEvent>/g);
+      for (const match of alarmEventMatches) {
+        const alarmXml = match[1] ?? "";
+        const channelText = getXmlText(alarmXml, "channelId");
+        const channel = channelText !== undefined ? Number(channelText) : fallbackChannel;
+        const status = (getXmlText(alarmXml, "status") ?? "").trim();
+        const statusUpper = status.toUpperCase();
 
-    // Motion detection
-    if (status && status.includes("MD")) {
-      return {
-        channel,
-        type: "motion",
-        motion: {
-          channel,
-          state: true,
-          timestamp: Date.now(),
-        },
-        timestamp: Date.now(),
-      };
+        // Some firmwares may attach AI type in different tag names.
+        const aiTypeRaw = (getXmlText(alarmXml, "AItype") ?? getXmlText(alarmXml, "aiType") ?? getXmlText(alarmXml, "aitype") ?? "").trim();
+
+        // Motion (MD) OR PIR should both map to motion for consumers like Scrypted.
+        if (statusUpper.includes("MD")) {
+          out.push({
+            channel,
+            type: "motion",
+            motion: { channel, state: true, timestamp: now, source: "md" },
+            timestamp: now,
+          });
+          continue;
+        }
+
+        if (statusUpper.includes("PIR")) {
+          out.push({
+            channel,
+            type: "motion",
+            motion: { channel, state: true, timestamp: now, source: "pir" },
+            timestamp: now,
+          });
+          continue;
+        }
+
+        if (aiTypeRaw) {
+          const aiTypeMap: Record<string, "people" | "vehicle" | "dog_cat" | "face" | "package" | "other"> = {
+            people: "people",
+            vehicle: "vehicle",
+            dog_cat: "dog_cat",
+            face: "face",
+            package: "package",
+          };
+          out.push({
+            channel,
+            type: "ai",
+            ai: {
+              channel,
+              type: aiTypeMap[aiTypeRaw.toLowerCase()] ?? "other",
+              detected: true,
+              timestamp: now,
+            },
+            timestamp: now,
+          });
+          continue;
+        }
+
+        // Some firmwares signal AI without an explicit AItype.
+        if (statusUpper.includes("AI")) {
+          out.push({
+            channel,
+            type: "ai",
+            ai: { channel, type: "other", detected: true, timestamp: now },
+            timestamp: now,
+          });
+          continue;
+        }
+
+        if (statusUpper.includes("VIS")) {
+          out.push({ channel, type: "visitor", timestamp: now });
+          continue;
+        }
+
+        if (statusUpper.includes("DN")) {
+          out.push({ channel, type: "daynight", timestamp: now });
+          continue;
+        }
+      }
+      return out;
     }
 
-    // AI detection
+    // 2) Fallback format: <Event>
+    const eventMatch = xml.match(/<Event\b[^>]*>([\s\S]*?)<\/Event>/);
+    if (!eventMatch) return [];
+
+    const eventXml = eventMatch[1] ?? "";
+    const status = (getXmlText(eventXml, "status") ?? "").trim();
+    const aiType = (getXmlText(eventXml, "AItype") ?? "").trim();
+
+    if (status.toUpperCase().includes("MD")) {
+      return [{
+        channel: fallbackChannel,
+        type: "motion",
+        motion: { channel: fallbackChannel, state: true, timestamp: now, source: "md" },
+        timestamp: now,
+      }];
+    }
+    if (status.toUpperCase().includes("PIR")) {
+      return [{
+        channel: fallbackChannel,
+        type: "motion",
+        motion: { channel: fallbackChannel, state: true, timestamp: now, source: "pir" },
+        timestamp: now,
+      }];
+    }
     if (aiType) {
       const aiTypeMap: Record<string, "people" | "vehicle" | "dog_cat" | "face" | "package" | "other"> = {
         people: "people",
@@ -355,21 +437,20 @@ export class BaichuanClient extends EventEmitter<{
         face: "face",
         package: "package",
       };
-
-      return {
-        channel,
+      return [{
+        channel: fallbackChannel,
         type: "ai",
         ai: {
-          channel,
+          channel: fallbackChannel,
           type: aiTypeMap[aiType.toLowerCase()] ?? "other",
           detected: true,
-          timestamp: Date.now(),
+          timestamp: now,
         },
-        timestamp: Date.now(),
-      };
+        timestamp: now,
+      }];
     }
 
-    return null;
+    return [];
   }
 
   private nextMsgNum(): number {

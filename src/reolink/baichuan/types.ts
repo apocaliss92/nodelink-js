@@ -110,6 +110,8 @@ export interface MotionEvent {
   channel: number;
   state: boolean; // true = motion detected
   timestamp?: number;
+  /** Origin of motion trigger when known (e.g. PIR-only cameras). */
+  source?: "md" | "pir" | "unknown";
 }
 
 export interface AIEvent {

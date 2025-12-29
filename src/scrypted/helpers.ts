@@ -279,6 +279,7 @@ export class ScryptedIntercom {
 export class ScryptedEventEmitter {
   private api: ReolinkBaichuanApi;
   private subscribed = false;
+  private onEventHandler: ((event: ReolinkEvent) => void) | undefined;
 
   constructor(api: ReolinkBaichuanApi) {
     this.api = api;
@@ -294,9 +295,8 @@ export class ScryptedEventEmitter {
     await this.api.subscribeEvents();
 
     // Listen for parsed events
-    this.api.client.on("event", (event: ReolinkEvent) => {
-      onEvent(event);
-    });
+    this.onEventHandler = (event: ReolinkEvent) => onEvent(event);
+    this.api.client.on("event", this.onEventHandler);
 
     this.subscribed = true;
   }
@@ -308,7 +308,10 @@ export class ScryptedEventEmitter {
     if (!this.subscribed) return;
 
     await this.api.unsubscribeEvents();
-    this.api.client.removeAllListeners("event");
+    if (this.onEventHandler) {
+      this.api.client.removeListener("event", this.onEventHandler);
+      this.onEventHandler = undefined;
+    }
     this.subscribed = false;
   }
 
