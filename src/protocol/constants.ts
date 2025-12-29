@@ -49,6 +49,10 @@ export const BC_CMD_ID_PTZ_CONTROL_PRESET = 19; // MSG_ID_PTZ_CONTROL_PRESET - S
 export const BC_CMD_ID_GET_PTZ_PRESET = 190; // MSG_ID_GET_PTZ_PRESET - Get preset list
 export const BC_CMD_ID_GET_PTZ_POSITION = 433; // Get current PTZ position (from reolink_aio)
 
+// PTZ Zoom/Focus command IDs (from neolink model.rs)
+export const BC_CMD_ID_GET_ZOOM_FOCUS = 294; // MSG_ID_GET_ZOOM_FOCUS - Read zoom/focus min/max/current
+export const BC_CMD_ID_SET_ZOOM_FOCUS = 295; // MSG_ID_SET_ZOOM_FOCUS - Write zoom/focus position
+
 // Battery Info command IDs
 export const BC_CMD_ID_GET_BATTERY_INFO = 252; // MSG_ID_BATTERY_INFO_LIST - Get battery info
 

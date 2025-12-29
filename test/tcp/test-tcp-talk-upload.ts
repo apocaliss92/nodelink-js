@@ -12,6 +12,14 @@
 import { ReolinkBaichuanApi } from "../../index.js";
 import { config } from "../env.js";
 
+function envBool(value: string | undefined, defaultValue: boolean): boolean {
+  if (value === undefined) return defaultValue;
+  const v = value.trim().toLowerCase();
+  if (v === "1" || v === "true" || v === "yes" || v === "y" || v === "on") return true;
+  if (v === "0" || v === "false" || v === "no" || v === "n" || v === "off") return false;
+  return defaultValue;
+}
+
 function log(message: string, data?: unknown) {
   console.log(`\n${"=".repeat(60)}`);
   console.log(`[INFO] ${message}`);
@@ -154,10 +162,20 @@ async function main(): Promise<void> {
 
   log("Starting talk upload test", { host, username });
 
+  const debugEnabled = envBool(process.env.BAICHUAN_DEBUG, false);
+  const debugOptions = {
+    enabled: debugEnabled,
+    traceTalk: envBool(process.env.BAICHUAN_TRACE_TALK, false),
+    traceStream: envBool(process.env.BAICHUAN_TRACE_STREAM, false),
+    debugH264: envBool(process.env.BAICHUAN_DEBUG_H264, debugEnabled),
+    debugParamSets: envBool(process.env.BAICHUAN_DEBUG_PARAMSETS, false),
+  } as const;
+
   const api = new ReolinkBaichuanApi({
     host,
     username,
     password,
+    debugOptions,
   });
 
   try {

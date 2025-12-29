@@ -40,7 +40,9 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "npx tsup",
+    "build:js": "npx tsup",
+    "build:types": "rm -rf .tmp/types && npx tsc -p tsconfig.json --emitDeclarationOnly --declaration --declarationMap false --outDir .tmp/types && npx api-extractor run --local && rm -rf .tmp/types",
+    "build": "npm run build:js && npm run build:types",
     "typecheck": "npx tsc -p tsconfig.json --noEmit",
     "lint": "npx eslint .",
     "test:build": "npm run build && npx tsc -p tsconfig.test.json",
@@ -59,6 +61,8 @@
     "test:tcp:video-stream-record": "npm run test:build && node dist/test/tcp/test-tcp-video-stream-record.js",
     "test:tcp:video-stream-record-265": "npm run test:build && node dist/test/tcp/test-tcp-video-stream-record-265.js",
     "test:tcp:talk-upload": "npm run test:build && node dist/test/tcp/test-tcp-talk-upload.js",
+    "test:tcp:ptz": "npm run test:build && node dist/test/tcp/test-tcp-ptz.js",
+    "test:tcp:ptz-ops": "npm run test:build && node dist/test/tcp/test-tcp-ptz-ops.js",
     "test:tcp:diagnostics": "npm run test:build && node dist/test/tcp/test-tcp-diagnostics-bundle.js",
     "test:tcp:video-save-merge": "npm run test:build && node dist/test/tcp/test-tcp-video-save-and-merge.js",
     "test:tcp:new-apis": "npm run test:build && node dist/test/tcp/test-tcp-new-apis.js",
@@ -75,11 +79,12 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
+    "@microsoft/api-extractor": "^7.53.0",
     "@types/node": "^24.0.0",
     "eslint": "^9.0.0",
     "globals": "^16.0.0",
     "tsup": "^8.0.0",
-    "typescript": "^5.8.0"
+    "typescript": "5.8.2"
   },
   "dependencies": {
     "alawmulaw": "^6.0.0",

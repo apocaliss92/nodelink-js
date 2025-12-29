@@ -1,12 +1,25 @@
 import { EventEmitter } from "node:events";
 import net from "node:net";
-import { BC_TCP_DEFAULT_PORT, BC_CLASS_LEGACY, BC_CLASS_MODERN_24, BC_CMD_ID_UDP_KEEP_ALIVE } from "../protocol/constants";
+import {
+  BC_TCP_DEFAULT_PORT,
+  BC_CLASS_LEGACY,
+  BC_CLASS_MODERN_24,
+  BC_CMD_ID_UDP_KEEP_ALIVE,
+  BC_CMD_ID_TALK_ABILITY,
+  BC_CMD_ID_TALK_RESET,
+  BC_CMD_ID_TALK_CONFIG,
+  BC_CMD_ID_TALK,
+} from "../protocol/constants";
 import { aesDecrypt, aesEncrypt, bcDecrypt, bcEncrypt, deriveAesKey, md5StrModern, type EncryptionProtocol } from "../protocol/crypto";
 import { BaichuanFrameParser, encodeHeader, type BaichuanFrame } from "../protocol/framing";
 import { buildBinaryExtensionXml, buildChannelExtensionXml, buildLoginXml, getXmlText } from "../protocol/xml";
 import { BcUdpStream, type BcUdpStreamOptions } from "../bcudp/BcUdpStream";
 import type { ReolinkEvent } from "../reolink/baichuan/types";
-import { normalizeDebugOptions, traceLog, type DebugOptions, type DebugConfig } from "../debug/DebugConfig";
+import { normalizeDebugOptions, traceLog, talkTraceLog, type DebugOptions, type DebugConfig } from "../debug/DebugConfig";
+
+function isTalkCmd(cmdId: number): boolean {
+  return cmdId === BC_CMD_ID_TALK_ABILITY || cmdId === BC_CMD_ID_TALK_RESET || cmdId === BC_CMD_ID_TALK_CONFIG || cmdId === BC_CMD_ID_TALK;
+}
 
 export type BaichuanClientOptions = {
   host: string;
@@ -208,6 +221,14 @@ export class BaichuanClient extends EventEmitter<{
         }
       }
       return;
+    }
+
+    if (this.debugCfg.traceTalk && isTalkCmd(frame.header.cmdId)) {
+      talkTraceLog(
+        this.debugCfg,
+        "BaichuanTalk",
+        `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`
+      );
     }
 
     this.emit("frame", frame);
@@ -413,6 +434,8 @@ export class BaichuanClient extends EventEmitter<{
     cmdId: number;
     payload: Buffer;
     channel?: number;
+    /** Override the header channelId (and encryption channelId) for this request. */
+    channelIdOverride?: number;
     /** If omitted, uses a binary Extension with <binaryData>1</binaryData> + channelId. */
     extensionXml?: string;
     messageClass?: number;
@@ -422,7 +445,7 @@ export class BaichuanClient extends EventEmitter<{
     await this.connect();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
-    const channelId = params.channel == null ? 250 : channel + 1;
+    const channelId = params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
 
     const msgNum = this.nextMsgNum();
     const cmdId = params.cmdId;
@@ -449,6 +472,13 @@ export class BaichuanClient extends EventEmitter<{
     const wire = Buffer.concat([header, bodyBytes]);
 
     if (this.opts.debug) this.emit("debug", "tx", { cmdId, msgNum, channelId, messageClass, bodyLen, binaryPayload: true });
+    if (this.debugCfg.traceTalk && isTalkCmd(cmdId)) {
+      talkTraceLog(
+        this.debugCfg,
+        "BaichuanTalk",
+        `tx cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=${params.streamType ?? 0} class=0x${messageClass.toString(16)} bodyLen=${bodyLen} payloadOffset=${payloadOffset} binaryPayloadLen=${params.payload.length}`
+      );
+    }
     this.writeWire(wire);
   }
 
@@ -483,6 +513,8 @@ export class BaichuanClient extends EventEmitter<{
   async sendXml(params: {
     cmdId: number;
     channel?: number;
+    /** Override the header channelId (and encryption channelId) for this request. */
+    channelIdOverride?: number;
     payloadXml?: string;
     extensionXml?: string;
     /** Header class; defaults to modern 24-byte header (0x6414). */
@@ -497,7 +529,7 @@ export class BaichuanClient extends EventEmitter<{
     await this.connect();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
-    const channelId = params.channel == null ? 250 : channel + 1; // segue reolink_aio: 250 host, 1..= canali
+    const channelId = params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1); // default: reolink_aio-style
 
     const msgNum = this.nextMsgNum();
     const cmdId = params.cmdId;
@@ -548,12 +580,26 @@ export class BaichuanClient extends EventEmitter<{
     if (this.debugCfg.traceStream && (cmdId === 3 || cmdId === 4)) {
       traceLog(this.debugCfg, "BaichuanTrace", `tx cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=0 class=0x${messageClass.toString(16)} bodyLen=${bodyLen} payloadOffset=${payloadOffset}`);
     }
+    if (this.debugCfg.traceTalk && isTalkCmd(cmdId)) {
+      talkTraceLog(
+        this.debugCfg,
+        "BaichuanTalk",
+        `tx cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=0 class=0x${messageClass.toString(16)} bodyLen=${bodyLen} payloadOffset=${payloadOffset}`
+      );
+    }
     this.writeWire(wire);
 
     const frame = await framePromise;
     if (this.opts.debug) this.emit("debug", "rx", { cmdId: frame.header.cmdId, responseCode: frame.header.responseCode, msgNum: frame.header.msgNum });
     if (this.debugCfg.traceStream && (cmdId === 3 || cmdId === 4)) {
       traceLog(this.debugCfg, "BaichuanTrace", `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`);
+    }
+    if (this.debugCfg.traceTalk && isTalkCmd(cmdId)) {
+      talkTraceLog(
+        this.debugCfg,
+        "BaichuanTalk",
+        `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`
+      );
     }
 
     // Check responseCode for errors (400 = bad request/auth failure, 200 = success)
@@ -585,6 +631,8 @@ export class BaichuanClient extends EventEmitter<{
   async sendFrame(params: {
     cmdId: number;
     channel?: number;
+    /** Override the header channelId (and encryption channelId) for this request. */
+    channelIdOverride?: number;
     payloadXml?: string;
     extensionXml?: string;
     messageClass?: number;
@@ -595,7 +643,7 @@ export class BaichuanClient extends EventEmitter<{
     await this.connect();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
-    const channelId = params.channel == null ? 250 : channel + 1;
+    const channelId = params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
 
     const msgNum = this.nextMsgNum();
     const cmdId = params.cmdId;
@@ -646,12 +694,26 @@ export class BaichuanClient extends EventEmitter<{
     if (this.debugCfg.traceStream && (cmdId === 3 || cmdId === 4)) {
       traceLog(this.debugCfg, "BaichuanTrace", `tx cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=${params.streamType ?? 0} class=0x${messageClass.toString(16)} bodyLen=${bodyLen} payloadOffset=${payloadOffset}`);
     }
+    if (this.debugCfg.traceTalk && isTalkCmd(cmdId)) {
+      talkTraceLog(
+        this.debugCfg,
+        "BaichuanTalk",
+        `tx cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=${params.streamType ?? 0} class=0x${messageClass.toString(16)} bodyLen=${bodyLen} payloadOffset=${payloadOffset}`
+      );
+    }
     this.writeWire(wire);
 
     const frame = await framePromise;
     if (this.opts.debug) this.emit("debug", "rx", { cmdId: frame.header.cmdId, responseCode: frame.header.responseCode, msgNum: frame.header.msgNum });
     if (this.debugCfg.traceStream && (cmdId === 3 || cmdId === 4)) {
       traceLog(this.debugCfg, "BaichuanTrace", `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`);
+    }
+    if (this.debugCfg.traceTalk && isTalkCmd(cmdId)) {
+      talkTraceLog(
+        this.debugCfg,
+        "BaichuanTalk",
+        `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`
+      );
     }
     return frame;
   }
@@ -663,6 +725,8 @@ export class BaichuanClient extends EventEmitter<{
   async sendBinary(params: {
     cmdId: number;
     channel?: number;
+    /** Override the header channelId (and encryption channelId) for this request. */
+    channelIdOverride?: number;
     payloadXml?: string;
     extensionXml?: string;
     messageClass?: number;
@@ -673,7 +737,7 @@ export class BaichuanClient extends EventEmitter<{
     await this.connect();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
-    const channelId = params.channel == null ? 250 : channel + 1;
+    const channelId = params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
 
     const msgNum = this.nextMsgNum();
     const cmdId = params.cmdId;

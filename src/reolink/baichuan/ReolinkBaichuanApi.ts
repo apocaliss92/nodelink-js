@@ -2,7 +2,7 @@ import { BaichuanClient, type BaichuanClientOptions } from "../../client/Baichua
 import { BaichuanVideoStream, type BaichuanVideoStreamOptions } from "../../baichuan/stream/BaichuanVideoStream";
 import { BaichuanRtspServer, type BaichuanRtspServerOptions } from "../../baichuan/stream/BaichuanRtspServer";
 import { createNativeStream } from "../../scrypted/helpers";
-import { xmlEscape, getXmlText, buildPreviewXml, buildPreviewStopXml, buildChannelExtensionXml, buildBinaryExtensionXml, buildPtzControlXml, buildPtzPresetXml, buildSirenManualXml, buildSirenTimesXml, buildWhiteLedStateXml, buildAbilityInfoExtensionXml } from "../../protocol/xml";
+import { xmlEscape, getXmlText, buildPreviewXml, buildPreviewStopXml, buildChannelExtensionXml, buildBinaryExtensionXml, buildPtzControlXml, buildPtzPresetXml, buildStartZoomFocusXml, buildSirenManualXml, buildSirenTimesXml, buildWhiteLedStateXml, buildAbilityInfoExtensionXml } from "../../protocol/xml";
 import { 
   BC_CMD_ID_VIDEO, 
   BC_CMD_ID_VIDEO_STOP, 
@@ -15,6 +15,8 @@ import {
   BC_CMD_ID_PTZ_CONTROL_PRESET,
   BC_CMD_ID_GET_PTZ_PRESET,
   BC_CMD_ID_GET_PTZ_POSITION,
+  BC_CMD_ID_GET_ZOOM_FOCUS,
+  BC_CMD_ID_SET_ZOOM_FOCUS,
   BC_CMD_ID_GET_BATTERY_INFO,
   BC_CMD_ID_GET_PIR_INFO,
   BC_CMD_ID_SET_PIR_INFO,
@@ -340,22 +342,7 @@ export class ReolinkBaichuanApi {
     let buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0) as Buffer<ArrayBufferLike>;
     let closed = false;
     let pumping = false;
-    let notify: (() => void) | undefined;
     let expectedStreamEndMs = Date.now();
-
-    const wake = () => {
-      const n = notify;
-      notify = undefined;
-      n?.();
-    };
-
-    const waitForData = async (): Promise<void> => {
-      if (closed) return;
-      if (buffer.length >= fullBlockSize) return;
-      await new Promise<void>((resolve) => {
-        notify = resolve;
-      });
-    };
 
     const BLOCKS_PER_PAYLOAD = 4; // neolink
 
@@ -396,28 +383,29 @@ export class ReolinkBaichuanApi {
       pumping = true;
       try {
         while (true) {
-          if (closed && buffer.length === 0) break;
-          if (buffer.length < fullBlockSize) {
-            if (closed) {
-              // pad last partial block to avoid dropping tail
-              if (buffer.length > 0) {
-                const padded = Buffer.alloc(fullBlockSize, 0xff) as Buffer<ArrayBufferLike>;
-                buffer.copy(padded, 0);
-                buffer = Buffer.alloc(0) as Buffer<ArrayBufferLike>;
-                await sendBlocks([padded]);
-              }
-              break;
+          if (buffer.length >= fullBlockSize) {
+            const blocks: Array<Buffer<ArrayBufferLike>> = [];
+            while (blocks.length < BLOCKS_PER_PAYLOAD && buffer.length >= fullBlockSize) {
+              blocks.push(buffer.subarray(0, fullBlockSize) as Buffer<ArrayBufferLike>);
+              buffer = buffer.subarray(fullBlockSize) as Buffer<ArrayBufferLike>;
             }
-            await waitForData();
+            await sendBlocks(blocks);
             continue;
           }
 
-          const blocks: Array<Buffer<ArrayBufferLike>> = [];
-          while (blocks.length < BLOCKS_PER_PAYLOAD && buffer.length >= fullBlockSize) {
-            blocks.push(buffer.subarray(0, fullBlockSize) as Buffer<ArrayBufferLike>);
-            buffer = buffer.subarray(fullBlockSize) as Buffer<ArrayBufferLike>;
+          if (closed) {
+            // pad last partial block to avoid dropping tail
+            if (buffer.length > 0) {
+              const padded = Buffer.alloc(fullBlockSize, 0xff) as Buffer<ArrayBufferLike>;
+              buffer.copy(padded, 0);
+              buffer = Buffer.alloc(0) as Buffer<ArrayBufferLike>;
+              await sendBlocks([padded]);
+            }
+            break;
           }
-          await sendBlocks(blocks);
+
+          // Not enough data for a full block yet; exit and wait for more.
+          break;
         }
       } finally {
         pumping = false;
@@ -427,7 +415,6 @@ export class ReolinkBaichuanApi {
     const stop = async (): Promise<void> => {
       if (closed) return;
       closed = true;
-      wake();
       await pump();
 
       // Wait a tiny bit after the expected end, like neolink does, to avoid cutting off playback.
@@ -452,9 +439,7 @@ export class ReolinkBaichuanApi {
         if (closed) throw new Error("Talk session is closed");
         if (adpcm.length === 0) return;
         buffer = buffer.length === 0 ? adpcm : (Buffer.concat([buffer, adpcm]) as Buffer<ArrayBufferLike>);
-        wake();
-        // Fire-and-forget pump kickoff (but keep ordering by awaiting the first tick if not running).
-        void pump();
+        await pump();
       },
       stop,
     };
@@ -1062,11 +1047,16 @@ export class ReolinkBaichuanApi {
    * @returns Array of PTZ presets
    */
   async getPtzPresets(channel: number): Promise<PtzPreset[]> {
-    const channelId = channel + 1; // Convert to 1-based
-    const xml = await this.sendXml({ 
-      cmdId: BC_CMD_ID_GET_PTZ_PRESET, 
+    // Neolink uses the same channel_id everywhere (header, Extension, payload).
+    // In neolink this is 0-based.
+    const channelId = channel;
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_PTZ_PRESET,
       channel,
+      channelIdOverride: channelId,
+      extensionXml: buildChannelExtensionXml(channelId),
       messageClass: BC_CLASS_MODERN_24,
+      streamType: 0,
     });
     
     // Parse preset list from XML
@@ -1103,46 +1093,49 @@ export class ReolinkBaichuanApi {
    * @returns Promise that resolves when command is sent
    */
   async ptz(channel: number, command: PtzCommand): Promise<void> {
-    // Neolink uses channel_id in both extension and PtzControl XML
-    // channel_id is 1-based (0 becomes 1, but 0 can also be valid for host commands)
-    const channelId = channel + 1;
+    // Neolink uses the same channel_id in meta header, Extension and payload XML.
+    // In neolink this is 0-based.
+    const channelId = channel;
     
-    // Map command.action + command.command to neolink direction strings
-    // Neolink only supports: "up", "down", "left", "right", "stop"
-    let direction: string;
+    // Neolink supports only: "up", "down", "left", "right", "stop" via MSG_ID_PTZ_CONTROL.
+    // Zoom/focus are separate messages (e.g. 294/295).
+    let direction: "up" | "down" | "left" | "right" | "stop";
     if (command.action === "stop") {
       direction = "stop";
     } else {
-      // Map Scrypted command format to neolink format (lowercase only)
-      const cmdMap: Record<string, string> = {
-        "Left": "left",
-        "Right": "right",
-        "Up": "up",
-        "Down": "down",
-        // Zoom and Focus are not standard PTZ control commands in neolink
-        // They may require different cmd_id or not be supported via PTZ_CONTROL
-        "ZoomIn": "zoomIn", // May not work - camera may not support
-        "ZoomOut": "zoomOut", // May not work - camera may not support
-        "FocusNear": "focusNear", // May not work - camera may not support
-        "FocusFar": "focusFar", // May not work - camera may not support
+      const cmdMap: Record<string, "up" | "down" | "left" | "right"> = {
+        Left: "left",
+        Right: "right",
+        Up: "up",
+        Down: "down",
       };
-      direction = cmdMap[command.command] ?? command.command.toLowerCase();
+      const mapped = cmdMap[command.command];
+      if (!mapped) {
+        throw new Error(`Unsupported PTZ command for MSG_ID_PTZ_CONTROL: ${command.command}`);
+      }
+      direction = mapped;
     }
-    
-    // Neolink uses speed as f32 (float), not as integer
-    // Use the speed directly (0.0-1.0 range) or convert to a reasonable float value
-    // For stop command, speed should be 0 (as per neolink implementation)
-    const speed = direction === "stop" ? 0 : (command.speed ?? 0.5);
+
+    // Neolink uses speed as f32; typical values are ~32 (CLI defaults to 32).
+    // Some integrations provide a normalized 0..1 speed; map that to 0..64.
+    let speed: number;
+    if (direction === "stop") {
+      speed = 0;
+    } else {
+      const raw = command.speed;
+      if (raw === undefined) {
+        speed = 32;
+      } else if (raw > 0 && raw <= 1) {
+        speed = Math.max(1, raw * 64);
+      } else {
+        speed = raw;
+      }
+    }
     
     const payloadXml = buildPtzControlXml(channelId, direction, speed);
     
-    // Neolink includes extension with channel_id for PTZ commands
-    // Extension channelId must match the channel_id in PtzControl XML (both 1-based)
-    // buildChannelExtensionXml expects 0-based, but we need 1-based here
-    const extensionXml = `<?xml version="1.0" encoding="UTF-8" ?>
-<Extension version="1.1">
-<channelId>${channelId}</channelId>
-</Extension>`;
+    // Neolink includes Extension with channel_id for PTZ commands.
+    const extensionXml = buildChannelExtensionXml(channelId);
     
     // Neolink does subscribe before sending PTZ commands
     // However, sendFrame already handles the response via pending map using cmdId:messageKey
@@ -1154,18 +1147,17 @@ export class ReolinkBaichuanApi {
     if (this.client.getDebugConfig().debugH264 || process.env.BAICHUAN_DEBUG_PTZ) {
       console.log("[DEBUG] PTZ XML:", payloadXml);
       console.log("[DEBUG] Extension XML:", extensionXml);
-      console.log("[DEBUG] Channel (0-based):", channel, "ChannelId (1-based):", channelId);
+      console.log("[DEBUG] Channel (0-based):", channel, "ChannelId (0-based):", channelId);
     }
     
-    // sendFrame converts channel (0-based) to channelId (1-based) for header
-    // This matches neolink where self.channel_id is used in both meta.header.channel_id 
-    // and extension/payload XML channelId
     const frame = await this.client.sendFrame({
       cmdId: BC_CMD_ID_PTZ_CONTROL,
-      channel, // 0-based - sendFrame will convert to channelId (1-based) for header
+      channel,
+      channelIdOverride: channelId,
       extensionXml,
       payloadXml,
       messageClass: BC_CLASS_MODERN_24,
+      streamType: 0,
     });
     
     if (frame.header.responseCode !== 200) {
@@ -1191,13 +1183,11 @@ export class ReolinkBaichuanApi {
       throw new Error(`PTZ control rejected (response_code ${frame.header.responseCode})${errorDetails}`);
     }
     
-    // If action is "start", we need to send a stop command after a short delay
-    // This matches Scrypted's behavior: pan/tilt commands are momentary
+    // If action is "start", send a stop after a short delay.
     if (command.action === "start" && direction !== "stop") {
-      // Schedule stop after 500ms (similar to Scrypted behavior)
       setTimeout(() => {
         this.ptz(channel, { action: "stop", command: command.command }).catch(() => {
-          // Ignore errors on stop
+          // Ignore stop errors
         });
       }, 500);
     }
@@ -1211,21 +1201,20 @@ export class ReolinkBaichuanApi {
    * @param presetId - Preset ID
    */
   async moveToPtzPreset(channel: number, presetId: number): Promise<void> {
-    const channelId = channel + 1; // Convert to 1-based
+    const channelId = channel;
     const payloadXml = buildPtzPresetXml(channelId, presetId, "toPos");
     
     // Neolink includes extension with channel_id for PTZ preset commands
-    const extensionXml = `<?xml version="1.0" encoding="UTF-8" ?>
-<Extension version="1.1">
-<channelId>${channelId}</channelId>
-</Extension>`;
+    const extensionXml = buildChannelExtensionXml(channelId);
     
     const frame = await this.client.sendFrame({
       cmdId: BC_CMD_ID_PTZ_CONTROL_PRESET,
       channel,
+      channelIdOverride: channelId,
       extensionXml,
       payloadXml,
       messageClass: BC_CLASS_MODERN_24,
+      streamType: 0,
     });
     
     if (frame.header.responseCode !== 200) {
@@ -1242,21 +1231,20 @@ export class ReolinkBaichuanApi {
    * @param name - Preset name
    */
   async setPtzPreset(channel: number, presetId: number, name: string): Promise<void> {
-    const channelId = channel + 1; // Convert to 1-based
+    const channelId = channel;
     const payloadXml = buildPtzPresetXml(channelId, presetId, "setPos", name);
     
     // Neolink includes extension with channel_id for PTZ preset commands
-    const extensionXml = `<?xml version="1.0" encoding="UTF-8" ?>
-<Extension version="1.1">
-<channelId>${channelId}</channelId>
-</Extension>`;
+    const extensionXml = buildChannelExtensionXml(channelId);
     
     const frame = await this.client.sendFrame({
       cmdId: BC_CMD_ID_PTZ_CONTROL_PRESET,
       channel,
+      channelIdOverride: channelId,
       extensionXml,
       payloadXml,
       messageClass: BC_CLASS_MODERN_24,
+      streamType: 0,
     });
     
     if (frame.header.responseCode !== 200) {
@@ -1286,6 +1274,80 @@ export class ReolinkBaichuanApi {
     }
     
     return result;
+  }
+
+  /**
+   * Read zoom/focus min/max/current positions.
+   * cmd_id: 294 (MSG_ID_GET_ZOOM_FOCUS)
+   */
+  async getZoomFocus(channel: number): Promise<{
+    zoom?: { minPos: number; maxPos: number; curPos: number };
+    focus?: { minPos: number; maxPos: number; curPos: number };
+  }> {
+    const channelId = channel;
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_ZOOM_FOCUS,
+      channel,
+      channelIdOverride: channelId,
+      extensionXml: buildChannelExtensionXml(channelId),
+      messageClass: BC_CLASS_MODERN_24,
+      streamType: 0,
+    });
+
+    const parseTriplet = (sectionTag: string): { minPos: number; maxPos: number; curPos: number } | undefined => {
+      const sectionMatch = new RegExp(`<${sectionTag}>([\\s\\S]*?)</${sectionTag}>`).exec(xml);
+      const sectionXml = sectionMatch?.[1];
+      if (!sectionXml) return undefined;
+      const maxPos = getXmlText(sectionXml, "maxPos");
+      const minPos = getXmlText(sectionXml, "minPos");
+      const curPos = getXmlText(sectionXml, "curPos");
+      if (maxPos === undefined || minPos === undefined || curPos === undefined) return undefined;
+      return { maxPos: Number(maxPos), minPos: Number(minPos), curPos: Number(curPos) };
+    };
+
+    const out: {
+      zoom?: { minPos: number; maxPos: number; curPos: number };
+      focus?: { minPos: number; maxPos: number; curPos: number };
+    } = {};
+    const zoom = parseTriplet("zoom");
+    const focus = parseTriplet("focus");
+    if (zoom) out.zoom = zoom;
+    if (focus) out.focus = focus;
+    return out;
+  }
+
+  /**
+   * Zoom to a given zoom factor, where 1.0 is normal.
+   * Uses movePos where 1000 == 1.0x (neolink behavior).
+   * cmd_id: 295 (MSG_ID_SET_ZOOM_FOCUS)
+   */
+  async zoomToFactor(channel: number, zoomFactor: number): Promise<void> {
+    const channelId = channel;
+    const current = await this.getZoomFocus(channel);
+    const zoom = current.zoom;
+    if (!zoom) {
+      throw new Error("Camera did not return <zoom> info (zoom may be unsupported)");
+    }
+
+    const requestedPos = Math.round(zoomFactor * 1000);
+    const movePos = Math.min(zoom.maxPos, Math.max(zoom.minPos, requestedPos));
+
+    const payloadXml = buildStartZoomFocusXml(channelId, movePos);
+    const extensionXml = buildChannelExtensionXml(channelId);
+
+    const frame = await this.client.sendFrame({
+      cmdId: BC_CMD_ID_SET_ZOOM_FOCUS,
+      channel,
+      channelIdOverride: channelId,
+      extensionXml,
+      payloadXml,
+      messageClass: BC_CLASS_MODERN_24,
+      streamType: 0,
+    });
+
+    if (frame.header.responseCode !== 200) {
+      throw new Error(`Zoom rejected (response_code ${frame.header.responseCode})`);
+    }
   }
 
   // --------------------

@@ -163,6 +163,26 @@ ${nameXml}
 }
 
 /**
+ * Build StartZoomFocus XML for zooming to an absolute position.
+ * Based on neolink ptz.rs implementation.
+ *
+ * cmd_id: 295 (MSG_ID_SET_ZOOM_FOCUS)
+ *
+ * @param channelId - Channel ID (0/1-based depending on camera; should match header/extension)
+ * @param movePos - Absolute zoom position (typically 1000 == 1.0x)
+ */
+export function buildStartZoomFocusXml(channelId: number, movePos: number): string {
+  return `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<StartZoomFocus version="1.1">
+<channelId>${channelId}</channelId>
+<command>zoomPos</command>
+<movePos>${Math.trunc(movePos)}</movePos>
+</StartZoomFocus>
+</body>`;
+}
+
+/**
  * Build Siren/Audio Alarm XML for manual control.
  * Based on reolink_aio xmls.py SirenManual template.
  * 
