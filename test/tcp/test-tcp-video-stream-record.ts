@@ -80,6 +80,46 @@ async function ffprobeAssertNoErrors(filePath: string): Promise<void> {
   });
 }
 
+async function ffprobeAssertHasAudioStream(filePath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const ffprobe = spawn(
+      "ffprobe",
+      [
+        "-v",
+        "error",
+        "-show_streams",
+        "-of",
+        "json",
+        filePath,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] }
+    );
+
+    let stdout = "";
+    let stderr = "";
+    ffprobe.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
+    ffprobe.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
+    ffprobe.on("error", (e) => reject(new Error(`ffprobe spawn error: ${e.message}`)));
+    ffprobe.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`ffprobe exited with code ${code}\n${stderr}`));
+        return;
+      }
+      try {
+        const json = JSON.parse(stdout) as { streams?: Array<{ codec_type?: string }> };
+        const hasAudio = (json.streams ?? []).some((s) => s.codec_type === "audio");
+        if (!hasAudio) {
+          reject(new Error(`Recorded file has no audio stream: ${filePath}`));
+          return;
+        }
+        resolve();
+      } catch (e) {
+        reject(new Error(`ffprobe returned invalid JSON: ${(e as Error).message}`));
+      }
+    });
+  });
+}
+
 function cleanupRecordingsDir(recordingsDir: string): void {
   if (!fs.existsSync(recordingsDir)) return;
   const entries = fs.readdirSync(recordingsDir, { withFileTypes: true });
@@ -616,6 +656,7 @@ async function testVideoStreamRecording() {
   cleanupRecordingsDir(recordingsDir);
 
   const recordedFiles: string[] = [];
+  const failedProfiles: string[] = [];
 
   try {
     // Login
@@ -682,6 +723,7 @@ async function testVideoStreamRecording() {
       log(`\n🎥 Testing profile: ${profile}`);
       
       let rtspServer: BaichuanRtspServer | undefined;
+      let profileFailed = false;
 
       try {
         // Create RTSP stream using the library
@@ -733,6 +775,7 @@ async function testVideoStreamRecording() {
           ]);
         } catch (error) {
           logError(`Error during recording from RTSP`, error);
+          profileFailed = true;
           continue;
         }
         
@@ -751,15 +794,32 @@ async function testVideoStreamRecording() {
             }
           } catch (e) {
             logError(`Duration verification failed for ${profile}`, e);
+            profileFailed = true;
             continue;
+          }
+
+          // Ensure we actually recorded audio when expected.
+          // (Video-only recordings were historically passing duration checks but missing audio.)
+          if (profile === "main" || profile === "sub") {
+            try {
+              await ffprobeAssertHasAudioStream(outputFile);
+              logSuccess(`Audio stream detected in recording for profile ${profile}`);
+            } catch (e) {
+              logError(`Audio stream verification failed for ${profile}`, e);
+              profileFailed = true;
+              continue;
+            }
           }
         } else {
           logError(`File not created: ${outputFile}`, new Error("File not found"));
+          profileFailed = true;
         }
 
       } catch (error) {
         logError(`Error while testing profile ${profile}`, error);
+        profileFailed = true;
       } finally {
+        if (profileFailed) failedProfiles.push(profile);
         // Cleanup RTSP server
         if (rtspServer) {
           try {
@@ -780,11 +840,15 @@ async function testVideoStreamRecording() {
       await ffprobeAssertNoErrors(f);
     }
 
+    if (failedProfiles.length > 0) {
+      throw new Error(`Some profiles failed: ${failedProfiles.join(", ")}`);
+    }
+
     logSuccess("All tests completed!");
 
   } catch (error) {
     logError("Critical error during tests", error);
-    process.exit(1);
+    process.exitCode = 1;
   } finally {
     try {
       await api.close();
@@ -792,9 +856,9 @@ async function testVideoStreamRecording() {
     } catch (error) {
       logError("Error while closing connection", error);
     }
-    // Ensure process exits
+    // Ensure process exits (keep failure exit code if set).
     setTimeout(() => {
-      process.exit(0);
+      process.exit(process.exitCode ?? 0);
     }, 1000);
   }
 }

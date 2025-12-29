@@ -363,6 +363,7 @@ export async function* createNativeStream(
   data: Buffer;
   codec: string | null;
   sampleRate: number | null;
+  microseconds: number | null;
   videoType?: "H264" | "H265";
 }, void, unknown> {
   const videoStream = new BaichuanVideoStream({
@@ -428,6 +429,7 @@ export async function* createNativeStream(
     data: Buffer;
     codec: string | null;
     sampleRate: number | null;
+    microseconds: number | null;
     videoType?: "H264" | "H265";
   }> = [];
 
@@ -438,6 +440,7 @@ export async function* createNativeStream(
     data: Buffer;
     isKeyframe: boolean;
     videoType: "H264" | "H265";
+    microseconds: number;
   }) => {
     if (closed) return;
     
@@ -446,6 +449,7 @@ export async function* createNativeStream(
       data: unit.data,
       codec: null,
       sampleRate: null,
+      microseconds: unit.microseconds,
       videoType: unit.videoType,
     });
     
@@ -471,6 +475,7 @@ export async function* createNativeStream(
       data: frame,
       codec: audioCodec,
       sampleRate: audioSampleRate,
+      microseconds: null,
     });
     
     if (frameResolve) {

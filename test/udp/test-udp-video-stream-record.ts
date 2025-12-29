@@ -422,32 +422,17 @@ async function testUdpVideoStreamRecording() {
         log(`Recording ${duration}s from RTSP stream: ${rtspUrl}`);
         log(`This emulates a user (ffmpeg) connecting to the RTSP stream`);
         
-        // For battery cameras, keep the camera awake during recording by sending periodic pings
-        const keepAliveInterval = setInterval(async () => {
-          try {
-            await api.ping();
-          } catch (error) {
-            // Ignore ping errors silently
-          }
-        }, 3000);
-        
-        const clearKeepAlive = () => {
-          clearInterval(keepAliveInterval);
-        };
-        
         // Record from RTSP stream (this is the actual client connection)
         try {
           await Promise.race([
-            recordVideoFromRtsp(rtspUrl, outputFile, duration).finally(clearKeepAlive),
+            recordVideoFromRtsp(rtspUrl, outputFile, duration),
             new Promise((_, reject) => 
               setTimeout(() => {
-                clearKeepAlive();
                 reject(new Error("Timeout recording from RTSP"));
               }, (duration + 10) * 1000)
             ),
           ]);
         } catch (error) {
-          clearKeepAlive();
           logError(`Error during recording from RTSP`, error);
           continue;
         }

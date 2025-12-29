@@ -23,6 +23,7 @@ export interface RtspFlow {
 
   /** Returns fmtp value (without the leading "a=fmtp:96 "). */
   getFmtp(): { fmtp: string; hasParamSets: boolean };
+  getParameterSetsAnnexB(): Buffer | null;
 
   /** Called while native stream is active; may keep device awake (UDP/battery). */
   startKeepAlive(api: ReolinkBaichuanApi): Promise<void>;
@@ -40,8 +41,6 @@ abstract class BaseFlow implements RtspFlow {
   public abstract readonly ffmpegFormat: "h264" | "hevc";
   public abstract readonly sdpCodec: "H264" | "H265";
 
-  protected keepAliveTimer: NodeJS.Timeout | null = null;
-
   protected constructor(transport: RtspTransport, videoType: RtspVideoType) {
     this.transport = transport;
     this.videoType = videoType;
@@ -49,44 +48,32 @@ abstract class BaseFlow implements RtspFlow {
   }
 
   async startKeepAlive(api: ReolinkBaichuanApi): Promise<void> {
-    if (this.transport !== "udp") return;
-
-
-    // Battery cams can be sensitive to overlapping keepalive calls.
-    // Use a self-scheduling loop to guarantee at most one in-flight ping.
-    if (this.keepAliveTimer) return;
-    this.keepAliveStopped = false;
-
-    const tick = async () => {
-      if (this.keepAliveStopped) return;
-      if (this.keepAliveInFlight) return;
-      this.keepAliveInFlight = true;
-      try {
-        await api.ping();
-      } catch {
-        // Ignore keep-alive errors; stream should continue if possible.
-      } finally {
-        this.keepAliveInFlight = false;
-      }
-    };
-
-    this.keepAliveTimer = setInterval(() => {
-      void tick();
-    }, 2000);
-    (this.keepAliveTimer as any)?.unref?.();
+    void api;
+    // Neolink does NOT keep battery streams alive by sending cmd_id=93 pings.
+    // The correct mechanism is responding to camera-initiated UDP keepalive
+    // frames (MSG_ID_UDP_KEEP_ALIVE=234) with response_code=200.
+    // This is handled centrally in `BaichuanClient.handleFrame()`.
   }
 
   stopKeepAlive(): void {
-    if (this.keepAliveTimer) {
-      clearInterval(this.keepAliveTimer);
-      this.keepAliveTimer = null;
-    }
-    this.keepAliveStopped = true;
-    this.keepAliveInFlight = false;
+    // no-op (see startKeepAlive)
   }
 
   abstract extractParameterSets(accessUnitAnnexB: Buffer): void;
   abstract getFmtp(): { fmtp: string; hasParamSets: boolean };
+  abstract getParameterSetsAnnexB(): Buffer | null;
+}
+
+const ANNEXB_START_CODE = Buffer.from([0x00, 0x00, 0x00, 0x01]);
+
+function joinAnnexBNals(...nals: Array<Buffer | null>): Buffer | null {
+  const present = nals.filter((n): n is Buffer => !!n && n.length > 0);
+  if (present.length === 0) return null;
+  const parts: Buffer[] = [];
+  for (const n of present) {
+    parts.push(ANNEXB_START_CODE, n);
+  }
+  return Buffer.concat(parts);
 }
 
 class H264Flow extends BaseFlow {
@@ -119,6 +106,10 @@ class H264Flow extends BaseFlow {
     }
     return { fmtp, hasParamSets: false };
   }
+
+  getParameterSetsAnnexB(): Buffer | null {
+    return joinAnnexBNals(this.sps, this.pps);
+  }
 }
 
 class H265Flow extends BaseFlow {
@@ -150,6 +141,10 @@ class H265Flow extends BaseFlow {
       return { fmtp, hasParamSets: true };
     }
     return { fmtp, hasParamSets: false };
+  }
+
+  getParameterSetsAnnexB(): Buffer | null {
+    return joinAnnexBNals(this.vps, this.sps, this.pps);
   }
 }
 
