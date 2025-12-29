@@ -39,6 +39,17 @@ export function buildChannelExtensionXml(channelId: number | string | undefined 
 </Extension>`;
 }
 
+export function buildBinaryExtensionXml(channelId: number | string | undefined | null): string {
+  if (channelId === undefined || channelId === null) {
+    return `<?xml version="1.0" encoding="UTF-8" ?><Extension version="1.1"><binaryData>1</binaryData></Extension>`;
+  }
+  return `<?xml version="1.0" encoding="UTF-8" ?>
+<Extension version="1.1">
+<binaryData>1</binaryData>
+<channelId>${channelId}</channelId>
+</Extension>`;
+}
+
 /**
  * Build Preview XML for video stream request.
  * Based on neolink stream.rs: uses Preview element with handle and stream_type.

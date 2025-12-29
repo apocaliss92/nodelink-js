@@ -133,6 +133,49 @@ export interface TwoWayAudioConfig {
   mode?: "mixAudioStream" | string;
 }
 
+export interface TalkAudioConfig {
+  priority?: number;
+  audioType: string;
+  sampleRate: number;
+  samplePrecision: number;
+  lengthPerEncoder: number;
+  soundTrack: string;
+}
+
+export interface TalkAbility {
+  version?: string;
+  duplexList: string[];
+  audioStreamModeList: string[];
+  audioConfigList: TalkAudioConfig[];
+}
+
+export interface TalkConfig {
+  channel: number;
+  duplex: string;
+  audioStreamMode: string;
+  audioConfig: TalkAudioConfig;
+}
+
+export interface TalkSessionInfo {
+  channel: number;
+  audioConfig: TalkAudioConfig;
+  /** ADPCM bytes per block excluding the 4-byte predictor state. */
+  blockSize: number;
+  /** ADPCM bytes per block including the 4-byte predictor state. */
+  fullBlockSize: number;
+}
+
+export interface TalkSession {
+  readonly info: TalkSessionInfo;
+  /**
+   * Enqueue ADPCM DVI4 bytes (raw blocks, including the 4-byte predictor header per block).
+   * The session will packetize into BcMedia ADPCM and pace delivery.
+   */
+  sendAudio(adpcm: Buffer): Promise<void>;
+  /** Flush remaining audio and stop the talk session. */
+  stop(): Promise<void>;
+}
+
 /**
  * Device ability/capability information for a specific channel or host.
  * 

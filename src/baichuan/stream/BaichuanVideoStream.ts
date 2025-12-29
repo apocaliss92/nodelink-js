@@ -21,6 +21,14 @@ import { convertToAnnexB as convertH265ToAnnexB, isValidH265AnnexBAccessUnit, is
 
 const NAL_START_CODE_4B = Buffer.from([0x00, 0x00, 0x00, 0x01]);
 
+function envBool(value: string | undefined, defaultValue: boolean): boolean {
+  if (value == null) return defaultValue;
+  const v = value.trim().toLowerCase();
+  if (v === "1" || v === "true" || v === "yes" || v === "on") return true;
+  if (v === "0" || v === "false" || v === "no" || v === "off") return false;
+  return defaultValue;
+}
+
 // --- Minimal H.264 bit parsing helpers (for SPS/PPS IDs + slice pps_id) ---
 function removeEmulationPreventionBytes(rbsp: Buffer): Buffer {
   // Remove 0x03 after 00 00 (Annex-B emulation prevention)
@@ -248,11 +256,20 @@ export class BaichuanVideoStream extends EventEmitter<{
       if (frame.header.cmdId !== 3) return;
       
       totalFramesReceived++;
+
+      const dbg = this.client.getDebugConfig();
+      const rtspDebug = dbg.debugRtsp || envBool(process.env.BAICHUAN_DEBUG_RTSP, false);
       if (totalFramesReceived === 1) {
-        console.log(`[BaichuanVideoStream] First cmd_id=3 frame received (bodyLen: ${frame.body.length}, channelId: ${frame.header.channelId})`);
+        if (rtspDebug) {
+          console.log(
+            `[BaichuanVideoStream] First cmd_id=3 frame received (bodyLen: ${frame.body.length}, channelId: ${frame.header.channelId})`
+          );
+        }
       }
       if (totalFramesReceived % 10 === 0 || totalFramesReceived <= 5) {
-        console.log(`[BaichuanVideoStream] Received ${totalFramesReceived} Baichuan frames (cmd_id=3)`);
+        if (rtspDebug) {
+          console.log(`[BaichuanVideoStream] Received ${totalFramesReceived} Baichuan frames (cmd_id=3)`);
+        }
       }
 
       // Note (from neolink): the media stream is often NOT encrypted like control messages.
@@ -283,10 +300,14 @@ export class BaichuanVideoStream extends EventEmitter<{
         channelId: frame.header.channelId,
       });
       if (totalFramesReceived === 1) {
-        console.log(`[BaichuanVideoStream] Data after XML: ${dataAfterXml.length} bytes, first 32 bytes: ${dataAfterXml.subarray(0, Math.min(32, dataAfterXml.length)).toString("hex")}`);
+        if (rtspDebug) {
+          console.log(
+            `[BaichuanVideoStream] Data after XML: ${dataAfterXml.length} bytes, first 32 bytes: ${dataAfterXml
+              .subarray(0, Math.min(32, dataAfterXml.length))
+              .toString("hex")}`
+          );
+        }
       }
-
-      const dbg = this.client.getDebugConfig();
       if (dbg.dumpEnabled) ensureDumpDir(dbg);
 
       // Dumps the exact chunks fed to the BcMedia decoder (neolink-style payload_stream()).
@@ -329,7 +350,11 @@ export class BaichuanVideoStream extends EventEmitter<{
       if (totalFramesReceived <= 10 || totalFramesReceived % 20 === 0) {
         const remainingBuffer = this.bcMediaCodec.getRemainingBuffer();
         const typesStr = Array.from(packetTypes.entries()).map(([t, c]) => `${t}:${c}`).join(", ");
-        console.log(`[BaichuanVideoStream] Frame #${totalFramesReceived}: dataToParse=${dataAfterXml.length} bytes, parsed ${mediaPackets.length} BcMedia packets (${typesStr || "none"}), total: ${totalMediaPackets}, remaining buffer: ${remainingBuffer.length} bytes`);
+        if (rtspDebug) {
+          console.log(
+            `[BaichuanVideoStream] Frame #${totalFramesReceived}: dataToParse=${dataAfterXml.length} bytes, parsed ${mediaPackets.length} BcMedia packets (${typesStr || "none"}), total: ${totalMediaPackets}, remaining buffer: ${remainingBuffer.length} bytes`
+          );
+        }
       }
       
       // Process complete BcMedia packets.
@@ -620,9 +645,11 @@ export class BaichuanVideoStream extends EventEmitter<{
 
           if (totalFramesReceived <= 5 || videoFramesEmitted <= 5) {
             const sc = hasStartCodes(annexBData) ? "yes" : "no";
-            console.log(
-              `[BaichuanVideoStream] Emitted ${media.type} (${media.videoType}) ${media.data.length} bytes -> ${annexBData.length} bytes (Annex-B, startCode:${sc})`
-            );
+            if (rtspDebug) {
+              console.log(
+                `[BaichuanVideoStream] Emitted ${media.type} (${media.videoType}) ${media.data.length} bytes -> ${annexBData.length} bytes (Annex-B, startCode:${sc})`
+              );
+            }
           }
         } else if (media.type === "Pframe") {
           const chunk = media.data;
@@ -688,7 +715,11 @@ export class BaichuanVideoStream extends EventEmitter<{
       
       // Log frame emission stats
       if (totalFramesReceived <= 10 || (totalFramesReceived % 20 === 0 && (videoFramesEmitted > 0 || audioFramesEmitted > 0))) {
-        console.log(`[BaichuanVideoStream] Frame #${totalFramesReceived}: emitted ${videoFramesEmitted} video frames, ${audioFramesEmitted} audio frames`);
+        if (rtspDebug) {
+          console.log(
+            `[BaichuanVideoStream] Frame #${totalFramesReceived}: emitted ${videoFramesEmitted} video frames, ${audioFramesEmitted} audio frames`
+          );
+        }
       }
       
       // Track total video frames emitted

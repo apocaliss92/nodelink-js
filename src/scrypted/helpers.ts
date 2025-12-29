@@ -202,19 +202,13 @@ export interface ScryptedIntercomOptions {
  * Audio Format Requirements (for sending audio TO camera):
  * =========================================================
  * 
- * - Format: G.711 A-law (pcm_alaw)
- * - Sample Rate: 8000 Hz
- * - Channels: 1 (mono)
- * - Bitrate: 64k (typical)
- * 
- * Scrypted will pass audio data already in the correct format via FFmpegInput.
- * No encoding/decoding is performed - data is passed directly to the camera.
- * 
- * Example ffmpeg encoder arguments (similar to ONVIF intercom):
- *   -acodec pcm_alaw
- *   -ar 8000
- *   -ac 1
- *   -b:a 64k
+ * Reolink Baichuan talk-back expects ADPCM (DVI4/IMA-style) in fixed-size blocks.
+ * The exact parameters come from `TalkAbility` (cmd_id=10) and are applied via
+ * `TalkConfig` (cmd_id=201). Audio data is then sent as BcMedia ADPCM packets
+ * inside Talk (cmd_id=202) payloads.
+ *
+ * This helper assumes Scrypted/ffmpeg is responsible for producing the correct
+ * ADPCM byte stream. No encoding is performed here.
  * 
  * Note: Audio reception is handled via the video stream, not through this intercom interface.
  * 
@@ -224,6 +218,7 @@ export class ScryptedIntercom {
   private api: ReolinkBaichuanApi;
   private channel: number;
   private active = false;
+  private session: Awaited<ReturnType<ReolinkBaichuanApi["createTalkSession"]>> | undefined;
 
   constructor(options: ScryptedIntercomOptions) {
     this.api = options.api;
@@ -239,37 +234,26 @@ export class ScryptedIntercom {
       throw new Error("Intercom session already active");
     }
 
-    // Check if two-way audio is supported
-    const config = await this.api.getTwoWayAudioConfig(this.channel);
-    if (!config.enabled) {
-      throw new Error(`Two-way audio not supported on channel ${this.channel}`);
-    }
-
-    // Start two-way audio session
-    await this.api.startTwoWayAudio(this.channel);
-
+    // `createTalkSession` validates TalkAbility and sends TalkConfig.
+    this.session = await this.api.createTalkSession(this.channel);
     this.active = true;
   }
 
   /**
    * Send audio data to camera.
    * 
-   * @param audioData - G.711 A-law encoded audio data (from Scrypted/ffmpeg)
-   *                    Format: pcm_alaw, 8kHz, mono, 64k bitrate
-   *                    No encoding is performed - data is sent directly to camera.
-   * 
-   * Note: Scrypted will pass audio already in G.711 A-law format via FFmpegInput.
-   *       This method sends the data directly to the camera without modification.
-   *       Similar to ONVIF intercom implementation.
+   * @param audioData - ADPCM byte stream produced by Scrypted/ffmpeg.
+   *                    No encoding is performed - data is sent directly to the camera.
    */
   async sendAudio(audioData: Buffer): Promise<void> {
     if (!this.active) {
       throw new Error("Intercom session not active");
     }
 
-    // Send audio data directly to camera (already in G.711 A-law format from ffmpeg)
-    // No encoding/decoding needed - Scrypted handles format conversion via ffmpeg
-    await this.api.sendAudioData(audioData, this.channel);
+    if (!this.session) {
+      throw new Error("Intercom session missing (internal state error)");
+    }
+    await this.session.sendAudio(audioData);
   }
 
   /**
@@ -278,7 +262,8 @@ export class ScryptedIntercom {
   async stop(): Promise<void> {
     if (!this.active) return;
 
-    await this.api.stopTwoWayAudio(this.channel);
+    await this.session?.stop();
+    this.session = undefined;
     this.active = false;
   }
 

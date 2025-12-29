@@ -2,11 +2,15 @@ import { BaichuanClient, type BaichuanClientOptions } from "../../client/Baichua
 import { BaichuanVideoStream, type BaichuanVideoStreamOptions } from "../../baichuan/stream/BaichuanVideoStream";
 import { BaichuanRtspServer, type BaichuanRtspServerOptions } from "../../baichuan/stream/BaichuanRtspServer";
 import { createNativeStream } from "../../scrypted/helpers";
-import { xmlEscape, getXmlText, buildPreviewXml, buildPreviewStopXml, buildChannelExtensionXml, buildPtzControlXml, buildPtzPresetXml, buildSirenManualXml, buildSirenTimesXml, buildWhiteLedStateXml, buildAbilityInfoExtensionXml } from "../../protocol/xml";
+import { xmlEscape, getXmlText, buildPreviewXml, buildPreviewStopXml, buildChannelExtensionXml, buildBinaryExtensionXml, buildPtzControlXml, buildPtzPresetXml, buildSirenManualXml, buildSirenTimesXml, buildWhiteLedStateXml, buildAbilityInfoExtensionXml } from "../../protocol/xml";
 import { 
   BC_CMD_ID_VIDEO, 
   BC_CMD_ID_VIDEO_STOP, 
   BC_CLASS_MODERN_24,
+  BC_CMD_ID_TALK_ABILITY,
+  BC_CMD_ID_TALK_CONFIG,
+  BC_CMD_ID_TALK,
+  BC_CMD_ID_TALK_RESET,
   BC_CMD_ID_PTZ_CONTROL,
   BC_CMD_ID_PTZ_CONTROL_PRESET,
   BC_CMD_ID_GET_PTZ_PRESET,
@@ -23,25 +27,31 @@ import {
   BC_CMD_ID_SET_WHITE_LED_TASK,
   BC_CMD_ID_ABILITY_INFO,
 } from "../../protocol/constants";
-import type {
-  OsdConfig,
-  AIState,
-  PtzPreset,
-  PtzCommand,
-  BatteryInfo,
-  PirState,
-  WhiteLedState,
-  AudioAlarmParams,
-  Events,
-  StreamMetadata,
-  ChannelStreamMetadata,
-  StreamProfile,
-  VideoCodec,
-  ReolinkEvent,
-  MotionEvent,
-  AIEvent,
-  TwoWayAudioConfig,
+import {
+  type OsdConfig,
+  type AIState,
+  type PtzPreset,
+  type PtzCommand,
+  type BatteryInfo,
+  type PirState,
+  type WhiteLedState,
+  type AudioAlarmParams,
+  type Events,
+  type StreamMetadata,
+  type ChannelStreamMetadata,
+  type StreamProfile,
+  type VideoCodec,
+  type ReolinkEvent,
+  type MotionEvent,
+  type AIEvent,
+  type TwoWayAudioConfig,
 } from "./types";
+
+type TalkAbility = import("./types").TalkAbility;
+type TalkAudioConfig = import("./types").TalkAudioConfig;
+type TalkConfig = import("./types").TalkConfig;
+type TalkSession = import("./types").TalkSession;
+type TalkSessionInfo = import("./types").TalkSessionInfo;
 
 export type ReolinkBaichuanPorts = Record<string, Record<string, number>>;
 
@@ -52,6 +62,116 @@ function getXmlTexts(xml: string, tags: string[]): Record<string, string> {
     if (v !== undefined) out[t] = v;
   }
   return out;
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getXmlBlocks(xml: string, tagName: string): string[] {
+  const re = new RegExp(`<${tagName}\\b[^>]*>([\\s\\S]*?)<\\/${tagName}>`, "g");
+  const out: string[] = [];
+  let m: RegExpExecArray | null;
+  // eslint-disable-next-line no-cond-assign
+  while ((m = re.exec(xml))) {
+    out.push(m[1] ?? "");
+  }
+  return out;
+}
+
+function parseTalkAudioConfig(block: string): TalkAudioConfig | null {
+  const audioType = getXmlText(block, "audioType");
+  const sampleRate = Number.parseInt(getXmlText(block, "sampleRate") ?? "", 10);
+  const samplePrecision = Number.parseInt(getXmlText(block, "samplePrecision") ?? "", 10);
+  const lengthPerEncoder = Number.parseInt(getXmlText(block, "lengthPerEncoder") ?? "", 10);
+  const soundTrack = getXmlText(block, "soundTrack");
+  const priorityText = getXmlText(block, "priority");
+
+  if (!audioType || !Number.isFinite(sampleRate) || !Number.isFinite(samplePrecision) || !Number.isFinite(lengthPerEncoder) || !soundTrack) {
+    return null;
+  }
+
+  const config: TalkAudioConfig = {
+    audioType,
+    sampleRate,
+    samplePrecision,
+    lengthPerEncoder,
+    soundTrack,
+  };
+  if (priorityText !== undefined) {
+    const pr = Number.parseInt(priorityText, 10);
+    if (Number.isFinite(pr)) config.priority = pr;
+  }
+  return config;
+}
+
+function parseTalkAbilityXml(xml: string): TalkAbility {
+  const talkAbilityBlock = getXmlBlocks(xml, "TalkAbility")[0];
+  if (!talkAbilityBlock) {
+    throw new Error("TalkAbility XML not found in response");
+  }
+
+  const duplexListBlocks = getXmlBlocks(talkAbilityBlock, "duplexList");
+  const duplexList = duplexListBlocks
+    .map((b) => getXmlText(b, "duplex"))
+    .filter((v): v is string => !!v);
+
+  const audioStreamModeListBlocks = getXmlBlocks(talkAbilityBlock, "audioStreamModeList");
+  const audioStreamModeList = audioStreamModeListBlocks
+    .map((b) => getXmlText(b, "audioStreamMode"))
+    .filter((v): v is string => !!v);
+
+  // audioConfig blocks are nested under audioConfigList -> audioConfig
+  const audioConfigBlocks = getXmlBlocks(talkAbilityBlock, "audioConfig");
+  const audioConfigList = audioConfigBlocks
+    .map(parseTalkAudioConfig)
+    .filter((v): v is TalkAudioConfig => !!v);
+
+  return {
+    duplexList,
+    audioStreamModeList,
+    audioConfigList,
+  };
+}
+
+function buildTalkConfigPayloadXml(config: TalkConfig): string {
+  const audio = config.audioConfig;
+  return `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<TalkConfig version="1.1">
+<channelId>${config.channel}</channelId>
+<duplex>${xmlEscape(config.duplex)}</duplex>
+<audioStreamMode>${xmlEscape(config.audioStreamMode)}</audioStreamMode>
+<audioConfig>
+<audioType>${xmlEscape(audio.audioType)}</audioType>
+<sampleRate>${audio.sampleRate}</sampleRate>
+<samplePrecision>${audio.samplePrecision}</samplePrecision>
+<lengthPerEncoder>${audio.lengthPerEncoder}</lengthPerEncoder>
+<soundTrack>${xmlEscape(audio.soundTrack)}</soundTrack>
+</audioConfig>
+</TalkConfig>
+</body>`;
+}
+
+function encodeBcMediaAdpcmBlock(block: Buffer, halfBlockSize: number): Buffer {
+  // Matches parseAdpcm in src/baichuan/stream/BcMediaParser.ts
+  // magic(4) + payload_size(u16) + payload_size_b(u16) + magic_data(u16=0x0100) + half_block_size(u16) + data + padding
+  const magic = 0x62773130; // "bw10"
+  const subHeaderSize = 4;
+  const payloadSize = subHeaderSize + block.length;
+  const headerLen = 12;
+  const padSize = payloadSize % 8 === 0 ? 0 : 8 - (payloadSize % 8);
+  const totalLen = headerLen + block.length + padSize;
+  const buf = Buffer.alloc(totalLen);
+
+  buf.writeUInt32LE(magic, 0);
+  buf.writeUInt16LE(payloadSize, 4);
+  buf.writeUInt16LE(payloadSize, 6);
+  buf.writeUInt16LE(0x0100, 8);
+  buf.writeUInt16LE(halfBlockSize, 10);
+  block.copy(buf, 12);
+
+  return buf;
 }
 
 export class ReolinkBaichuanApi {
@@ -130,6 +250,216 @@ export class ReolinkBaichuanApi {
       // If it's already an Error from sendFrame (timeout, etc.), just throw it
       throw error;
     }
+  }
+
+  /**
+   * Fetch TalkAbility (cmd_id=10) which describes supported two-way audio formats.
+   * Based on neolink MSG_ID_TALKABILITY.
+   */
+  async getTalkAbility(channel?: number): Promise<TalkAbility> {
+    const xml = await this.sendXml({ cmdId: BC_CMD_ID_TALK_ABILITY, ...(channel !== undefined ? { channel } : {}) });
+    return parseTalkAbilityXml(xml);
+  }
+
+  /**
+   * Create a talk (two-way audio) session.
+   *
+   * Input audio format expected by the camera is ADPCM (DVI4/IMA style) in blocks described
+   * by TalkAbility.audioConfigList (typically 16kHz mono, lengthPerEncoder=1024).
+   */
+  async createTalkSession(channel = 0): Promise<TalkSession> {
+    if (!this.client.loggedIn) await this.client.login();
+
+    const ability = await this.getTalkAbility(channel);
+    const audioConfig = ability.audioConfigList.find((c) => c.audioType.toLowerCase() === "adpcm") ?? ability.audioConfigList[0];
+    if (!audioConfig) {
+      throw new Error(`Talk not supported on channel ${channel} (no audioConfig in TalkAbility)`);
+    }
+
+    const duplex = ability.duplexList[0] ?? "FDX";
+    const audioStreamMode = ability.audioStreamModeList[0] ?? "followVideoStream";
+
+    const talkConfig: TalkConfig = {
+      channel,
+      duplex,
+      audioStreamMode,
+      audioConfig,
+    };
+
+    const blockSize = Math.floor(audioConfig.lengthPerEncoder / 2);
+    const fullBlockSize = blockSize + 4;
+    if (blockSize <= 0 || fullBlockSize <= 4) {
+      throw new Error(`Invalid talk audio config: lengthPerEncoder=${audioConfig.lengthPerEncoder}`);
+    }
+
+    // Send TalkConfig (201) and handle 422 by issuing TalkReset (11) then retry.
+    const payloadXml = buildTalkConfigPayloadXml(talkConfig);
+    const sendTalkConfig = async (): Promise<void> => {
+      const frame = await this.client.sendFrame({
+        cmdId: BC_CMD_ID_TALK_CONFIG,
+        channel,
+        payloadXml,
+        messageClass: BC_CLASS_MODERN_24,
+      });
+
+      if (frame.header.responseCode === 422) {
+        await this.client.sendFrame({
+          cmdId: BC_CMD_ID_TALK_RESET,
+          channel,
+          // TalkReset has no payload; extension is enough.
+          payloadXml: "",
+          messageClass: BC_CLASS_MODERN_24,
+        });
+        const retryFrame = await this.client.sendFrame({
+          cmdId: BC_CMD_ID_TALK_CONFIG,
+          channel,
+          payloadXml,
+          messageClass: BC_CLASS_MODERN_24,
+        });
+        if (retryFrame.header.responseCode !== 200) {
+          throw new Error(`TalkConfig rejected after reset (responseCode ${retryFrame.header.responseCode})`);
+        }
+        return;
+      }
+
+      if (frame.header.responseCode !== 200) {
+        throw new Error(`TalkConfig rejected (responseCode ${frame.header.responseCode})`);
+      }
+    };
+
+    await sendTalkConfig();
+
+    const info: TalkSessionInfo = {
+      channel,
+      audioConfig,
+      blockSize,
+      fullBlockSize,
+    };
+
+    // Session implementation
+    let buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0) as Buffer<ArrayBufferLike>;
+    let closed = false;
+    let pumping = false;
+    let notify: (() => void) | undefined;
+    let expectedStreamEndMs = Date.now();
+
+    const wake = () => {
+      const n = notify;
+      notify = undefined;
+      n?.();
+    };
+
+    const waitForData = async (): Promise<void> => {
+      if (closed) return;
+      if (buffer.length >= fullBlockSize) return;
+      await new Promise<void>((resolve) => {
+        notify = resolve;
+      });
+    };
+
+    const BLOCKS_PER_PAYLOAD = 4; // neolink
+
+    const sendBlocks = async (blocks: Array<Buffer<ArrayBufferLike>>): Promise<void> => {
+      if (blocks.length === 0) return;
+      if (blocks.length > BLOCKS_PER_PAYLOAD) {
+        throw new Error(`Internal error: too many blocks in payload (${blocks.length})`);
+      }
+
+      const parts: Buffer[] = [];
+      let samplesSent = 0;
+      for (const block of blocks) {
+        parts.push(encodeBcMediaAdpcmBlock(block, blockSize));
+        // 2 samples per encoded byte + 1 predictor sample in 4-byte header
+        samplesSent += Math.max(0, (block.length - 4) * 2 + 1);
+      }
+
+      await this.client.sendBinaryPayloadNoReply({
+        cmdId: BC_CMD_ID_TALK,
+        channel,
+        extensionXml: buildBinaryExtensionXml(channel),
+        payload: Buffer.concat(parts),
+        messageClass: BC_CLASS_MODERN_24,
+      });
+
+      const playLengthMs = (samplesSent / audioConfig.sampleRate) * 1000;
+
+      const now = Date.now();
+      if (now > expectedStreamEndMs) expectedStreamEndMs = now + playLengthMs;
+      else expectedStreamEndMs += playLengthMs;
+
+      const sleepFor = expectedStreamEndMs - Date.now();
+      if (sleepFor > 0) await sleepMs(sleepFor);
+    };
+
+    const pump = async (): Promise<void> => {
+      if (pumping) return;
+      pumping = true;
+      try {
+        while (true) {
+          if (closed && buffer.length === 0) break;
+          if (buffer.length < fullBlockSize) {
+            if (closed) {
+              // pad last partial block to avoid dropping tail
+              if (buffer.length > 0) {
+                const padded = Buffer.alloc(fullBlockSize, 0xff) as Buffer<ArrayBufferLike>;
+                buffer.copy(padded, 0);
+                buffer = Buffer.alloc(0) as Buffer<ArrayBufferLike>;
+                await sendBlocks([padded]);
+              }
+              break;
+            }
+            await waitForData();
+            continue;
+          }
+
+          const blocks: Array<Buffer<ArrayBufferLike>> = [];
+          while (blocks.length < BLOCKS_PER_PAYLOAD && buffer.length >= fullBlockSize) {
+            blocks.push(buffer.subarray(0, fullBlockSize) as Buffer<ArrayBufferLike>);
+            buffer = buffer.subarray(fullBlockSize) as Buffer<ArrayBufferLike>;
+          }
+          await sendBlocks(blocks);
+        }
+      } finally {
+        pumping = false;
+      }
+    };
+
+    const stop = async (): Promise<void> => {
+      if (closed) return;
+      closed = true;
+      wake();
+      await pump();
+
+      // Wait a tiny bit after the expected end, like neolink does, to avoid cutting off playback.
+      const remaining = expectedStreamEndMs - Date.now();
+      if (remaining > 0) await sleepMs(remaining + 100);
+      else await sleepMs(100);
+
+      const frame = await this.client.sendFrame({
+        cmdId: BC_CMD_ID_TALK_RESET,
+        channel,
+        payloadXml: "",
+        messageClass: BC_CLASS_MODERN_24,
+      });
+      if (frame.header.responseCode !== 200) {
+        throw new Error(`TalkReset rejected (responseCode ${frame.header.responseCode})`);
+      }
+    };
+
+    const session: TalkSession = {
+      info,
+      sendAudio: async (adpcm: Buffer<ArrayBufferLike>) => {
+        if (closed) throw new Error("Talk session is closed");
+        if (adpcm.length === 0) return;
+        buffer = buffer.length === 0 ? adpcm : (Buffer.concat([buffer, adpcm]) as Buffer<ArrayBufferLike>);
+        wake();
+        // Fire-and-forget pump kickoff (but keep ordering by awaiting the first tick if not running).
+        void pump();
+      },
+      stop,
+    };
+
+    return session;
   }
 
   /** Generic Baichuan cmd_id call, returns binary data (for commands like Snap). */

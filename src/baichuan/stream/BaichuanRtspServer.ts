@@ -20,6 +20,14 @@ import { createRtspFlow, type RtspFlow, type RtspVideoType } from "./rtspFlow";
 import { isH264KeyframeAnnexB } from "./H264Converter";
 import { isH265Irap, splitAnnexBToNalPayloads } from "./H265Converter";
 
+function envBool(value: string | undefined, defaultValue: boolean): boolean {
+  if (value == null) return defaultValue;
+  const v = value.trim().toLowerCase();
+  if (v === "1" || v === "true" || v === "yes" || v === "on") return true;
+  if (v === "0" || v === "false" || v === "no" || v === "off") return false;
+  return defaultValue;
+}
+
 export interface BaichuanRtspServerOptions {
   /** API instance (required) */
   api: ReolinkBaichuanApi;
@@ -71,7 +79,7 @@ export class BaichuanRtspServer extends EventEmitter<{
     rtspSocket: net.Socket | null;
     pipelineStarted?: boolean;
     seenFirstVideoKeyframe?: boolean;
-    keyframeWaitStartMs?: number;
+    h265WaitStartMs?: number;
     setupTrack0: boolean;
     setupTrack1: boolean;
     isPlaying: boolean;
@@ -90,6 +98,16 @@ export class BaichuanRtspServer extends EventEmitter<{
     rtpAudioSsrc?: number;
     rtpSentVideoConfig?: boolean;
   }>();
+
+  private isRtspDebugEnabled(): boolean {
+    const dbg = this.api.client.getDebugConfig();
+    return dbg.debugRtsp || envBool(process.env.BAICHUAN_DEBUG_RTSP, false);
+  }
+
+  private rtspDebugLog(message: string): void {
+    if (!this.isRtspDebugEnabled()) return;
+    console.log(`[BaichuanRtspServer] ${message}`);
+  }
   // Track when first frame arrives from camera
   private firstFramePromise: Promise<void> | null = null;
   private firstFrameResolve: (() => void) | null = null;
@@ -223,7 +241,7 @@ export class BaichuanRtspServer extends EventEmitter<{
     const transport = this.api.client.getTransport();
     this.flow.stopKeepAlive();
     this.flow = createRtspFlow(transport, videoType);
-    console.log(`[BaichuanRtspServer] Using RTSP flow ${this.flow.key} (${reason})`);
+    this.rtspDebugLog(`Using RTSP flow ${this.flow.key} (${reason})`);
   }
 
   /**
@@ -403,7 +421,7 @@ export class BaichuanRtspServer extends EventEmitter<{
           socket.write(response);
         };
 
-        console.log(`[BaichuanRtspServer] RTSP ${method} ${url}`);
+        this.rtspDebugLog(`RTSP ${method} ${url}`);
 
         if (method === "OPTIONS") {
           sendResponse(200, "OK", {
@@ -424,7 +442,7 @@ export class BaichuanRtspServer extends EventEmitter<{
                 this.firstFramePromise || Promise.resolve(),
                 new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout waiting for first frame")), 10000))
               ]);
-              console.log(`[BaichuanRtspServer] First frame received, parameter sets extracted for SDP`);
+              this.rtspDebugLog(`First frame received, parameter sets extracted for SDP`);
             } catch (error) {
               console.warn(`[BaichuanRtspServer] Timeout waiting for first frame for SDP: ${error}`);
               // Continue anyway - SDP will be generated without parameter sets
@@ -550,7 +568,9 @@ export class BaichuanRtspServer extends EventEmitter<{
             if (resources) {
               if (isTrack1) resources.setupTrack1 = true;
               else resources.setupTrack0 = true;
-              console.log(`[BaichuanRtspServer] SETUP done for ${clientId}: track0=${!!resources.setupTrack0} track1=${!!resources.setupTrack1} playing=${!!resources.isPlaying}`);
+              this.rtspDebugLog(
+                `SETUP done for ${clientId}: track0=${!!resources.setupTrack0} track1=${!!resources.setupTrack1} playing=${!!resources.isPlaying}`
+              );
             }
           }
 
@@ -576,7 +596,9 @@ export class BaichuanRtspServer extends EventEmitter<{
             const resources = this.clientResources.get(clientId) as any;
             if (resources) {
               resources.isPlaying = true;
-              console.log(`[BaichuanRtspServer] PLAY for ${clientId}: track0=${!!resources.setupTrack0} track1=${!!resources.setupTrack1} playing=${!!resources.isPlaying}`);
+              this.rtspDebugLog(
+                `PLAY for ${clientId}: track0=${!!resources.setupTrack0} track1=${!!resources.setupTrack1} playing=${!!resources.isPlaying}`
+              );
             }
           }
           sendResponse(200, "OK", {
@@ -666,7 +688,7 @@ export class BaichuanRtspServer extends EventEmitter<{
             width: stream.width,
             height: stream.height,
           };
-          console.log(`[BaichuanRtspServer] Fetched metadata for profile ${this.profile}: ${streamMetadata.frameRate} fps`);
+          this.rtspDebugLog(`Fetched metadata for profile ${this.profile}: ${streamMetadata.frameRate} fps`);
         }
       } catch (error) {
         console.warn(`[BaichuanRtspServer] Could not fetch stream metadata: ${error}`);
@@ -735,17 +757,17 @@ export class BaichuanRtspServer extends EventEmitter<{
         udpSocket.on("message", (msg: Buffer) => {
           if (!firstSeen) {
             firstSeen = true;
-            console.log(`[BaichuanRtspServer] First video RTP packet received from ffmpeg for client ${clientId} (len=${msg.length})`);
+            this.rtspDebugLog(`First video RTP packet received from ffmpeg for client ${clientId} (len=${msg.length})`);
           }
 
           const forwarded = sendInterleaved(videoRtpChannel, msg);
           if (forwarded && !firstForwarded) {
             firstForwarded = true;
-            console.log(`[BaichuanRtspServer] First video RTP packet forwarded via TCP interleaved for client ${clientId}`);
+            this.rtspDebugLog(`First video RTP packet forwarded via TCP interleaved for client ${clientId}`);
           }
           rtpPacketCount++;
           if (rtpPacketCount % 1000 === 0) {
-            console.log(`[BaichuanRtspServer] Forwarded ${rtpPacketCount} RTP packets to client ${clientId} via TCP interleaved`);
+            this.rtspDebugLog(`Forwarded ${rtpPacketCount} RTP packets to client ${clientId} via TCP interleaved`);
           }
         });
       }
@@ -767,21 +789,23 @@ export class BaichuanRtspServer extends EventEmitter<{
           audioPacketCount++;
           if (!firstSeenAudio) {
             firstSeenAudio = true;
-            console.log(`[BaichuanRtspServer] First audio RTP packet received from ffmpeg for client ${clientId} (len=${msg.length})`);
+            this.rtspDebugLog(`First audio RTP packet received from ffmpeg for client ${clientId} (len=${msg.length})`);
           }
           const forwarded = sendInterleaved(audioRtpChannel, msg);
           if (forwarded && !firstForwardedAudio) {
             firstForwardedAudio = true;
-            console.log(`[BaichuanRtspServer] First audio RTP packet forwarded via TCP interleaved for client ${clientId}`);
+            this.rtspDebugLog(`First audio RTP packet forwarded via TCP interleaved for client ${clientId}`);
           }
           if (audioPacketCount % 1000 === 0) {
-            console.log(`[BaichuanRtspServer] Forwarded ${audioPacketCount} audio RTP packets to client ${clientId} via TCP interleaved`);
+            this.rtspDebugLog(`Forwarded ${audioPacketCount} audio RTP packets to client ${clientId} via TCP interleaved`);
           }
         });
       }
     }
     
     const resources = this.clientResources.get(clientId) as any;
+    const rtspDebug = this.isRtspDebugEnabled();
+    const rtspDebugLog = (message: string) => this.rtspDebugLog(message);
 
     const sendInterleaved = (channel: number, msg: Buffer): boolean => {
       if (!rtspSocket || rtspSocket.destroyed || !rtspSocket.writable) return false;
@@ -962,6 +986,19 @@ export class BaichuanRtspServer extends EventEmitter<{
       }
     };
 
+    const isH265IrapAccessUnit = (annexB: Buffer): boolean => {
+      const nals = splitAnnexBToNalPayloads(annexB);
+      for (const nal of nals) {
+        if (nal.length < 2) continue;
+        const b0 = nal[0];
+        if (b0 === undefined) continue;
+        if ((b0 & 0x80) !== 0) continue;
+        const nalType = (b0 >> 1) & 0x3f;
+        if (isH265Irap(nalType)) return true;
+      }
+      return false;
+    };
+
     if (useDirectRtp) {
       onProcess(undefined, null, null);
     }
@@ -980,7 +1017,7 @@ export class BaichuanRtspServer extends EventEmitter<{
       const frameRate = streamMetadata?.frameRate || 25;
       if (frameRate > 0) {
         ffmpegArgs.push("-r", frameRate.toString());
-        console.log(`[BaichuanRtspServer] Using frame rate ${frameRate} fps for client ${clientId}`);
+        this.rtspDebugLog(`Using frame rate ${frameRate} fps for client ${clientId}`);
       }
     
       ffmpegArgs.push(
@@ -1045,7 +1082,7 @@ export class BaichuanRtspServer extends EventEmitter<{
     
       const stdio: any[] = ["pipe", "ignore", "pipe"];
       if (this.hasAudio) stdio.push("pipe");
-      console.log(`[BaichuanRtspServer] Spawning ffmpeg for client ${clientId}: ffmpeg ${ffmpegArgs.join(" ")}`);
+      this.rtspDebugLog(`Spawning ffmpeg for client ${clientId}: ffmpeg ${ffmpegArgs.join(" ")}`);
       ffmpeg = spawn("ffmpeg", ffmpegArgs, {
         stdio,
       });
@@ -1056,9 +1093,7 @@ export class BaichuanRtspServer extends EventEmitter<{
         const paramSets = this.flow.getParameterSetsAnnexB();
         if (paramSets && paramSets.length > 0 && ffmpeg?.stdin) {
           ffmpeg.stdin.write(paramSets);
-          console.log(
-            `[BaichuanRtspServer] Wrote video parameter sets to ffmpeg stdin for client ${clientId} (len=${paramSets.length})`
-          );
+          this.rtspDebugLog(`Wrote video parameter sets to ffmpeg stdin for client ${clientId} (len=${paramSets.length})`);
         }
       } catch (e) {
         console.warn(`[BaichuanRtspServer] Failed to write video parameter sets to ffmpeg for client ${clientId}: ${e}`);
@@ -1068,7 +1103,7 @@ export class BaichuanRtspServer extends EventEmitter<{
       });
 
       ffmpeg.on("close", (code, signal) => {
-        console.log(`[BaichuanRtspServer] ffmpeg exited for client ${clientId} (code=${code}, signal=${signal})`);
+        this.rtspDebugLog(`ffmpeg exited for client ${clientId} (code=${code}, signal=${signal})`);
       });
 
       onProcess(ffmpeg, udpSocket, udpSocketAudio);
@@ -1078,7 +1113,7 @@ export class BaichuanRtspServer extends EventEmitter<{
       ffmpeg.stdin?.on("error", (error: NodeJS.ErrnoException) => {
         const code = (error as any)?.code;
         if (code === "EPIPE" || code === "ERR_STREAM_WRITE_AFTER_END") {
-          console.log(`[BaichuanRtspServer] FFmpeg stdin error (${code}) for client ${clientId}`);
+          this.rtspDebugLog(`FFmpeg stdin error (${code}) for client ${clientId}`);
           return;
         }
         console.error(`[BaichuanRtspServer] FFmpeg stdin error for client ${clientId}:`, error);
@@ -1088,7 +1123,7 @@ export class BaichuanRtspServer extends EventEmitter<{
       (audioPipe as any)?.on?.("error", (error: NodeJS.ErrnoException) => {
         const code = (error as any)?.code;
         if (code === "EPIPE" || code === "ERR_STREAM_WRITE_AFTER_END") {
-          console.log(`[BaichuanRtspServer] FFmpeg audio pipe error (${code}) for client ${clientId}`);
+          this.rtspDebugLog(`FFmpeg audio pipe error (${code}) for client ${clientId}`);
           return;
         }
         console.error(`[BaichuanRtspServer] FFmpeg audio pipe error for client ${clientId}:`, error);
@@ -1107,12 +1142,12 @@ export class BaichuanRtspServer extends EventEmitter<{
     // Default: each client gets its own native stream generator.
     // When available, reuse the already-started generator created during DESCRIBE SDP priming.
     // This avoids a costly stop/start cycle and makes the first RTP packets arrive much sooner.
-    console.log(`[BaichuanRtspServer] Creating native stream generator for client ${clientId}`);
+    this.rtspDebugLog(`Creating native stream generator for client ${clientId}`);
     const clientGenerator = this.tempStreamGenerator
       ? this.tempStreamGenerator
       : createNativeStream(this.api, this.channel, this.profile);
     if (this.tempStreamGenerator) {
-      console.log(`[BaichuanRtspServer] Reusing primed generator for client ${clientId}`);
+      this.rtspDebugLog(`Reusing primed generator for client ${clientId}`);
       this.tempStreamGenerator = null;
     }
     
@@ -1125,7 +1160,9 @@ export class BaichuanRtspServer extends EventEmitter<{
     
     const feedFrames = async () => {
       try {
-        console.log(`[BaichuanRtspServer] Starting to feed frames to client ${clientId} (target FPS: ${streamMetadata?.frameRate || 25}, interval: ${targetFrameInterval}ms)`);
+        this.rtspDebugLog(
+          `Starting to feed frames to client ${clientId} (target FPS: ${streamMetadata?.frameRate || 25}, interval: ${targetFrameInterval}ms)`
+        );
         let audioFrameCount = 0;
         let firstVideoWriteLogged = false;
         let firstAudioWriteLogged = false;
@@ -1135,14 +1172,14 @@ export class BaichuanRtspServer extends EventEmitter<{
         for await (const frame of clientGenerator) {
           // Check if client is still connected before processing frame
           if (!this.connectedClients.has(clientId)) {
-            console.log(`[BaichuanRtspServer] Client ${clientId} disconnected, stopping frame feed`);
+            this.rtspDebugLog(`Client ${clientId} disconnected, stopping frame feed`);
             break;
           }
           
           const stdin = ffmpeg?.stdin;
           if (!useDirectRtp) {
             if (!stdin || stdin.destroyed || stdin.writableEnded || stdin.writableFinished) {
-              console.log(`[BaichuanRtspServer] FFmpeg stdin closed for client ${clientId}`);
+              this.rtspDebugLog(`FFmpeg stdin closed for client ${clientId}`);
               break;
             }
           }
@@ -1151,22 +1188,26 @@ export class BaichuanRtspServer extends EventEmitter<{
 
           if (!frame.audio && !firstVideoFrameSeenLogged) {
             firstVideoFrameSeenLogged = true;
-            const headHex = frame.data.subarray(0, 16).toString("hex");
-            console.log(
-              `[BaichuanRtspServer] First video frame received from generator for client ${clientId} (len=${frame.data.length}, videoType=${String(
-                (frame as any).videoType ?? this.flow.videoType
-              )}, head=${headHex})`
-            );
+            if (rtspDebug) {
+              const headHex = frame.data.subarray(0, 16).toString("hex");
+              rtspDebugLog(
+                `First video frame received from generator for client ${clientId} (len=${frame.data.length}, videoType=${String(
+                  (frame as any).videoType ?? this.flow.videoType
+                )}, head=${headHex})`
+              );
+            }
           }
           
           // Handle audio frames (TCP only): write ADTS AAC frames to ffmpeg audio pipe.
           if (frame.audio) {
             audioFrameCount++;
             if (audioFrameCount === 1) {
-              console.log(`[BaichuanRtspServer] Audio frames detected (codec: ${frame.codec || 'unknown'}, sampleRate: ${frame.sampleRate || 'unknown'})`);
+              this.rtspDebugLog(
+                `Audio frames detected (codec: ${frame.codec || "unknown"}, sampleRate: ${frame.sampleRate || "unknown"})`
+              );
             }
             if (audioFrameCount % 100 === 0) {
-              console.log(`[BaichuanRtspServer] Received ${audioFrameCount} audio frames (not sent to RTSP yet)`);
+              this.rtspDebugLog(`Received ${audioFrameCount} audio frames (not sent to RTSP yet)`);
             }
 
             if (useDirectRtp) {
@@ -1175,10 +1216,10 @@ export class BaichuanRtspServer extends EventEmitter<{
                 continue;
               }
               if (this.hasAudio && BaichuanRtspServer.isAdtsAacFrame(frame.data)) {
-                if (!firstAudioWriteLogged) {
+                if (rtspDebug && !firstAudioWriteLogged) {
                   firstAudioWriteLogged = true;
                   const headHex = frame.data.subarray(0, 16).toString("hex");
-                  console.log(`[BaichuanRtspServer] First audio ADTS frame packetized to RTP for client ${clientId} (len=${frame.data.length}, head=${headHex})`);
+                  rtspDebugLog(`First audio ADTS frame packetized to RTP for client ${clientId} (len=${frame.data.length}, head=${headHex})`);
                 }
                 sendAudioAdtsFrame(frame.data);
               }
@@ -1198,7 +1239,9 @@ export class BaichuanRtspServer extends EventEmitter<{
                     if (!firstAudioWriteLogged) {
                       firstAudioWriteLogged = true;
                       const headHex = frame.data.subarray(0, 16).toString("hex");
-                      console.log(`[BaichuanRtspServer] First audio frame written to ffmpeg pipe for client ${clientId} (len=${frame.data.length}, head=${headHex})`);
+                      this.rtspDebugLog(
+                        `First audio frame written to ffmpeg pipe for client ${clientId} (len=${frame.data.length}, head=${headHex})`
+                      );
                     }
                     const written = ap.write(frame.data);
                     if (!written) {
@@ -1233,7 +1276,7 @@ export class BaichuanRtspServer extends EventEmitter<{
           
           frameCount++;
           if (frameCount % 100 === 0) {
-            console.log(`[BaichuanRtspServer] Sent ${frameCount} frames to client ${clientId} (frame size: ${frame.data.length} bytes)`);
+            this.rtspDebugLog(`Sent ${frameCount} frames to client ${clientId} (frame size: ${frame.data.length} bytes)`);
           }
           
           // Throttle frame sending to match frame rate
@@ -1250,19 +1293,6 @@ export class BaichuanRtspServer extends EventEmitter<{
           if (useDirectRtp) {
             const videoType = (frame.videoType ?? this.flow.videoType) as "H264" | "H265";
 
-            const isH265IrapAccessUnit = (annexB: Buffer): boolean => {
-              const nals = splitAnnexBToNalPayloads(annexB);
-              for (const nal of nals) {
-                if (nal.length < 2) continue;
-                const b0 = nal[0];
-                if (b0 === undefined) continue;
-                if ((b0 & 0x80) !== 0) continue;
-                const nalType = (b0 >> 1) & 0x3f;
-                if (isH265Irap(nalType)) return true;
-              }
-              return false;
-            };
-
             // Many cameras start streaming with P-frames; decoding stays black until the first IDR/IRAP.
             // For H.264 we gate strictly on IDR.
             // For H.265 we gate on: (1) having VPS/SPS/PPS extracted (so we can send config), then
@@ -1271,9 +1301,9 @@ export class BaichuanRtspServer extends EventEmitter<{
               if (videoType === "H265") {
                 const { hasParamSets } = this.flow.getFmtp();
                 if (!hasParamSets) {
-                  if (!h265WaitParamSetsLogged) {
+                  if (rtspDebug && !h265WaitParamSetsLogged) {
                     h265WaitParamSetsLogged = true;
-                    console.log(`[BaichuanRtspServer] H265 gating: waiting for VPS/SPS/PPS before sending RTP to client ${clientId}`);
+                    rtspDebugLog(`H265 gating: waiting for VPS/SPS/PPS before sending RTP to client ${clientId}`);
                   }
                   continue;
                 }
@@ -1291,9 +1321,9 @@ export class BaichuanRtspServer extends EventEmitter<{
                 const isIrap = isH265IrapAccessUnit(frame.data);
                 const waitedMs = Date.now() - (resources.h265WaitStartMs as number);
                 if (!isIrap && waitedMs < 2000) {
-                  if (!h265WaitIrapLogged) {
+                  if (rtspDebug && !h265WaitIrapLogged) {
                     h265WaitIrapLogged = true;
-                    console.log(`[BaichuanRtspServer] H265 gating: waiting for IRAP (or timeout) for client ${clientId}`);
+                    rtspDebugLog(`H265 gating: waiting for IRAP (or timeout) for client ${clientId}`);
                   }
                   continue;
                 }
@@ -1323,8 +1353,10 @@ export class BaichuanRtspServer extends EventEmitter<{
             }
             if (!firstVideoWriteLogged) {
               firstVideoWriteLogged = true;
-              const headHex = frame.data.subarray(0, 16).toString("hex");
-              console.log(`[BaichuanRtspServer] First video access unit packetized to RTP for client ${clientId} (len=${frame.data.length}, head=${headHex})`);
+              if (rtspDebug) {
+                const headHex = frame.data.subarray(0, 16).toString("hex");
+                rtspDebugLog(`First video access unit packetized to RTP for client ${clientId} (len=${frame.data.length}, head=${headHex})`);
+              }
             }
 
             sendVideoAccessUnit(videoType, frame.data, true);
@@ -1334,7 +1366,9 @@ export class BaichuanRtspServer extends EventEmitter<{
                 if (!firstVideoWriteLogged) {
                   firstVideoWriteLogged = true;
                   const headHex = frame.data.subarray(0, 16).toString("hex");
-                  console.log(`[BaichuanRtspServer] First video frame written to ffmpeg stdin for client ${clientId} (len=${frame.data.length}, head=${headHex})`);
+                  this.rtspDebugLog(
+                    `First video frame written to ffmpeg stdin for client ${clientId} (len=${frame.data.length}, head=${headHex})`
+                  );
                 }
                 const written = stdin.write(frame.data);
                 if (!written) {
@@ -1350,14 +1384,14 @@ export class BaichuanRtspServer extends EventEmitter<{
             } catch (error) {
               const code = (error as any)?.code;
               if (code === "EPIPE" || code === "ERR_STREAM_WRITE_AFTER_END") {
-                console.log(`[BaichuanRtspServer] EPIPE writing to ffmpeg for client ${clientId}`);
+                this.rtspDebugLog(`EPIPE writing to ffmpeg for client ${clientId}`);
                 break;
               }
               console.error(`[BaichuanRtspServer] Error writing frame to ffmpeg for client ${clientId}:`, error);
             }
           }
         }
-        console.log(`[BaichuanRtspServer] Finished feeding frames to client ${clientId} (total: ${frameCount} frames)`);
+        this.rtspDebugLog(`Finished feeding frames to client ${clientId} (total: ${frameCount} frames)`);
       } catch (error) {
         console.error(`[BaichuanRtspServer] Error in feedFrames for client ${clientId}:`, error);
       }
@@ -1401,7 +1435,7 @@ export class BaichuanRtspServer extends EventEmitter<{
       this.firstAudioResolve = resolve;
     });
     
-    console.log(`[BaichuanRtspServer] Starting native stream for profile ${this.profile} (waiting for camera to start transmitting...)`);
+    this.rtspDebugLog(`Starting native stream for profile ${this.profile} (waiting for camera to start transmitting...)`);
 
     // Keep-alive behavior is part of the selected protocol flow.
     await this.flow.startKeepAlive(this.api);
@@ -1418,7 +1452,7 @@ export class BaichuanRtspServer extends EventEmitter<{
 
     (async () => {
       try {
-        console.log(`[BaichuanRtspServer] Waiting for parameter sets in temporary stream...`);
+        this.rtspDebugLog(`Waiting for parameter sets in temporary stream...`);
         const startTime = Date.now();
         let paramSetsReadyAt = 0;
         while (true) {
@@ -1433,7 +1467,9 @@ export class BaichuanRtspServer extends EventEmitter<{
                 this.audioInfo = { codec: "aac-adts", sampleRate: info.sampleRate, channels: info.channels, configHex: info.configHex };
                 this.audioPrimingFrame = Buffer.from(frame.data);
                 this.markFirstAudioDetected();
-                console.log(`[BaichuanRtspServer] Audio detected (AAC/ADTS ${info.sampleRate}Hz ch=${info.channels}); advertising RTSP track1 as mpeg4-generic`);
+                this.rtspDebugLog(
+                  `Audio detected (AAC/ADTS ${info.sampleRate}Hz ch=${info.channels}); advertising RTSP track1 as mpeg4-generic`
+                );
               }
             }
             continue;
@@ -1447,7 +1483,7 @@ export class BaichuanRtspServer extends EventEmitter<{
           this.flow.extractParameterSets(frame.data);
           const { hasParamSets } = this.flow.getFmtp();
           if (hasParamSets) {
-            console.log(`[BaichuanRtspServer] Parameter sets extracted from temporary stream (${frame.data.length} bytes)`);
+            this.rtspDebugLog(`Parameter sets extracted from temporary stream (${frame.data.length} bytes)`);
             this.markFirstFrameReceived();
 
             // For TCP, prefer including audio in SDP if it shows up quickly.
@@ -1475,8 +1511,8 @@ export class BaichuanRtspServer extends EventEmitter<{
       } catch (error) {
         console.warn(`[BaichuanRtspServer] Error in temporary stream for parameter sets: ${error}`);
       } finally {
-        // For TCP, we only use the temporary generator for priming (SPS/PPS + optional audio info).
-        // Keep it open only for UDP where we might hand it off to the first client.
+        // Keep the temporary generator open so the first RTSP client can immediately consume frames.
+        // (It will be handed off in `startClientFfmpeg()` via `this.tempStreamGenerator`.)
         if (!keepTempGenOpen) {
           try {
             await tempGen.return(undefined as any);
@@ -1491,7 +1527,7 @@ export class BaichuanRtspServer extends EventEmitter<{
   private markFirstFrameReceived(): void {
     if (!this.firstFrameReceived && this.firstFrameResolve) {
       this.firstFrameReceived = true;
-      console.log(`[BaichuanRtspServer] First frame received from camera for profile ${this.profile}`);
+      this.rtspDebugLog(`First frame received from camera for profile ${this.profile}`);
       this.firstFrameResolve();
       this.firstFrameResolve = null;
     }
@@ -1513,7 +1549,7 @@ export class BaichuanRtspServer extends EventEmitter<{
       return;
     }
 
-    console.log(`[BaichuanRtspServer] Stopping native stream`);
+    this.rtspDebugLog(`Stopping native stream`);
 
     this.flow.stopKeepAlive();
 
@@ -1580,7 +1616,7 @@ export class BaichuanRtspServer extends EventEmitter<{
           socket.destroy();
           // Port is listening, now wait for first frame if native stream is active
           if (this.nativeStreamActive && this.firstFramePromise) {
-            console.log(`[BaichuanRtspServer] Port is listening, waiting for camera to start transmitting frames...`);
+            this.rtspDebugLog(`Port is listening, waiting for camera to start transmitting frames...`);
             this.firstFramePromise
               .then(() => {
                 clearTimeout(timeout);

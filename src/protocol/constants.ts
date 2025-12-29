@@ -37,6 +37,12 @@ export function bcHeaderHasPayloadOffset(messageClass: number): boolean {
 export const BC_CMD_ID_VIDEO = 3; // MSG_ID_VIDEO - Video and Audio Streams messages
 export const BC_CMD_ID_VIDEO_STOP = 4; // MSG_ID_VIDEO_STOP - ID used to stop the video stream
 
+// Talk / two-way audio command IDs (from neolink model.rs)
+export const BC_CMD_ID_TALK_ABILITY = 10; // MSG_ID_TALKABILITY - get talk ability/config
+export const BC_CMD_ID_TALK_RESET = 11; // MSG_ID_TALKRESET - stop/reset talk session
+export const BC_CMD_ID_TALK_CONFIG = 201; // MSG_ID_TALKCONFIG - configure talk audio format
+export const BC_CMD_ID_TALK = 202; // MSG_ID_TALK - send talk binary (BcMedia ADPCM)
+
 // PTZ Control command IDs (from neolink model.rs)
 export const BC_CMD_ID_PTZ_CONTROL = 18; // MSG_ID_PTZ_CONTROL - Pan/tilt/zoom control
 export const BC_CMD_ID_PTZ_CONTROL_PRESET = 19; // MSG_ID_PTZ_CONTROL_PRESET - Set/move to preset

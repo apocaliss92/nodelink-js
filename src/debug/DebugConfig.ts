@@ -4,6 +4,8 @@ import * as path from "node:path";
 export type DebugOptions = {
   /** Enables generic debug logs. */
   enabled?: boolean;
+  /** Enables extra RTSP proxy/server debug logs (quiet by default). */
+  debugRtsp?: boolean;
   /** Enables stream command tracing (tx/rx cmd_id 3/4 + rx stream frames). */
   traceStream?: boolean;
   /** Enables H.264-centric debug logs/samples. */
@@ -20,6 +22,7 @@ export type DebugOptions = {
 
 export type DebugConfig = {
   enabled: boolean;
+  debugRtsp: boolean;
   traceStream: boolean;
   debugH264: boolean;
   debugParamSets: boolean;
@@ -31,6 +34,7 @@ export type DebugConfig = {
 
 export function normalizeDebugOptions(opts?: DebugOptions): DebugConfig {
   const enabled = opts?.enabled === true;
+  const debugRtsp = opts?.debugRtsp === true;
   const traceStream = opts?.traceStream === true;
   const debugH264 = opts?.debugH264 === true || enabled;
   const debugParamSets = opts?.debugParamSets === true;
@@ -40,7 +44,7 @@ export function normalizeDebugOptions(opts?: DebugOptions): DebugConfig {
   const dumpBcMedia = opts?.dump?.bcmedia ?? dumpEnabled;
   const dumpNals = opts?.dump?.nals ?? dumpEnabled;
 
-  return { enabled, traceStream, debugH264, debugParamSets, dumpEnabled, dumpDir, dumpBcMedia, dumpNals };
+  return { enabled, debugRtsp, traceStream, debugH264, debugParamSets, dumpEnabled, dumpDir, dumpBcMedia, dumpNals };
 }
 
 export function ensureDumpDir(cfg: DebugConfig): void {
@@ -61,6 +65,16 @@ export function debugWarn(cfg: DebugConfig, tag: string, message: string): void 
 export function traceLog(cfg: DebugConfig, tag: string, message: string): void {
   if (!cfg.traceStream) return;
   console.log(`[${tag}] ${message}`);
+}
+
+export function rtspLog(cfg: DebugConfig, tag: string, message: string): void {
+  if (!cfg.debugRtsp) return;
+  console.log(`[${tag}] ${message}`);
+}
+
+export function rtspWarn(cfg: DebugConfig, tag: string, message: string): void {
+  if (!cfg.debugRtsp) return;
+  console.warn(`[${tag}] ${message}`);
 }
 
 

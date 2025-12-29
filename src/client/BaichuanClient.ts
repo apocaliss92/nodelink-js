@@ -3,7 +3,7 @@ import net from "node:net";
 import { BC_TCP_DEFAULT_PORT, BC_CLASS_LEGACY, BC_CLASS_MODERN_24, BC_CMD_ID_UDP_KEEP_ALIVE } from "../protocol/constants";
 import { aesDecrypt, aesEncrypt, bcDecrypt, bcEncrypt, deriveAesKey, md5StrModern, type EncryptionProtocol } from "../protocol/crypto";
 import { BaichuanFrameParser, encodeHeader, type BaichuanFrame } from "../protocol/framing";
-import { buildChannelExtensionXml, buildLoginXml, getXmlText } from "../protocol/xml";
+import { buildBinaryExtensionXml, buildChannelExtensionXml, buildLoginXml, getXmlText } from "../protocol/xml";
 import { BcUdpStream, type BcUdpStreamOptions } from "../bcudp/BcUdpStream";
 import type { ReolinkEvent } from "../reolink/baichuan/types";
 import { normalizeDebugOptions, traceLog, type DebugOptions, type DebugConfig } from "../debug/DebugConfig";
@@ -389,6 +389,67 @@ export class BaichuanClient extends EventEmitter<{
     if (enc.kind === "aes" || enc.kind === "full_aes") return Buffer.concat([aesEncrypt(extBuf, enc.key), aesEncrypt(payloadBuf, enc.key)]);
     // exhaustive
     return Buffer.concat([extBuf, payloadBuf]);
+  }
+
+  private encodeBodyBinary(extXml: string, payload: Buffer, channelId: number, enc: EncryptionProtocol): Buffer {
+    const extBuf = Buffer.from(extXml, "utf8");
+
+    // Neolink behavior: binary payloads are sent unencrypted, while the Extension is still encrypted.
+    if (enc.kind === "none") return Buffer.concat([extBuf, payload]);
+    if (enc.kind === "bc") return Buffer.concat([bcEncrypt(extBuf, channelId), payload]);
+    if (enc.kind === "aes" || enc.kind === "full_aes") return Buffer.concat([aesEncrypt(extBuf, enc.key), payload]);
+    return Buffer.concat([extBuf, payload]);
+  }
+
+  /**
+   * Sends a Baichuan command with a binary payload (Extension XML + raw binary payload).
+   *
+   * This is required for Talk (cmdId=202): the payload is BcMedia ADPCM and should NOT be encrypted,
+   * while the Extension still follows the session encryption.
+   *
+   * Note: many cameras do not send a reply for Talk packets, so this is fire-and-forget.
+   */
+  async sendBinaryPayloadNoReply(params: {
+    cmdId: number;
+    payload: Buffer;
+    channel?: number;
+    /** If omitted, uses a binary Extension with <binaryData>1</binaryData> + channelId. */
+    extensionXml?: string;
+    messageClass?: number;
+    streamType?: number;
+    encryption?: EncryptionProtocol;
+  }): Promise<void> {
+    await this.connect();
+
+    const channel = params.channel ?? this.opts.channel ?? 0;
+    const channelId = params.channel == null ? 250 : channel + 1;
+
+    const msgNum = this.nextMsgNum();
+    const cmdId = params.cmdId;
+
+    const extXml = params.extensionXml ?? buildBinaryExtensionXml(channel);
+    const payloadOffset = Buffer.byteLength(extXml, "utf8");
+    const bodyLen = payloadOffset + params.payload.length;
+
+    const messageClass = params.messageClass ?? BC_CLASS_MODERN_24;
+
+    const header = encodeHeader({
+      cmdId,
+      bodyLen,
+      channelId,
+      streamType: params.streamType ?? 0,
+      msgNum,
+      responseCode: 0,
+      messageClass,
+      payloadOffset,
+    });
+
+    const enc = params.encryption ?? this.enc;
+    const bodyBytes = this.encodeBodyBinary(extXml, params.payload, channelId, enc);
+    const wire = Buffer.concat([header, bodyBytes]);
+
+    if (this.opts.debug) this.emit("debug", "tx", { cmdId, msgNum, channelId, messageClass, bodyLen, binaryPayload: true });
+    this.writeWire(wire);
   }
 
   private tryDecryptXml(buf: Buffer, channelId: number, preferred: EncryptionProtocol): string {
