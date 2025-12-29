@@ -652,12 +652,14 @@ export class BaichuanVideoStream extends EventEmitter<{
             if (outP0.length === 0) continue;
             const outP = outP0;
             dumpNalSummary(outP, "Pframe", media.microseconds);
-            // Guard rail: drop only if the full NAL is invalid
-            if (!isValidH264AnnexBAccessUnit(outP)) {
+            // Guard rail: drop only if the access unit is invalid (codec-specific)
+            const isValid =
+              media.videoType === "H265" ? isValidH265AnnexBAccessUnit(outP) : isValidH264AnnexBAccessUnit(outP);
+            if (!isValid) {
               if (dbg.debugH264 && this.debugH264LogsLeft > 0) {
                 this.debugH264LogsLeft--;
                 const head = outP.subarray(0, Math.min(24, outP.length)).toString("hex");
-                console.warn(`[BaichuanVideoStream] Dropping invalid Pframe: len=${outP.length} head=${head}`);
+                console.warn(`[BaichuanVideoStream] Dropping invalid Pframe (${media.videoType}): len=${outP.length} head=${head}`);
               }
               continue;
             }

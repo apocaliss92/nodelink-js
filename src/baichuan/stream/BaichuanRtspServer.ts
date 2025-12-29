@@ -87,6 +87,8 @@ export class BaichuanRtspServer extends EventEmitter<{
     videoType?: "H264" | "H265";
   }, void, unknown> | null = null;
 
+  private udpKeepAliveTimer: NodeJS.Timeout | null = null;
+
   constructor(options: BaichuanRtspServerOptions) {
     super();
     this.api = options.api;
@@ -699,6 +701,25 @@ export class BaichuanRtspServer extends EventEmitter<{
     });
     
     console.log(`[BaichuanRtspServer] Starting native stream for profile ${this.profile} (waiting for camera to start transmitting...)`);
+
+    // Battery cameras on BCUDP can stop transmitting quickly unless kept awake.
+    // Send a periodic ping while the native stream is active.
+    if (this.api.client.getTransport() === "udp") {
+      try {
+        await this.api.ping();
+      } catch {
+        // ignore
+      }
+      if (!this.udpKeepAliveTimer) {
+        this.udpKeepAliveTimer = setInterval(() => {
+          this.api.ping().catch(() => {
+            // ignore
+          });
+        }, 1000);
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+        (this.udpKeepAliveTimer as any)?.unref?.();
+      }
+    }
     
     // Start a temporary stream to extract parameter sets for SDP
     // This stream will be used to get the first frame with parameter sets
@@ -792,6 +813,12 @@ export class BaichuanRtspServer extends EventEmitter<{
     }
 
     console.log(`[BaichuanRtspServer] Stopping native stream`);
+
+    if (this.udpKeepAliveTimer) {
+      clearInterval(this.udpKeepAliveTimer);
+      this.udpKeepAliveTimer = null;
+    }
+
     this.nativeStreamActive = false;
     this.firstFrameReceived = false;
     this.firstFramePromise = null;

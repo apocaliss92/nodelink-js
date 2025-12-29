@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import net from "node:net";
-import { BC_TCP_DEFAULT_PORT, BC_CLASS_LEGACY, BC_CLASS_MODERN_24 } from "../protocol/constants";
+import { BC_TCP_DEFAULT_PORT, BC_CLASS_LEGACY, BC_CLASS_MODERN_24, BC_CMD_ID_UDP_KEEP_ALIVE } from "../protocol/constants";
 import { aesDecrypt, aesEncrypt, bcDecrypt, bcEncrypt, deriveAesKey, md5StrModern, type EncryptionProtocol } from "../protocol/crypto";
 import { BaichuanFrameParser, encodeHeader, type BaichuanFrame } from "../protocol/framing";
 import { buildChannelExtensionXml, buildLoginXml, getXmlText } from "../protocol/xml";
@@ -70,6 +70,10 @@ export class BaichuanClient extends EventEmitter<{
     this.opts = options;
     // Back-compat: `debug: true` enables generic debug logs.
     this.debugCfg = normalizeDebugOptions({ ...(options.debug ? { enabled: true } : {}), ...(options.debugOptions ?? {}) });
+  }
+
+  getTransport(): "tcp" | "udp" {
+    return this.transport;
   }
 
   getDebugConfig(): DebugConfig {
@@ -177,6 +181,35 @@ export class BaichuanClient extends EventEmitter<{
   }
 
   private handleFrame(frame: BaichuanFrame): void {
+    // Battery cameras (BCUDP) expect the client to respond to UDP keep-alive frames.
+    // Neolink handles this by replying with response_code=200 using the same msg_num/channel_id/stream_type.
+    // If we don't, the camera can stop sending stream data after a couple seconds.
+    if (this.transport === "udp" && frame.header.cmdId === BC_CMD_ID_UDP_KEEP_ALIVE) {
+      // Only respond to requests (responseCode typically 0). If we ever see a 200 here, it's already a response.
+      if (frame.header.responseCode !== 200) {
+        try {
+          const header = encodeHeader({
+            cmdId: frame.header.cmdId,
+            bodyLen: 0,
+            channelId: frame.header.channelId,
+            streamType: frame.header.streamType,
+            msgNum: frame.header.msgNum,
+            responseCode: 200,
+            messageClass: BC_CLASS_MODERN_24,
+            payloadOffset: 0,
+          });
+
+          if (this.opts.debug) this.emit("debug", "udp_keepalive_rx", { msgNum: frame.header.msgNum, channelId: frame.header.channelId, streamType: frame.header.streamType });
+          this.writeWire(header);
+          if (this.opts.debug) this.emit("debug", "udp_keepalive_tx", { msgNum: frame.header.msgNum, channelId: frame.header.channelId, streamType: frame.header.streamType });
+        } catch (e) {
+          // Keepalive failures shouldn't crash the client; log when debug is enabled.
+          if (this.opts.debug) this.emit("debug", "udp_keepalive_error", e);
+        }
+      }
+      return;
+    }
+
     this.emit("frame", frame);
 
     const key: PendingKey = `${frame.header.cmdId}:${frame.messageKey}`;

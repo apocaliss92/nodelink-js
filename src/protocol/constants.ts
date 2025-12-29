@@ -46,6 +46,10 @@ export const BC_CMD_ID_GET_PTZ_POSITION = 433; // Get current PTZ position (from
 // Battery Info command IDs
 export const BC_CMD_ID_GET_BATTERY_INFO = 252; // MSG_ID_BATTERY_INFO_LIST - Get battery info
 
+// UDP Keep Alive command ID (from neolink model.rs)
+// Battery cameras (BCUDP) periodically send this and expect a 200 response.
+export const BC_CMD_ID_UDP_KEEP_ALIVE = 234; // MSG_ID_UDP_KEEP_ALIVE
+
 // PIR State command IDs (from neolink model.rs)
 export const BC_CMD_ID_GET_PIR_INFO = 212; // MSG_ID_GET_PIR_ALARM - Get PIR settings
 export const BC_CMD_ID_SET_PIR_INFO = 213; // MSG_ID_START_PIR_ALARM - Set PIR settings

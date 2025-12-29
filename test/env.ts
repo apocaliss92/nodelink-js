@@ -13,6 +13,11 @@ export interface TestConfig {
     username: string;
     password: string;
   };
+  tcp265: {
+    host: string;
+    username: string;
+    password: string;
+  };
   udp: {
     host: string;
     username: string;
@@ -41,6 +46,11 @@ function loadEnv(): TestConfig {
       host: getEnv("TCP_HOST", ""),
       username: getEnv("TCP_USERNAME", "admin"),
       password: getEnv("TCP_PASSWORD", ""),
+    },
+    tcp265: {
+      host: getEnv("TCP265_HOST", ""),
+      username: getEnv("TCP265_USERNAME", "admin"),
+      password: getEnv("TCP265_PASSWORD", ""),
     },
     udp: {
       host: getEnv("UDP_HOST", ""),

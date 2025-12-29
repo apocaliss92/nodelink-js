@@ -12,6 +12,89 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
 
+async function probeVideoDurationSeconds(filePath: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const ffprobe = spawn(
+      "ffprobe",
+      [
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=nk=1:nw=1",
+        filePath,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] }
+    );
+
+    let stdout = "";
+    let stderr = "";
+    ffprobe.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
+    ffprobe.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
+    ffprobe.on("error", (e) => reject(new Error(`ffprobe spawn error: ${e.message}`)));
+    ffprobe.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`ffprobe exited with code ${code}\n${stderr}`));
+        return;
+      }
+      const value = Number.parseFloat(stdout.trim());
+      if (!Number.isFinite(value)) {
+        reject(new Error(`ffprobe returned invalid duration: ${stdout.trim()}`));
+        return;
+      }
+      resolve(value);
+    });
+  });
+}
+
+async function ffprobeAssertNoErrors(filePath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const ffprobe = spawn(
+      "ffprobe",
+      [
+        "-v",
+        "error",
+        "-show_format",
+        "-show_streams",
+        "-of",
+        "json",
+        filePath,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] }
+    );
+
+    let stderr = "";
+    ffprobe.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
+    ffprobe.on("error", (e) => reject(new Error(`ffprobe spawn error: ${e.message}`)));
+    ffprobe.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`ffprobe exited with code ${code}\n${stderr}`));
+        return;
+      }
+      if (stderr.trim().length > 0) {
+        reject(new Error(`ffprobe reported errors:\n${stderr}`));
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+function cleanupRecordingsDir(recordingsDir: string): void {
+  if (!fs.existsSync(recordingsDir)) return;
+  const entries = fs.readdirSync(recordingsDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    if (!entry.name.endsWith(".mp4")) continue;
+    try {
+      fs.rmSync(path.join(recordingsDir, entry.name));
+    } catch {
+      // ignore
+    }
+  }
+}
+
 // Helper functions
 function log(message: string, data?: unknown) {
   console.log(`\n${"=".repeat(60)}`);
@@ -50,26 +133,29 @@ async function recordVideoFromRtsp(
   return new Promise((resolve, reject) => {
     log(`Recording from RTSP stream`, { rtspUrl, outputFile, durationSeconds });
 
-    // First, wait for the stream to be ready (first frame received)
-    // We'll use ffprobe to check if the stream is ready, then start recording
-    let recordingStarted = false;
-    let firstFrameTime: number | null = null;
-    let recordingEndTime: number | null = null;
-
-    const ffmpeg = spawn("ffmpeg", [
-      "-hide_banner",
-      "-loglevel", "info", // Changed to info to see more details
-      "-rtsp_transport", "tcp",
-      "-rtsp_flags", "prefer_tcp", // Prefer TCP for RTSP
-      "-timeout", "5000000", // 5 second timeout for RTSP connection (in microseconds)
-      "-i", rtspUrl,
-      // Don't use -t here, we'll control duration manually based on first frame
-      "-c:v", "copy", // Copy video codec (no re-encoding)
-      "-c:a", "copy", // Copy audio codec if present
-      "-movflags", "+faststart",
-      "-y",
-      outputFile,
-    ], { stdio: ["pipe", "pipe", "pipe"] });
+    const ffmpeg = spawn(
+      "ffmpeg",
+      [
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-rtsp_transport",
+        "tcp",
+        "-rtsp_flags",
+        "prefer_tcp",
+        "-timeout",
+        "5000000", // 5 second timeout for RTSP connection (in microseconds)
+        "-i",
+        rtspUrl,
+        "-t",
+        durationSeconds.toString(),
+        "-c",
+        "copy",
+        "-y",
+        outputFile,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] }
+    );
 
     let stderr = "";
     let stdout = "";
@@ -78,14 +164,7 @@ async function recordVideoFromRtsp(
     const doneOk = () => {
       if (settled) return;
       settled = true;
-      if (durationCheckInterval) {
-        clearInterval(durationCheckInterval);
-        durationCheckInterval = null;
-      }
       try { 
-        if (ffmpeg.stdin && !ffmpeg.stdin.destroyed) {
-          ffmpeg.stdin.end();
-        }
         ffmpeg.kill("SIGTERM"); 
       } catch {}
       resolve();
@@ -94,14 +173,7 @@ async function recordVideoFromRtsp(
     const doneErr = (e: Error) => {
       if (settled) return;
       settled = true;
-      if (durationCheckInterval) {
-        clearInterval(durationCheckInterval);
-        durationCheckInterval = null;
-      }
       try { 
-        if (ffmpeg.stdin && !ffmpeg.stdin.destroyed) {
-          ffmpeg.stdin.end();
-        }
         ffmpeg.kill("SIGTERM"); 
       } catch {}
       const t = setTimeout(() => { 
@@ -112,32 +184,9 @@ async function recordVideoFromRtsp(
       reject(e);
     };
 
-    // Monitor recording duration based on first frame
-    let durationCheckInterval: NodeJS.Timeout | null = null;
-    
     ffmpeg.stderr?.on("data", (d: Buffer) => { 
       const output = d.toString();
       stderr += output;
-      
-      // Detect when first frame arrives (ffmpeg starts processing)
-      if (!recordingStarted && (output.includes("frame=") || output.includes("time=") || output.includes("Stream #"))) {
-        recordingStarted = true;
-        firstFrameTime = Date.now();
-        recordingEndTime = firstFrameTime + (durationSeconds * 1000);
-        console.log(`[FFmpeg Recording] First frame detected at ${new Date(firstFrameTime).toISOString()}, recording will stop at ${new Date(recordingEndTime).toISOString()} (${durationSeconds}s duration)`);
-        
-        // Start checking duration periodically
-        durationCheckInterval = setInterval(() => {
-          if (recordingEndTime && Date.now() >= recordingEndTime) {
-            console.log(`[FFmpeg Recording] Target duration reached (${durationSeconds}s), stopping recording`);
-            if (durationCheckInterval) {
-              clearInterval(durationCheckInterval);
-              durationCheckInterval = null;
-            }
-            doneOk();
-          }
-        }, 100); // Check every 100ms
-      }
       
       // Log important messages
       if (output.includes("Connection refused") || 
@@ -148,10 +197,9 @@ async function recordVideoFromRtsp(
         console.error(`[FFmpeg Recording] ${output.trim()}`);
       }
     });
-    
-    ffmpeg.stdout?.on("data", (d: Buffer) => { 
+
+    ffmpeg.stdout?.on("data", (d: Buffer) => {
       stdout += d.toString();
-      console.log(`[FFmpeg Recording] ${d.toString().trim()}`);
     });
     
     ffmpeg.on("error", (e) => {
@@ -171,26 +219,12 @@ async function recordVideoFromRtsp(
       doneErr(new Error(`ffmpeg exited with code ${code}\n${stderr}`));
     });
 
-    // Safety timeout - extended to account for camera wake-up time
+    // Safety timeout - extended to account for camera wake-up time.
     const timeout = setTimeout(() => {
-      if (!settled) {
-        if (recordingStarted && firstFrameTime && recordingEndTime) {
-          // If recording started, wait until target duration
-          const remaining = recordingEndTime - Date.now();
-          if (remaining > 0) {
-            setTimeout(() => {
-              if (!settled) {
-                console.log(`[FFmpeg Recording] Target duration reached, stopping`);
-                doneOk();
-              }
-            }, remaining);
-            return;
-          }
-        }
-        console.error(`[FFmpeg Recording] Timeout after ${durationSeconds + 20} seconds`);
-        doneErr(new Error(`Recording timeout after ${durationSeconds + 20} seconds`));
-      }
-    }, (durationSeconds + 20) * 1000); // Extended timeout to account for camera wake-up
+      if (settled) return;
+      console.error(`[FFmpeg Recording] Timeout after ${durationSeconds + 20} seconds`);
+      doneErr(new Error(`Recording timeout after ${durationSeconds + 20} seconds`));
+    }, (durationSeconds + 20) * 1000);
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     (timeout as any)?.unref?.();
   });
@@ -260,6 +294,11 @@ async function testUdpVideoStreamRecording() {
   if (!fs.existsSync(recordingsDir)) {
     fs.mkdirSync(recordingsDir, { recursive: true });
   }
+
+  // Cleanup previous artifacts to avoid accumulating recordings between runs.
+  cleanupRecordingsDir(recordingsDir);
+
+  const recordedFiles: string[] = [];
 
   try {
     // Check battery status first (for battery cameras)
@@ -420,6 +459,19 @@ async function testUdpVideoStreamRecording() {
         if (fs.existsSync(outputFile)) {
           const stats = fs.statSync(outputFile);
           logSuccess(`Recorded file: ${outputFile} (${stats.size} bytes)`);
+          recordedFiles.push(outputFile);
+
+          try {
+            const recordedDuration = await probeVideoDurationSeconds(outputFile);
+            console.log(`[FFprobe] Duration: ${recordedDuration.toFixed(3)}s (target ${duration}s)`);
+            const toleranceSeconds = 0.75;
+            if (Math.abs(recordedDuration - duration) > toleranceSeconds) {
+              throw new Error(`Recorded duration out of tolerance: ${recordedDuration}s (target ${duration}s)`);
+            }
+          } catch (e) {
+            logError(`Duration verification failed for ${profile}`, e);
+            continue;
+          }
         } else {
           logError(`File not created: ${outputFile}`, new Error("File not found"));
         }
@@ -440,6 +492,11 @@ async function testUdpVideoStreamRecording() {
         // Small delay before the next profile
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
+    }
+
+    log("Final ffprobe verification (no errors)");
+    for (const f of recordedFiles) {
+      await ffprobeAssertNoErrors(f);
     }
 
     logSuccess("All tests completed!");

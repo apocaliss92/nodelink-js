@@ -4,7 +4,7 @@ import { type AddressInfo } from "node:net";
 import { setInterval as setIntervalNode } from "node:timers";
 import { BCUDP_DATA_HEADER_SIZE, BCUDP_DEFAULT_MTU, BCUDP_DISCOVERY_PORT_LOCAL_UID, BCUDP_DISCOVERY_PORT_LOCAL_ANY } from "./constants";
 import { decodeBcUdpPacket, encodeAckPacket, encodeDataPacket, encodeDiscoveryPacket } from "./packets";
-import { buildC2dC, buildC2dHb, parseD2cCr } from "./xml";
+import { buildC2dC, buildC2dHb, buildC2dT, parseD2cCfm, parseD2cCr, parseD2cT } from "./xml";
 
 export type BcUdpStreamOptions =
   | {
@@ -118,7 +118,7 @@ export class BcUdpStream extends EventEmitter<{
     // Neolink uses "MAC" as OS for discovery (see discovery.rs:361)
     const xml = buildC2dC({ uid: this.opts.uid, clientPort: localPort, cid, mtu: this.mtu });
 
-    const reply = await new Promise<{ cid: number; did: number; rhost: string; rport: number }>((resolve, reject) => {
+    const reply = await new Promise<{ cid: number; did: number; rhost: string; rport: number; sid?: number }>((resolve, reject) => {
       const timeout = setTimeout(() => {
         if (retryTimer) clearInterval(retryTimer);
         sock.off("message", onMsg);
@@ -127,20 +127,71 @@ export class BcUdpStream extends EventEmitter<{
 
       let retryTimer: NodeJS.Timeout | undefined;
       let retryCount = 0;
+      let discoveredSid: number | undefined;
+      let discovered: { cid: number; did: number; rhost: string; rport: number } | undefined;
+      let tHandshakeDone = false;
+      let tHandshakeTimer: NodeJS.Timeout | undefined;
 
       const onMsg = (msg: Buffer, rinfo: dgram.RemoteInfo) => {
         try {
           const p = decodeBcUdpPacket(msg);
           if (p.kind !== "discovery") return;
+
+          // Some models send a D2C_CFM before/around discovery completion; it can carry the camera SID.
+          const cfm = parseD2cCfm(p.xml);
+          if (cfm?.sid != null) {
+            discoveredSid = cfm.sid;
+          }
+
+          // If we already sent C2D_T, watch for D2C_T response to complete the handshake.
+          const dt = parseD2cT(p.xml);
+          if (dt && discovered && !tHandshakeDone) {
+            if (dt.cid === discovered.cid && dt.did === discovered.did) {
+              tHandshakeDone = true;
+              if (tHandshakeTimer) clearTimeout(tHandshakeTimer);
+              sock.off("message", onMsg);
+              this.emit("debug", "discovery_t_done", { sid: dt.sid, cid: dt.cid, did: dt.did, rhost: rinfo.address, rport: rinfo.port });
+              resolve({ ...discovered, sid: dt.sid });
+              return;
+            }
+          }
+
           const parsed = parseD2cCr(p.xml);
           if (!parsed) return;
           if (parsed.rsp !== 0) return;
           // Success! Camera responded
           clearTimeout(timeout);
           if (retryTimer) clearInterval(retryTimer);
+          this.emit("debug", "discovery_success", { retryCount, rhost: rinfo.address, rport: rinfo.port, sid: discoveredSid });
+
+          discovered = { cid: parsed.cid, did: parsed.did, rhost: rinfo.address, rport: rinfo.port };
+
+          // If we have a SID, attempt the T handshake (C2D_T -> D2C_T). Some battery cams need it
+          // to keep the session stable.
+          if (discoveredSid != null) {
+            const sidToUse = discoveredSid;
+            try {
+              const tid = (Math.floor(Math.random() * 255) | 0) >>> 0;
+              const tXml = buildC2dT({ sid: sidToUse, cid: parsed.cid, mtu: this.mtu, conn: "local" });
+              const tPkt = encodeDiscoveryPacket(tid, tXml);
+              sock.send(tPkt, rinfo.port, rinfo.address);
+              this.emit("debug", "discovery_t_send", { sid: sidToUse, cid: parsed.cid, did: parsed.did, rhost: rinfo.address, rport: rinfo.port });
+            } catch (e) {
+              this.emit("debug", "discovery_t_send_error", e);
+            }
+
+            // Wait a short window for D2C_T; if it doesn't arrive, continue anyway.
+            tHandshakeTimer = setTimeout(() => {
+              if (tHandshakeDone) return;
+              sock.off("message", onMsg);
+              resolve({ ...discovered!, sid: sidToUse });
+            }, 2000);
+            return;
+          }
+
+          // No SID found; fall back to the minimal discovery.
           sock.off("message", onMsg);
-          this.emit("debug", "discovery_success", { retryCount, rhost: rinfo.address, rport: rinfo.port });
-          resolve({ cid: parsed.cid, did: parsed.did, rhost: rinfo.address, rport: rinfo.port });
+          resolve({ ...discovered });
         } catch {
           // ignore
         }

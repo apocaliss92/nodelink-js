@@ -47,6 +47,53 @@ async function probeVideoDurationSeconds(filePath: string): Promise<number> {
   });
 }
 
+async function ffprobeAssertNoErrors(filePath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const ffprobe = spawn(
+      "ffprobe",
+      [
+        "-v",
+        "error",
+        "-show_format",
+        "-show_streams",
+        "-of",
+        "json",
+        filePath,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] }
+    );
+
+    let stderr = "";
+    ffprobe.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
+    ffprobe.on("error", (e) => reject(new Error(`ffprobe spawn error: ${e.message}`)));
+    ffprobe.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`ffprobe exited with code ${code}\n${stderr}`));
+        return;
+      }
+      if (stderr.trim().length > 0) {
+        reject(new Error(`ffprobe reported errors:\n${stderr}`));
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+function cleanupRecordingsDir(recordingsDir: string): void {
+  if (!fs.existsSync(recordingsDir)) return;
+  const entries = fs.readdirSync(recordingsDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    if (!entry.name.endsWith(".mp4")) continue;
+    try {
+      fs.rmSync(path.join(recordingsDir, entry.name));
+    } catch {
+      // ignore
+    }
+  }
+}
+
 // Helper functions
 function log(message: string, data?: unknown) {
   console.log(`\n${"=".repeat(60)}`);
@@ -565,6 +612,11 @@ async function testVideoStreamRecording() {
     fs.mkdirSync(recordingsDir, { recursive: true });
   }
 
+  // Cleanup previous artifacts to avoid accumulating recordings between runs.
+  cleanupRecordingsDir(recordingsDir);
+
+  const recordedFiles: string[] = [];
+
   try {
     // Login
     log("Baichuan TCP login");
@@ -688,6 +740,7 @@ async function testVideoStreamRecording() {
         if (fs.existsSync(outputFile)) {
           const stats = fs.statSync(outputFile);
           logSuccess(`Recorded file: ${outputFile} (${stats.size} bytes)`);
+          recordedFiles.push(outputFile);
 
           try {
             const recordedDuration = await probeVideoDurationSeconds(outputFile);
@@ -720,6 +773,11 @@ async function testVideoStreamRecording() {
         // Small delay before the next profile
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
+    }
+
+    log("Final ffprobe verification (no errors)");
+    for (const f of recordedFiles) {
+      await ffprobeAssertNoErrors(f);
     }
 
     logSuccess("All tests completed!");
