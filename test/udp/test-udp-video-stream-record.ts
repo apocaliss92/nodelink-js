@@ -1,0 +1,433 @@
+#!/usr/bin/env node
+/**
+ * Baichuan UDP end-to-end video streaming test.
+ * Records a short MP4 clip for each available profile (main, sub, ext) via UDP/BCUDP.
+ * This test is specifically for battery-powered cameras that use UDP transport.
+ */
+
+// @ts-expect-error - Path resolution at runtime
+import { ReolinkBaichuanApi, BaichuanRtspServer } from "../../index.js";
+import { config } from "../env.js";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { spawn } from "node:child_process";
+
+// Helper functions
+function log(message: string, data?: unknown) {
+  console.log(`\n${"=".repeat(60)}`);
+  console.log(`[INFO] ${message}`);
+  if (data !== undefined) {
+    console.log(JSON.stringify(data, null, 2));
+  }
+  console.log("=".repeat(60));
+}
+
+function logSuccess(message: string) {
+  console.log(`\n[OK] ${message}`);
+}
+
+function logError(message: string, error: unknown) {
+  console.error(`\n[ERROR] ${message}`);
+  if (error instanceof Error) {
+    console.error(`   Message: ${error.message}`);
+    if (error.stack) {
+      console.error(`   Stack: ${error.stack.split("\n").slice(0, 5).join("\n")}`);
+    }
+  } else {
+    console.error(`   Details: ${error}`);
+  }
+}
+
+/**
+ * Record video from RTSP stream using ffmpeg.
+ * This is much simpler than handling raw frames directly.
+ */
+async function recordVideoFromRtsp(
+  rtspUrl: string,
+  outputFile: string,
+  durationSeconds: number
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    log(`Recording from RTSP stream`, { rtspUrl, outputFile, durationSeconds });
+
+    const ffmpeg = spawn("ffmpeg", [
+      "-hide_banner",
+      "-loglevel", "info", // Changed to info to see more details
+      "-rtsp_transport", "tcp",
+      "-rtsp_flags", "prefer_tcp", // Prefer TCP for RTSP
+      "-timeout", "5000000", // 5 second timeout for RTSP connection (in microseconds)
+      "-i", rtspUrl,
+      "-t", String(durationSeconds), // Duration
+      "-c:v", "copy", // Copy video codec (no re-encoding)
+      "-c:a", "copy", // Copy audio codec if present
+      "-movflags", "+faststart",
+      "-y",
+      outputFile,
+    ], { stdio: ["pipe", "pipe", "pipe"] });
+
+    let stderr = "";
+    let stdout = "";
+    let settled = false;
+
+    const doneOk = () => {
+      if (settled) return;
+      settled = true;
+      try { 
+        if (ffmpeg.stdin && !ffmpeg.stdin.destroyed) {
+          ffmpeg.stdin.end();
+        }
+        ffmpeg.kill("SIGTERM"); 
+      } catch {}
+      resolve();
+    };
+
+    const doneErr = (e: Error) => {
+      if (settled) return;
+      settled = true;
+      try { 
+        if (ffmpeg.stdin && !ffmpeg.stdin.destroyed) {
+          ffmpeg.stdin.end();
+        }
+        ffmpeg.kill("SIGTERM"); 
+      } catch {}
+      const t = setTimeout(() => { 
+        try { ffmpeg.kill("SIGKILL"); } catch {} 
+      }, 1500);
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+      (t as any)?.unref?.();
+      reject(e);
+    };
+
+    ffmpeg.stderr?.on("data", (d: Buffer) => { 
+      const output = d.toString();
+      stderr += output;
+      // Log important messages
+      if (output.includes("Connection refused") || 
+          output.includes("Connection timed out") ||
+          output.includes("Unable to open") ||
+          output.includes("Server returned 404") ||
+          output.includes("error")) {
+        console.error(`[FFmpeg Recording] ${output.trim()}`);
+      }
+    });
+    
+    ffmpeg.stdout?.on("data", (d: Buffer) => { 
+      stdout += d.toString();
+      console.log(`[FFmpeg Recording] ${d.toString().trim()}`);
+    });
+    
+    ffmpeg.on("error", (e) => {
+      console.error(`[FFmpeg Recording] Spawn error:`, e);
+      doneErr(new Error(`ffmpeg spawn error: ${e.message}`));
+    });
+    
+    ffmpeg.on("close", (code, signal) => {
+      console.log(`[FFmpeg Recording] Process closed with code ${code}, signal ${signal}`);
+      if (code === 0 || code === null) {
+        logSuccess(`Recording completed: ${outputFile}`);
+        return doneOk();
+      }
+      // Show full error output
+      console.error(`[FFmpeg Recording] Full stderr:\n${stderr}`);
+      console.error(`[FFmpeg Recording] Full stdout:\n${stdout}`);
+      doneErr(new Error(`ffmpeg exited with code ${code}\n${stderr}`));
+    });
+
+    // Safety timeout
+    const timeout = setTimeout(() => {
+      if (!settled) {
+        console.error(`[FFmpeg Recording] Timeout after ${durationSeconds + 5} seconds`);
+        doneErr(new Error(`Recording timeout after ${durationSeconds + 5} seconds`));
+      }
+    }, (durationSeconds + 10) * 1000); // Increased timeout
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    (timeout as any)?.unref?.();
+  });
+}
+
+async function testUdpVideoStreamRecording() {
+  console.log("\n");
+  console.log("╔════════════════════════════════════════════════════════════╗");
+  console.log("║     BAICHUAN UDP VIDEO STREAM RECORDING TEST              ║");
+  console.log("╚════════════════════════════════════════════════════════════╝");
+  console.log(`\nConfiguration:`);
+  console.log(`  Host: ${config.udp.host ?? "255.255.255.255 (broadcast)"}`);
+  console.log(`  UID: ${config.udp.uid}`);
+  console.log(`  Username: ${config.udp.username}\n`);
+
+  if (!config.udp.uid || !config.udp.password) {
+    console.error("[ERROR] Incomplete UDP configuration in .env");
+    process.exit(1);
+  }
+
+  // Try broadcast first (as per neolink behavior for battery cameras)
+  const useBroadcast = !config.udp.host || config.udp.host === "255.255.255.255";
+  const api = new ReolinkBaichuanApi({
+    host: useBroadcast ? "255.255.255.255" : config.udp.host!,
+    username: config.udp.username,
+    password: config.udp.password,
+    transport: "udp",
+    udp: {
+      mode: "uid",
+      uid: config.udp.uid,
+      host: useBroadcast ? undefined : config.udp.host,
+      broadcast: useBroadcast,
+      discoveryTimeout: 30_000,
+      discoveryRetryInterval: 500,
+    },
+    debug: true, // Enable debug to see what's happening
+    debugOptions: {
+      enabled: true,
+      traceStream: true, // Enable stream command tracing (tx/rx cmd_id 3/4 + rx stream frames)
+      debugH264: true, // Enable H.264-centric debug logs
+      debugParamSets: true, // Enable SPS/PPS cache/prepend debug logs
+      dump: {
+        enabled: true,
+        dir: path.join(process.cwd(), "test", "frames-debug"),
+        bcmedia: true, // Dump BCMedia packets
+        nals: true, // Dump NAL units
+      },
+    },
+  });
+
+  // Handle errors
+  api.client.on("error", () => {
+    // Errors are handled in try/catch blocks.
+  });
+
+  // Discovery debug - show all UDP debug events
+  api.client.on("debug", (event: string, data?: unknown) => {
+    console.log(`  [DEBUG UDP] ${event}:`, data);
+  });
+
+  const channel = 0;
+  const recordingsDir = path.join(process.cwd(), "test", "recordings", "udp");
+  // Deterministic default: always record 10 seconds for every available profile
+  const duration = 10;
+
+  // Create directory if it doesn't exist
+  if (!fs.existsSync(recordingsDir)) {
+    fs.mkdirSync(recordingsDir, { recursive: true });
+  }
+
+  try {
+    // Check battery status first (for battery cameras)
+    log("Checking battery status");
+    try {
+      const batteryStatus = await api.getBatteryStatus(channel);
+      log("Battery status", batteryStatus);
+      if (batteryStatus.sleeping) {
+        log("Camera is sleeping, attempting to wake up");
+        await api.wakeUp(channel);
+        // Wait a bit for camera to fully wake up
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        // Re-check battery status
+        const newStatus = await api.getBatteryStatus(channel);
+        log("Battery status after wake-up", newStatus);
+      }
+    } catch (error) {
+      logError("Could not get battery status (camera may not be battery-powered)", error);
+      // Continue anyway, as this might be a wired camera using UDP
+    }
+
+    // Login
+    log("Baichuan UDP login");
+    const maxEnc = (process.env.BAICHUAN_MAX_ENC as any) as "none" | "bc" | "aes" | "full_aes" | undefined;
+    await api.login(maxEnc ?? "aes");
+    logSuccess("Login completed");
+
+    // Check available profiles
+    log("Checking available profiles");
+    const streamMetadata = await api.getStreamMetadata(channel);
+    logSuccess("Stream metadata fetched");
+    log("Stream metadata", streamMetadata);
+    
+    const availableProfiles: Array<"main" | "sub" | "ext"> = [];
+    // streamMetadata can be an array or an object depending on camera/firmware
+    if (Array.isArray(streamMetadata)) {
+      // Array: each element includes a profile
+      for (const stream of streamMetadata) {
+        if (stream.profile === "main" || stream.profile === "sub" || stream.profile === "ext") {
+          if (!availableProfiles.includes(stream.profile)) {
+            availableProfiles.push(stream.profile);
+          }
+        }
+      }
+    } else if (streamMetadata && typeof streamMetadata === "object") {
+      // Object: check known properties
+      if ("main" in streamMetadata && streamMetadata.main) availableProfiles.push("main");
+      if ("sub" in streamMetadata && streamMetadata.sub) availableProfiles.push("sub");
+      if ("ext" in streamMetadata && streamMetadata.ext) availableProfiles.push("ext");
+      // Or an array under "streams"
+      if ("streams" in streamMetadata && Array.isArray(streamMetadata.streams)) {
+        for (const stream of streamMetadata.streams) {
+          if (stream.profile === "main" || stream.profile === "sub" || stream.profile === "ext") {
+            if (!availableProfiles.includes(stream.profile)) {
+              availableProfiles.push(stream.profile);
+            }
+          }
+        }
+      }
+    }
+    
+    log(`Available profiles: ${availableProfiles.length > 0 ? availableProfiles.join(", ") : "none (continuing anyway)"}`);
+    
+    // If no profile is reported, still try with "sub" as a fallback
+    if (availableProfiles.length === 0) {
+      log("No profiles found in metadata, continuing with 'sub' as default");
+      availableProfiles.push("sub");
+    }
+
+    // Deterministic: record every available profile (preferred order)
+    const preferredOrder: Array<"main" | "sub" | "ext"> = ["main", "sub", "ext"];
+    const profiles = preferredOrder.filter((p) => availableProfiles.includes(p));
+    log(`Profiles to test: ${profiles.join(", ")}`);
+
+    // Test and record each available profile
+    for (let i = 0; i < profiles.length; i++) {
+      const profile = profiles[i]!;
+      if (!availableProfiles.includes(profile)) {
+        log(`Profile ${profile} not available, skipping`);
+        continue;
+      }
+
+      log(`\n🎥 Testing profile: ${profile}`);
+      
+      let rtspServer: BaichuanRtspServer | undefined;
+
+      try {
+        // Create RTSP stream using the library
+        // The library will automatically detect H.264/H.265 and configure ffmpeg accordingly
+        log(`Creating RTSP stream for profile ${profile}`);
+        rtspServer = await api.createRtspStream(channel, profile, {
+          listenPort: 8554 + i, // Use different ports for each profile
+          path: `/${profile}`,
+        });
+        
+        // Handle RTSP server errors (don't crash the test)
+        rtspServer.on("error", (error: Error) => {
+          logError(`RTSP server error for profile ${profile}`, error);
+        });
+        
+        const rtspUrl = rtspServer.getRtspUrl();
+        logSuccess(`RTSP stream created: ${rtspUrl}`);
+        log(`Waiting for RTSP server to be ready...`);
+        
+        // Wait for RTSP server to be ready
+        try {
+          await rtspServer.waitUntilReady(15000);
+          logSuccess(`RTSP server is ready: ${rtspUrl}`);
+        } catch (error) {
+          logError(`RTSP server not ready after timeout`, error);
+          continue;
+        }
+        
+        // Simulate a client connecting (this will start the native stream and wait for first keyframe)
+        const clientId = `ffmpeg-recorder-${profile}`;
+        log(`Simulating client connection: ${clientId}`);
+        log(`This will start the native stream and wait for first keyframe...`);
+        
+        try {
+          await rtspServer.addClient(clientId);
+          logSuccess(`Client connected and native stream is ready (clients: ${rtspServer.getConnectedClientsCount()})`);
+        } catch (error) {
+          logError(`Error connecting client or starting native stream`, error);
+          continue;
+        }
+        
+        if (!rtspServer.isNativeStreamActive()) {
+          logError(`Native stream did not start after client connection`, new Error("Stream not active"));
+          rtspServer.removeClient(clientId);
+          continue;
+        }
+        
+        // Record from RTSP stream using ffmpeg (emulating a user connecting to the stream)
+        const outputFile = path.join(recordingsDir, `recording_udp_${profile}_${Date.now()}.mp4`);
+        log(`Recording ${duration}s from RTSP stream: ${rtspUrl}`);
+        log(`This emulates a user (ffmpeg) connecting to the RTSP stream`);
+        
+        // For battery cameras, keep the camera awake during recording by sending periodic pings
+        const keepAliveInterval = setInterval(async () => {
+          try {
+            await api.ping();
+          } catch (error) {
+            // Ignore ping errors silently
+          }
+        }, 3000);
+        
+        const clearKeepAlive = () => {
+          clearInterval(keepAliveInterval);
+        };
+        
+        // Record from RTSP stream (this is the actual client connection)
+        try {
+          await Promise.race([
+            recordVideoFromRtsp(rtspUrl, outputFile, duration).finally(clearKeepAlive),
+            new Promise((_, reject) => 
+              setTimeout(() => {
+                clearKeepAlive();
+                reject(new Error("Timeout recording from RTSP"));
+              }, (duration + 10) * 1000)
+            ),
+          ]);
+        } catch (error) {
+          clearKeepAlive();
+          logError(`Error during recording from RTSP`, error);
+          rtspServer.removeClient(clientId);
+          continue;
+        }
+        
+        // Simulate client disconnection (this will stop the native stream if no other clients)
+        log(`Simulating client disconnection: ${clientId}`);
+        rtspServer.removeClient(clientId);
+        
+        // Verify the file was created
+        if (fs.existsSync(outputFile)) {
+          const stats = fs.statSync(outputFile);
+          logSuccess(`Recorded file: ${outputFile} (${stats.size} bytes)`);
+        } else {
+          logError(`File not created: ${outputFile}`, new Error("File not found"));
+        }
+
+      } catch (error) {
+        logError(`Error while testing profile ${profile}`, error);
+      } finally {
+        // Cleanup RTSP server
+        if (rtspServer) {
+          try {
+            await rtspServer.stop();
+            logSuccess(`RTSP stream stopped for profile ${profile}`);
+          } catch (error) {
+            logError(`Error while stopping RTSP stream for profile ${profile}`, error);
+          }
+        }
+
+        // Small delay before the next profile
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    }
+
+    logSuccess("All tests completed!");
+
+  } catch (error) {
+    logError("Critical error during tests", error);
+    process.exit(1);
+  } finally {
+    try {
+      await api.close();
+      logSuccess("Connection closed");
+    } catch (error) {
+      logError("Error while closing connection", error);
+    }
+    // Ensure process exits
+    setTimeout(() => {
+      process.exit(0);
+    }, 1000);
+  }
+}
+
+testUdpVideoStreamRecording().catch((error) => {
+  console.error("Fatal error:", error);
+  process.exit(1);
+});
+

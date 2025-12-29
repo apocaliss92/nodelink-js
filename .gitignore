@@ -19,10 +19,10 @@ pnpm-debug.log*
 !node_modules/**/*.js
 
 # Test frames (saved for offline testing)
-test/frames/
-test/diagnostics/
-test/recordings/
-test/diagnostics-dumps/
+test/frames/*
+test/diagnostics/*
+test/recordings/*
+test/diagnostics-dumps/*
 test/frames-debug/*
-test/frames-save/
+test/frames-save/*
 

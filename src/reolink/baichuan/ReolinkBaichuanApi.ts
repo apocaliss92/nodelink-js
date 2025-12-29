@@ -1,4 +1,7 @@
 import { BaichuanClient, type BaichuanClientOptions } from "../../client/BaichuanClient";
+import { BaichuanVideoStream, type BaichuanVideoStreamOptions } from "../../baichuan/stream/BaichuanVideoStream";
+import { BaichuanRtspServer, type BaichuanRtspServerOptions } from "../../baichuan/stream/BaichuanRtspServer";
+import { createNativeStream } from "../../scrypted/helpers";
 import { xmlEscape, getXmlText, buildPreviewXml, buildPreviewStopXml, buildChannelExtensionXml, buildPtzControlXml, buildPtzPresetXml, buildSirenManualXml, buildSirenTimesXml, buildWhiteLedStateXml, buildAbilityInfoExtensionXml } from "../../protocol/xml";
 import { 
   BC_CMD_ID_VIDEO, 
@@ -53,6 +56,7 @@ function getXmlTexts(xml: string, tags: string[]): Record<string, string> {
 
 export class ReolinkBaichuanApi {
   readonly client: BaichuanClient;
+  private rtspServers = new Set<BaichuanRtspServer>(); // Track all RTSP servers for cleanup
 
   constructor(opts: BaichuanClientOptions) {
     this.client = new BaichuanClient(opts);
@@ -63,7 +67,33 @@ export class ReolinkBaichuanApi {
   }
 
   async close(): Promise<void> {
+    // Stop all RTSP servers before closing the client
+    await this.cleanup();
     await this.client.close();
+  }
+
+  /**
+   * Cleanup all RTSP servers and release resources.
+   * This should be called when the API instance is being destroyed to prevent memory leaks.
+   */
+  async cleanup(): Promise<void> {
+    const servers = Array.from(this.rtspServers);
+    this.rtspServers.clear();
+    
+    // Stop all servers in parallel
+    await Promise.allSettled(
+      servers.map(async (server) => {
+        try {
+          await server.stop();
+        } catch (error) {
+          console.error(`[ReolinkBaichuanApi] Error stopping RTSP server during cleanup:`, error);
+        }
+      })
+    );
+    
+    if (servers.length > 0) {
+      console.log(`[ReolinkBaichuanApi] Cleaned up ${servers.length} RTSP server(s)`);
+    }
   }
 
   /** Generic Baichuan cmd_id call, returns XML (if any). */
@@ -933,10 +963,75 @@ export class ReolinkBaichuanApi {
   // --------------------
 
   /**
+   * Get battery status for battery-powered cameras, including sleep state.
+   * This is a comprehensive API that returns battery info AND checks if the camera is sleeping.
+   * cmd_id: 252 (GetBatteryInfo from reolink_aio)
+   * 
+   * @param channel - Channel number (0-based)
+   * @returns Battery information including sleep status
+   */
+  async getBatteryStatus(channel: number): Promise<BatteryInfo> {
+    try {
+      // First, try to get battery info
+      // If the camera is sleeping, this may timeout or fail
+      const xml = await Promise.race([
+        this.sendXml({ cmdId: BC_CMD_ID_GET_BATTERY_INFO, channel }),
+        new Promise<string>((_, reject) => 
+          setTimeout(() => reject(new Error("Timeout")), 5000)
+        )
+      ]);
+      
+      // Parse battery info from XML
+      // Expected format: <Battery><batteryPercent>...</batteryPercent><chargeStatus>...</chargeStatus></Battery>
+      const batteryPercentText = getXmlText(xml, "batteryPercent");
+      const chargeStatus = getXmlText(xml, "chargeStatus");
+      
+      // chargeStatus: 0=charging, 1=discharging, 2=full
+      
+      const result: BatteryInfo = {
+        channel,
+        sleeping: false, // Camera responded, so it's awake
+      };
+      if (batteryPercentText !== undefined) {
+        result.batteryPercent = Number(batteryPercentText);
+      }
+      if (chargeStatus !== undefined) {
+        result.chargeStatus = chargeStatus;
+      }
+      
+      return result;
+    } catch (error) {
+      // If the command times out or fails, the camera is likely sleeping
+      // Note: GetBatteryInfo is a NONE_WAKING_COMMAND, so it won't wake up the camera
+      const result: BatteryInfo = {
+        channel,
+        sleeping: true,
+      };
+      
+      // If we got an error that's not a timeout, we still don't know the battery status
+      // But we can infer it's sleeping if it failed to respond
+      if (error instanceof Error && error.message === "Timeout") {
+        // Camera didn't respond within 5 seconds, likely sleeping
+        if (this.client.getDebugConfig().debugH264) {
+          console.log(`[DEBUG] getBatteryStatus: Camera appears to be sleeping (timeout)`);
+        }
+      } else {
+        // Other error, but still mark as potentially sleeping
+        if (this.client.getDebugConfig().debugH264) {
+          console.log(`[DEBUG] getBatteryStatus: Error getting battery info:`, error);
+        }
+      }
+      
+      return result;
+    }
+  }
+
+  /**
    * Get battery information via Baichuan.
    * cmd_id: 252 (MSG_ID_BATTERY_INFO_LIST from neolink)
    * 
    * Note: Battery info is typically pushed via events (cmd_id 252), but can also be requested.
+   * For checking sleep state, use getBatteryStatus() instead.
    * 
    * @param channel - Channel number (0-based)
    * @returns Battery information
@@ -958,7 +1053,9 @@ export class ReolinkBaichuanApi {
     if (batteryPercentText !== undefined) {
       result.batteryPercent = Number(batteryPercentText);
     }
-    // Note: sleeping state is not directly in battery info, may need separate API call
+    if (chargeStatus !== undefined) {
+      result.chargeStatus = chargeStatus;
+    }
     
     return result;
   }
@@ -1487,6 +1584,78 @@ export class ReolinkBaichuanApi {
     }
     
     return 0;
+  }
+
+  /**
+   * Create an RTSP server for a video stream.
+   * Automatically detects video codec (H.264 or H.265) and configures ffmpeg accordingly.
+   * 
+   * @param channel - Channel number (0-based)
+   * @param profile - Stream profile ("main", "sub", or "ext")
+   * @param options - RTSP server options (port, path, etc.)
+   * @returns RTSP server instance
+   * 
+   * @example
+   * ```typescript
+   * const rtspServer = await api.createRtspStream(0, "main", { listenPort: 8554 });
+   * const rtspUrl = rtspServer.getRtspUrl();
+   * console.log(`RTSP stream available at: ${rtspUrl}`);
+   * // Use ffmpeg or VLC to connect: ffmpeg -i ${rtspUrl} output.mp4
+   * ```
+   */
+  async createRtspStream(
+    channel: number,
+    profile: StreamProfile,
+    options?: {
+      listenHost?: string; // Host to listen on (default: "127.0.0.1")
+      listenPort?: number; // Port to listen on (default: 8554)
+      path?: string; // RTSP path (e.g. "/main" or "/sub")
+    }
+  ): Promise<BaichuanRtspServer> {
+    // Get stream metadata to determine codec
+    let videoCodec: string | undefined;
+    try {
+      const metadata = await this.getStreamMetadata(channel);
+      if (Array.isArray(metadata)) {
+        const stream = metadata.find((s) => s.profile === profile);
+        if (stream?.videoEncType) {
+          videoCodec = stream.videoEncType;
+        }
+      } else if (metadata && typeof metadata === "object" && "streams" in metadata) {
+        const streams = (metadata as any).streams;
+        if (Array.isArray(streams)) {
+          const stream = streams.find((s: any) => s?.profile === profile);
+          if (stream?.videoEncType) {
+            videoCodec = stream.videoEncType;
+          }
+        }
+      }
+    } catch (error) {
+      // If metadata fetch fails, codec will be auto-detected from stream
+      console.warn(`[ReolinkBaichuanApi] Could not fetch stream metadata, will auto-detect codec: ${error instanceof Error ? error.message : error}`);
+    }
+
+    const rtspOptions: BaichuanRtspServerOptions = {
+      api: this,
+      channel,
+      profile,
+      ...(options?.listenHost !== undefined ? { listenHost: options.listenHost } : {}),
+      ...(options?.listenPort !== undefined ? { listenPort: options.listenPort } : {}),
+      ...(options?.path !== undefined ? { path: options.path } : {}),
+    };
+
+    const server = new BaichuanRtspServer(rtspOptions);
+    await server.start();
+    
+    // Track the server for cleanup
+    this.rtspServers.add(server);
+    
+    // Remove from tracking when server is stopped
+    server.once("close", () => {
+      this.rtspServers.delete(server);
+    });
+    
+    return server;
   }
 }
 

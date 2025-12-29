@@ -49,6 +49,7 @@ export interface PtzCommand {
 
 export interface BatteryInfo {
   batteryPercent?: number;
+  chargeStatus?: string; // "0"=charging, "1"=discharging, "2"=full
   sleeping?: boolean;
   channel?: number;
 }

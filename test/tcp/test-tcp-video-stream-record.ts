@@ -5,8 +5,8 @@
  */
 
 // @ts-expect-error - Path resolution at runtime
-import { ReolinkBaichuanApi, BaichuanVideoStream, BaichuanHttpStreamServer } from "../../index";
-import { config } from "../env";
+import { ReolinkBaichuanApi, BaichuanRtspServer } from "../../index.js";
+import { config } from "../env.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
@@ -184,8 +184,147 @@ async function recordVideoFromUrl(inputUrl: string, outputFile: string, duration
   });
 }
 
+async function recordVideoFromRtsp(rtspUrl: string, outputFile: string, durationSeconds: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    log(`Recording video from RTSP`, { rtspUrl, outputFile, durationSeconds });
+    
+    // ffmpeg -i <rtsp_url> -t <duration> -c copy output.mp4
+    const ffmpeg = spawn("ffmpeg", [
+      "-hide_banner",
+      "-loglevel", "warning",
+      "-rtsp_transport", "tcp",
+      "-i", rtspUrl,
+      "-t", durationSeconds.toString(),
+      "-c", "copy", // Copy codec (no re-encoding)
+      "-y", // Overwrite output file
+      outputFile,
+    ], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let settled = false;
+    let stderr = "";
+    let hasStarted = false;
+    let timeout: NodeJS.Timeout | undefined;
+    let killTimer: NodeJS.Timeout | undefined;
+    let startedPoll: NodeJS.Timeout | undefined;
+
+    const cleanup = () => {
+      if (timeout) clearTimeout(timeout);
+      timeout = undefined;
+      if (killTimer) clearTimeout(killTimer);
+      killTimer = undefined;
+      if (startedPoll) clearInterval(startedPoll);
+      startedPoll = undefined;
+      ffmpeg.removeAllListeners();
+      ffmpeg.stderr?.removeAllListeners();
+      ffmpeg.stdout?.removeAllListeners();
+    };
+
+    const killFfmpeg = () => {
+      try {
+        ffmpeg.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
+      killTimer = setTimeout(() => {
+        try {
+          ffmpeg.kill("SIGKILL");
+        } catch {
+          // ignore
+        }
+      }, 1500);
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+      (killTimer as any)?.unref?.();
+    };
+
+    const fail = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      killFfmpeg();
+      cleanup();
+      reject(err);
+    };
+
+    const ok = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
+    };
+    
+    ffmpeg.stderr.on("data", (data: Buffer) => {
+      const output = data.toString();
+      stderr += output;
+      
+      if (!hasStarted && (output.includes("Stream") || output.includes("frame="))) {
+        hasStarted = true;
+        console.log(`[FFmpeg Recording] Stream started`);
+      }
+      
+      // Log all ffmpeg output for debugging
+      if (output.includes("error") || output.includes("Error") || output.includes("Invalid") || output.includes("Connection")) {
+        console.error(`[FFmpeg Recording] ${output.trim()}`);
+      }
+      
+      // Log progress
+      if (output.includes("time=")) {
+        const timeMatch = output.match(/time=(\d+:\d+:\d+\.\d+)/);
+        if (timeMatch) {
+          console.log(`[FFmpeg Recording] Progress: ${timeMatch[1]}`);
+        }
+      }
+    });
+
+    ffmpeg.on("close", (code) => {
+      if (code === 0) {
+        logSuccess(`Recording completed: ${outputFile}`);
+        ok();
+      } else {
+        if (code === 1 && hasStarted) {
+          logSuccess(`Recording completed (exit code ${code}): ${outputFile}`);
+          ok();
+        } else {
+          fail(new Error(`ffmpeg exited with code ${code}\n${stderr}`));
+        }
+      }
+    });
+
+    ffmpeg.on("error", (error) => {
+      fail(new Error(`ffmpeg spawn error: ${error.message}`));
+    });
+    
+    const markStartedIfOutputGrows = () => {
+      if (hasStarted) return;
+      try {
+        if (fs.existsSync(outputFile)) {
+          const s = fs.statSync(outputFile);
+          if (s.size > 0) {
+            hasStarted = true;
+            console.log(`[FFmpeg Recording] Output file started (size=${s.size} bytes)`);
+          }
+        }
+      } catch {
+        // ignore
+      }
+    };
+    startedPoll = setInterval(markStartedIfOutputGrows, 400);
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    (startedPoll as any)?.unref?.();
+
+    timeout = setTimeout(() => {
+      markStartedIfOutputGrows();
+      if (!hasStarted) {
+        fail(new Error(`Timeout: ffmpeg did not start producing output within 10 seconds`));
+      }
+    }, 10000);
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    (timeout as any)?.unref?.();
+  });
+}
+
 async function recordVideoFromStream(
-  videoStream: BaichuanVideoStream,
+  videoStream: any,
   outputFile: string,
   durationSeconds: number,
   inputFps: number
@@ -354,7 +493,7 @@ async function testVideoStreamRecording() {
   });
 
   const channel = 0;
-  const recordingsDir = path.join(process.cwd(), "test", "recordings");
+  const recordingsDir = path.join(process.cwd(), "test", "recordings", "tcp");
   // Deterministic default: always record 10 seconds for every available profile.
   const duration = 10;
 
@@ -418,7 +557,8 @@ async function testVideoStreamRecording() {
     log(`Profiles to test: ${profiles.join(", ")}`);
 
     // Test and record each available profile
-    for (const profile of profiles) {
+    for (let i = 0; i < profiles.length; i++) {
+      const profile = profiles[i]!;
       if (!availableProfiles.includes(profile)) {
         log(`Profile ${profile} not available, skipping`);
         continue;
@@ -426,102 +566,58 @@ async function testVideoStreamRecording() {
 
       log(`\n🎥 Testing profile: ${profile}`);
       
-      let videoStream: BaichuanVideoStream | undefined;
-      let inputFps = 25;
+      let rtspServer: BaichuanRtspServer | undefined;
 
       try {
-        // Create BaichuanVideoStream
-        videoStream = new BaichuanVideoStream({
-          client: api.client,
-          api,
-          channel,
-          profile,
+        // Create RTSP stream using the library
+        // The library will automatically detect H.264/H.265 and configure ffmpeg accordingly
+        log(`Creating RTSP stream for profile ${profile}`);
+        rtspServer = await api.createRtspStream(channel, profile, {
+          listenPort: 8554 + i, // Use different ports for each profile
+          path: `/${profile}`,
         });
-
-        // Count received frames
-        let videoFrameCount = 0;
-        let audioFrameCount = 0;
-
-        videoStream.on("videoFrame", (frame: Buffer) => {
-          videoFrameCount++;
-          if (videoFrameCount === 1) {
-            logSuccess(`First video frame received (${frame.length} bytes)`);
-          }
+        
+        // Handle RTSP server errors (don't crash the test)
+        rtspServer.on("error", (error: Error) => {
+          logError(`RTSP server error for profile ${profile}`, error);
         });
-
-        videoStream.on("audioFrame", (frame: Buffer) => {
-          audioFrameCount++;
-          if (audioFrameCount === 1) {
-            logSuccess(`First audio frame received (${frame.length} bytes)`);
-          }
-        });
-
-        videoStream.on("error", (error: Error) => {
-          logError(`Error in video stream`, error);
-        });
-
-        // Try to use FPS from metadata (helps ffmpeg generate PTS/DTS)
-        if (Array.isArray(streamMetadata)) {
-          const found = streamMetadata.find((s: any) => s?.profile === profile);
-          if (found?.frameRate) inputFps = Number(found.frameRate) || inputFps;
-        } else if (streamMetadata && typeof streamMetadata === "object") {
-          const streams = (streamMetadata as any).streams;
-          if (Array.isArray(streams)) {
-            const found = streams.find((s: any) => s?.profile === profile);
-            if (found?.frameRate) inputFps = Number(found.frameRate) || inputFps;
-          }
-        }
-        // Start stream
-        log(`Starting video stream for profile ${profile}`);
-        await videoStream.start();
-        logSuccess(`Video stream started for profile ${profile}`);
         
-        // Wait for some video frames before recording
-        let frameReceived = false;
-        let totalFrames = 0;
-        const frameTimeout = setTimeout(() => {
-          if (!frameReceived) {
-            logError("No video frames received after 5 seconds", new Error("Timeout"));
-          }
-        }, 5000);
+        const rtspUrl = rtspServer.getRtspUrl();
+        logSuccess(`RTSP stream created: ${rtspUrl}`);
         
-        const waitForFramesHandler = () => {
-          if (!frameReceived) {
-            frameReceived = true;
-            clearTimeout(frameTimeout);
-            logSuccess("First video frame received!");
-          }
-          totalFrames++;
-        };
-        videoStream.on("videoFrame", waitForFramesHandler);
-        
-        // Wait a bit to accumulate frames before recording
-        await new Promise((resolve) => setTimeout(resolve, 3000));
-
-        // Rimuovi handler temporaneo
-        videoStream.removeListener("videoFrame", waitForFramesHandler);
-        
-        if (!frameReceived) {
-          logError("No video frames received after 5 seconds", new Error("No video frames"));
+        // Wait for RTSP server to be ready
+        log(`Waiting for RTSP server to be ready...`);
+        try {
+          await rtspServer.waitUntilReady();
+          logSuccess(`RTSP server is ready: ${rtspUrl}`);
+        } catch (error) {
+          logError(`RTSP server not ready after timeout`, error);
           continue;
         }
         
-        logSuccess(`Received ${totalFrames} video frames, starting recording (direct pipe)`);
+        // Wait a bit more to ensure RTSP server is fully ready to accept connections
+        log(`Waiting for RTSP server to be fully ready...`);
+        await new Promise((resolve) => setTimeout(resolve, 2000));
         
-        // Record directly from the videoStream using ffmpeg stdin
-        const outputFile = path.join(recordingsDir, `recording_${profile}_${Date.now()}.mp4`);
-        log(`Recording ${duration}s for profile ${profile} (direct pipe)`);
+        // Record from RTSP stream using ffmpeg (emulating a user connecting to the stream)
+        // The native stream will start automatically when ffmpeg connects
+        const outputFile = path.join(recordingsDir, `recording_tcp_${profile}_${Date.now()}.mp4`);
+        log(`Recording ${duration}s from RTSP stream: ${rtspUrl}`);
+        log(`This emulates a user (ffmpeg) connecting to the RTSP stream`);
+        log(`The native stream will start automatically when ffmpeg connects`);
         
-        // Add a hard timeout for recording
+        // Record from RTSP stream (this is the actual client connection)
         try {
           await Promise.race([
-            recordVideoFromStream(videoStream, outputFile, duration, inputFps),
+            recordVideoFromRtsp(rtspUrl, outputFile, duration),
             new Promise((_, reject) => 
-              setTimeout(() => reject(new Error("Timeout recording (direct pipe)")), (duration + 8) * 1000)
+              setTimeout(() => {
+                reject(new Error("Timeout recording from RTSP"));
+              }, (duration + 10) * 1000)
             ),
           ]);
         } catch (error) {
-          logError(`Error during recording (direct pipe)`, error);
+          logError(`Error during recording from RTSP`, error);
           continue;
         }
         
@@ -529,8 +625,6 @@ async function testVideoStreamRecording() {
         if (fs.existsSync(outputFile)) {
           const stats = fs.statSync(outputFile);
           logSuccess(`Recorded file: ${outputFile} (${stats.size} bytes)`);
-          logSuccess(`Video frames received: ${videoFrameCount}`);
-          logSuccess(`Audio frames received: ${audioFrameCount}`);
         } else {
           logError(`File not created: ${outputFile}`, new Error("File not found"));
         }
@@ -538,16 +632,15 @@ async function testVideoStreamRecording() {
       } catch (error) {
         logError(`Error while testing profile ${profile}`, error);
       } finally {
-        // Cleanup
-        if (videoStream) {
+        // Cleanup RTSP server
+        if (rtspServer) {
           try {
-            await videoStream.stop();
-            logSuccess(`Video stream stopped for profile ${profile}`);
+            await rtspServer.stop();
+            logSuccess(`RTSP stream stopped for profile ${profile}`);
           } catch (error) {
-            logError(`Error while stopping stream for profile ${profile}`, error);
+            logError(`Error while stopping RTSP stream for profile ${profile}`, error);
           }
         }
-        
 
         // Small delay before the next profile
         await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -566,6 +659,10 @@ async function testVideoStreamRecording() {
     } catch (error) {
       logError("Error while closing connection", error);
     }
+    // Ensure process exits
+    setTimeout(() => {
+      process.exit(0);
+    }, 1000);
   }
 }
 

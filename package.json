@@ -62,6 +62,7 @@
     "test:tcp:new-apis": "npm run test:build && node dist/test/tcp/test-tcp-new-apis.js",
     "test:tcp:ability-comparison": "npm run test:build && node dist/test/tcp/test-ability-comparison.js",
     "test:udp": "npm run test:build && node dist/test/udp/test-udp.js",
+    "test:udp:record": "npm run test:build && node dist/test/udp/test-udp-video-stream-record.js",
     "test:streams": "npm run test:build && node dist/test/streams/test-streams.js",
     "test:nvr:tcp": "npm run test:build && node dist/test/nvr/test-nvr-tcp.js",
     "test:nvr:udp": "npm run test:build && node dist/test/nvr/test-nvr-udp.js",

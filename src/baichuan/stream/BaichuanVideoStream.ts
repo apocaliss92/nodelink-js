@@ -476,11 +476,22 @@ export class BaichuanVideoStream extends EventEmitter<{
           dumpNalSummary(outAnnex, "Iframe", media.microseconds);
 
           // Guard rail: do not emit invalid keyframes (prevents cascading SPS/PPS "out of range")
-          if (!isValidH264AnnexBAccessUnit(outAnnex) || !isH264KeyframeAnnexB(outAnnex)) {
-            if (dbg.debugH264) {
-              console.warn(`[BaichuanVideoStream] Dropping invalid Iframe (Annex-B) len=${outAnnex.length}`);
+          // Skip H.264 validation for H.265 frames (they use different NAL unit types)
+          if (media.videoType === "H264") {
+            if (!isValidH264AnnexBAccessUnit(outAnnex) || !isH264KeyframeAnnexB(outAnnex)) {
+              if (dbg.debugH264) {
+                console.warn(`[BaichuanVideoStream] Dropping invalid H.264 Iframe (Annex-B) len=${outAnnex.length}`);
+              }
+              continue;
             }
-            continue;
+          } else if (media.videoType === "H265") {
+            // For H.265, just check that we have start codes (basic validation)
+            if (!hasStartCodes(outAnnex)) {
+              if (dbg.debugH264) {
+                console.warn(`[BaichuanVideoStream] Dropping H.265 Iframe without start codes len=${outAnnex.length}`);
+              }
+              continue;
+            }
           }
 
           // Save a one-off sample for offline analysis
