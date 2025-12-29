@@ -1,6 +1,14 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+export interface Logger {
+  log(message?: any, ...optionalParams: any[]): void;
+  info(message?: any, ...optionalParams: any[]): void;
+  warn(message?: any, ...optionalParams: any[]): void;
+  error(message?: any, ...optionalParams: any[]): void;
+  debug(message?: any, ...optionalParams: any[]): void;
+}
+
 export type DebugOptions = {
   /** Enables generic debug logs. */
   enabled?: boolean;
@@ -56,39 +64,39 @@ export function ensureDumpDir(cfg: DebugConfig): void {
   fs.mkdirSync(cfg.dumpDir, { recursive: true });
 }
 
-export function debugLog(cfg: DebugConfig, tag: string, message: string): void {
+export function debugLog(cfg: DebugConfig, logger: Logger, tag: string, message: string): void {
   if (!cfg.enabled) return;
-  console.log(`[${tag}] ${message}`);
+  logger.debug(`[${tag}] ${message}`);
 }
 
-export function debugWarn(cfg: DebugConfig, tag: string, message: string): void {
+export function debugWarn(cfg: DebugConfig, logger: Logger, tag: string, message: string): void {
   if (!cfg.enabled) return;
-  console.warn(`[${tag}] ${message}`);
+  logger.warn(`[${tag}] ${message}`);
 }
 
-export function traceLog(cfg: DebugConfig, tag: string, message: string): void {
+export function traceLog(cfg: DebugConfig, logger: Logger, tag: string, message: string): void {
   if (!cfg.traceStream) return;
-  console.log(`[${tag}] ${message}`);
+  logger.debug(`[${tag}] ${message}`);
 }
 
-export function talkTraceLog(cfg: DebugConfig, tag: string, message: string): void {
+export function talkTraceLog(cfg: DebugConfig, logger: Logger, tag: string, message: string): void {
   if (!cfg.traceTalk) return;
-  console.log(`[${tag}] ${message}`);
+  logger.debug(`[${tag}] ${message}`);
 }
 
-export function talkTraceWarn(cfg: DebugConfig, tag: string, message: string): void {
+export function talkTraceWarn(cfg: DebugConfig, logger: Logger, tag: string, message: string): void {
   if (!cfg.traceTalk) return;
-  console.warn(`[${tag}] ${message}`);
+  logger.warn(`[${tag}] ${message}`);
 }
 
-export function rtspLog(cfg: DebugConfig, tag: string, message: string): void {
+export function rtspLog(cfg: DebugConfig, logger: Logger, tag: string, message: string): void {
   if (!cfg.debugRtsp) return;
-  console.log(`[${tag}] ${message}`);
+  logger.info(`[${tag}] ${message}`);
 }
 
-export function rtspWarn(cfg: DebugConfig, tag: string, message: string): void {
+export function rtspWarn(cfg: DebugConfig, logger: Logger, tag: string, message: string): void {
   if (!cfg.debugRtsp) return;
-  console.warn(`[${tag}] ${message}`);
+  logger.warn(`[${tag}] ${message}`);
 }
 
 

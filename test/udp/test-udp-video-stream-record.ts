@@ -390,7 +390,7 @@ async function testUdpVideoStreamRecording() {
         // The library will automatically detect H.264/H.265 and configure ffmpeg accordingly
         log(`Creating RTSP stream for profile ${profile}`);
         rtspServer = await api.createRtspStream(channel, profile, {
-          listenPort: 8554 + i, // Use different ports for each profile
+          listenPort: 18554 + i, // Use different ports for each profile (avoid EADDRINUSE)
           path: `/${profile}`,
         });
         

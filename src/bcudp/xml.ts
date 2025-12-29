@@ -23,11 +23,25 @@ export function buildC2dHb(params: { cid: number; did: number }): string {
   return buildP2pXml(`<C2D_HB><cid>${params.cid}</cid><did>${params.did}</did></C2D_HB>`);
 }
 
-export function buildC2dT(params: { sid: number; conn?: string; cid: number; mtu: number }): string {
+export function buildC2dA(params: { sid: number; conn?: string; cid: number; did: number; mtu: number }): string {
   const conn = params.conn ?? "local";
   return buildP2pXml(
-    `<C2D_T>` +
+    `<C2D_A>` +
       `<sid>${params.sid}</sid>` +
+      `<conn>${xmlEscape(conn)}</conn>` +
+      `<cid>${params.cid}</cid>` +
+      `<did>${params.did}</did>` +
+      `<mtu>${params.mtu}</mtu>` +
+    `</C2D_A>`
+  );
+}
+
+export function buildC2dT(params: { sid?: number; conn?: string; cid: number; mtu: number }): string {
+  const conn = params.conn ?? "local";
+  const sid = params.sid != null ? `<sid>${params.sid}</sid>` : "";
+  return buildP2pXml(
+    `<C2D_T>` +
+      sid +
       `<conn>${xmlEscape(conn)}</conn>` +
       `<cid>${params.cid}</cid>` +
       `<mtu>${params.mtu}</mtu>` +
@@ -35,7 +49,13 @@ export function buildC2dT(params: { sid: number; conn?: string; cid: number; mtu
   );
 }
 
-export type D2cCrParsed = { rsp: number; cid: number; did: number };
+export type D2cCrParsed = {
+  rsp: number;
+  cid: number;
+  did: number;
+  sid?: number;
+  timer?: { def?: number; hb?: number; hbt?: number };
+};
 
 export function parseD2cCr(xml: string): D2cCrParsed | undefined {
   // Minimal parser: extract <rsp>, <cid>, <did> within <D2C_C_R>...</D2C_C_R>
@@ -46,7 +66,26 @@ export function parseD2cCr(xml: string): D2cCrParsed | undefined {
   const cid = /<cid>(-?\d+)<\/cid>/.exec(body)?.[1];
   const did = /<did>(-?\d+)<\/did>/.exec(body)?.[1];
   if (rsp == null || cid == null || did == null) return undefined;
-  return { rsp: Number(rsp), cid: Number(cid), did: Number(did) };
+
+  const sid = /<sid>(-?\d+)<\/sid>/.exec(body)?.[1];
+
+  const timerBlock = /<timer>([\s\S]*?)<\/timer>/.exec(body)?.[1];
+  const def = timerBlock ? /<def>(-?\d+)<\/def>/.exec(timerBlock)?.[1] : undefined;
+  const hb = timerBlock ? /<hb>(-?\d+)<\/hb>/.exec(timerBlock)?.[1] : undefined;
+  const hbt = timerBlock ? /<hbt>(-?\d+)<\/hbt>/.exec(timerBlock)?.[1] : undefined;
+  const timer = def != null || hb != null || hbt != null ? {
+    ...(def != null ? { def: Number(def) } : {}),
+    ...(hb != null ? { hb: Number(hb) } : {}),
+    ...(hbt != null ? { hbt: Number(hbt) } : {}),
+  } : undefined;
+
+  return {
+    rsp: Number(rsp),
+    cid: Number(cid),
+    did: Number(did),
+    ...(sid != null ? { sid: Number(sid) } : {}),
+    ...(timer ? { timer } : {}),
+  };
 }
 
 export type D2cCfmParsed = { sid: number; conn?: string; rsp?: number; cid?: number; did?: number };

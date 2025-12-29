@@ -1,8 +1,6 @@
 export function xmlEscape(text: string | undefined | null): string {
   if (text === undefined || text === null || typeof text !== "string") {
     const error = new Error(`xmlEscape: expected string but got ${typeof text}: ${text}`);
-    console.error("[xmlEscape] Error:", error.message);
-    console.error("[xmlEscape] Stack:", error.stack);
     throw error;
   }
   return text
@@ -62,19 +60,16 @@ export function buildBinaryExtensionXml(channelId: number | string | undefined |
  * @returns XML string for Preview element
  */
 export function buildPreviewXml(handle: number, streamType: string | undefined | null, channelId?: number): string {
-  // Based on neolink stream.rs line 171-189:
-  // BcXml has #[serde(rename = "body")], so it serializes as <body>...</body>
-  // Preview is inside BcXml, with version as an attribute (@version)
-  // IMPORTANT: channelId is NOT in Preview XML - it's handled via channelId in header/extension
-  // The working format (response_code 200) is Preview WITHOUT channelId
-  // Note: channelId parameter is kept for backward compatibility but not used in XML
+  // Based on neolink stream.rs:
+  // Preview includes channelId + handle + streamType.
   if (!streamType || typeof streamType !== "string") {
     throw new Error(`buildPreviewXml: streamType is required (string) but got: ${typeof streamType} = ${streamType}`);
   }
+  const channelIdXml = channelId !== undefined ? `<channelId>${channelId}</channelId>\n` : "";
   return `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <Preview version="1.0">
-<handle>${handle}</handle>
+${channelIdXml}<handle>${handle}</handle>
 <streamType>${xmlEscape(streamType)}</streamType>
 </Preview>
 </body>`;
@@ -89,7 +84,6 @@ export function buildPreviewXml(handle: number, streamType: string | undefined |
  * @returns XML string for Preview element (stop)
  */
 export function buildPreviewStopXml(handle: number, channelId?: number): string {
-  // channelId is NOT in Preview XML - it's handled via channelId in header
   const channelIdXml = channelId !== undefined ? `<channelId>${channelId}</channelId>\n` : "";
   return `<?xml version="1.0" encoding="UTF-8" ?>
 <body>

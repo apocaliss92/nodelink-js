@@ -14,7 +14,7 @@ import * as path from "node:path";
 import type { StreamProfile } from "../../reolink/baichuan/types";
 import type { ReolinkBaichuanApi } from "../../reolink/baichuan/ReolinkBaichuanApi";
 import type { EncryptionProtocol } from "../../protocol/crypto";
-import { ensureDumpDir } from "../../debug/DebugConfig";
+import { ensureDumpDir, type Logger } from "../../debug/DebugConfig";
 import { BcMediaCodec } from "./BcMediaCodec";
 import { convertToAnnexB, hasStartCodes, H264RtpDepacketizer, isValidH264AnnexBAccessUnit, isH264KeyframeAnnexB, splitAnnexBToNalPayloads } from "./H264Converter";
 import { convertToAnnexB as convertH265ToAnnexB, isValidH265AnnexBAccessUnit, isH265KeyframeAnnexB, splitAnnexBToNalPayloads as splitH265AnnexBToNalPayloads, extractVpsFromAnnexB, extractSpsFromAnnexB, extractPpsFromAnnexB, getH265NalType } from "./H265Converter";
@@ -27,6 +27,44 @@ function envBool(value: string | undefined, defaultValue: boolean): boolean {
   if (v === "1" || v === "true" || v === "yes" || v === "on") return true;
   if (v === "0" || v === "false" || v === "no" || v === "off") return false;
   return defaultValue;
+}
+
+class AsyncFsQueue {
+  private running = false;
+  private readonly queue: Array<() => Promise<void>> = [];
+  private readonly maxQueueSize: number;
+
+  constructor(maxQueueSize: number) {
+    this.maxQueueSize = maxQueueSize;
+  }
+
+  enqueue(task: () => Promise<void>): void {
+    if (this.queue.length >= this.maxQueueSize) return;
+    this.queue.push(task);
+    this.pump();
+  }
+
+  private pump(): void {
+    if (this.running) return;
+    this.running = true;
+    void this.run();
+  }
+
+  private async run(): Promise<void> {
+    try {
+      while (this.queue.length > 0) {
+        const task = this.queue.shift();
+        if (!task) continue;
+        try {
+          await task();
+        } catch {
+          // ignore
+        }
+      }
+    } finally {
+      this.running = false;
+    }
+  }
 }
 
 // --- Minimal H.264 bit parsing helpers (for SPS/PPS IDs + slice pps_id) ---
@@ -115,6 +153,7 @@ export interface BaichuanVideoStreamOptions {
   api?: ReolinkBaichuanApi; // Optional API for requesting stream
   channel: number;
   profile: StreamProfile; // "main" | "sub" | "ext"
+  logger?: Logger;
 }
 
 /**
@@ -149,6 +188,7 @@ export class BaichuanVideoStream extends EventEmitter<{
   private api: ReolinkBaichuanApi | undefined;
   private channel: number;
   private profile: StreamProfile;
+  private logger: Logger | undefined;
   private active = false;
   private videoFrameHandler: ((frame: BaichuanFrame) => void) | undefined;
   private bcMediaCodec: BcMediaCodec;
@@ -157,6 +197,8 @@ export class BaichuanVideoStream extends EventEmitter<{
   // "RTP-like" depacketizer (some models encapsulate NAL units in FU-A/STAP)
   private readonly depacketizer = new H264RtpDepacketizer();
   private dumpChunkIdx = 0;
+  private dumpNalLines = 0;
+  private readonly dumpIo = new AsyncFsQueue(200);
   private spsById = new Map<number, Buffer>(); // NAL payload (without start code) - H.264
   private ppsById = new Map<number, { nal: Buffer; spsId: number }>(); // NAL payload + mapping - H.264
   private lastSps: Buffer | null = null; // H.264
@@ -192,8 +234,8 @@ export class BaichuanVideoStream extends EventEmitter<{
     return { score: count * 1000 - (first < 0 ? 50000 : first), first };
   }
 
-  private chooseDecryptedOrRawCandidate(params: { raw: Buffer; enc: EncryptionProtocol; channelId: number }): Buffer {
-    const { raw, enc, channelId } = params;
+  private chooseDecryptedOrRawCandidate(params: { raw: Buffer; enc: EncryptionProtocol; channelId: number; allowResync: boolean }): Buffer {
+    const { raw, enc, channelId, allowResync } = params;
     const rawScore = BaichuanVideoStream.scoreBcMediaLike(raw);
     const dec =
       this.client.enc.kind === "aes" || this.client.enc.kind === "full_aes" || this.client.enc.kind === "bc"
@@ -201,6 +243,11 @@ export class BaichuanVideoStream extends EventEmitter<{
         : raw;
     const decScore = BaichuanVideoStream.scoreBcMediaLike(dec);
     const chosen = decScore.score > rawScore.score ? dec : raw;
+
+    // WARNING: trimming to the first magic boundary can drop bytes that belong to a
+    // fragmented BcMedia packet (spanning across frames). Only do this when we know
+    // the chunk may contain non-media bytes (e.g. XML) at the start.
+    if (!allowResync) return chosen;
     const best = BaichuanVideoStream.scoreBcMediaLike(chosen);
     return best.first > 0 ? chosen.subarray(best.first) : chosen;
   }
@@ -211,7 +258,8 @@ export class BaichuanVideoStream extends EventEmitter<{
     this.api = options.api;
     this.channel = options.channel;
     this.profile = options.profile;
-    this.bcMediaCodec = new BcMediaCodec(false); // non-strict mode for error recovery
+    this.logger = options.logger;
+    this.bcMediaCodec = new BcMediaCodec(false, this.logger); // non-strict mode for error recovery
     // Debug is configured on the client; the library must not read env vars.
     const dbg = this.client.getDebugConfig();
     this.debugH264LogsLeft = dbg.debugH264 ? 200 : 0;
@@ -243,8 +291,13 @@ export class BaichuanVideoStream extends EventEmitter<{
       try {
         await this.api.startVideoStream(this.channel, this.profile);
       } catch (error) {
-        // Log error but continue - stream might start automatically
-        this.emit("error", error instanceof Error ? error : new Error(String(error)));
+        const err = error instanceof Error ? error : new Error(String(error));
+        // On UDP/battery cams the stream typically will NOT start automatically.
+        // Failing fast avoids returning a "live" generator that never produces frames.
+        if (this.client.getTransport?.() === "udp") {
+          throw err;
+        }
+        this.emit("error", err);
       }
     }
 
@@ -261,14 +314,14 @@ export class BaichuanVideoStream extends EventEmitter<{
       const rtspDebug = dbg.debugRtsp || envBool(process.env.BAICHUAN_DEBUG_RTSP, false);
       if (totalFramesReceived === 1) {
         if (rtspDebug) {
-          console.log(
+          this.logger?.log(
             `[BaichuanVideoStream] First cmd_id=3 frame received (bodyLen: ${frame.body.length}, channelId: ${frame.header.channelId})`
           );
         }
       }
       if (totalFramesReceived % 10 === 0 || totalFramesReceived <= 5) {
         if (rtspDebug) {
-          console.log(`[BaichuanVideoStream] Received ${totalFramesReceived} Baichuan frames (cmd_id=3)`);
+          this.logger?.log(`[BaichuanVideoStream] Received ${totalFramesReceived} Baichuan frames (cmd_id=3)`);
         }
       }
 
@@ -298,10 +351,11 @@ export class BaichuanVideoStream extends EventEmitter<{
         raw: dataToParse,
         enc,
         channelId: frame.header.channelId,
+        allowResync: frame.payload.length === 0,
       });
       if (totalFramesReceived === 1) {
         if (rtspDebug) {
-          console.log(
+          this.logger?.log(
             `[BaichuanVideoStream] Data after XML: ${dataAfterXml.length} bytes, first 32 bytes: ${dataAfterXml
               .subarray(0, Math.min(32, dataAfterXml.length))
               .toString("hex")}`
@@ -312,14 +366,15 @@ export class BaichuanVideoStream extends EventEmitter<{
 
       // Dumps the exact chunks fed to the BcMedia decoder (neolink-style payload_stream()).
       if (dbg.dumpBcMedia && this.dumpChunkIdx < 200) {
-        try {
-          const outDir = dbg.dumpDir;
-          const idx = String(this.dumpChunkIdx).padStart(4, "0");
-          fs.writeFileSync(path.join(outDir, `bcmedia_chunk_${idx}.bin`), dataAfterXml);
-          if (this.dumpChunkIdx === 0) {
-            fs.writeFileSync(
-              path.join(outDir, `bcmedia_info.json`),
-              JSON.stringify(
+        const outDir = dbg.dumpDir;
+        const idx = String(this.dumpChunkIdx).padStart(4, "0");
+        const chunkPath = path.join(outDir, `bcmedia_chunk_${idx}.bin`);
+        const infoPath = path.join(outDir, "bcmedia_info.json");
+        const chunk = Buffer.from(dataAfterXml);
+        const writeInfo = this.dumpChunkIdx === 0;
+        const infoJson =
+          writeInfo
+            ? JSON.stringify(
                 {
                   note: "Chunks fed into the BcMedia decoder (after XML stripping/alignment).",
                   profile: this.profile,
@@ -329,12 +384,16 @@ export class BaichuanVideoStream extends EventEmitter<{
                 null,
                 2
               )
-            );
+            : "";
+
+        // Non-blocking: sync FS calls can starve BCUDP ACK/keepalive and abort the stream.
+        this.dumpIo.enqueue(async () => {
+          await fs.promises.writeFile(chunkPath, chunk);
+          if (writeInfo) {
+            await fs.promises.writeFile(infoPath, infoJson);
           }
-          this.dumpChunkIdx++;
-        } catch {
-          // ignore
-        }
+        });
+        this.dumpChunkIdx++;
       }
       
       const mediaPackets = this.bcMediaCodec.decode(dataAfterXml);
@@ -351,7 +410,7 @@ export class BaichuanVideoStream extends EventEmitter<{
         const remainingBuffer = this.bcMediaCodec.getRemainingBuffer();
         const typesStr = Array.from(packetTypes.entries()).map(([t, c]) => `${t}:${c}`).join(", ");
         if (rtspDebug) {
-          console.log(
+          this.logger?.log(
             `[BaichuanVideoStream] Frame #${totalFramesReceived}: dataToParse=${dataAfterXml.length} bytes, parsed ${mediaPackets.length} BcMedia packets (${typesStr || "none"}), total: ${totalMediaPackets}, remaining buffer: ${remainingBuffer.length} bytes`
           );
         }
@@ -378,7 +437,7 @@ export class BaichuanVideoStream extends EventEmitter<{
                   if (!isPlausibleH264Sps(nal)) continue;
                   this.spsById.set(id, nal);
                   if (dbg.debugParamSets) {
-                    console.warn(`[BaichuanVideoStream] Cached H.264 SPS id=${id} len=${nal.length}`);
+                    this.logger?.warn(`[BaichuanVideoStream] Cached H.264 SPS id=${id} len=${nal.length}`);
                   }
                 }
                 if (isPlausibleH264Sps(nal)) this.lastSps = nal;
@@ -391,7 +450,7 @@ export class BaichuanVideoStream extends EventEmitter<{
                   if (sps && !isPlausibleH264Sps(sps)) continue;
                   this.ppsById.set(ids.ppsId, { nal, spsId: ids.spsId });
                   if (dbg.debugParamSets) {
-                    console.warn(`[BaichuanVideoStream] Cached H.264 PPS id=${ids.ppsId} (spsId=${ids.spsId}) len=${nal.length}`);
+                    this.logger?.warn(`[BaichuanVideoStream] Cached H.264 PPS id=${ids.ppsId} (spsId=${ids.spsId}) len=${nal.length}`);
                   }
                 }
                 this.lastPps = nal;
@@ -403,21 +462,21 @@ export class BaichuanVideoStream extends EventEmitter<{
             if (vps) {
               this.lastVps = vps;
               if (dbg.debugParamSets) {
-                console.warn(`[BaichuanVideoStream] Cached H.265 VPS len=${vps.length}`);
+                this.logger?.warn(`[BaichuanVideoStream] Cached H.265 VPS len=${vps.length}`);
               }
             }
             const sps = extractSpsFromAnnexB(annexB);
             if (sps) {
               this.lastSpsH265 = sps;
               if (dbg.debugParamSets) {
-                console.warn(`[BaichuanVideoStream] Cached H.265 SPS len=${sps.length}`);
+                this.logger?.warn(`[BaichuanVideoStream] Cached H.265 SPS len=${sps.length}`);
               }
             }
             const pps = extractPpsFromAnnexB(annexB);
             if (pps) {
               this.lastPpsH265 = pps;
               if (dbg.debugParamSets) {
-                console.warn(`[BaichuanVideoStream] Cached H.265 PPS len=${pps.length}`);
+                this.logger?.warn(`[BaichuanVideoStream] Cached H.265 PPS len=${pps.length}`);
               }
             }
           }
@@ -444,7 +503,7 @@ export class BaichuanVideoStream extends EventEmitter<{
               }
             }
             if (dbg.debugParamSets) {
-              console.warn(`[BaichuanVideoStream] Slice references ppsId=${ppsId ?? "?"} lastPrepended=${this.lastPrependedPpsId ?? "?"}`);
+              this.logger?.warn(`[BaichuanVideoStream] Slice references ppsId=${ppsId ?? "?"} lastPrepended=${this.lastPrependedPpsId ?? "?"}`);
             }
 
             // If we can't parse it, be conservative: only use the last seen SPS/PPS once at the beginning.
@@ -490,7 +549,7 @@ export class BaichuanVideoStream extends EventEmitter<{
             
             this.lastPrependedParamSetsH265 = true;
             if (dbg.debugParamSets) {
-              console.warn(`[BaichuanVideoStream] Prepending H.265 VPS/SPS/PPS to frame`);
+              this.logger?.warn(`[BaichuanVideoStream] Prepending H.265 VPS/SPS/PPS to frame`);
             }
             return Buffer.concat([
               NAL_START_CODE_4B, this.lastVps,
@@ -526,8 +585,10 @@ export class BaichuanVideoStream extends EventEmitter<{
                 if (ids) ppsIds.push(ids.ppsId);
               }
             }
-            fs.appendFileSync(
-              path.join(outDir, "nal_dump.ndjson"),
+            // Keep this non-blocking: sync FS writes can starve BCUDP ACK/keepalive.
+            // Also cap total dumped lines to avoid unbounded I/O.
+            if (this.dumpNalLines >= 20_000) return;
+            const line =
               JSON.stringify({
                 label,
                 microseconds,
@@ -539,8 +600,12 @@ export class BaichuanVideoStream extends EventEmitter<{
                 cachedSps: this.spsById.size,
                 cachedPps: this.ppsById.size,
                 lastPrependedPpsId: this.lastPrependedPpsId,
-              }) + "\n"
-            );
+              }) + "\n";
+            this.dumpNalLines++;
+            const outPath = path.join(outDir, "nal_dump.ndjson");
+            this.dumpIo.enqueue(async () => {
+              await fs.promises.appendFile(outPath, line);
+            });
           } catch {
             // ignore
           }
@@ -575,7 +640,7 @@ export class BaichuanVideoStream extends EventEmitter<{
           if (media.videoType === "H264") {
             if (!isValidH264AnnexBAccessUnit(outAnnex) || !isH264KeyframeAnnexB(outAnnex)) {
               if (dbg.debugH264) {
-                console.warn(`[BaichuanVideoStream] Dropping invalid H.264 Iframe (Annex-B) len=${outAnnex.length}`);
+                this.logger?.warn(`[BaichuanVideoStream] Dropping invalid H.264 Iframe (Annex-B) len=${outAnnex.length}`);
               }
               continue;
             }
@@ -583,14 +648,14 @@ export class BaichuanVideoStream extends EventEmitter<{
             // For H.265, validate access unit and check for keyframe (IRAP with VPS/SPS/PPS)
             if (!isValidH265AnnexBAccessUnit(outAnnex)) {
               if (dbg.debugH264) {
-                console.warn(`[BaichuanVideoStream] Dropping invalid H.265 Iframe (Annex-B) len=${outAnnex.length}`);
+                this.logger?.warn(`[BaichuanVideoStream] Dropping invalid H.265 Iframe (Annex-B) len=${outAnnex.length}`);
               }
               continue;
             }
             // Check if it's a proper keyframe (should have VPS/SPS/PPS and IRAP)
             if (!isH265KeyframeAnnexB(outAnnex)) {
               if (dbg.debugH264) {
-                console.warn(`[BaichuanVideoStream] H.265 Iframe missing VPS/SPS/PPS or IRAP, but continuing len=${outAnnex.length}`);
+                this.logger?.warn(`[BaichuanVideoStream] H.265 Iframe missing VPS/SPS/PPS or IRAP, but continuing len=${outAnnex.length}`);
               }
               // Continue anyway - the parameter sets might be prepended
             }
@@ -626,7 +691,7 @@ export class BaichuanVideoStream extends EventEmitter<{
             const idx3 = b.indexOf(sc3);
             const idx4a = annexBData.indexOf(sc4);
             const idx3a = annexBData.indexOf(sc3);
-            console.warn(
+            this.logger?.warn(
               `[BaichuanVideoStream][DEBUG] ${media.type} non-AnnexB: len=${b.length} head=${head} ` +
               `u32be=${u32be} u32le=${u32le} u16be=${u16be} u16le=${u16le} ` +
               `idxSC4=${idx4} idxSC3=${idx3} idxSC4a=${idx4a} idxSC3a=${idx3a} annexHead=${headAnnex}`
@@ -646,7 +711,7 @@ export class BaichuanVideoStream extends EventEmitter<{
           if (totalFramesReceived <= 5 || videoFramesEmitted <= 5) {
             const sc = hasStartCodes(annexBData) ? "yes" : "no";
             if (rtspDebug) {
-              console.log(
+              this.logger?.log(
                 `[BaichuanVideoStream] Emitted ${media.type} (${media.videoType}) ${media.data.length} bytes -> ${annexBData.length} bytes (Annex-B, startCode:${sc})`
               );
             }
@@ -686,7 +751,7 @@ export class BaichuanVideoStream extends EventEmitter<{
               if (dbg.debugH264 && this.debugH264LogsLeft > 0) {
                 this.debugH264LogsLeft--;
                 const head = outP.subarray(0, Math.min(24, outP.length)).toString("hex");
-                console.warn(`[BaichuanVideoStream] Dropping invalid Pframe (${media.videoType}): len=${outP.length} head=${head}`);
+                this.logger?.warn(`[BaichuanVideoStream] Dropping invalid Pframe (${media.videoType}): len=${outP.length} head=${head}`);
               }
               continue;
             }
@@ -716,7 +781,7 @@ export class BaichuanVideoStream extends EventEmitter<{
       // Log frame emission stats
       if (totalFramesReceived <= 10 || (totalFramesReceived % 20 === 0 && (videoFramesEmitted > 0 || audioFramesEmitted > 0))) {
         if (rtspDebug) {
-          console.log(
+          this.logger?.log(
             `[BaichuanVideoStream] Frame #${totalFramesReceived}: emitted ${videoFramesEmitted} video frames, ${audioFramesEmitted} audio frames`
           );
         }

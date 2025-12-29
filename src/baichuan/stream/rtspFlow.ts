@@ -41,6 +41,8 @@ abstract class BaseFlow implements RtspFlow {
   public abstract readonly ffmpegFormat: "h264" | "hevc";
   public abstract readonly sdpCodec: "H264" | "H265";
 
+  private keepAliveTimer: NodeJS.Timeout | undefined;
+
   protected constructor(transport: RtspTransport, videoType: RtspVideoType) {
     this.transport = transport;
     this.videoType = videoType;
@@ -48,15 +50,27 @@ abstract class BaseFlow implements RtspFlow {
   }
 
   async startKeepAlive(api: ReolinkBaichuanApi): Promise<void> {
-    void api;
-    // Neolink does NOT keep battery streams alive by sending cmd_id=93 pings.
-    // The correct mechanism is responding to camera-initiated UDP keepalive
-    // frames (MSG_ID_UDP_KEEP_ALIVE=234) with response_code=200.
-    // This is handled centrally in `BaichuanClient.handleFrame()`.
+    // Neolink-style keepalive for battery/UDP cameras:
+    // - BCUDP ACK + resend
+    // - BCUDP heartbeat (C2D_HB)
+    // - Respond to camera-initiated Baichuan UDP keepalive frames (cmd_id=234)
+    //   with response_code=200 (handled centrally in `BaichuanClient.handleFrame()`).
+    //
+    // Avoid sending extra Baichuan pings (cmd_id=93) from here: on some models
+    // it appears to correlate with early stream termination.
+    this.stopKeepAlive();
+
+    if (api.client.getTransport() !== "udp") return;
+
+    // Nothing else to do here for UDP.
+    return;
   }
 
   stopKeepAlive(): void {
-    // no-op (see startKeepAlive)
+    if (this.keepAliveTimer) {
+      clearInterval(this.keepAliveTimer);
+      this.keepAliveTimer = undefined;
+    }
   }
 
   abstract extractParameterSets(accessUnitAnnexB: Buffer): void;
@@ -100,6 +114,16 @@ class H264Flow extends BaseFlow {
 
   getFmtp(): { fmtp: string; hasParamSets: boolean } {
     let fmtp = "packetization-mode=1";
+
+    // Add profile-level-id when we have an SPS.
+    // SPS NAL payload format (without AnnexB start code):
+    //  - byte 0: nal header
+    //  - bytes 1..3: profile_idc, constraint_set flags, level_idc
+    if (this.sps && this.sps.length >= 4) {
+      const profileLevelId = Buffer.from([this.sps[1]!, this.sps[2]!, this.sps[3]!]).toString("hex");
+      fmtp += `;profile-level-id=${profileLevelId}`;
+    }
+
     if (this.sps && this.pps) {
       fmtp += `;sprop-parameter-sets=${this.sps.toString("base64")},${this.pps.toString("base64")}`;
       return { fmtp, hasParamSets: true };

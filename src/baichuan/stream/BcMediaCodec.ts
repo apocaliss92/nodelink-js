@@ -7,14 +7,17 @@
  */
 
 import { parseBcMedia, type BcMedia } from "./BcMediaParser";
+import type { Logger } from "../../debug/DebugConfig";
 
 export class BcMediaCodec {
   private buffer: Buffer = Buffer.alloc(0);
   private strict: boolean;
   private amountSkipped: number = 0;
+  private logger: Logger | undefined;
 
-  constructor(strict: boolean = false) {
+  constructor(strict: boolean = false, logger?: Logger) {
     this.strict = strict;
+    this.logger = logger;
   }
 
   /**
@@ -38,9 +41,9 @@ export class BcMediaCodec {
         if (this.amountSkipped > 0) {
           // Log recovery if we had to skip data
           if (this.strict) {
-            console.warn(`[BcMediaCodec] Recovered stream after skipping ${this.amountSkipped} bytes`);
+            this.logger?.warn(`[BcMediaCodec] Recovered stream after skipping ${this.amountSkipped} bytes`);
           } else {
-            console.warn(`[BcMediaCodec] Recovered stream after skipping ${this.amountSkipped} bytes`);
+            this.logger?.warn(`[BcMediaCodec] Recovered stream after skipping ${this.amountSkipped} bytes`);
           }
           this.amountSkipped = 0;
         }
@@ -71,7 +74,7 @@ export class BcMediaCodec {
         }
 
         if (this.amountSkipped === 0) {
-          console.warn(`[BcMediaCodec] Error in stream, attempting to recover...`);
+          this.logger?.warn(`[BcMediaCodec] Error in stream, attempting to recover...`);
         }
         this.amountSkipped += this.buffer.length;
         this.buffer = Buffer.alloc(0);

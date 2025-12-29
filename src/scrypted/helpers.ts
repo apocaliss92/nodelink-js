@@ -359,6 +359,7 @@ export async function* createNativeStream(
     api,
     channel,
     profile,
+    logger: api.logger,
   });
 
   let videoCodecInfo: { sps: Buffer | null; pps: Buffer | null } | null = null;
@@ -367,114 +368,130 @@ export async function* createNativeStream(
   let streamStarted = false;
   let closed = false;
 
-  // Start the video stream
-  await videoStream.start();
-
-  // Handle errors
-  videoStream.on("error", (error: Error) => {
+  const onError = (_error: Error) => {
     closed = true;
-    throw error;
-  });
+    // Do not throw from an event callback: it can crash the process asynchronously.
+    // Consumers will observe stream termination.
+  };
 
-  videoStream.on("close", () => {
+  const onClose = () => {
     closed = true;
-  });
-
-  // Collect video codec info (SPS/PPS for H.264) from first keyframe
-  // Similar to Wyze implementation that writes SPS/PPS to ffmpeg
-  const videoCodecInfoPromise = new Promise<{ sps: Buffer | null; pps: Buffer | null }>((resolve) => {
-    const handler = (unit: { data: Buffer; isKeyframe: boolean; videoType: "H264" | "H265" }) => {
-      if (unit.isKeyframe && !videoCodecInfo) {
-        // Extract SPS/PPS from H.264 keyframe (if available)
-        // For H.265, we'd need VPS/SPS/PPS but for now we'll pass raw data
-        // The rebroadcast server will handle codec detection
-        videoCodecInfo = { sps: null, pps: null };
-        videoStream.removeListener("videoAccessUnit" as any, handler);
-        resolve(videoCodecInfo);
-      }
-    };
-    videoStream.on("videoAccessUnit" as any, handler);
-    
-    // Timeout after 5 seconds
-    setTimeout(() => {
-      if (!videoCodecInfo) {
-        videoCodecInfo = { sps: null, pps: null };
-        videoStream.removeListener("videoAccessUnit" as any, handler);
-        resolve(videoCodecInfo);
-      }
-    }, 5000);
-  });
-
-  // Wait for codec info (with timeout)
-  await Promise.race([
-    videoCodecInfoPromise,
-    new Promise((resolve) => setTimeout(resolve, 5000)),
-  ]);
-
-  // Stream video and audio frames
-  const frameQueue: Array<{
-    audio: boolean;
-    data: Buffer;
-    codec: string | null;
-    sampleRate: number | null;
-    microseconds: number | null;
-    videoType?: "H264" | "H265";
-  }> = [];
-
-  let frameResolve: (() => void) | null = null;
-
-  // Video frame handler
-  videoStream.on("videoAccessUnit", (unit: {
-    data: Buffer;
-    isKeyframe: boolean;
-    videoType: "H264" | "H265";
-    microseconds: number;
-  }) => {
-    if (closed) return;
-    
-    frameQueue.push({
-      audio: false,
-      data: unit.data,
-      codec: null,
-      sampleRate: null,
-      microseconds: unit.microseconds,
-      videoType: unit.videoType,
-    });
-    
-    if (frameResolve) {
-      frameResolve();
-      frameResolve = null;
-    }
-  });
-
-  // Audio frame handler
-  videoStream.on("audioFrame", (frame: Buffer) => {
-    if (closed) return;
-    
-    // Default audio codec for Reolink (typically AAC)
-    // This could be enhanced to detect actual codec from stream metadata
-    if (!audioCodec) {
-      audioCodec = "aac"; // Default, may need detection
-      audioSampleRate = 8000; // Default, may need detection
-    }
-    
-    frameQueue.push({
-      audio: true,
-      data: frame,
-      codec: audioCodec,
-      sampleRate: audioSampleRate,
-      microseconds: null,
-    });
-    
-    if (frameResolve) {
-      frameResolve();
-      frameResolve = null;
-    }
-  });
-
-  streamStarted = true;
+  };
 
   try {
+    // Start the video stream
+    await videoStream.start();
+
+    // Handle errors
+    videoStream.on("error", onError);
+    videoStream.on("close", onClose);
+
+    // Collect video codec info (SPS/PPS for H.264) from first keyframe
+    // Similar to Wyze implementation that writes SPS/PPS to ffmpeg
+    const videoCodecInfoPromise = new Promise<{ sps: Buffer | null; pps: Buffer | null }>((resolve) => {
+      const handler = (unit: { data: Buffer; isKeyframe: boolean; videoType: "H264" | "H265" }) => {
+        if (unit.isKeyframe && !videoCodecInfo) {
+          // Extract SPS/PPS from H.264 keyframe (if available)
+          // For H.265, we'd need VPS/SPS/PPS but for now we'll pass raw data
+          // The rebroadcast server will handle codec detection
+          videoCodecInfo = { sps: null, pps: null };
+          videoStream.removeListener("videoAccessUnit" as any, handler);
+          resolve(videoCodecInfo);
+        }
+      };
+      videoStream.on("videoAccessUnit" as any, handler);
+
+      // Timeout after 5 seconds
+      setTimeout(() => {
+        if (!videoCodecInfo) {
+          videoCodecInfo = { sps: null, pps: null };
+          videoStream.removeListener("videoAccessUnit" as any, handler);
+          resolve(videoCodecInfo);
+        }
+      }, 5000);
+    });
+
+    // Wait for codec info (with timeout)
+    await Promise.race([
+      videoCodecInfoPromise,
+      new Promise((resolve) => setTimeout(resolve, 5000)),
+    ]);
+
+    // Stream video and audio frames
+    const frameQueue: Array<{
+      audio: boolean;
+      data: Buffer;
+      codec: string | null;
+      sampleRate: number | null;
+      microseconds: number | null;
+      videoType?: "H264" | "H265";
+    }> = [];
+
+    // Prevent unbounded growth if the consumer pauses or is slower than the camera.
+    // Live video streaming can safely drop older frames under backpressure.
+    const MAX_FRAME_QUEUE = 200;
+
+    let frameResolve: (() => void) | null = null;
+
+    // Video frame handler
+    videoStream.on("videoAccessUnit", (unit: {
+      data: Buffer;
+      isKeyframe: boolean;
+      videoType: "H264" | "H265";
+      microseconds: number;
+    }) => {
+      if (closed) return;
+
+      frameQueue.push({
+        audio: false,
+        data: unit.data,
+        codec: null,
+        sampleRate: null,
+        microseconds: unit.microseconds,
+        videoType: unit.videoType,
+      });
+
+      if (frameQueue.length > MAX_FRAME_QUEUE) {
+        frameQueue.splice(0, frameQueue.length - MAX_FRAME_QUEUE);
+      }
+
+      if (frameResolve) {
+        frameResolve();
+        frameResolve = null;
+      }
+    });
+
+    // Audio frame handler
+    videoStream.on("audioFrame", (frame: Buffer) => {
+      if (closed) return;
+
+      // Default audio codec for Reolink (typically AAC)
+      // This could be enhanced to detect actual codec from stream metadata
+      if (!audioCodec) {
+        audioCodec = "aac"; // Default, may need detection
+        audioSampleRate = 8000; // Default, may need detection
+      }
+
+      frameQueue.push({
+        audio: true,
+        data: frame,
+        codec: audioCodec,
+        sampleRate: audioSampleRate,
+        microseconds: null,
+      });
+
+      if (frameQueue.length > MAX_FRAME_QUEUE) {
+        frameQueue.splice(0, frameQueue.length - MAX_FRAME_QUEUE);
+      }
+
+      if (frameResolve) {
+        frameResolve();
+        frameResolve = null;
+      }
+    });
+
+    streamStarted = true;
+
     // Yield frames as they arrive
     while (!closed) {
       if (frameQueue.length > 0) {
@@ -502,6 +519,8 @@ export async function* createNativeStream(
     } catch {
       // Ignore stop errors
     }
+    videoStream.removeListener("error", onError);
+    videoStream.removeListener("close", onClose);
   }
 }
 

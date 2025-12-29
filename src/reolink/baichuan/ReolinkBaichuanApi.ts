@@ -1,6 +1,8 @@
 import { EventEmitter } from "node:events";
+import { type BaichuanFrame } from "../../protocol/framing";
 import { BaichuanRtspServer, type BaichuanRtspServerOptions } from "../../baichuan/stream/BaichuanRtspServer";
 import { BaichuanClient, type BaichuanClientOptions } from "../../client/BaichuanClient";
+import { type Logger } from "../../debug/DebugConfig";
 import {
   BC_CLASS_MODERN_24,
   BC_CMD_ID_ABILITY_INFO,
@@ -216,14 +218,17 @@ function encodeBcMediaAdpcmBlock(block: Buffer, halfBlockSize: number): Buffer {
 
 export class ReolinkBaichuanApi {
   readonly client: BaichuanClient;
+  readonly logger: Logger;
   /**
    * Minimal event emitter: emits only `{ type, channel, timestamp }`.
    * Useful for integrations that only need high-level event categories.
    */
   readonly simpleEvents = new EventEmitter<{ event: [ReolinkSimpleEvent] }>();
   private rtspServers = new Set<BaichuanRtspServer>(); // Track all RTSP servers for cleanup
+  private readonly activeVideoMsgNums = new Map<string, number>();
 
   constructor(opts: BaichuanClientOptions) {
+    this.logger = opts.logger ?? console;
     this.client = new BaichuanClient(opts);
 
     // Re-emit parsed events in a minimal, stable shape.
@@ -257,13 +262,13 @@ export class ReolinkBaichuanApi {
         try {
           await server.stop();
         } catch (error) {
-          console.error(`[ReolinkBaichuanApi] Error stopping RTSP server during cleanup:`, error);
+          this.logger.error(`[ReolinkBaichuanApi] Error stopping RTSP server during cleanup:`, error);
         }
       })
     );
     
     if (servers.length > 0) {
-      console.log(`[ReolinkBaichuanApi] Cleaned up ${servers.length} RTSP server(s)`);
+      this.logger.info(`[ReolinkBaichuanApi] Cleaned up ${servers.length} RTSP server(s)`);
     }
   }
 
@@ -282,7 +287,7 @@ export class ReolinkBaichuanApi {
       // This gives battery cameras time to wake up from sleep mode
       if (frame.header.responseCode === 400 && retry > 0) {
         if (this.client.getDebugConfig().debugH264) {
-          console.log(`[DEBUG] Got 400 error (responseCode=${frame.header.responseCode}), retrying in 1.5s (camera may be sleeping)...`);
+          this.logger.debug(`[DEBUG] Got 400 error (responseCode=${frame.header.responseCode}), retrying in 1.5s (camera may be sleeping)...`);
         }
         await new Promise(resolve => setTimeout(resolve, 1500)); // Give camera time to wake
         return await this.sendXml(params, retry - 1);
@@ -812,11 +817,70 @@ export class ReolinkBaichuanApi {
    * Returns JPEG image as Buffer.
    * Note: Snapshot uses a special message ID system for binary responses
    */
-  async getSnapshot(channel?: number): Promise<Buffer> {
-    const cmdId = 109; // From reolink-aio snapshot
-    // Note: reolink-aio uses a special mess_id system for snapshots
-    // This may need adjustment based on actual implementation
-    return await this.sendBinary({ cmdId, ...(channel !== undefined ? { channel } : {}) });
+  async getSnapshot(channel: number = 0): Promise<Buffer> {
+    const cmdId = 109;
+    
+    // 1. Send Snap request (XML)
+    // Neolink: <Snap version="1.1"><channelId>...</channelId><logicChannel>...</logicChannel><time>0</time><fullFrame>0</fullFrame><streamType>main</streamType></Snap>
+    // Must be wrapped in <body>
+    const xml = `<body><Snap version="1.1"><channelId>${channel}</channelId><logicChannel>${channel}</logicChannel><time>0</time><fullFrame>0</fullFrame><streamType>main</streamType></Snap></body>`;
+    
+    await this.client.login();
+
+    // We expect an XML response first.
+    // We use sendFrame to get the raw frame, so we can check responseCode and body.
+    const response = await this.client.sendFrame({
+      cmdId,
+      payloadXml: xml,
+      extensionXml: buildChannelExtensionXml(channel),
+    });
+    
+    const msgNum = response.header.msgNum;
+    
+    // 2. Listen for binary chunks
+    // They come with cmdId 109 and responseCode 200/201.
+    // They are NOT matched to the request msgNum, so they will be emitted as 'push' events.
+    
+    return new Promise<Buffer>((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        let timeout: NodeJS.Timeout;
+        
+        const onPush = (frame: BaichuanFrame) => {
+            if (frame.header.cmdId === cmdId && frame.header.msgNum === msgNum) {
+                // Check if it's binary data
+                // Neolink checks for binary_data=1 in extension, but we can just check responseCode
+                // and maybe if body is not XML.
+                
+                if (frame.header.responseCode === 200 || frame.header.responseCode === 201) {
+                    // Decrypt binary body
+                    try {
+                        const decrypted = (this.client as any).tryDecryptBinary(frame.body, frame.header.channelId, this.client.enc);
+                        chunks.push(decrypted);
+                        
+                        if (frame.header.responseCode === 201) {
+                            cleanup();
+                            resolve(Buffer.concat(chunks));
+                        }
+                    } catch (e) {
+                        cleanup();
+                        reject(e);
+                    }
+                }
+            }
+        };
+        
+        const cleanup = () => {
+            this.client.off("push", onPush);
+            clearTimeout(timeout);
+        };
+        
+        timeout = setTimeout(() => {
+            cleanup();
+            reject(new Error("Timeout waiting for snapshot binary data"));
+        }, 15000);
+        
+        this.client.on("push", onPush);
+    });
   }
 
   /**
@@ -973,7 +1037,8 @@ export class ReolinkBaichuanApi {
    * @returns Promise that resolves when stream request is sent
    */
   async startVideoStream(channel: number, profile: StreamProfile = "sub"): Promise<void> {
-    const channelId = channel + 1; // Convert to 1-based for Baichuan protocol
+    // Neolink uses the same 0-based channel_id everywhere (header, Extension, payload).
+    const channelId = channel;
     
     // Map profile to handle and stream_type values (from neolink stream.rs)
     // handle: 0 for main, 256 for sub, 1024 for extern
@@ -1001,40 +1066,57 @@ export class ReolinkBaichuanApi {
     if (typeof streamName !== "string") {
       throw new Error(`streamName is not a string: ${typeof streamName}, value: ${streamName}, config: ${JSON.stringify(config)}`);
     }
-    const payloadXml = buildPreviewXml(config.handle, streamName);
+    const payloadXml = buildPreviewXml(config.handle, streamName, channelId);
     
-    // Neolink uses connection.subscribe(MSG_ID_VIDEO, msg_num) BEFORE sending the command
-    // This creates a dedicated channel for video frames. In our implementation,
-    // we subscribe to the msgNum that will be used for the command.
-    const msgNum = this.client.peekNextMsgNum();
-    
-    // Subscribe to video stream frames with this msgNum (similar to neolink)
-    // This ensures we capture video frames that match this specific request
-    this.client.subscribeVideoStream(BC_CMD_ID_VIDEO, msgNum);
-    
-    // Send video stream start command
-    // Based on neolink stream.rs:
-    // - Uses BC_CLASS_MODERN_24 (0x6414) as in neolink
-    // - streamType in header must match the stream type (0 for main/ext, 1 for sub)
-    // - NO Extension XML - neolink doesn't use it in stream.rs (only BcXml with Preview)
-    // - Neolink expects response_code 200, otherwise it returns an error
-    const frameParams: Parameters<typeof this.client.sendFrame>[0] = {
-      cmdId: BC_CMD_ID_VIDEO,
-      channel,
-      payloadXml,
-      messageClass: BC_CLASS_MODERN_24,
-      streamType: config.streamType, // 0 for main/ext, 1 for sub
-    };
-    // Omit extensionXml - neolink doesn't use it for Preview command
-    const frame = await this.client.sendFrame(frameParams);
-    
-    // Check response_code (neolink expects 200 and rejects anything else)
-    // From neolink stream.rs line 194-202: if response_code is not 200, it returns an error
-    if (frame.header.responseCode !== 200) {
-      // Unsubscribe on error
-      this.client.unsubscribeVideoStream(BC_CMD_ID_VIDEO, msgNum);
-      throw new Error(`Video stream request rejected (response_code ${frame.header.responseCode}). Neolink expects response_code 200, camera returned ${frame.header.responseCode}`);
+    // Neolink subscribes (MSG_ID_VIDEO, msg_num) BEFORE sending the command.
+    // On some BCUDP/battery models, the start-stream request can sporadically timeout;
+    // retry a few times and ensure we unsubscribe on failures.
+    const isUdp = this.client.getTransport?.() === "udp";
+    const maxAttempts = isUdp ? 3 : 1;
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const msgNum = this.client.peekNextMsgNum();
+      this.client.subscribeVideoStream(BC_CMD_ID_VIDEO, msgNum);
+
+      try {
+        const frameParams: Parameters<typeof this.client.sendFrame>[0] = {
+          cmdId: BC_CMD_ID_VIDEO,
+          channel,
+          channelIdOverride: channelId,
+          extensionXml: buildChannelExtensionXml(channelId),
+          payloadXml,
+          messageClass: BC_CLASS_MODERN_24,
+          streamType: config.streamType,
+        };
+        const frame = await this.client.sendFrame(frameParams);
+
+        if (frame.header.responseCode !== 200) {
+          throw new Error(
+            `Video stream request rejected (response_code ${frame.header.responseCode}). Neolink expects response_code 200, camera returned ${frame.header.responseCode}`
+          );
+        }
+
+        // Remember msgNum so we can stop the stream with the same msgNum (neolink behavior).
+        this.activeVideoMsgNums.set(`${channel}:${profile}`, frame.header.msgNum);
+
+        // Success.
+        return;
+      } catch (error) {
+        lastError = error;
+        try {
+          this.client.unsubscribeVideoStream(BC_CMD_ID_VIDEO, msgNum);
+        } catch {
+          // ignore
+        }
+        if (attempt < maxAttempts) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          continue;
+        }
+      }
     }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
     
     // Success - stream should start and frames will arrive as push events with cmd_id 3
     
@@ -1057,7 +1139,8 @@ export class ReolinkBaichuanApi {
    * @param profile - Stream profile ("main" | "sub" | "ext")
    */
   async stopVideoStream(channel: number, profile: StreamProfile = "sub"): Promise<void> {
-    const channelId = channel + 1; // Convert to 1-based for Baichuan protocol
+    // Neolink uses the same 0-based channel_id everywhere (header, Extension, payload).
+    const channelId = channel;
     
     // Map profile to handle value (from neolink stream.rs)
     const profileConfig: Record<StreamProfile, { handle: number; streamType: number }> = {
@@ -1070,18 +1153,29 @@ export class ReolinkBaichuanApi {
     
     // Build Preview XML payload for stop (without stream_type)
     // channelId is NOT in Preview XML - it's handled via channelId in header
-    const payloadXml = buildPreviewStopXml(config.handle);
+    const payloadXml = buildPreviewStopXml(config.handle, channelId);
     
-    // Send video stream stop command
-    // Uses BC_CLASS_MODERN_24 (0x6414) as in neolink
-    // streamType in header must match the stream type (0 for main/ext, 1 for sub)
-    await this.sendXml({
-      cmdId: BC_CMD_ID_VIDEO_STOP,
-      channel,
-      payloadXml,
-      messageClass: BC_CLASS_MODERN_24,
-      streamType: config.streamType, // 0 for main/ext, 1 for sub
-    });
+    const key = `${channel}:${profile}`;
+    const msgNum = this.activeVideoMsgNums.get(key);
+    this.activeVideoMsgNums.delete(key);
+
+    // Neolink sends VIDEO_STOP with the same msg_num as VIDEO.
+    // Some cameras don't reliably reply; treat this as best-effort with a short timeout.
+    try {
+      await this.client.sendFrame({
+        cmdId: BC_CMD_ID_VIDEO_STOP,
+        channel,
+        channelIdOverride: channelId,
+        extensionXml: buildChannelExtensionXml(channelId),
+        payloadXml,
+        messageClass: BC_CLASS_MODERN_24,
+        streamType: config.streamType,
+        ...(msgNum !== undefined ? { msgNumOverride: msgNum } : {}),
+        timeoutMs: 2000,
+      });
+    } catch {
+      // ignore
+    }
   }
 
   // --------------------
@@ -1194,9 +1288,9 @@ export class ReolinkBaichuanApi {
     // Use sendFrame to check response_code (neolink expects 200)
     // Enable debug to see exact XML being sent
     if (this.client.getDebugConfig().debugH264 || process.env.BAICHUAN_DEBUG_PTZ) {
-      console.log("[DEBUG] PTZ XML:", payloadXml);
-      console.log("[DEBUG] Extension XML:", extensionXml);
-      console.log("[DEBUG] Channel (0-based):", channel, "ChannelId (0-based):", channelId);
+      this.logger.debug("[DEBUG] PTZ XML:", payloadXml);
+      this.logger.debug("[DEBUG] Extension XML:", extensionXml);
+      this.logger.debug("[DEBUG] Channel (0-based):", channel, "ChannelId (0-based):", channelId);
     }
     
     const frame = await this.client.sendFrame({
@@ -1225,7 +1319,7 @@ export class ReolinkBaichuanApi {
         } catch (e) {
           // Ignore decryption errors, but log them in debug
           if (this.client.getDebugConfig().debugH264 || process.env.BAICHUAN_DEBUG_PTZ) {
-            console.log("[DEBUG] Could not decrypt error body:", e);
+            this.logger.debug("[DEBUG] Could not decrypt error body:", e);
           }
         }
       }
@@ -1454,12 +1548,12 @@ export class ReolinkBaichuanApi {
       if (error instanceof Error && error.message === "Timeout") {
         // Camera didn't respond within 5 seconds, likely sleeping
         if (this.client.getDebugConfig().debugH264) {
-          console.log(`[DEBUG] getBatteryStatus: Camera appears to be sleeping (timeout)`);
+          this.logger.debug(`[DEBUG] getBatteryStatus: Camera appears to be sleeping (timeout)`);
         }
       } else {
         // Other error, but still mark as potentially sleeping
         if (this.client.getDebugConfig().debugH264) {
-          console.log(`[DEBUG] getBatteryStatus: Error getting battery info:`, error);
+          this.logger.debug(`[DEBUG] getBatteryStatus: Error getting battery info:`, error);
         }
       }
       
@@ -1524,7 +1618,7 @@ export class ReolinkBaichuanApi {
       // If GetEnc fails (e.g., camera is still sleeping), that's OK - we tried
       // The caller should handle this gracefully
       if (this.client.getDebugConfig().debugH264) {
-        console.log(`[DEBUG] Wake-up command failed for channel ${channel}:`, error);
+        this.logger.debug(`[DEBUG] Wake-up command failed for channel ${channel}:`, error);
       }
       throw error;
     }
@@ -1559,7 +1653,7 @@ export class ReolinkBaichuanApi {
       // If we get a timeout or connection error, camera might be sleeping
       // However, it could also be a network issue or camera offline
       if (this.client.getDebugConfig().debugH264) {
-        console.log(`[DEBUG] isSleeping check for channel ${channel} failed:`, error);
+        this.logger.debug(`[DEBUG] isSleeping check for channel ${channel} failed:`, error);
       }
       // We can't be 100% sure, but a timeout suggests sleeping
       return true;
@@ -1898,7 +1992,7 @@ export class ReolinkBaichuanApi {
     
     // Debug: Log raw XML if debug is enabled
     if (this.client.getDebugConfig().debugH264 || process.env.BAICHUAN_DEBUG_ABILITY) {
-      console.log("[DEBUG] Raw AbilityInfo XML:", xml);
+      this.logger.debug("[DEBUG] Raw AbilityInfo XML:", xml);
     }
     
     // Parse AbilityInfo XML
@@ -2073,7 +2167,7 @@ export class ReolinkBaichuanApi {
       }
     } catch (error) {
       // If metadata fetch fails, codec will be auto-detected from stream
-      console.warn(`[ReolinkBaichuanApi] Could not fetch stream metadata, will auto-detect codec: ${error instanceof Error ? error.message : error}`);
+      this.logger.warn(`[ReolinkBaichuanApi] Could not fetch stream metadata, will auto-detect codec: ${error instanceof Error ? error.message : error}`);
     }
 
     const rtspOptions: BaichuanRtspServerOptions = {
@@ -2083,6 +2177,7 @@ export class ReolinkBaichuanApi {
       ...(options?.listenHost !== undefined ? { listenHost: options.listenHost } : {}),
       ...(options?.listenPort !== undefined ? { listenPort: options.listenPort } : {}),
       ...(options?.path !== undefined ? { path: options.path } : {}),
+      logger: this.logger,
     };
 
     const server = new BaichuanRtspServer(rtspOptions);

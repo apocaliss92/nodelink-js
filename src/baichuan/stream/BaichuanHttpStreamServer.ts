@@ -9,6 +9,7 @@ import { BaichuanVideoStream } from "./BaichuanVideoStream";
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
 import * as http from "node:http";
+import type { Logger } from "../../debug/DebugConfig";
 
 export interface BaichuanHttpStreamServerOptions {
   videoStream: BaichuanVideoStream;
@@ -19,6 +20,7 @@ export interface BaichuanHttpStreamServerOptions {
    * Defaults to 25 if not provided.
    */
   inputFps?: number;
+  logger?: Logger;
 }
 
 const NAL_START_CODE_4B = Buffer.from([0x00, 0x00, 0x00, 0x01]);
@@ -86,8 +88,7 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
 }> {
   private videoStream: BaichuanVideoStream;
   private listenPort: number;
-  private path: string;
-  private inputFps: number;
+  private path: string;  private logger: Logger;  private inputFps: number;
   private httpServer: http.Server | undefined;
   private ffmpegProcess: ReturnType<typeof spawn> | undefined;
   private active = false;
@@ -107,8 +108,9 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
     this.listenPort = options.listenPort ?? 8080;
     this.path = options.path ?? "/stream";
     this.inputFps = options.inputFps ?? 25;
+    this.logger = options.logger ?? console;
   }
-
+  
   /**
    * Start HTTP stream server.
    * Starts an HTTP server that serves an MPEG-TS stream.
@@ -118,15 +120,15 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
       throw new Error("HTTP stream server already active");
     }
 
-    console.log(`[BaichuanHttpStreamServer] Starting Baichuan video stream...`);
+    this.logger.info(`[BaichuanHttpStreamServer] Starting Baichuan video stream...`);
     // Start the Baichuan video stream.
     await this.videoStream.start();
-    console.log(`[BaichuanHttpStreamServer] Baichuan video stream started`);
+    this.logger.info(`[BaichuanHttpStreamServer] Baichuan video stream started`);
 
     // Crea server HTTP
     this.httpServer = http.createServer((req, res) => {
       if (req.url === this.path || req.url === `${this.path}.ts`) {
-        console.log(`[BaichuanHttpStreamServer] New client connected: ${req.socket.remoteAddress}`);
+        this.logger.info(`[BaichuanHttpStreamServer] New client connected: ${req.socket.remoteAddress}`);
         this.clients.add(res);
         this.emit("client", req.socket.remoteAddress || "unknown");
 
@@ -141,7 +143,7 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
         // Remove the client when it disconnects.
         req.on("close", () => {
           this.clients.delete(res);
-          console.log(`[BaichuanHttpStreamServer] Client disconnected`);
+          this.logger.info(`[BaichuanHttpStreamServer] Client disconnected`);
         });
       } else {
         res.writeHead(404);
@@ -152,14 +154,14 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
     // Start HTTP server.
     await new Promise<void>((resolve, reject) => {
       this.httpServer!.listen(this.listenPort, "127.0.0.1", () => {
-        console.log(`[BaichuanHttpStreamServer] HTTP server listening on port ${this.listenPort}`);
+        this.logger.info(`[BaichuanHttpStreamServer] HTTP server listening on port ${this.listenPort}`);
         resolve();
       });
       this.httpServer!.on("error", reject);
     });
 
     // Avvia ffmpeg per convertire H.264 in MPEG-TS e inviare ai client
-    console.log(`[BaichuanHttpStreamServer] Starting ffmpeg for H.264 -> MPEG-TS conversion...`);
+    this.logger.info(`[BaichuanHttpStreamServer] Starting ffmpeg for H.264 -> MPEG-TS conversion...`);
     
     const ffmpeg = spawn("ffmpeg", [
       "-hide_banner",
@@ -182,7 +184,7 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
     });
 
     this.ffmpegProcess = ffmpeg;
-    console.log(`[BaichuanHttpStreamServer] FFmpeg process started (PID: ${ffmpeg.pid})`);
+    this.logger.info(`[BaichuanHttpStreamServer] FFmpeg process started (PID: ${ffmpeg.pid})`);
 
     // Feed video frames to ffmpeg.
     let frameCount = 0;
@@ -194,13 +196,13 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
       }
       frameCount++;
       if (frameCount === 1) {
-        console.log(`[BaichuanHttpStreamServer] First video frame received (${videoData.length} bytes)`);
+        this.logger.info(`[BaichuanHttpStreamServer] First video frame received (${videoData.length} bytes)`);
       }
       if (ffmpeg.stdin && !ffmpeg.stdin.destroyed) {
         try {
           ffmpeg.stdin.write(videoData);
         } catch (error) {
-          console.error(`[BaichuanHttpStreamServer] Error writing frame: ${error}`);
+          this.logger.error(`[BaichuanHttpStreamServer] Error writing frame: ${error}`);
           this.emit("error", error instanceof Error ? error : new Error(String(error)));
         }
       }
@@ -237,7 +239,7 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
       if (!this.seenKeyframe) {
         if (!isKeyframe) return;
         this.seenKeyframe = true;
-        console.log(`[BaichuanHttpStreamServer] First keyframe received: starting ffmpeg feed`);
+        this.logger.info(`[BaichuanHttpStreamServer] First keyframe received: starting ffmpeg feed`);
       }
 
       // If we have cached SPS/PPS, prepend them before keyframes for robustness (some muxers/players require it).
@@ -302,7 +304,7 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
 
       if (isKnownNonFatal) {
         // Track but do not emit 'error'
-        console.warn(`[BaichuanHttpStreamServer] FFmpeg decode warning: ${output.trim()}`);
+        this.logger.warn(`[BaichuanHttpStreamServer] FFmpeg decode warning: ${output.trim()}`);
         return;
       }
 
@@ -317,17 +319,17 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
         output.includes("Conversion failed");
 
       if (isCriticalError) {
-        console.error(`[BaichuanHttpStreamServer] FFmpeg critical error: ${output.trim()}`);
+        this.logger.error(`[BaichuanHttpStreamServer] FFmpeg critical error: ${output.trim()}`);
         // Emit 'error' only for truly terminal conditions.
         this.emit("error", new Error(`FFmpeg error: ${output}`));
       } else {
-        console.warn(`[BaichuanHttpStreamServer] FFmpeg stderr: ${output.trim()}`);
+        this.logger.warn(`[BaichuanHttpStreamServer] FFmpeg stderr: ${output.trim()}`);
       }
     });
 
     ffmpeg.on("close", (code) => {
       if (code !== 0) {
-        console.error(`[BaichuanHttpStreamServer] FFmpeg exited with code ${code}`);
+        this.logger.error(`[BaichuanHttpStreamServer] FFmpeg exited with code ${code}`);
         this.emit("error", new Error(`FFmpeg exited with code ${code}`));
       }
       this.active = false;

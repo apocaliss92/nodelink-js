@@ -4,7 +4,44 @@ import { type AddressInfo } from "node:net";
 import { setInterval as setIntervalNode } from "node:timers";
 import { BCUDP_DATA_HEADER_SIZE, BCUDP_DEFAULT_MTU, BCUDP_DISCOVERY_PORT_LOCAL_UID, BCUDP_DISCOVERY_PORT_LOCAL_ANY } from "./constants";
 import { decodeBcUdpPacket, encodeAckPacket, encodeDataPacket, encodeDiscoveryPacket } from "./packets";
-import { buildC2dC, buildC2dHb, buildC2dT, parseD2cCfm, parseD2cCr, parseD2cT } from "./xml";
+import { buildC2dA, buildC2dC, buildC2dHb, buildC2dT, parseD2cCfm, parseD2cCr, parseD2cT } from "./xml";
+
+class AckLatency {
+  private currentValues: number[] = [];
+  private lastReceiveTime: number | null = null;
+  private displayValue: number = 0;
+  private lastDisplayTime: number | null = null;
+
+  getValue(): number {
+    return this.displayValue;
+  }
+
+  feed(): void {
+    const now = performance.now(); // Use high-res timer if available, or Date.now()
+    if (this.lastReceiveTime !== null) {
+      const diff = (now - this.lastReceiveTime) * 1000; // ms to micros
+      this.currentValues.push(diff);
+    }
+    this.lastReceiveTime = now;
+
+    if (this.lastDisplayTime !== null) {
+      if (now - this.lastDisplayTime > 1000) {
+        this.lastDisplayTime = now;
+        const count = this.currentValues.length;
+        if (count > 0) {
+          const sum = this.currentValues.reduce((a, b) => a + b, 0);
+          this.displayValue = Math.floor(sum / count);
+        } else {
+          this.displayValue = 0;
+        }
+        this.currentValues = [];
+      }
+    } else {
+      this.lastDisplayTime = now;
+      this.displayValue = 0;
+    }
+  }
+}
 
 export type BcUdpStreamOptions =
   | {
@@ -50,6 +87,7 @@ export class BcUdpStream extends EventEmitter<{
 
   private clientId: number | undefined;
   private cameraId: number | undefined;
+  private sid: number | undefined;
 
   private sendPacketId = 0;
   private packetsWant = 0;
@@ -59,6 +97,24 @@ export class BcUdpStream extends EventEmitter<{
   private ackTimer: NodeJS.Timeout | undefined;
   private resendTimer: NodeJS.Timeout | undefined;
   private hbTimer: NodeJS.Timeout | undefined;
+  private discoveryTid: number | undefined;
+
+  private ackScheduled = false;
+  private ackLatency = new AckLatency();
+
+  // Neolink pattern: compute the ACK payload when state changes (on data receive),
+  // but send the latest ACK on a tight interval. This keeps the send path cheap,
+  // which is important in Node under heavy load.
+  private lastAckPacket: Buffer = Buffer.alloc(0);
+  private ackSentCount = 0;
+
+  // Decouple UDP receive path (ACK timing) from consumer parsing.
+  // Emitting data synchronously from the UDP socket callback can block the event loop
+  // (especially with verbose logging / heavy frame parsing), which delays ACKs and can
+  // cause the camera to abort the stream.
+  private pendingData: Buffer[] = [];
+  private pendingDataOffset = 0;
+  private drainScheduled = false;
 
   constructor(options: BcUdpStreamOptions) {
     super();
@@ -70,6 +126,13 @@ export class BcUdpStream extends EventEmitter<{
     if (this.sock) return;
     const sock = dgram.createSocket("udp4");
     this.sock = sock;
+    
+    try {
+      sock.setRecvBufferSize(4 * 1024 * 1024);
+      sock.setSendBufferSize(4 * 1024 * 1024);
+    } catch (e) {
+      // Ignore if not supported
+    }
 
     sock.on("message", (msg, rinfo) => {
       try {
@@ -118,7 +181,7 @@ export class BcUdpStream extends EventEmitter<{
     // Neolink uses "MAC" as OS for discovery (see discovery.rs:361)
     const xml = buildC2dC({ uid: this.opts.uid, clientPort: localPort, cid, mtu: this.mtu });
 
-    const reply = await new Promise<{ cid: number; did: number; rhost: string; rport: number; sid?: number }>((resolve, reject) => {
+    const reply = await new Promise<{ cid: number; did: number; rhost: string; rport: number; sid?: number; tid?: number }>((resolve, reject) => {
       const timeout = setTimeout(() => {
         if (retryTimer) clearInterval(retryTimer);
         sock.off("message", onMsg);
@@ -128,70 +191,128 @@ export class BcUdpStream extends EventEmitter<{
       let retryTimer: NodeJS.Timeout | undefined;
       let retryCount = 0;
       let discoveredSid: number | undefined;
+      let discoveredTid: number | undefined;
       let discovered: { cid: number; did: number; rhost: string; rport: number } | undefined;
-      let tHandshakeDone = false;
-      let tHandshakeTimer: NodeJS.Timeout | undefined;
+      let sentT = false;
+      let gotT = false;
+      let sentA = false;
+      let finalizeTimer: NodeJS.Timeout | undefined;
+
+      const maybeFinalize = (reason: string) => {
+        if (!discovered) return;
+        // Once we have cid/did, we can proceed; SID helps stability but some cams omit it.
+        // If we managed to complete T/A, great; otherwise continue with best-effort.
+        if (finalizeTimer) return;
+        // Small delay to allow an immediate CFM to arrive after A.
+        finalizeTimer = setTimeout(() => {
+          const d = discovered;
+          const sid = discoveredSid;
+          const tid = discoveredTid;
+          if (!d) return;
+          sock.off("message", onMsg);
+          clearTimeout(timeout);
+          if (retryTimer) clearInterval(retryTimer);
+          this.emit("debug", "discovery_finalize", { reason, ...(sid != null ? { sid } : {}), ...d });
+          resolve({ ...d, ...(sid != null ? { sid } : {}), ...(tid != null ? { tid } : {}) });
+        }, 250);
+      };
+
+      const sendT = (rhost: string, rport: number) => {
+        if (sentT) return;
+        if (!discovered) return;
+        try {
+          const tid = (Math.floor(Math.random() * 255) | 0) >>> 0;
+          const tXml = buildC2dT({ ...(discoveredSid != null ? { sid: discoveredSid } : {}), cid: discovered.cid, mtu: this.mtu, conn: "local" });
+          const tPkt = encodeDiscoveryPacket(tid, tXml);
+          sock.send(tPkt, rport, rhost);
+          sentT = true;
+          this.emit("debug", "discovery_t_send", { sid: discoveredSid, cid: discovered.cid, did: discovered.did, rhost, rport });
+        } catch (e) {
+          this.emit("debug", "discovery_t_send_error", e);
+        }
+      };
+
+      const sendA = (tid: number, rhost: string, rport: number, dt: { sid: number; cid: number; did: number; conn?: string }) => {
+        if (sentA) return;
+        try {
+          const aXml = buildC2dA({ sid: dt.sid, conn: dt.conn ?? "local", cid: dt.cid, did: dt.did, mtu: this.mtu });
+          const aPkt = encodeDiscoveryPacket(tid, aXml);
+          sock.send(aPkt, rport, rhost);
+          sentA = true;
+          this.emit("debug", "discovery_a_send", { sid: dt.sid, cid: dt.cid, did: dt.did, rhost, rport });
+        } catch (e) {
+          this.emit("debug", "discovery_a_send_error", e);
+        }
+      };
 
       const onMsg = (msg: Buffer, rinfo: dgram.RemoteInfo) => {
         try {
           const p = decodeBcUdpPacket(msg);
           if (p.kind !== "discovery") return;
 
-          // Some models send a D2C_CFM before/around discovery completion; it can carry the camera SID.
+          // Helpful for debugging odd camera behavior.
+          this.emit("debug", "discovery_rx", { tid: p.tid, rhost: rinfo.address, rport: rinfo.port, xmlPreview: p.xml.slice(0, 120) });
+
+          // Some models send a D2C_CFM before/around discovery completion.
+          // Treat it as a strong signal that the session is established.
           const cfm = parseD2cCfm(p.xml);
-          if (cfm?.sid != null) {
+          if (cfm) {
             discoveredSid = cfm.sid;
+            if (!discovered && cfm.cid != null && cfm.did != null) {
+              discovered = { cid: cfm.cid, did: cfm.did, rhost: rinfo.address, rport: rinfo.port };
+            }
+            // If we have enough to proceed, finalize (but still attempt T/A if possible).
+            if (discovered) {
+              sendT(rinfo.address, rinfo.port);
+              maybeFinalize("cfm");
+            }
           }
 
-          // If we already sent C2D_T, watch for D2C_T response to complete the handshake.
+          // Camera->Client T step. Reply with C2D_A using the same tid.
           const dt = parseD2cT(p.xml);
-          if (dt && discovered && !tHandshakeDone) {
-            if (dt.cid === discovered.cid && dt.did === discovered.did) {
-              tHandshakeDone = true;
-              if (tHandshakeTimer) clearTimeout(tHandshakeTimer);
-              sock.off("message", onMsg);
-              this.emit("debug", "discovery_t_done", { sid: dt.sid, cid: dt.cid, did: dt.did, rhost: rinfo.address, rport: rinfo.port });
-              resolve({ ...discovered, sid: dt.sid });
-              return;
+          if (dt) {
+            gotT = true;
+            discoveredSid = dt.sid;
+            if (!discovered) {
+              discovered = { cid: dt.cid, did: dt.did, rhost: rinfo.address, rport: rinfo.port };
             }
+            this.emit("debug", "discovery_t_rx", { sid: dt.sid, cid: dt.cid, did: dt.did, rhost: rinfo.address, rport: rinfo.port });
+            sendA(p.tid, rinfo.address, rinfo.port, dt);
+            // After receiving T and sending A, we should be good to proceed.
+            maybeFinalize("t_a");
+            return;
           }
 
           const parsed = parseD2cCr(p.xml);
           if (!parsed) return;
           if (parsed.rsp !== 0) return;
           // Success! Camera responded
-          clearTimeout(timeout);
-          if (retryTimer) clearInterval(retryTimer);
-          this.emit("debug", "discovery_success", { retryCount, rhost: rinfo.address, rport: rinfo.port, sid: discoveredSid });
+          this.emit("debug", "discovery_success", { retryCount, rhost: rinfo.address, rport: rinfo.port, sid: parsed.sid ?? discoveredSid, timer: parsed.timer });
 
+          discoveredTid = p.tid;
           discovered = { cid: parsed.cid, did: parsed.did, rhost: rinfo.address, rport: rinfo.port };
+          if (parsed.sid != null) discoveredSid = parsed.sid;
 
-          // If we have a SID, attempt the T handshake (C2D_T -> D2C_T). Some battery cams need it
-          // to keep the session stable.
-          if (discoveredSid != null) {
-            const sidToUse = discoveredSid;
-            try {
-              const tid = (Math.floor(Math.random() * 255) | 0) >>> 0;
-              const tXml = buildC2dT({ sid: sidToUse, cid: parsed.cid, mtu: this.mtu, conn: "local" });
-              const tPkt = encodeDiscoveryPacket(tid, tXml);
-              sock.send(tPkt, rinfo.port, rinfo.address);
-              this.emit("debug", "discovery_t_send", { sid: sidToUse, cid: parsed.cid, did: parsed.did, rhost: rinfo.address, rport: rinfo.port });
-            } catch (e) {
-              this.emit("debug", "discovery_t_send_error", e);
+          // Attempt T handshake if SID is available.
+          sendT(rinfo.address, rinfo.port);
+
+          // Don't resolve immediately: give the camera a chance to complete T/A/CFM.
+          // If it doesn't, we'll finalize shortly anyway.
+          if (gotT || sentA) {
+            maybeFinalize("cr_t");
+          } else {
+            // If SID is missing, we might still proceed without T.
+            // If SID is present, allow a brief window for D2C_T.
+            if (discoveredSid != null) {
+              if (finalizeTimer) clearTimeout(finalizeTimer);
+              finalizeTimer = setTimeout(() => {
+                maybeFinalize("cr_timeout");
+              }, 1500);
+            } else {
+              maybeFinalize("cr_no_sid");
             }
-
-            // Wait a short window for D2C_T; if it doesn't arrive, continue anyway.
-            tHandshakeTimer = setTimeout(() => {
-              if (tHandshakeDone) return;
-              sock.off("message", onMsg);
-              resolve({ ...discovered!, sid: sidToUse });
-            }, 2000);
-            return;
           }
-
-          // No SID found; fall back to the minimal discovery.
-          sock.off("message", onMsg);
-          resolve({ ...discovered });
+          return;
         } catch {
           // ignore
         }
@@ -225,6 +346,8 @@ export class BcUdpStream extends EventEmitter<{
 
     this.clientId = reply.cid;
     this.cameraId = reply.did;
+    this.sid = reply.sid;
+    this.discoveryTid = reply.tid;
     // After discovery, the peer is the responder address (port may vary by model).
     this.remote = { host: reply.rhost, port: reply.rport };
   }
@@ -234,10 +357,16 @@ export class BcUdpStream extends EventEmitter<{
       throw new Error("BCUDP not ready");
     }
 
+    // Initialize ACK packet (empty)
+    this.updateAckPacket();
+
+    // Send initial heartbeat immediately (neolink behavior)
+    this.sendHeartbeat();
+
     // ACK every 10ms (official client / neolink behavior)
     this.ackTimer = setIntervalNode(() => {
       try {
-        this.sendAck();
+        this.sendAckFast();
       } catch (e) {
         this.emit("error", e instanceof Error ? e : new Error(String(e)));
       }
@@ -264,38 +393,108 @@ export class BcUdpStream extends EventEmitter<{
 
   private sendHeartbeat(): void {
     if (!this.sock || !this.remote || this.clientId == null || this.cameraId == null) return;
+    // Neolink generates a random u8 TID for heartbeats (see udpsource.rs)
     const tid = (Math.floor(Math.random() * 255) | 0) >>> 0;
-    const xml = buildC2dHb({ cid: this.clientId, did: this.cameraId });
+
+    let xml: string;
+    // Neolink sends C2D_HB as soon as it has CID and DID, even if SID is not yet assigned (or is 0).
+    // This keeps the session alive and seems to be what the camera expects after the initial handshake.
+    xml = buildC2dHb({ cid: this.clientId, did: this.cameraId });
+
     const pkt = encodeDiscoveryPacket(tid, xml);
+    
+    this.emit("debug", "udp_hb_send", { tid, xml, host: this.remote.host, port: this.remote.port });
+
+    // Send to current remote (data port)
     this.sock.send(pkt, this.remote.port, this.remote.host);
+
+    // Neolink does NOT seem to send heartbeats to discovery ports (2015/2018) in the main loop.
+    // It only sends to the connected address.
+    // Sending to discovery ports might be confusing the camera or causing D2C_DISC.
+    
+    if (this.opts.mode === "uid") {
+      // Ignore errors (e.g. if host is not reachable on these ports)
+      try { this.sock.send(pkt, 2015, this.remote.host); } catch {}
+      try { this.sock.send(pkt, 2018, this.remote.host); } catch {}
+    }
+    
   }
 
   private buildAckPayload(): { packetId: number; payload: Buffer } {
+    // Some cameras will disconnect if the ACK truth-table grows to ~205 bytes.
+    // Keep it comfortably below that.
+    const MAX_ACK_PAYLOAD_BYTES = 200;
+
+    // Match neolink/offical client behavior: until we've received and consumed at least
+    // one packet (packetsWant>0), send the special "empty" ACK.
+    // This uses group_id=0xffffffff + packet_id=0xffffffff + empty payload.
+    // Avoid sending packet_id=0xffffffff with a non-empty truth-table.
     if (this.packetsWant === 0) {
       return { packetId: 0xffffffff, payload: Buffer.alloc(0) };
     }
     let firstMissing = this.packetsWant;
     while (this.received.has(firstMissing)) firstMissing++;
 
-    const max = this.received.size === 0 ? firstMissing - 1 : Math.max(firstMissing - 1, ...this.received.keys());
-    const bytes: number[] = [];
-    for (let i = firstMissing; i <= max; i++) {
-      bytes.push(this.received.has(i) ? 1 : 0);
+    let max = firstMissing - 1;
+    // Avoid spread/Math.max over iterators (can be very costly when many packets are buffered).
+    for (const k of this.received.keys()) {
+      if (k > max) max = k;
     }
-    return { packetId: (firstMissing - 1) >>> 0, payload: Buffer.from(bytes) };
+
+    // Cap the ACK bitmap window to avoid disconnects.
+    const maxAllowed = firstMissing + MAX_ACK_PAYLOAD_BYTES - 1;
+    if (max > maxAllowed) max = maxAllowed;
+
+    if (max < firstMissing) {
+      return { packetId: (firstMissing - 1) >>> 0, payload: Buffer.alloc(0) };
+    }
+
+    const len = max - firstMissing + 1;
+    const bytes = Buffer.allocUnsafe(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = this.received.has(firstMissing + i) ? 1 : 0;
+    }
+    return { packetId: (firstMissing - 1) >>> 0, payload: bytes };
   }
 
-  private sendAck(): void {
-    if (!this.sock || !this.remote || this.clientId == null || this.cameraId == null) return;
+  private updateAckPacket(): void {
+    if (this.cameraId == null) return;
     const { packetId, payload } = this.buildAckPayload();
-    const ack = encodeAckPacket({
+    this.lastAckPacket = encodeAckPacket({
       connectionId: this.cameraId, // towards camera: did
-      groupId: packetId === 0xffffffff ? 0xffffffff : 0,
+      // In neolink: group_id=0xffffffff is only used for the special empty ACK.
+      groupId: packetId === 0xffffffff && payload.length === 0 ? 0xffffffff : 0,
       packetId,
-      maybeLatency: 0,
+      maybeLatency: this.ackLatency.getValue(),
       payload,
     });
-    this.sock.send(ack, this.remote.port, this.remote.host);
+  }
+
+  private sendAckFast(): void {
+    if (!this.sock || !this.remote || this.lastAckPacket.length === 0) return;
+    this.sock.send(this.lastAckPacket, this.remote.port, this.remote.host);
+    this.ackSentCount++;
+    if (this.ackSentCount % 100 === 0) {
+      this.emit("debug", "ack_sent_100", { latency: this.ackLatency.getValue() });
+    }
+  }
+
+  private scheduleAck(reason: "data" | "manual" = "data"): void {
+    // With the cached ACK packet + 10ms timer, we avoid sending ACKs on every
+    // inbound packet to prevent overwhelming the camera.
+    if (reason === "manual") {
+      if (this.ackScheduled) return;
+      this.ackScheduled = true;
+      setImmediate(() => {
+        this.ackScheduled = false;
+        try {
+          this.sendAckFast();
+        } catch (e) {
+          this.emit("error", e instanceof Error ? e : new Error(String(e)));
+        }
+      });
+      this.emit("debug", "ack_scheduled", { reason });
+    }
   }
 
   private resendOutstanding(): void {
@@ -310,7 +509,9 @@ export class BcUdpStream extends EventEmitter<{
     // Remove <= packetId and those marked 1 in payload (relative to packetId).
     if (packetId !== 0xffffffff) {
       for (const k of this.sent.keys()) {
-        if (k <= packetId) this.sent.delete(k);
+        if (k <= packetId) {
+          this.sent.delete(k);
+        }
       }
       for (let i = 0; i < payload.length; i++) {
         const v = payload[i] ?? 0;
@@ -320,24 +521,60 @@ export class BcUdpStream extends EventEmitter<{
         }
       }
     }
+    this.ackLatency.feed();
+  }
+
+  private scheduleDrain(): void {
+    if (this.drainScheduled) return;
+    this.drainScheduled = true;
+    setImmediate(() => {
+      this.drainScheduled = false;
+      try {
+        for (; this.pendingDataOffset < this.pendingData.length; this.pendingDataOffset++) {
+          this.emit("data", this.pendingData[this.pendingDataOffset]!);
+        }
+      } catch (e) {
+        this.emit("error", e instanceof Error ? e : new Error(String(e)));
+      } finally {
+        // Reset buffer when fully drained.
+        if (this.pendingDataOffset >= this.pendingData.length) {
+          this.pendingData = [];
+          this.pendingDataOffset = 0;
+        }
+      }
+    });
   }
 
   private flushReceived(): void {
-    // emit contiguous received payloads as a byte stream
+    // Move contiguous received payloads to a pending queue (fast) and drain later.
     while (this.received.has(this.packetsWant)) {
       const chunk = this.received.get(this.packetsWant)!;
       this.received.delete(this.packetsWant);
       this.packetsWant++;
-      this.emit("data", chunk);
+      this.pendingData.push(chunk);
+    }
+    if (this.pendingData.length > this.pendingDataOffset) {
+      this.scheduleDrain();
     }
   }
 
   private handlePacket(p: ReturnType<typeof decodeBcUdpPacket>, rhost: string, rport: number): void {
-    // Bind remote to whoever talks to us after discovery (robustness)
-    if (!this.remote) this.remote = { host: rhost, port: rport };
+    // Bind/update remote to whoever talks to us.
+    // Important for some battery cameras: discovery happens on one UDP port,
+    // but the data/ack stream can come from another port. If we keep sending
+    // ACK/heartbeat to the discovery port, the camera may stop streaming.
+    const updateRemote = (reason: string) => {
+      if (!this.remote || this.remote.host !== rhost || this.remote.port !== rport) {
+        this.remote = { host: rhost, port: rport };
+        this.emit("debug", "remote_update", { reason, host: rhost, port: rport });
+      }
+    };
+
+    if (!this.remote) updateRemote("first_packet");
 
     if (p.kind === "ack") {
       if (this.clientId != null && p.connectionId === this.clientId) {
+        updateRemote("ack");
         this.handleAckFromCamera(p.packetId, p.payload);
       }
       return;
@@ -345,15 +582,24 @@ export class BcUdpStream extends EventEmitter<{
 
     if (p.kind === "data") {
       if (this.clientId != null && p.connectionId === this.clientId) {
+        updateRemote("data");
+        // this.ackLatency.feed(); // Removed: latency is calculated from ACKs
         if (p.packetId >= this.packetsWant) {
           this.received.set(p.packetId, p.payload);
           this.flushReceived();
+          this.updateAckPacket();
+          if (this.packetsWant % 100 === 0) {
+            this.emit("debug", "udp_progress", { packetsWant: this.packetsWant });
+          }
         }
       }
       return;
     }
 
     // discovery packets after connect (HB, disconnect, etc.) -> ignored for now.
+    if (p.kind === "discovery") {
+      this.emit("debug", "discovery_rx_connected", { tid: p.tid, xml: p.xml });
+    }
     return;
   }
 
