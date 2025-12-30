@@ -67,6 +67,13 @@ export async function createScryptedRfc4571TcpServer(
     closeApiOnTeardown = true,
   } = options;
 
+  const logPrefix = `[native-rfc4571 ch=${channel} profile=${profile}]`;
+  const log = (message: string) => logger.warn(`${logPrefix} ${message}`);
+
+  log(
+    `starting (host=${host} videoPT=${videoPayloadType} audioPT=${audioPayloadType} expectedVideoType=${expectedVideoType ?? 'n/a'} keyframeTimeoutMs=${keyframeTimeoutMs} idleTeardownMs=${idleTeardownMs})`,
+  );
+
   const videoStream = new BaichuanVideoStream({
     client: api.client,
     api,
@@ -76,6 +83,8 @@ export async function createScryptedRfc4571TcpServer(
   });
 
   await videoStream.start();
+
+  log('baichuan stream started; waiting for keyframe to extract parameter sets');
 
   const waitForKeyframe = async (): Promise<
     { videoType: VideoType; accessUnit: Buffer } &
@@ -124,8 +133,10 @@ export async function createScryptedRfc4571TcpServer(
 
   const keyframe = await waitForKeyframe();
   if (expectedVideoType && keyframe.videoType !== expectedVideoType) {
-    logger.warn(`createScryptedRfc4571TcpServer: expectedVideoType=${expectedVideoType} actual=${keyframe.videoType}`);
+    log(`expectedVideoType mismatch (expected=${expectedVideoType} actual=${keyframe.videoType})`);
   }
+
+  log(`video detected: codec=${keyframe.videoType} (primed via keyframe)`);
 
   // Best-effort framerate for raw elementary-stream input.
   let fps = 25;
@@ -142,6 +153,8 @@ export async function createScryptedRfc4571TcpServer(
   } catch {
     // ignore
   }
+
+  log(`video framerate hint: ${fps} fps`);
 
   // Prime audio: detect ADTS and extract AudioSpecificConfig.
   let audio: { sampleRate: number; channels: number; configHex: string } | undefined;
@@ -182,6 +195,12 @@ export async function createScryptedRfc4571TcpServer(
 
   audio = await tryPrimeAudio();
 
+  if (audio) {
+    log(`audio detected: codec=aac sampleRate=${audio.sampleRate} channels=${audio.channels}`);
+  } else {
+    log('audio not detected/advertised (no ADTS AAC config within timeout)');
+  }
+
   const video: VideoParamSets = {
     videoType: keyframe.videoType,
     payloadType: videoPayloadType,
@@ -215,6 +234,10 @@ export async function createScryptedRfc4571TcpServer(
   const sdp = buildRfc4571Sdp(video, aacAudio);
   const muxer = new Rfc4571Muxer(logger, videoPayloadType, aacAudio ? audioPayloadType : undefined, fps);
 
+  log(
+    `SDP ready (video=${keyframe.videoType}/90000 pt=${videoPayloadType}${aacAudio ? `, audio=aac/${aacAudio.sampleRate}/${aacAudio.channels} pt=${audioPayloadType}` : ', audio=none'})`,
+  );
+
   let rfcClients = 0;
   let idleTeardownTimer: NodeJS.Timeout | undefined;
   let tearingDown = false;
@@ -242,7 +265,10 @@ export async function createScryptedRfc4571TcpServer(
 
     cancelIdleTeardown();
     const message = (reason as any)?.message || (reason as any)?.toString?.() || reason;
-    if (message) logger.warn(`RFC4571 server teardown: ${message}`);
+    const address = server.address();
+    const addrStr = address && typeof address !== 'string' ? `${address.address}:${address.port}` : 'unbound';
+    if (message) log(`teardown requested (addr=${addrStr} clients=${rfcClients} reason=${message})`);
+    else log(`teardown requested (addr=${addrStr} clients=${rfcClients})`);
 
     muxer.close();
 
@@ -265,6 +291,8 @@ export async function createScryptedRfc4571TcpServer(
     } catch {
       // ignore
     }
+
+    log('teardown complete');
   };
 
   server.on('connection', (socket) => {
@@ -272,11 +300,15 @@ export async function createScryptedRfc4571TcpServer(
     cancelIdleTeardown();
     muxer.addClient(socket);
 
+    const remote = `${socket.remoteAddress ?? 'unknown'}:${socket.remotePort ?? 'unknown'}`;
+    log(`client connected (remote=${remote} clients=${rfcClients})`);
+
     let counted = true;
     const dec = () => {
       if (!counted) return;
       counted = false;
       rfcClients = Math.max(0, rfcClients - 1);
+      log(`client disconnected (remote=${remote} clients=${rfcClients})`);
       if (rfcClients === 0) scheduleIdleTeardown(close);
     };
 
@@ -321,6 +353,8 @@ export async function createScryptedRfc4571TcpServer(
   }
   const port = address.port;
   if (!port) throw new Error('Failed to bind RFC TCP server');
+
+  log(`listening (addr=${host}:${port})`);
 
   const audioInfo = aacAudio ? { codec: 'aac' as const, sampleRate: aacAudio.sampleRate, channels: aacAudio.channels } : undefined;
 
