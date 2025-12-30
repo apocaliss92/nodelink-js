@@ -137,10 +137,31 @@ export function buildPtzControlXml(channelId: number, command: string, speed: nu
  * @returns XML string for PtzPreset element
  */
 export function buildPtzPresetXml(channelId: number, presetId: number, command: "setPos" | "toPos", name?: string): string {
+  return buildPtzPresetXmlV2(channelId, presetId, command, name === undefined ? undefined : { name });
+}
+
+export function buildPtzPresetXmlV2(
+  channelId: number,
+  presetId: number,
+  command: "setPos" | "toPos",
+  options?: {
+    /** Preset name. For setPos many firmwares require it; empty string will emit an empty <name></name>. */
+    name?: string;
+    /** Best-effort enable/disable support. Some firmwares include this in the preset list response. */
+    enable?: 0 | 1;
+  }
+): string {
   let nameXml = "";
-  if (command === "setPos" && name) {
+  const name = options?.name;
+  if (command === "setPos" && name !== undefined) {
     nameXml = `<name>${xmlEscape(name)}</name>`;
   }
+
+  let enableXml = "";
+  if (options?.enable !== undefined) {
+    enableXml = `<enable>${options.enable}</enable>`;
+  }
+
   return `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <PtzPreset version="1.0">
@@ -150,6 +171,7 @@ export function buildPtzPresetXml(channelId: number, presetId: number, command: 
 <id>${presetId}</id>
 <command>${command}</command>
 ${nameXml}
+${enableXml}
 </preset>
 </presetList>
 </PtzPreset>

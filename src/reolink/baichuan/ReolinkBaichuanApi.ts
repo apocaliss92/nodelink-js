@@ -30,7 +30,7 @@ import {
   BC_CMD_ID_VIDEO,
   BC_CMD_ID_VIDEO_STOP,
 } from "../../protocol/constants";
-import { buildAbilityInfoExtensionXml, buildBinaryExtensionXml, buildChannelExtensionXml, buildPreviewStopXml, buildPreviewXml, buildPtzControlXml, buildPtzPresetXml, buildSirenManualXml, buildSirenTimesXml, buildStartZoomFocusXml, buildWhiteLedStateXml, getXmlText, xmlEscape } from "../../protocol/xml";
+import { buildAbilityInfoExtensionXml, buildBinaryExtensionXml, buildChannelExtensionXml, buildPreviewStopXml, buildPreviewXml, buildPtzControlXml, buildPtzPresetXml, buildPtzPresetXmlV2, buildSirenManualXml, buildSirenTimesXml, buildStartZoomFocusXml, buildWhiteLedStateXml, getXmlText, xmlEscape } from "../../protocol/xml";
 import {
   type AIEvent,
   type AIState,
@@ -1387,7 +1387,8 @@ export class ReolinkBaichuanApi {
   async moveToPtzPreset(presetId: number, channel?: number): Promise<void>;
   async moveToPtzPreset(channel: number, presetId: number): Promise<void>;
   async moveToPtzPreset(arg1: number, arg2?: number): Promise<void> {
-    const ch = arg2 === undefined ? this.normalizeChannel(arg2) : this.normalizeChannel(arg1);
+    // If 2 args are provided, interpret as (channel, presetId).
+    const ch = arg2 === undefined ? this.normalizeChannel(undefined) : this.normalizeChannel(arg1);
     const presetId = arg2 === undefined ? arg1 : arg2;
     const channelId = ch;
     const payloadXml = buildPtzPresetXml(channelId, presetId, "toPos");
@@ -1443,6 +1444,61 @@ export class ReolinkBaichuanApi {
     if (frame.header.responseCode !== 200) {
       throw new Error(`PTZ preset save rejected (response_code ${frame.header.responseCode})`);
     }
+  }
+
+  /**
+   * Best-effort delete/disable a PTZ preset.
+   * 
+   * Note: firmware behavior varies. Many cameras include an <enable> flag in the preset list.
+   * This method attempts to set enable=0 for the preset.
+   */
+  async deletePtzPreset(presetId: number, channel?: number): Promise<void>;
+  async deletePtzPreset(channel: number, presetId: number): Promise<void>;
+  async deletePtzPreset(arg1: number, arg2?: number): Promise<void> {
+    // If 2 args are provided, interpret as (channel, presetId).
+    const ch = arg2 === undefined ? this.normalizeChannel(undefined) : this.normalizeChannel(arg1);
+    const presetId = arg2 === undefined ? arg1 : arg2;
+    const channelId = ch;
+
+    const extensionXml = buildChannelExtensionXml(channelId);
+
+    const attempts: Array<{ payloadXml: string; label: string }> = [
+      {
+        label: "enable=0 name=''",
+        payloadXml: buildPtzPresetXmlV2(channelId, presetId, "setPos", { name: "", enable: 0 }),
+      },
+      {
+        label: "enable=0 name='Preset N'",
+        payloadXml: buildPtzPresetXmlV2(channelId, presetId, "setPos", { name: `Preset ${presetId}`, enable: 0 }),
+      },
+    ];
+
+    let lastError: unknown;
+    for (const a of attempts) {
+      try {
+        const frame = await this.client.sendFrame({
+          cmdId: BC_CMD_ID_PTZ_CONTROL_PRESET,
+          channel: ch,
+          channelIdOverride: channelId,
+          extensionXml,
+          payloadXml: a.payloadXml,
+          messageClass: BC_CLASS_MODERN_24,
+          streamType: 0,
+        });
+
+        if (frame.header.responseCode !== 200) {
+          throw new Error(`PTZ preset delete rejected (response_code ${frame.header.responseCode})`);
+        }
+        return;
+      } catch (e) {
+        lastError = e;
+        if (this.client.getDebugConfig().debugH264 || process.env.BAICHUAN_DEBUG_PTZ) {
+          this.logger.debug(`[DEBUG] deletePtzPreset attempt failed (${a.label}):`, e);
+        }
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error("PTZ preset delete failed");
   }
 
   /**
