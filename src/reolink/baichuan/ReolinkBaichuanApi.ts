@@ -309,11 +309,6 @@ export class ReolinkBaichuanApi {
           }
 
           const delayMs = 1500;
-          if (this.client.getDebugConfig().debugH264) {
-            this.logger.debug(
-              `[DEBUG] Got 400 error (responseCode=${frame.header.responseCode}, bodyLen=${frame.body.length}), retrying in ${delayMs}ms (${retry} retries left)...`,
-            );
-          }
           await new Promise((resolve) => setTimeout(resolve, delayMs));
           return await this.sendXml(params, retry - 1);
         }
@@ -1768,14 +1763,8 @@ export class ReolinkBaichuanApi {
       // But we can infer it's sleeping if it failed to respond
       if (error instanceof Error && error.message === "Timeout") {
         // Camera didn't respond within 5 seconds, likely sleeping
-        if (this.client.getDebugConfig().debugH264) {
-          this.logger.debug(`[DEBUG] getBatteryStatus: Camera appears to be sleeping (timeout)`);
-        }
       } else {
         // Other error, but still mark as potentially sleeping
-        if (this.client.getDebugConfig().debugH264) {
-          this.logger.debug(`[DEBUG] getBatteryStatus: Error getting battery info:`, error);
-        }
       }
       
       return result;
@@ -1840,9 +1829,6 @@ export class ReolinkBaichuanApi {
     } catch (error) {
       // If GetEnc fails (e.g., camera is still sleeping), that's OK - we tried
       // The caller should handle this gracefully
-      if (this.client.getDebugConfig().debugH264) {
-        this.logger.debug(`[DEBUG] Wake-up command failed for channel ${ch}:`, error);
-      }
       throw error;
     }
   }
@@ -1876,9 +1862,6 @@ export class ReolinkBaichuanApi {
     } catch (error) {
       // If we get a timeout or connection error, camera might be sleeping
       // However, it could also be a network issue or camera offline
-      if (this.client.getDebugConfig().debugH264) {
-        this.logger.debug(`[DEBUG] isSleeping check for channel ${ch} failed:`, error);
-      }
       // We can't be 100% sure, but a timeout suggests sleeping
       return true;
     }
@@ -2283,11 +2266,6 @@ export class ReolinkBaichuanApi {
       cmdId: BC_CMD_ID_ABILITY_INFO,
       extensionXml,
     });
-    
-    // Debug: Log raw XML if debug is enabled
-    if (this.client.getDebugConfig().debugH264 || process.env.BAICHUAN_DEBUG_ABILITY) {
-      this.logger.debug("[DEBUG] Raw AbilityInfo XML:", xml);
-    }
     
     // Parse AbilityInfo XML
     // Expected format based on neolink: multiple token sections (system, network, alarm, image, video, security, replay, PTZ, IO, streaming, disk, record)

@@ -702,30 +702,6 @@ export class BaichuanVideoStream extends EventEmitter<{
             }
           }
 
-          // Targeted debug: if after conversion we still don't have a start code, the payload is
-          // likely not Annex-B nor standard 4-byte AVCC. Log the first bytes to understand the format.
-          if (this.debugH264LogsLeft > 0 && !hasStartCodes(annexBData)) {
-            this.debugH264LogsLeft--;
-            const b = media.data;
-            const head = b.subarray(0, Math.min(24, b.length)).toString("hex");
-            const headAnnex = annexBData.subarray(0, Math.min(24, annexBData.length)).toString("hex");
-            const u32be = b.length >= 4 ? b.readUInt32BE(0) : null;
-            const u32le = b.length >= 4 ? b.readUInt32LE(0) : null;
-            const u16be = b.length >= 2 ? b.readUInt16BE(0) : null;
-            const u16le = b.length >= 2 ? b.readUInt16LE(0) : null;
-            const sc4 = Buffer.from([0x00, 0x00, 0x00, 0x01]);
-            const sc3 = Buffer.from([0x00, 0x00, 0x01]);
-            const idx4 = b.indexOf(sc4);
-            const idx3 = b.indexOf(sc3);
-            const idx4a = annexBData.indexOf(sc4);
-            const idx3a = annexBData.indexOf(sc3);
-            this.logger?.warn(
-              `[BaichuanVideoStream][DEBUG] ${media.type} non-AnnexB: len=${b.length} head=${head} ` +
-              `u32be=${u32be} u32le=${u32le} u16be=${u16be} u16le=${u16le} ` +
-              `idxSC4=${idx4} idxSC3=${idx3} idxSC4a=${idx4a} idxSC3a=${idx3a} annexHead=${headAnnex}`
-            );
-          }
-
           // If debug is off, still emit a single warning the first time we see non-AnnexB output.
           // This helps diagnose models that prepend headers or use nonstandard framing.
           if (!this.warnedNonAnnexBOnce && !hasStartCodes(annexBData)) {
