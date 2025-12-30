@@ -68,6 +68,7 @@
     "test:tcp:events": "npm run test:build && node dist/test/tcp/test-tcp-events.js",
     "test:tcp:events-ptz": "npm run test:build && node dist/test/tcp/test-tcp-events-ptz-trigger.js",
     "test:tcp:diagnostics": "npm run test:build && node dist/test/tcp/test-tcp-diagnostics-bundle.js",
+    "test:tcp:floodlight-compare": "npm run test:build && node dist/test/tcp/test-tcp-floodlight-compare.js",
     "test:tcp:video-save-merge": "npm run test:build && node dist/test/tcp/test-tcp-video-save-and-merge.js",
     "test:tcp:new-apis": "npm run test:build && node dist/test/tcp/test-tcp-new-apis.js",
     "test:tcp:ability-comparison": "npm run test:build && node dist/test/tcp/test-ability-comparison.js",

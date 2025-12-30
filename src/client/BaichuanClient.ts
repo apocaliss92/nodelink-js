@@ -1203,6 +1203,15 @@ export class BaichuanClient extends EventEmitter<{
   async login(maxEncryption: MaxEncryption = "full_aes"): Promise<void> {
     if (this.loggedIn) return;
 
+    const maxAttempts = 3;
+    let lastError: unknown;
+
+    const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        // 1) legacy header-only login upgrade to obtain nonce + encryption type
+
     // 1) legacy header-only login upgrade to obtain nonce + encryption type
     // IMPORTANT (neolink): AES request uses 0xdc12.
     // Some cameras will close the socket if you request an unsupported enc byte (es. 0xdc02).
@@ -1269,7 +1278,7 @@ export class BaichuanClient extends EventEmitter<{
     else if (encType === 0x12) this.enc = { kind: "full_aes", key: deriveAesKey(nonce, this.opts.password) };
     else throw new Error(`Baichuan login: unknown encType=0x${encType.toString(16)}`);
 
-    // 2) modern login with username/password hashes
+      // 2) modern login with username/password hashes
     const userHash = md5StrModern(`${this.opts.username}${nonce}`);
     const passHash = md5StrModern(`${this.opts.password}${nonce}`);
     const loginXml = buildLoginXml(userHash, passHash);
@@ -1310,18 +1319,40 @@ export class BaichuanClient extends EventEmitter<{
         startsWithXml: replyXml.startsWith("<?xml")
       });
     
-    // Check if reply is empty - this often indicates authentication failure
-    // (responseCode 400 was seen in debug output, which typically means auth failure)
-    if (replyXml.length === 0) {
-      throw new Error("Baichuan login failed: empty reply (likely authentication failure - check username/password. Response code 400 indicates bad credentials)");
-    }
+        // Check if reply is empty.
+        // This is commonly seen on sleeping/waking battery cameras, but can also indicate bad credentials.
+        if (replyXml.length === 0) {
+          throw new Error(
+            "Baichuan login failed: empty reply (camera may be sleeping/waking, session may be stale, or username/password may be invalid)",
+          );
+        }
     
     if (!replyXml.startsWith("<?xml")) {
       const preview = replyXml.length > 0 ? replyXml.substring(0, 100) : "(empty)";
       throw new Error(`Baichuan login: unexpected non-XML reply (length: ${replyXml.length}, preview: ${preview})`);
     }
 
-    this.loggedIn = true;
+        this.loggedIn = true;
+        return;
+      } catch (e) {
+        lastError = e;
+        this.loggedIn = false;
+        try {
+          await this.close();
+        } catch {
+          // ignore
+        }
+        if (attempt < maxAttempts) {
+          // Backoff: give the camera time to wake up.
+          await sleep(1500);
+          continue;
+        }
+        throw e;
+      }
+    }
+
+    // Should be unreachable.
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 }
 

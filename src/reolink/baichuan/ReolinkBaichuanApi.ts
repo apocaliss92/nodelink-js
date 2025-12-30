@@ -30,7 +30,7 @@ import {
   BC_CMD_ID_VIDEO,
   BC_CMD_ID_VIDEO_STOP,
 } from "../../protocol/constants";
-import { buildAbilityInfoExtensionXml, buildBinaryExtensionXml, buildChannelExtensionXml, buildPreviewStopXml, buildPreviewXml, buildPtzControlXml, buildPtzPresetXml, buildPtzPresetXmlV2, buildSirenManualXml, buildSirenTimesXml, buildStartZoomFocusXml, buildWhiteLedStateXml, getXmlText, xmlEscape } from "../../protocol/xml";
+import { buildAbilityInfoExtensionXml, buildBinaryExtensionXml, buildChannelExtensionXml, buildFloodlightManualXml, buildPreviewStopXml, buildPreviewXml, buildPtzControlXml, buildPtzPresetXml, buildPtzPresetXmlV2, buildSirenManualXml, buildSirenTimesXml, buildStartZoomFocusXml, getXmlText, xmlEscape } from "../../protocol/xml";
 import {
   type AIEvent,
   type AIState,
@@ -283,7 +283,7 @@ export class ReolinkBaichuanApi {
   }
 
   /** Generic Baichuan cmd_id call, returns XML (if any). */
-  async sendXml(params: Parameters<BaichuanClient["sendXml"]>[0], retry = 1): Promise<string> {
+  async sendXml(params: Parameters<BaichuanClient["sendXml"]>[0], retry = 3): Promise<string> {
     // Only call login() if not already logged in (avoid recursion if called from login itself)
     if (!this.client.loggedIn) {
       await this.client.login();
@@ -292,20 +292,38 @@ export class ReolinkBaichuanApi {
       // Use sendFrame to check responseCode and handle 400 errors with retry
       const frame = await this.client.sendFrame(params);
       
-      // Retry logic for 400 errors (camera might be sleeping, need to wake up)
-      // Based on reolink_aio: if we get a 400 error, wait 1.5s and retry once
-      // This gives battery cameras time to wake up from sleep mode
-      if (frame.header.responseCode === 400 && retry > 0) {
-        if (this.client.getDebugConfig().debugH264) {
-          this.logger.debug(`[DEBUG] Got 400 error (responseCode=${frame.header.responseCode}), retrying in 1.5s (camera may be sleeping)...`);
+      // Retry logic for 400 errors.
+      // NOTE: several firmwares return responseCode=400 with empty body when the camera is sleeping,
+      // waking up, or when the session has expired (not only for bad credentials).
+      if (frame.header.responseCode === 400) {
+        if (retry > 0) {
+          // If the body is empty, try forcing a re-login once before backing off.
+          // This helps for expired sessions while staying safe for sleeping cameras.
+          if (frame.body.length === 0) {
+            try {
+              this.client.loggedIn = false;
+              await this.client.login();
+            } catch {
+              // ignore; we will still back off and retry
+            }
+          }
+
+          const delayMs = 1500;
+          if (this.client.getDebugConfig().debugH264) {
+            this.logger.debug(
+              `[DEBUG] Got 400 error (responseCode=${frame.header.responseCode}, bodyLen=${frame.body.length}), retrying in ${delayMs}ms (${retry} retries left)...`,
+            );
+          }
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          return await this.sendXml(params, retry - 1);
         }
-        await new Promise(resolve => setTimeout(resolve, 1500)); // Give camera time to wake
-        return await this.sendXml(params, retry - 1);
-      }
-      
-      // Check for empty body with 400 (authentication failure)
-      if (frame.header.responseCode === 400 && frame.body.length === 0) {
-        throw new Error("Baichuan authentication failed (responseCode 400, empty body) - check username/password");
+
+        // Out of retries.
+        if (frame.body.length === 0) {
+          throw new Error(
+            'Baichuan request failed (responseCode 400, empty body). Possible causes: camera sleeping/waking (battery), expired session, or invalid username/password.',
+          );
+        }
       }
       
       // Decrypt and return XML
@@ -2072,13 +2090,16 @@ export class ReolinkBaichuanApi {
     const ch = this.normalizeChannel(channel);
     const xml = await this.sendXml({ cmdId: BC_CMD_ID_GET_WHITE_LED, channel: ch });
     
-    // Parse white LED state from XML
-    // Expected format: <FloodlightTask><state>...</state><brightness_cur>...</brightness_cur></FloodlightTask>
+    // Parse state from various known payloads:
+    // - FloodlightTask: <enable>1</enable> and/or sometimes <state>
+    // - FloodlightManual: <status>1</status>
+    const enable = getXmlText(xml, "enable");
     const state = getXmlText(xml, "state");
+    const status = getXmlText(xml, "status");
     const brightnessText = getXmlText(xml, "brightness_cur");
     
     const result: WhiteLedState = {
-      enabled: state === "1",
+      enabled: enable === "1" || state === "1" || status === "1",
     };
     if (brightnessText !== undefined) {
       result.brightness = Number(brightnessText);
@@ -2102,29 +2123,61 @@ export class ReolinkBaichuanApi {
     const on = typeof arg1 === "number" ? (arg2 as boolean | undefined) : (arg1 as boolean | undefined);
     const brightness = typeof arg1 === "number" ? arg3 : (arg2 as number | undefined);
     const ch = this.normalizeChannel(channel);
+
+    // Neolink (and many firmwares) use:
+    // - cmd 288: FloodlightManual (write) for manual on/off
+    // - cmd 290: FloodlightTask (write) for task config / brightness
+    // Historically we sent a <WhiteLed> payload which can yield 400 on many cameras.
     if (on !== undefined) {
-      // Set state using cmd_id 288
-      const channelId = ch + 1;
-      const payloadXml = buildWhiteLedStateXml(channelId, on ? 1 : 0);
-      
-      await this.sendXml({ 
-        cmdId: BC_CMD_ID_SET_WHITE_LED_STATE, 
-        channel: ch, 
-        payloadXml,
-      });
+      try {
+        const payloadXml = buildFloodlightManualXml(ch, on ? 1 : 0, on ? 180 : 0);
+        await this.sendXml({
+          cmdId: BC_CMD_ID_SET_WHITE_LED_STATE,
+          channel: ch,
+          payloadXml,
+        });
+      } catch (e) {
+        // Fallback: use task XML returned by cmd 289, update <enable>/<state>/<status> and send with cmd 290.
+        const currentXml = await this.sendXml({ cmdId: BC_CMD_ID_GET_WHITE_LED, channel: ch });
+        let modifiedXml = currentXml;
+
+        // Some payloads use <enable>, others use <state> or <status>.
+        if (/<enable>[^<]*<\/enable>/i.test(modifiedXml)) {
+          modifiedXml = modifiedXml.replace(/<enable>[^<]*<\/enable>/i, `<enable>${on ? 1 : 0}</enable>`);
+        }
+        if (/<state>[^<]*<\/state>/i.test(modifiedXml)) {
+          modifiedXml = modifiedXml.replace(/<state>[^<]*<\/state>/i, `<state>${on ? 1 : 0}</state>`);
+        }
+        if (/<status>[^<]*<\/status>/i.test(modifiedXml)) {
+          modifiedXml = modifiedXml.replace(/<status>[^<]*<\/status>/i, `<status>${on ? 1 : 0}</status>`);
+        }
+
+        await this.sendXml({
+          cmdId: BC_CMD_ID_SET_WHITE_LED_TASK,
+          channel: ch,
+          payloadXml: modifiedXml,
+        });
+      }
     }
-    
+
     if (brightness !== undefined) {
-      // Set brightness using cmd_id 290 (requires getting current settings first)
       const currentXml = await this.sendXml({ cmdId: BC_CMD_ID_GET_WHITE_LED, channel: ch });
-      
-      // Parse and modify XML
       let modifiedXml = currentXml;
-      modifiedXml = modifiedXml.replace(/<brightness_cur>[^<]*<\/brightness_cur>/, `<brightness_cur>${brightness}</brightness_cur>`);
-      
-      await this.sendXml({ 
-        cmdId: BC_CMD_ID_SET_WHITE_LED_TASK, 
-        channel: ch, 
+      if (/<brightness_cur>[^<]*<\/brightness_cur>/i.test(modifiedXml)) {
+        modifiedXml = modifiedXml.replace(
+          /<brightness_cur>[^<]*<\/brightness_cur>/i,
+          `<brightness_cur>${brightness}</brightness_cur>`,
+        );
+      }
+
+      // If a brightness was set, ensure task is enabled.
+      if (/<enable>[^<]*<\/enable>/i.test(modifiedXml)) {
+        modifiedXml = modifiedXml.replace(/<enable>[^<]*<\/enable>/i, `<enable>1</enable>`);
+      }
+
+      await this.sendXml({
+        cmdId: BC_CMD_ID_SET_WHITE_LED_TASK,
+        channel: ch,
         payloadXml: modifiedXml,
       });
     }
@@ -2357,6 +2410,52 @@ export class ReolinkBaichuanApi {
           const ok = (await tryGet()) || (await tryOff());
           if (ok) {
             capabilities.hasSiren = true;
+          }
+        }
+
+        // Best-effort floodlight probe.
+        // Many firmwares expose only `ledState_rw` (status LED) in AbilityInfo, even when a real floodlight
+        // exists and is controllable via Baichuan. The most reliable signal is whether cmd 289 works.
+        if (!capabilities.hasFloodlight) {
+          const channelSupportItems = (support?.items ?? []).filter((i) => i.chnID === ch || i.chnID === ch + 1);
+
+          const parseLightType = (item: any): number | undefined => {
+            const v = item?.lightType;
+            if (typeof v === "number") return v;
+            if (typeof v === "string") {
+              const n = Number(v);
+              return Number.isFinite(n) ? n : undefined;
+            }
+            return undefined;
+          };
+
+          const lightTypes = channelSupportItems
+            .map((i) => parseLightType(i as any))
+            .filter((v): v is number => Number.isFinite(v));
+
+          // If firmware explicitly says there is no white LED/floodlight, do not probe.
+          // This avoids false positives where cmd289 returns a FloodlightTask-like XML but the device
+          // only has IR illumination / status LEDs.
+          if (lightTypes.some((v) => v === 0)) {
+            // leave as false
+          } else if (lightTypes.some((v) => v > 0)) {
+            capabilities.hasFloodlight = true;
+          } else {
+            // No explicit lightType. Probe cmd 289.
+            try {
+              const xml = await this.sendXml({
+                cmdId: BC_CMD_ID_GET_WHITE_LED,
+                channel: ch,
+                timeoutMs: 1000,
+              });
+
+              // Only treat this as floodlight support if the payload clearly looks like floodlight.
+              if (/(<FloodlightTask\b|<FloodlightManual\b|<FloodlightStatusList\b|<WhiteLed\b)/i.test(xml)) {
+                capabilities.hasFloodlight = true;
+              }
+            } catch {
+              // noop
+            }
           }
         }
 

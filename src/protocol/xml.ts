@@ -243,21 +243,31 @@ ${channelXml}
 }
 
 /**
- * Build White LED/Floodlight state XML.
- * Based on reolink_aio floodlight implementation.
- * 
- * @param channelId - Channel ID (1-based)
- * @param state - State (1 = on, 0 = off)
- * @returns XML string for WhiteLed element
+ * Build FloodlightManual XML.
+ * Matches neolink dissector for cmd_id 288.
+ *
+ * Notes:
+ * - channelId is 0-based (same as Baichuan channel id)
+ * - status: 1 = on, 0 = off
+ * - duration is in seconds
  */
-export function buildWhiteLedStateXml(channelId: number, state: number): string {
+export function buildFloodlightManualXml(channelId: number, status: number, durationSeconds = 180): string {
   return `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
-<WhiteLed version="1.1">
+<FloodlightManual version="1.1">
 <channelId>${channelId}</channelId>
-<state>${state}</state>
-</WhiteLed>
+<status>${status}</status>
+<duration>${durationSeconds}</duration>
+</FloodlightManual>
 </body>`;
+}
+
+/**
+ * Back-compat alias: historically this project called floodlight control "WhiteLed".
+ * In practice, many cameras expect FloodlightManual payload for cmd 288.
+ */
+export function buildWhiteLedStateXml(channelId: number, state: number): string {
+  return buildFloodlightManualXml(channelId, state ? 1 : 0);
 }
 
 /**

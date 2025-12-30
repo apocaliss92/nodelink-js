@@ -123,8 +123,52 @@ export function parseSupportXml(xml: string): SupportInfo | undefined {
 
 function getSupportItemForChannel(support: SupportInfo | undefined, channel: number): SupportItem | undefined {
   if (!support?.items?.length) return undefined;
+
   // Most observed firmwares use 0-based chnID.
-  return support.items.find((i) => i.chnID === channel) ?? support.items.find((i) => i.chnID === channel + 1);
+  // Some firmwares return multiple <item> entries with the same chnID:
+  // - smartHome items (googleHome/amazonAlexa) with only {name, ver}
+  // - a "real" capability item with many numeric fields (ptzType, ledCtrl, lightType, etc.)
+  // We must pick the best candidate, otherwise we miss lightType/ledCtrl and mis-detect capabilities.
+
+  const scoreSupportItem = (item: SupportItem): number => {
+    const anyItem = item as any;
+    let score = 0;
+
+    // Prefer items without a "name" field (often smartHome entries).
+    if (anyItem.name == null) score += 2;
+
+    // Prefer items with known capability-ish fields.
+    const capabilityKeys = [
+      "ptzType",
+      "ptzControl",
+      "ptzPreset",
+      "ledCtrl",
+      "lightType",
+      "battery",
+      "audioVersion",
+      "motion",
+      "encCtrl",
+      "newIspCfg",
+      "remoteAbility",
+    ];
+    for (const k of capabilityKeys) {
+      if (anyItem[k] !== undefined) score += 3;
+    }
+
+    // Fallback: reward having many fields at all.
+    score += Math.min(10, Math.max(0, Object.keys(anyItem).length - 1));
+    return score;
+  };
+
+  const pickBest = (chnId: number): SupportItem | undefined => {
+    const candidates = support.items.filter((i) => i.chnID === chnId);
+    if (!candidates.length) return undefined;
+    return candidates
+      .slice()
+      .sort((a, b) => scoreSupportItem(b) - scoreSupportItem(a))[0];
+  };
+
+  return pickBest(channel) ?? pickBest(channel + 1);
 }
 
 export function computeDeviceCapabilities(params: {
@@ -140,15 +184,23 @@ export function computeDeviceCapabilities(params: {
   const ptzMode = typeof ptzModeRaw === "string" ? ptzModeRaw.toLowerCase() : undefined;
 
   const hasBatteryFromSupport = supportItem ? isTruthyNumberLike((supportItem as any).battery) : false;
-  const hasLedFromSupport = supportItem ? isTruthyNumberLike((supportItem as any).ledCtrl) : false;
+  // NOTE: ledCtrl is typically the indicator/status LED control, NOT the floodlight.
+  // Do not map it to floodlight capability.
   const hasPresetsFromSupport = supportItem ? isTruthyNumberLike((supportItem as any).ptzPreset) : false;
+
+  // Some firmwares expose an explicit lightType in SupportInfo items.
+  // Observed values:
+  // - 0: no white LED / no floodlight
+  // - >0: some form of controllable light (treat as floodlight)
+  const lightTypeRaw = supportItem ? (supportItem as any).lightType : undefined;
+  const lightType = typeof lightTypeRaw === "number" ? lightTypeRaw : typeof lightTypeRaw === "string" ? Number(lightTypeRaw) : undefined;
 
   const hasPtzFromSupport = ptzMode ? ptzMode !== "none" && ptzMode !== "0" : false;
   const hasPanTiltFromSupport = ptzMode ? ptzMode.includes("pt") || ptzMode === "pt" || ptzMode === "ptz" : false;
   const hasZoomFromSupport = ptzMode ? ptzMode.includes("z") : false;
 
   const hasBatteryFromAbilities = abilitiesHasAny(flat, /battery/i);
-  const hasFloodlightFromAbilities = abilitiesHasAny(flat, /white\s*led|whiteLed|flood\s*light|floodlight|ledState/i);
+  const hasFloodlightFromAbilities = abilitiesHasAny(flat, /white\s*led|whiteLed|flood\s*light|floodlight/i);
   const hasSirenFromAbilities = abilitiesHasAny(flat, /audio\s*alarm|audioAlarm|siren|pushAlarn|audioPlay/i);
 
   const hasPanTiltFromAbilities = abilitiesHasAny(flat, /ptz/i);
@@ -170,7 +222,7 @@ export function computeDeviceCapabilities(params: {
     hasPtz: hasPtzFromSupport || hasPan || hasTilt || hasZoom || hasPresets,
     hasBattery: hasBatteryFromSupport || hasBatteryFromAbilities,
     hasSiren: hasSirenFromAbilities,
-    hasFloodlight: hasLedFromSupport || hasFloodlightFromAbilities,
+    hasFloodlight: Number.isFinite(lightType as number) ? (lightType as number) > 0 : hasFloodlightFromAbilities,
     hasPir: hasPirFromAbilities,
   };
 
