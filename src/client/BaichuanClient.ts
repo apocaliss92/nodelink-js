@@ -117,6 +117,10 @@ export class BaichuanClient extends EventEmitter<{
     return this.debugCfg;
   }
 
+  get username(): string {
+    return this.opts.username;
+  }
+
   private startKeepAlive(): void {
     if (this.keepAliveTimer) return;
 

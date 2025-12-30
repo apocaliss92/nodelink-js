@@ -60,7 +60,8 @@ export class ReolinkCgiApi {
     return await this.call("Reboot", param);
   }
 
-  async GetAbility(username: string): Promise<ReolinkCmdResponse[]> {
+  async GetAbility(): Promise<ReolinkCmdResponse[]> {
+    const username = this.client.getUsername();
     return await this.call("GetAbility", {
       User: {
         userName: username,

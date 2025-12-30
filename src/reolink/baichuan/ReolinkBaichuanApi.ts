@@ -244,6 +244,10 @@ export class ReolinkBaichuanApi {
     });
   }
 
+  private normalizeChannel(channel?: number | null): number {
+    return channel == null ? 0 : channel;
+  }
+
   async login(maxEncryption?: import("../../client/BaichuanClient.js").MaxEncryption): Promise<void> {
     await this.client.login(maxEncryption);
   }
@@ -518,7 +522,7 @@ export class ReolinkBaichuanApi {
   // --------------------
 
   /** GetNetPort via Baichuan: cmd_id 37 */
-  async getPorts(): Promise<ReolinkBaichuanPorts> {
+  async getNetPort(): Promise<ReolinkBaichuanPorts> {
     const xml = await this.sendXml({ cmdId: 37 });
     // Parser minimale: estrae <RtspPort><enable>...</enable><port>...</port>...
     const ports: ReolinkBaichuanPorts = {};
@@ -560,8 +564,9 @@ export class ReolinkBaichuanApi {
   }
 
   /** GetEnc via Baichuan: cmd_id 56 (returns raw XML). */
-  async getEncXml(channel: number): Promise<string> {
-    return await this.sendXml({ cmdId: 56, channel });
+  async getEncXml(channel?: number): Promise<string> {
+    const ch = this.normalizeChannel(channel);
+    return await this.sendXml({ cmdId: 56, channel: ch });
   }
 
   /**
@@ -580,8 +585,9 @@ export class ReolinkBaichuanApi {
    * - There's no explicit "enable" field for extStream in the GetEnc response
    * - extStream is typically available on newer Reolink models that support multiple stream profiles
    */
-  async getStreamMetadata(channel: number): Promise<ChannelStreamMetadata> {
-    const xml = await this.getEncXml(channel);
+  async getStreamMetadata(channel?: number): Promise<ChannelStreamMetadata> {
+    const ch = this.normalizeChannel(channel);
+    const xml = await this.getEncXml(ch);
     const streams: StreamMetadata[] = [];
     let audioEnabled = true;
 
@@ -683,15 +689,19 @@ export class ReolinkBaichuanApi {
     }
 
     return {
-      channel,
+      channel: ch,
       streams,
       audioEnabled,
     };
   }
 
   /** SetEnc via Baichuan: cmd_id 57 (sends raw XML). */
-  async setEncXml(channel: number, encXml: string): Promise<void> {
-    await this.sendXml({ cmdId: 57, channel, payloadXml: encXml });
+  async setEncXml(encXml: string): Promise<void>;
+  async setEncXml(channel: number, encXml: string): Promise<void>;
+  async setEncXml(channelOrEncXml: number | string, encXmlMaybe?: string): Promise<void> {
+    const ch = typeof channelOrEncXml === "number" ? this.normalizeChannel(channelOrEncXml) : 0;
+    const encXml = typeof channelOrEncXml === "number" ? encXmlMaybe! : channelOrEncXml;
+    await this.sendXml({ cmdId: 57, channel: ch, payloadXml: encXml });
   }
 
   /**
@@ -700,25 +710,34 @@ export class ReolinkBaichuanApi {
    * NOTE: This changes the camera configuration.
    * Many models may require a short delay (or stream restart) before the new codec is used.
    */
-  async setStreamVideoCodec(channel: number, profile: StreamProfile, codec: "H.264" | "H.265"): Promise<void> {
+  async setStreamVideoCodec(profile: StreamProfile, codec: "H.264" | "H.265", channel?: number): Promise<void>;
+  async setStreamVideoCodec(channel: number, profile: StreamProfile, codec: "H.264" | "H.265"): Promise<void>;
+  async setStreamVideoCodec(
+    channelOrProfile: number | StreamProfile,
+    profileOrCodec: StreamProfile | ("H.264" | "H.265"),
+    codecOrChannel?: ("H.264" | "H.265") | number
+  ): Promise<void> {
+    const ch = typeof channelOrProfile === "number" ? this.normalizeChannel(channelOrProfile) : this.normalizeChannel(codecOrChannel as number | undefined);
+    const profile = typeof channelOrProfile === "number" ? (profileOrCodec as StreamProfile) : channelOrProfile;
+    const codec = typeof channelOrProfile === "number" ? (codecOrChannel as "H.264" | "H.265") : (profileOrCodec as "H.264" | "H.265");
     const desired = codec === "H.265" ? 1 : 0;
     const tag = profile === "main" ? "mainStream" : profile === "sub" ? "subStream" : "extStream";
 
-    const current = await this.getEncXml(channel);
+    const current = await this.getEncXml(ch);
 
     const sectionRe = new RegExp(`(<${tag}[^>]*>[\\s\\S]*?<videoEncType>)(\\d+)(</videoEncType>)`);
     const m = sectionRe.exec(current);
     if (!m) {
-      throw new Error(`Could not find <videoEncType> inside <${tag}> in GetEnc XML (channel=${channel}).`);
+      throw new Error(`Could not find <videoEncType> inside <${tag}> in GetEnc XML (channel=${ch}).`);
     }
 
     const updated = current.replace(sectionRe, `$1${desired}$3`);
     if (updated === current) {
       // Should not happen, but keep it explicit.
-      throw new Error(`Failed to update <videoEncType> for profile=${profile} (channel=${channel}).`);
+      throw new Error(`Failed to update <videoEncType> for profile=${profile} (channel=${ch}).`);
     }
 
-    await this.setEncXml(channel, updated);
+    await this.setEncXml(ch, updated);
   }
 
   /** Bulk SetNetPort helper (reolink_aio-style): accepts NetPort with onvifEnable/rtmpEnable/rtspEnable. */
@@ -748,7 +767,11 @@ export class ReolinkBaichuanApi {
   }
 
   /** SetGeneralXml via Baichuan: cmd_id 105 */
-  async setGeneralXml(channel: number | undefined, xml: string): Promise<void> {
+  async setGeneralXml(xml: string): Promise<void>;
+  async setGeneralXml(channel: number | undefined, xml: string): Promise<void>;
+  async setGeneralXml(channelOrXml: number | string | undefined, xmlMaybe?: string): Promise<void> {
+    const channel = typeof channelOrXml === "number" || channelOrXml === undefined ? channelOrXml : undefined;
+    const xml = typeof channelOrXml === "string" ? channelOrXml : xmlMaybe!;
     await this.sendXml({ cmdId: 105, ...(channel === undefined ? {} : { channel }), payloadXml: xml });
   }
 
@@ -779,13 +802,14 @@ export class ReolinkBaichuanApi {
    * GetOsd via Baichuan.
    * cmd_id: 26 (GetImage - includes OSD settings from reolink-aio)
    */
-  async getOsd(channel: number): Promise<OsdConfig> {
+  async getOsd(channel?: number): Promise<OsdConfig> {
+    const ch = this.normalizeChannel(channel);
     const cmdId = 26; // From reolink-aio GetImage (includes OSD)
-    const xml = await this.sendXml({ cmdId, channel });
+    const xml = await this.sendXml({ cmdId, channel: ch });
     // Parse OSD XML structure from VideoInput/OsdChannel and OsdTime
     // This is a placeholder - actual parsing depends on XML structure
     return {
-      channel,
+      channel: ch,
       osdChannel: {
         enable: Number(getXmlText(xml, "enable") ?? "0"),
         name: getXmlText(xml, "name") ?? "",
@@ -803,13 +827,17 @@ export class ReolinkBaichuanApi {
    * SetOsd via Baichuan.
    * cmd_id: 25 (SetImage - includes OSD settings from reolink-aio)
    */
-  async setOsd(channel: number, osd: OsdConfig): Promise<void> {
+  async setOsd(osd: OsdConfig, channel?: number): Promise<void>;
+  async setOsd(channel: number, osd: OsdConfig): Promise<void>;
+  async setOsd(channelOrOsd: number | OsdConfig, osdMaybe?: OsdConfig | number): Promise<void> {
+    const ch = typeof channelOrOsd === "number" ? this.normalizeChannel(channelOrOsd) : this.normalizeChannel(osdMaybe as number | undefined);
+    const osd = typeof channelOrOsd === "number" ? (osdMaybe as OsdConfig) : channelOrOsd;
     const cmdId = 25; // From reolink-aio SetImage (includes OSD)
     const xml =
       `<?xml version="1.0" encoding="UTF-8" ?>` +
       `<body>` +
       `<Osd version="1.1">` +
-      `<channel>${channel}</channel>` +
+      `<channel>${ch}</channel>` +
       `<osdChannel>` +
       `<enable>${osd.osdChannel.enable}</enable>` +
       `<name>${xmlEscape(osd.osdChannel.name)}</name>` +
@@ -822,7 +850,7 @@ export class ReolinkBaichuanApi {
       `<watermark>${osd.watermark}</watermark>` +
       `</Osd>` +
       `</body>`;
-    await this.sendXml({ cmdId, channel, payloadXml: xml });
+    await this.sendXml({ cmdId, channel: ch, payloadXml: xml });
   }
 
   /**
@@ -1026,9 +1054,10 @@ export class ReolinkBaichuanApi {
    * @param profile - Stream profile ("main" | "sub" | "ext")
    * @returns Promise that resolves when stream request is sent
    */
-  async startVideoStream(channel: number, profile: StreamProfile = "sub"): Promise<void> {
+  async startVideoStream(channel?: number, profile: StreamProfile = "sub"): Promise<void> {
+    const ch = this.normalizeChannel(channel);
     // Neolink uses the same 0-based channel_id everywhere (header, Extension, payload).
-    const channelId = channel;
+    const channelId = ch;
     
     // Map profile to handle and stream_type values (from neolink stream.rs)
     // handle: 0 for main, 256 for sub, 1024 for extern
@@ -1072,7 +1101,7 @@ export class ReolinkBaichuanApi {
       try {
         const frameParams: Parameters<typeof this.client.sendFrame>[0] = {
           cmdId: BC_CMD_ID_VIDEO,
-          channel,
+          channel: ch,
           channelIdOverride: channelId,
           extensionXml: buildChannelExtensionXml(channelId),
           payloadXml,
@@ -1088,7 +1117,7 @@ export class ReolinkBaichuanApi {
         }
 
         // Remember msgNum so we can stop the stream with the same msgNum (neolink behavior).
-        this.activeVideoMsgNums.set(`${channel}:${profile}`, frame.header.msgNum);
+        this.activeVideoMsgNums.set(`${ch}:${profile}`, frame.header.msgNum);
 
         // Success.
         return;
@@ -1122,8 +1151,9 @@ export class ReolinkBaichuanApi {
    * This can be used by stream consumers to filter incoming cmd_id=3 frames and
    * avoid mixing multiple concurrent streams on the same Baichuan client.
    */
-  getActiveVideoMsgNum(channel: number, profile: StreamProfile = "sub"): number | undefined {
-    return this.activeVideoMsgNums.get(`${channel}:${profile}`);
+  getActiveVideoMsgNum(channel?: number, profile: StreamProfile = "sub"): number | undefined {
+    const ch = this.normalizeChannel(channel);
+    return this.activeVideoMsgNums.get(`${ch}:${profile}`);
   }
 
   /**
@@ -1137,9 +1167,10 @@ export class ReolinkBaichuanApi {
    * @param channel - Channel number (0-based)
    * @param profile - Stream profile ("main" | "sub" | "ext")
    */
-  async stopVideoStream(channel: number, profile: StreamProfile = "sub"): Promise<void> {
+  async stopVideoStream(channel?: number, profile: StreamProfile = "sub"): Promise<void> {
+    const ch = this.normalizeChannel(channel);
     // Neolink uses the same 0-based channel_id everywhere (header, Extension, payload).
-    const channelId = channel;
+    const channelId = ch;
     
     // Map profile to handle value (from neolink stream.rs)
     const profileConfig: Record<StreamProfile, { handle: number; streamType: number }> = {
@@ -1154,7 +1185,7 @@ export class ReolinkBaichuanApi {
     // channelId is NOT in Preview XML - it's handled via channelId in header
     const payloadXml = buildPreviewStopXml(config.handle, channelId);
     
-    const key = `${channel}:${profile}`;
+    const key = `${ch}:${profile}`;
     const msgNum = this.activeVideoMsgNums.get(key);
     this.activeVideoMsgNums.delete(key);
 
@@ -1163,7 +1194,7 @@ export class ReolinkBaichuanApi {
     try {
       await this.client.sendFrame({
         cmdId: BC_CMD_ID_VIDEO_STOP,
-        channel,
+        channel: ch,
         channelIdOverride: channelId,
         extensionXml: buildChannelExtensionXml(channelId),
         payloadXml,
@@ -1188,13 +1219,14 @@ export class ReolinkBaichuanApi {
    * @param channel - Channel number (0-based)
    * @returns Array of PTZ presets
    */
-  async getPtzPresets(channel: number): Promise<PtzPreset[]> {
+  async getPtzPresets(channel?: number): Promise<PtzPreset[]> {
+    const ch = this.normalizeChannel(channel);
     // Neolink uses the same channel_id everywhere (header, Extension, payload).
     // In neolink this is 0-based.
-    const channelId = channel;
+    const channelId = ch;
     const xml = await this.sendXml({
       cmdId: BC_CMD_ID_GET_PTZ_PRESET,
-      channel,
+      channel: ch,
       channelIdOverride: channelId,
       extensionXml: buildChannelExtensionXml(channelId),
       messageClass: BC_CLASS_MODERN_24,
@@ -1234,15 +1266,19 @@ export class ReolinkBaichuanApi {
    * @param command - PTZ command
    * @returns Promise that resolves when command is sent
    */
-  async ptz(channel: number, command: PtzCommand): Promise<void> {
+  async ptz(command: PtzCommand): Promise<void>;
+  async ptz(channel: number, command: PtzCommand): Promise<void>;
+  async ptz(channelOrCommand: number | PtzCommand, command?: PtzCommand): Promise<void> {
+    const ch = typeof channelOrCommand === "number" ? this.normalizeChannel(channelOrCommand) : 0;
+    const resolvedCommand = typeof channelOrCommand === "number" ? command! : channelOrCommand;
     // Neolink uses the same channel_id in meta header, Extension and payload XML.
     // In neolink this is 0-based.
-    const channelId = channel;
+    const channelId = ch;
     
     // Neolink supports only: "up", "down", "left", "right", "stop" via MSG_ID_PTZ_CONTROL.
     // Zoom/focus are separate messages (e.g. 294/295).
     let direction: "up" | "down" | "left" | "right" | "stop";
-    if (command.action === "stop") {
+    if (resolvedCommand.action === "stop") {
       direction = "stop";
     } else {
       const cmdMap: Record<string, "up" | "down" | "left" | "right"> = {
@@ -1251,9 +1287,9 @@ export class ReolinkBaichuanApi {
         Up: "up",
         Down: "down",
       };
-      const mapped = cmdMap[command.command];
+      const mapped = cmdMap[resolvedCommand.command];
       if (!mapped) {
-        throw new Error(`Unsupported PTZ command for MSG_ID_PTZ_CONTROL: ${command.command}`);
+        throw new Error(`Unsupported PTZ command for MSG_ID_PTZ_CONTROL: ${resolvedCommand.command}`);
       }
       direction = mapped;
     }
@@ -1264,7 +1300,7 @@ export class ReolinkBaichuanApi {
     if (direction === "stop") {
       speed = 0;
     } else {
-      const raw = command.speed;
+      const raw = resolvedCommand.speed;
       if (raw === undefined) {
         speed = 32;
       } else if (raw > 0 && raw <= 1) {
@@ -1289,12 +1325,12 @@ export class ReolinkBaichuanApi {
     if (this.client.getDebugConfig().debugH264 || process.env.BAICHUAN_DEBUG_PTZ) {
       this.logger.debug("[DEBUG] PTZ XML:", payloadXml);
       this.logger.debug("[DEBUG] Extension XML:", extensionXml);
-      this.logger.debug("[DEBUG] Channel (0-based):", channel, "ChannelId (0-based):", channelId);
+      this.logger.debug("[DEBUG] Channel (0-based):", ch, "ChannelId (0-based):", channelId);
     }
     
     const frame = await this.client.sendFrame({
       cmdId: BC_CMD_ID_PTZ_CONTROL,
-      channel,
+      channel: ch,
       channelIdOverride: channelId,
       extensionXml,
       payloadXml,
@@ -1327,11 +1363,11 @@ export class ReolinkBaichuanApi {
     
     // If action is "start", send a stop after a short delay.
     // Some integrations need to tune the movement amount per command.
-    if (command.action === "start" && direction !== "stop") {
-      const autoStopMs = command.autoStopMs ?? 500;
+    if (resolvedCommand.action === "start" && direction !== "stop") {
+      const autoStopMs = resolvedCommand.autoStopMs ?? 500;
       if (autoStopMs > 0) {
         setTimeout(() => {
-          this.ptz(channel, { action: "stop", command: command.command }).catch(() => {
+          this.ptz(ch, { action: "stop", command: resolvedCommand.command }).catch(() => {
             // Ignore stop errors
           });
         }, autoStopMs);
@@ -1346,8 +1382,12 @@ export class ReolinkBaichuanApi {
    * @param channel - Channel number (0-based)
    * @param presetId - Preset ID
    */
-  async moveToPtzPreset(channel: number, presetId: number): Promise<void> {
-    const channelId = channel;
+  async moveToPtzPreset(presetId: number, channel?: number): Promise<void>;
+  async moveToPtzPreset(channel: number, presetId: number): Promise<void>;
+  async moveToPtzPreset(arg1: number, arg2?: number): Promise<void> {
+    const ch = arg2 === undefined ? this.normalizeChannel(arg2) : this.normalizeChannel(arg1);
+    const presetId = arg2 === undefined ? arg1 : arg2;
+    const channelId = ch;
     const payloadXml = buildPtzPresetXml(channelId, presetId, "toPos");
     
     // Neolink includes extension with channel_id for PTZ preset commands
@@ -1355,7 +1395,7 @@ export class ReolinkBaichuanApi {
     
     const frame = await this.client.sendFrame({
       cmdId: BC_CMD_ID_PTZ_CONTROL_PRESET,
-      channel,
+      channel: ch,
       channelIdOverride: channelId,
       extensionXml,
       payloadXml,
@@ -1376,8 +1416,13 @@ export class ReolinkBaichuanApi {
    * @param presetId - Preset ID
    * @param name - Preset name
    */
-  async setPtzPreset(channel: number, presetId: number, name: string): Promise<void> {
-    const channelId = channel;
+  async setPtzPreset(presetId: number, name: string, channel?: number): Promise<void>;
+  async setPtzPreset(channel: number, presetId: number, name: string): Promise<void>;
+  async setPtzPreset(arg1: number, arg2: number | string, arg3?: string | number): Promise<void> {
+    const ch = typeof arg2 === "string" ? this.normalizeChannel(arg3 as number | undefined) : this.normalizeChannel(arg1);
+    const presetId = typeof arg2 === "string" ? arg1 : (arg2 as number);
+    const name = typeof arg2 === "string" ? arg2 : (arg3 as string);
+    const channelId = ch;
     const payloadXml = buildPtzPresetXml(channelId, presetId, "setPos", name);
     
     // Neolink includes extension with channel_id for PTZ preset commands
@@ -1385,7 +1430,7 @@ export class ReolinkBaichuanApi {
     
     const frame = await this.client.sendFrame({
       cmdId: BC_CMD_ID_PTZ_CONTROL_PRESET,
-      channel,
+      channel: ch,
       channelIdOverride: channelId,
       extensionXml,
       payloadXml,
@@ -1405,8 +1450,9 @@ export class ReolinkBaichuanApi {
    * @param channel - Channel number (0-based)
    * @returns PTZ position (pan and tilt)
    */
-  async getPtzPosition(channel: number): Promise<{ pan?: number; tilt?: number }> {
-    const xml = await this.sendXml({ cmdId: BC_CMD_ID_GET_PTZ_POSITION, channel });
+  async getPtzPosition(channel?: number): Promise<{ pan?: number; tilt?: number }> {
+    const ch = this.normalizeChannel(channel);
+    const xml = await this.sendXml({ cmdId: BC_CMD_ID_GET_PTZ_POSITION, channel: ch });
     
     const panText = getXmlText(xml, "pPos");
     const tiltText = getXmlText(xml, "tPos");
@@ -1426,14 +1472,15 @@ export class ReolinkBaichuanApi {
    * Read zoom/focus min/max/current positions.
    * cmd_id: 294 (MSG_ID_GET_ZOOM_FOCUS)
    */
-  async getZoomFocus(channel: number): Promise<{
+  async getZoomFocus(channel?: number): Promise<{
     zoom?: { minPos: number; maxPos: number; curPos: number };
     focus?: { minPos: number; maxPos: number; curPos: number };
   }> {
-    const channelId = channel;
+    const ch = this.normalizeChannel(channel);
+    const channelId = ch;
     const xml = await this.sendXml({
       cmdId: BC_CMD_ID_GET_ZOOM_FOCUS,
-      channel,
+      channel: ch,
       channelIdOverride: channelId,
       extensionXml: buildChannelExtensionXml(channelId),
       messageClass: BC_CLASS_MODERN_24,
@@ -1467,9 +1514,13 @@ export class ReolinkBaichuanApi {
    * Uses movePos where 1000 == 1.0x (neolink behavior).
    * cmd_id: 295 (MSG_ID_SET_ZOOM_FOCUS)
    */
-  async zoomToFactor(channel: number, zoomFactor: number): Promise<void> {
-    const channelId = channel;
-    const current = await this.getZoomFocus(channel);
+  async zoomToFactor(zoomFactor: number, channel?: number): Promise<void>;
+  async zoomToFactor(channel: number, zoomFactor: number): Promise<void>;
+  async zoomToFactor(arg1: number, arg2?: number): Promise<void> {
+    const ch = arg2 === undefined ? 0 : this.normalizeChannel(arg1);
+    const zoomFactor = arg2 === undefined ? arg1 : arg2;
+    const channelId = ch;
+    const current = await this.getZoomFocus(ch);
     const zoom = current.zoom;
     if (!zoom) {
       throw new Error("Camera did not return <zoom> info (zoom may be unsupported)");
@@ -1483,7 +1534,7 @@ export class ReolinkBaichuanApi {
 
     const frame = await this.client.sendFrame({
       cmdId: BC_CMD_ID_SET_ZOOM_FOCUS,
-      channel,
+      channel: ch,
       channelIdOverride: channelId,
       extensionXml,
       payloadXml,
@@ -1508,12 +1559,13 @@ export class ReolinkBaichuanApi {
    * @param channel - Channel number (0-based)
    * @returns Battery information including sleep status
    */
-  async getBatteryStatus(channel: number): Promise<BatteryInfo> {
+  async getBatteryStatus(channel?: number): Promise<BatteryInfo> {
+    const ch = this.normalizeChannel(channel);
     try {
       // First, try to get battery info
       // If the camera is sleeping, this may timeout or fail
       const xml = await Promise.race([
-        this.sendXml({ cmdId: BC_CMD_ID_GET_BATTERY_INFO, channel }),
+        this.sendXml({ cmdId: BC_CMD_ID_GET_BATTERY_INFO, channel: ch }),
         new Promise<string>((_, reject) => 
           setTimeout(() => reject(new Error("Timeout")), 5000)
         )
@@ -1527,7 +1579,7 @@ export class ReolinkBaichuanApi {
       // chargeStatus: 0=charging, 1=discharging, 2=full
       
       const result: BatteryInfo = {
-        channel,
+        channel: ch,
         sleeping: false, // Camera responded, so it's awake
       };
       if (batteryPercentText !== undefined) {
@@ -1542,7 +1594,7 @@ export class ReolinkBaichuanApi {
       // If the command times out or fails, the camera is likely sleeping
       // Note: GetBatteryInfo is a NONE_WAKING_COMMAND, so it won't wake up the camera
       const result: BatteryInfo = {
-        channel,
+        channel: ch,
         sleeping: true,
       };
       
@@ -1574,8 +1626,9 @@ export class ReolinkBaichuanApi {
    * @param channel - Channel number (0-based)
    * @returns Battery information
    */
-  async getBatteryInfo(channel: number): Promise<BatteryInfo> {
-    const xml = await this.sendXml({ cmdId: BC_CMD_ID_GET_BATTERY_INFO, channel });
+  async getBatteryInfo(channel?: number): Promise<BatteryInfo> {
+    const ch = this.normalizeChannel(channel);
+    const xml = await this.sendXml({ cmdId: BC_CMD_ID_GET_BATTERY_INFO, channel: ch });
     
     // Parse battery info from XML
     // Expected format: <Battery><batteryPercent>...</batteryPercent><chargeStatus>...</chargeStatus></Battery>
@@ -1586,7 +1639,7 @@ export class ReolinkBaichuanApi {
     // Note: sleep status is typically from GetChannelstatus (cmd_id 145), not from battery info
     
     const result: BatteryInfo = {
-      channel,
+      channel: ch,
     };
     if (batteryPercentText !== undefined) {
       result.batteryPercent = Number(batteryPercentText);
@@ -1607,11 +1660,12 @@ export class ReolinkBaichuanApi {
    * @param channel - Channel number (0-based)
    * @param waitAfterWake - Optional delay in milliseconds after sending wake command (default: 1500ms, as in reolink_aio)
    */
-  async wakeUp(channel: number, waitAfterWake?: number): Promise<void> {
+  async wakeUp(channel?: number, waitAfterWake?: number): Promise<void> {
+    const ch = this.normalizeChannel(channel);
     // Use GetEnc (cmd_id 56) which is a WAKING_COMMAND per reolink_aio
     // This command will wake up the camera if it's sleeping
     try {
-      await this.getEncXml(channel);
+      await this.getEncXml(ch);
       // Give the camera time to wake up (reolink_aio waits 1.5s after 400 errors)
       const delay = waitAfterWake ?? 1500;
       if (delay > 0) {
@@ -1621,7 +1675,7 @@ export class ReolinkBaichuanApi {
       // If GetEnc fails (e.g., camera is still sleeping), that's OK - we tried
       // The caller should handle this gracefully
       if (this.client.getDebugConfig().debugH264) {
-        this.logger.debug(`[DEBUG] Wake-up command failed for channel ${channel}:`, error);
+        this.logger.debug(`[DEBUG] Wake-up command failed for channel ${ch}:`, error);
       }
       throw error;
     }
@@ -1640,12 +1694,13 @@ export class ReolinkBaichuanApi {
    * @param channel - Channel number (0-based)
    * @returns true if camera appears to be sleeping, false otherwise
    */
-  async isSleeping(channel: number): Promise<boolean> {
+  async isSleeping(channel?: number): Promise<boolean> {
+    const ch = this.normalizeChannel(channel);
     try {
       // Try to get battery info (non-waking command)
       // If camera is sleeping, this should timeout or fail
       await Promise.race([
-        this.getBatteryInfo(channel),
+        this.getBatteryInfo(ch),
         new Promise((_, reject) => 
           setTimeout(() => reject(new Error("Timeout")), 5000)
         )
@@ -1656,7 +1711,7 @@ export class ReolinkBaichuanApi {
       // If we get a timeout or connection error, camera might be sleeping
       // However, it could also be a network issue or camera offline
       if (this.client.getDebugConfig().debugH264) {
-        this.logger.debug(`[DEBUG] isSleeping check for channel ${channel} failed:`, error);
+        this.logger.debug(`[DEBUG] isSleeping check for channel ${ch} failed:`, error);
       }
       // We can't be 100% sure, but a timeout suggests sleeping
       return true;
@@ -1674,8 +1729,9 @@ export class ReolinkBaichuanApi {
    * @param channel - Channel number (0-based)
    * @returns PIR state information
    */
-  async getPirInfo(channel: number): Promise<PirState> {
-    const xml = await this.sendXml({ cmdId: BC_CMD_ID_GET_PIR_INFO, channel });
+  async getPirInfo(channel?: number): Promise<PirState> {
+    const ch = this.normalizeChannel(channel);
+    const xml = await this.sendXml({ cmdId: BC_CMD_ID_GET_PIR_INFO, channel: ch });
     
     const enable = getXmlText(xml, "enable");
     const sensitive = getXmlText(xml, "sensiValue");
@@ -1684,7 +1740,7 @@ export class ReolinkBaichuanApi {
     const intervalMax = getXmlText(xml, "intervalSecMax");
     
     const state: PirState["state"] = {
-      channel,
+      channel: ch,
     };
     if (enable !== undefined) {
       state.enable = Number(enable);
@@ -1715,9 +1771,17 @@ export class ReolinkBaichuanApi {
    * @param channel - Channel number (0-based)
    * @param params - PIR settings (enable is required)
    */
-  async setPirInfo(channel: number, params: { enable: number; sensitive?: number; reduceAlarm?: number; interval?: number }): Promise<void> {
+  async setPirInfo(params: { enable: number; sensitive?: number; reduceAlarm?: number; interval?: number }, channel?: number): Promise<void>;
+  async setPirInfo(channel: number, params: { enable: number; sensitive?: number; reduceAlarm?: number; interval?: number }): Promise<void>;
+  async setPirInfo(
+    arg1: number | { enable: number; sensitive?: number; reduceAlarm?: number; interval?: number },
+    arg2?: number | { enable: number; sensitive?: number; reduceAlarm?: number; interval?: number }
+  ): Promise<void> {
+    const channel = typeof arg1 === "number" ? arg1 : (arg2 as number | undefined);
+    const params = typeof arg1 === "number" ? (arg2 as { enable: number; sensitive?: number; reduceAlarm?: number; interval?: number }) : arg1;
+    const ch = this.normalizeChannel(channel);
     // First get current settings to modify
-    const currentXml = await this.sendXml({ cmdId: BC_CMD_ID_GET_PIR_INFO, channel });
+    const currentXml = await this.sendXml({ cmdId: BC_CMD_ID_GET_PIR_INFO, channel: ch });
     
     // Parse and modify XML
     let modifiedXml = currentXml;
@@ -1737,7 +1801,7 @@ export class ReolinkBaichuanApi {
     
     await this.sendXml({ 
       cmdId: BC_CMD_ID_SET_PIR_INFO, 
-      channel, 
+      channel: ch, 
       payloadXml: modifiedXml,
     });
   }
@@ -1754,9 +1818,15 @@ export class ReolinkBaichuanApi {
    * @param enabled - Enable/disable motion detection
    * @param sensitivity - Sensitivity level (optional)
    */
-  async setMotionDetection(channel: number, enabled: boolean, sensitivity?: number): Promise<void> {
+  async setMotionDetection(enabled: boolean, sensitivity?: number, channel?: number): Promise<void>;
+  async setMotionDetection(channel: number, enabled: boolean, sensitivity?: number): Promise<void>;
+  async setMotionDetection(arg1: number | boolean, arg2?: boolean | number, arg3?: number): Promise<void> {
+    const channel = typeof arg1 === "number" ? arg1 : arg3;
+    const enabled = typeof arg1 === "number" ? (arg2 as boolean) : arg1;
+    const sensitivity = typeof arg1 === "number" ? arg3 : (arg2 as number | undefined);
+    const ch = this.normalizeChannel(channel);
     // First get current settings
-    const currentXml = await this.sendXml({ cmdId: 46, channel }); // GetMdAlarm
+    const currentXml = await this.sendXml({ cmdId: 46, channel: ch }); // GetMdAlarm
     
     // Parse and modify XML
     // Expected format: <sensInfoNew><enable>...</enable><sensitivityDefault>...</sensitivityDefault></sensInfoNew>
@@ -1771,7 +1841,7 @@ export class ReolinkBaichuanApi {
     
     await this.sendXml({ 
       cmdId: BC_CMD_ID_SET_MOTION_ALARM, 
-      channel, 
+      channel: ch, 
       payloadXml: modifiedXml,
     });
   }
@@ -1789,20 +1859,27 @@ export class ReolinkBaichuanApi {
    * @param sensitivity - Sensitivity level (optional)
    * @param stayTime - Stay time/delay (optional)
    */
-  async setAiDetection(channel: number, aiType: string, sensitivity?: number, stayTime?: number): Promise<void> {
+  async setAiDetection(aiType: string, sensitivity?: number, stayTime?: number, channel?: number): Promise<void>;
+  async setAiDetection(channel: number, aiType: string, sensitivity?: number, stayTime?: number): Promise<void>;
+  async setAiDetection(arg1: number | string, arg2?: string | number, arg3?: number, arg4?: number): Promise<void> {
+    const channel = typeof arg1 === "number" ? arg1 : arg4;
+    const aiType = typeof arg1 === "number" ? (arg2 as string) : arg1;
+    const sensitivity = typeof arg1 === "number" ? arg3 : (arg2 as number | undefined);
+    const stayTime = typeof arg1 === "number" ? arg4 : arg3;
+    const ch = this.normalizeChannel(channel);
     // First get current settings for this AI type
     // Note: GetAiAlarm requires ai_type parameter, we need to build the request XML
     const getXml = `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <GetAiAlarm version="1.1">
-<channelId>${channel + 1}</channelId>
+<channelId>${ch + 1}</channelId>
 <aiType>${xmlEscape(aiType)}</aiType>
 </GetAiAlarm>
 </body>`;
     
     const currentXml = await this.sendXml({ 
       cmdId: 342, // GetAiAlarm
-      channel,
+      channel: ch,
       payloadXml: getXml,
     });
     
@@ -1818,7 +1895,7 @@ export class ReolinkBaichuanApi {
     
     await this.sendXml({ 
       cmdId: BC_CMD_ID_SET_AI_ALARM, 
-      channel, 
+      channel: ch, 
       payloadXml: modifiedXml,
     });
   }
@@ -1866,7 +1943,13 @@ export class ReolinkBaichuanApi {
    * @param on - Enable/disable siren (for manual mode)
    * @param duration - Number of times to play (for times mode)
    */
-  async setSiren(channel: number | undefined, on?: boolean, duration?: number): Promise<void> {
+  async setSiren(on?: boolean, duration?: number, channel?: number): Promise<void>;
+  async setSiren(channel: number | undefined, on?: boolean, duration?: number): Promise<void>;
+  async setSiren(arg1?: number | boolean, arg2?: boolean | number, arg3?: number): Promise<void> {
+    const channel = typeof arg1 === "boolean" ? (arg3 ?? 0) : (arg1 as number | undefined);
+    const on = typeof arg1 === "boolean" ? arg1 : (arg2 as boolean | undefined);
+    const duration = typeof arg1 === "boolean" ? (arg2 as number | undefined) : arg3;
+
     const channelId = channel !== undefined ? channel + 1 : undefined;
     let payloadXml: string;
     
@@ -1911,8 +1994,9 @@ export class ReolinkBaichuanApi {
    * @param channel - Channel number (0-based)
    * @returns White LED state
    */
-  async getWhiteLedState(channel: number): Promise<WhiteLedState> {
-    const xml = await this.sendXml({ cmdId: BC_CMD_ID_GET_WHITE_LED, channel });
+  async getWhiteLedState(channel?: number): Promise<WhiteLedState> {
+    const ch = this.normalizeChannel(channel);
+    const xml = await this.sendXml({ cmdId: BC_CMD_ID_GET_WHITE_LED, channel: ch });
     
     // Parse white LED state from XML
     // Expected format: <FloodlightTask><state>...</state><brightness_cur>...</brightness_cur></FloodlightTask>
@@ -1937,22 +2021,28 @@ export class ReolinkBaichuanApi {
    * @param on - Enable/disable white LED
    * @param brightness - Brightness level (optional)
    */
-  async setWhiteLedState(channel: number, on?: boolean, brightness?: number): Promise<void> {
+  async setWhiteLedState(on?: boolean, brightness?: number, channel?: number): Promise<void>;
+  async setWhiteLedState(channel: number, on?: boolean, brightness?: number): Promise<void>;
+  async setWhiteLedState(arg1?: number | boolean, arg2?: boolean | number, arg3?: number): Promise<void> {
+    const channel = typeof arg1 === "number" ? arg1 : (arg3 ?? 0);
+    const on = typeof arg1 === "number" ? (arg2 as boolean | undefined) : (arg1 as boolean | undefined);
+    const brightness = typeof arg1 === "number" ? arg3 : (arg2 as number | undefined);
+    const ch = this.normalizeChannel(channel);
     if (on !== undefined) {
       // Set state using cmd_id 288
-      const channelId = channel + 1;
+      const channelId = ch + 1;
       const payloadXml = buildWhiteLedStateXml(channelId, on ? 1 : 0);
       
       await this.sendXml({ 
         cmdId: BC_CMD_ID_SET_WHITE_LED_STATE, 
-        channel, 
+        channel: ch, 
         payloadXml,
       });
     }
     
     if (brightness !== undefined) {
       // Set brightness using cmd_id 290 (requires getting current settings first)
-      const currentXml = await this.sendXml({ cmdId: BC_CMD_ID_GET_WHITE_LED, channel });
+      const currentXml = await this.sendXml({ cmdId: BC_CMD_ID_GET_WHITE_LED, channel: ch });
       
       // Parse and modify XML
       let modifiedXml = currentXml;
@@ -1960,7 +2050,7 @@ export class ReolinkBaichuanApi {
       
       await this.sendXml({ 
         cmdId: BC_CMD_ID_SET_WHITE_LED_TASK, 
-        channel, 
+        channel: ch, 
         payloadXml: modifiedXml,
       });
     }
@@ -1983,9 +2073,9 @@ export class ReolinkBaichuanApi {
    * @param username - Username for the request (required)
    * @returns Dictionary of capability names to version numbers or values, keyed by channel number or "Host"
    */
-  async getAbilityInfo(username: string): Promise<Partial<Record<number | "Host", Record<string, number | string | undefined>>>> {
+  async getAbilityInfo(): Promise<Partial<Record<number | "Host", Record<string, number | string | undefined>>>> {
     // Return type matches DeviceAbilities from types.ts
-    const user = username;
+    const user = this.client.username;
     const extensionXml = buildAbilityInfoExtensionXml(user);
     
     const xml = await this.sendXml({ 
@@ -2101,8 +2191,8 @@ export class ReolinkBaichuanApi {
    * @param channel - Channel number (optional, None/null for host-level)
    * @returns Version number (0 = not supported, >0 = supported with that version)
    */
-  async getAbilityVersion(username: string, capability: string, channel?: number | null): Promise<number> {
-    const abilities = await this.getAbilityInfo(username);
+  async getAbilityVersion(capability: string, channel?: number | null): Promise<number> {
+    const abilities = await this.getAbilityInfo();
     const channelKey: number | "Host" = channel !== undefined && channel !== null ? channel : "Host";
     const channelAbilities = abilities[channelKey];
     
@@ -2141,27 +2231,77 @@ export class ReolinkBaichuanApi {
        * This method centralizes capability parsing in the library.
        */
       async getDeviceCapabilities(
-        username: string,
-        channel: number,
-      ): Promise<{ abilities?: DeviceAbilities; support?: SupportInfo; capabilities: DeviceCapabilities }> {
+        channel?: number,
+      ): Promise<{ abilities?: DeviceAbilities; support?: SupportInfo; capabilities: DeviceCapabilities; presets?: PtzPreset[] }> {
+        const ch = this.normalizeChannel(channel);
         const [abilitiesResult, supportResult] = await Promise.allSettled([
-          this.getAbilityInfo(username) as Promise<DeviceAbilities>,
+          this.getAbilityInfo() as Promise<DeviceAbilities>,
           this.getSupportInfo(),
         ]);
 
         const abilities = abilitiesResult.status === "fulfilled" ? abilitiesResult.value : undefined;
         const support = supportResult.status === "fulfilled" ? supportResult.value : undefined;
 
-        const computeArgs: { channel: number; abilities?: DeviceAbilities; support?: SupportInfo } = { channel };
+        const computeArgs: { channel: number; abilities?: DeviceAbilities; support?: SupportInfo } = { channel: ch };
         if (abilities) computeArgs.abilities = abilities;
         if (support) computeArgs.support = support;
         const capabilities = computeDeviceCapabilities(computeArgs);
 
-        const result: { abilities?: DeviceAbilities; support?: SupportInfo; capabilities: DeviceCapabilities } = {
+        // Best-effort siren probe.
+        // Some devices support audio alarm but do not advertise it via AbilityInfo/Support.
+        // We try a harmless request first, then fall back to sending "off".
+        if (!capabilities.hasSiren) {
+          const tryGet = async (): Promise<boolean> => {
+            try {
+              await this.sendXml({
+                cmdId: BC_CMD_ID_GET_AUDIO_ALARM,
+                channel: ch,
+                timeoutMs: 1000,
+              });
+              return true;
+            } catch {
+              return false;
+            }
+          };
+
+          const tryOff = async (): Promise<boolean> => {
+            try {
+              const channelId = ch + 1;
+              const payloadXml = buildSirenManualXml(channelId, 0);
+              await this.sendXml({
+                cmdId: BC_CMD_ID_AUDIO_ALARM_PLAY,
+                channel: ch,
+                payloadXml,
+                timeoutMs: 1000,
+              });
+              return true;
+            } catch {
+              return false;
+            }
+          };
+
+          const ok = (await tryGet()) || (await tryOff());
+          if (ok) {
+            capabilities.hasSiren = true;
+          }
+        }
+
+        let presets: PtzPreset[] | undefined;
+        if (capabilities.hasPresets) {
+          const presetsResult = await Promise.allSettled([this.getPtzPresets(ch)]);
+          const r0 = presetsResult[0];
+          if (r0?.status === "fulfilled") {
+            presets = r0.value;
+            capabilities.hasPresets = presets.length > 0;
+          }
+        }
+
+        const result: { abilities?: DeviceAbilities; support?: SupportInfo; capabilities: DeviceCapabilities; presets?: PtzPreset[] } = {
           capabilities,
         };
         if (abilities) result.abilities = abilities;
         if (support) result.support = support;
+        if (presets) result.presets = presets;
         return result;
       }
 
@@ -2183,6 +2323,14 @@ export class ReolinkBaichuanApi {
    * ```
    */
   async createRtspStream(
+    profile: StreamProfile,
+    options?: {
+      listenHost?: string; // Host to listen on (default: "127.0.0.1")
+      listenPort?: number; // Port to listen on (default: 8554)
+      path?: string; // RTSP path (e.g. "/main" or "/sub")
+    }
+  ): Promise<BaichuanRtspServer>;
+  async createRtspStream(
     channel: number,
     profile: StreamProfile,
     options?: {
@@ -2190,11 +2338,29 @@ export class ReolinkBaichuanApi {
       listenPort?: number; // Port to listen on (default: 8554)
       path?: string; // RTSP path (e.g. "/main" or "/sub")
     }
+  ): Promise<BaichuanRtspServer>;
+  async createRtspStream(
+    channelOrProfile: number | StreamProfile,
+    profileOrOptions?:
+      | StreamProfile
+      | {
+          listenHost?: string;
+          listenPort?: number;
+          path?: string;
+        },
+    optionsMaybe?: {
+      listenHost?: string;
+      listenPort?: number;
+      path?: string;
+    }
   ): Promise<BaichuanRtspServer> {
+    const ch = typeof channelOrProfile === "number" ? this.normalizeChannel(channelOrProfile) : 0;
+    const profile = typeof channelOrProfile === "number" ? (profileOrOptions as StreamProfile) : channelOrProfile;
+    const options = typeof channelOrProfile === "number" ? optionsMaybe : (profileOrOptions as typeof optionsMaybe);
     // Get stream metadata to determine codec
     let videoCodec: string | undefined;
     try {
-      const metadata = await this.getStreamMetadata(channel);
+      const metadata = await this.getStreamMetadata(ch);
       if (Array.isArray(metadata)) {
         const stream = metadata.find((s) => s.profile === profile);
         if (stream?.videoEncType) {
@@ -2216,7 +2382,7 @@ export class ReolinkBaichuanApi {
 
     const rtspOptions: BaichuanRtspServerOptions = {
       api: this,
-      channel,
+      channel: ch,
       profile,
       ...(options?.listenHost !== undefined ? { listenHost: options.listenHost } : {}),
       ...(options?.listenPort !== undefined ? { listenPort: options.listenPort } : {}),

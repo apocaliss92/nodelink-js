@@ -149,7 +149,7 @@ export function computeDeviceCapabilities(params: {
 
   const hasBatteryFromAbilities = abilitiesHasAny(flat, /battery/i);
   const hasFloodlightFromAbilities = abilitiesHasAny(flat, /white\s*led|whiteLed|flood\s*light|floodlight|ledState/i);
-  const hasSirenFromAbilities = abilitiesHasAny(flat, /audio\s*alarm|audioAlarm|siren|audioPlay/i);
+  const hasSirenFromAbilities = abilitiesHasAny(flat, /audio\s*alarm|audioAlarm|siren|pushAlarn|audioPlay/i);
 
   const hasPanTiltFromAbilities = abilitiesHasAny(flat, /ptz/i);
   const hasZoomFromAbilities = abilitiesHasAny(flat, /zoom|zoomFocus|StartZoomFocus/i);

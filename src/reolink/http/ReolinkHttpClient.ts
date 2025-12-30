@@ -42,6 +42,10 @@ export class ReolinkHttpClient {
     }
   }
 
+  getUsername(): string {
+    return this.username;
+  }
+
   getToken(): string | undefined {
     return this.token;
   }

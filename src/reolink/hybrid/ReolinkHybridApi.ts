@@ -69,7 +69,7 @@ export class ReolinkHybridApi {
   async GetNetPort(): Promise<ReolinkCmdResponse[]> {
     if (this.baichuan) {
       try {
-        const ports = await this.baichuan.getPorts();
+        const ports = await this.baichuan.getNetPort();
         return [{ cmd: "GetNetPort", code: 0, value: ports }];
       } catch {
         // fallback
