@@ -333,7 +333,7 @@ export class ReolinkBaichuanApi {
    * Input audio format expected by the camera is ADPCM (DVI4/IMA style) in blocks described
    * by TalkAbility.audioConfigList (typically 16kHz mono, lengthPerEncoder=1024).
    */
-  async createTalkSession(channel = 0): Promise<TalkSession> {
+  async createTalkSession(channel = 0, options?: { blocksPerPayload?: number }): Promise<TalkSession> {
     if (!this.client.loggedIn) await this.client.login();
 
     const ability = await this.getTalkAbility(channel);
@@ -408,7 +408,9 @@ export class ReolinkBaichuanApi {
     let pumping = false;
     let expectedStreamEndMs = Date.now();
 
-    const BLOCKS_PER_PAYLOAD = 4; // neolink
+    // Neolink uses 4 blocks per payload. Lower values reduce end-to-end latency
+    // (smaller bursts, earlier first audio) at the cost of more packets.
+    const BLOCKS_PER_PAYLOAD = Math.max(1, Math.min(8, Math.floor(options?.blocksPerPayload ?? 1)));
 
     const sendBlocks = async (blocks: Array<Buffer<ArrayBufferLike>>): Promise<void> => {
       if (blocks.length === 0) return;
