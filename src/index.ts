@@ -23,6 +23,8 @@ export * from "./reolink/nvr/ReolinkNvrHybridApi";
 export * from "./rtsp/urls";
 export * from "./rtsp/server";
 export * from "./scrypted/helpers";
+export * from "./scrypted/rfc4571";
+export * from "./scrypted/rfc4571-server";
 export * from "./baichuan/stream/BaichuanVideoStream";
 export * from "./baichuan/stream/BaichuanRtspServer";
 export * from "./baichuan/stream/BaichuanHttpStreamServer";
