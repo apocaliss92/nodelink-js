@@ -22,6 +22,7 @@ import {
   BC_CMD_ID_SET_WHITE_LED_STATE,
   BC_CMD_ID_SET_WHITE_LED_TASK,
   BC_CMD_ID_SET_ZOOM_FOCUS,
+  BC_CMD_ID_SUPPORT,
   BC_CMD_ID_TALK,
   BC_CMD_ID_TALK_ABILITY,
   BC_CMD_ID_TALK_CONFIG,
@@ -35,6 +36,8 @@ import {
   type AIState,
   type BatteryInfo,
   type ChannelStreamMetadata,
+  type DeviceAbilities,
+  type DeviceCapabilities,
   type Events,
   type OsdConfig,
   type PirState,
@@ -45,10 +48,13 @@ import {
   type ReolinkSimpleEventType,
   type StreamMetadata,
   type StreamProfile,
+  type SupportInfo,
   type TwoWayAudioConfig,
   type VideoCodec,
   type WhiteLedState
 } from "./types";
+
+import { computeDeviceCapabilities, parseSupportXml } from "./capabilities";
 
 type TalkAbility = import("./types").TalkAbility;
 type TalkAudioConfig = import("./types").TalkAudioConfig;
@@ -1320,12 +1326,16 @@ export class ReolinkBaichuanApi {
     }
     
     // If action is "start", send a stop after a short delay.
+    // Some integrations need to tune the movement amount per command.
     if (command.action === "start" && direction !== "stop") {
-      setTimeout(() => {
-        this.ptz(channel, { action: "stop", command: command.command }).catch(() => {
-          // Ignore stop errors
-        });
-      }, 500);
+      const autoStopMs = command.autoStopMs ?? 500;
+      if (autoStopMs > 0) {
+        setTimeout(() => {
+          this.ptz(channel, { action: "stop", command: command.command }).catch(() => {
+            // Ignore stop errors
+          });
+        }, autoStopMs);
+      }
     }
   }
 
@@ -2113,6 +2123,47 @@ export class ReolinkBaichuanApi {
     
     return 0;
   }
+
+      /**
+       * Get device support info via Baichuan.
+       * cmd_id: 199 (MSG_ID_SUPPORT from neolink)
+       *
+       * Returns host-level support info including ptzMode and per-channel flags (battery, ledCtrl, etc).
+       */
+      async getSupportInfo(): Promise<SupportInfo | undefined> {
+        const xml = await this.sendXml({ cmdId: BC_CMD_ID_SUPPORT });
+        return parseSupportXml(xml);
+      }
+
+      /**
+       * Compute explicit device capabilities (hasZoom/hasPan/hasTilt/hasBattery/...) for a specific channel.
+       *
+       * This method centralizes capability parsing in the library.
+       */
+      async getDeviceCapabilities(
+        username: string,
+        channel: number,
+      ): Promise<{ abilities?: DeviceAbilities; support?: SupportInfo; capabilities: DeviceCapabilities }> {
+        const [abilitiesResult, supportResult] = await Promise.allSettled([
+          this.getAbilityInfo(username) as Promise<DeviceAbilities>,
+          this.getSupportInfo(),
+        ]);
+
+        const abilities = abilitiesResult.status === "fulfilled" ? abilitiesResult.value : undefined;
+        const support = supportResult.status === "fulfilled" ? supportResult.value : undefined;
+
+        const computeArgs: { channel: number; abilities?: DeviceAbilities; support?: SupportInfo } = { channel };
+        if (abilities) computeArgs.abilities = abilities;
+        if (support) computeArgs.support = support;
+        const capabilities = computeDeviceCapabilities(computeArgs);
+
+        const result: { abilities?: DeviceAbilities; support?: SupportInfo; capabilities: DeviceCapabilities } = {
+          capabilities,
+        };
+        if (abilities) result.abilities = abilities;
+        if (support) result.support = support;
+        return result;
+      }
 
   /**
    * Create an RTSP server for a video stream.

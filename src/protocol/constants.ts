@@ -84,6 +84,10 @@ export const BC_CMD_ID_SET_WHITE_LED_TASK = 290; // SetWhiteLed task (brightness
 // Ability Info command ID
 export const BC_CMD_ID_ABILITY_INFO = 151; // MSG_ID_ABILITY_INFO - Get device capabilities/abilities
 
+// Support query command ID
+// Returns a <Support> XML block with ptzMode and per-channel flags (e.g. battery, ledCtrl).
+export const BC_CMD_ID_SUPPORT = 199; // MSG_ID_SUPPORT
+
 // Ping command ID (from neolink model.rs)
 export const BC_CMD_ID_PING = 93; // MSG_ID_PING - Keep connection alive / check status
 

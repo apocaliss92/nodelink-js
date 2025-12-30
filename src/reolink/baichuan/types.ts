@@ -45,6 +45,8 @@ export interface PtzCommand {
   action: "start" | "stop";
   command: "Left" | "Right" | "Up" | "Down" | "ZoomIn" | "ZoomOut" | "FocusNear" | "FocusFar";
   speed?: number;
+  /** Optional: how long to move before sending an automatic stop (ms). Set to 0 to disable auto-stop. */
+  autoStopMs?: number;
 }
 
 export interface BatteryInfo {
@@ -237,4 +239,68 @@ export type AbilityInfo = Record<string, number | string | undefined>;
  * - "Host": Host-level/system abilities
  */
 export type DeviceAbilities = Partial<Record<number | "Host", AbilityInfo>>;
+
+export interface SupportItem {
+  chnID: number;
+  ptzType?: number;
+  ptzPreset?: number;
+  ptzPatrol?: number;
+  ptzTattern?: number;
+  ptzControl?: number;
+  rfCfg?: number;
+  noAudio?: number;
+  autoFocus?: number;
+  videoClip?: number;
+  battery?: number;
+  ispCfg?: number;
+  osdCfg?: number;
+  batAnalysis?: number;
+  dynamicReso?: number;
+  audioVersion?: number;
+  ledCtrl?: number;
+  motion?: number;
+  [key: string]: number | string | undefined;
+}
+
+export interface SupportInfo {
+  items: SupportItem[];
+  ptzMode?: string;
+
+  IOInputPortNum?: number;
+  IOOutputPortNum?: number;
+  diskNum?: number;
+  channelNum?: number;
+  audioNum?: number;
+  ptzCfg?: number;
+  B485?: number;
+  autoUpdate?: number;
+  pushAlarm?: number;
+  ftp?: number;
+  ftpTest?: number;
+  email?: number;
+  wifi?: number;
+  record?: number;
+  wifiTest?: number;
+  rtsp?: number;
+  onvif?: number;
+  audioTalk?: number;
+
+  // Preserve unknown fields when useful.
+  [key: string]: unknown;
+}
+
+export interface DeviceCapabilities {
+  channel: number;
+  /** Lower-cased ptzMode when available (e.g. "pt", "ptz", "none"). */
+  ptzMode?: string;
+  hasPan: boolean;
+  hasTilt: boolean;
+  hasZoom: boolean;
+  hasPresets: boolean;
+  hasPtz: boolean;
+  hasBattery: boolean;
+  hasSiren: boolean;
+  hasFloodlight: boolean;
+  hasPir: boolean;
+}
 
