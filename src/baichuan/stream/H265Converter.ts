@@ -43,6 +43,60 @@ function tryConvertWithLengthReader(data: Buffer, readLen: (buf: Buffer, offset:
   return Buffer.concat(result);
 }
 
+function tryConvertWithLengthReader16(data: Buffer, readLen: (buf: Buffer, offset: number) => number): Buffer | null {
+  const result: Buffer[] = [];
+  let offset = 0;
+  let nalCount = 0;
+
+  while (offset < data.length) {
+    if (offset + 2 > data.length) return null;
+    const nalLength = readLen(data, offset);
+    offset += 2;
+    if (nalLength <= 0) return null;
+    if (nalLength > data.length - offset) return null;
+
+    result.push(NAL_START_CODE_4B);
+    result.push(data.subarray(offset, offset + nalLength));
+    offset += nalLength;
+    nalCount++;
+  }
+
+  if (nalCount === 0) return null;
+  return Buffer.concat(result);
+}
+
+function tryConvertWithLengthReader24(data: Buffer, endian: "be" | "le"): Buffer | null {
+  const result: Buffer[] = [];
+  let offset = 0;
+  let nalCount = 0;
+
+  const readLen24 = (buf: Buffer, at: number): number => {
+    if (at + 3 > buf.length) return 0;
+    const b0 = buf[at]!;
+    const b1 = buf[at + 1]!;
+    const b2 = buf[at + 2]!;
+    return endian === "be"
+      ? ((b0 << 16) | (b1 << 8) | b2) >>> 0
+      : ((b2 << 16) | (b1 << 8) | b0) >>> 0;
+  };
+
+  while (offset < data.length) {
+    if (offset + 3 > data.length) return null;
+    const nalLength = readLen24(data, offset);
+    offset += 3;
+    if (nalLength <= 0) return null;
+    if (nalLength > data.length - offset) return null;
+
+    result.push(NAL_START_CODE_4B);
+    result.push(data.subarray(offset, offset + nalLength));
+    offset += nalLength;
+    nalCount++;
+  }
+
+  if (nalCount === 0) return null;
+  return Buffer.concat(result);
+}
+
 function looksLikeSingleH265Nal(nalPayload: Buffer): boolean {
   if (nalPayload.length < 2) return false;
   const b0 = nalPayload[0];
@@ -73,6 +127,16 @@ export function convertToAnnexB(data: Buffer): Buffer {
     return data;
   }
 
+  // Some models prepend a small header (e.g. size/timestamp) before an Annex-B access unit.
+  // If we can find a start code very early, resync to it.
+  const sc4 = Buffer.from([0x00, 0x00, 0x00, 0x01]);
+  const sc3 = Buffer.from([0x00, 0x00, 0x01]);
+  const maxScan = Math.min(64, data.length);
+  const idx4 = data.subarray(0, maxScan).indexOf(sc4);
+  if (idx4 > 0) return data.subarray(idx4);
+  const idx3 = data.subarray(0, maxScan).indexOf(sc3);
+  if (idx3 > 0) return data.subarray(idx3);
+
   // Otherwise, try HVCC -> AnnexB conversion.
   // In practice most sources use 4-byte big-endian, but some streams can be little-endian:
   // try both and take the first valid conversion.
@@ -81,11 +145,135 @@ export function convertToAnnexB(data: Buffer): Buffer {
   const le = tryConvertWithLengthReader(data, (b, o) => b.readUInt32LE(o));
   if (le) return le;
 
+  // Some devices use 3-byte (24-bit) NAL lengths.
+  const be24 = tryConvertWithLengthReader24(data, "be");
+  if (be24) return be24;
+  const le24 = tryConvertWithLengthReader24(data, "le");
+  if (le24) return le24;
+
+  // Also try 2-byte length-prefixed.
+  const be16 = tryConvertWithLengthReader16(data, (b, o) => b.readUInt16BE(o));
+  if (be16) return be16;
+  const le16 = tryConvertWithLengthReader16(data, (b, o) => b.readUInt16LE(o));
+  if (le16) return le16;
+
   // If it looks like a single H.265 NAL without start codes, prepend a start code.
   if (looksLikeSingleH265Nal(data)) {
     return Buffer.concat([NAL_START_CODE_4B, data]);
   }
   return data;
+}
+
+/**
+ * Depacketizer for H.265 "RTP-like" payloads (RFC 7798) when the camera sends
+ * single NAL units, AP aggregation, or FU fragmentation inside a BcMedia frame payload.
+ *
+ * Returns complete access units already in Annex-B (with start codes).
+ */
+export class H265RtpDepacketizer {
+  private fuParts: Buffer[] | null = null;
+
+  reset(): void {
+    this.fuParts = null;
+  }
+
+  private static parseRtpPayload(packet: Buffer): Buffer | null {
+    if (!packet || packet.length < 12) return null;
+    const version = (packet[0]! >> 6) & 0x03;
+    if (version !== 2) return null;
+
+    const padding = (packet[0]! & 0x20) !== 0;
+    const extension = (packet[0]! & 0x10) !== 0;
+    const csrcCount = packet[0]! & 0x0f;
+
+    let offset = 12 + csrcCount * 4;
+    if (offset > packet.length) return null;
+
+    if (extension) {
+      if (offset + 4 > packet.length) return null;
+      const extLenWords = packet.readUInt16BE(offset + 2);
+      offset += 4 + extLenWords * 4;
+      if (offset > packet.length) return null;
+    }
+
+    let end = packet.length;
+    if (padding) {
+      const padLen = packet[packet.length - 1]!;
+      if (padLen <= 0 || padLen > packet.length) return null;
+      end = packet.length - padLen;
+      if (end < offset) return null;
+    }
+
+    if (end <= offset) return null;
+    return packet.subarray(offset, end);
+  }
+
+  push(payload: Buffer): Buffer[] {
+    if (!payload || payload.length < 2) return [];
+
+    // Some models embed full RTP packets in the BcMedia payload.
+    // If this looks like RTP, strip the header and depacketize the RTP payload.
+    const rtpPayload = H265RtpDepacketizer.parseRtpPayload(payload);
+    if (rtpPayload) payload = rtpPayload;
+
+    const h0 = payload[0]!;
+    const h1 = payload[1]!;
+
+    // forbidden_zero_bit must be 0
+    if ((h0 & 0x80) !== 0) return [];
+
+    const nalType = (h0 >> 1) & 0x3f;
+
+    // AP (48): [2B header][2B size][NAL (incl 2B hdr)]...
+    if (nalType === 48) {
+      let off = 2;
+      const out: Buffer[] = [];
+      while (off + 2 <= payload.length) {
+        const size = payload.readUInt16BE(off);
+        off += 2;
+        if (size <= 0 || off + size > payload.length) return [];
+        const nal = payload.subarray(off, off + size);
+        off += size;
+        if (nal.length) out.push(NAL_START_CODE_4B, nal);
+      }
+      return out.length ? [Buffer.concat(out)] : [];
+    }
+
+    // FU (49): [2B FU indicator][1B FU header][fragment]
+    if (nalType === 49) {
+      if (payload.length < 3) return [];
+      const fuHeader = payload[2]!;
+      const start = (fuHeader & 0x80) !== 0;
+      const end = (fuHeader & 0x40) !== 0;
+      const origType = fuHeader & 0x3f;
+
+      // Reconstruct original NAL header: keep F bit and nuh_layer_id msb (bit0) from FU indicator,
+      // replace type.
+      const orig0 = (h0 & 0x81) | ((origType & 0x3f) << 1);
+      const orig1 = h1;
+      const frag = payload.subarray(3);
+
+      if (start) {
+        this.fuParts = [NAL_START_CODE_4B, Buffer.from([orig0, orig1]), frag];
+      }
+      else {
+        if (!this.fuParts) return [];
+        this.fuParts.push(frag);
+      }
+
+      if (end) {
+        if (!this.fuParts) return [];
+        const out = Buffer.concat(this.fuParts);
+        this.fuParts = null;
+        return [out];
+      }
+
+      return [];
+    }
+
+    // Single NAL unit (no start code)
+    return [Buffer.concat([NAL_START_CODE_4B, payload])];
+  }
 }
 
 /**

@@ -68,6 +68,38 @@ function tryConvertWithLengthReader16(data: Buffer, readLen: (buf: Buffer, offse
   return Buffer.concat(result);
 }
 
+function tryConvertWithLengthReader24(data: Buffer, endian: "be" | "le"): Buffer | null {
+  const result: Buffer[] = [];
+  let offset = 0;
+  let nalCount = 0;
+
+  const readLen24 = (buf: Buffer, at: number): number => {
+    if (at + 3 > buf.length) return 0;
+    const b0 = buf[at]!;
+    const b1 = buf[at + 1]!;
+    const b2 = buf[at + 2]!;
+    return endian === "be"
+      ? ((b0 << 16) | (b1 << 8) | b2) >>> 0
+      : ((b2 << 16) | (b1 << 8) | b0) >>> 0;
+  };
+
+  while (offset < data.length) {
+    if (offset + 3 > data.length) return null;
+    const nalLength = readLen24(data, offset);
+    offset += 3;
+    if (nalLength <= 0) return null;
+    if (nalLength > data.length - offset) return null;
+
+    result.push(NAL_START_CODE_4B);
+    result.push(data.subarray(offset, offset + nalLength));
+    offset += nalLength;
+    nalCount++;
+  }
+
+  if (nalCount === 0) return null;
+  return Buffer.concat(result);
+}
+
 function looksLikeSingleH264Nal(nalPayload: Buffer): boolean {
   if (nalPayload.length < 1) return false;
   const b0 = nalPayload[0];
@@ -168,6 +200,16 @@ export function convertToAnnexB(data: Buffer): Buffer {
     return data;
   }
 
+  // Some models prepend a small header (e.g. size/timestamp) before an Annex-B access unit.
+  // If we can find a start code very early, resync to it.
+  const sc4 = Buffer.from([0x00, 0x00, 0x00, 0x01]);
+  const sc3 = Buffer.from([0x00, 0x00, 0x01]);
+  const maxScan = Math.min(64, data.length);
+  const idx4 = data.subarray(0, maxScan).indexOf(sc4);
+  if (idx4 > 0) return data.subarray(idx4);
+  const idx3 = data.subarray(0, maxScan).indexOf(sc3);
+  if (idx3 > 0) return data.subarray(idx3);
+
   // Otherwise, try AVCC -> AnnexB conversion.
   // In practice most sources use 4-byte big-endian, but some streams can be little-endian:
   // try both and take the first valid conversion.
@@ -175,6 +217,12 @@ export function convertToAnnexB(data: Buffer): Buffer {
   if (be) return be;
   const le = tryConvertWithLengthReader(data, (b, o) => b.readUInt32LE(o));
   if (le) return le;
+
+  // Some devices use 3-byte (24-bit) NAL lengths.
+  const be24 = tryConvertWithLengthReader24(data, "be");
+  if (be24) return be24;
+  const le24 = tryConvertWithLengthReader24(data, "le");
+  if (le24) return le24;
 
   // Also try 2-byte length-prefixed (some streams do this on P-frames).
   const be16 = tryConvertWithLengthReader16(data, (b, o) => b.readUInt16BE(o));
@@ -191,6 +239,9 @@ export function convertToAnnexB(data: Buffer): Buffer {
   if (looksLikeSingleH264Nal(data)) {
     return Buffer.concat([NAL_START_CODE_4B, data]);
   }
+
+  // Last-ditch: if we couldn't convert, return original bytes.
+  // Callers that validate Annex-B will drop invalid frames.
   return data;
 }
 
@@ -260,6 +311,38 @@ export class H264RtpDepacketizer {
   private fuNalHeader: number | null = null;
   private fuParts: Buffer[] = [];
 
+  private static parseRtpPayload(packet: Buffer): Buffer | null {
+    // Accept full RTP packets (12B header + optional CSRC/ext/padding) and return the payload.
+    if (!packet || packet.length < 12) return null;
+    const version = (packet[0]! >> 6) & 0x03;
+    if (version !== 2) return null;
+
+    const padding = (packet[0]! & 0x20) !== 0;
+    const extension = (packet[0]! & 0x10) !== 0;
+    const csrcCount = packet[0]! & 0x0f;
+
+    let offset = 12 + csrcCount * 4;
+    if (offset > packet.length) return null;
+
+    if (extension) {
+      if (offset + 4 > packet.length) return null;
+      const extLenWords = packet.readUInt16BE(offset + 2);
+      offset += 4 + extLenWords * 4;
+      if (offset > packet.length) return null;
+    }
+
+    let end = packet.length;
+    if (padding) {
+      const padLen = packet[packet.length - 1]!;
+      if (padLen <= 0 || padLen > packet.length) return null;
+      end = packet.length - padLen;
+      if (end < offset) return null;
+    }
+
+    if (end <= offset) return null;
+    return packet.subarray(offset, end);
+  }
+
   reset(): void {
     this.fuNalHeader = null;
     this.fuParts = [];
@@ -267,6 +350,11 @@ export class H264RtpDepacketizer {
 
   push(payload: Buffer): Buffer[] {
     if (payload.length === 0) return [];
+
+    // Some models embed full RTP packets in the BcMedia payload.
+    // If this looks like RTP, strip the header and depacketize the RTP payload.
+    const rtpPayload = H264RtpDepacketizer.parseRtpPayload(payload);
+    if (rtpPayload) payload = rtpPayload;
 
     // Important: behave like an RFC 6184 "RTP-like" depacketizer here, so do NOT run
     // AVCC/heuristic conversions that could produce false positives.

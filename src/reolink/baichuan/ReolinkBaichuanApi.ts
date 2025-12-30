@@ -1112,6 +1112,15 @@ export class ReolinkBaichuanApi {
   }
 
   /**
+   * Returns the msgNum associated with an active video stream subscription, if any.
+   * This can be used by stream consumers to filter incoming cmd_id=3 frames and
+   * avoid mixing multiple concurrent streams on the same Baichuan client.
+   */
+  getActiveVideoMsgNum(channel: number, profile: StreamProfile = "sub"): number | undefined {
+    return this.activeVideoMsgNums.get(`${channel}:${profile}`);
+  }
+
+  /**
    * Stop video stream via Baichuan protocol.
    * Based on neolink stream.rs implementation.
    * 

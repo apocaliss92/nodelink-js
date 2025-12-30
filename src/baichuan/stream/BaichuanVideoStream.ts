@@ -17,7 +17,7 @@ import type { EncryptionProtocol } from "../../protocol/crypto";
 import { ensureDumpDir, type Logger } from "../../debug/DebugConfig";
 import { BcMediaCodec } from "./BcMediaCodec";
 import { convertToAnnexB, hasStartCodes, H264RtpDepacketizer, isValidH264AnnexBAccessUnit, isH264KeyframeAnnexB, splitAnnexBToNalPayloads } from "./H264Converter";
-import { convertToAnnexB as convertH265ToAnnexB, isValidH265AnnexBAccessUnit, isH265KeyframeAnnexB, splitAnnexBToNalPayloads as splitH265AnnexBToNalPayloads, extractVpsFromAnnexB, extractSpsFromAnnexB, extractPpsFromAnnexB, getH265NalType } from "./H265Converter";
+import { convertToAnnexB as convertH265ToAnnexB, isValidH265AnnexBAccessUnit, isH265KeyframeAnnexB, splitAnnexBToNalPayloads as splitH265AnnexBToNalPayloads, extractVpsFromAnnexB, extractSpsFromAnnexB, extractPpsFromAnnexB, getH265NalType, H265RtpDepacketizer } from "./H265Converter";
 
 const NAL_START_CODE_4B = Buffer.from([0x00, 0x00, 0x00, 0x01]);
 
@@ -191,11 +191,15 @@ export class BaichuanVideoStream extends EventEmitter<{
   private logger: Logger | undefined;
   private active = false;
   private videoFrameHandler: ((frame: BaichuanFrame) => void) | undefined;
+  private readonly expectedStreamType: number;
+  private activeMsgNum: number | undefined;
   private bcMediaCodec: BcMediaCodec;
   private debugH264LogsLeft: number;
   private debugSavedSamples: boolean;
+  private warnedNonAnnexBOnce = false;
   // "RTP-like" depacketizer (some models encapsulate NAL units in FU-A/STAP)
   private readonly depacketizer = new H264RtpDepacketizer();
+  private readonly depacketizerH265 = new H265RtpDepacketizer();
   private dumpChunkIdx = 0;
   private dumpNalLines = 0;
   private readonly dumpIo = new AsyncFsQueue(200);
@@ -259,6 +263,8 @@ export class BaichuanVideoStream extends EventEmitter<{
     this.channel = options.channel;
     this.profile = options.profile;
     this.logger = options.logger;
+    // Stream type: 0 for main/ext, 1 for sub (neolink + ReolinkBaichuanApi mapping)
+    this.expectedStreamType = this.profile === "sub" ? 1 : 0;
     this.bcMediaCodec = new BcMediaCodec(false, this.logger); // non-strict mode for error recovery
     // Debug is configured on the client; the library must not read env vars.
     const dbg = this.client.getDebugConfig();
@@ -286,10 +292,24 @@ export class BaichuanVideoStream extends EventEmitter<{
       throw new Error("Video stream already active");
     }
 
+    // Ensure depacketizers start from a clean state.
+    this.depacketizer.reset();
+    this.depacketizerH265.reset();
+
     // Request the video stream if the API is available
     if (this.api) {
       try {
         await this.api.startVideoStream(this.channel, this.profile);
+
+        // When multiple streams are active on the same Baichuan client, frames for
+        // different streams can interleave. Filter by msgNum (if available) and
+        // streamType to prevent cross-stream corruption.
+        try {
+          const getMsgNum = (this.api as any).getActiveVideoMsgNum as ((ch: number, p: StreamProfile) => number | undefined) | undefined;
+          this.activeMsgNum = typeof getMsgNum === "function" ? getMsgNum(this.channel, this.profile) : undefined;
+        } catch {
+          this.activeMsgNum = undefined;
+        }
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
         // On UDP/battery cams the stream typically will NOT start automatically.
@@ -307,6 +327,14 @@ export class BaichuanVideoStream extends EventEmitter<{
     this.videoFrameHandler = (frame: BaichuanFrame) => {
       // Only cmd_id=3 frames carry the media stream.
       if (frame.header.cmdId !== 3) return;
+
+      // Filter by expected stream type (main/ext=0, sub=1). This is critical when
+      // main and sub are active concurrently on the same client connection.
+      if (frame.header.streamType !== this.expectedStreamType) return;
+
+      // Filter by msgNum if we were able to capture it from the API.
+      // Some firmwares reuse streamType but keep msgNum distinct per stream.
+      if (this.activeMsgNum !== undefined && frame.header.msgNum !== this.activeMsgNum) return;
       
       totalFramesReceived++;
 
@@ -698,6 +726,19 @@ export class BaichuanVideoStream extends EventEmitter<{
             );
           }
 
+          // If debug is off, still emit a single warning the first time we see non-AnnexB output.
+          // This helps diagnose models that prepend headers or use nonstandard framing.
+          if (!this.warnedNonAnnexBOnce && !hasStartCodes(annexBData)) {
+            this.warnedNonAnnexBOnce = true;
+            const b = media.data;
+            const head = b.subarray(0, Math.min(24, b.length)).toString("hex");
+            const headAnnex = annexBData.subarray(0, Math.min(24, annexBData.length)).toString("hex");
+            this.logger?.warn(
+              `[BaichuanVideoStream] WARNING: non-AnnexB frame after conversion (${media.type} ${media.videoType}) ` +
+                `len=${b.length} head=${head} convertedLen=${annexBData.length} convertedHead=${headAnnex}`
+            );
+          }
+
           this.emit("videoFrame", outAnnex);
           this.emit("videoAccessUnit", {
             data: outAnnex,
@@ -729,9 +770,9 @@ export class BaichuanVideoStream extends EventEmitter<{
             : (media.videoType === "H265" ? convertH265ToAnnexB(chunk) : convertToAnnexB(chunk));
           
           // For H.264, use the depacketizer. For H.265, we might need a similar depacketizer in the future.
-          const parts = hasStartCodes(annexBOrRaw) 
-            ? [annexBOrRaw] 
-            : (media.videoType === "H265" ? [annexBOrRaw] : this.depacketizer.push(chunk));
+          const parts = hasStartCodes(annexBOrRaw)
+            ? [annexBOrRaw]
+            : (media.videoType === "H265" ? this.depacketizerH265.push(chunk) : this.depacketizer.push(chunk));
           
           if (parts.length === 0) {
             // incomplete fragment (FU-A mid) or unrecognized payload: wait for more packets
@@ -807,6 +848,10 @@ export class BaichuanVideoStream extends EventEmitter<{
   async stop(): Promise<void> {
     if (!this.active) return;
 
+    // Ensure depacketizers don't keep FU state across restarts.
+    this.depacketizer.reset();
+    this.depacketizerH265.reset();
+
     if (this.videoFrameHandler) {
       this.client.removeListener("push", this.videoFrameHandler);
     }
@@ -816,6 +861,8 @@ export class BaichuanVideoStream extends EventEmitter<{
     
     // Clear codec buffer
     this.bcMediaCodec.clear();
+
+    this.activeMsgNum = undefined;
 
     // Stop the video stream if the API is available
     if (this.api) {

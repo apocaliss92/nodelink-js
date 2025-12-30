@@ -1,3 +1,7 @@
+// Debug/build marker used by downstream consumers to verify the exact bundled library version.
+// Intentionally constant and human-readable.
+export const BAICHUAN_JS_BUILD_ID = "vendored-in-scrypted-reolink-native-2025-12-30.1";
+
 export * from "./protocol/constants";
 export * from "./protocol/crypto";
 export * from "./protocol/framing";
@@ -24,5 +28,18 @@ export * from "./baichuan/stream/BaichuanHttpStreamServer";
 export * from "./baichuan/stream/BcMediaParser";
 export * from "./baichuan/stream/BcMediaCodec";
 export * from "./baichuan/stream/H264Converter";
+export {
+	H265RtpDepacketizer,
+	getH265NalType,
+	isH265Irap,
+	isValidH265AnnexBAccessUnit,
+	isH265KeyframeAnnexB,
+	splitAnnexBToNalPayloads as splitH265AnnexBToNalPayloads,
+	hasStartCodes as hasH265StartCodes,
+	convertToAnnexB as convertH265ToAnnexB,
+	extractVpsFromAnnexB,
+	extractSpsFromAnnexB,
+	extractPpsFromAnnexB,
+} from "./baichuan/stream/H265Converter";
 export type { DebugOptions, DebugConfig } from "./debug/DebugConfig";
 
