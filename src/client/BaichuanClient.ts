@@ -661,7 +661,7 @@ export class BaichuanClient extends EventEmitter<{
     this.writeWire(wire);
   }
 
-  private tryDecryptXml(buf: Buffer, channelId: number, preferred: EncryptionProtocol): string {
+  tryDecryptXml(buf: Buffer, channelId: number, preferred: EncryptionProtocol): string {
     const tryDecode = (b: Buffer) => b.toString("utf8");
 
     const tryAs = (enc: EncryptionProtocol): string | undefined => {
@@ -913,6 +913,13 @@ export class BaichuanClient extends EventEmitter<{
     encryption?: EncryptionProtocol;
     timeoutMs?: number;
   }): Promise<Buffer> {
+    // Snapshot (cmdId=109) is special: many firmwares deliver the binary payload via unsolicited "push" frames
+    // and do not necessarily reply on the request's cmdId:msgNum pending slot. In that case, waiting on
+    // `pending` will timeout. Handle it by sending without pending and collecting push chunks.
+    if (params.cmdId === 109) {
+      return await this.sendBinarySnapshot109(params);
+    }
+
     await this.connect();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
@@ -921,7 +928,8 @@ export class BaichuanClient extends EventEmitter<{
     const msgNum = this.nextMsgNum();
     const cmdId = params.cmdId;
 
-    const extXml = params.extensionXml ?? (params.channel != null ? buildChannelExtensionXml(channel) : "");
+    const extXml =
+      params.extensionXml ?? (params.channel != null ? buildBinaryExtensionXml(channel) : buildBinaryExtensionXml(undefined));
     const payloadXml = params.payloadXml ?? "";
 
     const messageClass = params.messageClass ?? BC_CLASS_MODERN_24;
@@ -975,13 +983,181 @@ export class BaichuanClient extends EventEmitter<{
       }
     }
 
-    // For binary responses, return raw decrypted body
-    const body = frame.body;
-    if (body.length === 0) return Buffer.alloc(0);
+    // IMPORTANT: `body` can include an XML Extension prefix; for binary data use `payload`.
+    const payload = frame.payload;
+    if (payload.length === 0) return Buffer.alloc(0);
 
-    // Decrypt the body (binary data like JPEG)
-    const decrypted = this.tryDecryptBinary(body, frame.header.channelId, enc);
+    const decrypted = this.tryDecryptBinary(payload, frame.header.channelId, enc);
     return decrypted;
+  }
+
+  private async sendBinarySnapshot109(params: {
+    cmdId: number;
+    channel?: number;
+    /** Override the header channelId (and encryption channelId) for this request. */
+    channelIdOverride?: number;
+    payloadXml?: string;
+    extensionXml?: string;
+    messageClass?: number;
+    streamType?: number;
+    encryption?: EncryptionProtocol;
+    timeoutMs?: number;
+  }): Promise<Buffer> {
+    await this.connect();
+
+    const channel = params.channel ?? this.opts.channel ?? 0;
+    const channelId = params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
+
+    const msgNum = this.nextMsgNum();
+    const cmdId = params.cmdId;
+
+    // Per Snap (cmdId=109) la request usa solo channelId (niente <binaryData>1</binaryData>).
+    // I chunk binari in risposta saranno marcati con <binaryData>1</binaryData> nella Extension.
+    const extXml = params.extensionXml ?? (params.channel != null ? buildChannelExtensionXml(channel) : "");
+    const payloadXml = params.payloadXml ?? "";
+
+    const messageClass = params.messageClass ?? BC_CLASS_MODERN_24;
+    const payloadOffset = Buffer.byteLength(extXml, "utf8");
+    const bodyLen = payloadOffset + Buffer.byteLength(payloadXml, "utf8");
+
+    const header = encodeHeader({
+      cmdId,
+      bodyLen,
+      channelId,
+      streamType: params.streamType ?? 0,
+      msgNum,
+      responseCode: 0,
+      messageClass,
+      payloadOffset,
+    });
+
+    const enc = params.encryption ?? this.enc;
+    const bodyBytes = this.encodeBodyXml(extXml, payloadXml, channelId, enc);
+    const wire = Buffer.concat([header, bodyBytes]);
+
+    const timeoutMs = params.timeoutMs ?? 15_000;
+    const chunks: Buffer[] = [];
+    let seenJpegStart = false;
+
+    const indexOfJpegSoi = (buf: Buffer): number => {
+      // JPEG SOI: FF D8
+      for (let i = 0; i + 1 < buf.length; i++) {
+        if (buf[i] === 0xff && buf[i + 1] === 0xd8) return i;
+      }
+      return -1;
+    };
+
+    const endsWithJpegEoi = (buf: Buffer): boolean => {
+      // JPEG EOI: FF D9
+      for (let i = 0; i + 1 < buf.length; i++) {
+        if (buf[i] === 0xff && buf[i + 1] === 0xd9) return true;
+      }
+      return false;
+    };
+
+    return await new Promise<Buffer>((resolve, reject) => {
+      let timeout: NodeJS.Timeout | undefined;
+      let done = false;
+
+      const cleanup = () => {
+        this.off("frame", onFrame);
+        if (timeout) clearTimeout(timeout);
+      };
+
+      const finish = (buf: Buffer) => {
+        if (done) return;
+        done = true;
+        cleanup();
+        resolve(buf);
+      };
+
+      const fail = (e: unknown) => {
+        if (done) return;
+        done = true;
+        cleanup();
+        reject(e instanceof Error ? e : new Error(String(e)));
+      };
+
+      const onFrame = (frame: BaichuanFrame) => {
+        if (frame.header.cmdId !== cmdId) return;
+
+        // If the request itself was rejected, fail fast instead of timing out.
+        // Some firmwares respond with an empty-body error for snapshot.
+        if (frame.header.msgNum === msgNum && frame.header.responseCode >= 400) {
+          fail(new Error(`Baichuan snapshot request rejected (cmdId=${cmdId} msgNum=${msgNum} responseCode=${frame.header.responseCode})`));
+          return;
+        }
+
+        try {
+          // Snapshot flow (neolink):
+          // - reply 1: XML body (no binaryData)
+          // - reply 2..n: Extension has <binaryData>1</binaryData>, payload is binary chunks (responseCode 200/201)
+          let isBinaryChunk = false;
+          if (frame.extension.length > 0) {
+            const extDec = this.tryDecryptXml(frame.extension, frame.header.channelId, enc);
+            if (extDec.includes("<binaryData>1</binaryData>")) {
+              isBinaryChunk = true;
+            }
+          }
+
+          // If extension isn't present/parseable, fallback to heuristic: payload contains JPEG SOI.
+          const decrypted = this.tryDecryptBinary(frame.payload, frame.header.channelId, enc);
+          if (decrypted.length === 0) return;
+
+          const head = decrypted.subarray(0, Math.min(16, decrypted.length)).toString("utf8");
+          const looksLikeXml = head.startsWith("<?xml") || head.trimStart().startsWith("<");
+          if (!isBinaryChunk && looksLikeXml) return;
+
+          let toAppend = decrypted;
+          if (!seenJpegStart) {
+            const soi = indexOfJpegSoi(decrypted);
+            if (soi === -1) {
+              // Not JPEG yet; ignore unless this is a declared binary chunk (could start mid-stream).
+              if (!isBinaryChunk) return;
+              // If it's a binary chunk but doesn't contain SOI, append as-is.
+              toAppend = decrypted;
+              chunks.push(toAppend);
+              const combined = Buffer.concat(chunks);
+              if (frame.header.responseCode === 201) finish(combined);
+              return;
+            }
+            seenJpegStart = true;
+            toAppend = decrypted.subarray(soi);
+          }
+
+          chunks.push(toAppend);
+          const combined = Buffer.concat(chunks);
+
+          // Prefer marker-based completion; some firmwares don't use responseCode 201 reliably.
+          if (endsWithJpegEoi(combined) || frame.header.responseCode === 201) {
+            // Trim to the first EOI if present.
+            const eoiIdx = combined.indexOf(Buffer.from([0xff, 0xd9]));
+            if (eoiIdx !== -1) {
+              finish(combined.subarray(0, eoiIdx + 2));
+              return;
+            }
+            finish(combined);
+          }
+        } catch (e) {
+          fail(e);
+        }
+      };
+
+      timeout = setTimeout(() => {
+        fail(new Error(`Baichuan timeout waiting snapshot push cmdId=${cmdId} msgNum=${msgNum}`));
+      }, timeoutMs);
+
+      // Attach listener BEFORE sending request to avoid missing the first chunk.
+      // Use "frame" (not "push") so we also see frames that would otherwise be consumed by `pending`.
+      this.on("frame", onFrame);
+
+      try {
+        this.logDebug("tx", { cmdId, msgNum, channelId, messageClass, bodyLen, binary: true, snapshot: true });
+        this.writeWire(wire);
+      } catch (e) {
+        fail(e);
+      }
+    });
   }
 
   /**

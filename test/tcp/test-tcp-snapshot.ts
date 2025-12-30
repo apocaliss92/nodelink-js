@@ -77,7 +77,9 @@ async function runSnapshotTest() {
     
     if (snapshotBuffer.length > 0) {
       const filename = `snapshot_ch${channel}_${Date.now()}.jpg`;
-      const outputPath = path.join(__dirname, filename);
+      const outDir = path.join(process.cwd(), "test", "diagnostics", "snapshots");
+      fs.mkdirSync(outDir, { recursive: true });
+      const outputPath = path.join(outDir, filename);
       fs.writeFileSync(outputPath, snapshotBuffer);
       logSuccess(`Snapshot saved to ${outputPath}`);
       

@@ -49,6 +49,8 @@
     "test:tcp": "npm run test:build && node dist/test/tcp/test-tcp.js",
     "test:tcp:native": "npm run test:build && node dist/test/tcp/test-tcp-native-apis.js",
     "test:tcp:audio": "npm run test:build && node dist/test/tcp/test-tcp-audio.js",
+    "test:tcp:snapshot": "npm run test:build && node dist/test/tcp/test-tcp-snapshot.js",
+    "test:tcp:set-enc": "npm run test:build && node dist/test/tcp/test-tcp-set-enc-video-codec.js",
     "test:tcp:streams": "npm run test:build && node dist/test/tcp/test-tcp-streams-record.js",
     "test:tcp:stream-analyze": "npm run test:build && node dist/test/tcp/test-tcp-stream-analyze.js",
     "test:tcp:stream-request": "npm run test:build && node dist/test/tcp/test-tcp-stream-request.js",

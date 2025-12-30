@@ -18,8 +18,8 @@ import type { ReolinkBaichuanApi } from "../../reolink/baichuan/ReolinkBaichuanA
 import type { Logger } from "../../debug/DebugConfig";
 import { createNativeStream } from "../../scrypted/helpers";
 import { createRtspFlow, type RtspFlow, type RtspVideoType } from "./rtspFlow";
-import { isH264KeyframeAnnexB } from "./H264Converter";
-import { isH265Irap, splitAnnexBToNalPayloads } from "./H265Converter";
+import { convertToAnnexB as convertH264ToAnnexB } from "./H264Converter";
+import { convertToAnnexB as convertH265ToAnnexB, isH265Irap, splitAnnexBToNalPayloads } from "./H265Converter";
 
 class AsyncBoundedQueue<T> {
   private readonly maxItems: number;
@@ -171,6 +171,13 @@ export interface BaichuanRtspServerOptions {
   listenPort?: number; // Port to listen on (default: 8554)
   path?: string; // RTSP path (e.g. "/main" or "/sub")
   logger?: Logger;
+
+  /**
+   * Framing used when sending RTP packets over a TCP stream.
+   * - "rtsp-interleaved": RTSP interleaved framing: '$' + channel + 2-byte length + RTP packet
+   * - "rfc4571": RFC4571 framing: 2-byte length + RTP packet
+   */
+  tcpRtpFraming?: "rtsp-interleaved" | "rfc4571";
 }
 
 /**
@@ -197,6 +204,7 @@ export class BaichuanRtspServer extends EventEmitter<{
   private listenPort: number;
   private path: string;
   private logger: Logger;
+  private tcpRtpFraming: "rtsp-interleaved" | "rfc4571";
   private active = false;
   private flow: RtspFlow;
   
@@ -378,6 +386,7 @@ export class BaichuanRtspServer extends EventEmitter<{
     this.listenPort = options.listenPort ?? 8554;
     this.path = options.path ?? `/stream/${this.profile}`;
     this.logger = options.logger ?? console;
+    this.tcpRtpFraming = options.tcpRtpFraming ?? "rfc4571";
 
     // Default flow is conservative (tcp+h264); it will be refined from metadata or first frames.
     const transport = this.api.client.getTransport();
@@ -418,8 +427,8 @@ export class BaichuanRtspServer extends EventEmitter<{
           height: stream.height,
         };
         // Detect video type from metadata (refines flow early, before first frame).
-        const metaVideoType: RtspVideoType =
-          stream.videoEncType === "H.265" || stream.videoEncType === "HEVC" ? "H265" : "H264";
+        const enc = String(stream.videoEncType ?? "").trim().toLowerCase();
+        const metaVideoType: RtspVideoType = enc.includes("265") || enc.includes("hevc") ? "H265" : "H264";
         this.setFlowVideoType(metaVideoType, "metadata");
       }
     } catch (error) {
@@ -879,6 +888,24 @@ export class BaichuanRtspServer extends EventEmitter<{
     let udpSocketAudio: dgram.Socket | null = null;
 
     const useDirectRtp = useTcpInterleaved;
+
+    const frameRtpOverTcp = (channel: number, rtpPacket: Buffer): Buffer => {
+      // If the RTSP client negotiated TCP interleaved transport, we MUST use RTSP interleaved framing.
+      // RFC4571 is only valid on a raw TCP transport carrying RTP, not on RTSP interleaved.
+      const framing = useTcpInterleaved ? "rtsp-interleaved" : this.tcpRtpFraming;
+
+      if (framing === "rfc4571") {
+        const h = Buffer.alloc(2);
+        h.writeUInt16BE(rtpPacket.length & 0xffff, 0);
+        return Buffer.concat([h, rtpPacket]);
+      }
+      const h = Buffer.alloc(4);
+      h[0] = 0x24; // '$'
+      h[1] = channel & 0xff;
+      h[2] = (rtpPacket.length >> 8) & 0xff;
+      h[3] = rtpPacket.length & 0xff;
+      return Buffer.concat([h, rtpPacket]);
+    };
     
     if (useTcpInterleaved && !useDirectRtp) {
       localUdpPort = 50000 + Math.floor(Math.random() * 10000);
@@ -905,13 +932,8 @@ export class BaichuanRtspServer extends EventEmitter<{
         if (channel === videoRtpChannel && !resources?.setupTrack0) return false;
         if (channel === audioRtpChannel && !resources?.setupTrack1) return false;
 
-        const header = Buffer.alloc(4);
-        header[0] = 0x24; // '$'
-        header[1] = channel;
-        header[2] = (msg.length >> 8) & 0xff;
-        header[3] = msg.length & 0xff;
         try {
-          return rtspSocket.write(Buffer.concat([header, msg]));
+          return rtspSocket.write(frameRtpOverTcp(channel, msg));
         } catch (error) {
           if (error && typeof error === "object" && "code" in error && (error as any).code === "EPIPE") return false;
         }
@@ -980,13 +1002,8 @@ export class BaichuanRtspServer extends EventEmitter<{
 
     const sendInterleaved = (channel: number, msg: Buffer): boolean => {
       if (!rtspSocket || rtspSocket.destroyed || !rtspSocket.writable) return false;
-      const header = Buffer.alloc(4);
-      header[0] = 0x24; // '$'
-      header[1] = channel;
-      header[2] = (msg.length >> 8) & 0xff;
-      header[3] = msg.length & 0xff;
       try {
-        return rtspSocket.write(Buffer.concat([header, msg]));
+        return rtspSocket.write(frameRtpOverTcp(channel, msg));
       } catch (error) {
         if (error && typeof error === "object" && "code" in error && (error as any).code === "EPIPE") return false;
       }
@@ -1038,6 +1055,16 @@ export class BaichuanRtspServer extends EventEmitter<{
     };
 
     const maxRtpPayload = 1200;
+
+    const isH264IdrAccessUnit = (annexB: Buffer): boolean => {
+      const nals = BaichuanRtspServer.splitAnnexBNals(annexB);
+      for (const nal of nals) {
+        if (nal.length < 1) continue;
+        const t = (nal[0] ?? 0) & 0x1f;
+        if (t === 5) return true; // IDR
+      }
+      return false;
+    };
 
     const packetizeAndSendH264 = (nal: Buffer, markerOnLast: boolean) => {
       if (nal.length <= maxRtpPayload) {
@@ -1426,13 +1453,15 @@ export class BaichuanRtspServer extends EventEmitter<{
           // Extract parameter sets until available.
           // Some cameras don't include VPS/SPS/PPS in the very first access unit.
           if (frame.videoType === "H264" || frame.videoType === "H265") {
+            const normalizedVideoData =
+              frame.videoType === "H264" ? convertH264ToAnnexB(frame.data) : convertH265ToAnnexB(frame.data);
             if (frameCount === 0) {
               this.setFlowVideoType(frame.videoType, "first video frame");
             }
 
             const before = this.flow.getFmtp();
             if (!before.hasParamSets) {
-              this.flow.extractParameterSets(frame.data);
+              this.flow.extractParameterSets(normalizedVideoData);
               const after = this.flow.getFmtp();
               if (after.hasParamSets) {
                 this.markFirstFrameReceived();
@@ -1460,6 +1489,7 @@ export class BaichuanRtspServer extends EventEmitter<{
           
           if (useDirectRtp) {
             const videoType = (frame.videoType ?? this.flow.videoType) as "H264" | "H265";
+            const normalizedVideoData = videoType === "H264" ? convertH264ToAnnexB(frame.data) : convertH265ToAnnexB(frame.data);
 
             // Many cameras start streaming with P-frames; decoding stays black until the first IDR/IRAP.
             // For H.264 we gate strictly on IDR.
@@ -1486,7 +1516,7 @@ export class BaichuanRtspServer extends EventEmitter<{
                 }
 
                 if (!resources.h265WaitStartMs) resources.h265WaitStartMs = Date.now();
-                const isIrap = isH265IrapAccessUnit(frame.data);
+                const isIrap = isH265IrapAccessUnit(normalizedVideoData);
                 const waitedMs = Date.now() - (resources.h265WaitStartMs as number);
                 if (!isIrap && waitedMs < 2000) {
                   if (rtspDebug && !h265WaitIrapLogged) {
@@ -1498,10 +1528,33 @@ export class BaichuanRtspServer extends EventEmitter<{
 
                 resources.seenFirstVideoKeyframe = true;
               } else {
-                const isKeyframe = isH264KeyframeAnnexB(frame.data);
-                if (!isKeyframe) {
+                // H.264 gating:
+                // - wait until SPS/PPS are extracted (so we can provide config)
+                // - then wait for an IDR (type 5)
+                const { hasParamSets } = this.flow.getFmtp();
+                if (!hasParamSets) {
+                  if (rtspDebug && !h265WaitParamSetsLogged) {
+                    // reuse the flag name to avoid adding more state; message makes it clear.
+                    h265WaitParamSetsLogged = true;
+                    rtspDebugLog(`H264 gating: waiting for SPS/PPS before sending RTP to client ${clientId}`);
+                  }
                   continue;
                 }
+
+                // Send parameter sets as soon as we have them, even before the first IDR.
+                if (!resources?.rtpSentVideoConfig) {
+                  const paramSets = this.flow.getParameterSetsAnnexB();
+                  if (paramSets && paramSets.length > 0) {
+                    sendVideoAccessUnit(videoType, paramSets, false);
+                    resources.rtpSentVideoConfig = true;
+                  }
+                }
+
+                const isIdr = isH264IdrAccessUnit(normalizedVideoData);
+                if (!isIdr) {
+                  continue;
+                }
+
                 resources.seenFirstVideoKeyframe = true;
               }
             }
@@ -1527,7 +1580,7 @@ export class BaichuanRtspServer extends EventEmitter<{
               }
             }
 
-            sendVideoAccessUnit(videoType, frame.data, true);
+            sendVideoAccessUnit(videoType, normalizedVideoData, true);
           } else {
             try {
               if (stdin && !stdin.destroyed && !stdin.writableEnded && !stdin.writableFinished) {
@@ -1538,7 +1591,7 @@ export class BaichuanRtspServer extends EventEmitter<{
                     `First video frame written to ffmpeg stdin for client ${clientId} (len=${frame.data.length}, head=${headHex})`
                   );
                 }
-                const written = stdin.write(frame.data);
+                const written = stdin.write(frame.videoType === "H264" ? convertH264ToAnnexB(frame.data) : frame.data);
                 if (!written) {
                   await new Promise<void>((resolve) => {
                     if (stdin) {

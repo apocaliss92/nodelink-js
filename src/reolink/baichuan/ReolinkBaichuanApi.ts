@@ -688,6 +688,33 @@ export class ReolinkBaichuanApi {
     await this.sendXml({ cmdId: 57, channel, payloadXml: encXml });
   }
 
+  /**
+   * Update the encoder codec for a given stream profile (main/sub/ext).
+   *
+   * NOTE: This changes the camera configuration.
+   * Many models may require a short delay (or stream restart) before the new codec is used.
+   */
+  async setStreamVideoCodec(channel: number, profile: StreamProfile, codec: "H.264" | "H.265"): Promise<void> {
+    const desired = codec === "H.265" ? 1 : 0;
+    const tag = profile === "main" ? "mainStream" : profile === "sub" ? "subStream" : "extStream";
+
+    const current = await this.getEncXml(channel);
+
+    const sectionRe = new RegExp(`(<${tag}[^>]*>[\\s\\S]*?<videoEncType>)(\\d+)(</videoEncType>)`);
+    const m = sectionRe.exec(current);
+    if (!m) {
+      throw new Error(`Could not find <videoEncType> inside <${tag}> in GetEnc XML (channel=${channel}).`);
+    }
+
+    const updated = current.replace(sectionRe, `$1${desired}$3`);
+    if (updated === current) {
+      // Should not happen, but keep it explicit.
+      throw new Error(`Failed to update <videoEncType> for profile=${profile} (channel=${channel}).`);
+    }
+
+    await this.setEncXml(channel, updated);
+  }
+
   /** Bulk SetNetPort helper (reolink_aio-style): accepts NetPort with onvifEnable/rtmpEnable/rtspEnable. */
   async setNetPort(netPort: { onvifEnable?: number; rtmpEnable?: number; rtspEnable?: number }): Promise<void> {
     if (netPort.onvifEnable != null) await this.setPortEnabled({ port: "onvif", enable: netPort.onvifEnable === 1 });
@@ -827,59 +854,16 @@ export class ReolinkBaichuanApi {
     
     await this.client.login();
 
-    // We expect an XML response first.
-    // We use sendFrame to get the raw frame, so we can check responseCode and body.
-    const response = await this.client.sendFrame({
+    // IMPORTANT (neolink-compatible): the Snap request Extension must NOT include <binaryData>1</binaryData>.
+    // The binary chunks in response will have <binaryData>1</binaryData> in their Extension.
+    // Delegate to the client binary handler. cmdId=109 (snapshot) is special and is delivered via push frames
+    // on many firmwares; BaichuanClient.sendBinary handles that.
+    return await this.client.sendBinary({
       cmdId,
+      channel,
       payloadXml: xml,
       extensionXml: buildChannelExtensionXml(channel),
-    });
-    
-    const msgNum = response.header.msgNum;
-    
-    // 2. Listen for binary chunks
-    // They come with cmdId 109 and responseCode 200/201.
-    // They are NOT matched to the request msgNum, so they will be emitted as 'push' events.
-    
-    return new Promise<Buffer>((resolve, reject) => {
-        const chunks: Buffer[] = [];
-        let timeout: NodeJS.Timeout;
-        
-        const onPush = (frame: BaichuanFrame) => {
-            if (frame.header.cmdId === cmdId && frame.header.msgNum === msgNum) {
-                // Check if it's binary data
-                // Neolink checks for binary_data=1 in extension, but we can just check responseCode
-                // and maybe if body is not XML.
-                
-                if (frame.header.responseCode === 200 || frame.header.responseCode === 201) {
-                    // Decrypt binary body
-                    try {
-                        const decrypted = (this.client as any).tryDecryptBinary(frame.body, frame.header.channelId, this.client.enc);
-                        chunks.push(decrypted);
-                        
-                        if (frame.header.responseCode === 201) {
-                            cleanup();
-                            resolve(Buffer.concat(chunks));
-                        }
-                    } catch (e) {
-                        cleanup();
-                        reject(e);
-                    }
-                }
-            }
-        };
-        
-        const cleanup = () => {
-            this.client.off("push", onPush);
-            clearTimeout(timeout);
-        };
-        
-        timeout = setTimeout(() => {
-            cleanup();
-            reject(new Error("Timeout waiting for snapshot binary data"));
-        }, 15000);
-        
-        this.client.on("push", onPush);
+      timeoutMs: 15_000,
     });
   }
 
