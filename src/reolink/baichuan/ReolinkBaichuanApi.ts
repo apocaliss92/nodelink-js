@@ -659,11 +659,14 @@ export class ReolinkBaichuanApi {
       }
     }
 
-    // Parse extStream (if available)
-    // Note: extStream is only present in XML if enabled/supported by the camera
-    // If extStream is not in the XML, it's not available for this channel
-    const extMatch = xml.match(/<extStream[^>]*>([\s\S]*?)<\/extStream>/);
-    if (extMatch) {
+    // Parse ext-like stream (if available).
+    // Some firmwares use <thirdStream> (or other variants) instead of <extStream>.
+    // We treat these as an alias for the public "ext" profile.
+    const extLikeTags = ["extStream", "thirdStream", "externStream", "extraStream"];
+    for (const tag of extLikeTags) {
+      const extMatch = xml.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`));
+      if (!extMatch) continue;
+
       const extXml = extMatch[1] ?? "";
       const width = Number(getXmlText(extXml, "width") ?? "0");
       const height = Number(getXmlText(extXml, "height") ?? "0");
@@ -671,7 +674,6 @@ export class ReolinkBaichuanApi {
       const frameRate = Number(getXmlText(extXml, "frame") ?? "0");
       const bitRate = Number(getXmlText(extXml, "bitRate") ?? "0");
       const audio = Number(getXmlText(extXml, "audio") ?? "0");
-      // Check if extStream has an enable field (though typically if it's present, it's enabled)
       const enabled = getXmlText(extXml, "enable");
       const isEnabled = enabled === undefined || enabled === "1" || enabled === "true";
 
@@ -688,6 +690,9 @@ export class ReolinkBaichuanApi {
         });
         audioEnabled = audioEnabled && audio === 1;
       }
+
+      // Only one ext-like stream is expected; stop after the first match.
+      break;
     }
 
     return {
@@ -723,20 +728,31 @@ export class ReolinkBaichuanApi {
     const profile = typeof channelOrProfile === "number" ? (profileOrCodec as StreamProfile) : channelOrProfile;
     const codec = typeof channelOrProfile === "number" ? (codecOrChannel as "H.264" | "H.265") : (profileOrCodec as "H.264" | "H.265");
     const desired = codec === "H.265" ? 1 : 0;
-    const tag = profile === "main" ? "mainStream" : profile === "sub" ? "subStream" : "extStream";
+
+    const candidateTags =
+      profile === "main"
+        ? ["mainStream"]
+        : profile === "sub"
+          ? ["subStream"]
+          : ["extStream", "thirdStream", "externStream", "extraStream"];
 
     const current = await this.getEncXml(ch);
 
-    const sectionRe = new RegExp(`(<${tag}[^>]*>[\\s\\S]*?<videoEncType>)(\\d+)(</videoEncType>)`);
-    const m = sectionRe.exec(current);
-    if (!m) {
-      throw new Error(`Could not find <videoEncType> inside <${tag}> in GetEnc XML (channel=${ch}).`);
+    let updated: string | null = null;
+    for (const tag of candidateTags) {
+      const sectionRe = new RegExp(`(<${tag}[^>]*>[\\s\\S]*?<videoEncType>)(\\d+)(</videoEncType>)`);
+      if (!sectionRe.test(current)) continue;
+      const next = current.replace(sectionRe, `$1${desired}$3`);
+      if (next !== current) {
+        updated = next;
+        break;
+      }
     }
 
-    const updated = current.replace(sectionRe, `$1${desired}$3`);
-    if (updated === current) {
-      // Should not happen, but keep it explicit.
-      throw new Error(`Failed to update <videoEncType> for profile=${profile} (channel=${ch}).`);
+    if (!updated) {
+      throw new Error(
+        `Could not find <videoEncType> for profile=${profile} (tags=${candidateTags.join(",")}) in GetEnc XML (channel=${ch}).`,
+      );
     }
 
     await this.setEncXml(ch, updated);
