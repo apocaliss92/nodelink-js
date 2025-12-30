@@ -143,7 +143,7 @@ export function buildPtzPresetXml(channelId: number, presetId: number, command: 
 export function buildPtzPresetXmlV2(
   channelId: number,
   presetId: number,
-  command: "setPos" | "toPos",
+  command: "setPos" | "toPos" | "delPos",
   options?: {
     /** Preset name. For setPos many firmwares require it; empty string will emit an empty <name></name>. */
     name?: string;
@@ -164,7 +164,7 @@ export function buildPtzPresetXmlV2(
 
   return `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
-<PtzPreset version="1.0">
+<PtzPreset version="1.1">
 <channelId>${channelId}</channelId>
 <presetList>
 <preset>

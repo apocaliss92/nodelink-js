@@ -1268,30 +1268,55 @@ export class ReolinkBaichuanApi {
       messageClass: BC_CLASS_MODERN_24,
       streamType: 0,
     });
-    
-    // Parse preset list from XML
-    // Expected format: <PtzPreset><presetList><preset><id>...</id><name>...</name></preset>...</presetList></PtzPreset>
-    const presets: PtzPreset[] = [];
-    const presetMatches = xml.matchAll(/<preset[^>]*>([\s\S]*?)<\/preset>/g);
-    
-    for (const match of presetMatches) {
-      const presetXml = match[1] ?? "";
-      const id = getXmlText(presetXml, "id");
-      const name = getXmlText(presetXml, "name");
-      const enable = getXmlText(presetXml, "enable");
-      
-      // Only include enabled presets (enable="1" or not present)
-      if (enable === undefined || enable === "1") {
-        if (id !== undefined) {
-          presets.push({
-            id: Number(id),
-            name: name ?? `Preset ${id}`,
-          });
-        }
-      }
-    }
+
+    const parsed = this.parsePtzPresetList(xml);
+    const presets: PtzPreset[] = parsed
+      // Expose only enabled presets (enable="1" or not present). Disabled presets should not show up in UI.
+      .filter((p) => p.enable === undefined || p.enable === "1")
+      // Treat empty name as deleted/disabled.
+      .filter((p) => p.name === undefined || String(p.name).trim() !== "")
+      .map((p) => ({
+        id: p.id,
+        name: p.name ?? `Preset ${p.id}`,
+      }));
     
     return presets;
+  }
+
+  private parsePtzPresetList(xml: string): Array<{ id: number; name?: string; enable?: string }> {
+    const parsed: Array<{ id: number; name?: string; enable?: string }> = [];
+    const presetMatches = xml.matchAll(/<preset\b[^>]*>([\s\S]*?)<\/preset>/gi);
+    for (const match of presetMatches) {
+      const presetXml = match[1] ?? "";
+      const idText = /<id>([^<]*)<\/id>/i.exec(presetXml)?.[1];
+      if (!idText) continue;
+      const id = Number(idText);
+      if (!Number.isFinite(id)) continue;
+      const nameMatch = /<name>([^<]*)<\/name>/i.exec(presetXml);
+      const enableMatch = /<enable>([^<]*)<\/enable>/i.exec(presetXml);
+
+      const entry: { id: number; name?: string; enable?: string } = { id };
+      const name = nameMatch?.[1];
+      const enable = enableMatch?.[1];
+      if (name !== undefined) entry.name = name;
+      if (enable !== undefined) entry.enable = enable;
+      parsed.push(entry);
+    }
+    return parsed;
+  }
+
+  private async getPtzPresetsRaw(channel: number): Promise<Array<{ id: number; name?: string; enable?: string }>> {
+    const ch = this.normalizeChannel(channel);
+    const channelId = ch;
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_PTZ_PRESET,
+      channel: ch,
+      channelIdOverride: channelId,
+      extensionXml: buildChannelExtensionXml(channelId),
+      messageClass: BC_CLASS_MODERN_24,
+      streamType: 0,
+    });
+    return this.parsePtzPresetList(xml);
   }
 
   /**
@@ -1357,13 +1382,6 @@ export class ReolinkBaichuanApi {
     // So we don't need explicit subscribeVideoStream here
     
     // Use sendFrame to check response_code (neolink expects 200)
-    // Enable debug to see exact XML being sent
-    if (this.client.getDebugConfig().debugH264 || process.env.BAICHUAN_DEBUG_PTZ) {
-      this.logger.debug("[DEBUG] PTZ XML:", payloadXml);
-      this.logger.debug("[DEBUG] Extension XML:", extensionXml);
-      this.logger.debug("[DEBUG] Channel (0-based):", ch, "ChannelId (0-based):", channelId);
-    }
-    
     const frame = await this.client.sendFrame({
       cmdId: BC_CMD_ID_PTZ_CONTROL,
       channel: ch,
@@ -1387,11 +1405,8 @@ export class ReolinkBaichuanApi {
               errorDetails = ` - Error details: ${errorXml.substring(0, 200)}`;
             }
           }
-        } catch (e) {
-          // Ignore decryption errors, but log them in debug
-          if (this.client.getDebugConfig().debugH264 || process.env.BAICHUAN_DEBUG_PTZ) {
-            this.logger.debug("[DEBUG] Could not decrypt error body:", e);
-          }
+        } catch {
+          // Ignore decryption errors.
         }
       }
       throw new Error(`PTZ control rejected (response_code ${frame.header.responseCode})${errorDetails}`);
@@ -1460,10 +1475,13 @@ export class ReolinkBaichuanApi {
     const presetId = typeof arg2 === "string" ? arg1 : (arg2 as number);
     const name = typeof arg2 === "string" ? arg2 : (arg3 as string);
     const channelId = ch;
-    const payloadXml = buildPtzPresetXml(channelId, presetId, "setPos", name);
+    // Important: some firmwares will keep a deleted preset "disabled" (enable=0) and will omit it from cmd190.
+    // Sending enable=1 ensures the slot becomes visible again.
+    const payloadXml = buildPtzPresetXmlV2(channelId, presetId, "setPos", { name, enable: 1 });
     
     // Neolink includes extension with channel_id for PTZ preset commands
     const extensionXml = buildChannelExtensionXml(channelId);
+
     
     const frame = await this.client.sendFrame({
       cmdId: BC_CMD_ID_PTZ_CONTROL_PRESET,
@@ -1496,11 +1514,43 @@ export class ReolinkBaichuanApi {
 
     const extensionXml = buildChannelExtensionXml(channelId);
 
+    // Grab current name (if any). Some firmwares will only accept disable when the name is preserved.
+    let currentName: string | undefined;
+    try {
+      const before = await this.getPtzPresetsRaw(ch);
+      currentName = before.find((p) => p.id === presetId)?.name;
+    } catch {
+      // ignore
+    }
+
     const attempts: Array<{ payloadXml: string; label: string }> = [
+      {
+        // Some firmwares support an explicit delete command.
+        label: "command=delPos",
+        payloadXml: buildPtzPresetXmlV2(channelId, presetId, "delPos"),
+      },
+      {
+        // Try disable without renaming.
+        label: "enable=0 (no name)",
+        payloadXml: buildPtzPresetXmlV2(channelId, presetId, "setPos", { enable: 0 }),
+      },
+      {
+        // Some firmwares don't support <enable>, but will accept setting an empty name.
+        label: "name='' (no enable)",
+        payloadXml: buildPtzPresetXmlV2(channelId, presetId, "setPos", { name: "" }),
+      },
       {
         label: "enable=0 name=''",
         payloadXml: buildPtzPresetXmlV2(channelId, presetId, "setPos", { name: "", enable: 0 }),
       },
+      ...(currentName
+        ? [
+            {
+              label: "enable=0 name=current",
+              payloadXml: buildPtzPresetXmlV2(channelId, presetId, "setPos", { name: currentName, enable: 0 }),
+            },
+          ]
+        : []),
       {
         label: "enable=0 name='Preset N'",
         payloadXml: buildPtzPresetXmlV2(channelId, presetId, "setPos", { name: `Preset ${presetId}`, enable: 0 }),
@@ -1508,6 +1558,7 @@ export class ReolinkBaichuanApi {
     ];
 
     let lastError: unknown;
+    let any200 = false;
     for (const a of attempts) {
       try {
         const frame = await this.client.sendFrame({
@@ -1523,13 +1574,36 @@ export class ReolinkBaichuanApi {
         if (frame.header.responseCode !== 200) {
           throw new Error(`PTZ preset delete rejected (response_code ${frame.header.responseCode})`);
         }
-        return;
+
+        any200 = true;
+
+        // Verify removal/disable. Some firmwares return 200 but do not apply the change.
+        // Important: consider enable=0 or empty name as "deleted" even if the slot still exists.
+        try {
+          const after = await this.getPtzPresetsRaw(ch);
+          const entry = after.find((p) => p.id === presetId);
+          if (!entry) return;
+          const nameEmpty = entry.name !== undefined && String(entry.name).trim() === "";
+          const disabled = entry.enable !== undefined && String(entry.enable).trim() === "0";
+          if (nameEmpty || disabled) return;
+        } catch (e) {
+          // If verification fails, treat it as a soft failure and continue attempts.
+          lastError = e;
+        }
       } catch (e) {
         lastError = e;
-        if (this.client.getDebugConfig().debugH264 || process.env.BAICHUAN_DEBUG_PTZ) {
-          this.logger.debug(`[DEBUG] deletePtzPreset attempt failed (${a.label}):`, e);
-        }
       }
+    }
+
+    // Many firmwares accept the request (200) but ignore it; don't block the caller.
+    // The plugin can still hide the preset by removing it from the enabled list.
+    if (any200) {
+      this.logger.warn("PTZ presets (baichuan): deletePtzPreset did not take effect (firmware ignored request)", {
+        channel: ch,
+        channelId,
+        presetId,
+      });
+      return;
     }
 
     throw lastError instanceof Error ? lastError : new Error("PTZ preset delete failed");
