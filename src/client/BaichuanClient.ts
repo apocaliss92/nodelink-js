@@ -51,9 +51,23 @@ export type BaichuanClientOptions = {
   udp?: BcUdpStreamOptions;
   /**
    * Interval in milliseconds to send keep-alive pings (MSG_ID_PING).
-   * Default: 5000ms for UDP/battery cameras, 0 (disabled) for TCP.
+   * Default:
+   * - UDP/BCUDP: 2500ms (battery cameras tend to aggressively drop idle sessions)
+   * - TCP: 30000ms (prevents idle socket closures by camera/NAT)
    */
   keepAliveInterval?: number;
+  /**
+   * Enable TCP keep-alive probes at OS level (Node `socket.setKeepAlive`).
+   * Default: true.
+   *
+   * Note: this is complementary to `keepAliveInterval` (protocol-level ping).
+   */
+  tcpSocketKeepAlive?: boolean;
+  /**
+   * Initial delay (ms) before the first TCP keep-alive probe.
+   * Default: 30000ms.
+   */
+  tcpSocketKeepAliveInitialDelayMs?: number;
 };
 
 export type MaxEncryption = "none" | "bc" | "aes" | "full_aes";
@@ -83,6 +97,7 @@ export class BaichuanClient extends EventEmitter<{
   subscribed = false; // Public to allow ReolinkBaichuanApi to check subscription status
 
   private keepAliveTimer: NodeJS.Timeout | undefined;
+  private keepAlivePingInFlight = false;
 
   enc: EncryptionProtocol = { kind: "none" }; // Public to allow ReolinkBaichuanApi to access for audio decryption
   private nonce?: string;
@@ -124,19 +139,30 @@ export class BaichuanClient extends EventEmitter<{
   private startKeepAlive(): void {
     if (this.keepAliveTimer) return;
 
-    // Default: 5000ms for UDP, 0 (disabled) for TCP unless explicitly set
+    // Default intervals unless explicitly set.
     let interval = this.opts.keepAliveInterval;
     if (interval === undefined) {
-      interval = this.transport === "udp" ? 2500 : 0;
+      interval = this.transport === "udp" ? 2500 : 30_000;
     }
 
     if (interval <= 0) return;
 
     this.keepAliveTimer = setInterval(() => {
-      this.sendPing().catch((e) => {
-        this.logDebug("keepalive_ping_error", e);
-      });
+      // Avoid overlapping pings (they wait for a reply and can take up to timeoutMs).
+      if (this.keepAlivePingInFlight) return;
+      this.keepAlivePingInFlight = true;
+      void (async () => {
+        try {
+          await this.sendPing();
+        } catch (e) {
+          this.logDebug("keepalive_ping_error", e);
+        } finally {
+          this.keepAlivePingInFlight = false;
+        }
+      })();
     }, interval);
+    // Don't keep the Node process alive only for keepalive.
+    this.keepAliveTimer.unref?.();
   }
 
   private stopKeepAlive(): void {
@@ -144,11 +170,15 @@ export class BaichuanClient extends EventEmitter<{
       clearInterval(this.keepAliveTimer);
       this.keepAliveTimer = undefined;
     }
+    this.keepAlivePingInFlight = false;
   }
 
   private async sendPing(): Promise<void> {
     // Only send if connected
     if (!this.tcpSocket && !this.udpSocket) return;
+
+    // Avoid pings before login; some firmwares treat them as invalid and may drop the session.
+    if (!this.loggedIn) return;
     
     // Send MSG_ID_PING (93)
     // Neolink sends this to check link status and keep connection alive
@@ -206,11 +236,23 @@ export class BaichuanClient extends EventEmitter<{
     this.tcpSocket = sock;
     this.transport = "tcp";
 
+    // TCP keep-alive at OS level (helps prevent idle disconnects from NAT/camera).
+    const enableTcpKeepAlive = this.opts.tcpSocketKeepAlive ?? true;
+    if (enableTcpKeepAlive) {
+      const initialDelay = this.opts.tcpSocketKeepAliveInitialDelayMs ?? 30_000;
+      try {
+        sock.setKeepAlive(true, initialDelay);
+      } catch (e) {
+        this.logDebug("tcp_setKeepAlive_failed", e);
+      }
+    }
+
     sock.on("data", (chunk) => {
       const frames = this.parser.push(chunk);
       for (const f of frames) this.handleFrame(f);
     });
     sock.on("close", () => {
+      this.stopKeepAlive();
       this.emit("close");
       for (const [, p] of this.pending) p.reject(new Error("Baichuan socket closed"));
       this.pending.clear();
@@ -243,6 +285,7 @@ export class BaichuanClient extends EventEmitter<{
       for (const f of frames) this.handleFrame(f);
     });
     sock.on("close", () => {
+      this.stopKeepAlive();
       this.emit("close");
       for (const [, p] of this.pending) p.reject(new Error("Baichuan UDP stream closed"));
       this.pending.clear();
