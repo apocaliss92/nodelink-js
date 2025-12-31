@@ -17,7 +17,7 @@ import { BaichuanFrameParser, encodeHeader, type BaichuanFrame } from "../protoc
 import { buildBinaryExtensionXml, buildChannelExtensionXml, buildLoginXml, getXmlText } from "../protocol/xml";
 import { BcUdpStream, type BcUdpStreamOptions } from "../bcudp/BcUdpStream";
 import type { ReolinkEvent } from "../reolink/baichuan/types";
-import { normalizeDebugOptions, traceLog, talkTraceLog, type DebugOptions, type DebugConfig, type Logger } from "../debug/DebugConfig";
+import { eventTraceLog, normalizeDebugOptions, traceLog, talkTraceLog, type DebugOptions, type DebugConfig, type Logger } from "../debug/DebugConfig";
 export type { Logger };
 
 function isTalkCmd(cmdId: number): boolean {
@@ -405,7 +405,17 @@ export class BaichuanClient extends EventEmitter<{
     if (frame.header.cmdId === 33) {
       try {
         const events = this.parseEvents(frame);
-        for (const event of events) this.emit("event", event);
+        for (const event of events) {
+          eventTraceLog(
+            this.debugCfg,
+            this.logger,
+            "BaichuanEvent",
+            `dispatch cmdId=33 msgNum=${frame.header.msgNum} channelId=${frame.header.channelId} type=${event.type} eventChannel=${event.channel}` +
+              (event.type === "ai" ? ` aiType=${(event.ai as any)?.type ?? "unknown"} detected=${(event.ai as any)?.detected ?? ""}` : "") +
+              (event.type === "motion" ? ` source=${(event.motion as any)?.source ?? ""}` : "")
+          );
+          this.emit("event", event);
+        }
       } catch (error) {
         this.logDebug("event_parse_error", error);
       }

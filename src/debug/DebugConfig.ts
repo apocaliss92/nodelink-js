@@ -18,6 +18,8 @@ export type DebugOptions = {
   traceStream?: boolean;
   /** Enables talkback tracing (tx/rx cmd_id 10/11/201/202). */
   traceTalk?: boolean;
+  /** Enables per-event tracing for cmd_id 33 (AlarmEventList push). */
+  traceEvents?: boolean;
   /** Enables H.264-centric debug logs/samples. */
   debugH264?: boolean;
   /** Enables SPS/PPS cache/prepend debug logs. */
@@ -35,6 +37,7 @@ export type DebugConfig = {
   debugRtsp: boolean;
   traceStream: boolean;
   traceTalk: boolean;
+  traceEvents: boolean;
   debugH264: boolean;
   debugParamSets: boolean;
   dumpEnabled: boolean;
@@ -48,6 +51,7 @@ export function normalizeDebugOptions(opts?: DebugOptions): DebugConfig {
   const debugRtsp = opts?.debugRtsp === true;
   const traceStream = opts?.traceStream === true;
   const traceTalk = opts?.traceTalk === true;
+  const traceEvents = opts?.traceEvents === true;
   const debugH264 = opts?.debugH264 === true || enabled;
   const debugParamSets = opts?.debugParamSets === true;
 
@@ -56,7 +60,7 @@ export function normalizeDebugOptions(opts?: DebugOptions): DebugConfig {
   const dumpBcMedia = opts?.dump?.bcmedia ?? dumpEnabled;
   const dumpNals = opts?.dump?.nals ?? dumpEnabled;
 
-  return { enabled, debugRtsp, traceStream, traceTalk, debugH264, debugParamSets, dumpEnabled, dumpDir, dumpBcMedia, dumpNals };
+  return { enabled, debugRtsp, traceStream, traceTalk, traceEvents, debugH264, debugParamSets, dumpEnabled, dumpDir, dumpBcMedia, dumpNals };
 }
 
 export function ensureDumpDir(cfg: DebugConfig): void {
@@ -87,6 +91,11 @@ export function talkTraceLog(cfg: DebugConfig, logger: Logger, tag: string, mess
 export function talkTraceWarn(cfg: DebugConfig, logger: Logger, tag: string, message: string): void {
   if (!cfg.traceTalk) return;
   logger.warn(`[${tag}] ${message}`);
+}
+
+export function eventTraceLog(cfg: DebugConfig, logger: Logger, tag: string, message: string): void {
+  if (!cfg.traceEvents) return;
+  logger.debug(`[${tag}] ${message}`);
 }
 
 export function rtspLog(cfg: DebugConfig, logger: Logger, tag: string, message: string): void {
