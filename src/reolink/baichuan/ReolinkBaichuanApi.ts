@@ -1843,14 +1843,14 @@ export class ReolinkBaichuanApi {
    */
   async getBatteryStatus(channel?: number): Promise<BatteryInfo> {
     const ch = this.normalizeChannel(channel);
+    const BATTERY_TIMEOUT = "BATTERY_TIMEOUT";
+    const timeoutMs = 2500;
     try {
       // First, try to get battery info
       // If the camera is sleeping, this may timeout or fail
       const xml = await Promise.race([
         this.sendXml({ cmdId: BC_CMD_ID_GET_BATTERY_INFO, channel: ch }),
-        new Promise<string>((_, reject) => 
-          setTimeout(() => reject(new Error("Timeout")), 5000)
-        )
+        new Promise<string>((_, reject) => setTimeout(() => reject(new Error(BATTERY_TIMEOUT)), timeoutMs)),
       ]);
       
       // Parse battery info from XML
@@ -1873,22 +1873,12 @@ export class ReolinkBaichuanApi {
       
       return result;
     } catch (error) {
-      // If the command times out or fails, the camera is likely sleeping
-      // Note: GetBatteryInfo is a NONE_WAKING_COMMAND, so it won't wake up the camera
-      const result: BatteryInfo = {
-        channel: ch,
-        sleeping: true,
-      };
-      
-      // If we got an error that's not a timeout, we still don't know the battery status
-      // But we can infer it's sleeping if it failed to respond
-      if (error instanceof Error && error.message === "Timeout") {
-        // Camera didn't respond within 5 seconds, likely sleeping
-      } else {
-        // Other error, but still mark as potentially sleeping
+      // NOTE: Only treat explicit timeouts as "sleeping".
+      // Any other error could be a transport/BCUDP issue and would cause Sleep flapping.
+      if (error instanceof Error && error.message === BATTERY_TIMEOUT) {
+        return { channel: ch, sleeping: true };
       }
-      
-      return result;
+      return { channel: ch };
     }
   }
 

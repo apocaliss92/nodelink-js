@@ -36,14 +36,16 @@ export function buildC2dA(params: { sid: number; conn?: string; cid: number; did
   );
 }
 
-export function buildC2dT(params: { sid?: number; conn?: string; cid: number; mtu: number }): string {
+export function buildC2dT(params: { sid?: number; conn?: string; cid: number; did?: number; mtu: number }): string {
   const conn = params.conn ?? "local";
   const sid = params.sid != null ? `<sid>${params.sid}</sid>` : "";
+  const did = params.did != null ? `<did>${params.did}</did>` : "";
   return buildP2pXml(
     `<C2D_T>` +
       sid +
       `<conn>${xmlEscape(conn)}</conn>` +
       `<cid>${params.cid}</cid>` +
+      did +
       `<mtu>${params.mtu}</mtu>` +
     `</C2D_T>`
   );
