@@ -84,6 +84,12 @@ export interface Events {
     state?: number;
     [key: string]: unknown;
   };
+  /** Doorbell/visitor notification (instant event). Present when detected. */
+  visitor?: {
+    detected?: boolean;
+    timestamp?: number;
+    [key: string]: unknown;
+  };
   [key: string]: unknown;
 }
 
@@ -303,5 +309,60 @@ export interface DeviceCapabilities {
   hasSiren: boolean;
   hasFloodlight: boolean;
   hasPir: boolean;
+  /** True when device reports doorbell support via support.items[].doorbellVersion. */
+  isDoorbell: boolean;
+}
+
+export type DeviceAiType = string;
+
+export interface DeviceAiProbeResult {
+  ok: boolean;
+  supported?: boolean;
+  support?: number;
+  alarm_state?: number;
+  enable?: number;
+  sensitivity?: number;
+  stayTime?: number;
+  error?: string;
+}
+
+export interface DeviceAiCapabilities {
+  candidates: DeviceAiType[];
+  supportedTypes: DeviceAiType[];
+  probes: Record<DeviceAiType, DeviceAiProbeResult>;
+}
+
+export interface DeviceSupportFlags {
+  rtsp?: boolean;
+  onvif?: boolean;
+  wifi?: boolean;
+  record?: boolean;
+  ftp?: boolean;
+  email?: boolean;
+  pushAlarm?: boolean;
+  audioTalk?: boolean;
+}
+
+export interface DeviceCapabilitiesDebugInfo {
+  channel: number;
+  channelId1Based: number;
+  transport: "tcp" | "udp";
+  encryptionKind: "none" | "bc" | "aes" | "full_aes";
+  loggedIn: boolean;
+  subscribed: boolean;
+  abilitiesAvailable: boolean;
+  supportAvailable: boolean;
+  abilityMergedKeyCount?: number;
+  supportItemCount?: number;
+}
+
+export interface DeviceCapabilitiesResult {
+  abilities?: DeviceAbilities;
+  support?: SupportInfo;
+  capabilities: DeviceCapabilities;
+  presets?: PtzPreset[];
+  ai?: DeviceAiCapabilities;
+  features?: DeviceSupportFlags;
+  debug?: DeviceCapabilitiesDebugInfo;
 }
 

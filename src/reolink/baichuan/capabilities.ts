@@ -192,6 +192,8 @@ export function computeDeviceCapabilities(params: {
   // NOTE: ledCtrl is typically the indicator/status LED control, NOT the floodlight.
   // Do not map it to floodlight capability.
   const hasPresetsFromSupport = supportItem ? isTruthyNumberLike((supportItem as any).ptzPreset) : false;
+  const doorbellVersionRaw = supportItem ? (supportItem as any).doorbellVersion : undefined;
+  const isDoorbellFromSupport = Number.isFinite(Number(doorbellVersionRaw)) ? Number(doorbellVersionRaw) > 0 : isTruthyNumberLike(doorbellVersionRaw);
 
   // Some firmwares expose an explicit lightType in SupportInfo items.
   // Observed values:
@@ -236,6 +238,7 @@ export function computeDeviceCapabilities(params: {
     hasSiren: hasSirenFromAbilities,
     hasFloodlight: Number.isFinite(lightType as number) ? (lightType as number) > 0 : hasFloodlightFromAbilities,
     hasPir: hasPirFromAbilities,
+    isDoorbell: isDoorbellFromSupport,
   };
 
   if (ptzMode !== undefined) result.ptzMode = ptzMode;

@@ -483,6 +483,9 @@ export class BaichuanClient extends EventEmitter<{
         // Some firmwares may attach AI type in different tag names.
         const aiTypeRaw = (getXmlText(alarmXml, "AItype") ?? getXmlText(alarmXml, "aiType") ?? getXmlText(alarmXml, "aitype") ?? "").trim();
 
+        // Unlike older implementations, a single AlarmEvent may encode multiple independent states
+        // (e.g. motion + ai + visitor). Emit all applicable events.
+
         // Motion (MD) OR PIR should both map to motion for consumers like Scrypted.
         if (statusUpper.includes("MD")) {
           out.push({
@@ -491,7 +494,6 @@ export class BaichuanClient extends EventEmitter<{
             motion: { channel, state: true, timestamp: now, source: "md" },
             timestamp: now,
           });
-          continue;
         }
 
         if (statusUpper.includes("PIR")) {
@@ -501,10 +503,15 @@ export class BaichuanClient extends EventEmitter<{
             motion: { channel, state: true, timestamp: now, source: "pir" },
             timestamp: now,
           });
-          continue;
         }
 
-        if (aiTypeRaw) {
+        const aiTypeToken = aiTypeRaw
+          ? aiTypeRaw
+              .split(",")
+              .map((t) => t.trim())
+              .find((t) => t.length > 0 && t.toLowerCase() !== "none")
+          : undefined;
+        if (aiTypeToken) {
           const aiTypeMap: Record<string, "people" | "vehicle" | "dog_cat" | "face" | "package" | "other"> = {
             people: "people",
             vehicle: "vehicle",
@@ -517,34 +524,29 @@ export class BaichuanClient extends EventEmitter<{
             type: "ai",
             ai: {
               channel,
-              type: aiTypeMap[aiTypeRaw.toLowerCase()] ?? "other",
+              type: aiTypeMap[aiTypeToken.toLowerCase()] ?? "other",
               detected: true,
               timestamp: now,
             },
             timestamp: now,
           });
-          continue;
-        }
-
-        // Some firmwares signal AI without an explicit AItype.
-        if (statusUpper.includes("AI")) {
+        } else if (statusUpper.includes("AI")) {
+          // Some firmwares signal AI without an explicit AItype.
           out.push({
             channel,
             type: "ai",
             ai: { channel, type: "other", detected: true, timestamp: now },
             timestamp: now,
           });
-          continue;
         }
 
+        // Doorbell/visitor notification.
         if (statusUpper.includes("VIS")) {
           out.push({ channel, type: "visitor", timestamp: now });
-          continue;
         }
 
         if (statusUpper.includes("DN")) {
           out.push({ channel, type: "daynight", timestamp: now });
-          continue;
         }
       }
       return out;
@@ -556,25 +558,36 @@ export class BaichuanClient extends EventEmitter<{
 
     const eventXml = eventMatch[1] ?? "";
     const status = (getXmlText(eventXml, "status") ?? "").trim();
-    const aiType = (getXmlText(eventXml, "AItype") ?? "").trim();
+    const statusUpper = status.toUpperCase();
+    const aiTypeRaw = (getXmlText(eventXml, "AItype") ?? getXmlText(eventXml, "aiType") ?? getXmlText(eventXml, "aitype") ?? "").trim();
 
-    if (status.toUpperCase().includes("MD")) {
-      return [{
+    const out: ReolinkEvent[] = [];
+
+    if (statusUpper.includes("MD")) {
+      out.push({
         channel: fallbackChannel,
         type: "motion",
         motion: { channel: fallbackChannel, state: true, timestamp: now, source: "md" },
         timestamp: now,
-      }];
+      });
     }
-    if (status.toUpperCase().includes("PIR")) {
-      return [{
+
+    if (statusUpper.includes("PIR")) {
+      out.push({
         channel: fallbackChannel,
         type: "motion",
         motion: { channel: fallbackChannel, state: true, timestamp: now, source: "pir" },
         timestamp: now,
-      }];
+      });
     }
-    if (aiType) {
+
+    const aiTypeToken = aiTypeRaw
+      ? aiTypeRaw
+          .split(",")
+          .map((t) => t.trim())
+          .find((t) => t.length > 0 && t.toLowerCase() !== "none")
+      : undefined;
+    if (aiTypeToken) {
       const aiTypeMap: Record<string, "people" | "vehicle" | "dog_cat" | "face" | "package" | "other"> = {
         people: "people",
         vehicle: "vehicle",
@@ -582,20 +595,35 @@ export class BaichuanClient extends EventEmitter<{
         face: "face",
         package: "package",
       };
-      return [{
+      out.push({
         channel: fallbackChannel,
         type: "ai",
         ai: {
           channel: fallbackChannel,
-          type: aiTypeMap[aiType.toLowerCase()] ?? "other",
+          type: aiTypeMap[aiTypeToken.toLowerCase()] ?? "other",
           detected: true,
           timestamp: now,
         },
         timestamp: now,
-      }];
+      });
+    } else if (statusUpper.includes("AI")) {
+      out.push({
+        channel: fallbackChannel,
+        type: "ai",
+        ai: { channel: fallbackChannel, type: "other", detected: true, timestamp: now },
+        timestamp: now,
+      });
     }
 
-    return [];
+    if (statusUpper.includes("VIS")) {
+      out.push({ channel: fallbackChannel, type: "visitor", timestamp: now });
+    }
+
+    if (statusUpper.includes("DN")) {
+      out.push({ channel: fallbackChannel, type: "daynight", timestamp: now });
+    }
+
+    return out;
   }
 
   private nextMsgNum(): number {
