@@ -183,6 +183,11 @@ export function computeDeviceCapabilities(params: {
   const ptzModeRaw = params.support?.ptzMode;
   const ptzMode = typeof ptzModeRaw === "string" ? ptzModeRaw.toLowerCase() : undefined;
 
+  // Some battery cameras expose legacy/host PTZ abilities (e.g. preset_rw/ptzInfo_ro) even when
+  // the actual channel PTZ is explicitly disabled. When support.ptzMode says "none", treat it
+  // as authoritative and do NOT expose PTZ/presets/pan/tilt/zoom based on abilities heuristics.
+  const ptzDisabledBySupport = ptzMode === "none" || ptzMode === "0";
+
   const hasBatteryFromSupport = supportItem ? isTruthyNumberLike((supportItem as any).battery) : false;
   // NOTE: ledCtrl is typically the indicator/status LED control, NOT the floodlight.
   // Do not map it to floodlight capability.
@@ -213,13 +218,18 @@ export function computeDeviceCapabilities(params: {
   const hasZoom = hasZoomFromSupport || hasZoomFromAbilities;
   const hasPresets = hasPresetsFromSupport || hasPresetsFromAbilities;
 
+  const finalHasPan = ptzDisabledBySupport ? false : hasPan;
+  const finalHasTilt = ptzDisabledBySupport ? false : hasTilt;
+  const finalHasZoom = ptzDisabledBySupport ? false : hasZoom;
+  const finalHasPresets = ptzDisabledBySupport ? false : hasPresets;
+
   const result: DeviceCapabilities = {
     channel,
-    hasPan,
-    hasTilt,
-    hasZoom,
-    hasPresets,
-    hasPtz: hasPtzFromSupport || hasPan || hasTilt || hasZoom || hasPresets,
+    hasPan: finalHasPan,
+    hasTilt: finalHasTilt,
+    hasZoom: finalHasZoom,
+    hasPresets: finalHasPresets,
+    hasPtz: ptzDisabledBySupport ? false : (hasPtzFromSupport || finalHasPan || finalHasTilt || finalHasZoom || finalHasPresets),
     hasBattery: hasBatteryFromSupport || hasBatteryFromAbilities,
     hasSiren: hasSirenFromAbilities,
     hasFloodlight: Number.isFinite(lightType as number) ? (lightType as number) > 0 : hasFloodlightFromAbilities,
