@@ -30,6 +30,14 @@ export interface ScryptedRfc4571TcpServerOptions {
   /** How long to wait for an IDR/IRAP to extract parameter sets and produce SDP. */
   keyframeTimeoutMs?: number;
 
+  /**
+   * Stream uptime watchdog: if no packets are sent/received for this long,
+   * the server will restart its internal pipeline (drop clients, restart the native stream).
+   *
+   * Default: 10s. Set to 0 to disable.
+   */
+  uptimeRestartMs?: number;
+
   /** Optional: auto-close when no clients are connected for a while. */
   idleTeardownMs?: number;
 
@@ -63,6 +71,7 @@ export async function createScryptedRfc4571TcpServer(
     videoPayloadType = 96,
     audioPayloadType = 97,
     keyframeTimeoutMs = 5000,
+    uptimeRestartMs = 10_000,
     idleTeardownMs = 2500,
     closeApiOnTeardown = true,
   } = options;
@@ -71,7 +80,7 @@ export async function createScryptedRfc4571TcpServer(
   const log = (message: string) => logger.warn(`${logPrefix} ${message}`);
 
   log(
-    `starting (host=${host} videoPT=${videoPayloadType} audioPT=${audioPayloadType} expectedVideoType=${expectedVideoType ?? 'n/a'} keyframeTimeoutMs=${keyframeTimeoutMs} idleTeardownMs=${idleTeardownMs})`,
+    `starting (host=${host} videoPT=${videoPayloadType} audioPT=${audioPayloadType} expectedVideoType=${expectedVideoType ?? 'n/a'} keyframeTimeoutMs=${keyframeTimeoutMs} uptimeRestartMs=${uptimeRestartMs} idleTeardownMs=${idleTeardownMs})`,
   );
 
   const videoStream = new BaichuanVideoStream({
@@ -232,20 +241,47 @@ export async function createScryptedRfc4571TcpServer(
     : undefined;
 
   const sdp = buildRfc4571Sdp(video, aacAudio);
-  const muxer = new Rfc4571Muxer(logger, videoPayloadType, aacAudio ? audioPayloadType : undefined, fps);
+  const makeMuxer = () => new Rfc4571Muxer(logger, videoPayloadType, aacAudio ? audioPayloadType : undefined, fps);
+  let muxer = makeMuxer();
 
   log(
     `SDP ready (video=${keyframe.videoType}/90000 pt=${videoPayloadType}${aacAudio ? `, audio=aac/${aacAudio.sampleRate}/${aacAudio.channels} pt=${audioPayloadType}` : ', audio=none'})`,
   );
 
   let rfcClients = 0;
+  const sockets = new Set<net.Socket>();
   let idleTeardownTimer: NodeJS.Timeout | undefined;
   let tearingDown = false;
+  let restarting = false;
+
+  // Uptime watchdog: touch this on any observed activity (RX/TX).
+  let lastActivityMs = Date.now();
+  const touchActivity = () => {
+    lastActivityMs = Date.now();
+  };
 
   const cancelIdleTeardown = () => {
     if (!idleTeardownTimer) return;
     clearTimeout(idleTeardownTimer);
     idleTeardownTimer = undefined;
+  };
+
+  let uptimeTimer: NodeJS.Timeout | undefined;
+  const stopUptimeMonitor = () => {
+    if (!uptimeTimer) return;
+    clearInterval(uptimeTimer);
+    uptimeTimer = undefined;
+  };
+  const startUptimeMonitor = () => {
+    if (!uptimeRestartMs || uptimeRestartMs <= 0) return;
+    if (uptimeTimer) return;
+    const tickMs = Math.max(250, Math.min(1000, Math.floor(uptimeRestartMs / 2)));
+    uptimeTimer = setInterval(() => {
+      if (tearingDown || restarting) return;
+      const idleFor = Date.now() - lastActivityMs;
+      if (idleFor < uptimeRestartMs) return;
+      restart(new Error(`No stream activity for ${idleFor}ms (threshold=${uptimeRestartMs}ms)`)).catch(() => {});
+    }, tickMs);
   };
 
   const scheduleIdleTeardown = (closeFn: (reason?: unknown) => Promise<void>) => {
@@ -259,10 +295,65 @@ export async function createScryptedRfc4571TcpServer(
 
   const server = netImpl.createServer();
 
+  const restart = async (reason?: unknown): Promise<void> => {
+    if (tearingDown) return;
+    if (restarting) return;
+    restarting = true;
+    touchActivity();
+
+    cancelIdleTeardown();
+
+    const message = (reason as any)?.message || (reason as any)?.toString?.() || reason;
+    const address = server.address();
+    const addrStr = address && typeof address !== 'string' ? `${address.address}:${address.port}` : 'unbound';
+    if (message) log(`uptime watchdog: restarting (addr=${addrStr} clients=${rfcClients} reason=${message})`);
+    else log(`uptime watchdog: restarting (addr=${addrStr} clients=${rfcClients})`);
+
+    // Drop clients first: force reconnect and clear muxer state.
+    for (const s of Array.from(sockets)) {
+      try {
+        s.destroy();
+      } catch {
+        // ignore
+      }
+    }
+    sockets.clear();
+
+    try {
+      muxer.close();
+    } catch {
+      // ignore
+    }
+    muxer = makeMuxer();
+
+    // Restart the native stream pipeline (best-effort).
+    try {
+      await videoStream.stop();
+    } catch {
+      // ignore
+    }
+    try {
+      await videoStream.start();
+    } catch (e) {
+      // If restart fails, escalate to teardown so callers don't hang forever.
+      restarting = false;
+      close(e).catch(() => {});
+      return;
+    }
+
+    restarting = false;
+    touchActivity();
+    log('uptime watchdog: restart complete');
+
+    // If no clients are connected after restart, keep existing idle teardown behavior.
+    if (rfcClients === 0) scheduleIdleTeardown(close);
+  };
+
   const close = async (reason?: unknown): Promise<void> => {
     if (tearingDown) return;
     tearingDown = true;
 
+    stopUptimeMonitor();
     cancelIdleTeardown();
     const message = (reason as any)?.message || (reason as any)?.toString?.() || reason;
     const address = server.address();
@@ -296,8 +387,26 @@ export async function createScryptedRfc4571TcpServer(
   };
 
   server.on('connection', (socket) => {
+    touchActivity();
     rfcClients++;
     cancelIdleTeardown();
+
+    sockets.add(socket);
+
+    // Track RX from client (RTCP, keepalives, etc).
+    socket.on('data', () => touchActivity());
+
+    // Track TX to client by wrapping socket.write (used by muxer).
+    try {
+      const origWrite = socket.write.bind(socket) as any;
+      (socket as any).write = (...args: any[]) => {
+        touchActivity();
+        return origWrite(...args);
+      };
+    } catch {
+      // ignore
+    }
+
     muxer.addClient(socket);
 
     const remote = `${socket.remoteAddress ?? 'unknown'}:${socket.remotePort ?? 'unknown'}`;
@@ -308,6 +417,7 @@ export async function createScryptedRfc4571TcpServer(
       if (!counted) return;
       counted = false;
       rfcClients = Math.max(0, rfcClients - 1);
+      sockets.delete(socket);
       log(`client disconnected (remote=${remote} clients=${rfcClients})`);
       if (rfcClients === 0) scheduleIdleTeardown(close);
     };
@@ -318,6 +428,7 @@ export async function createScryptedRfc4571TcpServer(
 
   // Attach stream forwarding.
   videoStream.on('videoAccessUnit' as any, (au: any) => {
+    touchActivity();
     try {
       muxer.sendVideoAccessUnit(au.videoType, au.data, au.isKeyframe, au.microseconds);
     } catch (e) {
@@ -327,6 +438,7 @@ export async function createScryptedRfc4571TcpServer(
 
   if (aacAudio) {
     videoStream.on('audioFrame' as any, (frame: Buffer) => {
+      touchActivity();
       try {
         muxer.sendAudioAdtsFrame(frame);
       } catch (e) {
@@ -336,9 +448,11 @@ export async function createScryptedRfc4571TcpServer(
   }
 
   videoStream.on('error' as any, (e: unknown) => {
+    if (restarting) return;
     close(e).catch(() => {});
   });
   videoStream.on('close' as any, (e: unknown) => {
+    if (restarting) return;
     close(e).catch(() => {});
   });
 
@@ -360,6 +474,7 @@ export async function createScryptedRfc4571TcpServer(
 
   // If created with no clients, schedule idle teardown.
   scheduleIdleTeardown(close);
+  startUptimeMonitor();
 
   return {
     host,
