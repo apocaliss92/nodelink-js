@@ -299,6 +299,7 @@ export interface DeviceCapabilities {
   hasPresets: boolean;
   hasPtz: boolean;
   hasBattery: boolean;
+  hasIntercom: boolean;
   hasSiren: boolean;
   hasFloodlight: boolean;
   hasPir: boolean;
