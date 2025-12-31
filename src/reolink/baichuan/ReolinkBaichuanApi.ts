@@ -1,5 +1,3 @@
-import { EventEmitter } from "node:events";
-import { type BaichuanFrame } from "../../protocol/framing";
 import { BaichuanRtspServer, type BaichuanRtspServerOptions } from "../../baichuan/stream/BaichuanRtspServer";
 import { BaichuanClient, type BaichuanClientOptions } from "../../client/BaichuanClient";
 import { type Logger } from "../../debug/DebugConfig";
@@ -225,11 +223,10 @@ function encodeBcMediaAdpcmBlock(block: Buffer, halfBlockSize: number): Buffer {
 export class ReolinkBaichuanApi {
   readonly client: BaichuanClient;
   readonly logger: Logger;
-  /**
-   * Minimal event emitter: emits only `{ type, channel, timestamp }`.
-   * Useful for integrations that only need high-level event categories.
-   */
-  readonly simpleEvents = new EventEmitter<{ event: [ReolinkSimpleEvent] }>();
+  private readonly simpleEventListeners = new Set<(event: ReolinkSimpleEvent) => void>();
+  private simpleEventSubscribed = false;
+  private simpleEventSubscribeInFlight: Promise<void> | undefined;
+  private simpleEventUnsubscribeInFlight: Promise<void> | undefined;
   private rtspServers = new Set<BaichuanRtspServer>(); // Track all RTSP servers for cleanup
   private readonly activeVideoMsgNums = new Map<string, number>();
 
@@ -237,11 +234,85 @@ export class ReolinkBaichuanApi {
     this.logger = opts.logger ?? console;
     this.client = new BaichuanClient(opts);
 
-    // Re-emit parsed events in a minimal, stable shape.
+    // Dispatch parsed events in a minimal, stable shape.
     this.client.on("event", (event) => {
       const mapped = mapToSimpleEvent(event);
-      if (mapped) this.simpleEvents.emit("event", mapped);
+      if (!mapped) return;
+
+      for (const cb of this.simpleEventListeners) {
+        try {
+          cb(mapped);
+        }
+        catch (e) {
+          // Never allow user handlers to break the Baichuan client's event loop.
+          (this.logger.warn ?? this.logger.error).call(this.logger, "[ReolinkBaichuanApi] onSimpleEvent handler error", e);
+        }
+      }
     });
+  }
+
+  /**
+   * Subscribe to minimal high-level events.
+   * The API manages Baichuan subscribe/unsubscribe automatically.
+   */
+  async onSimpleEvent(callback: (event: ReolinkSimpleEvent) => void): Promise<void> {
+    this.simpleEventListeners.add(callback);
+    await this.ensureSimpleEventSubscribed();
+  }
+
+  /**
+   * Remove one callback, or all callbacks if omitted.
+   * When the last listener is removed, the API unsubscribes from Baichuan events.
+   */
+  async offSimpleEvent(callback?: (event: ReolinkSimpleEvent) => void): Promise<void> {
+    if (callback) {
+      this.simpleEventListeners.delete(callback);
+    }
+    else {
+      this.simpleEventListeners.clear();
+    }
+
+    if (this.simpleEventListeners.size === 0) {
+      await this.ensureSimpleEventUnsubscribed();
+    }
+  }
+
+  private async ensureSimpleEventSubscribed(): Promise<void> {
+    if (this.simpleEventListeners.size === 0) return;
+    if (this.simpleEventSubscribed) return;
+    if (this.simpleEventSubscribeInFlight) return await this.simpleEventSubscribeInFlight;
+
+    this.simpleEventSubscribeInFlight = (async () => {
+      await this.subscribeEvents();
+      this.simpleEventSubscribed = true;
+    })().finally(() => {
+      this.simpleEventSubscribeInFlight = undefined;
+    });
+
+    return await this.simpleEventSubscribeInFlight;
+  }
+
+  private async ensureSimpleEventUnsubscribed(): Promise<void> {
+    if (!this.simpleEventSubscribed && !this.client.subscribed) return;
+    if (this.simpleEventUnsubscribeInFlight) return await this.simpleEventUnsubscribeInFlight;
+
+    if (this.simpleEventSubscribeInFlight) {
+      try {
+        await this.simpleEventSubscribeInFlight;
+      }
+      catch {
+        // ignore
+      }
+    }
+
+    this.simpleEventUnsubscribeInFlight = (async () => {
+      await this.unsubscribeEvents();
+      this.simpleEventSubscribed = false;
+    })().finally(() => {
+      this.simpleEventUnsubscribeInFlight = undefined;
+    });
+
+    return await this.simpleEventUnsubscribeInFlight;
   }
 
   private normalizeChannel(channel?: number | null): number {

@@ -25,4 +25,5 @@ test/recordings/*
 test/diagnostics-dumps/*
 test/frames-debug/*
 test/frames-save/*
+.tmp/*
 
