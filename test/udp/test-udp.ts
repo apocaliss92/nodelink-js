@@ -37,25 +37,16 @@ async function runUdpTests() {
   console.log("║         UDP TEST SUITE (BCUDP) - REOLINK BAICHUAN         ║");
   console.log("╚════════════════════════════════════════════════════════════╝");
   console.log(`\nConfiguration:`);
-  console.log(`  Host: ${config.udp.host}`);
+  console.log(`  Host: 255.255.255.255 (broadcast)`);
   console.log(`  Username: ${config.udp.username}`);
   console.log(`  UID: ${config.udp.uid}\n`);
 
-  // Try broadcast first (as per neolink behavior for battery cameras)
-  const useBroadcast = true; // Force broadcast for discovery
   const api = new ReolinkBaichuanApi({
-    host: useBroadcast ? "255.255.255.255" : (config.udp.host ?? "255.255.255.255"),
+    host: "255.255.255.255",
     username: config.udp.username,
     password: config.udp.password,
+    uid: config.udp.uid,
     transport: "udp",
-    udp: {
-      mode: "uid",
-      uid: config.udp.uid,
-      host: useBroadcast ? undefined : config.udp.host, // Don't pass host for broadcast
-      broadcast: useBroadcast, // Use broadcast for discovery
-      discoveryTimeout: 30_000,
-      discoveryRetryInterval: 500,
-    },
     debug: true, // Enable debug to see what's happening
   });
 

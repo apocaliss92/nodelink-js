@@ -127,12 +127,8 @@ const api = new ReolinkBaichuanApi({
   host: "255.255.255.255", // Broadcast for discovery
   username: "admin",
   password: "your-password",
+  uid: "YOUR_CAMERA_UID",
   transport: "udp",
-  udp: {
-    mode: "uid",
-    uid: "YOUR_CAMERA_UID",
-    broadcast: true,
-  },
 });
 
 await api.login();

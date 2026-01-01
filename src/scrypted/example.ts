@@ -24,6 +24,7 @@ export class ScryptedReolinkCamera {
     host: string,
     username: string,
     password: string,
+    uid: string | undefined,
     channel: number = 0,
     transport: "tcp" | "udp" | "auto" = "auto"
   ) {
@@ -31,6 +32,7 @@ export class ScryptedReolinkCamera {
       host,
       username,
       password,
+      ...(uid !== undefined ? { uid } : {}),
       transport,
       channel,
     });

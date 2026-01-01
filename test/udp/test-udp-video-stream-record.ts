@@ -236,7 +236,7 @@ async function testUdpVideoStreamRecording() {
   console.log("║     BAICHUAN UDP VIDEO STREAM RECORDING TEST              ║");
   console.log("╚════════════════════════════════════════════════════════════╝");
   console.log(`\nConfiguration:`);
-  console.log(`  Host: ${config.udp.host ?? "255.255.255.255 (broadcast)"}`);
+  console.log(`  Host: 255.255.255.255 (broadcast)`);
   console.log(`  UID: ${config.udp.uid}`);
   console.log(`  Username: ${config.udp.username}\n`);
 
@@ -245,21 +245,12 @@ async function testUdpVideoStreamRecording() {
     process.exit(1);
   }
 
-  // Try broadcast first (as per neolink behavior for battery cameras)
-  const useBroadcast = !config.udp.host || config.udp.host === "255.255.255.255";
   const api = new ReolinkBaichuanApi({
-    host: useBroadcast ? "255.255.255.255" : config.udp.host!,
+    host: "255.255.255.255",
     username: config.udp.username,
     password: config.udp.password,
+    uid: config.udp.uid,
     transport: "udp",
-    udp: {
-      mode: "uid",
-      uid: config.udp.uid,
-      host: useBroadcast ? undefined : config.udp.host,
-      broadcast: useBroadcast,
-      discoveryTimeout: 30_000,
-      discoveryRetryInterval: 500,
-    },
     debug: true, // Enable debug to see what's happening
     debugOptions: {
       enabled: true,

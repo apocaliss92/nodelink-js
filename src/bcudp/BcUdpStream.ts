@@ -48,15 +48,6 @@ export type BcUdpStreamOptions =
       /** Local discovery via UID (typical for battery cameras). */
       mode: "uid";
       uid: string;
-      host?: string;
-      port?: number;
-      mtu?: number;
-      /** If true, enables UDP broadcast for discovery. */
-      broadcast?: boolean;
-      /** Discovery timeout in milliseconds (default: 30000 for battery cameras that may be sleeping). */
-      discoveryTimeout?: number;
-      /** Interval between discovery retry packets in milliseconds (default: 500). */
-      discoveryRetryInterval?: number;
     }
   | {
       /** Direct connection with already-known parameters. */
@@ -65,7 +56,6 @@ export type BcUdpStreamOptions =
       port: number;
       clientId: number;
       cameraId: number;
-      mtu?: number;
     };
 
 type SendEntry = { packetId: number; buf: Buffer; ts: number };
@@ -128,7 +118,7 @@ export class BcUdpStream extends EventEmitter<{
   constructor(options: BcUdpStreamOptions) {
     super();
     this.opts = options;
-    this.mtu = options.mtu ?? BCUDP_DEFAULT_MTU;
+    this.mtu = BCUDP_DEFAULT_MTU;
   }
 
   async connect(): Promise<void> {
@@ -169,18 +159,16 @@ export class BcUdpStream extends EventEmitter<{
 
   private async discoveryUid(sock: dgram.Socket): Promise<void> {
     if (this.opts.mode !== "uid") throw new Error("Internal: discoveryUid called for non-uid mode");
-    // Neolink sends to both ports 2015 and 2018 (see discovery.rs:1119)
-    const ports = this.opts.port ? [this.opts.port] : [BCUDP_DISCOVERY_PORT_LOCAL_ANY, BCUDP_DISCOVERY_PORT_LOCAL_UID];
-    const host = this.opts.host ?? "255.255.255.255";
-    const broadcast = this.opts.broadcast ?? true;
-    // Longer timeout for battery cameras that may be sleeping (default 30s, was 5s)
-    const discoveryTimeout = this.opts.discoveryTimeout ?? 30_000;
-    // Retry interval for sending discovery packets to wake up sleeping cameras
-    const retryInterval = this.opts.discoveryRetryInterval ?? 500;
+    // Internal defaults (do not expose knobs):
+    // - Battery cameras may be sleeping -> keep a longer timeout.
+    // - Send to both discovery ports 2015/2018 (neolink behavior).
+    // - Use broadcast to discover by UID.
+    const ports = [BCUDP_DISCOVERY_PORT_LOCAL_ANY, BCUDP_DISCOVERY_PORT_LOCAL_UID];
+    const host = "255.255.255.255";
+    const discoveryTimeout = 30_000;
+    const retryInterval = 500;
 
-    if (broadcast) {
-      sock.setBroadcast(true);
-    }
+    sock.setBroadcast(true);
 
     const addr = sock.address();
     const localPort = typeof addr === "string" ? 0 : (addr as AddressInfo).port;

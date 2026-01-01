@@ -54,7 +54,7 @@ async function main(): Promise<boolean> {
   const debug = envBool("UDP_DEBUG", false);
 
   console.log("Configuration:");
-  console.log(`  Host: ${config.udp.host || "255.255.255.255 (broadcast)"}`);
+  console.log(`  Host: 255.255.255.255 (broadcast)`);
   console.log(`  Username: ${config.udp.username}`);
   console.log(`  UID: ${config.udp.uid}`);
   console.log(`  Target seconds: ${targetSeconds}`);
@@ -63,21 +63,12 @@ async function main(): Promise<boolean> {
   console.log(`  First frame timeout (ms): ${firstFrameTimeoutMs}`);
   console.log(`  Debug: ${debug ? "on" : "off"}`);
 
-  const useBroadcast = !config.udp.host || config.udp.host === "255.255.255.255";
-
   const api = new ReolinkBaichuanApi({
-    host: useBroadcast ? "255.255.255.255" : config.udp.host!,
+    host: "255.255.255.255",
     username: config.udp.username,
     password: config.udp.password,
+    uid: config.udp.uid,
     transport: "udp",
-    udp: {
-      mode: "uid",
-      uid: config.udp.uid,
-      host: useBroadcast ? undefined : config.udp.host,
-      broadcast: useBroadcast,
-      discoveryTimeout: 30_000,
-      discoveryRetryInterval: 500,
-    },
     debug,
   });
 

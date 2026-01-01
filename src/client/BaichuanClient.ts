@@ -15,7 +15,7 @@ import {
 import { aesDecrypt, aesEncrypt, bcDecrypt, bcEncrypt, deriveAesKey, md5StrModern, type EncryptionProtocol } from "../protocol/crypto";
 import { BaichuanFrameParser, encodeHeader, type BaichuanFrame } from "../protocol/framing";
 import { buildBinaryExtensionXml, buildChannelExtensionXml, buildLoginXml, getXmlText } from "../protocol/xml";
-import { BcUdpStream, type BcUdpStreamOptions } from "../bcudp/BcUdpStream";
+import { BcUdpStream } from "../bcudp/BcUdpStream";
 import type { ReolinkEvent } from "../reolink/baichuan/types";
 import { eventTraceLog, normalizeDebugOptions, traceLog, talkTraceLog, type DebugOptions, type DebugConfig, type Logger } from "../debug/DebugConfig";
 export type { Logger };
@@ -29,6 +29,8 @@ export type BaichuanClientOptions = {
   port?: number;
   username: string;
   password: string;
+  /** UID used for BCUDP discovery (typical for battery cameras). Required for `transport: "udp"` and UDP fallback in `auto`. */
+  uid?: string;
   /**
    * For NVR: logical channel index (0-based).
    * For standalone cameras: usually 0.
@@ -47,33 +49,6 @@ export type BaichuanClientOptions = {
    * - `auto`: try `tcp`, then fallback to `udp`
    */
   transport?: "tcp" | "udp" | "auto";
-  /** BCUDP options (required for `transport: "udp"` or `auto` fallback). */
-  udp?: BcUdpStreamOptions;
-  /**
-    * Interval in milliseconds to send protocol keep-alive pings.
-    *
-    * Default:
-    * - TCP: 30000ms (prevents idle socket closures by camera/NAT)
-    *
-    * Notes:
-    * - For `transport: "tcp"`: controls MSG_ID_PING (93).
-    * - For `transport: "udp"` (BCUDP): keepalive cadence is intentionally fixed internally
-    *   (2500ms) because some battery-camera firmwares are sensitive; overriding it can cause
-    *   regressions.
-   */
-  keepAliveInterval?: number;
-  /**
-   * Enable TCP keep-alive probes at OS level (Node `socket.setKeepAlive`).
-   * Default: true.
-   *
-   * Note: this is complementary to `keepAliveInterval` (protocol-level ping).
-   */
-  tcpSocketKeepAlive?: boolean;
-  /**
-   * Initial delay (ms) before the first TCP keep-alive probe.
-   * Default: 30000ms.
-   */
-  tcpSocketKeepAliveInitialDelayMs?: number;
 };
 
 export type MaxEncryption = "none" | "bc" | "aes" | "full_aes";
@@ -145,8 +120,10 @@ export class BaichuanClient extends EventEmitter<{
   private startKeepAlive(): void {
     if (this.keepAliveTimer) return;
 
-    // UDP keepalive cadence is intentionally fixed (see BaichuanClientOptions.keepAliveInterval).
-    const interval = this.transport === "udp" ? 2500 : (this.opts.keepAliveInterval ?? 30_000);
+    // Internal defaults:
+    // - UDP/BCUDP: battery cameras tend to aggressively drop idle sessions.
+    // - TCP: prevent idle socket closures by camera/NAT.
+    const interval = this.transport === "udp" ? 2500 : 30_000;
 
     if (interval <= 0) return;
 
@@ -257,6 +234,10 @@ export class BaichuanClient extends EventEmitter<{
     } catch (e) {
       this.logDebug("auto:tcp_failed", e);
       // Fallback to UDP discovery (like neolink "local discovery")
+      // Requires UID.
+      if (!this.opts.uid) {
+        throw new Error("TCP connection failed and UDP fallback requires `options.uid` (BCUDP discovery UID).");
+      }
       await this.connectUdp();
     }
   }
@@ -272,14 +253,10 @@ export class BaichuanClient extends EventEmitter<{
     this.transport = "tcp";
 
     // TCP keep-alive at OS level (helps prevent idle disconnects from NAT/camera).
-    const enableTcpKeepAlive = this.opts.tcpSocketKeepAlive ?? true;
-    if (enableTcpKeepAlive) {
-      const initialDelay = this.opts.tcpSocketKeepAliveInitialDelayMs ?? 30_000;
-      try {
-        sock.setKeepAlive(true, initialDelay);
-      } catch (e) {
-        this.logDebug("tcp_setKeepAlive_failed", e);
-      }
+    try {
+      sock.setKeepAlive(true, 30_000);
+    } catch (e) {
+      this.logDebug("tcp_setKeepAlive_failed", e);
     }
 
     sock.on("data", (chunk) => {
@@ -307,11 +284,10 @@ export class BaichuanClient extends EventEmitter<{
       this.transport = "udp";
       return;
     }
-    const udpOpts = this.opts.udp;
-    if (!udpOpts) {
-      throw new Error("Baichuan UDP requested but `options.udp` is not set (required for BCUDP, typical for battery cameras).");
+    if (!this.opts.uid) {
+      throw new Error("Baichuan UDP requested but `options.uid` is not set (required for BCUDP discovery).");
     }
-    const sock = new BcUdpStream(udpOpts);
+    const sock = new BcUdpStream({ mode: "uid", uid: this.opts.uid });
     this.udpSocket = sock;
     this.transport = "udp";
 

@@ -11,21 +11,15 @@ const PASS = process.env.UDP_PASSWORD || "";
 const UID = process.env.UDP_UID || "";
 
 async function main() {
-  console.log(`Connecting to ${HOST} (UID: ${UID})...`);
+  console.log(`Connecting via broadcast discovery (UID: ${UID})...`);
 
   const api = new ReolinkBaichuanApi({
-    host: HOST,
+    host: "255.255.255.255",
     port: 9000,
     username: USER,
     password: PASS,
+    uid: UID,
     transport: "udp",
-    udp: {
-        mode: "uid",
-        uid: UID,
-        host: HOST,
-        discoveryTimeout: 30_000,
-        discoveryRetryInterval: 500,
-    },
     debug: true,
     debugOptions: {
         enabled: true,
