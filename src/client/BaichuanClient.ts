@@ -418,22 +418,6 @@ export class BaichuanClient extends EventEmitter<{
     
     // Forward BcUdpStream debug events
     sock.on("debug", (event: string, data?: unknown) => {
-      // TEMPORARY DEBUG: Always log critical UDP events
-      const criticalEvents = [
-        'discovery_t_send',
-        'discovery_a_send',
-        'udp_hb_send',
-        'udp_hb_sent_ok',
-        'udp_ack_periodic',
-        'd2c_hb_received',
-        'd2c_c_r_during_stream_ignored',
-        'camera_disconnect_received',
-        'disconnect_stats',
-        'discovery_rx_connected',
-      ];
-      if (criticalEvents.includes(event)) {
-        this.logger.log(`[BcUdpStream] ${event}`, data);
-      }
       this.logDebug(`udp_${event}`, data);
     });
 

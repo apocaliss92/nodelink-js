@@ -4,7 +4,7 @@ import { type AddressInfo } from "node:net";
 import { setInterval as setIntervalNode } from "node:timers";
 import { BCUDP_DATA_HEADER_SIZE, BCUDP_DEFAULT_MTU, BCUDP_DISCOVERY_PORT_LOCAL_UID, BCUDP_DISCOVERY_PORT_LOCAL_ANY } from "./constants";
 import { decodeBcUdpPacket, encodeAckPacket, encodeDataPacket, encodeDiscoveryPacket } from "./packets";
-import { buildC2dA, buildC2dC, buildC2dHb, buildC2dT, parseD2cCfm, parseD2cCr, parseD2cHb, parseD2cT } from "./xml";
+import { buildC2dA, buildC2dC, buildC2dHb, buildC2dT, parseD2cCfm, parseD2cCr, parseD2cT } from "./xml";
 
 class AckLatency {
   private currentValues: number[] = [];
@@ -86,7 +86,6 @@ export class BcUdpStream extends EventEmitter<{
   private sock: dgram.Socket | undefined;
   private remote?: { host: string; port: number };
   private mtu: number;
-  private uid: string;
 
   private clientId: number | undefined;
   private cameraId: number | undefined;
@@ -100,14 +99,8 @@ export class BcUdpStream extends EventEmitter<{
   private ackTimer: NodeJS.Timeout | undefined;
   private resendTimer: NodeJS.Timeout | undefined;
   private hbTimer: NodeJS.Timeout | undefined;
-  // DISABLED: Discovery TID heartbeat loop (see startTimers comment)
-  // private hbTimerDiscovery: NodeJS.Timeout | undefined;
   private discoveryTid: number | undefined;
-  private discoveryTidAny: number | undefined;
-  private discoveryTidUid: number | undefined;
   private lastASentAtMs = 0;
-  private lastCSentAtMs = 0;
-  private lastTSentAtMs = 0;
 
   // Neolink/official client send UDP HB at 1s cadence.
   private readonly hbIntervalMs = 1000;
@@ -133,15 +126,10 @@ export class BcUdpStream extends EventEmitter<{
   private pendingData: Buffer[] = [];
   private pendingDataOffset = 0;
   private drainScheduled = false;
-  // Avoid starving ACK/HB timers: drain in small chunks and yield back to the event loop.
-  // Under heavy load, emitting thousands of buffers in one setImmediate can block the loop
-  // long enough for the camera to miss ACK cadence and stop streaming.
-  private readonly maxDrainPerTick = 64;
 
   constructor(options: BcUdpStreamOptions) {
     super();
     this.opts = options;
-    this.uid = options.mode === "uid" ? options.uid : "";
     this.mtu = options.mtu ?? BCUDP_DEFAULT_MTU;
   }
 
@@ -244,34 +232,12 @@ export class BcUdpStream extends EventEmitter<{
         if (sentT) return;
         if (!discovered) return;
         try {
-          // Some firmwares appear to expect C2D_T to reuse the discovery response tid (from D2C_C_R / D2C_CFM).
-          // If we use a random tid here, the camera may ignore the T step and later disconnect the session.
-          // Use the FULL 32-bit tid from discovery response when available.
-          // Some firmwares appear to use tids beyond 0..255 (e.g. observed tid=1001 on D2C_DISC),
-          // so truncating to 8-bit can break the expected handshake correlation.
-          const tid = (discoveredTid != null ? (discoveredTid >>> 0) : ((Math.floor(Math.random() * 256) | 0) >>> 0));
-          // Some firmwares appear to require <did> in C2D_T; include it when known (from D2C_C_R).
-          const tXml = buildC2dT({
-            ...(discoveredSid != null ? { sid: discoveredSid } : {}),
-            cid: discovered.cid,
-            did: discovered.did,
-            mtu: this.mtu,
-            conn: "local",
-          });
+          const tid = (Math.floor(Math.random() * 255) | 0) >>> 0;
+          const tXml = buildC2dT({ ...(discoveredSid != null ? { sid: discoveredSid } : {}), cid: discovered.cid, mtu: this.mtu, conn: "local" });
           const tPkt = encodeDiscoveryPacket(tid, tXml);
           sock.send(tPkt, rport, rhost);
           sentT = true;
-          this.emit("debug", "discovery_t_send", {
-            sid: discoveredSid,
-            cid: discovered.cid,
-            did: discovered.did,
-            rhost,
-            rport,
-            tid,
-            // Helpful to verify firmware expectations: some require <did> in C2D_T.
-            xmlPreview: tXml,
-            hasDid: tXml.includes("<did>"),
-          });
+          this.emit("debug", "discovery_t_send", { sid: discoveredSid, cid: discovered.cid, did: discovered.did, rhost, rport });
         } catch (e) {
           this.emit("debug", "discovery_t_send_error", e);
         }
@@ -346,18 +312,8 @@ export class BcUdpStream extends EventEmitter<{
           discovered = { cid: parsed.cid, did: parsed.did, rhost: rinfo.address, rport: rinfo.port };
           if (parsed.sid != null) discoveredSid = parsed.sid;
 
-          // IMPORTANT: stop discovery retries immediately once we have a valid response.
-          // Continuing to spam C2D_C while the camera is transitioning to the data/handshake port
-          // can cause some firmwares to keep re-sending D2C_C_R and eventually disconnect.
-          if (retryTimer) {
-            try { clearInterval(retryTimer); } catch { /* ignore */ }
-            retryTimer = undefined;
-          }
-
-          // Neolink observed behavior (PCAP): it does NOT send C2D_T automatically on D2C_C_R.
-          // It proceeds to heartbeat + stream and only responds to D2C_T with C2D_A when/if the camera asks.
-          // Some firmwares appear to disconnect when they receive unsolicited C2D_T.
-          // Therefore: do NOT sendT() here.
+          // Attempt T handshake if SID is available.
+          sendT(rinfo.address, rinfo.port);
 
           // Don't resolve immediately: give the camera a chance to complete T/A/CFM.
           // If it doesn't, we'll finalize shortly anyway.
@@ -384,14 +340,10 @@ export class BcUdpStream extends EventEmitter<{
 
       // Send initial discovery packet to all ports (neolink behavior)
       const sendDiscovery = () => {
-        // Neolink PCAP shows stable tids per discovery port across retries.
-        // Keep one tid per port (2015/2018) for the life of this discovery attempt.
-        this.discoveryTidAny ??= ((Math.floor(Math.random() * 256) | 0) >>> 0);
-        this.discoveryTidUid ??= ((Math.floor(Math.random() * 256) | 0) >>> 0);
+        const tid = (Math.floor(Math.random() * 255) | 0) >>> 0;
+        const packet = encodeDiscoveryPacket(tid, xml);
         for (const port of ports) {
           try {
-            const tid = port === BCUDP_DISCOVERY_PORT_LOCAL_UID ? this.discoveryTidUid! : this.discoveryTidAny!;
-            const packet = encodeDiscoveryPacket(tid, xml);
             sock.send(packet, port, host);
             retryCount++;
             this.emit("debug", "discovery_send", { retryCount, host, port });
@@ -418,21 +370,6 @@ export class BcUdpStream extends EventEmitter<{
     // After discovery, assume the responder is the streaming peer.
     // Some cameras may later switch ports for data; we track that via remote_update on data/ack.
     this.remote = { host: reply.rhost, port: reply.rport };
-    this.emit("debug", "discovery_complete", { 
-      host: reply.rhost, 
-      port: reply.rport, 
-      cid: reply.cid, 
-      did: reply.did, 
-      sid: reply.sid 
-    });
-    
-    // Neolink disables broadcast after discovery (new_from_discovery line 71).
-    // This ensures heartbeat/ACK packets are unicast to the specific camera.
-    try {
-      sock.setBroadcast(false);
-    } catch (e) {
-      this.emit("debug", "setBroadcast_false_error", e);
-    }
   }
 
   private startTimers(): void {
@@ -473,83 +410,29 @@ export class BcUdpStream extends EventEmitter<{
         this.emit("error", e instanceof Error ? e : new Error(String(e)));
       }
     }, hbMs);
-
-    // DISABLED: Second heartbeat loop with fixed discovery TID.
-    // Analysis of neolink udpsource.rs shows only ONE heartbeat loop with random TID.
-    // The fixed discoveryTid is only used during initial discovery, not for ongoing keepalive.
-    // Sending two HB messages per second might confuse the camera.
-    // if (this.discoveryTid != null) {
-    //   this.hbTimerDiscovery = setIntervalNode(() => {
-    //     try {
-    //       this.sendHeartbeatDiscoveryTid();
-    //     } catch (e) {
-    //       this.emit("error", e instanceof Error ? e : new Error(String(e)));
-    //     }
-    //   }, hbMs);
-    // }
   }
 
   private sendHeartbeat(): void {
-    if (!this.sock || !this.remote || this.clientId == null || this.cameraId == null) {
-      this.emit("debug", "udp_hb_skip", { sock: !!this.sock, remote: !!this.remote, clientId: this.clientId, cameraId: this.cameraId });
-      return;
-    }
+    if (!this.sock || !this.remote || this.clientId == null || this.cameraId == null) return;
     const peer = this.remote;
-    // Neolink generates a random TID for each heartbeat (0-255).
-    // See udpsource.rs line 441-445: tid: { let mut rng = thread_rng(); (rng.gen::<u8>()) as u32 }
-    // This differs from keep_alive_device which uses a fixed tid from discovery.
-    const tid = ((Math.floor(Math.random() * 256) | 0) >>> 0);
+    // Neolink sends HB using the discovery thread tid (keep_alive_device(tid, ...)).
+    // Some firmwares appear to be strict about this.
+    const tid = (this.discoveryTid ?? ((Math.floor(Math.random() * 255) | 0) >>> 0)) >>> 0;
 
-    const xml = buildC2dHb({ cid: this.clientId, did: this.cameraId });
+    let xml: string;
+    // Neolink sends C2D_HB as soon as it has CID and DID, even if SID is not yet assigned (or is 0).
+    // This keeps the session alive and seems to be what the camera expects after the initial handshake.
+    xml = buildC2dHb({ cid: this.clientId, did: this.cameraId });
+
     const pkt = encodeDiscoveryPacket(tid, xml);
 
-    // DEBUG: Always log heartbeat sends with packet details
-    this.emit("debug", "udp_hb_send", { 
-      tid, 
-      cid: this.clientId, 
-      did: this.cameraId, 
-      host: peer.host, 
-      port: peer.port, 
-      xml: xml,
-      xmlLen: xml.length,
-      pktLen: pkt.length,
-      pktHex: pkt.toString('hex').substring(0, 100) // First 50 bytes in hex for inspection
-    });
+    this.emit("debug", "udp_hb_send", { tid, xml, host: peer.host, port: peer.port });
 
     // Neolink sends HB to the same peer address used by the UDP stream.
-    this.sock.send(pkt, peer.port, peer.host, (err) => {
-      if (err) {
-        this.emit("error", new Error(`Failed to send heartbeat (random TID): ${err.message}`));
-      } else {
-        this.emit("debug", "udp_hb_sent_ok", { tid });
-      }
-    });
+    this.sock.send(pkt, peer.port, peer.host);
     this.lastHbSentAtMs = performance.now();
     this.lastHbDest = { host: peer.host, port: peer.port };
     
-  }
-
-  private sendHeartbeatDiscoveryTid(): void {
-    if (!this.sock || !this.remote || this.clientId == null || this.cameraId == null || this.discoveryTid == null) {
-      return;
-    }
-    const peer = this.remote;
-    // Neolink's keep_alive_device uses the fixed TID from discovery.
-    // See discovery.rs line 953-979.
-    const tid = this.discoveryTid;
-
-    const xml = buildC2dHb({ cid: this.clientId, did: this.cameraId });
-    const pkt = encodeDiscoveryPacket(tid, xml);
-
-    this.emit("debug", "udp_hb_send_discovery", { tid, cid: this.clientId, did: this.cameraId, host: peer.host, port: peer.port, pktLen: pkt.length });
-
-    this.sock.send(pkt, peer.port, peer.host, (err) => {
-      if (err) {
-        this.emit("error", new Error(`Failed to send heartbeat (discovery TID): ${err.message}`));
-      }
-    });
-    this.lastHbSentAtMs = performance.now();
-    this.lastHbDest = { host: peer.host, port: peer.port };
   }
 
   private buildAckPayload(): { packetId: number; payload: Buffer } {
@@ -590,12 +473,10 @@ export class BcUdpStream extends EventEmitter<{
   }
 
   private updateAckPacket(): void {
-    // Neolink behavior (PCAP): client->camera ACK packets always use connectionId=0.
-    // The camera uses the client's cid as connectionId in camera->client DATA/ACK packets.
-    // If we send ACK with a non-zero connectionId (e.g. did), some firmwares eventually disconnect (D2C_DISC).
+    if (this.cameraId == null) return;
     const { packetId, payload } = this.buildAckPayload();
     this.lastAckPacket = encodeAckPacket({
-      connectionId: 0,
+      connectionId: this.cameraId, // towards camera: did
       // In neolink: group_id=0xffffffff is only used for the special empty ACK.
       groupId: packetId === 0xffffffff && payload.length === 0 ? 0xffffffff : 0,
       packetId,
@@ -606,17 +487,6 @@ export class BcUdpStream extends EventEmitter<{
 
   private sendAckFast(): void {
     if (!this.sock || !this.remote || this.lastAckPacket.length === 0) return;
-    // DEBUG: Log ACK sends occasionally
-    const now = performance.now();
-    if (!this.lastAckLogMs || (now - this.lastAckLogMs > 5000)) {
-      this.lastAckLogMs = now;
-      this.emit("debug", "udp_ack_periodic", { 
-        packetsWant: this.packetsWant, 
-        ackSize: this.lastAckPacket.length,
-        destHost: this.remote.host,
-        destPort: this.remote.port
-      });
-    }
     this.sock.send(this.lastAckPacket, this.remote.port, this.remote.host);
     this.ackSentCount++;
     this.lastAckSentAtMs = performance.now();
@@ -625,7 +495,6 @@ export class BcUdpStream extends EventEmitter<{
       this.emit("debug", "ack_sent_100", { latency: this.ackLatency.getValue() });
     }
   }
-  private lastAckLogMs = 0;
 
   private maybeSendImmediateAck(reason: "data" | "manual"): void {
     // Critical for battery cams: ACK must be timely (camera resends after ~1000ms).
@@ -688,28 +557,22 @@ export class BcUdpStream extends EventEmitter<{
   private scheduleDrain(): void {
     if (this.drainScheduled) return;
     this.drainScheduled = true;
-    const drainOnce = () => {
-      // Mark unscheduled for this tick; we may reschedule below.
+    setImmediate(() => {
       this.drainScheduled = false;
       try {
-        const end = Math.min(this.pendingData.length, this.pendingDataOffset + this.maxDrainPerTick);
-        for (; this.pendingDataOffset < end; this.pendingDataOffset++) {
+        for (; this.pendingDataOffset < this.pendingData.length; this.pendingDataOffset++) {
           this.emit("data", this.pendingData[this.pendingDataOffset]!);
         }
       } catch (e) {
         this.emit("error", e instanceof Error ? e : new Error(String(e)));
       } finally {
+        // Reset buffer when fully drained.
         if (this.pendingDataOffset >= this.pendingData.length) {
-          // Fully drained.
           this.pendingData = [];
           this.pendingDataOffset = 0;
-          return;
         }
-        // More pending: yield and continue draining in a later tick.
-        this.scheduleDrain();
       }
-    };
-    setImmediate(drainOnce);
+    });
   }
 
   private flushReceived(): void {
@@ -732,16 +595,8 @@ export class BcUdpStream extends EventEmitter<{
     // ACK/heartbeat to the discovery port, the camera may stop streaming.
     const updateRemote = (reason: string) => {
       if (!this.remote || this.remote.host !== rhost || this.remote.port !== rport) {
-        const oldHost = this.remote?.host;
-        const oldPort = this.remote?.port;
         this.remote = { host: rhost, port: rport };
-        this.emit("debug", "remote_update", { 
-          reason, 
-          oldHost, 
-          oldPort, 
-          newHost: rhost, 
-          newPort: rport 
-        });
+        this.emit("debug", "remote_update", { reason, host: rhost, port: rport });
       }
     };
 
@@ -810,31 +665,6 @@ export class BcUdpStream extends EventEmitter<{
         }
       }
 
-      // Battery cameras may send D2C_HB (Device to Client HeartBeat).
-      // Neolink only verifies cid/did and logs mismatches (udpsource.rs:516-526).
-      // It does NOT send a response - just validates the session IDs.
-      const hb = parseD2cHb(p.xml);
-      if (hb && this.clientId != null && this.cameraId != null) {
-        this.emit("debug", "d2c_hb_received", { tid: p.tid, cid: hb.cid, did: hb.did, expectedCid: this.clientId, expectedDid: this.cameraId });
-        if (hb.cid !== this.clientId) {
-          this.emit("debug", "d2c_hb_cid_mismatch", { expected: this.clientId, received: hb.cid });
-        }
-        if (hb.did !== this.cameraId) {
-          this.emit("debug", "d2c_hb_did_mismatch", { expected: this.cameraId, received: hb.did });
-        }
-      }
-
-      // Battery cameras may resend D2C_C_R during streaming.
-      // Some firmwares will keep sending D2C_C_R until they see a correlated C2D_T on the same tid.
-      // If we ignore it, the camera may eventually send D2C_DISC and terminate the session.
-      const cr = parseD2cCr(p.xml);
-      if (cr && cr.rsp === 0 && this.clientId != null && this.cameraId != null && cr.cid === this.clientId && cr.did === this.cameraId) {
-        // Neolink PCAP behavior: it does NOT respond to D2C_C_R with C2D_T during the session.
-        // It keeps the session alive with C2D_HB and only participates in T/A if the camera initiates D2C_T.
-        // Sending unsolicited C2D_T appears to correlate with camera-initiated D2C_DISC on some firmwares.
-        this.emit("debug", "d2c_c_r_during_stream_ignored", { tid: p.tid, cid: cr.cid, did: cr.did, sid: cr.sid, timer: cr.timer });
-      }
-
       // If the camera sends CFM later, keep SID in sync.
       const cfm = parseD2cCfm(p.xml);
       if (cfm && cfm.sid != null) {
@@ -843,9 +673,8 @@ export class BcUdpStream extends EventEmitter<{
 
       // Surface disconnect requests for diagnostics.
       const isDisc = /<D2C_DISC>|<C2D_DISC>/.test(p.xml);
-      this.emit("debug", "discovery_rx_connected", { tid: p.tid, disconnect: isDisc, xml: p.xml.slice(0, 200) });
+      this.emit("debug", "discovery_rx_connected", { tid: p.tid, ...(isDisc ? { disconnect: true } : {}), xml: p.xml.slice(0, 200) });
       if (isDisc) {
-        this.emit("debug", "camera_disconnect_received", { tid: p.tid, xml: p.xml });
         const now = performance.now();
         const stats = {
           packetsWant: this.packetsWant,
@@ -870,8 +699,8 @@ export class BcUdpStream extends EventEmitter<{
           ),
         );
       }
-      return;
     }
+    return;
   }
 
   write(buf: Buffer): void {
@@ -881,9 +710,7 @@ export class BcUdpStream extends EventEmitter<{
       const payload = buf.subarray(off, Math.min(buf.length, off + maxPayload));
       const packetId = this.sendPacketId >>> 0;
       this.sendPacketId = (this.sendPacketId + 1) >>> 0;
-      // Neolink PCAP behavior: client->camera DATA packets use connectionId=0.
-      // Using did here deviates from the working flow and can prevent the stream from being delivered.
-      const pkt = encodeDataPacket({ connectionId: 0, packetId, payload: Buffer.from(payload) });
+      const pkt = encodeDataPacket({ connectionId: this.cameraId, packetId, payload: Buffer.from(payload) });
       this.sent.set(packetId, { packetId, buf: pkt, ts: Date.now() });
       this.sock.send(pkt, this.remote.port, this.remote.host);
     }
