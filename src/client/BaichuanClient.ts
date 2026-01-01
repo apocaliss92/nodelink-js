@@ -72,6 +72,7 @@ export class BaichuanClient extends EventEmitter<{
   private transport: "tcp" | "udp" = "tcp";
   private readonly parser = new BaichuanFrameParser();
   private readonly pending = new Map<PendingKey, { resolve: (f: BaichuanFrame) => void; reject: (e: Error) => void }>();
+  private socketClosed = false;
 
   private msgNum = 0;
   loggedIn = false; // Public to allow ReolinkBaichuanApi to check login status
@@ -111,6 +112,21 @@ export class BaichuanClient extends EventEmitter<{
 
   getDebugConfig(): DebugConfig {
     return this.debugCfg;
+  }
+
+  /**
+   * Check if the socket is connected and ready for operations.
+   * For TCP: checks if socket exists and is not destroyed.
+   * For UDP: checks if socket exists.
+   */
+  isSocketConnected(): boolean {
+    if (this.transport === "tcp") {
+      return this.tcpSocket !== undefined && !this.tcpSocket.destroyed;
+    }
+    if (this.transport === "udp") {
+      return this.udpSocket !== undefined;
+    }
+    return false;
   }
 
   get username(): string {
@@ -251,6 +267,7 @@ export class BaichuanClient extends EventEmitter<{
     const sock = net.createConnection({ host: this.opts.host, port });
     this.tcpSocket = sock;
     this.transport = "tcp";
+    this.socketClosed = false;
 
     // TCP keep-alive at OS level (helps prevent idle disconnects from NAT/camera).
     try {
@@ -265,9 +282,23 @@ export class BaichuanClient extends EventEmitter<{
     });
     sock.on("close", () => {
       this.stopKeepAlive();
+      this.socketClosed = true;
       this.emit("close");
-      for (const [, p] of this.pending) p.reject(new Error("Baichuan socket closed"));
+      // Reject all pending promises asynchronously to allow catch handlers to be attached
+      // This prevents unhandled rejections when the socket closes
+      const pendingEntries = Array.from(this.pending.entries());
       this.pending.clear();
+      for (const [, p] of pendingEntries) {
+        // Use setImmediate to allow catch handlers to be attached before rejection
+        // setImmediate runs after the current event loop, giving catch handlers time to attach
+        setImmediate(() => {
+          try {
+            p.reject(new Error("Baichuan socket closed"));
+          } catch (e) {
+            // Ignore errors from rejecting promises (they may already be handled)
+          }
+        });
+      }
     });
     sock.on("error", (err) => this.emit("error", err));
 
@@ -290,6 +321,7 @@ export class BaichuanClient extends EventEmitter<{
     const sock = new BcUdpStream({ mode: "uid", uid: this.opts.uid });
     this.udpSocket = sock;
     this.transport = "udp";
+    this.socketClosed = false;
 
     sock.on("data", (chunk) => {
       const frames = this.parser.push(chunk);
@@ -297,9 +329,23 @@ export class BaichuanClient extends EventEmitter<{
     });
     sock.on("close", () => {
       this.stopKeepAlive();
+      this.socketClosed = true;
       this.emit("close");
-      for (const [, p] of this.pending) p.reject(new Error("Baichuan UDP stream closed"));
+      // Reject all pending promises asynchronously to allow catch handlers to be attached
+      // This prevents unhandled rejections when the socket closes
+      const pendingEntries = Array.from(this.pending.entries());
       this.pending.clear();
+      for (const [, p] of pendingEntries) {
+        // Use setImmediate to allow catch handlers to be attached before rejection
+        // setImmediate runs after the current event loop, giving catch handlers time to attach
+        setImmediate(() => {
+          try {
+            p.reject(new Error("Baichuan UDP stream closed"));
+          } catch (e) {
+            // Ignore errors from rejecting promises (they may already be handled)
+          }
+        });
+      }
     });
     sock.on("error", (err) => this.emit("error", err));
     
@@ -833,7 +879,9 @@ export class BaichuanClient extends EventEmitter<{
     const wire = Buffer.concat([header, bodyBytes]);
 
     const timeoutMs = params.timeoutMs ?? 10_000;
+    let rejectFn: ((e: Error) => void) | undefined;
     const framePromise = new Promise<BaichuanFrame>((resolve, reject) => {
+      rejectFn = reject;
       const t = setTimeout(() => {
         this.pending.delete(pendingKey);
         reject(new Error(`Baichuan timeout cmdId=${cmdId} msgNum=${msgNum}`));
@@ -848,6 +896,14 @@ export class BaichuanClient extends EventEmitter<{
           reject(e);
         },
       });
+    });
+    
+    // CRITICAL: Add catch handler IMMEDIATELY after promise creation, BEFORE any operations
+    // This must happen synchronously, before writeWire or any async operations
+    // This prevents unhandled rejections when socket closes during writeWire
+    framePromise.catch(() => {
+      // Silently handle rejections from socket closures
+      // The caller will handle the error when they await the promise
     });
 
     this.logDebug("tx", { cmdId, msgNum, channelId, messageClass, bodyLen });
@@ -948,7 +1004,9 @@ export class BaichuanClient extends EventEmitter<{
     const wire = Buffer.concat([header, bodyBytes]);
 
     const timeoutMs = params.timeoutMs ?? 10_000;
+    let rejectFn: ((e: Error) => void) | undefined;
     const framePromise = new Promise<BaichuanFrame>((resolve, reject) => {
+      rejectFn = reject;
       const t = setTimeout(() => {
         this.pending.delete(pendingKey);
         reject(new Error(`Baichuan timeout cmdId=${cmdId} msgNum=${msgNum}`));
@@ -963,6 +1021,14 @@ export class BaichuanClient extends EventEmitter<{
           reject(e);
         },
       });
+    });
+    
+    // CRITICAL: Add catch handler IMMEDIATELY after promise creation, BEFORE any operations
+    // This must happen synchronously, before writeWire or any async operations
+    // This prevents unhandled rejections when socket closes during writeWire
+    framePromise.catch(() => {
+      // Silently handle rejections from socket closures
+      // The caller will handle the error when they await the promise
     });
 
     this.logDebug("tx", { cmdId, msgNum, channelId, messageClass, bodyLen });
@@ -1049,7 +1115,9 @@ export class BaichuanClient extends EventEmitter<{
     const wire = Buffer.concat([header, bodyBytes]);
 
     const timeoutMs = params.timeoutMs ?? 10_000;
+    let rejectFn: ((e: Error) => void) | undefined;
     const framePromise = new Promise<BaichuanFrame>((resolve, reject) => {
+      rejectFn = reject;
       const t = setTimeout(() => {
         this.pending.delete(pendingKey);
         reject(new Error(`Baichuan timeout cmdId=${cmdId} msgNum=${msgNum}`));
@@ -1064,6 +1132,14 @@ export class BaichuanClient extends EventEmitter<{
           reject(e);
         },
       });
+    });
+    
+    // CRITICAL: Add catch handler IMMEDIATELY after promise creation, BEFORE any operations
+    // This must happen synchronously, before writeWire or any async operations
+    // This prevents unhandled rejections when socket closes during writeWire
+    framePromise.catch(() => {
+      // Silently handle rejections from socket closures
+      // The caller will handle the error when they await the promise
     });
 
     this.logDebug("tx", { cmdId, msgNum, channelId, messageClass, bodyLen, binary: true });
@@ -1347,6 +1423,14 @@ export class BaichuanClient extends EventEmitter<{
           reject(e);
         },
       });
+    });
+    
+    // CRITICAL: Add catch handler IMMEDIATELY after promise creation, BEFORE writeWire
+    // This must happen synchronously, before any operations that might cause socket to close
+    // This prevents unhandled rejections when socket closes during writeWire
+    framePromise.catch(() => {
+      // Silently handle rejections from socket closures
+      // The caller will handle the error when they await the promise
     });
 
     this.writeWire(header); // header-only
