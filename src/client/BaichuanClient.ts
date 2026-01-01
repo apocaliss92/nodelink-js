@@ -50,10 +50,16 @@ export type BaichuanClientOptions = {
   /** BCUDP options (required for `transport: "udp"` or `auto` fallback). */
   udp?: BcUdpStreamOptions;
   /**
-   * Interval in milliseconds to send keep-alive pings (MSG_ID_PING).
-   * Default:
-   * - UDP/BCUDP: 2500ms (battery cameras tend to aggressively drop idle sessions)
-   * - TCP: 30000ms (prevents idle socket closures by camera/NAT)
+    * Interval in milliseconds to send protocol keep-alive pings.
+    *
+    * Default:
+    * - TCP: 30000ms (prevents idle socket closures by camera/NAT)
+    *
+    * Notes:
+    * - For `transport: "tcp"`: controls MSG_ID_PING (93).
+    * - For `transport: "udp"` (BCUDP): keepalive cadence is intentionally fixed internally
+    *   (2500ms) because some battery-camera firmwares are sensitive; overriding it can cause
+    *   regressions.
    */
   keepAliveInterval?: number;
   /**
@@ -139,15 +145,23 @@ export class BaichuanClient extends EventEmitter<{
   private startKeepAlive(): void {
     if (this.keepAliveTimer) return;
 
-    // Default intervals unless explicitly set.
-    let interval = this.opts.keepAliveInterval;
-    if (interval === undefined) {
-      interval = this.transport === "udp" ? 2500 : 30_000;
-    }
+    // UDP keepalive cadence is intentionally fixed (see BaichuanClientOptions.keepAliveInterval).
+    const interval = this.transport === "udp" ? 2500 : (this.opts.keepAliveInterval ?? 30_000);
 
     if (interval <= 0) return;
 
     this.keepAliveTimer = setInterval(() => {
+      // BCUDP keepalive behaves differently: some cameras don't reply to the keepalive frame,
+      // so waiting for a response would stall the loop.
+      if (this.transport === "udp") {
+        try {
+          this.sendUdpKeepAlive();
+        } catch (e) {
+          this.logDebug("udp_keepalive_ping_error", e);
+        }
+        return;
+      }
+
       // Avoid overlapping pings (they wait for a reply and can take up to timeoutMs).
       if (this.keepAlivePingInFlight) return;
       this.keepAlivePingInFlight = true;
@@ -165,6 +179,28 @@ export class BaichuanClient extends EventEmitter<{
     this.keepAliveTimer.unref?.();
   }
 
+  private sendUdpKeepAlive(): void {
+    if (this.transport !== "udp") return;
+    if (!this.udpSocket) return;
+    // Avoid keepalives before login; some firmwares treat them as invalid.
+    if (!this.loggedIn) return;
+
+    const msgNum = this.nextMsgNum();
+    const header = encodeHeader({
+      cmdId: BC_CMD_ID_UDP_KEEP_ALIVE,
+      bodyLen: 0,
+      channelId: 0,
+      streamType: 0,
+      msgNum,
+      responseCode: 0,
+      messageClass: BC_CLASS_MODERN_24,
+      payloadOffset: 0,
+    });
+
+    this.logDebug("udp_keepalive_ping_tx", { msgNum, channelId: 0, streamType: 0 });
+    this.writeWire(header);
+  }
+
   private stopKeepAlive(): void {
     if (this.keepAliveTimer) {
       clearInterval(this.keepAliveTimer);
@@ -180,8 +216,7 @@ export class BaichuanClient extends EventEmitter<{
     // Avoid pings before login; some firmwares treat them as invalid and may drop the session.
     if (!this.loggedIn) return;
     
-    // Send MSG_ID_PING (93)
-    // Neolink sends this to check link status and keep connection alive
+    // TCP keepalive: MSG_ID_PING (93)
     try {
       // We use sendFrame which waits for response.
       // If it times out, it's fine, we just log it.
@@ -191,7 +226,7 @@ export class BaichuanClient extends EventEmitter<{
         channelIdOverride: 0, // Force 0-based channel ID for Ping
         messageClass: BC_CLASS_MODERN_24,
         streamType: 0,
-        extensionXml: "", // Neolink sends empty body XML for Ping
+        extensionXml: "", // Keepalive has empty body
       });
     } catch (e) {
       // Ignore errors, just log debug

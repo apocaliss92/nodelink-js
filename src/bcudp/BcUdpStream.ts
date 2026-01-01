@@ -4,7 +4,7 @@ import { type AddressInfo } from "node:net";
 import { setInterval as setIntervalNode } from "node:timers";
 import { BCUDP_DATA_HEADER_SIZE, BCUDP_DEFAULT_MTU, BCUDP_DISCOVERY_PORT_LOCAL_UID, BCUDP_DISCOVERY_PORT_LOCAL_ANY } from "./constants";
 import { decodeBcUdpPacket, encodeAckPacket, encodeDataPacket, encodeDiscoveryPacket } from "./packets";
-import { buildC2dA, buildC2dC, buildC2dHb, buildC2dT, parseD2cCfm, parseD2cCr, parseD2cT } from "./xml";
+import { buildC2dA, buildC2dC, buildC2dHb, buildC2dT, parseD2cCfm, parseD2cCr, parseD2cDisc, parseD2cHb, parseD2cT } from "./xml";
 
 class AckLatency {
   private currentValues: number[] = [];
@@ -99,6 +99,8 @@ export class BcUdpStream extends EventEmitter<{
   private hbTimer: NodeJS.Timeout | undefined;
   private discoveryTid: number | undefined;
 
+  private acceptSent = false;
+
   private ackScheduled = false;
   private ackLatency = new AckLatency();
 
@@ -115,6 +117,13 @@ export class BcUdpStream extends EventEmitter<{
   private pendingData: Buffer[] = [];
   private pendingDataOffset = 0;
   private drainScheduled = false;
+
+  private getKeepAliveTid(): number {
+    // `neolink` keeps a stable TID for device keepalive.
+    // Many cameras appear to associate the session with that TID.
+    if (this.discoveryTid != null) return this.discoveryTid;
+    return (Math.floor(Math.random() * 255) | 0) >>> 0;
+  }
 
   constructor(options: BcUdpStreamOptions) {
     super();
@@ -200,7 +209,7 @@ export class BcUdpStream extends EventEmitter<{
 
       const maybeFinalize = (reason: string) => {
         if (!discovered) return;
-        // Once we have cid/did, we can proceed; SID helps stability but some cams omit it.
+        // Once we have cid/did, we can proceed. SID helps stability but some cams omit it.
         // If we managed to complete T/A, great; otherwise continue with best-effort.
         if (finalizeTimer) return;
         // Small delay to allow an immediate CFM to arrive after A.
@@ -220,8 +229,11 @@ export class BcUdpStream extends EventEmitter<{
       const sendT = (rhost: string, rport: number) => {
         if (sentT) return;
         if (!discovered) return;
+        // Neolink direct-connect path does NOT send C2D_T when SID is unknown.
+        // Some cameras appear to treat unsolicited C2D_T as an error and later disconnect (D2C_DISC).
+        if (discoveredSid == null) return;
         try {
-          const tid = (Math.floor(Math.random() * 255) | 0) >>> 0;
+          const tid = (Math.floor(Math.random() * 0x7fffffff) | 0) >>> 0;
           const tXml = buildC2dT({ ...(discoveredSid != null ? { sid: discoveredSid } : {}), cid: discovered.cid, mtu: this.mtu, conn: "local" });
           const tPkt = encodeDiscoveryPacket(tid, tXml);
           sock.send(tPkt, rport, rhost);
@@ -381,7 +393,8 @@ export class BcUdpStream extends EventEmitter<{
       }
     }, 500);
 
-    // heartbeat every 1s
+    // Heartbeat: match `neolink` behavior (1s, stable TID). Some cameras disconnect if the heartbeat
+    // isn't sent frequently enough.
     this.hbTimer = setIntervalNode(() => {
       try {
         this.sendHeartbeat();
@@ -393,8 +406,8 @@ export class BcUdpStream extends EventEmitter<{
 
   private sendHeartbeat(): void {
     if (!this.sock || !this.remote || this.clientId == null || this.cameraId == null) return;
-    // Neolink generates a random u8 TID for heartbeats (see udpsource.rs)
-    const tid = (Math.floor(Math.random() * 255) | 0) >>> 0;
+    // Keep a stable TID for keepalive (matches `neolink`).
+    const tid = this.getKeepAliveTid();
 
     let xml: string;
     // Neolink sends C2D_HB as soon as it has CID and DID, even if SID is not yet assigned (or is 0).
@@ -410,14 +423,7 @@ export class BcUdpStream extends EventEmitter<{
 
     // Neolink does NOT seem to send heartbeats to discovery ports (2015/2018) in the main loop.
     // It only sends to the connected address.
-    // Sending to discovery ports might be confusing the camera or causing D2C_DISC.
-    
-    if (this.opts.mode === "uid") {
-      // Ignore errors (e.g. if host is not reachable on these ports)
-      try { this.sock.send(pkt, 2015, this.remote.host); } catch {}
-      try { this.sock.send(pkt, 2018, this.remote.host); } catch {}
-    }
-    
+    // Sending to discovery ports can confuse some cameras and may cause the stream to drop.
   }
 
   private buildAckPayload(): { packetId: number; payload: Buffer } {
@@ -599,6 +605,60 @@ export class BcUdpStream extends EventEmitter<{
     // discovery packets after connect (HB, disconnect, etc.) -> ignored for now.
     if (p.kind === "discovery") {
       this.emit("debug", "discovery_rx_connected", { tid: p.tid, xml: p.xml });
+
+      // Some cameras send heartbeat probes (D2C_HB). Reply with a heartbeat.
+      const hb = parseD2cHb(p.xml);
+      if (hb && this.clientId != null && this.cameraId != null && hb.cid === this.clientId && hb.did === this.cameraId) {
+        this.emit("debug", "discovery_hb_rx_connected", { ...hb, rhost, rport });
+        try {
+          updateRemote("d2c_hb");
+          this.sendHeartbeat();
+        } catch (e) {
+          this.emit("debug", "discovery_hb_reply_error", e);
+        }
+        return;
+      }
+
+      // Some cameras send D2C_T late (after we've already started using the stream).
+      // If we don't reply with C2D_A, the camera may terminate the session (D2C_DISC)
+      // after a short time (often ~5-10s).
+      const dt = parseD2cT(p.xml);
+      if (dt && this.clientId != null && this.cameraId != null && dt.cid === this.clientId && dt.did === this.cameraId) {
+        try {
+          updateRemote("d2c_t");
+          this.sid = dt.sid;
+          this.emit("debug", "discovery_t_rx_connected", { sid: dt.sid, cid: dt.cid, did: dt.did, rhost, rport });
+          if (!this.acceptSent) {
+            const aXml = buildC2dA({ sid: dt.sid, conn: dt.conn ?? "local", cid: dt.cid, did: dt.did, mtu: this.mtu });
+            const aPkt = encodeDiscoveryPacket(p.tid, aXml);
+            this.sock?.send(aPkt, rport, rhost);
+            this.acceptSent = true;
+            this.emit("debug", "discovery_a_send_connected", { sid: dt.sid, cid: dt.cid, did: dt.did, rhost, rport });
+          }
+        } catch (e) {
+          this.emit("debug", "discovery_a_send_connected_error", e);
+        }
+        return;
+      }
+
+      const cfm = parseD2cCfm(p.xml);
+      if (cfm && this.clientId != null && this.cameraId != null) {
+        // Some firmwares send this without us explicitly expecting it. Keep sid for completeness.
+        if (cfm.cid === this.clientId && cfm.did === this.cameraId) {
+          this.sid = cfm.sid;
+          this.emit("debug", "discovery_cfm_rx_connected", cfm);
+          return;
+        }
+      }
+
+      const disc = parseD2cDisc(p.xml);
+      if (disc && this.clientId != null && this.cameraId != null && disc.cid === this.clientId && disc.did === this.cameraId) {
+        this.emit("debug", "discovery_disc_rx_connected", { ...disc, rhost, rport });
+        // Camera terminated the session.
+        this.emit("error", new Error("BCUDP disconnected by camera (D2C_DISC)"));
+        void this.close();
+        return;
+      }
     }
     return;
   }

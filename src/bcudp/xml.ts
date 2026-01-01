@@ -128,3 +128,27 @@ export function parseD2cT(xml: string): D2cTParsed | undefined {
   };
 }
 
+export type D2cDiscParsed = { cid: number; did: number };
+
+export function parseD2cDisc(xml: string): D2cDiscParsed | undefined {
+  const m = /<D2C_DISC>([\s\S]*?)<\/D2C_DISC>/.exec(xml);
+  if (!m) return undefined;
+  const body = m[1] ?? "";
+  const cid = /<cid>(-?\d+)<\/cid>/.exec(body)?.[1];
+  const did = /<did>(-?\d+)<\/did>/.exec(body)?.[1];
+  if (cid == null || did == null) return undefined;
+  return { cid: Number(cid), did: Number(did) };
+}
+
+export type D2cHbParsed = { cid: number; did: number };
+
+export function parseD2cHb(xml: string): D2cHbParsed | undefined {
+  const m = /<D2C_HB>([\s\S]*?)<\/D2C_HB>/.exec(xml);
+  if (!m) return undefined;
+  const body = m[1] ?? "";
+  const cid = /<cid>(-?\d+)<\/cid>/.exec(body)?.[1];
+  const did = /<did>(-?\d+)<\/did>/.exec(body)?.[1];
+  if (cid == null || did == null) return undefined;
+  return { cid: Number(cid), did: Number(did) };
+}
+
