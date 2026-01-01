@@ -47,6 +47,8 @@ export type BcUdpStreamOptions =
   | {
       /** Local discovery via UID (typical for battery cameras). */
       mode: "uid";
+      /** Select the underlying BCUDP engine. */
+      implementation?: "v1" | "neolink-v2";
       uid: string;
       host?: string;
       port?: number;

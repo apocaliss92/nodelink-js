@@ -16,6 +16,7 @@ import { aesDecrypt, aesEncrypt, bcDecrypt, bcEncrypt, deriveAesKey, md5StrModer
 import { BaichuanFrameParser, encodeHeader, type BaichuanFrame } from "../protocol/framing";
 import { buildBinaryExtensionXml, buildChannelExtensionXml, buildLoginXml, getXmlText } from "../protocol/xml";
 import { BcUdpStream, type BcUdpStreamOptions } from "../bcudp/BcUdpStream";
+import { NeolinkUdpStream } from "../bcudp/NeolinkUdpStream";
 import type { ReolinkEvent } from "../reolink/baichuan/types";
 import { eventTraceLog, normalizeDebugOptions, traceLog, talkTraceLog, type DebugOptions, type DebugConfig, type Logger } from "../debug/DebugConfig";
 export type { Logger };
@@ -96,7 +97,18 @@ export class BaichuanClient extends EventEmitter<{
   private readonly logger: Logger;
 
   private tcpSocket: net.Socket | undefined;
-  private udpSocket: BcUdpStream | undefined;
+  private udpSocket:
+    | (EventEmitter<{
+        data: [Buffer];
+        close: [];
+        error: [Error];
+        debug: [string, unknown?];
+      }> & {
+        connect(): Promise<void>;
+        close(): Promise<void>;
+        write(buf: Buffer): void;
+      })
+    | undefined;
   private transport: "tcp" | "udp" = "tcp";
   private readonly parser = new BaichuanFrameParser();
   private readonly pending = new Map<PendingKey, { resolve: (f: BaichuanFrame) => void; reject: (e: Error) => void }>();
@@ -399,11 +411,33 @@ export class BaichuanClient extends EventEmitter<{
     if (!udpOpts) {
       throw new Error("Baichuan UDP requested but `options.udp` is not set (required for BCUDP, typical for battery cameras).");
     }
-    const sock = new BcUdpStream(udpOpts);
+    // Select UDP implementation.
+    // `neolink-v2` is a fresh port of Neolink's discovery+udpsource (see `_refs/neolink/...`).
+    let sock: any;
+    let engine: "BcUdpStream" | "NeolinkUdpStream" = "BcUdpStream";
+    if (udpOpts.implementation === "neolink-v2") {
+      if (udpOpts.mode === "uid") {
+        const o: { uid: string; host?: string; broadcast?: boolean; mtu?: number } = { uid: udpOpts.uid };
+        if (udpOpts.host != null) o.host = udpOpts.host;
+        if (udpOpts.broadcast != null) o.broadcast = udpOpts.broadcast;
+        if (udpOpts.mtu != null) o.mtu = udpOpts.mtu;
+        sock = new NeolinkUdpStream(o);
+        engine = "NeolinkUdpStream";
+      } else {
+        // direct mode is currently unsupported by NeolinkUdpStream (it is discovery-based).
+        // Fall back to legacy implementation for now.
+        sock = new BcUdpStream(udpOpts);
+      }
+    } else {
+      sock = new BcUdpStream(udpOpts);
+    }
     this.udpSocket = sock;
     this.transport = "udp";
 
-    sock.on("data", (chunk) => {
+    const udpInstanceId = (sock as any)?.instanceId;
+    this.logger.log(`[BaichuanClient] udp_engine_selected`, { host: this.opts.host, engine, udpInstanceId, udpOpts });
+
+    sock.on("data", (chunk: Buffer) => {
       const frames = this.parser.push(chunk);
       for (const f of frames) this.handleFrame(f);
     });
@@ -414,9 +448,9 @@ export class BaichuanClient extends EventEmitter<{
       this.pending.clear();
       this.rejectQueuedUdpTasks(new Error("Baichuan UDP stream closed"));
     });
-    sock.on("error", (err) => this.emit("error", err));
+    sock.on("error", (err: Error) => this.emit("error", err));
     
-    // Forward BcUdpStream debug events
+    // Forward UDP debug events
     sock.on("debug", (event: string, data?: unknown) => {
       // TEMPORARY DEBUG: Always log critical UDP events
       const criticalEvents = [
@@ -432,7 +466,7 @@ export class BaichuanClient extends EventEmitter<{
         'discovery_rx_connected',
       ];
       if (criticalEvents.includes(event)) {
-        this.logger.log(`[BcUdpStream] ${event}`, data);
+        this.logger.log(`[${engine}] ${event}`, data);
       }
       this.logDebug(`udp_${event}`, data);
     });
@@ -1411,9 +1445,13 @@ export class BaichuanClient extends EventEmitter<{
     await this.connect();
     // legacy login is supported on both transports
 
-    const msgNum = this.nextMsgNum();
+    // Neolink PCAP: the legacy header-only nonce/encryption negotiation uses channelId=0 and msgNum=0.
+    // Using channelId=250 (0xFA) here results in the camera not replying with the nonce on some firmwares.
+    const msgNum = 0;
     const cmdId = 1;
-    const channelId = 250; // host
+    const channelId = 0;
+
+    this.logDebug("nonce_request_send", { transport: this.transport, cmdId, msgNum, channelId, encByte });
 
     const header = encodeHeader({
       cmdId,
