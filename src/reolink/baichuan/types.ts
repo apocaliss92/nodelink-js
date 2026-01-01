@@ -313,24 +313,7 @@ export interface DeviceCapabilities {
   isDoorbell: boolean;
 }
 
-export type DeviceAiType = string;
-
-export interface DeviceAiProbeResult {
-  ok: boolean;
-  supported?: boolean;
-  support?: number;
-  alarm_state?: number;
-  enable?: number;
-  sensitivity?: number;
-  stayTime?: number;
-  error?: string;
-}
-
-export interface DeviceAiCapabilities {
-  candidates: DeviceAiType[];
-  supportedTypes: DeviceAiType[];
-  probes: Record<DeviceAiType, DeviceAiProbeResult>;
-}
+export type DeviceObjectType = string;
 
 export interface DeviceSupportFlags {
   rtsp?: boolean;
@@ -361,7 +344,7 @@ export interface DeviceCapabilitiesResult {
   support?: SupportInfo;
   capabilities: DeviceCapabilities;
   presets?: PtzPreset[];
-  ai?: DeviceAiCapabilities;
+  objects?: DeviceObjectType[];
   features?: DeviceSupportFlags;
   debug?: DeviceCapabilitiesDebugInfo;
 }

@@ -34,8 +34,6 @@ import {
   type AIState,
   type BatteryInfo,
   type ChannelStreamMetadata,
-  type DeviceAiCapabilities,
-  type DeviceAiProbeResult,
   type DeviceAbilities,
   type DeviceCapabilities,
   type DeviceCapabilitiesResult,
@@ -972,8 +970,10 @@ export class ReolinkBaichuanApi {
    */
   async getAiState(channel?: number): Promise<AIState> {
     const cmdId = 342; // From reolink-aio GetAiAlarm
-    // Note: GetAiAlarm requires ai_type, but we'll try without for now
-    // This may need to be adjusted based on actual API requirements
+    // NOTE: Many firmwares require an explicit aiType for cmd 342.
+    // The correct payload (per reolink_aio + neolink dissector) is <AiDetectCfg><chn/><type/>.
+    // This legacy helper keeps behavior best-effort and may return empty state on firmwares
+    // that reject cmd 342 without a type.
     const xml = await this.sendXml({ cmdId, ...(channel !== undefined ? { channel } : {}) });
     // Parse AI state XML
     const state: AIState = {
@@ -2143,15 +2143,15 @@ export class ReolinkBaichuanApi {
     const sensitivity = typeof arg1 === "number" ? arg3 : (arg2 as number | undefined);
     const stayTime = typeof arg1 === "number" ? arg4 : arg3;
     const ch = this.normalizeChannel(channel);
-    // First get current settings for this AI type
-    // Note: GetAiAlarm requires ai_type parameter, we need to build the request XML
+    // First get current settings for this AI type.
+    // Correct cmd 342 payload (reolink_aio): <AiDetectCfg><chn>0-based</chn><type>people</type></AiDetectCfg>
     const getXml = `<?xml version="1.0" encoding="UTF-8" ?>
-<body>
-<GetAiAlarm version="1.1">
-<channelId>${ch + 1}</channelId>
-<aiType>${xmlEscape(aiType)}</aiType>
-</GetAiAlarm>
-</body>`;
+  <body>
+  <AiDetectCfg version="1.1">
+  <chn>${ch}</chn>
+  <type>${xmlEscape(aiType)}</type>
+  </AiDetectCfg>
+  </body>`;
     
     const currentXml = await this.sendXml({ 
       cmdId: 342, // GetAiAlarm
@@ -2548,12 +2548,6 @@ export class ReolinkBaichuanApi {
           probeSiren?: boolean;
           /** Enable/disable floodlight probing (cmd 289). Defaults to true. */
           probeFloodlight?: boolean;
-          /** Enable/disable AI probing (cmd 342). Defaults to true. */
-          probeAi?: boolean;
-          /** Limit number of AI types to probe. Default: all candidates. */
-          maxAiProbes?: number;
-          /** Limit concurrent AI probes (avoids flooding the device). Default: 2. */
-          aiProbeConcurrency?: number;
         },
       ): Promise<DeviceCapabilitiesResult> {
         const ch = this.normalizeChannel(channel);
@@ -2561,9 +2555,6 @@ export class ReolinkBaichuanApi {
           probe: options?.probe ?? true,
           probeSiren: options?.probeSiren ?? true,
           probeFloodlight: options?.probeFloodlight ?? true,
-          probeAi: options?.probeAi ?? true,
-          maxAiProbes: options?.maxAiProbes,
-          aiProbeConcurrency: options?.aiProbeConcurrency ?? 2,
         };
 
         const [abilitiesResult, supportResult] = await Promise.allSettled([
@@ -2689,101 +2680,22 @@ export class ReolinkBaichuanApi {
           }
         }
 
-        // Best-effort AI capability probing.
-        // Many firmwares require an explicit aiType for cmd 342 (GetAiAlarm).
-        // We probe a small curated set to discover what the device actually supports.
-        const aiCandidates = [
-          "people",
-          "person",
-          "vehicle",
-          "car",
-          "dog_cat",
-          "pet",
-          "face",
-          "package",
-          "baby",
-          "visitor",
-        ];
-
-        const shouldProbeAi =
-          probeCfg.probe &&
-          probeCfg.probeAi &&
-          (capabilities.isDoorbell || abilitiesHasAny(flat, /ai|smart|people|person|vehicle|car|dog|cat|pet|face|package|baby|visitor/i));
-
-        let ai: DeviceAiCapabilities | undefined;
-        if (shouldProbeAi) {
-          const probes: Record<string, DeviceAiProbeResult> = {};
-
-          const probeOne = async (aiType: string): Promise<void> => {
-            const getXml = `<?xml version="1.0" encoding="UTF-8" ?>
-<body>
-<GetAiAlarm version="1.1">
-<channelId>${ch + 1}</channelId>
-<aiType>${xmlEscape(aiType)}</aiType>
-</GetAiAlarm>
-</body>`;
-
-            try {
-              const xml = await this.sendXml({
-                cmdId: 342,
-                channel: ch,
-                payloadXml: getXml,
-                timeoutMs: 1200,
-              });
-
-              const supportRaw = getXmlText(xml, "support");
-              const alarmStateRaw = getXmlText(xml, "alarm_state");
-              const enableRaw = getXmlText(xml, "enable");
-              const sensitivityRaw = getXmlText(xml, "sensitivity");
-              const stayTimeRaw = getXmlText(xml, "stayTime");
-
-              const supportNum = supportRaw != null ? Number(supportRaw) : Number.NaN;
-              const support = Number.isFinite(supportNum) ? supportNum : undefined;
-              const alarm_state = alarmStateRaw != null && Number.isFinite(Number(alarmStateRaw)) ? Number(alarmStateRaw) : undefined;
-              const enable = enableRaw != null && Number.isFinite(Number(enableRaw)) ? Number(enableRaw) : undefined;
-              const sensitivity = sensitivityRaw != null && Number.isFinite(Number(sensitivityRaw)) ? Number(sensitivityRaw) : undefined;
-              const stayTime = stayTimeRaw != null && Number.isFinite(Number(stayTimeRaw)) ? Number(stayTimeRaw) : undefined;
-
-              const supported =
-                (support !== undefined && support > 0) ||
-                enable !== undefined ||
-                sensitivity !== undefined ||
-                stayTime !== undefined ||
-                /<AiAlarm\b|<GetAiAlarm\b/i.test(xml);
-
-              const probe: DeviceAiProbeResult = { ok: true, supported };
-              if (support !== undefined) probe.support = support;
-              if (alarm_state !== undefined) probe.alarm_state = alarm_state;
-              if (enable !== undefined) probe.enable = enable;
-              if (sensitivity !== undefined) probe.sensitivity = sensitivity;
-              if (stayTime !== undefined) probe.stayTime = stayTime;
-              probes[aiType] = probe;
-            } catch (e) {
-              probes[aiType] = {
-                ok: false,
-                error: e instanceof Error ? e.message : String(e),
-              };
-            }
-          };
-
-          const max = probeCfg.maxAiProbes !== undefined ? Math.max(0, probeCfg.maxAiProbes) : aiCandidates.length;
-          const candidates = aiCandidates.slice(0, max);
-
-          const concurrency = Math.max(1, probeCfg.aiProbeConcurrency);
-          const running = new Set<Promise<void>>();
-          for (const t of candidates) {
-            const p = probeOne(t).finally(() => {
-              running.delete(p);
-            });
-            running.add(p);
-            if (running.size >= concurrency) {
-              await Promise.race(running);
-            }
+        // Object-detection capabilities.
+        // Always read cmd 299 (AiCfg) and use <detectType> as the single source of truth.
+        // This avoids inference/probing variability across firmwares.
+        let objects: string[] | undefined;
+        try {
+          const xml = await this.sendXml({ cmdId: 299, channel: ch, timeoutMs: 1500 });
+          const detectTypeRaw = (getXmlText(xml, "detectType") ?? "").trim();
+          if (detectTypeRaw) {
+            const list = detectTypeRaw
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean);
+            if (list.length > 0) objects = list;
           }
-          await Promise.allSettled(Array.from(running));
-
-          const supportedTypes = candidates.filter((t) => probes[t]?.supported);
-          ai = { candidates, supportedTypes, probes };
+        } catch {
+          // noop
         }
 
         let presets: PtzPreset[] | undefined;
@@ -2814,7 +2726,7 @@ export class ReolinkBaichuanApi {
         if (abilities) result.abilities = abilities;
         if (support) result.support = support;
         if (presets) result.presets = presets;
-        if (ai) result.ai = ai;
+        if (objects) result.objects = objects;
         if (features) result.features = features;
         return result;
       }

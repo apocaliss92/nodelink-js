@@ -72,6 +72,7 @@
     "test:tcp:video-save-merge": "npm run test:build && node dist/test/tcp/test-tcp-video-save-and-merge.js",
     "test:tcp:new-apis": "npm run test:build && node dist/test/tcp/test-tcp-new-apis.js",
     "test:tcp:ability-comparison": "npm run test:build && node dist/test/tcp/test-ability-comparison.js",
+    "test:tcp:ai-265": "npm run test:build && node dist/test/tcp/test-tcp-ai-capabilities-265.js",
     "test:udp": "npm run test:build && node dist/test/udp/test-udp.js",
     "test:udp:uptime": "npm run test:build && node dist/test/udp/test-udp-stream-uptime.js",
     "test:udp:record": "npm run test:build && node dist/test/udp/test-udp-video-stream-record.js",
