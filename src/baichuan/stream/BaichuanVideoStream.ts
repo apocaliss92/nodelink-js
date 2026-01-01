@@ -21,13 +21,8 @@ import { convertToAnnexB as convertH265ToAnnexB, isValidH265AnnexBAccessUnit, is
 
 const NAL_START_CODE_4B = Buffer.from([0x00, 0x00, 0x00, 0x01]);
 
-function envBool(value: string | undefined, defaultValue: boolean): boolean {
-  if (value == null) return defaultValue;
-  const v = value.trim().toLowerCase();
-  if (v === "1" || v === "true" || v === "yes" || v === "on") return true;
-  if (v === "0" || v === "false" || v === "no" || v === "off") return false;
-  return defaultValue;
-}
+const WATCHDOG_TICK_MS = 1000;
+const WATCHDOG_MAX_RESTARTS_PER_MINUTE = 3;
 
 class AsyncFsQueue {
   private running = false;
@@ -213,6 +208,12 @@ export class BaichuanVideoStream extends EventEmitter<{
   private lastSpsH265: Buffer | null = null; // H.265 SPS
   private lastPpsH265: Buffer | null = null; // H.265 PPS
   private lastPrependedParamSetsH265 = false; // Track if we've prepended H.265 param sets
+  private lastMediaAtMs = 0;
+  private watchdogTimer: NodeJS.Timeout | undefined;
+  private restarting = false;
+  private restartWindowStartMs = 0;
+  private restartCountInWindow = 0;
+  private readonly idleRestartMs: number;
   // Note: reassembly happens at the BcMediaCodec transport level, so we do not
   // accumulate frames here (same approach as neolink).
 
@@ -281,6 +282,101 @@ export class BaichuanVideoStream extends EventEmitter<{
     this.lastSpsH265 = null;
     this.lastPpsH265 = null;
     this.lastPrependedParamSetsH265 = false;
+
+    // Internal defaults (no external knobs): if the stream goes idle for too long,
+    // best-effort restart the native stream request.
+    const transport = this.client.getTransport?.();
+    this.idleRestartMs = transport === "udp" ? 6_000 : 15_000;
+  }
+
+  private noteMediaActivity(): void {
+    this.lastMediaAtMs = Date.now();
+  }
+
+  private startWatchdog(): void {
+    // Only useful when we can re-request the stream via API.
+    if (!this.api) return;
+    if (this.watchdogTimer) return;
+
+    this.restartWindowStartMs = Date.now();
+    this.restartCountInWindow = 0;
+    this.watchdogTimer = setInterval(() => {
+      void this.watchdogTick();
+    }, WATCHDOG_TICK_MS);
+  }
+
+  private stopWatchdog(): void {
+    if (this.watchdogTimer) clearInterval(this.watchdogTimer);
+    this.watchdogTimer = undefined;
+  }
+
+  private async watchdogTick(): Promise<void> {
+    if (!this.active) return;
+    if (!this.api) return;
+    if (this.restarting) return;
+    if (this.lastMediaAtMs <= 0) return;
+
+    const now = Date.now();
+    const idleMs = now - this.lastMediaAtMs;
+    if (idleMs < this.idleRestartMs) return;
+
+    // Rate-limit restarts to avoid loops.
+    if (now - this.restartWindowStartMs > 60_000) {
+      this.restartWindowStartMs = now;
+      this.restartCountInWindow = 0;
+    }
+    if (this.restartCountInWindow >= WATCHDOG_MAX_RESTARTS_PER_MINUTE) {
+      this.logger?.warn(
+        `[BaichuanVideoStream] Watchdog: idle for ${idleMs}ms, but restart budget exceeded; leaving stream as-is`,
+      );
+      return;
+    }
+    this.restartCountInWindow++;
+
+    void this.restartNativeStream({ reason: `idle ${idleMs}ms` });
+  }
+
+  private async restartNativeStream(params: { reason: string }): Promise<void> {
+    if (!this.api) return;
+    if (!this.active) return;
+    if (this.restarting) return;
+    this.restarting = true;
+
+    try {
+      this.logger?.warn(`[BaichuanVideoStream] Watchdog restarting native stream (${params.reason})`);
+
+      // Reset parsers to avoid carrying corrupt state across a restart.
+      this.depacketizer.reset();
+      this.depacketizerH265.reset();
+      this.bcMediaCodec.clear();
+      this.activeMsgNum = undefined;
+      this.lastPrependedPpsId = null;
+      this.lastPrependedParamSetsH265 = false;
+
+      // Best-effort stop/start: some firmwares behave better with a full reset.
+      try {
+        await this.api.stopVideoStream(this.channel, this.profile);
+      } catch {
+        // ignore
+      }
+
+      await this.api.startVideoStream(this.channel, this.profile);
+
+      try {
+        const getMsgNum = (this.api as any).getActiveVideoMsgNum as ((ch: number, p: StreamProfile) => number | undefined) | undefined;
+        this.activeMsgNum = typeof getMsgNum === "function" ? getMsgNum(this.channel, this.profile) : undefined;
+      } catch {
+        this.activeMsgNum = undefined;
+      }
+
+      // Avoid immediate re-trigger if the camera takes a moment.
+      this.lastMediaAtMs = Date.now();
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.emit("error", err);
+    } finally {
+      this.restarting = false;
+    }
   }
 
   /**
@@ -339,7 +435,7 @@ export class BaichuanVideoStream extends EventEmitter<{
       totalFramesReceived++;
 
       const dbg = this.client.getDebugConfig();
-      const rtspDebug = dbg.debugRtsp || envBool(process.env.BAICHUAN_DEBUG_RTSP, false);
+      const rtspDebug = dbg.debugRtsp;
       if (totalFramesReceived === 1) {
         if (rtspDebug) {
           this.logger?.log(
@@ -803,6 +899,11 @@ export class BaichuanVideoStream extends EventEmitter<{
           );
         }
       }
+
+      // Mark liveness only when we actually produced media (not just transport frames).
+      if (videoFramesEmitted > 0 || audioFramesEmitted > 0) {
+        this.noteMediaActivity();
+      }
       
       // Track total video frames emitted
       if (videoFramesEmitted > 0 && (totalFramesReceived <= 10 || totalFramesReceived % 50 === 0)) {
@@ -813,6 +914,8 @@ export class BaichuanVideoStream extends EventEmitter<{
 
     this.client.on("push", this.videoFrameHandler);
     this.active = true;
+    this.lastMediaAtMs = Date.now();
+    this.startWatchdog();
   }
 
   // isVideoFrame, isAudioFrame, and extractVideoData are no longer needed
@@ -823,6 +926,8 @@ export class BaichuanVideoStream extends EventEmitter<{
    */
   async stop(): Promise<void> {
     if (!this.active) return;
+
+    this.stopWatchdog();
 
     // Ensure depacketizers don't keep FU state across restarts.
     this.depacketizer.reset();
