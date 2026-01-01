@@ -681,6 +681,12 @@ export class ReolinkBaichuanApi {
     const streams: StreamMetadata[] = [];
     let audioEnabled = true;
 
+    // Some firmwares include placeholder stream sections (not actually supported)
+    // with 0x0 resolution and/or 0 FPS/bitrate. Treat those as unavailable.
+    const isPlausibleStream = (s: { width: number; height: number; frameRate: number; bitRate: number }): boolean => {
+      return s.width > 0 && s.height > 0 && (s.frameRate > 0 || s.bitRate > 0);
+    };
+
     // Video encoding type mapping (from reolink-aio EncodingEnum)
     const videoCodecMap: Record<number, VideoCodec> = {
       0: "H.264",
@@ -703,7 +709,7 @@ export class ReolinkBaichuanApi {
       const enabled = getXmlText(mainXml, "enable");
       const isEnabled = enabled === undefined || enabled === "1" || enabled === "true";
 
-      if (isEnabled) {
+      if (isEnabled && isPlausibleStream({ width, height, frameRate, bitRate })) {
         streams.push({
           profile: "main",
           audio,
@@ -732,7 +738,7 @@ export class ReolinkBaichuanApi {
       const enabled = getXmlText(subXml, "enable");
       const isEnabled = enabled === undefined || enabled === "1" || enabled === "true";
 
-      if (isEnabled) {
+      if (isEnabled && isPlausibleStream({ width, height, frameRate, bitRate })) {
         streams.push({
           profile: "sub",
           audio,
@@ -765,7 +771,7 @@ export class ReolinkBaichuanApi {
       const enabled = getXmlText(extXml, "enable");
       const isEnabled = enabled === undefined || enabled === "1" || enabled === "true";
 
-      if (isEnabled) {
+      if (isEnabled && isPlausibleStream({ width, height, frameRate, bitRate })) {
         streams.push({
           profile: "ext",
           audio,
