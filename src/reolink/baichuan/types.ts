@@ -377,3 +377,84 @@ export interface DeviceCapabilitiesResult {
   debug?: DeviceCapabilitiesDebugInfo;
 }
 
+export type RecordingStreamType = "mainStream" | "subStream";
+
+export type RecordingDevType = "cam" | "hub";
+export type RecordingVodStreamHint = "main" | "sub" | "unknown";
+
+export interface RecordingVodFlags {
+  aiPerson?: boolean;
+  aiVehicle?: boolean;
+  aiAnimal?: boolean;
+  aiFace?: boolean;
+  aiOther?: boolean;
+  motion?: boolean;
+  schedule?: boolean;
+  doorbell?: boolean;
+  rf?: boolean;
+  package?: boolean;
+}
+
+export interface ParsedRecordingFileName {
+  baseName: string;
+  ext: string;
+  streamHint: RecordingVodStreamHint;
+  version: number;
+  devType: RecordingDevType;
+  start: Date;
+  end: Date;
+  durationMs: number;
+  flags?: RecordingVodFlags;
+  rawFlags?: Record<string, number>;
+  animalTypeRaw?: string;
+  widthRaw?: string;
+  heightRaw?: string;
+}
+
+export interface RecordingFile {
+  /** Camera-provided recording identifier (often a filename/path, e.g. "00_YYYYMMDDHHMMSS"). */
+  fileName: string;
+  /** Optional human-friendly name when provided separately (e.g. FileInfoList <name>). */
+  name?: string;
+  /** Optional full path/identifier when provided separately (e.g. FileInfoList <Id>). */
+  id?: string;
+  /** Optional size when provided by the camera (bytes). */
+  sizeBytes?: number;
+  /** Optional recordType when provided (e.g. md, people, sched, manual...). */
+  recordType?: string;
+  /** Optional start time when provided as YYYY/MM/DD etc; best-effort parsing may be absent. */
+  startTime?: Date;
+  /** Optional end time when provided. */
+  endTime?: Date;
+
+  /** Parsed metadata extracted from the file name when it matches known Reolink VOD patterns. */
+  parsedFileName?: ParsedRecordingFileName;
+}
+
+export interface ListRecordingsParams {
+  channel: number;
+  uid: string;
+  start: Date;
+  end: Date;
+  streamType?: RecordingStreamType;
+  /** Comma-separated list per Reolink XML, e.g. "manual, sched, io, md, people". */
+  recordType?: string;
+  /**
+   * If true (default), when FileInfoList returns no results, try the alternate Baichuan listing
+   * based on <findAlarmVideo> (cmdId 272/273/274) used by reolink_aio.
+   */
+  fallbackToAlarmVideo?: boolean;
+  /** Safety limit for pagination/iterations (default 50). */
+  maxIterations?: number;
+}
+
+export interface DownloadRecordingParams {
+  channel: number;
+  uid: string;
+  /** Recording identifier (usually one of the `fileName` returned by listRecordings). */
+  fileName: string;
+  /** If true, fall back to HTTP CGI `cmd=Download` when Baichuan download fails/times out. Default: false (socket-first). */
+  fallbackToHttp?: boolean;
+  timeoutMs?: number;
+}
+

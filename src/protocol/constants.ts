@@ -19,9 +19,11 @@ export const BC_CLASS_LEGACY = 0x6514;
 export const BC_CLASS_MODERN_20 = 0x6614;
 export const BC_CLASS_MODERN_24 = 0x6414;
 export const BC_CLASS_MODERN_24_ALT = 0x0000;
+// Neolink dissector: "modern (file download)" message class, still uses 24-byte header with payloadOffset.
+export const BC_CLASS_FILE_DOWNLOAD = 0x6482;
 
 export function bcHeaderHasPayloadOffset(messageClass: number): boolean {
-  return messageClass === BC_CLASS_MODERN_24 || messageClass === BC_CLASS_MODERN_24_ALT;
+  return messageClass === BC_CLASS_MODERN_24 || messageClass === BC_CLASS_MODERN_24_ALT || messageClass === BC_CLASS_FILE_DOWNLOAD;
 }
 
 /**
@@ -36,6 +38,20 @@ export function bcHeaderHasPayloadOffset(messageClass: number): boolean {
  */
 export const BC_CMD_ID_VIDEO = 3; // MSG_ID_VIDEO - Video and Audio Streams messages
 export const BC_CMD_ID_VIDEO_STOP = 4; // MSG_ID_VIDEO_STOP - ID used to stop the video stream
+
+// Replay / recordings / file list (neolink dissector)
+export const BC_CMD_ID_FILE_INFO_LIST_REPLAY = 5; // <FileInfoList> (replay)
+export const BC_CMD_ID_FILE_INFO_LIST_STOP = 7; // <FileInfoList> (stop)
+export const BC_CMD_ID_FILE_INFO_LIST_DL_VIDEO = 8; // <FileInfoList> (DL Video)
+export const BC_CMD_ID_FILE_INFO_LIST_DOWNLOAD = 13; // <FileInfoList> (download)
+export const BC_CMD_ID_FILE_INFO_LIST_OPEN = 14; // <FileInfoList> (open/list)
+export const BC_CMD_ID_FILE_INFO_LIST_GET = 15; // <FileInfoList> (get/list page)
+export const BC_CMD_ID_FILE_INFO_LIST_CLOSE = 16; // <FileInfoList> (close)
+
+// Recording search (alarm video list) used by reolink_aio Baichuan implementation
+export const BC_CMD_ID_FIND_REC_VIDEO_OPEN = 272; // <findAlarmVideo> (open)
+export const BC_CMD_ID_FIND_REC_VIDEO_GET = 273; // <findAlarmVideo> (get)
+export const BC_CMD_ID_FIND_REC_VIDEO_CLOSE = 274; // <findAlarmVideo> (close)
 
 // Talk / two-way audio command IDs (from neolink model.rs)
 export const BC_CMD_ID_TALK_ABILITY = 10; // MSG_ID_TALKABILITY - get talk ability/config

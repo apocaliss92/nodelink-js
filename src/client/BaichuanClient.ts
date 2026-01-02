@@ -4,6 +4,7 @@ import { BcUdpStream } from "../bcudp/BcUdpStream";
 import { debugLog, eventTraceLog, normalizeDebugOptions, talkTraceLog, traceLog, type DebugConfig, type DebugOptions, type Logger } from "../debug/DebugConfig";
 import {
   BC_CLASS_LEGACY,
+  BC_CLASS_FILE_DOWNLOAD,
   BC_CLASS_MODERN_24,
   BC_CMD_ID_PING,
   BC_CMD_ID_TALK,
@@ -1438,6 +1439,12 @@ export class BaichuanClient extends EventEmitter<{
       return await this.sendBinarySnapshot109(params);
     }
 
+    // File download (neolink dissector class=0x6482) is often delivered as a sequence of binary chunks.
+    // Handle it similarly to snapshot: send without pending and collect frames until completion.
+    if ((params.messageClass ?? BC_CLASS_MODERN_24) === BC_CLASS_FILE_DOWNLOAD) {
+      return await this.sendBinaryFileDownload6482(params);
+    }
+
     await this.connect();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
@@ -1518,6 +1525,151 @@ export class BaichuanClient extends EventEmitter<{
 
     const decrypted = this.tryDecryptBinary(payload, frame.header.channelId, enc);
     return decrypted;
+  }
+
+  private async sendBinaryFileDownload6482(params: {
+    cmdId: number;
+    channel?: number;
+    /** Override the header channelId (and encryption channelId) for this request. */
+    channelIdOverride?: number;
+    payloadXml?: string;
+    extensionXml?: string;
+    messageClass?: number;
+    streamType?: number;
+    encryption?: EncryptionProtocol;
+    timeoutMs?: number;
+  }): Promise<Buffer> {
+    await this.connect();
+
+    const channel = params.channel ?? this.opts.channel ?? 0;
+    const channelId = params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
+
+    const msgNum = this.nextMsgNum();
+    const cmdId = params.cmdId;
+
+    // For binary downloads, request Extension should include <binaryData>1</binaryData>.
+    const extXml = params.extensionXml ?? buildBinaryExtensionXml(channel);
+    const payloadXml = params.payloadXml ?? "";
+
+    const messageClass = params.messageClass ?? BC_CLASS_FILE_DOWNLOAD;
+    const payloadOffset = Buffer.byteLength(extXml, "utf8");
+    const bodyLen = payloadOffset + Buffer.byteLength(payloadXml, "utf8");
+
+    const header = encodeHeader({
+      cmdId,
+      bodyLen,
+      channelId,
+      streamType: params.streamType ?? 0,
+      msgNum,
+      responseCode: 0,
+      messageClass,
+      payloadOffset,
+    });
+
+    const enc = params.encryption ?? this.enc;
+    const bodyBytes = this.encodeBodyXml(extXml, payloadXml, channelId, enc);
+    const wire = Buffer.concat([header, bodyBytes]);
+
+    const timeoutMs = params.timeoutMs ?? 60_000;
+    const chunks: Buffer[] = [];
+    let receivedBytes = 0;
+    let lastProgressLogAt = 0;
+
+    return await new Promise<Buffer>((resolve, reject) => {
+      let timeout: NodeJS.Timeout | undefined;
+      let done = false;
+
+      const cleanup = () => {
+        this.off("frame", onFrame);
+        if (timeout) clearTimeout(timeout);
+      };
+
+      const finish = (buf: Buffer) => {
+        if (done) return;
+        done = true;
+        cleanup();
+        resolve(buf);
+      };
+
+      const fail = (e: unknown) => {
+        if (done) return;
+        done = true;
+        cleanup();
+        reject(e instanceof Error ? e : new Error(String(e)));
+      };
+
+      const looksLikeXml = (buf: Buffer): boolean => {
+        // Skip leading whitespace/NULs
+        let i = 0;
+        while (i < buf.length && (buf[i] === 0x00 || buf[i] === 0x09 || buf[i] === 0x0a || buf[i] === 0x0d || buf[i] === 0x20)) i++;
+        if (i >= buf.length) return false;
+        return buf[i] === 0x3c; // '<'
+      };
+
+      const onFrame = (frame: BaichuanFrame) => {
+        if (frame.header.cmdId !== cmdId) return;
+
+        // Fail fast if the request was rejected.
+        if (frame.header.msgNum === msgNum && frame.header.responseCode >= 400) {
+          fail(new Error(`Baichuan file download request rejected (cmdId=${cmdId} msgNum=${msgNum} responseCode=${frame.header.responseCode})`));
+          return;
+        }
+
+        try {
+          // Some firmwares do NOT mark file download chunks with <binaryData>1</binaryData>.
+          // Prefer the marker when present, otherwise fall back to a payload heuristic.
+          let markedBinary = false;
+          if (frame.extension.length > 0) {
+            try {
+              const extDec = this.tryDecryptXml(frame.extension, frame.header.channelId, enc);
+              if (extDec.includes("<binaryData>1</binaryData>")) markedBinary = true;
+            } catch {
+              // ignore
+            }
+          }
+
+          const decrypted = this.tryDecryptBinary(frame.payload, frame.header.channelId, enc);
+          if (decrypted.length === 0) return;
+
+          if (!markedBinary) {
+            // If the payload looks like XML, it's probably an ACK/info frame, not a chunk.
+            if (looksLikeXml(decrypted)) return;
+          }
+
+          chunks.push(decrypted);
+          receivedBytes += decrypted.length;
+
+          // Debug-only progress hint for long downloads (avoid noisy logs).
+          const now = Date.now();
+          if ((this.opts.debug || this.debugCfg.enabled) && now - lastProgressLogAt >= 2_000) {
+            lastProgressLogAt = now;
+            this.logDebug("file_download_progress", { cmdId, msgNum, bytes: receivedBytes });
+          }
+
+          // Neolink-style completion commonly uses responseCode=201 for the final chunk.
+          if (frame.header.responseCode === 201) {
+            finish(Buffer.concat(chunks));
+          }
+        } catch (e) {
+          fail(e);
+        }
+      };
+
+      timeout = setTimeout(() => {
+        fail(new Error(`Baichuan timeout waiting file download chunks cmdId=${cmdId} msgNum=${msgNum}`));
+      }, timeoutMs);
+
+      // Attach listener BEFORE sending request.
+      this.on("frame", onFrame);
+
+      try {
+        this.logDebug("tx", { cmdId, msgNum, channelId, messageClass, bodyLen, binary: true, fileDownload: true });
+        this.recordTx({ cmdId, responseCode: 0, msgNum, channelId, streamType: params.streamType ?? 0 });
+        this.writeWire(wire);
+      } catch (e) {
+        fail(e);
+      }
+    });
   }
 
   private async sendBinarySnapshot109(params: {

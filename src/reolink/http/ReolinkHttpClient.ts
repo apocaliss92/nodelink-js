@@ -160,5 +160,48 @@ export class ReolinkHttpClient {
       clearTimeout(t);
     }
   }
+
+  /**
+   * Download a VOD/recording via CGI `cmd=Download`.
+   *
+   * This matches reolink_aio's approach (POST with a dummy JSON body and query params).
+   * Returns the raw binary payload (often mp4).
+   */
+  async downloadVod(source: string, output?: string, start?: string): Promise<Buffer> {
+    await this.login();
+    if (!this.token) throw new Error("Missing token after login");
+
+    // NOTE: Do NOT URL-encode '/' in `source`. Many Reolink firmwares expect raw paths
+    // like "/mnt/sda/..." and return 404 when `%2F` is used. Match reolink_aio behavior:
+    // encode spaces only.
+    const scheme = this.useHttps ? "https" : "http";
+    const port = this.port ?? (this.useHttps ? 443 : 80);
+    const sourceForQuery = source.replaceAll(" ", "%20");
+    const outputForQuery = output ? encodeURIComponent(output) : undefined;
+    const startForQuery = start ? encodeURIComponent(start) : undefined;
+    const tokenForQuery = encodeURIComponent(this.token);
+    const url = `${scheme}://${this.host}:${port}/cgi-bin/api.cgi?cmd=Download&source=${sourceForQuery}${outputForQuery ? `&output=${outputForQuery}` : ""}${startForQuery ? `&start=${startForQuery}` : ""}&token=${tokenForQuery}`;
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), this.timeoutMs);
+    try {
+      const init: any = {
+        method: "POST",
+        body: "[{}]",
+        headers: { "Content-Type": "application/json" },
+        signal: ac.signal,
+      };
+      if (this.useHttps && this.httpsAgent) init.dispatcher = this.httpsAgent as any;
+
+      const res = await fetch(url, init as RequestInit);
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`HTTP ${res.status}: ${text}`);
+      }
+      const ab = await res.arrayBuffer();
+      return Buffer.from(ab);
+    } finally {
+      clearTimeout(t);
+    }
+  }
 }
 

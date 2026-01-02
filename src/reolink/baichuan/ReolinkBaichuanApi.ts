@@ -3,6 +3,7 @@ import { BaichuanClient, type BaichuanClientOptions } from "../../client/Baichua
 import { type Logger } from "../../debug/DebugConfig";
 import {
   BC_CLASS_MODERN_24,
+  BC_CLASS_FILE_DOWNLOAD,
   BC_CMD_ID_ABILITY_INFO,
   BC_CMD_ID_AUDIO_ALARM_PLAY,
   BC_CMD_ID_GET_AUDIO_ALARM,
@@ -30,6 +31,13 @@ import {
   BC_CMD_ID_UDP_KEEP_ALIVE,
   BC_CMD_ID_VIDEO,
   BC_CMD_ID_VIDEO_STOP,
+  BC_CMD_ID_FILE_INFO_LIST_OPEN,
+  BC_CMD_ID_FILE_INFO_LIST_GET,
+  BC_CMD_ID_FILE_INFO_LIST_CLOSE,
+  BC_CMD_ID_FILE_INFO_LIST_DOWNLOAD,
+  BC_CMD_ID_FIND_REC_VIDEO_OPEN,
+  BC_CMD_ID_FIND_REC_VIDEO_GET,
+  BC_CMD_ID_FIND_REC_VIDEO_CLOSE,
 } from "../../protocol/constants";
 import { buildAbilityInfoExtensionXml, buildBinaryExtensionXml, buildChannelExtensionXml, buildFloodlightManualXml, buildPreviewStopXml, buildPreviewXml, buildPtzControlXml, buildPtzPresetXml, buildPtzPresetXmlV2, buildSirenManualXml, buildSirenTimesXml, buildStartZoomFocusXml, getXmlText, xmlEscape } from "../../protocol/xml";
 import {
@@ -55,10 +63,16 @@ import {
   type SupportInfo,
   type TwoWayAudioConfig,
   type VideoCodec,
-  type WhiteLedState
+  type WhiteLedState,
+  type DownloadRecordingParams,
+  type ListRecordingsParams,
+  type RecordingFile,
 } from "./types";
 
+import { parseRecordingFileName } from "./recordingFileName";
+
 import { abilitiesHasAny, computeDeviceCapabilities, flattenAbilitiesForChannel, parseSupportXml } from "./capabilities";
+import { ReolinkHttpClient } from "../http/ReolinkHttpClient";
 
 type TalkAbility = import("./types").TalkAbility;
 type TalkAudioConfig = import("./types").TalkAudioConfig;
@@ -106,6 +120,139 @@ function getXmlBlocks(xml: string, tagName: string): string[] {
     out.push(m[1] ?? "");
   }
   return out;
+}
+
+function parseXmlDateTimeBlock(block: string): Date | undefined {
+  const year = Number.parseInt(getXmlText(block, "year") ?? "", 10);
+  const month = Number.parseInt(getXmlText(block, "month") ?? "", 10);
+  const day = Number.parseInt(getXmlText(block, "day") ?? "", 10);
+  const hour = Number.parseInt(getXmlText(block, "hour") ?? "", 10);
+  const minute = Number.parseInt(getXmlText(block, "minute") ?? "", 10);
+  const second = Number.parseInt(getXmlText(block, "second") ?? "", 10);
+  if (![year, month, day, hour, minute, second].every(Number.isFinite)) return undefined;
+  // Treat as local time; camera typically returns local timestamps.
+  return new Date(year, month - 1, day, hour, minute, second);
+}
+
+function xmlDateTimePayload(tag: "startTime" | "endTime", d: Date): string {
+  return `<${tag}><year>${d.getFullYear()}</year><month>${d.getMonth() + 1}</month><day>${d.getDate()}</day><hour>${d.getHours()}</hour><minute>${d.getMinutes()}</minute><second>${d.getSeconds()}</second></${tag}>`;
+}
+
+function parseRecordingFilesFromXml(xml: string): RecordingFile[] {
+  const out: RecordingFile[] = [];
+
+  // FileInfoList commonly returns <FileInfo> blocks with <name> and/or <Id>.
+  // Prefer <Id> (full path) as the identifier for download, but keep <name> when present.
+  const fileInfoBlocks = getXmlBlocks(xml, "FileInfo");
+  for (const b of fileInfoBlocks) {
+    const id = getXmlText(b, "Id") ?? getXmlText(b, "ID") ?? getXmlText(b, "id");
+    const name = getXmlText(b, "name") ?? getXmlText(b, "fileName");
+    const chosen = (id ?? name)?.trim();
+    if (!chosen) continue;
+    const item: RecordingFile = { fileName: chosen };
+    if (name != null && name.trim()) item.name = name.trim();
+    if (id != null && id.trim()) item.id = id.trim();
+    const recordType = getXmlText(b, "type") ?? getXmlText(b, "recordType") ?? getXmlText(b, "alarmType");
+    if (recordType != null) item.recordType = recordType;
+    const sizeText = getXmlText(b, "size") ?? getXmlText(b, "fileSize");
+    const sizeBytes = sizeText ? Number.parseInt(sizeText, 10) : undefined;
+    if (sizeBytes != null && Number.isFinite(sizeBytes)) item.sizeBytes = sizeBytes;
+    const start = getXmlBlocks(b, "startTime")[0];
+    const end = getXmlBlocks(b, "endTime")[0];
+    const startDt = start ? parseXmlDateTimeBlock(start) : undefined;
+    const endDt = end ? parseXmlDateTimeBlock(end) : undefined;
+    if (startDt) item.startTime = startDt;
+    if (endDt) item.endTime = endDt;
+
+    const parsed = parseRecordingFileName(item.name ?? item.fileName);
+    if (parsed) {
+      item.parsedFileName = parsed;
+      if (!item.startTime) item.startTime = parsed.start;
+      if (!item.endTime) item.endTime = parsed.end;
+    }
+    out.push(item);
+  }
+
+  // Preferred: parse <File> blocks (common in many Reolink list responses).
+  const fileBlocks = getXmlBlocks(xml, "File");
+  for (const b of fileBlocks) {
+    const fileName = getXmlText(b, "fileName") ?? getXmlText(b, "name");
+    if (!fileName) continue;
+    const sizeText = getXmlText(b, "size") ?? getXmlText(b, "fileSize");
+    const sizeBytes = sizeText ? Number.parseInt(sizeText, 10) : undefined;
+    const recordType = getXmlText(b, "type") ?? getXmlText(b, "recordType") ?? getXmlText(b, "alarmType");
+    const start = getXmlBlocks(b, "startTime")[0];
+    const end = getXmlBlocks(b, "endTime")[0];
+    const item: RecordingFile = { fileName };
+    if (sizeBytes != null && Number.isFinite(sizeBytes)) item.sizeBytes = sizeBytes;
+    if (recordType != null) item.recordType = recordType;
+    const startDt = start ? parseXmlDateTimeBlock(start) : undefined;
+    const endDt = end ? parseXmlDateTimeBlock(end) : undefined;
+    if (startDt) item.startTime = startDt;
+    if (endDt) item.endTime = endDt;
+
+    const parsed = parseRecordingFileName(item.fileName);
+    if (parsed) {
+      item.parsedFileName = parsed;
+      if (!item.startTime) item.startTime = parsed.start;
+      if (!item.endTime) item.endTime = parsed.end;
+    }
+    out.push(item);
+  }
+
+  // Fallback: any <fileName> tags.
+  if (out.length === 0) {
+    const re = /<fileName>([\s\S]*?)<\/fileName>/g;
+    let m: RegExpExecArray | null;
+    // eslint-disable-next-line no-cond-assign
+    while ((m = re.exec(xml))) {
+      const fileName = (m[1] ?? "").trim();
+      if (!fileName) continue;
+      const item: RecordingFile = { fileName };
+      const parsed = parseRecordingFileName(fileName);
+      if (parsed) {
+        item.parsedFileName = parsed;
+        item.startTime = parsed.start;
+        item.endTime = parsed.end;
+      }
+      out.push(item);
+    }
+  }
+
+  // Alarm video list: <alarmVideo><fileName>...</fileName><alarmType>...</alarmType>...</alarmVideo>
+  // Some firmwares use this API instead of FileInfoList for recordings.
+  if (out.length === 0) {
+    const alarmBlocks = getXmlBlocks(xml, "alarmVideo");
+    for (const b of alarmBlocks) {
+      const fileName = getXmlText(b, "fileName") ?? getXmlText(b, "name");
+      if (!fileName) continue;
+      const item: RecordingFile = { fileName };
+      const alarmType = getXmlText(b, "alarmType");
+      if (alarmType != null) item.recordType = alarmType;
+      const start = getXmlBlocks(b, "startTime")[0];
+      const end = getXmlBlocks(b, "endTime")[0];
+      const startDt = start ? parseXmlDateTimeBlock(start) : undefined;
+      const endDt = end ? parseXmlDateTimeBlock(end) : undefined;
+      if (startDt) item.startTime = startDt;
+      if (endDt) item.endTime = endDt;
+
+      const parsed = parseRecordingFileName(item.fileName);
+      if (parsed) {
+        item.parsedFileName = parsed;
+        if (!item.startTime) item.startTime = parsed.start;
+        if (!item.endTime) item.endTime = parsed.end;
+      }
+      out.push(item);
+    }
+  }
+
+  // De-dup by fileName.
+  const seen = new Set<string>();
+  return out.filter((f) => {
+    if (seen.has(f.fileName)) return false;
+    seen.add(f.fileName);
+    return true;
+  });
 }
 
 function parseTalkAudioConfig(block: string): TalkAudioConfig | null {
@@ -245,6 +392,7 @@ function encodeBcMediaAdpcmBlock(block: Buffer, halfBlockSize: number): Buffer {
 export class ReolinkBaichuanApi {
   readonly client: BaichuanClient;
   readonly logger: Logger;
+  private readonly httpClient: ReolinkHttpClient;
   private readonly simpleEventListeners = new Set<(event: ReolinkSimpleEvent) => void>();
   private simpleEventSubscribed = false;
   private simpleEventSubscribeInFlight: Promise<void> | undefined;
@@ -265,6 +413,12 @@ export class ReolinkBaichuanApi {
   constructor(opts: BaichuanClientOptions) {
     this.logger = opts.logger ?? console;
     this.client = new BaichuanClient(opts);
+    this.httpClient = new ReolinkHttpClient({
+      host: opts.host,
+      username: opts.username,
+      password: opts.password,
+      timeoutMs: 600_000,
+    });
 
     // Dispatch parsed events in a minimal, stable shape.
     this.client.on("event", (event) => {
@@ -1068,6 +1222,257 @@ export class ReolinkBaichuanApi {
       extensionXml: buildChannelExtensionXml(channel),
       timeoutMs: 15_000,
     });
+  }
+
+  /**
+   * List camera recordings via Baichuan FileInfoList (neolink-style).
+   *
+   * Flow (based on reolink_aio XML templates + neolink dissector msg IDs):
+   * - cmdId=14: open search -> returns <handle>
+   * - cmdId=15: get page(s) -> returns file list and optional <bFinished>
+   * - cmdId=16: close handle
+   */
+  async listRecordings(params: ListRecordingsParams): Promise<RecordingFile[]> {
+    await this.client.login();
+
+    const channel = this.normalizeChannel(params.channel);
+    const uid = params.uid;
+    const streamType = params.streamType ?? "mainStream";
+    const recordType =
+      params.recordType ?? "manual, sched, io, md, people, face, vehicle, dog_cat, visitor, other, package";
+    const maxIterations = params.maxIterations ?? 50;
+    const fallbackToAlarmVideo = params.fallbackToAlarmVideo ?? true;
+
+    const openXml = `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<FileInfoList version="1.1">
+<FileInfo>
+<uid>${xmlEscape(uid)}</uid>
+<searchAITrack>1</searchAITrack>
+<channelId>${channel}</channelId>
+<logicChnBitmap>255</logicChnBitmap>
+<streamType>${xmlEscape(streamType)}</streamType>
+<recordType>${xmlEscape(recordType)}</recordType>
+${xmlDateTimePayload("startTime", params.start)}
+${xmlDateTimePayload("endTime", params.end)}
+</FileInfo>
+</FileInfoList>
+</body>`;
+
+    const openResp = await this.sendXml({ cmdId: BC_CMD_ID_FILE_INFO_LIST_OPEN, channel, payloadXml: openXml });
+    const handleText = getXmlText(openResp, "handle");
+    if (!handleText) {
+      throw new Error("FileInfoList open did not return <handle>");
+    }
+
+    const handle = Number.parseInt(handleText, 10);
+    if (!Number.isFinite(handle)) {
+      throw new Error(`FileInfoList open returned invalid handle: ${handleText}`);
+    }
+
+    const pageXml = `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<FileInfoList version="1.1">
+<FileInfo>
+<channelId>${channel}</channelId>
+<uid>${xmlEscape(uid)}</uid>
+<searchAITrack>1</searchAITrack>
+<handle>${handle}</handle>
+</FileInfo>
+</FileInfoList>
+</body>`;
+
+    const files: RecordingFile[] = [];
+    try {
+      let finished = false;
+      for (let i = 0; i < maxIterations && !finished; i++) {
+        const resp = await this.sendXml({ cmdId: BC_CMD_ID_FILE_INFO_LIST_GET, channel, payloadXml: pageXml });
+        files.push(...parseRecordingFilesFromXml(resp));
+        const bFinishedText = getXmlText(resp, "bFinished") ?? getXmlText(resp, "finished");
+        if (bFinishedText != null) {
+          finished = bFinishedText.trim() === "1";
+        } else {
+          // If firmware doesn't provide a finished flag, assume one-page response.
+          finished = true;
+        }
+      }
+    } finally {
+      // Best-effort close.
+      try {
+        await this.sendXml({ cmdId: BC_CMD_ID_FILE_INFO_LIST_CLOSE, channel, payloadXml: pageXml });
+      } catch {
+        // ignore
+      }
+    }
+
+    // De-dup (pagination can repeat).
+    const seen = new Set<string>();
+    const unique = files.filter((f) => {
+      if (seen.has(f.fileName)) return false;
+      seen.add(f.fileName);
+      return true;
+    });
+
+    if (unique.length > 0 || !fallbackToAlarmVideo) return unique;
+
+    // Fallback path: <findAlarmVideo> (reolink_aio: cmdId 272/273/274).
+    // This often returns "alarm videos" when FileInfoList is unsupported/empty.
+    const uidBase = uid.split("_")[0] ?? uid;
+    const streamTypeInt = streamType === "subStream" ? 1 : 0;
+    const alarmType = "md, pir, io, people, face, vehicle, dog_cat, visitor, other, package, cry, crossline, intrusion, loitering, legacy, loss";
+
+    const findOpenXml = (start: Date, end: Date) => `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<findAlarmVideo version="1.1">
+<channelId>${channel}</channelId>
+<uid>${xmlEscape(uidBase)}</uid>
+<logicChnBitmap>255</logicChnBitmap>
+<streamType>${streamTypeInt}</streamType>
+<notSearchVideo>0</notSearchVideo>
+${xmlDateTimePayload("startTime", start)}
+${xmlDateTimePayload("endTime", end)}
+<alarmType>${alarmType}</alarmType>
+</findAlarmVideo>
+</body>`;
+
+    const findGetXml = (fileHandle: string) => `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<findAlarmVideo version="1.1">
+<channelId>${channel}</channelId>
+<fileHandle>${xmlEscape(fileHandle)}</fileHandle>
+</findAlarmVideo>
+</body>`;
+
+    const alarmFiles: RecordingFile[] = [];
+    let currentStart = params.start;
+    for (let i = 0; i < maxIterations; i++) {
+      const openResp = await this.sendXml({ cmdId: BC_CMD_ID_FIND_REC_VIDEO_OPEN, channel, payloadXml: findOpenXml(currentStart, params.end) });
+      const fileHandle = getXmlText(openResp, "fileHandle")?.trim();
+      if (!fileHandle) break;
+
+      const getXml = findGetXml(fileHandle);
+      try {
+        const getResp = await this.sendXml({ cmdId: BC_CMD_ID_FIND_REC_VIDEO_GET, channel, payloadXml: getXml });
+        const pageFiles = parseRecordingFilesFromXml(getResp);
+        alarmFiles.push(...pageFiles);
+
+        const bFinishedText = getXmlText(getResp, "bFinished")?.trim();
+        const finished = bFinishedText === "1";
+        if (finished) break;
+
+        // If not finished, advance start to the last returned event startTime if possible.
+        const lastWithStart = [...pageFiles].reverse().find((f) => f.startTime != null);
+        if (!lastWithStart?.startTime) break;
+        currentStart = lastWithStart.startTime;
+      } finally {
+        // Best-effort close.
+        try {
+          await this.sendXml({ cmdId: BC_CMD_ID_FIND_REC_VIDEO_CLOSE, channel, payloadXml: getXml });
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    const seenAlarm = new Set<string>();
+    return alarmFiles.filter((f) => {
+      if (seenAlarm.has(f.fileName)) return false;
+      seenAlarm.add(f.fileName);
+      return true;
+    });
+  }
+
+  /**
+    * Convenience wrapper around listRecordings() that returns only the recording identifiers.
+   *
+   * Most firmwares return a usable download identifier as a path-like string, e.g.
+   * `/mnt/sda/Mp4Record/YYYY-MM-DD/Rec....mp4`.
+   */
+  async listRecordingFileNames(params: ListRecordingsParams): Promise<string[]> {
+    const recs = await this.listRecordings(params);
+    return recs.map((r) => r.fileName);
+  }
+
+  /**
+   * Download a recording via Baichuan FileInfoList download (cmdId=13, class=0x6482).
+   * Returns raw bytes (often an mp4/flv/ps payload depending on firmware/camera).
+   */
+  async downloadRecording(params: DownloadRecordingParams): Promise<Buffer> {
+    await this.client.login();
+
+    const channel = this.normalizeChannel(params.channel);
+    const uid = params.uid;
+    const fileName = params.fileName;
+
+    const name = fileName.includes("/") ? fileName.split("/").filter(Boolean).at(-1) ?? fileName : fileName;
+
+    const payloadXml = `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<FileInfoList version="1.1">
+<FileInfo>
+<channelId>${channel}</channelId>
+<uid>${xmlEscape(uid)}</uid>
+<fileName>${xmlEscape(fileName)}</fileName>
+<name>${xmlEscape(name)}</name>
+<Id>${xmlEscape(fileName)}</Id>
+</FileInfo>
+</FileInfoList>
+</body>`;
+
+    const fallbackToHttp = params.fallbackToHttp ?? false;
+
+    try {
+      return await this.client.sendBinary({
+        cmdId: BC_CMD_ID_FILE_INFO_LIST_DOWNLOAD,
+        channel,
+        messageClass: BC_CLASS_FILE_DOWNLOAD,
+        extensionXml: buildBinaryExtensionXml(channel),
+        payloadXml,
+        timeoutMs: params.timeoutMs ?? 120_000,
+      });
+    } catch (e) {
+      if (!fallbackToHttp) throw e;
+
+      // Fallback: HTTP CGI Download (reolink_aio approach).
+      // Many firmwares expose recordings for download via /cgi-bin/api.cgi?cmd=Download&source=...
+      const wantedFilename = fileName.replaceAll("/", "_").replaceAll("\\", "_");
+      try {
+        // reolink_aio: if filename matches Rec* pattern, include `start=YYYYMMDDHHMMSS`
+        // to help the firmware locate the clip.
+        const m = /Rec(\w{3})(?:_|_DST)(\d{8})_(\d{6})_.*/.exec(fileName);
+        const startParam = m ? `${m[2]}${m[3]}` : undefined;
+
+        const candidates: string[] = [];
+        const pushUnique = (s: string | undefined) => {
+          const v = s?.trim();
+          if (!v) return;
+          if (!candidates.includes(v)) candidates.push(v);
+        };
+
+        pushUnique(fileName);
+        // Common FileInfoList Ids look like /mnt/sda/Mp4Record/YYYY-MM-DD/Rec....mp4
+        pushUnique(fileName.replace(/^\/mnt\/[a-zA-Z0-9]+\//, ""));
+        pushUnique(fileName.replace(/^\//, ""));
+
+        let lastErr: unknown;
+        for (const source of candidates) {
+          try {
+            return await this.httpClient.downloadVod(source, wantedFilename, startParam);
+          } catch (ee) {
+            lastErr = ee;
+            const msg = ee instanceof Error ? ee.message : String(ee);
+            // Try next path variant on 404.
+            if (msg.startsWith("HTTP 404")) continue;
+            throw ee;
+          }
+        }
+        throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+      } catch (e2) {
+        const err1 = e instanceof Error ? e.message : String(e);
+        const err2 = e2 instanceof Error ? e2.message : String(e2);
+        throw new Error(`downloadRecording failed (baichuan then http). baichuanErr=${err1}; httpErr=${err2}`);
+      }
+    }
   }
 
   /**

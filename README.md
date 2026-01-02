@@ -1,6 +1,6 @@
 # @reolink/baichuan-js
 
-TypeScript library implementing Reolink Baichuan protocol (control + streaming) with CGI and RTSP helpers. Full TypeScript support with comprehensive type definitions.
+Mostly vibed TypeScript library implementing Reolink Baichuan protocol (control + streaming) with CGI and RTSP helpers. Full TypeScript support with comprehensive type definitions.
 
 ## Features
 
