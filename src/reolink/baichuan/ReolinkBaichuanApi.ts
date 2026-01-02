@@ -48,6 +48,7 @@ import {
   type ReolinkSimpleEventType,
   type StreamMetadata,
   type StreamProfile,
+  type SleepStatus,
   type SupportInfo,
   type TwoWayAudioConfig,
   type VideoCodec,
@@ -250,6 +251,13 @@ export class ReolinkBaichuanApi {
   private lastAiState: AIState | undefined;
   private rtspServers = new Set<BaichuanRtspServer>(); // Track all RTSP servers for cleanup
   private readonly activeVideoMsgNums = new Map<string, number>();
+
+  private lastSleepProbe:
+    | {
+        atMs: number;
+        status: SleepStatus;
+      }
+    | undefined;
 
   constructor(opts: BaichuanClientOptions) {
     this.logger = opts.logger ?? console;
@@ -1066,6 +1074,9 @@ export class ReolinkBaichuanApi {
     const extensionXml = `<?xml version="1.0" encoding="UTF-8" ?><Extension version="1.1"><channelId>251</channelId></Extension>`;
     await this.client.sendXml({ cmdId: 31, extensionXml });
     this.client.subscribed = true;
+    // For BCUDP/battery cameras: enabling event subscription should keep the session alive
+    // to receive cmd_id=33 pushes reliably.
+    this.client.refreshKeepAlive?.();
   }
 
   /**
@@ -1075,6 +1086,8 @@ export class ReolinkBaichuanApi {
     // Note: reolink-aio doesn't have explicit unsubscribe, but closing connection unsubscribes
     // For now, we just mark as unsubscribed
     this.client.subscribed = false;
+    // For BCUDP/battery cameras: allow the camera to sleep when idle.
+    this.client.refreshKeepAlive?.();
   }
 
   /**
@@ -2049,6 +2062,175 @@ export class ReolinkBaichuanApi {
   }
 
   /**
+   * Best-effort sleeping inference for battery/BCUDP cameras.
+   *
+   * This method does NOT send any request to the camera.
+   * In practice (neolink-style), "sleeping" is inferred from the absence of inbound traffic / link health,
+   * because there is no universally reliable, purely passive protocol flag.
+   */
+  getSleepStatus(opts?: { idleMs?: number; channel?: number; ignoreCmdIds?: number[]; considerRecentTx?: boolean }): SleepStatus {
+    const idleMs = opts?.idleMs ?? 15_000;
+    const ignoreCmdIds = new Set<number>(opts?.ignoreCmdIds ?? [234]);
+    const transport = this.client.getTransport?.();
+    if (transport !== "udp") {
+      return { state: "unknown", reason: "sleep inference supported only for UDP/battery" };
+    }
+
+    // If we are actively streaming, treat the device as awake.
+    // (Some stream paths may not generate frequent Baichuan RX traffic.)
+    if (this.activeVideoMsgNums.size > 0 || this.rtspServers.size > 0 || this.client.hasActiveVideoSubscriptions?.()) {
+      return { state: "awake", reason: "active streaming" };
+    }
+
+    if (!this.client.isSocketConnected()) {
+      return { state: "unknown", reason: "udp socket not connected" };
+    }
+
+    // Optional: if enabled, refuse to infer sleep when we transmitted recently.
+    // NOTE: this can be too strict for BCUDP because replying to camera keepalives is also TX.
+    if (opts?.considerRecentTx) {
+      const lastTxAtMs = this.client.getLastTxAtMs?.();
+      if (lastTxAtMs != null) {
+        const txIdle = Date.now() - lastTxAtMs;
+        if (txIdle < idleMs) {
+          return {
+            state: "unknown",
+            reason: `recent client tx ${txIdle}ms ago (quiet window required)`,
+            idleMs: txIdle,
+          };
+        }
+      }
+    }
+
+    const history = this.client.getRxHistory?.() ?? [];
+    let lastActivity = undefined as (typeof history)[number] | undefined;
+    for (let i = history.length - 1; i >= 0; i--) {
+      const h = history[i];
+      if (!h) continue;
+      if (ignoreCmdIds.has(h.cmdId)) continue;
+      lastActivity = h;
+      break;
+    }
+
+    const lastRx = this.client.getLastRxInfo?.();
+    const lastRxDetails = lastRx ? ` (lastRx cmdId=${lastRx.cmdId} responseCode=${lastRx.responseCode})` : "";
+    const ignoredList = ignoreCmdIds.size ? ` (ignoring cmdId: ${Array.from(ignoreCmdIds).join(",")})` : "";
+
+    if (!lastActivity) {
+      const lastRxAtMs = this.client.getLastRxAtMs?.();
+      return {
+        state: "unknown",
+        reason: `no non-ignored inbound activity observed yet${ignoredList}${lastRxDetails}`,
+        ...(lastRxAtMs != null ? { lastRxAtMs } : {}),
+      };
+    }
+
+    const idle = Date.now() - lastActivity.atMs;
+    if (idle >= idleMs) {
+      return {
+        state: "sleeping",
+        reason: `no non-ignored inbound activity for ${idle}ms (lastActivity cmdId=${lastActivity.cmdId} responseCode=${lastActivity.responseCode})${ignoredList}${lastRxDetails}`,
+        lastRxAtMs: lastActivity.atMs,
+        idleMs: idle,
+      };
+    }
+
+    return {
+      state: "awake",
+      reason: `non-ignored inbound activity ${idle}ms ago (lastActivity cmdId=${lastActivity.cmdId} responseCode=${lastActivity.responseCode})${ignoredList}${lastRxDetails}`,
+      lastRxAtMs: lastActivity.atMs,
+      idleMs: idle,
+    };
+  }
+
+  /**
+   * Active sleep probe using a non-waking command with a short timeout.
+   *
+   * Why this exists:
+   * - Passive inference can be noisy (keepalives, other clients, separate stream paths).
+   * - A short-timeout probe answers: "is the camera responding right now?".
+   *
+   * Important caveats:
+   * - If *another* client keeps the camera awake, the probe will return awake (correct: it's awake).
+   * - Do NOT call this in a tight loop; it will generate traffic and can prevent sleep.
+   */
+  async probeSleepStatus(opts?: {
+    channel?: number;
+    /** Default: 700ms */
+    timeoutMs?: number;
+    /** Default: 1 */
+    attempts?: number;
+    /** Default: 5000ms (returns cached status if called more frequently) */
+    minIntervalMs?: number;
+    /** Override command used for probing. Default: battery info (253). */
+    cmdId?: number;
+  }): Promise<SleepStatus> {
+    const transport = this.client.getTransport?.();
+    if (transport !== "udp") {
+      return { state: "unknown", reason: "sleep probe supported only for UDP/battery" };
+    }
+
+    // If we are actively streaming, treat the device as awake.
+    if (this.activeVideoMsgNums.size > 0 || this.rtspServers.size > 0 || this.client.hasActiveVideoSubscriptions?.()) {
+      return { state: "awake", reason: "active streaming" };
+    }
+
+    const now = Date.now();
+    const minIntervalMs = opts?.minIntervalMs ?? 5_000;
+    if (this.lastSleepProbe && now - this.lastSleepProbe.atMs < minIntervalMs) {
+      return { ...this.lastSleepProbe.status, reason: `${this.lastSleepProbe.status.reason} (cached)` };
+    }
+
+    // Avoid implicitly forcing a login/reconnect as part of a "sleep check".
+    if (!this.client.isSocketConnected()) {
+      const status: SleepStatus = { state: "unknown", reason: "udp socket not connected" };
+      this.lastSleepProbe = { atMs: now, status };
+      return status;
+    }
+    if (!this.client.loggedIn) {
+      const status: SleepStatus = { state: "unknown", reason: "not logged in" };
+      this.lastSleepProbe = { atMs: now, status };
+      return status;
+    }
+
+    const ch = this.normalizeChannel(opts?.channel);
+    const timeoutMs = opts?.timeoutMs ?? 700;
+    const attempts = Math.max(1, opts?.attempts ?? 1);
+    const cmdId = opts?.cmdId ?? BC_CMD_ID_GET_BATTERY_INFO; // 253
+
+    for (let i = 0; i < attempts; i++) {
+      try {
+        const frame = await this.client.sendFrame({ cmdId, channel: ch, timeoutMs });
+        const status: SleepStatus = {
+          state: frame.header.responseCode === 200 ? "awake" : "unknown",
+          reason: `probe cmdId=${cmdId} responseCode=${frame.header.responseCode}`,
+        };
+        this.lastSleepProbe = { atMs: Date.now(), status };
+        return status;
+      } catch (e) {
+        // On timeout, interpret as sleeping (best-effort). Other errors remain unknown.
+        const msg = e instanceof Error ? e.message : String(e);
+        const isTimeout = msg.includes("Baichuan timeout") || msg.toLowerCase().includes("timeout");
+        if (isTimeout) {
+          const status: SleepStatus = { state: "sleeping", reason: `probe timeout cmdId=${cmdId} timeoutMs=${timeoutMs}` };
+          this.lastSleepProbe = { atMs: Date.now(), status };
+          return status;
+        }
+        // Retry on transient errors if attempts > 1.
+        if (i === attempts - 1) {
+          const status: SleepStatus = { state: "unknown", reason: `probe error cmdId=${cmdId}: ${msg}` };
+          this.lastSleepProbe = { atMs: Date.now(), status };
+          return status;
+        }
+      }
+    }
+
+    const fallback: SleepStatus = { state: "unknown", reason: "probe exhausted" };
+    this.lastSleepProbe = { atMs: Date.now(), status: fallback };
+    return fallback;
+  }
+
+  /**
    * Get battery status for battery-powered cameras, including sleep state.
    * This is a comprehensive API that returns battery info AND checks if the camera is sleeping.
     * cmd_id: 253 (MSG_ID_BATTERY_INFO from neolink)
@@ -2058,6 +2240,14 @@ export class ReolinkBaichuanApi {
    */
   async getBatteryStatus(channel?: number): Promise<BatteryInfo> {
     const ch = this.normalizeChannel(channel);
+
+    // First: no-wake inference. If we're likely sleeping, don't send any request.
+    // This avoids the common pitfall where the "sleep check" itself prevents sleep.
+    const sleepStatus = this.getSleepStatus({ channel: ch });
+    if (sleepStatus.state === "sleeping") {
+      return { channel: ch, sleeping: true };
+    }
+
     try {
       // First, try to get battery info
       // If the camera is sleeping, this may timeout or fail
@@ -2077,17 +2267,19 @@ export class ReolinkBaichuanApi {
 
       return result;
     } catch (error) {
-      // If the command times out or fails, the camera is likely sleeping
-      // Note: GetBatteryInfo is a NONE_WAKING_COMMAND, so it won't wake up the camera
+      // If the command times out or fails, the camera may be sleeping OR the path is broken.
       const result: BatteryInfo = {
         channel: ch,
-        sleeping: true,
       };
+
+      const inferred = this.getSleepStatus({ channel: ch });
+      if (inferred.state === "sleeping") result.sleeping = true;
 
       // If we got an error that's not a timeout, we still don't know the battery status
       // But we can infer it's sleeping if it failed to respond
       if (error instanceof Error && error.message === "Timeout") {
-        // Camera didn't respond within 5 seconds, likely sleeping
+        // Camera didn't respond within 5 seconds, possibly sleeping
+        if (result.sleeping == null) result.sleeping = true;
       } else {
         // Other error, but still mark as potentially sleeping
       }
@@ -2102,7 +2294,7 @@ export class ReolinkBaichuanApi {
    * 
    * Note: Battery info can be pushed via events (cmd_id 252 BatteryInfoList), but on-demand request
    * is cmd_id 253.
-   * For checking sleep state, use getBatteryStatus() instead.
+  * For checking sleep state without polling/waking, use getSleepStatus() instead.
    * 
    * @param channel - Channel number (0-based)
    * @returns Battery information

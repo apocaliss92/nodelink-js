@@ -81,6 +81,29 @@ export class BaichuanClient extends EventEmitter<{
   private keepAliveTimer: NodeJS.Timeout | undefined;
   private keepAlivePingInFlight = false;
 
+  private lastRxAtMs: number | undefined;
+  private lastTxAtMs: number | undefined;
+  private lastRxInfo:
+    | {
+        atMs: number;
+        cmdId: number;
+        responseCode: number;
+        msgNum: number;
+        channelId: number;
+        streamType: number;
+      }
+    | undefined;
+
+  // Ring-buffer of the last received frames (metadata only). Used for sleep inference heuristics.
+  private readonly rxHistory: Array<{
+    atMs: number;
+    cmdId: number;
+    responseCode: number;
+    msgNum: number;
+    channelId: number;
+    streamType: number;
+  }> = [];
+
   enc: EncryptionProtocol = { kind: "none" }; // Public to allow ReolinkBaichuanApi to access for audio decryption
   private nonce?: string;
   
@@ -110,6 +133,68 @@ export class BaichuanClient extends EventEmitter<{
     return this.transport;
   }
 
+  /**
+   * Recompute keepalive behavior based on current state.
+   *
+   * Default policy (UDP):
+   * - idle (no subscriptions/streams): no periodic keepalive (allows battery cameras to sleep)
+   * - subscribed to events OR streaming: periodic keepalive (improves reliability)
+   */
+  refreshKeepAlive(): void {
+    this.stopKeepAlive();
+    if (this.isSocketConnected()) this.startKeepAlive();
+  }
+
+  /** Timestamp (ms) of the last received Baichuan frame, if any. */
+  getLastRxAtMs(): number | undefined {
+    return this.lastRxAtMs;
+  }
+
+  /** Metadata about the last received Baichuan frame, if any. */
+  getLastRxInfo():
+    | {
+        atMs: number;
+        cmdId: number;
+        responseCode: number;
+        msgNum: number;
+        channelId: number;
+        streamType: number;
+      }
+    | undefined {
+    return this.lastRxInfo;
+  }
+
+  /** Recent RX frame metadata (newest last). */
+  getRxHistory(): ReadonlyArray<{
+    atMs: number;
+    cmdId: number;
+    responseCode: number;
+    msgNum: number;
+    channelId: number;
+    streamType: number;
+  }> {
+    return this.rxHistory;
+  }
+
+  /** Timestamp (ms) of the last transmitted Baichuan frame, if any. */
+  getLastTxAtMs(): number | undefined {
+    return this.lastTxAtMs;
+  }
+
+  /**
+   * Best-effort sleep heuristic for battery/BCUDP cameras.
+   *
+   * This does NOT send any request to the camera.
+   * If there has been no inbound traffic for `idleMs`, the camera is *likely* sleeping
+   * (or the network path is down).
+   */
+  isProbablySleeping(idleMs = 15_000): boolean {
+    if (this.transport !== "udp") return false;
+    const last = this.lastRxAtMs;
+    if (last == null) return false;
+    return Date.now() - last >= idleMs;
+  }
+
   getDebugConfig(): DebugConfig {
     return this.debugCfg;
   }
@@ -136,10 +221,16 @@ export class BaichuanClient extends EventEmitter<{
   private startKeepAlive(): void {
     if (this.keepAliveTimer) return;
 
-    // Internal defaults:
-    // - UDP/BCUDP: battery cameras tend to aggressively drop idle sessions.
+    // Defaults:
     // - TCP: prevent idle socket closures by camera/NAT.
-    const interval = this.transport === "udp" ? 2500 : 30_000;
+    // - UDP/BCUDP: neolink-style dynamic keepalive.
+    //   * When subscribed/streaming: send periodic keepalive to keep push/stream reliable.
+    //   * When idle: do not send keepalive, allowing battery cameras to sleep.
+    let interval = 30_000;
+    if (this.transport === "udp") {
+      if (!this.shouldSendUdpKeepAlive()) return;
+      interval = 2500;
+    }
 
     if (interval <= 0) return;
 
@@ -170,6 +261,31 @@ export class BaichuanClient extends EventEmitter<{
     }, interval);
     // Don't keep the Node process alive only for keepalive.
     this.keepAliveTimer.unref?.();
+  }
+
+  private hasActiveVideoSubscriptionsInternal(): boolean {
+    for (const set of this.videoSubscriptions.values()) {
+      if (set.size > 0) return true;
+    }
+    return false;
+  }
+
+  /** True when there is at least one active Baichuan video subscription (cmdId/msgNum). */
+  hasActiveVideoSubscriptions(): boolean {
+    return this.hasActiveVideoSubscriptionsInternal();
+  }
+
+  private shouldSendUdpKeepAlive(): boolean {
+    // Only useful when connected via BCUDP and logged in.
+    if (this.transport !== "udp") return false;
+    if (!this.udpSocket) return false;
+    if (!this.loggedIn) return false;
+
+    // Neolink-style default: do NOT send periodic keepalive just because we're subscribed.
+    // Battery cameras should be allowed to sleep; we still reply to camera-initiated keepalive frames.
+    if (this.hasActiveVideoSubscriptionsInternal()) return true;
+
+    return false;
   }
 
   private sendUdpKeepAlive(): void {
@@ -374,6 +490,20 @@ export class BaichuanClient extends EventEmitter<{
   }
 
   private handleFrame(frame: BaichuanFrame): void {
+    const now = Date.now();
+    this.lastRxAtMs = now;
+    this.lastRxInfo = {
+      atMs: now,
+      cmdId: frame.header.cmdId,
+      responseCode: frame.header.responseCode,
+      msgNum: frame.header.msgNum,
+      channelId: frame.header.channelId,
+      streamType: frame.header.streamType,
+    };
+
+    this.rxHistory.push(this.lastRxInfo);
+    if (this.rxHistory.length > 32) this.rxHistory.shift();
+
     // Battery cameras (BCUDP) expect the client to respond to UDP keep-alive frames.
     // Neolink handles this by replying with response_code=200 using the same msg_num/channel_id/stream_type.
     // If we don't, the camera can stop sending stream data after a couple seconds.
@@ -494,6 +624,9 @@ export class BaichuanClient extends EventEmitter<{
     if (cmdId === 3 && !this.streamTraceStats.has(msgNum)) {
       this.streamTraceStats.set(msgNum, { lastLogMs: Date.now(), frames: 0 });
     }
+
+    // Streaming requires keeping the BCUDP session alive.
+    if (this.transport === "udp") this.refreshKeepAlive();
   }
 
   /**
@@ -516,6 +649,8 @@ export class BaichuanClient extends EventEmitter<{
       this.videoSubscriptions.delete(cmdId);
       if (cmdId === 3) this.streamTraceStats.clear();
     }
+
+    if (this.transport === "udp") this.refreshKeepAlive();
   }
 
   /**
@@ -714,6 +849,7 @@ export class BaichuanClient extends EventEmitter<{
   }
 
   private writeWire(wire: Buffer): void {
+    this.lastTxAtMs = Date.now();
     if (this.transport === "tcp") {
       this.requireSocket().write(wire);
       return;

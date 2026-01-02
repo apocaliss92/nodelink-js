@@ -69,6 +69,21 @@ export interface BatteryInfo {
   channel?: number;
 }
 
+export type SleepState = "awake" | "sleeping" | "unknown";
+
+/**
+ * Best-effort sleep status inference.
+ *
+ * Note: for battery cameras there is no universally reliable, purely passive "sleep" flag.
+ * This status is inferred without sending any request to the camera.
+ */
+export interface SleepStatus {
+  state: SleepState;
+  reason: string;
+  lastRxAtMs?: number;
+  idleMs?: number;
+}
+
 export interface PirState {
   enabled: boolean;
   state?: {
