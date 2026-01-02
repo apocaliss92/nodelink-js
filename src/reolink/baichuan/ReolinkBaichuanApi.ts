@@ -252,13 +252,6 @@ export class ReolinkBaichuanApi {
   private rtspServers = new Set<BaichuanRtspServer>(); // Track all RTSP servers for cleanup
   private readonly activeVideoMsgNums = new Map<string, number>();
 
-  private lastSleepProbe:
-    | {
-        atMs: number;
-        status: SleepStatus;
-      }
-    | undefined;
-
   constructor(opts: BaichuanClientOptions) {
     this.logger = opts.logger ?? console;
     this.client = new BaichuanClient(opts);
@@ -2070,7 +2063,13 @@ export class ReolinkBaichuanApi {
    */
   getSleepStatus(opts?: { idleMs?: number; channel?: number; ignoreCmdIds?: number[]; considerRecentTx?: boolean }): SleepStatus {
     const idleMs = opts?.idleMs ?? 15_000;
-    const ignoreCmdIds = new Set<number>(opts?.ignoreCmdIds ?? [234]);
+    // Ignore keepalive (234) and battery info frames (252/253) by default.
+    // Battery info does not reliably indicate the camera is "awake" (it should not prevent sleep),
+    // so counting it as activity causes false "awake" reports.
+    // Also ignore a few service/control responses that are often present while the camera is otherwise idle:
+    // - 31: event subscribe (often returns 4xx while sleeping/transitioning)
+    // - 291: seen on some battery models as a periodic/state response; treat as non-wake activity
+    const ignoreCmdIds = new Set<number>(opts?.ignoreCmdIds ?? [234, 252, 253, 31, 291]);
     const transport = this.client.getTransport?.();
     if (transport !== "udp") {
       return { state: "unknown", reason: "sleep inference supported only for UDP/battery" };
@@ -2083,6 +2082,21 @@ export class ReolinkBaichuanApi {
     }
 
     if (!this.client.isSocketConnected()) {
+      const lastDiscAtMs = this.client.getLastD2cDiscAtMs?.();
+      if (lastDiscAtMs != null) {
+        const discIdle = Date.now() - lastDiscAtMs;
+        // If the camera intentionally disconnected recently, that's a strong sleep signal.
+        // We still bound it by idleMs to avoid sticky sleep reports.
+        if (discIdle < idleMs) {
+          return {
+            state: "sleeping",
+            reason: `bcudp disconnect by camera (D2C_DISC) ${discIdle}ms ago`,
+            lastRxAtMs: lastDiscAtMs,
+            idleMs: discIdle,
+          };
+        }
+      }
+
       return { state: "unknown", reason: "udp socket not connected" };
     }
 
@@ -2144,24 +2158,15 @@ export class ReolinkBaichuanApi {
   }
 
   /**
-   * Active sleep probe using a non-waking command with a short timeout.
+   * Active sleep probe with a short timeout.
    *
-   * Why this exists:
-   * - Passive inference can be noisy (keepalives, other clients, separate stream paths).
-   * - A short-timeout probe answers: "is the camera responding right now?".
-   *
-   * Important caveats:
-   * - If *another* client keeps the camera awake, the probe will return awake (correct: it's awake).
-   * - Do NOT call this in a tight loop; it will generate traffic and can prevent sleep.
+   * Design goal: exactly ONE request to the camera (no retries, no caching here).
+   * Scheduling is handled by the client during low-traffic windows.
    */
   async probeSleepStatus(opts?: {
     channel?: number;
     /** Default: 700ms */
     timeoutMs?: number;
-    /** Default: 1 */
-    attempts?: number;
-    /** Default: 5000ms (returns cached status if called more frequently) */
-    minIntervalMs?: number;
     /** Override command used for probing. Default: battery info (253). */
     cmdId?: number;
   }): Promise<SleepStatus> {
@@ -2175,59 +2180,12 @@ export class ReolinkBaichuanApi {
       return { state: "awake", reason: "active streaming" };
     }
 
-    const now = Date.now();
-    const minIntervalMs = opts?.minIntervalMs ?? 5_000;
-    if (this.lastSleepProbe && now - this.lastSleepProbe.atMs < minIntervalMs) {
-      return { ...this.lastSleepProbe.status, reason: `${this.lastSleepProbe.status.reason} (cached)` };
-    }
-
-    // Avoid implicitly forcing a login/reconnect as part of a "sleep check".
-    if (!this.client.isSocketConnected()) {
-      const status: SleepStatus = { state: "unknown", reason: "udp socket not connected" };
-      this.lastSleepProbe = { atMs: now, status };
-      return status;
-    }
-    if (!this.client.loggedIn) {
-      const status: SleepStatus = { state: "unknown", reason: "not logged in" };
-      this.lastSleepProbe = { atMs: now, status };
-      return status;
-    }
-
     const ch = this.normalizeChannel(opts?.channel);
-    const timeoutMs = opts?.timeoutMs ?? 700;
-    const attempts = Math.max(1, opts?.attempts ?? 1);
-    const cmdId = opts?.cmdId ?? BC_CMD_ID_GET_BATTERY_INFO; // 253
-
-    for (let i = 0; i < attempts; i++) {
-      try {
-        const frame = await this.client.sendFrame({ cmdId, channel: ch, timeoutMs });
-        const status: SleepStatus = {
-          state: frame.header.responseCode === 200 ? "awake" : "unknown",
-          reason: `probe cmdId=${cmdId} responseCode=${frame.header.responseCode}`,
-        };
-        this.lastSleepProbe = { atMs: Date.now(), status };
-        return status;
-      } catch (e) {
-        // On timeout, interpret as sleeping (best-effort). Other errors remain unknown.
-        const msg = e instanceof Error ? e.message : String(e);
-        const isTimeout = msg.includes("Baichuan timeout") || msg.toLowerCase().includes("timeout");
-        if (isTimeout) {
-          const status: SleepStatus = { state: "sleeping", reason: `probe timeout cmdId=${cmdId} timeoutMs=${timeoutMs}` };
-          this.lastSleepProbe = { atMs: Date.now(), status };
-          return status;
-        }
-        // Retry on transient errors if attempts > 1.
-        if (i === attempts - 1) {
-          const status: SleepStatus = { state: "unknown", reason: `probe error cmdId=${cmdId}: ${msg}` };
-          this.lastSleepProbe = { atMs: Date.now(), status };
-          return status;
-        }
-      }
-    }
-
-    const fallback: SleepStatus = { state: "unknown", reason: "probe exhausted" };
-    this.lastSleepProbe = { atMs: Date.now(), status: fallback };
-    return fallback;
+    return await this.client.probeSleepStatusOnce({
+      channel: ch,
+      timeoutMs: opts?.timeoutMs ?? 700,
+      cmdId: opts?.cmdId ?? BC_CMD_ID_GET_BATTERY_INFO,
+    });
   }
 
   /**
@@ -2248,44 +2206,33 @@ export class ReolinkBaichuanApi {
       return { channel: ch, sleeping: true };
     }
 
-    try {
-      // First, try to get battery info
-      // If the camera is sleeping, this may timeout or fail
-      const xml = await Promise.race([
-        this.sendXml({ cmdId: BC_CMD_ID_GET_BATTERY_INFO, channel: ch }),
-        new Promise<string>((_, reject) =>
-          setTimeout(() => reject(new Error("Timeout")), 5000)
-        )
-      ]);
-
-      const result: BatteryInfo = {
-        channel: ch,
-        sleeping: false, // Camera responded, so it's awake
-      };
-
-      Object.assign(result, this.parseBatteryInfoXml(xml, ch));
-
-      return result;
-    } catch (error) {
-      // If the command times out or fails, the camera may be sleeping OR the path is broken.
-      const result: BatteryInfo = {
-        channel: ch,
-      };
-
-      const inferred = this.getSleepStatus({ channel: ch });
-      if (inferred.state === "sleeping") result.sleeping = true;
-
-      // If we got an error that's not a timeout, we still don't know the battery status
-      // But we can infer it's sleeping if it failed to respond
-      if (error instanceof Error && error.message === "Timeout") {
-        // Camera didn't respond within 5 seconds, possibly sleeping
-        if (result.sleeping == null) result.sleeping = true;
-      } else {
-        // Other error, but still mark as potentially sleeping
+    // Prefer the last probe performed by the client during a low-traffic window.
+    const cachedProbe = this.client.getLastSleepProbe?.({ maxAgeMs: 15_000 });
+    if (cachedProbe) {
+      if (cachedProbe.status.state === "sleeping") {
+        return { channel: ch, sleeping: true };
       }
-
-      return result;
+      if (cachedProbe.status.state === "awake") {
+        const result: BatteryInfo = { channel: ch, sleeping: false };
+        if (cachedProbe.xml) Object.assign(result, this.parseBatteryInfoXml(cachedProbe.xml, ch));
+        return result;
+      }
     }
+
+    // Optional: if we are currently in an ACK-only low-traffic window, allow one short probe now.
+    if (this.client.isAckOnlyLowTraffic?.({ windowMs: 3000, requireRx: true })) {
+      const status = await this.client.probeSleepStatusOnce({ channel: ch, timeoutMs: 700, cmdId: BC_CMD_ID_GET_BATTERY_INFO });
+      const probe = this.client.getLastSleepProbe?.({ maxAgeMs: 2000 });
+      if (status.state === "sleeping") return { channel: ch, sleeping: true };
+      if (status.state === "awake") {
+        const result: BatteryInfo = { channel: ch, sleeping: false };
+        if (probe?.xml) Object.assign(result, this.parseBatteryInfoXml(probe.xml, ch));
+        return result;
+      }
+    }
+
+    // No probe available and not safe to actively probe right now.
+    return { channel: ch, sleeping: false };
   }
 
   /**

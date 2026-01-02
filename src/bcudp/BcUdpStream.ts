@@ -90,6 +90,7 @@ export class BcUdpStream extends EventEmitter<{
   private discoveryTid: number | undefined;
 
   private acceptSent = false;
+  private lastAcceptAtMs: number | undefined;
 
   private ackScheduled = false;
   private ackLatency = new AckLatency();
@@ -119,6 +120,11 @@ export class BcUdpStream extends EventEmitter<{
     super();
     this.opts = options;
     this.mtu = BCUDP_DEFAULT_MTU;
+  }
+
+  /** True when the underlying UDP socket and remote session parameters are established. */
+  isConnected(): boolean {
+    return !!this.sock && !!this.remote && this.cameraId != null;
   }
 
   async connect(): Promise<void> {
@@ -616,12 +622,19 @@ export class BcUdpStream extends EventEmitter<{
           updateRemote("d2c_t");
           this.sid = dt.sid;
           this.emit("debug", "discovery_t_rx_connected", { sid: dt.sid, cid: dt.cid, did: dt.did, rhost, rport });
-          if (!this.acceptSent) {
+          // Important: some firmwares send D2C_T repeatedly even after connect.
+          // If we don't reply with C2D_A for those, the camera may terminate the session (D2C_DISC).
+          // Throttle to avoid spamming if a camera bursts D2C_T frames.
+          const now = Date.now();
+          if (this.lastAcceptAtMs == null || now - this.lastAcceptAtMs > 750) {
             const aXml = buildC2dA({ sid: dt.sid, conn: dt.conn ?? "local", cid: dt.cid, did: dt.did, mtu: this.mtu });
             const aPkt = encodeDiscoveryPacket(p.tid, aXml);
             this.sock?.send(aPkt, rport, rhost);
             this.acceptSent = true;
+            this.lastAcceptAtMs = now;
             this.emit("debug", "discovery_a_send_connected", { sid: dt.sid, cid: dt.cid, did: dt.did, rhost, rport });
+          } else {
+            this.emit("debug", "discovery_a_send_connected_skip", { reason: "throttle", sid: dt.sid, cid: dt.cid, did: dt.did, rhost, rport });
           }
         } catch (e) {
           this.emit("debug", "discovery_a_send_connected_error", e);

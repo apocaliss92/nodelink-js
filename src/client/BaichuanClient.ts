@@ -7,6 +7,7 @@ import {
   BC_CLASS_MODERN_24_ALT,
   BC_CMD_ID_UDP_KEEP_ALIVE,
   BC_CMD_ID_PING,
+  BC_CMD_ID_GET_BATTERY_INFO,
   BC_CMD_ID_TALK_ABILITY,
   BC_CMD_ID_TALK_RESET,
   BC_CMD_ID_TALK_CONFIG,
@@ -16,7 +17,7 @@ import { aesDecrypt, aesEncrypt, bcDecrypt, bcEncrypt, deriveAesKey, md5StrModer
 import { BaichuanFrameParser, encodeHeader, type BaichuanFrame } from "../protocol/framing";
 import { buildBinaryExtensionXml, buildChannelExtensionXml, buildLoginXml, getXmlText } from "../protocol/xml";
 import { BcUdpStream } from "../bcudp/BcUdpStream";
-import type { ReolinkEvent } from "../reolink/baichuan/types";
+import type { ReolinkEvent, SleepStatus } from "../reolink/baichuan/types";
 import { eventTraceLog, normalizeDebugOptions, traceLog, talkTraceLog, type DebugOptions, type DebugConfig, type Logger } from "../debug/DebugConfig";
 export type { Logger };
 
@@ -80,6 +81,20 @@ export class BaichuanClient extends EventEmitter<{
 
   private keepAliveTimer: NodeJS.Timeout | undefined;
   private keepAlivePingInFlight = false;
+
+  private lastD2cDiscAtMs: number | undefined;
+
+  private sleepProbeTimer: NodeJS.Timeout | undefined;
+  private sleepProbeInFlight = false;
+  private lastSleepProbe:
+    | {
+        atMs: number;
+        status: SleepStatus;
+        cmdId: number;
+        channel: number;
+        xml?: string;
+      }
+    | undefined;
 
   private lastRxAtMs: number | undefined;
   private lastTxAtMs: number | undefined;
@@ -145,9 +160,117 @@ export class BaichuanClient extends EventEmitter<{
     if (this.isSocketConnected()) this.startKeepAlive();
   }
 
+  /** Latest active sleep probe result (if any). Intended for battery/BCUDP only. */
+  getLastSleepProbe(opts?: { maxAgeMs?: number }):
+    | {
+        atMs: number;
+        status: SleepStatus;
+        cmdId: number;
+        channel: number;
+        xml?: string;
+      }
+    | undefined {
+    const p = this.lastSleepProbe;
+    if (!p) return undefined;
+    const maxAgeMs = opts?.maxAgeMs;
+    if (maxAgeMs != null && Date.now() - p.atMs > maxAgeMs) return undefined;
+    return p;
+  }
+
+  /**
+   * True when recent inbound traffic is only UDP keepalive (cmd_id=234).
+   * This is used as a heuristic for "low traffic" windows where doing a single probe is less disruptive.
+   */
+  isAckOnlyLowTraffic(opts?: { windowMs?: number; requireRx?: boolean }): boolean {
+    if (this.transport !== "udp") return false;
+    const windowMs = opts?.windowMs ?? 3000;
+    const since = Date.now() - windowMs;
+    const recent = this.rxHistory.filter((h) => h.atMs >= since);
+    if (opts?.requireRx ?? true) {
+      if (recent.length === 0) return false;
+    }
+    for (const h of recent) {
+      // Treat keepalive + battery info frames as "low traffic".
+      // Battery info does not reliably indicate the camera is awake.
+      if (h.cmdId !== BC_CMD_ID_UDP_KEEP_ALIVE && h.cmdId !== 252 && h.cmdId !== 253) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Single active sleep probe with short timeout.
+   * - On response: awake (and caches decrypted XML if present)
+   * - On timeout: sleeping
+   * - On other errors: unknown
+   */
+  async probeSleepStatusOnce(opts?: { channel?: number; timeoutMs?: number; cmdId?: number }): Promise<SleepStatus> {
+    if (this.transport !== "udp") {
+      const status: SleepStatus = { state: "unknown", reason: "sleep probe supported only for UDP/battery" };
+      this.lastSleepProbe = { atMs: Date.now(), status, cmdId: opts?.cmdId ?? BC_CMD_ID_GET_BATTERY_INFO, channel: opts?.channel ?? 0 };
+      return status;
+    }
+
+    // Avoid implicitly forcing a reconnect/login as part of a "sleep check".
+    if (!this.isSocketConnected()) {
+      const status: SleepStatus = { state: "unknown", reason: "udp socket not connected" };
+      this.lastSleepProbe = { atMs: Date.now(), status, cmdId: opts?.cmdId ?? BC_CMD_ID_GET_BATTERY_INFO, channel: opts?.channel ?? 0 };
+      return status;
+    }
+    if (!this.loggedIn) {
+      const status: SleepStatus = { state: "unknown", reason: "not logged in" };
+      this.lastSleepProbe = { atMs: Date.now(), status, cmdId: opts?.cmdId ?? BC_CMD_ID_GET_BATTERY_INFO, channel: opts?.channel ?? 0 };
+      return status;
+    }
+
+    if (this.sleepProbeInFlight) {
+      return this.lastSleepProbe?.status ?? { state: "unknown", reason: "sleep probe in-flight" };
+    }
+
+    this.sleepProbeInFlight = true;
+    try {
+      const channel = opts?.channel ?? this.opts.channel ?? 0;
+      const cmdId = opts?.cmdId ?? BC_CMD_ID_GET_BATTERY_INFO;
+      const timeoutMs = opts?.timeoutMs ?? 700;
+
+      const frame = await this.sendFrame({ cmdId, channel, timeoutMs });
+      const status: SleepStatus = {
+        state: frame.header.responseCode === 200 ? "awake" : "unknown",
+        reason: `probe cmdId=${cmdId} responseCode=${frame.header.responseCode}`,
+      };
+
+      const atMs = Date.now();
+      if (frame.body.length > 0) {
+        const xml = this.tryDecryptXml(frame.body, frame.header.channelId, this.enc);
+        this.lastSleepProbe = { atMs, status, cmdId, channel, xml };
+      } else {
+        this.lastSleepProbe = { atMs, status, cmdId, channel };
+      }
+
+      return status;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const isTimeout = msg.includes("Baichuan timeout") || msg.toLowerCase().includes("timeout");
+      const cmdId = opts?.cmdId ?? BC_CMD_ID_GET_BATTERY_INFO;
+      const channel = opts?.channel ?? this.opts.channel ?? 0;
+      const timeoutMs = opts?.timeoutMs ?? 700;
+      const status: SleepStatus = isTimeout
+        ? { state: "sleeping", reason: `probe timeout cmdId=${cmdId} timeoutMs=${timeoutMs}` }
+        : { state: "unknown", reason: `probe error cmdId=${cmdId}: ${msg}` };
+      this.lastSleepProbe = { atMs: Date.now(), status, cmdId, channel };
+      return status;
+    } finally {
+      this.sleepProbeInFlight = false;
+    }
+  }
+
   /** Timestamp (ms) of the last received Baichuan frame, if any. */
   getLastRxAtMs(): number | undefined {
     return this.lastRxAtMs;
+  }
+
+  /** Timestamp (ms) when the camera sent BCUDP disconnect (D2C_DISC), if observed. */
+  getLastD2cDiscAtMs(): number | undefined {
+    return this.lastD2cDiscAtMs;
   }
 
   /** Metadata about the last received Baichuan frame, if any. */
@@ -209,7 +332,7 @@ export class BaichuanClient extends EventEmitter<{
       return this.tcpSocket !== undefined && !this.tcpSocket.destroyed;
     }
     if (this.transport === "udp") {
-      return this.udpSocket !== undefined;
+      return this.udpSocket !== undefined && this.udpSocket.isConnected();
     }
     return false;
   }
@@ -398,6 +521,7 @@ export class BaichuanClient extends EventEmitter<{
     });
     sock.on("close", () => {
       this.stopKeepAlive();
+      this.stopSleepProbeScheduler();
       this.socketClosed = true;
       this.emit("close");
       // Reject all pending promises asynchronously to allow catch handlers to be attached
@@ -428,8 +552,15 @@ export class BaichuanClient extends EventEmitter<{
 
   private async connectUdp(): Promise<void> {
     if (this.udpSocket) {
-      this.transport = "udp";
-      return;
+      // If the camera terminated the session (e.g. D2C_DISC), BcUdpStream closes its internal socket
+      // but this.udpSocket reference may still be set. Treat that as disconnected and rebuild.
+      if (this.udpSocket.isConnected()) {
+        this.transport = "udp";
+        return;
+      }
+      this.udpSocket = undefined;
+      this.loggedIn = false;
+      this.subscribed = false;
     }
     if (!this.opts.uid) {
       throw new Error("Baichuan UDP requested but `options.uid` is not set (required for BCUDP discovery).");
@@ -445,7 +576,12 @@ export class BaichuanClient extends EventEmitter<{
     });
     sock.on("close", () => {
       this.stopKeepAlive();
+      this.stopSleepProbeScheduler();
       this.socketClosed = true;
+      // Mark BCUDP socket as disconnected, so the next operation will reconnect.
+      if (this.udpSocket === sock) this.udpSocket = undefined;
+      this.loggedIn = false;
+      this.subscribed = false;
       this.emit("close");
       // Reject all pending promises asynchronously to allow catch handlers to be attached
       // This prevents unhandled rejections when the socket closes
@@ -463,7 +599,20 @@ export class BaichuanClient extends EventEmitter<{
         });
       }
     });
-    sock.on("error", (err) => this.emit("error", err));
+    sock.on("error", (err) => {
+      if (err?.message?.includes("D2C_DISC")) {
+        this.lastD2cDiscAtMs = Date.now();
+        // Treat as a strong signal that the camera intentionally closed the session.
+        // Also store a sleeping probe result for consumers that prefer cached probe state.
+        this.lastSleepProbe = {
+          atMs: this.lastD2cDiscAtMs,
+          status: { state: "sleeping", reason: "bcudp disconnect by camera (D2C_DISC)" },
+          cmdId: BC_CMD_ID_GET_BATTERY_INFO,
+          channel: this.opts.channel ?? 0,
+        };
+      }
+      this.emit("error", err);
+    });
     
     // Forward BcUdpStream debug events
     sock.on("debug", (event: string, data?: unknown) => {
@@ -472,10 +621,12 @@ export class BaichuanClient extends EventEmitter<{
 
     await sock.connect();
     this.startKeepAlive();
+    this.startSleepProbeScheduler();
   }
 
   async close(): Promise<void> {
     this.stopKeepAlive();
+    this.stopSleepProbeScheduler();
     const tcp = this.tcpSocket;
     this.tcpSocket = undefined;
     if (tcp) {
@@ -487,6 +638,36 @@ export class BaichuanClient extends EventEmitter<{
     const udp = this.udpSocket;
     this.udpSocket = undefined;
     if (udp) await udp.close();
+  }
+
+  private startSleepProbeScheduler(): void {
+    if (this.sleepProbeTimer) return;
+    if (this.transport !== "udp") return;
+    if (!this.isSocketConnected()) return;
+    if (!this.loggedIn) return;
+
+    this.sleepProbeTimer = setInterval(() => {
+      if (this.transport !== "udp") return;
+      if (!this.isSocketConnected()) return;
+      if (!this.loggedIn) return;
+      if (this.hasActiveVideoSubscriptionsInternal()) return;
+      if (this.pending.size > 0) return;
+      if (!this.isAckOnlyLowTraffic({ windowMs: 3000, requireRx: true })) return;
+
+      const minIntervalMs = 5000;
+      const lastAt = this.lastSleepProbe?.atMs;
+      if (lastAt != null && Date.now() - lastAt < minIntervalMs) return;
+
+      void this.probeSleepStatusOnce({ timeoutMs: 700, cmdId: BC_CMD_ID_GET_BATTERY_INFO });
+    }, 1000);
+    this.sleepProbeTimer.unref?.();
+  }
+
+  private stopSleepProbeScheduler(): void {
+    if (!this.sleepProbeTimer) return;
+    clearInterval(this.sleepProbeTimer);
+    this.sleepProbeTimer = undefined;
+    this.sleepProbeInFlight = false;
   }
 
   private handleFrame(frame: BaichuanFrame): void {
@@ -1141,12 +1322,14 @@ export class BaichuanClient extends EventEmitter<{
 
     const timeoutMs = params.timeoutMs ?? 10_000;
     let rejectFn: ((e: Error) => void) | undefined;
+    let timeoutHandle: NodeJS.Timeout | undefined;
     const framePromise = new Promise<BaichuanFrame>((resolve, reject) => {
       rejectFn = reject;
       const t = setTimeout(() => {
         this.pending.delete(pendingKey);
         reject(new Error(`Baichuan timeout cmdId=${cmdId} msgNum=${msgNum}`));
       }, timeoutMs);
+      timeoutHandle = t;
       this.pending.set(pendingKey, {
         resolve: (f) => {
           clearTimeout(t);
@@ -1178,7 +1361,14 @@ export class BaichuanClient extends EventEmitter<{
         `tx cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=${params.streamType ?? 0} class=0x${messageClass.toString(16)} bodyLen=${bodyLen} payloadOffset=${payloadOffset}`
       );
     }
-    this.writeWire(wire);
+    try {
+      this.writeWire(wire);
+    } catch (e) {
+      this.pending.delete(pendingKey);
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      const err = e instanceof Error ? e : new Error(String(e));
+      rejectFn?.(err);
+    }
 
     const frame = await framePromise;
     this.logDebug("rx", { cmdId: frame.header.cmdId, responseCode: frame.header.responseCode, msgNum: frame.header.msgNum });
