@@ -43,6 +43,10 @@ export interface ScryptedRfc4571TcpServerOptions {
 
   /** If true (default), closes the passed API when tearing down. */
   closeApiOnTeardown?: boolean;
+  username: string;
+  password: string;
+  /** If true, requires authentication before allowing stream access. Default: false. */
+  requireAuth?: boolean;
 }
 
 export interface ScryptedRfc4571TcpServer {
@@ -51,6 +55,8 @@ export interface ScryptedRfc4571TcpServer {
   sdp: string;
   videoType: VideoType;
   audio?: { codec: 'aac'; sampleRate: number; channels: number };
+  username: string;
+  password: string;
 
   server: net.Server;
   videoStream: BaichuanVideoStream;
@@ -74,6 +80,9 @@ export async function createScryptedRfc4571TcpServer(
     uptimeRestartMs = 10_000,
     idleTeardownMs = 2500,
     closeApiOnTeardown = true,
+    username,
+    password,
+    requireAuth = false,
   } = options;
 
   const logPrefix = `[native-rfc4571 ch=${channel} profile=${profile}]`;
@@ -388,29 +397,89 @@ export async function createScryptedRfc4571TcpServer(
 
   server.on('connection', (socket) => {
     touchActivity();
-    rfcClients++;
-    cancelIdleTeardown();
-
-    sockets.add(socket);
-
-    // Track RX from client (RTCP, keepalives, etc).
-    socket.on('data', () => touchActivity());
-
-    // Track TX to client by wrapping socket.write (used by muxer).
-    try {
-      const origWrite = socket.write.bind(socket) as any;
-      (socket as any).write = (...args: any[]) => {
-        touchActivity();
-        return origWrite(...args);
-      };
-    } catch {
-      // ignore
-    }
-
-    muxer.addClient(socket);
-
     const remote = `${socket.remoteAddress ?? 'unknown'}:${socket.remotePort ?? 'unknown'}`;
-    log(`client connected (remote=${remote} clients=${rfcClients})`);
+    log(`client connecting (remote=${remote} requireAuth=${requireAuth})`);
+
+    const setupClient = () => {
+      rfcClients++;
+      cancelIdleTeardown();
+      sockets.add(socket);
+
+      // Track RX from client (RTCP, keepalives, etc).
+      socket.on('data', () => touchActivity());
+
+      // Track TX to client by wrapping socket.write (used by muxer).
+      try {
+        const origWrite = socket.write.bind(socket) as any;
+        (socket as any).write = (...args: any[]) => {
+          touchActivity();
+          return origWrite(...args);
+        };
+      } catch {
+        // ignore
+      }
+
+      muxer.addClient(socket);
+      log(`client connected (remote=${remote} clients=${rfcClients})`);
+    };
+
+    if (!requireAuth) {
+      // No authentication required, setup client immediately
+      setupClient();
+    } else {
+      // Authentication required: expect "username:password\n" as first message
+      let authenticated = false;
+      let authBuffer = Buffer.alloc(0);
+      const authTimeout = setTimeout(() => {
+        if (!authenticated) {
+          log(`client authentication timeout (remote=${remote})`);
+          socket.destroy();
+        }
+      }, 5000); // 5 second timeout
+
+      const onData = (data: Buffer) => {
+        touchActivity();
+        
+        if (!authenticated) {
+          authBuffer = Buffer.concat([authBuffer, data]);
+          const authString = authBuffer.toString('utf8');
+          const authMatch = authString.match(/^([^:]+):([^\n]+)\n/);
+          
+          if (authMatch) {
+            const [, clientUsername, clientPassword] = authMatch;
+            if (clientUsername === username && clientPassword === password) {
+              authenticated = true;
+              clearTimeout(authTimeout);
+              setupClient();
+              
+              // Remove auth data from buffer and process remaining data
+              const authLineLength = authMatch[0].length;
+              const remainingData = authBuffer.subarray(authLineLength);
+              
+              // Replace data handler
+              socket.removeListener('data', onData);
+              socket.on('data', () => touchActivity());
+              
+              // Process remaining data if any
+              if (remainingData.length > 0) {
+                socket.emit('data', remainingData);
+              }
+            } else {
+              log(`client authentication failed (remote=${remote})`);
+              socket.destroy();
+              return;
+            }
+          } else if (authBuffer.length > 1024) {
+            // Prevent buffer overflow
+            log(`client authentication buffer overflow (remote=${remote})`);
+            socket.destroy();
+            return;
+          }
+        }
+      };
+
+      socket.on('data', onData);
+    }
 
     let counted = true;
     const dec = () => {
@@ -482,6 +551,8 @@ export async function createScryptedRfc4571TcpServer(
     sdp,
     videoType: keyframe.videoType,
     ...(audioInfo ? { audio: audioInfo } : {}),
+    username,
+    password,
     server,
     videoStream,
     close,
