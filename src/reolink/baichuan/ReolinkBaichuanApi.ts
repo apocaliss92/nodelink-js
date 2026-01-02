@@ -7,11 +7,13 @@ import {
   BC_CMD_ID_AUDIO_ALARM_PLAY,
   BC_CMD_ID_GET_AUDIO_ALARM,
   BC_CMD_ID_GET_BATTERY_INFO,
+  BC_CMD_ID_GET_BATTERY_INFO_LIST,
   BC_CMD_ID_GET_PIR_INFO,
   BC_CMD_ID_GET_PTZ_POSITION,
   BC_CMD_ID_GET_PTZ_PRESET,
   BC_CMD_ID_GET_WHITE_LED,
   BC_CMD_ID_GET_ZOOM_FOCUS,
+  BC_CMD_ID_FLOODLIGHT_STATUS_LIST,
   BC_CMD_ID_PTZ_CONTROL,
   BC_CMD_ID_PTZ_CONTROL_PRESET,
   BC_CMD_ID_SET_AI_ALARM,
@@ -25,6 +27,7 @@ import {
   BC_CMD_ID_TALK_ABILITY,
   BC_CMD_ID_TALK_CONFIG,
   BC_CMD_ID_TALK_RESET,
+  BC_CMD_ID_UDP_KEEP_ALIVE,
   BC_CMD_ID_VIDEO,
   BC_CMD_ID_VIDEO_STOP,
 } from "../../protocol/constants";
@@ -2065,81 +2068,78 @@ export class ReolinkBaichuanApi {
    * Best-effort sleeping inference for battery/BCUDP cameras.
    *
    * This method does NOT send any request to the camera.
-   * In practice (neolink-style), "sleeping" is inferred from the absence of inbound traffic / link health,
-   * because there is no universally reliable, purely passive protocol flag.
+   * Rule (per neolink): consider the camera sleeping if, in the last 10 seconds,
+   * we only received/sent Baichuan commands that are known to be non-waking.
    */
-  getSleepStatus(opts?: { idleMs?: number; channel?: number; ignoreCmdIds?: number[]; considerRecentTx?: boolean }): SleepStatus {
-    const idleMs = opts?.idleMs ?? 15_000;
-    const ignoreCmdIds = new Set<number>(opts?.ignoreCmdIds ?? [234]);
+  getSleepStatus(opts?: {
+    /** Window to inspect (ms). Default: 10_000. */
+    windowMs?: number;
+    /** Back-compat alias for `windowMs`. */
+    idleMs?: number;
+    channel?: number;
+    /** List of cmdIds that do NOT wake the camera. If omitted, uses neolink-derived defaults. */
+    nonWakingCmdIds?: number[];
+    /** Back-compat alias for `nonWakingCmdIds`. */
+    ignoreCmdIds?: number[];
+  }): SleepStatus {
+    const windowMs = opts?.windowMs ?? opts?.idleMs ?? 10_000;
+    const nonWakingCmdIds = new Set<number>(
+      opts?.nonWakingCmdIds ??
+        opts?.ignoreCmdIds ??
+        [BC_CMD_ID_UDP_KEEP_ALIVE, BC_CMD_ID_GET_BATTERY_INFO_LIST, BC_CMD_ID_GET_BATTERY_INFO, BC_CMD_ID_FLOODLIGHT_STATUS_LIST]
+    );
     const transport = this.client.getTransport?.();
     if (transport !== "udp") {
       return { state: "unknown", reason: "sleep inference supported only for UDP/battery" };
     }
 
     // If we are actively streaming, treat the device as awake.
-    // (Some stream paths may not generate frequent Baichuan RX traffic.)
-    if (this.activeVideoMsgNums.size > 0 || this.rtspServers.size > 0 || this.client.hasActiveVideoSubscriptions?.()) {
+    // This check lives in the client and includes cross-client streaming activity within the same process.
+    if (this.activeVideoMsgNums.size > 0 || this.rtspServers.size > 0 || this.client.isDeviceStreamingActive?.()) {
       return { state: "awake", reason: "active streaming" };
     }
 
-    if (!this.client.isSocketConnected()) {
-      return { state: "unknown", reason: "udp socket not connected" };
-    }
+    const socketConnected = this.client.isSocketConnected?.() ?? false;
 
-    // Optional: if enabled, refuse to infer sleep when we transmitted recently.
-    // NOTE: this can be too strict for BCUDP because replying to camera keepalives is also TX.
-    if (opts?.considerRecentTx) {
-      const lastTxAtMs = this.client.getLastTxAtMs?.();
-      if (lastTxAtMs != null) {
-        const txIdle = Date.now() - lastTxAtMs;
-        if (txIdle < idleMs) {
-          return {
-            state: "unknown",
-            reason: `recent client tx ${txIdle}ms ago (quiet window required)`,
-            idleMs: txIdle,
-          };
-        }
-      }
-    }
+    const now = Date.now();
+    const cutoff = now - windowMs;
 
-    const history = this.client.getRxHistory?.() ?? [];
-    let lastActivity = undefined as (typeof history)[number] | undefined;
-    for (let i = history.length - 1; i >= 0; i--) {
-      const h = history[i];
-      if (!h) continue;
-      if (ignoreCmdIds.has(h.cmdId)) continue;
-      lastActivity = h;
-      break;
-    }
+    const rx = (this.client.getRxHistory?.() ?? []).filter((h) => h.atMs >= cutoff);
+    const tx = (this.client.getTxHistory?.() ?? []).filter((h) => h.atMs >= cutoff);
 
-    const lastRx = this.client.getLastRxInfo?.();
-    const lastRxDetails = lastRx ? ` (lastRx cmdId=${lastRx.cmdId} responseCode=${lastRx.responseCode})` : "";
-    const ignoredList = ignoreCmdIds.size ? ` (ignoring cmdId: ${Array.from(ignoreCmdIds).join(",")})` : "";
-
-    if (!lastActivity) {
-      const lastRxAtMs = this.client.getLastRxAtMs?.();
+    // If we've had absolutely no activity in the window, treat as sleeping (best-effort).
+    // This matches the intent: no waking commands observed recently.
+    if (rx.length === 0 && tx.length === 0) {
       return {
-        state: "unknown",
-        reason: `no non-ignored inbound activity observed yet${ignoredList}${lastRxDetails}`,
-        ...(lastRxAtMs != null ? { lastRxAtMs } : {}),
+        state: "sleeping",
+        reason: `no rx/tx activity in last ${windowMs}ms${socketConnected ? "" : " (socket disconnected)"}`,
+        idleMs: windowMs,
       };
     }
 
-    const idle = Date.now() - lastActivity.atMs;
-    if (idle >= idleMs) {
+    const firstWakingRx = rx.find((h) => !nonWakingCmdIds.has(h.cmdId));
+    if (firstWakingRx) {
       return {
-        state: "sleeping",
-        reason: `no non-ignored inbound activity for ${idle}ms (lastActivity cmdId=${lastActivity.cmdId} responseCode=${lastActivity.responseCode})${ignoredList}${lastRxDetails}`,
-        lastRxAtMs: lastActivity.atMs,
-        idleMs: idle,
+        state: "awake",
+        reason: `waking rx cmdId=${firstWakingRx.cmdId} responseCode=${firstWakingRx.responseCode} seen ${now - firstWakingRx.atMs}ms ago`,
+        lastRxAtMs: firstWakingRx.atMs,
+        idleMs: now - firstWakingRx.atMs,
+      };
+    }
+
+    const firstWakingTx = tx.find((h) => !nonWakingCmdIds.has(h.cmdId));
+    if (firstWakingTx) {
+      return {
+        state: "awake",
+        reason: `waking tx cmdId=${firstWakingTx.cmdId} seen ${now - firstWakingTx.atMs}ms ago`,
+        idleMs: now - firstWakingTx.atMs,
       };
     }
 
     return {
-      state: "awake",
-      reason: `non-ignored inbound activity ${idle}ms ago (lastActivity cmdId=${lastActivity.cmdId} responseCode=${lastActivity.responseCode})${ignoredList}${lastRxDetails}`,
-      lastRxAtMs: lastActivity.atMs,
-      idleMs: idle,
+      state: "sleeping",
+      reason: `only non-waking cmdIds observed in last ${windowMs}ms (non-waking: ${Array.from(nonWakingCmdIds).join(",")})`,
+      idleMs: windowMs,
     };
   }
 
@@ -2171,7 +2171,8 @@ export class ReolinkBaichuanApi {
     }
 
     // If we are actively streaming, treat the device as awake.
-    if (this.activeVideoMsgNums.size > 0 || this.rtspServers.size > 0 || this.client.hasActiveVideoSubscriptions?.()) {
+    // This check lives in the client and includes cross-client streaming activity within the same process.
+    if (this.activeVideoMsgNums.size > 0 || this.rtspServers.size > 0 || this.client.isDeviceStreamingActive?.()) {
       return { state: "awake", reason: "active streaming" };
     }
 
@@ -2301,7 +2302,19 @@ export class ReolinkBaichuanApi {
    */
   async getBatteryInfo(channel?: number): Promise<BatteryInfo> {
     const ch = this.normalizeChannel(channel);
-    const xml = await this.sendXml({ cmdId: BC_CMD_ID_GET_BATTERY_INFO, channel: ch });
+
+    // IMPORTANT (battery/BCUDP): avoid forcing a reconnect/login just to fetch battery info.
+    // Many battery cameras will deliberately drop the BCUDP session when sleeping (D2C_DISC).
+    // If we auto-login here, the periodic poller will keep waking the camera.
+    const transport = this.client.getTransport?.();
+    if (transport === "udp") {
+      if (!this.client.isSocketConnected?.() || !this.client.loggedIn) {
+        return { channel: ch, sleeping: true };
+      }
+    }
+
+    // Use the raw client call to avoid `ReolinkBaichuanApi.sendXml` auto-login + 400-empty-body relogin loop.
+    const xml = await this.client.sendXml({ cmdId: BC_CMD_ID_GET_BATTERY_INFO, channel: ch });
 
     const result: BatteryInfo = {
       channel: ch,

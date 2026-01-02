@@ -84,6 +84,8 @@ export const BC_CMD_ID_AUDIO_ALARM_PLAY = 263; // MSG_ID_PLAY_AUDIO - Play siren
 export const BC_CMD_ID_GET_WHITE_LED = 289; // GetWhiteLed/Floodlight - Get floodlight state
 export const BC_CMD_ID_SET_WHITE_LED_STATE = 288; // SetWhiteLed state
 export const BC_CMD_ID_SET_WHITE_LED_TASK = 290; // SetWhiteLed task (brightness, mode, etc.)
+// Floodlight status report pushed by camera (from neolink model.rs)
+export const BC_CMD_ID_FLOODLIGHT_STATUS_LIST = 291; // MSG_ID_FLOODLIGHT_STATUS_LIST
 
 // Ability Info command ID
 export const BC_CMD_ID_ABILITY_INFO = 151; // MSG_ID_ABILITY_INFO - Get device capabilities/abilities

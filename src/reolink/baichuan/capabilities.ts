@@ -214,7 +214,16 @@ export function computeDeviceCapabilities(params: {
   const hasPanTiltFromAbilities = abilitiesHasAny(flat, /ptz/i);
   const hasZoomFromAbilities = abilitiesHasAny(flat, /zoom|zoomFocus|StartZoomFocus/i);
   const hasPresetsFromAbilities = abilitiesHasAny(flat, /preset/i);
-  const hasPirFromAbilities = abilitiesHasAny(flat, /(^|_)pir/i);
+  // PIR detection is inconsistently advertised across firmwares.
+  // Observed signals:
+  // - explicit pir_* abilities
+  // - rfAlarm_* host ability (common on battery cams; "rf" ~ PIR/radio sensor config)
+  // - mdWithPir version flag (seen in other SDKs)
+  const hasPirFromAbilities =
+    abilitiesHasAny(flat, /(^|_)pir/i) || abilitiesHasAny(flat, /rfAlarm/i) || abilitiesHasAny(flat, /mdWithPir/i);
+
+  // Some firmwares expose rfCfg in SupportInfo items; treat it as a hint for PIR support.
+  const hasPirFromSupport = supportItem ? isTruthyNumberLike((supportItem as any).rfCfg) : false;
 
   const hasPan = hasPanTiltFromSupport || hasPanTiltFromAbilities;
   const hasTilt = hasPanTiltFromSupport || hasPanTiltFromAbilities;
@@ -237,7 +246,7 @@ export function computeDeviceCapabilities(params: {
     hasIntercom: hasIntercomFromSupport,
     hasSiren: hasSirenFromAbilities,
     hasFloodlight: Number.isFinite(lightType as number) ? (lightType as number) > 0 : hasFloodlightFromAbilities,
-    hasPir: hasPirFromAbilities,
+    hasPir: hasPirFromAbilities || hasPirFromSupport,
     isDoorbell: isDoorbellFromSupport,
   };
 

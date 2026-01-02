@@ -75,6 +75,7 @@
     "test:tcp:ai-265": "npm run test:build && node dist/test/tcp/test-tcp-ai-capabilities-265.js",
     "test:tcp:battery-sleep-wake": "npm run test:build && node dist/test/tcp/test-tcp-battery-sleep-wake.js",
     "test:udp": "npm run test:build && node dist/test/udp/test-udp.js",
+    "test:udp:sleep-battery": "npm run test:build && node dist/test/udp/test-udp-sleep-battery.js",
     "test:udp:uptime": "npm run test:build && node dist/test/udp/test-udp-stream-uptime.js",
     "test:udp:record": "npm run test:build && node dist/test/udp/test-udp-video-stream-record.js",
     "test:streams": "npm run test:build && node dist/test/streams/test-streams.js",

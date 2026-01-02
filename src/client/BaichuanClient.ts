@@ -1,23 +1,22 @@
 import { EventEmitter } from "node:events";
 import net from "node:net";
+import { BcUdpStream } from "../bcudp/BcUdpStream";
+import { eventTraceLog, normalizeDebugOptions, talkTraceLog, traceLog, type DebugConfig, type DebugOptions, type Logger } from "../debug/DebugConfig";
 import {
-  BC_TCP_DEFAULT_PORT,
   BC_CLASS_LEGACY,
   BC_CLASS_MODERN_24,
-  BC_CLASS_MODERN_24_ALT,
-  BC_CMD_ID_UDP_KEEP_ALIVE,
   BC_CMD_ID_PING,
-  BC_CMD_ID_TALK_ABILITY,
-  BC_CMD_ID_TALK_RESET,
-  BC_CMD_ID_TALK_CONFIG,
   BC_CMD_ID_TALK,
+  BC_CMD_ID_TALK_ABILITY,
+  BC_CMD_ID_TALK_CONFIG,
+  BC_CMD_ID_TALK_RESET,
+  BC_CMD_ID_UDP_KEEP_ALIVE,
+  BC_TCP_DEFAULT_PORT
 } from "../protocol/constants";
 import { aesDecrypt, aesEncrypt, bcDecrypt, bcEncrypt, deriveAesKey, md5StrModern, type EncryptionProtocol } from "../protocol/crypto";
 import { BaichuanFrameParser, encodeHeader, type BaichuanFrame } from "../protocol/framing";
 import { buildBinaryExtensionXml, buildChannelExtensionXml, buildLoginXml, getXmlText } from "../protocol/xml";
-import { BcUdpStream } from "../bcudp/BcUdpStream";
 import type { ReolinkEvent } from "../reolink/baichuan/types";
-import { eventTraceLog, normalizeDebugOptions, traceLog, talkTraceLog, type DebugOptions, type DebugConfig, type Logger } from "../debug/DebugConfig";
 export type { Logger };
 
 function isTalkCmd(cmdId: number): boolean {
@@ -63,6 +62,17 @@ export class BaichuanClient extends EventEmitter<{
   debug: [string, unknown?];
   event: [ReolinkEvent]; // Parsed events (motion/AI)
 }> {
+  /**
+   * Process-wide streaming activity registry.
+   *
+   * Why this exists:
+   * - Consumers (e.g. Scrypted) may create multiple BaichuanClient instances per device:
+   *   one for control/polling and one for streaming.
+   * - Passive sleep inference should treat the device as awake while ANY client is actively streaming,
+   *   even if the current client instance is idle/disconnected.
+   */
+  private static readonly streamingRegistry = new Map<string, { activeStreamClients: number }>();
+
   private readonly opts: BaichuanClientOptions;
   private readonly debugCfg: DebugConfig;
   private readonly logger: Logger;
@@ -94,8 +104,29 @@ export class BaichuanClient extends EventEmitter<{
       }
     | undefined;
 
+  private lastTxInfo:
+    | {
+        atMs: number;
+        cmdId: number;
+        responseCode: number;
+        msgNum: number;
+        channelId: number;
+        streamType: number;
+      }
+    | undefined;
+
   // Ring-buffer of the last received frames (metadata only). Used for sleep inference heuristics.
   private readonly rxHistory: Array<{
+    atMs: number;
+    cmdId: number;
+    responseCode: number;
+    msgNum: number;
+    channelId: number;
+    streamType: number;
+  }> = [];
+
+  // Ring-buffer of the last transmitted frames (metadata only). Used for sleep inference heuristics.
+  private readonly txHistory: Array<{
     atMs: number;
     cmdId: number;
     responseCode: number;
@@ -111,6 +142,9 @@ export class BaichuanClient extends EventEmitter<{
   // Similar to neolink's connection.subscribe(MSG_ID_VIDEO, msg_num)
   private videoSubscriptions = new Map<number, Set<number>>();
 
+  // Tracks whether THIS client currently contributes to the global streaming registry.
+  private contributesToGlobalStreamingRegistry = false;
+
   // Throttled per-stream frame tracing (rx cmd_id=3 stream frames can be extremely chatty).
   private streamTraceStats = new Map<number, { lastLogMs: number; frames: number }>();
 
@@ -120,6 +154,38 @@ export class BaichuanClient extends EventEmitter<{
     this.logger = options.logger ?? console;
     // Back-compat: `debug: true` enables generic debug logs.
     this.debugCfg = normalizeDebugOptions({ ...(options.debug ? { enabled: true } : {}), ...(options.debugOptions ?? {}) });
+  }
+
+  private getDeviceRegistryKey(): string {
+    // Prefer UID when available (BCUDP/battery), but still include host as a safety net.
+    const uid = (this.opts.uid ?? "").trim().toUpperCase();
+    const host = (this.opts.host ?? "").trim();
+    const channel = this.opts.channel ?? 0;
+    return `${host}|${uid}|${channel}`;
+  }
+
+  private recomputeGlobalStreamingContribution(): void {
+    const shouldContribute = this.hasActiveVideoSubscriptionsInternal();
+    if (shouldContribute === this.contributesToGlobalStreamingRegistry) return;
+
+    const key = this.getDeviceRegistryKey();
+    const cur = BaichuanClient.streamingRegistry.get(key) ?? { activeStreamClients: 0 };
+    const nextCount = Math.max(0, cur.activeStreamClients + (shouldContribute ? 1 : -1));
+    if (nextCount === 0) BaichuanClient.streamingRegistry.delete(key);
+    else BaichuanClient.streamingRegistry.set(key, { activeStreamClients: nextCount });
+
+    this.contributesToGlobalStreamingRegistry = shouldContribute;
+  }
+
+  /**
+   * True if the device should be considered "awake" due to active streaming.
+   * This includes streaming on other BaichuanClient instances within the same process.
+   */
+  isDeviceStreamingActive(): boolean {
+    if (this.hasActiveVideoSubscriptionsInternal()) return true;
+    const key = this.getDeviceRegistryKey();
+    const cur = BaichuanClient.streamingRegistry.get(key);
+    return (cur?.activeStreamClients ?? 0) > 0;
   }
 
   private logDebug(event: string, data?: unknown): void {
@@ -181,6 +247,46 @@ export class BaichuanClient extends EventEmitter<{
     return this.lastTxAtMs;
   }
 
+  /** Metadata about the last transmitted Baichuan frame, if any. */
+  getLastTxInfo():
+    | {
+        atMs: number;
+        cmdId: number;
+        responseCode: number;
+        msgNum: number;
+        channelId: number;
+        streamType: number;
+      }
+    | undefined {
+    return this.lastTxInfo;
+  }
+
+  /** Recent TX frame metadata (newest last). */
+  getTxHistory(): ReadonlyArray<{
+    atMs: number;
+    cmdId: number;
+    responseCode: number;
+    msgNum: number;
+    channelId: number;
+    streamType: number;
+  }> {
+    return this.txHistory;
+  }
+
+  private recordTx(info: {
+    cmdId: number;
+    responseCode: number;
+    msgNum: number;
+    channelId: number;
+    streamType: number;
+  }): void {
+    const now = Date.now();
+    this.lastTxAtMs = now;
+    this.lastTxInfo = { atMs: now, ...info };
+    this.txHistory.push(this.lastTxInfo);
+    if (this.txHistory.length > 32) this.txHistory.shift();
+  }
+
   /**
    * Best-effort sleep heuristic for battery/BCUDP cameras.
    *
@@ -209,7 +315,7 @@ export class BaichuanClient extends EventEmitter<{
       return this.tcpSocket !== undefined && !this.tcpSocket.destroyed;
     }
     if (this.transport === "udp") {
-      return this.udpSocket !== undefined;
+      return this.udpSocket !== undefined && (this.udpSocket.isConnected?.() ?? true);
     }
     return false;
   }
@@ -307,6 +413,7 @@ export class BaichuanClient extends EventEmitter<{
     });
 
     this.logDebug("udp_keepalive_ping_tx", { msgNum, channelId: 0, streamType: 0 });
+    this.recordTx({ cmdId: BC_CMD_ID_UDP_KEEP_ALIVE, responseCode: 0, msgNum, channelId: 0, streamType: 0 });
     this.writeWire(header);
   }
 
@@ -428,8 +535,18 @@ export class BaichuanClient extends EventEmitter<{
 
   private async connectUdp(): Promise<void> {
     if (this.udpSocket) {
-      this.transport = "udp";
-      return;
+      // If the stream object exists but the underlying socket/remote is gone (e.g. after D2C_DISC),
+      // drop it so we can create a fresh connection.
+      if (this.udpSocket.isConnected?.()) {
+        this.transport = "udp";
+        return;
+      }
+      try {
+        await this.udpSocket.close();
+      } catch {
+        // ignore
+      }
+      this.udpSocket = undefined;
     }
     if (!this.opts.uid) {
       throw new Error("Baichuan UDP requested but `options.uid` is not set (required for BCUDP discovery).");
@@ -446,6 +563,16 @@ export class BaichuanClient extends EventEmitter<{
     sock.on("close", () => {
       this.stopKeepAlive();
       this.socketClosed = true;
+      // Mark session state as invalid; a new connect/login is required.
+      this.loggedIn = false;
+      this.subscribed = false;
+      // If this client was contributing streaming state, clear it.
+      if (this.contributesToGlobalStreamingRegistry) {
+        this.videoSubscriptions.clear();
+        this.recomputeGlobalStreamingContribution();
+      }
+      // Drop the UDP stream so subsequent operations recreate it.
+      if (this.udpSocket === sock) this.udpSocket = undefined;
       this.emit("close");
       // Reject all pending promises asynchronously to allow catch handlers to be attached
       // This prevents unhandled rejections when the socket closes
@@ -463,7 +590,21 @@ export class BaichuanClient extends EventEmitter<{
         });
       }
     });
-    sock.on("error", (err) => this.emit("error", err));
+    sock.on("error", (err) => {
+      // If the camera terminates the BCUDP session (D2C_DISC), the stream will close.
+      // Make sure we don't keep a stale handle around.
+      if (err?.message?.includes("D2C_DISC")) {
+        this.stopKeepAlive();
+        this.loggedIn = false;
+        this.subscribed = false;
+        // Camera terminated the session; clear streaming contribution for this client.
+        if (this.contributesToGlobalStreamingRegistry) {
+          this.videoSubscriptions.clear();
+          this.recomputeGlobalStreamingContribution();
+        }
+      }
+      this.emit("error", err);
+    });
     
     // Forward BcUdpStream debug events
     sock.on("debug", (event: string, data?: unknown) => {
@@ -476,6 +617,13 @@ export class BaichuanClient extends EventEmitter<{
 
   async close(): Promise<void> {
     this.stopKeepAlive();
+
+    // Ensure we drop any global streaming contribution before tearing down sockets.
+    if (this.contributesToGlobalStreamingRegistry) {
+      this.videoSubscriptions.clear();
+      this.recomputeGlobalStreamingContribution();
+    }
+
     const tcp = this.tcpSocket;
     this.tcpSocket = undefined;
     if (tcp) {
@@ -523,6 +671,13 @@ export class BaichuanClient extends EventEmitter<{
           });
 
           this.logDebug("udp_keepalive_rx", { msgNum: frame.header.msgNum, channelId: frame.header.channelId, streamType: frame.header.streamType });
+          this.recordTx({
+            cmdId: frame.header.cmdId,
+            responseCode: 200,
+            msgNum: frame.header.msgNum,
+            channelId: frame.header.channelId,
+            streamType: frame.header.streamType,
+          });
           this.writeWire(header);
           this.logDebug("udp_keepalive_tx", { msgNum: frame.header.msgNum, channelId: frame.header.channelId, streamType: frame.header.streamType });
         } catch (e) {
@@ -627,6 +782,9 @@ export class BaichuanClient extends EventEmitter<{
 
     // Streaming requires keeping the BCUDP session alive.
     if (this.transport === "udp") this.refreshKeepAlive();
+
+    // Keep global streaming registry in sync.
+    this.recomputeGlobalStreamingContribution();
   }
 
   /**
@@ -651,6 +809,9 @@ export class BaichuanClient extends EventEmitter<{
     }
 
     if (this.transport === "udp") this.refreshKeepAlive();
+
+    // Keep global streaming registry in sync.
+    this.recomputeGlobalStreamingContribution();
   }
 
   /**
@@ -936,6 +1097,7 @@ export class BaichuanClient extends EventEmitter<{
         `tx cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=${params.streamType ?? 0} class=0x${messageClass.toString(16)} bodyLen=${bodyLen} payloadOffset=${payloadOffset} binaryPayloadLen=${params.payload.length}`
       );
     }
+    this.recordTx({ cmdId, responseCode: 0, msgNum, channelId, streamType: params.streamType ?? 0 });
     this.writeWire(wire);
   }
 
@@ -1053,6 +1215,7 @@ export class BaichuanClient extends EventEmitter<{
         `tx cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=${params.streamType ?? 0} class=0x${messageClass.toString(16)} bodyLen=${bodyLen} payloadOffset=${payloadOffset}`
       );
     }
+    this.recordTx({ cmdId, responseCode: 0, msgNum, channelId, streamType: params.streamType ?? 0 });
     this.writeWire(wire);
 
     const frame = await framePromise;
@@ -1178,6 +1341,7 @@ export class BaichuanClient extends EventEmitter<{
         `tx cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=${params.streamType ?? 0} class=0x${messageClass.toString(16)} bodyLen=${bodyLen} payloadOffset=${payloadOffset}`
       );
     }
+    this.recordTx({ cmdId, responseCode: 0, msgNum, channelId, streamType: params.streamType ?? 0 });
     this.writeWire(wire);
 
     const frame = await framePromise;
@@ -1279,6 +1443,7 @@ export class BaichuanClient extends EventEmitter<{
     });
 
     this.logDebug("tx", { cmdId, msgNum, channelId, messageClass, bodyLen, binary: true });
+    this.recordTx({ cmdId, responseCode: 0, msgNum, channelId, streamType: 0 });
     this.writeWire(wire);
 
     const frame = await framePromise;
@@ -1461,6 +1626,7 @@ export class BaichuanClient extends EventEmitter<{
 
       try {
         this.logDebug("tx", { cmdId, msgNum, channelId, messageClass, bodyLen, binary: true, snapshot: true });
+        this.recordTx({ cmdId, responseCode: 0, msgNum, channelId, streamType: params.streamType ?? 0 });
         this.writeWire(wire);
       } catch (e) {
         fail(e);
