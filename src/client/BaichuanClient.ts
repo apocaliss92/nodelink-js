@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import net from "node:net";
 import { BcUdpStream } from "../bcudp/BcUdpStream";
-import { eventTraceLog, normalizeDebugOptions, talkTraceLog, traceLog, type DebugConfig, type DebugOptions, type Logger } from "../debug/DebugConfig";
+import { debugLog, eventTraceLog, normalizeDebugOptions, talkTraceLog, traceLog, type DebugConfig, type DebugOptions, type Logger } from "../debug/DebugConfig";
 import {
   BC_CLASS_LEGACY,
   BC_CLASS_MODERN_24,
@@ -148,6 +148,9 @@ export class BaichuanClient extends EventEmitter<{
   // Throttled per-stream frame tracing (rx cmd_id=3 stream frames can be extremely chatty).
   private streamTraceStats = new Map<number, { lastLogMs: number; frames: number }>();
 
+  // Throttled global RX cmd tracing (useful to debug missing pushes/events).
+  private rxCmdTraceStats = new Map<number, { lastLogMs: number; frames: number }>();
+
   constructor(options: BaichuanClientOptions) {
     super();
     this.opts = options;
@@ -189,7 +192,8 @@ export class BaichuanClient extends EventEmitter<{
   }
 
   private logDebug(event: string, data?: unknown): void {
-    if (this.opts.debug) {
+    // Treat `debugOptions.enabled` as a superset of the legacy `debug: true`.
+    if (this.opts.debug || this.debugCfg.enabled) {
       this.logger.debug(`[BaichuanClient] ${event}`, data);
       this.emit("debug", event, data);
     }
@@ -197,6 +201,10 @@ export class BaichuanClient extends EventEmitter<{
 
   getTransport(): "tcp" | "udp" {
     return this.transport;
+  }
+  
+  getConfiguredChannel(): number {
+    return this.opts.channel ?? 0;
   }
 
   /**
@@ -390,7 +398,6 @@ export class BaichuanClient extends EventEmitter<{
     // Neolink-style default: do NOT send periodic keepalive just because we're subscribed.
     // Battery cameras should be allowed to sleep; we still reply to camera-initiated keepalive frames.
     if (this.hasActiveVideoSubscriptionsInternal()) return true;
-
     return false;
   }
 
@@ -652,42 +659,66 @@ export class BaichuanClient extends EventEmitter<{
     this.rxHistory.push(this.lastRxInfo);
     if (this.rxHistory.length > 32) this.rxHistory.shift();
 
-    // Battery cameras (BCUDP) expect the client to respond to UDP keep-alive frames.
-    // Neolink handles this by replying with response_code=200 using the same msg_num/channel_id/stream_type.
-    // If we don't, the camera can stop sending stream data after a couple seconds.
-    if (this.transport === "udp" && frame.header.cmdId === BC_CMD_ID_UDP_KEEP_ALIVE) {
-      // Only respond to requests (responseCode typically 0). If we ever see a 200 here, it's already a response.
-      if (frame.header.responseCode !== 200) {
-        try {
-          const header = encodeHeader({
-            cmdId: frame.header.cmdId,
-            bodyLen: 0,
-            channelId: frame.header.channelId,
-            streamType: frame.header.streamType,
-            msgNum: frame.header.msgNum,
-            responseCode: 200,
-            messageClass: frame.header.messageClass,
-            payloadOffset: 0,
-          });
-
-          this.logDebug("udp_keepalive_rx", { msgNum: frame.header.msgNum, channelId: frame.header.channelId, streamType: frame.header.streamType });
-          this.recordTx({
-            cmdId: frame.header.cmdId,
-            responseCode: 200,
-            msgNum: frame.header.msgNum,
-            channelId: frame.header.channelId,
-            streamType: frame.header.streamType,
-          });
-          this.writeWire(header);
-          this.logDebug("udp_keepalive_tx", { msgNum: frame.header.msgNum, channelId: frame.header.channelId, streamType: frame.header.streamType });
-        } catch (e) {
-          // Keepalive failures shouldn't crash the client; log when debug is enabled.
-          this.logDebug("udp_keepalive_error", e);
+    // Temporary global RX logging: show every received cmdId.
+    // Throttle cmdId=3 (stream) to avoid flooding logs.
+    if (this.debugCfg.enabled) {
+      if (frame.header.cmdId === 3) {
+        const s = this.rxCmdTraceStats.get(3) ?? { lastLogMs: now, frames: 0 };
+        s.frames++;
+        if (now - s.lastLogMs >= 1000) {
+          debugLog(
+            this.debugCfg,
+            this.logger,
+            "BaichuanRx",
+            `rx cmdId=3 frames=${s.frames} lastMsgNum=${frame.header.msgNum} lastResponseCode=${frame.header.responseCode} lastChannelId=${frame.header.channelId} lastStreamType=${frame.header.streamType} lastBodyLen=${frame.body.length} lastPayloadLen=${frame.payload.length}`
+          );
+          s.lastLogMs = now;
+          s.frames = 0;
         }
-        // We handled the request, so we're done with this frame.
-        return;
+        this.rxCmdTraceStats.set(3, s);
+      } else {
+        debugLog(
+          this.debugCfg,
+          this.logger,
+          "BaichuanRx",
+          `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} streamType=${frame.header.streamType} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`
+        );
       }
-      // If responseCode === 200, it's a response to OUR ping. Fall through to pending resolution.
+    }
+
+    // Battery cameras (BCUDP) expect the client to respond to UDP keep-alive frames.
+    // Neolink always replies with response_code=200 using the same msg_num/channel_id/stream_type
+    // and does not special-case the incoming response_code.
+    // Some firmwares send these with response_code=200 already; we still reply to keep the session alive.
+    if (this.transport === "udp" && frame.header.cmdId === BC_CMD_ID_UDP_KEEP_ALIVE) {
+      try {
+        const header = encodeHeader({
+          cmdId: frame.header.cmdId,
+          bodyLen: 0,
+          channelId: frame.header.channelId,
+          streamType: frame.header.streamType,
+          msgNum: frame.header.msgNum,
+          responseCode: 200,
+          messageClass: frame.header.messageClass,
+          payloadOffset: 0,
+        });
+
+        this.logDebug("udp_keepalive_rx", { msgNum: frame.header.msgNum, channelId: frame.header.channelId, streamType: frame.header.streamType, responseCode: frame.header.responseCode });
+        this.recordTx({
+          cmdId: frame.header.cmdId,
+          responseCode: 200,
+          msgNum: frame.header.msgNum,
+          channelId: frame.header.channelId,
+          streamType: frame.header.streamType,
+        });
+        this.writeWire(header);
+        this.logDebug("udp_keepalive_tx", { msgNum: frame.header.msgNum, channelId: frame.header.channelId, streamType: frame.header.streamType });
+      } catch (e) {
+        // Keepalive failures shouldn't crash the client; log when debug is enabled.
+        this.logDebug("udp_keepalive_error", e);
+      }
+      // Keepalive frames are handled here.
+      return;
     }
 
     if (this.debugCfg.traceTalk && isTalkCmd(frame.header.cmdId)) {
@@ -826,6 +857,16 @@ export class BaichuanClient extends EventEmitter<{
     const xml = this.tryDecryptXml(body, frame.header.channelId, this.enc);
     if (!xml || !xml.startsWith("<?xml")) return [];
 
+    if (this.debugCfg.traceEvents) {
+      const snippet = xml.length > 500 ? `${xml.slice(0, 500)}...` : xml;
+      eventTraceLog(
+        this.debugCfg,
+        this.logger,
+        "BaichuanEventRaw",
+        `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} xml=${JSON.stringify(snippet)}`
+      );
+    }
+
     // Default channel from frame header (channelId 250 = host, 1+ = channels)
     const fallbackChannelId = frame.header.channelId;
     const fallbackChannel = fallbackChannelId === 250 ? 0 : Math.max(0, fallbackChannelId - 1);
@@ -846,24 +887,30 @@ export class BaichuanClient extends EventEmitter<{
         // Some firmwares may attach AI type in different tag names.
         const aiTypeRaw = (getXmlText(alarmXml, "AItype") ?? getXmlText(alarmXml, "aiType") ?? getXmlText(alarmXml, "aitype") ?? "").trim();
 
+        if (this.debugCfg.traceEvents) {
+          eventTraceLog(
+            this.debugCfg,
+            this.logger,
+            "BaichuanEventRaw",
+            `AlarmEvent channel=${channel} status=${JSON.stringify(status)} aiType=${JSON.stringify(aiTypeRaw)}`
+          );
+        }
+
         // Unlike older implementations, a single AlarmEvent may encode multiple independent states
         // (e.g. motion + ai + visitor). Emit all applicable events.
 
-        // Motion (MD) OR PIR should both map to motion for consumers like Scrypted.
-        if (statusUpper.includes("MD")) {
+        // Motion inference (neolink): treat as motion start when status != "none" OR aiType != "none".
+        // Battery cams often use status "other" for PIR-based motion.
+        const statusLower = status.toLowerCase();
+        const statusIndicatesMotion = statusLower.length > 0 && statusLower !== "none";
+        const aiTypeIndicatesMotion = aiTypeRaw.trim().length > 0 && aiTypeRaw.trim().toLowerCase() !== "none";
+        if (statusIndicatesMotion || aiTypeIndicatesMotion) {
+          const source =
+            statusUpper.includes("MD") ? "md" : statusUpper.includes("PIR") || statusUpper.includes("OTHER") ? "pir" : "unknown";
           out.push({
             channel,
             type: "motion",
-            motion: { channel, state: true, timestamp: now, source: "md" },
-            timestamp: now,
-          });
-        }
-
-        if (statusUpper.includes("PIR")) {
-          out.push({
-            channel,
-            type: "motion",
-            motion: { channel, state: true, timestamp: now, source: "pir" },
+            motion: { channel, state: true, timestamp: now, source },
             timestamp: now,
           });
         }
@@ -875,10 +922,17 @@ export class BaichuanClient extends EventEmitter<{
               .find((t) => t.length > 0 && t.toLowerCase() !== "none")
           : undefined;
         if (aiTypeToken) {
+          const t = aiTypeToken.toLowerCase();
           const aiTypeMap: Record<string, "people" | "vehicle" | "dog_cat" | "face" | "package" | "other"> = {
             people: "people",
+            person: "people",
+            human: "people",
             vehicle: "vehicle",
+            car: "vehicle",
             dog_cat: "dog_cat",
+            dog: "dog_cat",
+            cat: "dog_cat",
+            pet: "dog_cat",
             face: "face",
             package: "package",
           };
@@ -887,7 +941,7 @@ export class BaichuanClient extends EventEmitter<{
             type: "ai",
             ai: {
               channel,
-              type: aiTypeMap[aiTypeToken.toLowerCase()] ?? "other",
+              type: aiTypeMap[t] ?? "other",
               detected: true,
               timestamp: now,
             },
@@ -926,20 +980,15 @@ export class BaichuanClient extends EventEmitter<{
 
     const out: ReolinkEvent[] = [];
 
-    if (statusUpper.includes("MD")) {
+    const statusLower = status.toLowerCase();
+    const statusIndicatesMotion = statusLower.length > 0 && statusLower !== "none";
+    const aiTypeIndicatesMotion = aiTypeRaw.trim().length > 0 && aiTypeRaw.trim().toLowerCase() !== "none";
+    if (statusIndicatesMotion || aiTypeIndicatesMotion) {
+      const source = statusUpper.includes("MD") ? "md" : statusUpper.includes("PIR") || statusUpper.includes("OTHER") ? "pir" : "unknown";
       out.push({
         channel: fallbackChannel,
         type: "motion",
-        motion: { channel: fallbackChannel, state: true, timestamp: now, source: "md" },
-        timestamp: now,
-      });
-    }
-
-    if (statusUpper.includes("PIR")) {
-      out.push({
-        channel: fallbackChannel,
-        type: "motion",
-        motion: { channel: fallbackChannel, state: true, timestamp: now, source: "pir" },
+        motion: { channel: fallbackChannel, state: true, timestamp: now, source },
         timestamp: now,
       });
     }
@@ -951,10 +1000,17 @@ export class BaichuanClient extends EventEmitter<{
           .find((t) => t.length > 0 && t.toLowerCase() !== "none")
       : undefined;
     if (aiTypeToken) {
+      const t = aiTypeToken.toLowerCase();
       const aiTypeMap: Record<string, "people" | "vehicle" | "dog_cat" | "face" | "package" | "other"> = {
         people: "people",
+        person: "people",
+        human: "people",
         vehicle: "vehicle",
+        car: "vehicle",
         dog_cat: "dog_cat",
+        dog: "dog_cat",
+        cat: "dog_cat",
+        pet: "dog_cat",
         face: "face",
         package: "package",
       };
@@ -963,7 +1019,7 @@ export class BaichuanClient extends EventEmitter<{
         type: "ai",
         ai: {
           channel: fallbackChannel,
-          type: aiTypeMap[aiTypeToken.toLowerCase()] ?? "other",
+          type: aiTypeMap[t] ?? "other",
           detected: true,
           timestamp: now,
         },

@@ -681,6 +681,11 @@ export class ReolinkBaichuanApi {
     return ports;
   }
 
+  /** Back-compat alias for older API name used by tests/consumers. */
+  async getPorts(): Promise<ReolinkBaichuanPorts> {
+    return this.getNetPort();
+  }
+
   /** SetNetPort via Baichuan: cmd_id 36 (enable/disable rtsp/rtmp/onvif/http/https) */
   async setPortEnabled(params: { port: "rtsp" | "rtmp" | "onvif" | "http" | "https"; enable: boolean }): Promise<void> {
     const tag = `${params.port[0]!.toUpperCase()}${params.port.slice(1)}Port`;
@@ -1072,14 +1077,46 @@ export class ReolinkBaichuanApi {
    */
   async subscribeEvents(): Promise<void> {
     await this.client.login();
-    // cmd_id 31 with ch_id 251 subscribes to all events
-    // Use extension XML with channelId 251 for host-level subscription
-    const extensionXml = `<?xml version="1.0" encoding="UTF-8" ?><Extension version="1.1"><channelId>251</channelId></Extension>`;
-    await this.client.sendXml({ cmdId: 31, extensionXml });
-    this.client.subscribed = true;
-    // For BCUDP/battery cameras: enabling event subscription should keep the session alive
-    // to receive cmd_id=33 pushes reliably.
+    // NOTE: Some battery firmwares reject the old "channelId=251 Extension" approach with responseCode=421.
+    // Neolink sends MSG_ID 31 with *empty* body and channel_id set to the camera channel.
+    const channel = this.client.getConfiguredChannel?.() ?? 0;
+    const neolinkChannelId = channel + 1;
+
+    const attempts: Array<{ label: string; params: Parameters<BaichuanClient["sendFrame"]>[0] }> = [
+      {
+        label: `neolink-style channelId=${neolinkChannelId} bodyLen=0`,
+        params: { cmdId: 31, channelIdOverride: neolinkChannelId },
+      },
+      {
+        label: "host channelId=250 bodyLen=0",
+        params: { cmdId: 31, channelIdOverride: 250 },
+      },
+      {
+        label: "legacy Extension channelId=251",
+        params: {
+          cmdId: 31,
+          channelIdOverride: 250,
+          extensionXml: `<?xml version="1.0" encoding="UTF-8" ?><Extension version="1.1"><channelId>251</channelId></Extension>`,
+        },
+      },
+    ];
+
+    let lastCode: number | undefined;
+    for (const a of attempts) {
+      const frame = await this.client.sendFrame({ ...a.params, timeoutMs: 10_000 });
+      lastCode = frame.header.responseCode;
+      if (frame.header.responseCode === 200) {
+        this.client.subscribed = true;
+        this.client.refreshKeepAlive?.();
+        return;
+      }
+      // Keep trying other variants.
+      (this.logger.debug ?? this.logger.log).call(this.logger, `[ReolinkBaichuanApi] subscribeEvents rejected (${a.label}) responseCode=${frame.header.responseCode}`);
+    }
+
+    this.client.subscribed = false;
     this.client.refreshKeepAlive?.();
+    throw new Error(`subscribeEvents failed: camera rejected cmdId=31 (last responseCode=${lastCode ?? "unknown"})`);
   }
 
   /**
@@ -2438,6 +2475,28 @@ export class ReolinkBaichuanApi {
     const ch = this.normalizeChannel(channel);
     const xml = await this.sendXml({ cmdId: BC_CMD_ID_GET_PIR_INFO, channel: ch });
 
+    const parseBoolishNumber = (v: string | undefined): number | undefined => {
+      if (v === undefined) return undefined;
+      const t = v.trim().toLowerCase();
+      if (t === "true") return 1;
+      if (t === "false") return 0;
+      const n = Number(t);
+      return Number.isFinite(n) ? n : undefined;
+    };
+
+    const parseEnabled = (v: string | undefined): boolean => {
+      if (v === undefined) return false;
+      const t = v.trim().toLowerCase();
+      return t === "1" || t === "true";
+    };
+
+    // Reolink PIR sensitivity is commonly inverted vs the mobile app UI.
+    // Observed mapping (also used by other SDKs): app = 101 - sensiValue.
+    const mapPirSensitivityToApp = (raw: number): number => {
+      const mapped = 101 - raw;
+      return Math.trunc(mapped);
+    };
+
     const enable = getXmlText(xml, "enable");
     const sensitive = getXmlText(xml, "sensiValue");
     const reduceAlarm = getXmlText(xml, "reduceFalseAlarm");
@@ -2448,23 +2507,27 @@ export class ReolinkBaichuanApi {
       channel: ch,
     };
     if (enable !== undefined) {
-      state.enable = Number(enable);
+      const n = parseBoolishNumber(enable);
+      if (n !== undefined) state.enable = n;
     }
     if (sensitive !== undefined) {
       state.sensitive = Number(sensitive);
     }
     if (reduceAlarm !== undefined) {
-      state.reduceAlarm = Number(reduceAlarm);
+      const n = parseBoolishNumber(reduceAlarm);
+      if (n !== undefined) state.reduceAlarm = n;
     }
     if (interval !== undefined) {
-      state.interval = Number(interval);
+      const n = parseBoolishNumber(interval);
+      if (n !== undefined) state.interval = n;
     }
     if (intervalMax !== undefined) {
-      state.intervalMax = Number(intervalMax);
+      const n = parseBoolishNumber(intervalMax);
+      if (n !== undefined) state.intervalMax = n;
     }
 
     return {
-      enabled: enable === "1",
+      enabled: parseEnabled(enable),
       state,
     };
   }
@@ -2485,6 +2548,19 @@ export class ReolinkBaichuanApi {
     const channel = typeof arg1 === "number" ? arg1 : (arg2 as number | undefined);
     const params = typeof arg1 === "number" ? (arg2 as { enable: number; sensitive?: number; reduceAlarm?: number; interval?: number }) : arg1;
     const ch = this.normalizeChannel(channel);
+
+    const toPirSensitivityRaw = (appValue: number): number => {
+      // Inverse mapping of getPirInfo(): raw = 101 - app.
+      return Math.trunc(101 - appValue);
+    };
+
+    const toBoolishNumber = (v: unknown): number | undefined => {
+      if (v === undefined || v === null) return undefined;
+      if (typeof v === "boolean") return v ? 1 : 0;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : undefined;
+    };
+
     // First get current settings to modify
     const currentXml = await this.sendXml({ cmdId: BC_CMD_ID_GET_PIR_INFO, channel: ch });
 
@@ -2495,10 +2571,14 @@ export class ReolinkBaichuanApi {
       modifiedXml = modifiedXml.replace(/<enable>[^<]*<\/enable>/, `<enable>${params.enable}</enable>`);
     }
     if (params.sensitive !== undefined) {
-      modifiedXml = modifiedXml.replace(/<sensiValue>[^<]*<\/sensiValue>/, `<sensiValue>${params.sensitive}</sensiValue>`);
+      const raw = toPirSensitivityRaw(params.sensitive);
+      modifiedXml = modifiedXml.replace(/<sensiValue>[^<]*<\/sensiValue>/, `<sensiValue>${raw}</sensiValue>`);
     }
     if (params.reduceAlarm !== undefined) {
-      modifiedXml = modifiedXml.replace(/<reduceFalseAlarm>[^<]*<\/reduceFalseAlarm>/, `<reduceFalseAlarm>${params.reduceAlarm}</reduceFalseAlarm>`);
+      const n = toBoolishNumber(params.reduceAlarm);
+      if (n !== undefined) {
+        modifiedXml = modifiedXml.replace(/<reduceFalseAlarm>[^<]*<\/reduceFalseAlarm>/, `<reduceFalseAlarm>${n}</reduceFalseAlarm>`);
+      }
     }
     if (params.interval !== undefined) {
       modifiedXml = modifiedXml.replace(/<interval>[^<]*<\/interval>/, `<interval>${params.interval}</interval>`);
