@@ -12,6 +12,9 @@ pnpm-debug.log*
 
 # Compiled JavaScript files (keep only TypeScript source)
 *.js
+*.js.map
+*.d.ts
+*.d.ts.map
 !eslint.config.js
 !test/audio-samples/generate-test-audio.js
 

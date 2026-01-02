@@ -64,6 +64,22 @@ type TalkSessionInfo = import("./types").TalkSessionInfo;
 
 export type ReolinkBaichuanPorts = Record<string, Record<string, number>>;
 
+export type WakeUpOptions = {
+  /** Timeout per singolo tentativo (default: 20000). */
+  timeoutMs?: number;
+  /** Numero di tentativi (default: 3). */
+  attempts?: number;
+  /** Delay dopo un tentativo che “sblocca” la camera (default: 1500). */
+  waitAfterWakeMs?: number;
+  /** Delay tra tentativi falliti (default: 1500). */
+  backoffMs?: number;
+  /**
+   * Se true, chiude la connessione e forza un reconnect prima del retry.
+   * Default: true per UDP (battery), false per TCP.
+   */
+  reconnect?: boolean;
+};
+
 function getXmlTexts(xml: string, tags: string[]): Record<string, string> {
   const out: Record<string, string> = {};
   for (const t of tags) {
@@ -677,9 +693,9 @@ export class ReolinkBaichuanApi {
   }
 
   /** GetEnc via Baichuan: cmd_id 56 (returns raw XML). */
-  async getEncXml(channel?: number): Promise<string> {
+  async getEncXml(channel?: number, options?: { timeoutMs?: number }): Promise<string> {
     const ch = this.normalizeChannel(channel);
-    return await this.sendXml({ cmdId: 56, channel: ch });
+    return await this.sendXml({ cmdId: 56, channel: ch, ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}) });
   }
 
   /**
@@ -1989,10 +2005,53 @@ export class ReolinkBaichuanApi {
   // Battery Info API
   // --------------------
 
+  private parseBatteryInfoXml(xml: string, channel: number): Partial<BatteryInfo> {
+    const parseNum = (v: string | undefined): number | undefined => {
+      if (v === undefined) return undefined;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : undefined;
+    };
+
+    // Prefer parsing the matching <BatteryInfo> block when a list is returned.
+    const batteryInfoBlocks = getXmlBlocks(xml, "BatteryInfo");
+    const preferredBlock =
+      batteryInfoBlocks.find((b) => getXmlText(b, "channelId") === String(channel)) ??
+      batteryInfoBlocks[0] ??
+      xml;
+
+    const out: Partial<BatteryInfo> = {};
+
+    const batteryPercent = parseNum(getXmlText(preferredBlock, "batteryPercent"));
+    if (batteryPercent !== undefined) out.batteryPercent = batteryPercent;
+
+    const chargeStatus = getXmlText(preferredBlock, "chargeStatus");
+    if (chargeStatus !== undefined) out.chargeStatus = chargeStatus;
+
+    const adapterStatus = getXmlText(preferredBlock, "adapterStatus");
+    if (adapterStatus !== undefined) out.adapterStatus = adapterStatus;
+
+    const voltage = parseNum(getXmlText(preferredBlock, "voltage"));
+    if (voltage !== undefined) out.voltage = voltage;
+
+    const current = parseNum(getXmlText(preferredBlock, "current"));
+    if (current !== undefined) out.current = current;
+
+    const temperature = parseNum(getXmlText(preferredBlock, "temperature"));
+    if (temperature !== undefined) out.temperature = temperature;
+
+    const lowPower = parseNum(getXmlText(preferredBlock, "lowPower"));
+    if (lowPower !== undefined) out.lowPower = lowPower;
+
+    const batteryVersion = parseNum(getXmlText(preferredBlock, "batteryVersion"));
+    if (batteryVersion !== undefined) out.batteryVersion = batteryVersion;
+
+    return out;
+  }
+
   /**
    * Get battery status for battery-powered cameras, including sleep state.
    * This is a comprehensive API that returns battery info AND checks if the camera is sleeping.
-   * cmd_id: 252 (GetBatteryInfo from reolink_aio)
+    * cmd_id: 253 (MSG_ID_BATTERY_INFO from neolink)
    * 
    * @param channel - Channel number (0-based)
    * @returns Battery information including sleep status
@@ -2009,23 +2068,12 @@ export class ReolinkBaichuanApi {
         )
       ]);
 
-      // Parse battery info from XML
-      // Expected format: <Battery><batteryPercent>...</batteryPercent><chargeStatus>...</chargeStatus></Battery>
-      const batteryPercentText = getXmlText(xml, "batteryPercent");
-      const chargeStatus = getXmlText(xml, "chargeStatus");
-
-      // chargeStatus: 0=charging, 1=discharging, 2=full
-
       const result: BatteryInfo = {
         channel: ch,
         sleeping: false, // Camera responded, so it's awake
       };
-      if (batteryPercentText !== undefined) {
-        result.batteryPercent = Number(batteryPercentText);
-      }
-      if (chargeStatus !== undefined) {
-        result.chargeStatus = chargeStatus;
-      }
+
+      Object.assign(result, this.parseBatteryInfoXml(xml, ch));
 
       return result;
     } catch (error) {
@@ -2050,9 +2098,10 @@ export class ReolinkBaichuanApi {
 
   /**
    * Get battery information via Baichuan.
-   * cmd_id: 252 (MSG_ID_BATTERY_INFO_LIST from neolink)
+   * cmd_id: 253 (MSG_ID_BATTERY_INFO from neolink)
    * 
-   * Note: Battery info is typically pushed via events (cmd_id 252), but can also be requested.
+   * Note: Battery info can be pushed via events (cmd_id 252 BatteryInfoList), but on-demand request
+   * is cmd_id 253.
    * For checking sleep state, use getBatteryStatus() instead.
    * 
    * @param channel - Channel number (0-based)
@@ -2062,23 +2111,11 @@ export class ReolinkBaichuanApi {
     const ch = this.normalizeChannel(channel);
     const xml = await this.sendXml({ cmdId: BC_CMD_ID_GET_BATTERY_INFO, channel: ch });
 
-    // Parse battery info from XML
-    // Expected format: <Battery><batteryPercent>...</batteryPercent><chargeStatus>...</chargeStatus></Battery>
-    const batteryPercentText = getXmlText(xml, "batteryPercent");
-    const chargeStatus = getXmlText(xml, "chargeStatus");
-
-    // chargeStatus: 0=charging, 1=discharging, 2=full
-    // Note: sleep status is typically from GetChannelstatus (cmd_id 145), not from battery info
-
     const result: BatteryInfo = {
       channel: ch,
     };
-    if (batteryPercentText !== undefined) {
-      result.batteryPercent = Number(batteryPercentText);
-    }
-    if (chargeStatus !== undefined) {
-      result.chargeStatus = chargeStatus;
-    }
+
+    Object.assign(result, this.parseBatteryInfoXml(xml, ch));
 
     return result;
   }
@@ -2092,22 +2129,59 @@ export class ReolinkBaichuanApi {
    * @param channel - Channel number (0-based)
    * @param waitAfterWake - Optional delay in milliseconds after sending wake command (default: 1500ms, as in reolink_aio)
    */
-  async wakeUp(channel?: number, waitAfterWake?: number): Promise<void> {
+  async wakeUp(channel?: number, options?: number | WakeUpOptions): Promise<void> {
     const ch = this.normalizeChannel(channel);
-    // Use GetEnc (cmd_id 56) which is a WAKING_COMMAND per reolink_aio
-    // This command will wake up the camera if it's sleeping
-    try {
-      await this.getEncXml(ch);
-      // Give the camera time to wake up (reolink_aio waits 1.5s after 400 errors)
-      const delay = waitAfterWake ?? 1500;
-      if (delay > 0) {
-        await new Promise(resolve => setTimeout(resolve, delay));
+    const opts: WakeUpOptions = typeof options === "number" ? { waitAfterWakeMs: options } : (options ?? {});
+
+    const timeoutMs = opts.timeoutMs ?? 20_000;
+    const attempts = opts.attempts ?? 3;
+    const waitAfterWakeMs = opts.waitAfterWakeMs ?? 1500;
+    const backoffMs = opts.backoffMs ?? 1500;
+
+    const isUdp = this.client.getTransport?.() === "udp";
+    const reconnect = opts.reconnect ?? isUdp;
+
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        // Use GetEnc (cmd_id 56) which is a WAKING_COMMAND per reolink_aio.
+        // If the session is stale (common on battery/BCUDP), this may timeout.
+        await this.getEncXml(ch, { timeoutMs });
+
+        if (waitAfterWakeMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, waitAfterWakeMs));
+        }
+        return;
+      } catch (e) {
+        lastError = e;
+
+        // Common cases when the camera is sleeping or the session/socket is stale:
+        // - timeout waiting for reply
+        // - socket closed
+        const msg = e instanceof Error ? e.message : String(e);
+        const looksLikeTimeout = msg.includes("Baichuan timeout");
+        const looksLikeClosed = msg.toLowerCase().includes("socket closed") || msg.toLowerCase().includes("stream closed");
+
+        if (attempt < attempts) {
+          if (reconnect && (looksLikeTimeout || looksLikeClosed)) {
+            try {
+              // Force a fresh connect+login on next attempt.
+              this.client.loggedIn = false;
+              await this.client.close();
+            } catch {
+              // ignore
+            }
+          }
+
+          if (backoffMs > 0) {
+            await new Promise((resolve) => setTimeout(resolve, backoffMs));
+          }
+          continue;
+        }
       }
-    } catch (error) {
-      // If GetEnc fails (e.g., camera is still sleeping), that's OK - we tried
-      // The caller should handle this gracefully
-      throw error;
     }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 
   /**

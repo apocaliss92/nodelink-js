@@ -54,7 +54,11 @@ export const BC_CMD_ID_GET_ZOOM_FOCUS = 294; // MSG_ID_GET_ZOOM_FOCUS - Read zoo
 export const BC_CMD_ID_SET_ZOOM_FOCUS = 295; // MSG_ID_SET_ZOOM_FOCUS - Write zoom/focus position
 
 // Battery Info command IDs
-export const BC_CMD_ID_GET_BATTERY_INFO = 252; // MSG_ID_BATTERY_INFO_LIST - Get battery info
+// Neolink:
+// - 252: MSG_ID_BATTERY_INFO_LIST (camera-initiated status/event)
+// - 253: MSG_ID_BATTERY_INFO (client-initiated request)
+export const BC_CMD_ID_GET_BATTERY_INFO_LIST = 252; // MSG_ID_BATTERY_INFO_LIST
+export const BC_CMD_ID_GET_BATTERY_INFO = 253; // MSG_ID_BATTERY_INFO
 
 // UDP Keep Alive command ID (from neolink model.rs)
 // Battery cameras (BCUDP) periodically send this and expect a 200 response.

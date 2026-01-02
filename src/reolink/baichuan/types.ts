@@ -51,7 +51,20 @@ export interface PtzCommand {
 
 export interface BatteryInfo {
   batteryPercent?: number;
-  chargeStatus?: string; // "0"=charging, "1"=discharging, "2"=full
+  /** Known values include: "charging", "chargeComplete", "none". */
+  chargeStatus?: string;
+  /** Charging source/port status, e.g. "solarPanel". */
+  adapterStatus?: string;
+  /** Low power flag (0/1). */
+  lowPower?: number;
+  /** Battery voltage (mV) when available. */
+  voltage?: number;
+  /** Battery current (mA) when available (can be negative while charging). */
+  current?: number;
+  /** Battery temperature (°C) when available. */
+  temperature?: number;
+  /** Battery version info when available (commonly 2). */
+  batteryVersion?: number;
   sleeping?: boolean;
   channel?: number;
 }
