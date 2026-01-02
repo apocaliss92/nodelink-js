@@ -229,6 +229,9 @@ export class ReolinkBaichuanApi {
   private simpleEventSubscribed = false;
   private simpleEventSubscribeInFlight: Promise<void> | undefined;
   private simpleEventUnsubscribeInFlight: Promise<void> | undefined;
+  private statePollingInterval: NodeJS.Timeout | undefined;
+  private lastMotionState: boolean | undefined;
+  private lastAiState: AIState | undefined;
   private rtspServers = new Set<BaichuanRtspServer>(); // Track all RTSP servers for cleanup
   private readonly activeVideoMsgNums = new Map<string, number>();
 
@@ -276,6 +279,12 @@ export class ReolinkBaichuanApi {
 
     if (this.simpleEventListeners.size === 0) {
       await this.ensureSimpleEventUnsubscribed();
+    } else {
+      // If there are still listeners, keep polling running (TCP only)
+      const isUdp = this.client.getTransport?.() === "udp";
+      if (!isUdp) {
+        this.startStatePolling();
+      }
     }
   }
 
@@ -287,6 +296,17 @@ export class ReolinkBaichuanApi {
     this.simpleEventSubscribeInFlight = (async () => {
       await this.subscribeEvents();
       this.simpleEventSubscribed = true;
+      
+      // Only check current state and start polling for TCP connections (not UDP/battery cameras)
+      // UDP/battery cameras should rely on event pushes only, not polling
+      const isUdp = this.client.getTransport?.() === "udp";
+      if (!isUdp) {
+        // Check current state and dispatch events immediately (TCP only)
+        await this.checkAndDispatchCurrentState();
+        
+        // Start periodic polling if not already running (TCP only)
+        this.startStatePolling();
+      }
     })().finally(() => {
       this.simpleEventSubscribeInFlight = undefined;
     });
@@ -310,6 +330,9 @@ export class ReolinkBaichuanApi {
     this.simpleEventUnsubscribeInFlight = (async () => {
       await this.unsubscribeEvents();
       this.simpleEventSubscribed = false;
+
+      // Stop polling when no more listeners
+      this.stopStatePolling();
     })().finally(() => {
       this.simpleEventUnsubscribeInFlight = undefined;
     });
@@ -326,6 +349,8 @@ export class ReolinkBaichuanApi {
   }
 
   async close(): Promise<void> {
+    // Stop state polling before closing
+    this.stopStatePolling();
     // Stop all RTSP servers before closing the client
     await this.cleanup();
     await this.client.close();
@@ -338,7 +363,7 @@ export class ReolinkBaichuanApi {
   async cleanup(): Promise<void> {
     const servers = Array.from(this.rtspServers);
     this.rtspServers.clear();
-    
+
     // Stop all servers in parallel
     await Promise.allSettled(
       servers.map(async (server) => {
@@ -349,7 +374,7 @@ export class ReolinkBaichuanApi {
         }
       })
     );
-    
+
     if (servers.length > 0) {
       this.logger.info(`[ReolinkBaichuanApi] Cleaned up ${servers.length} RTSP server(s)`);
     }
@@ -364,7 +389,7 @@ export class ReolinkBaichuanApi {
     try {
       // Use sendFrame to check responseCode and handle 400 errors with retry
       const frame = await this.client.sendFrame(params);
-      
+
       // Retry logic for 400 errors.
       // NOTE: several firmwares return responseCode=400 with empty body when the camera is sleeping,
       // waking up, or when the session has expired (not only for bad credentials).
@@ -393,7 +418,7 @@ export class ReolinkBaichuanApi {
           );
         }
       }
-      
+
       // Decrypt and return XML
       if (frame.body.length === 0) return "";
       const xml = (this.client as any).tryDecryptXml(frame.body, frame.header.channelId, this.client.enc);
@@ -992,12 +1017,12 @@ export class ReolinkBaichuanApi {
    */
   async getSnapshot(channel: number = 0): Promise<Buffer> {
     const cmdId = 109;
-    
+
     // 1. Send Snap request (XML)
     // Neolink: <Snap version="1.1"><channelId>...</channelId><logicChannel>...</logicChannel><time>0</time><fullFrame>0</fullFrame><streamType>main</streamType></Snap>
     // Must be wrapped in <body>
     const xml = `<body><Snap version="1.1"><channelId>${channel}</channelId><logicChannel>${channel}</logicChannel><time>0</time><fullFrame>0</fullFrame><streamType>main</streamType></Snap></body>`;
-    
+
     await this.client.login();
 
     // IMPORTANT (neolink-compatible): the Snap request Extension must NOT include <binaryData>1</binaryData>.
@@ -1034,6 +1059,131 @@ export class ReolinkBaichuanApi {
     // Note: reolink-aio doesn't have explicit unsubscribe, but closing connection unsubscribes
     // For now, we just mark as unsubscribed
     this.client.subscribed = false;
+  }
+
+  /**
+   * Check current motion and AI state and dispatch events if state changed.
+   * This is called immediately after subscription and periodically during polling.
+   */
+  private async checkAndDispatchCurrentState(channel: number = 0): Promise<void> {
+    try {
+      // Check motion state
+      const motionState = await this.getMotionState(channel);
+      if (motionState !== this.lastMotionState) {
+        this.lastMotionState = motionState;
+        if (motionState) {
+          // Dispatch motion event
+          const event: ReolinkSimpleEvent = {
+            type: "motion",
+            channel,
+            timestamp: Date.now(),
+          };
+          this.dispatchSimpleEvent(event);
+        }
+      }
+
+      // Check AI state (if supported)
+      try {
+        const aiState = await this.getAiState(channel);
+        if (aiState && aiState.alarm_state !== undefined) {
+          // Check if AI state changed
+          const aiStateChanged = !this.lastAiState ||
+            this.lastAiState.alarm_state !== aiState.alarm_state ||
+            this.lastAiState.support !== aiState.support;
+
+          if (aiStateChanged) {
+            this.lastAiState = aiState;
+
+            // If alarm_state indicates detection, dispatch appropriate AI event
+            // alarm_state: 0 = no detection, 1 = detection active
+            if (aiState.alarm_state === 1) {
+              // Try to determine AI type from state
+              // For now, dispatch "other" if we can't determine the specific type
+              // The actual AI type should come from the event stream, but we dispatch a generic event here
+              const event: ReolinkSimpleEvent = {
+                type: "other", // Generic AI detection
+                channel,
+                timestamp: Date.now(),
+              };
+              this.dispatchSimpleEvent(event);
+            }
+          }
+        }
+      } catch (e) {
+        // AI state check may fail on cameras without AI support - ignore
+        // Only log if it's not a common "not supported" error
+        if (e && typeof e === 'object' && 'message' in e) {
+          const msg = String(e.message);
+          if (!msg.includes('not supported') && !msg.includes('unsupported')) {
+            (this.logger.debug ?? this.logger.log)?.call(this.logger, "[ReolinkBaichuanApi] getAiState failed (may not be supported)", e);
+          }
+        }
+      }
+    } catch (e) {
+      // Log but don't throw - state checking should be best-effort
+      (this.logger.warn ?? this.logger.error)?.call(this.logger, "[ReolinkBaichuanApi] Error checking current state", e);
+    }
+  }
+
+  /**
+   * Dispatch a simple event to all listeners.
+   */
+  private dispatchSimpleEvent(event: ReolinkSimpleEvent): void {
+    for (const cb of this.simpleEventListeners) {
+      try {
+        cb(event);
+      }
+      catch (e) {
+        // Never allow user handlers to break the event loop
+        (this.logger.warn ?? this.logger.error)?.call(this.logger, "[ReolinkBaichuanApi] onSimpleEvent handler error", e);
+      }
+    }
+  }
+
+  /**
+   * Start periodic polling of motion and AI state (every 5 seconds).
+   * Only starts if there are listeners and polling is not already running.
+   * Polling is disabled for UDP/battery cameras to avoid waking them unnecessarily.
+   */
+  private startStatePolling(): void {
+    // Only poll if there are listeners
+    if (this.simpleEventListeners.size === 0) {
+      return;
+    }
+
+    // Don't poll for UDP/battery cameras - they should rely on event pushes only
+    const isUdp = this.client.getTransport?.() === "udp";
+    if (isUdp) {
+      return;
+    }
+
+    // Don't start if already running
+    if (this.statePollingInterval) {
+      return;
+    }
+
+    // Poll every 5 seconds (TCP only)
+    this.statePollingInterval = setInterval(async () => {
+      // Only poll if there are still listeners
+      if (this.simpleEventListeners.size === 0) {
+        this.stopStatePolling();
+        return;
+      }
+
+      // Check state for channel 0 (default)
+      // TODO: Support multiple channels if needed
+      await this.checkAndDispatchCurrentState(0);
+    }, 5000);
+  }
+
+  /**
+   * Stop periodic polling of motion and AI state.
+   */
+  private stopStatePolling(): void {
+    if (this.statePollingInterval) {
+      clearInterval(this.statePollingInterval);
+      this.statePollingInterval = undefined;
+    }
   }
 
   /**
@@ -1074,9 +1224,9 @@ export class ReolinkBaichuanApi {
 
         const aiTypeToken = aiTypeRaw
           ? aiTypeRaw
-              .split(",")
-              .map((t) => t.trim())
-              .find((t) => t.length > 0 && t.toLowerCase() !== "none")
+            .split(",")
+            .map((t) => t.trim())
+            .find((t) => t.length > 0 && t.toLowerCase() !== "none")
           : undefined;
         if (aiTypeToken || statusUpper.includes("AI")) {
           out.ai = {
@@ -1216,7 +1366,7 @@ export class ReolinkBaichuanApi {
     const ch = this.normalizeChannel(channel);
     // Neolink uses the same 0-based channel_id everywhere (header, Extension, payload).
     const channelId = ch;
-    
+
     // Map profile to handle and stream_type values (from neolink stream.rs)
     // handle: 0 for main, 256 for sub, 1024 for extern
     // stream_type in header: 0 for main, 1 for sub, 0 for extern
@@ -1225,7 +1375,7 @@ export class ReolinkBaichuanApi {
       sub: { handle: 256, streamType: 1, streamName: "subStream" },
       ext: { handle: 1024, streamType: 0, streamName: "externStream" },
     };
-    
+
     const config = profileConfig[profile];
     if (!config) {
       throw new Error(`Invalid stream profile: ${profile}`);
@@ -1233,7 +1383,7 @@ export class ReolinkBaichuanApi {
     if (!config.streamName) {
       throw new Error(`Stream name not found for profile: ${profile}, config: ${JSON.stringify(config)}`);
     }
-    
+
     // Build Preview XML payload (from neolink stream.rs line 171-189)
     // BcXml serializes as <body>...</body> with Preview inside
     // IMPORTANT: channelId is NOT in Preview XML - it's handled via channelId in header
@@ -1244,7 +1394,7 @@ export class ReolinkBaichuanApi {
       throw new Error(`streamName is not a string: ${typeof streamName}, value: ${streamName}, config: ${JSON.stringify(config)}`);
     }
     const payloadXml = buildPreviewXml(config.handle, streamName, channelId);
-    
+
     // Neolink subscribes (MSG_ID_VIDEO, msg_num) BEFORE sending the command.
     // On some BCUDP/battery models, the start-stream request can sporadically timeout;
     // retry a few times and ensure we unsubscribe on failures.
@@ -1294,9 +1444,9 @@ export class ReolinkBaichuanApi {
     }
 
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
-    
+
     // Success - stream should start and frames will arrive as push events with cmd_id 3
-    
+
     // Check for response code 200 (success)
     // neolink expects response_code: 200 in the reply
     // If response_code is not 200, the stream request was rejected
@@ -1329,20 +1479,20 @@ export class ReolinkBaichuanApi {
     const ch = this.normalizeChannel(channel);
     // Neolink uses the same 0-based channel_id everywhere (header, Extension, payload).
     const channelId = ch;
-    
+
     // Map profile to handle value (from neolink stream.rs)
     const profileConfig: Record<StreamProfile, { handle: number; streamType: number }> = {
       main: { handle: 0, streamType: 0 },
       sub: { handle: 256, streamType: 1 },
       ext: { handle: 1024, streamType: 0 },
     };
-    
+
     const config = profileConfig[profile];
-    
+
     // Build Preview XML payload for stop (without stream_type)
     // channelId is NOT in Preview XML - it's handled via channelId in header
     const payloadXml = buildPreviewStopXml(config.handle, channelId);
-    
+
     const key = `${ch}:${profile}`;
     const msgNum = this.activeVideoMsgNums.get(key);
     this.activeVideoMsgNums.delete(key);
@@ -1401,7 +1551,7 @@ export class ReolinkBaichuanApi {
         id: p.id,
         name: p.name ?? `Preset ${p.id}`,
       }));
-    
+
     return presets;
   }
 
@@ -1457,7 +1607,7 @@ export class ReolinkBaichuanApi {
     // Neolink uses the same channel_id in meta header, Extension and payload XML.
     // In neolink this is 0-based.
     const channelId = ch;
-    
+
     // Neolink supports only: "up", "down", "left", "right", "stop" via MSG_ID_PTZ_CONTROL.
     // Zoom/focus are separate messages (e.g. 294/295).
     let direction: "up" | "down" | "left" | "right" | "stop";
@@ -1492,17 +1642,17 @@ export class ReolinkBaichuanApi {
         speed = raw;
       }
     }
-    
+
     const payloadXml = buildPtzControlXml(channelId, direction, speed);
-    
+
     // Neolink includes Extension with channel_id for PTZ commands.
     const extensionXml = buildChannelExtensionXml(channelId);
-    
+
     // Neolink does subscribe before sending PTZ commands
     // However, sendFrame already handles the response via pending map using cmdId:messageKey
     // The subscribe in neolink is for routing responses, which sendFrame already does
     // So we don't need explicit subscribeVideoStream here
-    
+
     // Use sendFrame to check response_code (neolink expects 200)
     const frame = await this.client.sendFrame({
       cmdId: BC_CMD_ID_PTZ_CONTROL,
@@ -1513,7 +1663,7 @@ export class ReolinkBaichuanApi {
       messageClass: BC_CLASS_MODERN_24,
       streamType: 0,
     });
-    
+
     if (frame.header.responseCode !== 200) {
       // Try to get error details from body if available
       let errorDetails = "";
@@ -1533,7 +1683,7 @@ export class ReolinkBaichuanApi {
       }
       throw new Error(`PTZ control rejected (response_code ${frame.header.responseCode})${errorDetails}`);
     }
-    
+
     // If action is "start", send a stop after a short delay.
     // Some integrations need to tune the movement amount per command.
     if (resolvedCommand.action === "start" && direction !== "stop") {
@@ -1563,10 +1713,10 @@ export class ReolinkBaichuanApi {
     const presetId = arg2 === undefined ? arg1 : arg2;
     const channelId = ch;
     const payloadXml = buildPtzPresetXml(channelId, presetId, "toPos");
-    
+
     // Neolink includes extension with channel_id for PTZ preset commands
     const extensionXml = buildChannelExtensionXml(channelId);
-    
+
     const frame = await this.client.sendFrame({
       cmdId: BC_CMD_ID_PTZ_CONTROL_PRESET,
       channel: ch,
@@ -1576,7 +1726,7 @@ export class ReolinkBaichuanApi {
       messageClass: BC_CLASS_MODERN_24,
       streamType: 0,
     });
-    
+
     if (frame.header.responseCode !== 200) {
       throw new Error(`PTZ preset move rejected (response_code ${frame.header.responseCode})`);
     }
@@ -1600,11 +1750,11 @@ export class ReolinkBaichuanApi {
     // Important: some firmwares will keep a deleted preset "disabled" (enable=0) and will omit it from cmd190.
     // Sending enable=1 ensures the slot becomes visible again.
     const payloadXml = buildPtzPresetXmlV2(channelId, presetId, "setPos", { name, enable: 1 });
-    
+
     // Neolink includes extension with channel_id for PTZ preset commands
     const extensionXml = buildChannelExtensionXml(channelId);
 
-    
+
     const frame = await this.client.sendFrame({
       cmdId: BC_CMD_ID_PTZ_CONTROL_PRESET,
       channel: ch,
@@ -1614,7 +1764,7 @@ export class ReolinkBaichuanApi {
       messageClass: BC_CLASS_MODERN_24,
       streamType: 0,
     });
-    
+
     if (frame.header.responseCode !== 200) {
       throw new Error(`PTZ preset save rejected (response_code ${frame.header.responseCode})`);
     }
@@ -1667,11 +1817,11 @@ export class ReolinkBaichuanApi {
       },
       ...(currentName
         ? [
-            {
-              label: "enable=0 name=current",
-              payloadXml: buildPtzPresetXmlV2(channelId, presetId, "setPos", { name: currentName, enable: 0 }),
-            },
-          ]
+          {
+            label: "enable=0 name=current",
+            payloadXml: buildPtzPresetXmlV2(channelId, presetId, "setPos", { name: currentName, enable: 0 }),
+          },
+        ]
         : []),
       {
         label: "enable=0 name='Preset N'",
@@ -1741,10 +1891,10 @@ export class ReolinkBaichuanApi {
   async getPtzPosition(channel?: number): Promise<{ pan?: number; tilt?: number }> {
     const ch = this.normalizeChannel(channel);
     const xml = await this.sendXml({ cmdId: BC_CMD_ID_GET_PTZ_POSITION, channel: ch });
-    
+
     const panText = getXmlText(xml, "pPos");
     const tiltText = getXmlText(xml, "tPos");
-    
+
     const result: { pan?: number; tilt?: number } = {};
     if (panText !== undefined) {
       result.pan = Number(panText);
@@ -1752,7 +1902,7 @@ export class ReolinkBaichuanApi {
     if (tiltText !== undefined) {
       result.tilt = Number(tiltText);
     }
-    
+
     return result;
   }
 
@@ -1854,18 +2004,18 @@ export class ReolinkBaichuanApi {
       // If the camera is sleeping, this may timeout or fail
       const xml = await Promise.race([
         this.sendXml({ cmdId: BC_CMD_ID_GET_BATTERY_INFO, channel: ch }),
-        new Promise<string>((_, reject) => 
+        new Promise<string>((_, reject) =>
           setTimeout(() => reject(new Error("Timeout")), 5000)
         )
       ]);
-      
+
       // Parse battery info from XML
       // Expected format: <Battery><batteryPercent>...</batteryPercent><chargeStatus>...</chargeStatus></Battery>
       const batteryPercentText = getXmlText(xml, "batteryPercent");
       const chargeStatus = getXmlText(xml, "chargeStatus");
-      
+
       // chargeStatus: 0=charging, 1=discharging, 2=full
-      
+
       const result: BatteryInfo = {
         channel: ch,
         sleeping: false, // Camera responded, so it's awake
@@ -1876,7 +2026,7 @@ export class ReolinkBaichuanApi {
       if (chargeStatus !== undefined) {
         result.chargeStatus = chargeStatus;
       }
-      
+
       return result;
     } catch (error) {
       // If the command times out or fails, the camera is likely sleeping
@@ -1885,7 +2035,7 @@ export class ReolinkBaichuanApi {
         channel: ch,
         sleeping: true,
       };
-      
+
       // If we got an error that's not a timeout, we still don't know the battery status
       // But we can infer it's sleeping if it failed to respond
       if (error instanceof Error && error.message === "Timeout") {
@@ -1893,7 +2043,7 @@ export class ReolinkBaichuanApi {
       } else {
         // Other error, but still mark as potentially sleeping
       }
-      
+
       return result;
     }
   }
@@ -1911,15 +2061,15 @@ export class ReolinkBaichuanApi {
   async getBatteryInfo(channel?: number): Promise<BatteryInfo> {
     const ch = this.normalizeChannel(channel);
     const xml = await this.sendXml({ cmdId: BC_CMD_ID_GET_BATTERY_INFO, channel: ch });
-    
+
     // Parse battery info from XML
     // Expected format: <Battery><batteryPercent>...</batteryPercent><chargeStatus>...</chargeStatus></Battery>
     const batteryPercentText = getXmlText(xml, "batteryPercent");
     const chargeStatus = getXmlText(xml, "chargeStatus");
-    
+
     // chargeStatus: 0=charging, 1=discharging, 2=full
     // Note: sleep status is typically from GetChannelstatus (cmd_id 145), not from battery info
-    
+
     const result: BatteryInfo = {
       channel: ch,
     };
@@ -1929,7 +2079,7 @@ export class ReolinkBaichuanApi {
     if (chargeStatus !== undefined) {
       result.chargeStatus = chargeStatus;
     }
-    
+
     return result;
   }
 
@@ -1980,7 +2130,7 @@ export class ReolinkBaichuanApi {
       // If camera is sleeping, this should timeout or fail
       await Promise.race([
         this.getBatteryInfo(ch),
-        new Promise((_, reject) => 
+        new Promise((_, reject) =>
           setTimeout(() => reject(new Error("Timeout")), 5000)
         )
       ]);
@@ -2008,13 +2158,13 @@ export class ReolinkBaichuanApi {
   async getPirInfo(channel?: number): Promise<PirState> {
     const ch = this.normalizeChannel(channel);
     const xml = await this.sendXml({ cmdId: BC_CMD_ID_GET_PIR_INFO, channel: ch });
-    
+
     const enable = getXmlText(xml, "enable");
     const sensitive = getXmlText(xml, "sensiValue");
     const reduceAlarm = getXmlText(xml, "reduceFalseAlarm");
     const interval = getXmlText(xml, "interval");
     const intervalMax = getXmlText(xml, "intervalSecMax");
-    
+
     const state: PirState["state"] = {
       channel: ch,
     };
@@ -2033,7 +2183,7 @@ export class ReolinkBaichuanApi {
     if (intervalMax !== undefined) {
       state.intervalMax = Number(intervalMax);
     }
-    
+
     return {
       enabled: enable === "1",
       state,
@@ -2058,10 +2208,10 @@ export class ReolinkBaichuanApi {
     const ch = this.normalizeChannel(channel);
     // First get current settings to modify
     const currentXml = await this.sendXml({ cmdId: BC_CMD_ID_GET_PIR_INFO, channel: ch });
-    
+
     // Parse and modify XML
     let modifiedXml = currentXml;
-    
+
     if (params.enable !== undefined) {
       modifiedXml = modifiedXml.replace(/<enable>[^<]*<\/enable>/, `<enable>${params.enable}</enable>`);
     }
@@ -2074,10 +2224,10 @@ export class ReolinkBaichuanApi {
     if (params.interval !== undefined) {
       modifiedXml = modifiedXml.replace(/<interval>[^<]*<\/interval>/, `<interval>${params.interval}</interval>`);
     }
-    
-    await this.sendXml({ 
-      cmdId: BC_CMD_ID_SET_PIR_INFO, 
-      channel: ch, 
+
+    await this.sendXml({
+      cmdId: BC_CMD_ID_SET_PIR_INFO,
+      channel: ch,
       payloadXml: modifiedXml,
     });
   }
@@ -2103,21 +2253,21 @@ export class ReolinkBaichuanApi {
     const ch = this.normalizeChannel(channel);
     // First get current settings
     const currentXml = await this.sendXml({ cmdId: 46, channel: ch }); // GetMdAlarm
-    
+
     // Parse and modify XML
     // Expected format: <sensInfoNew><enable>...</enable><sensitivityDefault>...</sensitivityDefault></sensInfoNew>
     let modifiedXml = currentXml;
-    
+
     if (enabled !== undefined) {
       modifiedXml = modifiedXml.replace(/<enable>[^<]*<\/enable>/, `<enable>${enabled ? "1" : "0"}</enable>`);
     }
     if (sensitivity !== undefined) {
       modifiedXml = modifiedXml.replace(/<sensitivityDefault>[^<]*<\/sensitivityDefault>/, `<sensitivityDefault>${sensitivity}</sensitivityDefault>`);
     }
-    
-    await this.sendXml({ 
-      cmdId: BC_CMD_ID_SET_MOTION_ALARM, 
-      channel: ch, 
+
+    await this.sendXml({
+      cmdId: BC_CMD_ID_SET_MOTION_ALARM,
+      channel: ch,
       payloadXml: modifiedXml,
     });
   }
@@ -2152,26 +2302,26 @@ export class ReolinkBaichuanApi {
   <type>${xmlEscape(aiType)}</type>
   </AiDetectCfg>
   </body>`;
-    
-    const currentXml = await this.sendXml({ 
+
+    const currentXml = await this.sendXml({
       cmdId: 342, // GetAiAlarm
       channel: ch,
       payloadXml: getXml,
     });
-    
+
     // Parse and modify XML
     let modifiedXml = currentXml;
-    
+
     if (sensitivity !== undefined) {
       modifiedXml = modifiedXml.replace(/<sensitivity>[^<]*<\/sensitivity>/, `<sensitivity>${sensitivity}</sensitivity>`);
     }
     if (stayTime !== undefined) {
       modifiedXml = modifiedXml.replace(/<stayTime>[^<]*<\/stayTime>/, `<stayTime>${stayTime}</stayTime>`);
     }
-    
-    await this.sendXml({ 
-      cmdId: BC_CMD_ID_SET_AI_ALARM, 
-      channel: ch, 
+
+    await this.sendXml({
+      cmdId: BC_CMD_ID_SET_AI_ALARM,
+      channel: ch,
       payloadXml: modifiedXml,
     });
   }
@@ -2194,11 +2344,11 @@ export class ReolinkBaichuanApi {
     // Note: cmd_id 547 is typically a push event, not a request
     // We try to get it, but it may not work on all cameras
     try {
-      const xml = await this.sendXml({ 
-        cmdId: BC_CMD_ID_GET_AUDIO_ALARM, 
+      const xml = await this.sendXml({
+        cmdId: BC_CMD_ID_GET_AUDIO_ALARM,
         ...(channel !== undefined ? { channel } : {}),
       });
-      
+
       // Parse siren status from XML
       // Expected format: <SirenStatus><status>...</status></SirenStatus>
       const status = getXmlText(xml, "status");
@@ -2228,7 +2378,7 @@ export class ReolinkBaichuanApi {
 
     const channelId = channel !== undefined ? channel + 1 : undefined;
     let payloadXml: string;
-    
+
     if (duration !== undefined) {
       // Times mode: play siren a specific number of times
       payloadXml = buildSirenTimesXml(channelId, duration);
@@ -2237,10 +2387,10 @@ export class ReolinkBaichuanApi {
       const enable = on ? 1 : 0;
       payloadXml = buildSirenManualXml(channelId, enable);
     }
-    
+
     try {
-      await this.sendXml({ 
-        cmdId: BC_CMD_ID_AUDIO_ALARM_PLAY, 
+      await this.sendXml({
+        cmdId: BC_CMD_ID_AUDIO_ALARM_PLAY,
         ...(channel !== undefined ? { channel } : {}),
         payloadXml,
       });
@@ -2248,8 +2398,8 @@ export class ReolinkBaichuanApi {
       // If manual mode fails, try times mode with 2 times (reolink_aio fallback)
       if (on === true && duration === undefined) {
         payloadXml = buildSirenTimesXml(channelId, 2);
-        await this.sendXml({ 
-          cmdId: BC_CMD_ID_AUDIO_ALARM_PLAY, 
+        await this.sendXml({
+          cmdId: BC_CMD_ID_AUDIO_ALARM_PLAY,
           ...(channel !== undefined ? { channel } : {}),
           payloadXml,
         });
@@ -2273,7 +2423,7 @@ export class ReolinkBaichuanApi {
   async getWhiteLedState(channel?: number): Promise<WhiteLedState> {
     const ch = this.normalizeChannel(channel);
     const xml = await this.sendXml({ cmdId: BC_CMD_ID_GET_WHITE_LED, channel: ch });
-    
+
     // Parse state from various known payloads:
     // - FloodlightTask: <enable>1</enable> and/or sometimes <state>
     // - FloodlightManual: <status>1</status>
@@ -2281,14 +2431,14 @@ export class ReolinkBaichuanApi {
     const state = getXmlText(xml, "state");
     const status = getXmlText(xml, "status");
     const brightnessText = getXmlText(xml, "brightness_cur");
-    
+
     const result: WhiteLedState = {
       enabled: enable === "1" || state === "1" || status === "1",
     };
     if (brightnessText !== undefined) {
       result.brightness = Number(brightnessText);
     }
-    
+
     return result;
   }
 
@@ -2388,12 +2538,12 @@ export class ReolinkBaichuanApi {
     // Return type matches DeviceAbilities from types.ts
     const user = this.client.username;
     const extensionXml = buildAbilityInfoExtensionXml(user);
-    
-    const xml = await this.sendXml({ 
+
+    const xml = await this.sendXml({
       cmdId: BC_CMD_ID_ABILITY_INFO,
       extensionXml,
     });
-    
+
     // Parse AbilityInfo XML
     // Expected format based on neolink: multiple token sections (system, network, alarm, image, video, security, replay, PTZ, IO, streaming, disk, record)
     // Each section can contain subModule elements with channelId and abilityValue
@@ -2407,35 +2557,35 @@ export class ReolinkBaichuanApi {
     //   ... etc
     // </AbilityInfo>
     const abilities: Partial<Record<number | "Host", Record<string, number | string | undefined>>> = {};
-    
+
     // List of all possible token sections (based on neolink implementation)
     const tokenSections = [
-      "system", "streaming", "PTZ", "IO", "security", "replay", 
+      "system", "streaming", "PTZ", "IO", "security", "replay",
       "disk", "network", "alarm", "record", "video", "image"
     ];
-    
+
     // Parse each token section
     for (const tokenSection of tokenSections) {
       // Use case-insensitive matching and handle both lowercase and mixed case
       const sectionRegex = new RegExp(`<${tokenSection}[^>]*>([\\s\\S]*?)<\\/${tokenSection}>`, "i");
       const sectionMatch = xml.match(sectionRegex);
-      
+
       if (sectionMatch) {
         const sectionXml = sectionMatch[1] ?? "";
         const subModuleMatches = sectionXml.matchAll(/<subModule[^>]*>([\s\S]*?)<\/subModule>/g);
-        
+
         for (const match of subModuleMatches) {
           const subModuleXml = match[1] ?? "";
           const channelIdText = getXmlText(subModuleXml, "channelId") || getXmlText(subModuleXml, "chnID");
           const abilityValue = getXmlText(subModuleXml, "abilityValue");
-          
+
           if (abilityValue) {
             const channelKey: number | "Host" = channelIdText ? Number(channelIdText) : "Host";
-            
+
             if (!abilities[channelKey]) {
               abilities[channelKey] = {};
             }
-            
+
             // Parse abilityValue string - contains comma-separated capability names
             // Capabilities already include their full name (e.g., "preview_rw", "general_rw")
             const capabilities = abilityValue.split(",").map(c => c.trim()).filter(Boolean);
@@ -2448,26 +2598,26 @@ export class ReolinkBaichuanApi {
         }
       }
     }
-    
+
     // Note: The token section parsing above already handles image and video,
     // so we don't need separate parsing for them
-    
+
     // Also check for top-level AbilityInfo items (host-level metadata like userName)
     const abilityInfoMatch = xml.match(/<AbilityInfo[^>]*>([\s\S]*?)<\/AbilityInfo>/);
     if (abilityInfoMatch) {
       const abilityInfoXml = abilityInfoMatch[1] ?? "";
-      
+
       // Find direct child elements that aren't image/video/subModule
       const directChildren = abilityInfoXml.matchAll(/<([A-Za-z]+)[^>]*>([^<]*)<\/\1>/g);
-      
+
       if (!abilities["Host"]) {
         abilities["Host"] = {};
       }
-      
+
       for (const childMatch of directChildren) {
         const tagName = childMatch[1];
         const textValue = childMatch[2];
-        
+
         // Only store metadata, not parsed ability values (those are already in channel entries)
         if (tagName && textValue !== undefined && !["image", "video", "subModule"].includes(tagName)) {
           // Skip internal parsing artifacts
@@ -2479,12 +2629,12 @@ export class ReolinkBaichuanApi {
         }
       }
     }
-    
+
     // Clean up: remove empty Host entry if it only has metadata
     if (abilities["Host"] && Object.keys(abilities["Host"]).length === 0) {
       delete abilities["Host"];
     }
-    
+
     return abilities;
   }
 
@@ -2501,235 +2651,235 @@ export class ReolinkBaichuanApi {
     const abilities = await this.getAbilityInfo();
     const channelKey: number | "Host" = channel !== undefined && channel !== null ? channel : "Host";
     const channelAbilities = abilities[channelKey];
-    
+
     if (!channelAbilities) {
       return 0;
     }
-    
+
     const value = channelAbilities[capability];
     if (typeof value === "number") {
       return value;
     }
-    
+
     // If value is a string, try to extract version number
     if (typeof value === "string") {
       const numValue = Number(value);
       return Number.isNaN(numValue) ? 0 : numValue;
     }
-    
+
     return 0;
   }
 
+  /**
+   * Get device support info via Baichuan.
+   * cmd_id: 199 (MSG_ID_SUPPORT from neolink)
+   *
+   * Returns host-level support info including ptzMode and per-channel flags (battery, ledCtrl, etc).
+   */
+  async getSupportInfo(): Promise<SupportInfo | undefined> {
+    const xml = await this.sendXml({ cmdId: BC_CMD_ID_SUPPORT });
+    return parseSupportXml(xml);
+  }
+
+  /**
+   * Compute explicit device capabilities (hasZoom/hasPan/hasTilt/hasBattery/...) for a specific channel.
+   *
+   * This method centralizes capability parsing in the library.
+   */
+  async getDeviceCapabilities(
+    channel?: number,
+    options?: {
       /**
-       * Get device support info via Baichuan.
-       * cmd_id: 199 (MSG_ID_SUPPORT from neolink)
-       *
-       * Returns host-level support info including ptzMode and per-channel flags (battery, ledCtrl, etc).
+       * Enable best-effort probing that may generate additional requests.
+       * Defaults to true.
        */
-      async getSupportInfo(): Promise<SupportInfo | undefined> {
-        const xml = await this.sendXml({ cmdId: BC_CMD_ID_SUPPORT });
-        return parseSupportXml(xml);
+      probe?: boolean;
+      /** Enable/disable siren probing (cmd 152/153). Defaults to true. */
+      probeSiren?: boolean;
+      /** Enable/disable floodlight probing (cmd 289). Defaults to true. */
+      probeFloodlight?: boolean;
+    },
+  ): Promise<DeviceCapabilitiesResult> {
+    const ch = this.normalizeChannel(channel);
+    const probeCfg = {
+      probe: options?.probe ?? true,
+      probeSiren: options?.probeSiren ?? true,
+      probeFloodlight: options?.probeFloodlight ?? true,
+    };
+
+    const [abilitiesResult, supportResult] = await Promise.allSettled([
+      this.getAbilityInfo() as Promise<DeviceAbilities>,
+      this.getSupportInfo(),
+    ]);
+
+    const abilities = abilitiesResult.status === "fulfilled" ? abilitiesResult.value : undefined;
+    const support = supportResult.status === "fulfilled" ? supportResult.value : undefined;
+
+    const computeArgs: { channel: number; abilities?: DeviceAbilities; support?: SupportInfo } = { channel: ch };
+    if (abilities) computeArgs.abilities = abilities;
+    if (support) computeArgs.support = support;
+    const capabilities = computeDeviceCapabilities(computeArgs);
+
+    const flat = flattenAbilitiesForChannel(abilities, ch);
+
+    const truthy = (v: unknown): boolean => {
+      if (typeof v === "number") return v > 0;
+      if (typeof v === "string") {
+        const n = Number(v);
+        if (Number.isFinite(n)) return n > 0;
+        return v.length > 0 && v !== "0";
       }
+      return Boolean(v);
+    };
 
-      /**
-       * Compute explicit device capabilities (hasZoom/hasPan/hasTilt/hasBattery/...) for a specific channel.
-       *
-       * This method centralizes capability parsing in the library.
-       */
-      async getDeviceCapabilities(
-        channel?: number,
-        options?: {
-          /**
-           * Enable best-effort probing that may generate additional requests.
-           * Defaults to true.
-           */
-          probe?: boolean;
-          /** Enable/disable siren probing (cmd 152/153). Defaults to true. */
-          probeSiren?: boolean;
-          /** Enable/disable floodlight probing (cmd 289). Defaults to true. */
-          probeFloodlight?: boolean;
-        },
-      ): Promise<DeviceCapabilitiesResult> {
-        const ch = this.normalizeChannel(channel);
-        const probeCfg = {
-          probe: options?.probe ?? true,
-          probeSiren: options?.probeSiren ?? true,
-          probeFloodlight: options?.probeFloodlight ?? true,
-        };
+    const features: DeviceSupportFlags | undefined = support
+      ? {
+        rtsp: truthy((support as any).rtsp),
+        onvif: truthy((support as any).onvif),
+        wifi: truthy((support as any).wifi),
+        record: truthy((support as any).record),
+        ftp: truthy((support as any).ftp),
+        email: truthy((support as any).email),
+        pushAlarm: truthy((support as any).pushAlarm),
+        audioTalk: truthy((support as any).audioTalk),
+      }
+      : undefined;
 
-        const [abilitiesResult, supportResult] = await Promise.allSettled([
-          this.getAbilityInfo() as Promise<DeviceAbilities>,
-          this.getSupportInfo(),
-        ]);
-
-        const abilities = abilitiesResult.status === "fulfilled" ? abilitiesResult.value : undefined;
-        const support = supportResult.status === "fulfilled" ? supportResult.value : undefined;
-
-        const computeArgs: { channel: number; abilities?: DeviceAbilities; support?: SupportInfo } = { channel: ch };
-        if (abilities) computeArgs.abilities = abilities;
-        if (support) computeArgs.support = support;
-        const capabilities = computeDeviceCapabilities(computeArgs);
-
-        const flat = flattenAbilitiesForChannel(abilities, ch);
-
-        const truthy = (v: unknown): boolean => {
-          if (typeof v === "number") return v > 0;
-          if (typeof v === "string") {
-            const n = Number(v);
-            if (Number.isFinite(n)) return n > 0;
-            return v.length > 0 && v !== "0";
-          }
-          return Boolean(v);
-        };
-
-        const features: DeviceSupportFlags | undefined = support
-          ? {
-              rtsp: truthy((support as any).rtsp),
-              onvif: truthy((support as any).onvif),
-              wifi: truthy((support as any).wifi),
-              record: truthy((support as any).record),
-              ftp: truthy((support as any).ftp),
-              email: truthy((support as any).email),
-              pushAlarm: truthy((support as any).pushAlarm),
-              audioTalk: truthy((support as any).audioTalk),
-            }
-          : undefined;
-
-        // Best-effort siren probe.
-        // Some devices support audio alarm but do not advertise it via AbilityInfo/Support.
-        // We try a harmless request first, then fall back to sending "off".
-        if (probeCfg.probe && probeCfg.probeSiren && !capabilities.hasSiren) {
-          const tryGet = async (): Promise<boolean> => {
-            try {
-              await this.sendXml({
-                cmdId: BC_CMD_ID_GET_AUDIO_ALARM,
-                channel: ch,
-                timeoutMs: 1000,
-              });
-              return true;
-            } catch {
-              return false;
-            }
-          };
-
-          const tryOff = async (): Promise<boolean> => {
-            try {
-              const channelId = ch + 1;
-              const payloadXml = buildSirenManualXml(channelId, 0);
-              await this.sendXml({
-                cmdId: BC_CMD_ID_AUDIO_ALARM_PLAY,
-                channel: ch,
-                payloadXml,
-                timeoutMs: 1000,
-              });
-              return true;
-            } catch {
-              return false;
-            }
-          };
-
-          const ok = (await tryGet()) || (await tryOff());
-          if (ok) {
-            capabilities.hasSiren = true;
-          }
-        }
-
-        // Best-effort floodlight probe.
-        // Many firmwares expose only `ledState_rw` (status LED) in AbilityInfo, even when a real floodlight
-        // exists and is controllable via Baichuan. The most reliable signal is whether cmd 289 works.
-        if (probeCfg.probe && probeCfg.probeFloodlight && !capabilities.hasFloodlight) {
-          const channelSupportItems = (support?.items ?? []).filter((i) => i.chnID === ch || i.chnID === ch + 1);
-
-          const parseLightType = (item: any): number | undefined => {
-            const v = item?.lightType;
-            if (typeof v === "number") return v;
-            if (typeof v === "string") {
-              const n = Number(v);
-              return Number.isFinite(n) ? n : undefined;
-            }
-            return undefined;
-          };
-
-          const lightTypes = channelSupportItems
-            .map((i) => parseLightType(i as any))
-            .filter((v): v is number => Number.isFinite(v));
-
-          // If firmware explicitly says there is no white LED/floodlight, do not probe.
-          // This avoids false positives where cmd289 returns a FloodlightTask-like XML but the device
-          // only has IR illumination / status LEDs.
-          if (lightTypes.some((v) => v === 0)) {
-            // leave as false
-          } else if (lightTypes.some((v) => v > 0)) {
-            capabilities.hasFloodlight = true;
-          } else {
-            // No explicit lightType. Probe cmd 289.
-            try {
-              const xml = await this.sendXml({
-                cmdId: BC_CMD_ID_GET_WHITE_LED,
-                channel: ch,
-                timeoutMs: 1000,
-              });
-
-              // Only treat this as floodlight support if the payload clearly looks like floodlight.
-              if (/(<FloodlightTask\b|<FloodlightManual\b|<FloodlightStatusList\b|<WhiteLed\b)/i.test(xml)) {
-                capabilities.hasFloodlight = true;
-              }
-            } catch {
-              // noop
-            }
-          }
-        }
-
-        // Object-detection capabilities.
-        // Always read cmd 299 (AiCfg) and use <detectType> as the single source of truth.
-        // This avoids inference/probing variability across firmwares.
-        let objects: string[] | undefined;
+    // Best-effort siren probe.
+    // Some devices support audio alarm but do not advertise it via AbilityInfo/Support.
+    // We try a harmless request first, then fall back to sending "off".
+    if (probeCfg.probe && probeCfg.probeSiren && !capabilities.hasSiren) {
+      const tryGet = async (): Promise<boolean> => {
         try {
-          const xml = await this.sendXml({ cmdId: 299, channel: ch, timeoutMs: 1500 });
-          const detectTypeRaw = (getXmlText(xml, "detectType") ?? "").trim();
-          if (detectTypeRaw) {
-            const list = detectTypeRaw
-              .split(",")
-              .map((s) => s.trim())
-              .filter(Boolean);
-            if (list.length > 0) objects = list;
+          await this.sendXml({
+            cmdId: BC_CMD_ID_GET_AUDIO_ALARM,
+            channel: ch,
+            timeoutMs: 1000,
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
+      const tryOff = async (): Promise<boolean> => {
+        try {
+          const channelId = ch + 1;
+          const payloadXml = buildSirenManualXml(channelId, 0);
+          await this.sendXml({
+            cmdId: BC_CMD_ID_AUDIO_ALARM_PLAY,
+            channel: ch,
+            payloadXml,
+            timeoutMs: 1000,
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
+      const ok = (await tryGet()) || (await tryOff());
+      if (ok) {
+        capabilities.hasSiren = true;
+      }
+    }
+
+    // Best-effort floodlight probe.
+    // Many firmwares expose only `ledState_rw` (status LED) in AbilityInfo, even when a real floodlight
+    // exists and is controllable via Baichuan. The most reliable signal is whether cmd 289 works.
+    if (probeCfg.probe && probeCfg.probeFloodlight && !capabilities.hasFloodlight) {
+      const channelSupportItems = (support?.items ?? []).filter((i) => i.chnID === ch || i.chnID === ch + 1);
+
+      const parseLightType = (item: any): number | undefined => {
+        const v = item?.lightType;
+        if (typeof v === "number") return v;
+        if (typeof v === "string") {
+          const n = Number(v);
+          return Number.isFinite(n) ? n : undefined;
+        }
+        return undefined;
+      };
+
+      const lightTypes = channelSupportItems
+        .map((i) => parseLightType(i as any))
+        .filter((v): v is number => Number.isFinite(v));
+
+      // If firmware explicitly says there is no white LED/floodlight, do not probe.
+      // This avoids false positives where cmd289 returns a FloodlightTask-like XML but the device
+      // only has IR illumination / status LEDs.
+      if (lightTypes.some((v) => v === 0)) {
+        // leave as false
+      } else if (lightTypes.some((v) => v > 0)) {
+        capabilities.hasFloodlight = true;
+      } else {
+        // No explicit lightType. Probe cmd 289.
+        try {
+          const xml = await this.sendXml({
+            cmdId: BC_CMD_ID_GET_WHITE_LED,
+            channel: ch,
+            timeoutMs: 1000,
+          });
+
+          // Only treat this as floodlight support if the payload clearly looks like floodlight.
+          if (/(<FloodlightTask\b|<FloodlightManual\b|<FloodlightStatusList\b|<WhiteLed\b)/i.test(xml)) {
+            capabilities.hasFloodlight = true;
           }
         } catch {
           // noop
         }
-
-        let presets: PtzPreset[] | undefined;
-        if (capabilities.hasPresets) {
-          const presetsResult = await Promise.allSettled([this.getPtzPresets(ch)]);
-          const r0 = presetsResult[0];
-          if (r0?.status === "fulfilled") {
-            presets = r0.value;
-            capabilities.hasPresets = presets.length > 0;
-          }
-        }
-
-        const debug: import("./types").DeviceCapabilitiesDebugInfo = {
-          channel: ch,
-          channelId1Based: ch + 1,
-          transport: this.client.getTransport(),
-          encryptionKind: this.client.enc.kind,
-          loggedIn: this.client.loggedIn,
-          subscribed: this.client.subscribed,
-          abilitiesAvailable: Boolean(abilities),
-          supportAvailable: Boolean(support),
-        };
-
-        if (flat) debug.abilityMergedKeyCount = Object.keys(flat).length;
-        if (support?.items) debug.supportItemCount = support.items.length;
-
-        const result: DeviceCapabilitiesResult = { capabilities, debug };
-        if (abilities) result.abilities = abilities;
-        if (support) result.support = support;
-        if (presets) result.presets = presets;
-        if (objects) result.objects = objects;
-        if (features) result.features = features;
-        return result;
       }
+    }
+
+    // Object-detection capabilities.
+    // Always read cmd 299 (AiCfg) and use <detectType> as the single source of truth.
+    // This avoids inference/probing variability across firmwares.
+    let objects: string[] | undefined;
+    try {
+      const xml = await this.sendXml({ cmdId: 299, channel: ch, timeoutMs: 1500 });
+      const detectTypeRaw = (getXmlText(xml, "detectType") ?? "").trim();
+      if (detectTypeRaw) {
+        const list = detectTypeRaw
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+        if (list.length > 0) objects = list;
+      }
+    } catch {
+      // noop
+    }
+
+    let presets: PtzPreset[] | undefined;
+    if (capabilities.hasPresets) {
+      const presetsResult = await Promise.allSettled([this.getPtzPresets(ch)]);
+      const r0 = presetsResult[0];
+      if (r0?.status === "fulfilled") {
+        presets = r0.value;
+        capabilities.hasPresets = presets.length > 0;
+      }
+    }
+
+    const debug: import("./types").DeviceCapabilitiesDebugInfo = {
+      channel: ch,
+      channelId1Based: ch + 1,
+      transport: this.client.getTransport(),
+      encryptionKind: this.client.enc.kind,
+      loggedIn: this.client.loggedIn,
+      subscribed: this.client.subscribed,
+      abilitiesAvailable: Boolean(abilities),
+      supportAvailable: Boolean(support),
+    };
+
+    if (flat) debug.abilityMergedKeyCount = Object.keys(flat).length;
+    if (support?.items) debug.supportItemCount = support.items.length;
+
+    const result: DeviceCapabilitiesResult = { capabilities, debug };
+    if (abilities) result.abilities = abilities;
+    if (support) result.support = support;
+    if (presets) result.presets = presets;
+    if (objects) result.objects = objects;
+    if (features) result.features = features;
+    return result;
+  }
 
   /**
    * Create an RTSP server for a video stream.
@@ -2770,10 +2920,10 @@ export class ReolinkBaichuanApi {
     profileOrOptions?:
       | StreamProfile
       | {
-          listenHost?: string;
-          listenPort?: number;
-          path?: string;
-        },
+        listenHost?: string;
+        listenPort?: number;
+        path?: string;
+      },
     optionsMaybe?: {
       listenHost?: string;
       listenPort?: number;
@@ -2818,15 +2968,15 @@ export class ReolinkBaichuanApi {
 
     const server = new BaichuanRtspServer(rtspOptions);
     await server.start();
-    
+
     // Track the server for cleanup
     this.rtspServers.add(server);
-    
+
     // Remove from tracking when server is stopped
     server.once("close", () => {
       this.rtspServers.delete(server);
     });
-    
+
     return server;
   }
 }
