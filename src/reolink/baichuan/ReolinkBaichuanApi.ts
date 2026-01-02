@@ -1080,22 +1080,31 @@ export class ReolinkBaichuanApi {
     // NOTE: Some battery firmwares reject the old "channelId=251 Extension" approach with responseCode=421.
     // Neolink sends MSG_ID 31 with *empty* body and channel_id set to the camera channel.
     const channel = this.client.getConfiguredChannel?.() ?? 0;
-    const neolinkChannelId = channel + 1;
+    // IMPORTANT: In neolink, BcCameraOpt.channel_id is 0 for standalone cameras (no +1 offset).
+    // Our library defaults to reolink_aio-style (channel+1) for most requests, so we try
+    // the exact neolink mapping first and keep +1 as a compatibility fallback.
+    const neolinkChannelId = channel;
+    const reolinkAioChannelId = channel + 1;
 
     const attempts: Array<{ label: string; params: Parameters<BaichuanClient["sendFrame"]>[0] }> = [
       {
         label: `neolink-style channelId=${neolinkChannelId} bodyLen=0`,
-        params: { cmdId: 31, channelIdOverride: neolinkChannelId },
+        params: { cmdId: 31, channelIdOverride: neolinkChannelId, messageClass: BC_CLASS_MODERN_24 },
+      },
+      {
+        label: `reolink_aio-style channelId=${reolinkAioChannelId} bodyLen=0`,
+        params: { cmdId: 31, channelIdOverride: reolinkAioChannelId, messageClass: BC_CLASS_MODERN_24 },
       },
       {
         label: "host channelId=250 bodyLen=0",
-        params: { cmdId: 31, channelIdOverride: 250 },
+        params: { cmdId: 31, channelIdOverride: 250, messageClass: BC_CLASS_MODERN_24 },
       },
       {
         label: "legacy Extension channelId=251",
         params: {
           cmdId: 31,
           channelIdOverride: 250,
+          messageClass: BC_CLASS_MODERN_24,
           extensionXml: `<?xml version="1.0" encoding="UTF-8" ?><Extension version="1.1"><channelId>251</channelId></Extension>`,
         },
       },
