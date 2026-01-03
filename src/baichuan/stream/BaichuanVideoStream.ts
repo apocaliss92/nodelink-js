@@ -325,12 +325,12 @@ export class BaichuanVideoStream extends EventEmitter<{
       this.restartWindowStartMs = now;
       this.restartCountInWindow = 0;
     }
-    if (this.restartCountInWindow >= WATCHDOG_MAX_RESTARTS_PER_MINUTE) {
-      this.logger?.warn(
-        `[BaichuanVideoStream] Watchdog: idle for ${idleMs}ms, but restart budget exceeded; leaving stream as-is`,
-      );
-      return;
-    }
+    // if (this.restartCountInWindow >= WATCHDOG_MAX_RESTARTS_PER_MINUTE) {
+    //   this.logger?.warn(
+    //     `[BaichuanVideoStream] Watchdog: idle for ${idleMs}ms, but restart budget exceeded; leaving stream as-is`,
+    //   );
+    //   return;
+    // }
     this.restartCountInWindow++;
 
     void this.restartNativeStream({ reason: `idle ${idleMs}ms` });

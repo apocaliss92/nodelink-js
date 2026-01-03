@@ -13,6 +13,15 @@ export type ReolinkHttpClientOptions = {
 };
 
 export class ReolinkHttpClient {
+  private static readonly sessionPool = new Map<
+    string,
+    {
+      token?: string;
+      tokenExpiresAt?: number;
+      loginInFlight?: Promise<void>;
+    }
+  >();
+
   private readonly host: string;
   private readonly username: string;
   private readonly password: string;
@@ -55,6 +64,23 @@ export class ReolinkHttpClient {
     this.tokenExpiresAt = undefined;
   }
 
+  private sessionKey(): string {
+    const scheme = this.useHttps ? "https" : "http";
+    const port = this.port ?? (this.useHttps ? 443 : 80);
+    // Token is bound to host + user session. We intentionally do NOT include password here;
+    // a password change should be handled by consumer recreating the client or by logout.
+    return `${scheme}://${this.host}:${port}|${this.username}`;
+  }
+
+  private getSharedSession(): { token?: string; tokenExpiresAt?: number; loginInFlight?: Promise<void> } {
+    const key = this.sessionKey();
+    const existing = ReolinkHttpClient.sessionPool.get(key);
+    if (existing) return existing;
+    const created: { token?: string; tokenExpiresAt?: number; loginInFlight?: Promise<void> } = {};
+    ReolinkHttpClient.sessionPool.set(key, created);
+    return created;
+  }
+
   private baseUrl(): string {
     const scheme = this.useHttps ? "https" : "http";
     const port = this.port ?? (this.useHttps ? 443 : 80);
@@ -76,9 +102,12 @@ export class ReolinkHttpClient {
     return Date.now() + 10_000 < this.tokenExpiresAt;
   }
 
-  async login(): Promise<void> {
-    if (this.isTokenValid()) return;
+  private isSharedTokenValid(shared: { token?: string; tokenExpiresAt?: number }): boolean {
+    if (!shared.token || !shared.tokenExpiresAt) return false;
+    return Date.now() + 10_000 < shared.tokenExpiresAt;
+  }
 
+  private async performLogin(): Promise<void> {
     const body: ReolinkCmdRequest[] = [
       {
         cmd: "Login",
@@ -97,10 +126,47 @@ export class ReolinkHttpClient {
     if (!first || first.code !== 0 || !first.value?.Token?.name) {
       throw new Error(`Login failed: ${JSON.stringify(rsp)}`);
     }
+
     const lease = Number(first.value.Token.leaseTime);
     const token = first.value.Token.name;
+    const expiresAt = Date.now() + (Number.isFinite(lease) ? lease * 1000 : 0);
+
     this.token = token;
-    this.tokenExpiresAt = Date.now() + (Number.isFinite(lease) ? lease * 1000 : 0);
+    this.tokenExpiresAt = expiresAt;
+
+    const shared = this.getSharedSession();
+    shared.token = token;
+    shared.tokenExpiresAt = expiresAt;
+  }
+
+  async login(): Promise<void> {
+    if (this.isTokenValid()) return;
+
+    const shared = this.getSharedSession();
+    if (this.isSharedTokenValid(shared)) {
+      this.token = shared.token;
+      this.tokenExpiresAt = shared.tokenExpiresAt;
+      return;
+    }
+
+    if (shared.loginInFlight) {
+      await shared.loginInFlight;
+      if (this.isSharedTokenValid(shared)) {
+        this.token = shared.token;
+        this.tokenExpiresAt = shared.tokenExpiresAt;
+      }
+      return;
+    }
+
+    shared.loginInFlight = (async () => {
+      try {
+        await this.performLogin();
+      } finally {
+        delete shared.loginInFlight;
+      }
+    })();
+
+    await shared.loginInFlight;
   }
 
   async logout(): Promise<void> {
@@ -109,6 +175,10 @@ export class ReolinkHttpClient {
       await this.call("Logout", { action: 0, param: {} });
     } finally {
       this.clearToken();
+
+      const shared = this.getSharedSession();
+      delete shared.token;
+      delete shared.tokenExpiresAt;
     }
   }
 
@@ -156,6 +226,44 @@ export class ReolinkHttpClient {
       }
       const json = JSON.parse(text) as ReolinkCmdResponse<TValue>[];
       return json;
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+  /**
+   * Take a snapshot via CGI `cmd=Snap` and return the raw JPEG bytes.
+   *
+   * This is a binary endpoint (not JSON). Requires a valid token.
+   */
+  async snap(channel: number, opts?: { timeoutMs?: number; rs?: string }): Promise<Buffer> {
+    await this.login();
+    if (!this.token) throw new Error("Missing token after login");
+
+    const rs = opts?.rs ?? Date.now().toString();
+    const url = this.apiUrl({
+      cmd: "Snap",
+      channel,
+      rs,
+      token: this.token,
+    });
+
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), opts?.timeoutMs ?? this.timeoutMs);
+    try {
+      const init: any = {
+        method: "GET",
+        signal: ac.signal,
+      };
+      if (this.useHttps && this.httpsAgent) init.dispatcher = this.httpsAgent as any;
+
+      const res = await fetch(url, init as RequestInit);
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`HTTP ${res.status}: ${text}`);
+      }
+      const ab = await res.arrayBuffer();
+      return Buffer.from(ab);
     } finally {
       clearTimeout(t);
     }

@@ -1,14 +1,22 @@
-import { BaichuanRtspServer, type BaichuanRtspServerOptions } from "../../baichuan/stream/BaichuanRtspServer";
-import { BaichuanClient, type BaichuanClientOptions } from "../../client/BaichuanClient";
-import { type Logger } from "../../debug/DebugConfig";
 import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
+import { BaichuanRtspServer, type BaichuanRtspServerOptions } from "../../baichuan/stream/BaichuanRtspServer";
+import { BaichuanClient, type BaichuanClientOptions } from "../../client/BaichuanClient";
+import { type Logger } from "../../debug/DebugConfig";
 import {
-  BC_CLASS_MODERN_24,
   BC_CLASS_FILE_DOWNLOAD,
+  BC_CLASS_MODERN_24,
   BC_CMD_ID_ABILITY_INFO,
   BC_CMD_ID_AUDIO_ALARM_PLAY,
+  BC_CMD_ID_FILE_INFO_LIST_CLOSE,
+  BC_CMD_ID_FILE_INFO_LIST_DOWNLOAD,
+  BC_CMD_ID_FILE_INFO_LIST_GET,
+  BC_CMD_ID_FILE_INFO_LIST_OPEN,
+  BC_CMD_ID_FIND_REC_VIDEO_CLOSE,
+  BC_CMD_ID_FIND_REC_VIDEO_GET,
+  BC_CMD_ID_FIND_REC_VIDEO_OPEN,
+  BC_CMD_ID_FLOODLIGHT_STATUS_LIST,
   BC_CMD_ID_GET_AUDIO_ALARM,
   BC_CMD_ID_GET_BATTERY_INFO,
   BC_CMD_ID_GET_BATTERY_INFO_LIST,
@@ -17,7 +25,6 @@ import {
   BC_CMD_ID_GET_PTZ_PRESET,
   BC_CMD_ID_GET_WHITE_LED,
   BC_CMD_ID_GET_ZOOM_FOCUS,
-  BC_CMD_ID_FLOODLIGHT_STATUS_LIST,
   BC_CMD_ID_PTZ_CONTROL,
   BC_CMD_ID_PTZ_CONTROL_PRESET,
   BC_CMD_ID_SET_AI_ALARM,
@@ -34,13 +41,6 @@ import {
   BC_CMD_ID_UDP_KEEP_ALIVE,
   BC_CMD_ID_VIDEO,
   BC_CMD_ID_VIDEO_STOP,
-  BC_CMD_ID_FILE_INFO_LIST_OPEN,
-  BC_CMD_ID_FILE_INFO_LIST_GET,
-  BC_CMD_ID_FILE_INFO_LIST_CLOSE,
-  BC_CMD_ID_FILE_INFO_LIST_DOWNLOAD,
-  BC_CMD_ID_FIND_REC_VIDEO_OPEN,
-  BC_CMD_ID_FIND_REC_VIDEO_GET,
-  BC_CMD_ID_FIND_REC_VIDEO_CLOSE,
 } from "../../protocol/constants";
 import { buildAbilityInfoExtensionXml, buildBinaryExtensionXml, buildChannelExtensionXml, buildFloodlightManualXml, buildPreviewStopXml, buildPreviewXml, buildPtzControlXml, buildPtzPresetXml, buildPtzPresetXmlV2, buildSirenManualXml, buildSirenTimesXml, buildStartZoomFocusXml, getXmlText, xmlEscape } from "../../protocol/xml";
 import {
@@ -49,34 +49,143 @@ import {
   type BatteryInfo,
   type ChannelStreamMetadata,
   type DeviceAbilities,
-  type DeviceCapabilities,
   type DeviceCapabilitiesResult,
   type DeviceSupportFlags,
+  type DownloadRecordingParams,
   type Events,
+  type ListRecordingsParams,
   type OsdConfig,
   type PirState,
   type PtzCommand,
   type PtzPreset,
+  type RecordingFile,
+  type RecordingStreamType,
   type ReolinkEvent,
   type ReolinkSimpleEvent,
   type ReolinkSimpleEventType,
+  type SleepStatus,
   type StreamMetadata,
   type StreamProfile,
-  type SleepStatus,
   type SupportInfo,
   type TwoWayAudioConfig,
   type VideoCodec,
-  type WhiteLedState,
-  type DownloadRecordingParams,
-  type ListRecordingsParams,
-  type RecordingFile,
-  type RecordingStreamType,
+  type WhiteLedState
 } from "./types";
 
 import { parseRecordingFileName } from "./recordingFileName";
 
-import { abilitiesHasAny, computeDeviceCapabilities, flattenAbilitiesForChannel, parseSupportXml } from "./capabilities";
+import { ReolinkCgiApi } from "../cgi/ReolinkCgiApi";
 import { ReolinkHttpClient } from "../http/ReolinkHttpClient";
+import type { ReolinkCmdResponse } from "../http/types";
+import { computeDeviceCapabilities, flattenAbilitiesForChannel, parseSupportXml } from "./capabilities";
+
+export type ReolinkNvrChannelInfo = {
+  channel: number;
+  /** Camera model string (Baichuan: <type>, CGI: typeInfo). */
+  model?: string;
+  /** Camera name (OSD/name). */
+  name?: string;
+  /** Camera UID (when available via NVR CGI). */
+  uid?: string;
+  /** Online flag (when available via NVR CGI). */
+  online?: boolean;
+  /** Sleep flag (when available via NVR CGI, common for battery cams). */
+  sleep?: boolean;
+  /** Firmware version (Baichuan: firmwareVersion, CGI: firmVer). */
+  firmwareVersion?: string;
+  /** Board info (CGI: boardInfo). */
+  boardInfo?: string;
+  /** Where the info came from for this channel. */
+  source: "baichuan" | "cgi";
+};
+
+function asBool01(v: unknown): boolean | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v === "boolean") return v;
+  if (typeof v === "number") return v === 1;
+  if (typeof v === "string") {
+    const s = v.trim().toLowerCase();
+    if (s === "1" || s === "true" || s === "yes" || s === "on") return true;
+    if (s === "0" || s === "false" || s === "no" || s === "off") return false;
+  }
+  return undefined;
+}
+
+function extractStatusArrayFromGetChannelstatus(rsp: ReolinkCmdResponse[]): any[] {
+  if (!rsp || rsp.length === 0) return [];
+  const v: any = rsp[0]?.value;
+  if (!v) return [];
+
+  // Try different variants of the field name.
+  // Note: some NVRs use "status" instead of "Channelstatus".
+  let status = v?.status ?? v?.Channelstatus ?? v?.ChannelStatus ?? v?.channelStatus ?? v?.channelstatus;
+
+  // If it's not an array, the value itself might be the array.
+  if (!Array.isArray(status)) {
+    if (Array.isArray(v)) {
+      status = v;
+    } else {
+      status = v?.channels ?? v?.Channels ?? v?.channel ?? v?.Channel;
+      if (!Array.isArray(status)) {
+        const channelKeys = Object.keys(v).filter((k) => /^channel\d+$/i.test(k) || /^ch\d+$/i.test(k));
+        if (channelKeys.length > 0) {
+          status = channelKeys.map((k) => {
+            const ch = v[k];
+            return typeof ch === "object" && ch !== null ? ch : { channel: parseInt(k.replace(/\D/g, ""), 10) };
+          });
+        }
+      }
+    }
+  }
+
+  return Array.isArray(status) ? status : [];
+}
+
+function extractChannelSummariesFromChannelStatus(rsp: ReolinkCmdResponse[]): Array<{
+  channel: number;
+  online?: boolean;
+  sleep?: boolean;
+  name?: string;
+  uid?: string;
+  typeInfo?: string;
+}> {
+  const status = extractStatusArrayFromGetChannelstatus(rsp);
+  if (!status.length) return [];
+
+  const out: Array<{
+    channel: number;
+    online?: boolean;
+    sleep?: boolean;
+    name?: string;
+    uid?: string;
+    typeInfo?: string;
+  }> = [];
+
+  for (const ch of status) {
+    if (typeof ch !== "object" || ch === null) continue;
+
+    const channel = ch?.channel ?? ch?.id ?? ch?.channelId ?? ch?.Channel ?? ch?.ID ?? ch?.ChannelId;
+    if (typeof channel !== "number" || !Number.isFinite(channel)) continue;
+
+    const name = typeof ch?.name === "string" ? ch.name : undefined;
+    const uid = typeof ch?.uid === "string" ? ch.uid : undefined;
+    const typeInfo = typeof ch?.typeInfo === "string" ? ch.typeInfo : undefined;
+    const online = asBool01(ch?.online);
+    const sleep = asBool01(ch?.sleep);
+
+    out.push({
+      channel,
+      ...(online !== undefined ? { online } : {}),
+      ...(sleep !== undefined ? { sleep } : {}),
+      ...(name ? { name } : {}),
+      ...(uid ? { uid } : {}),
+      ...(typeInfo ? { typeInfo } : {}),
+    });
+  }
+
+  out.sort((a, b) => a.channel - b.channel);
+  return out;
+}
 
 type TalkAbility = import("./types").TalkAbility;
 type TalkAudioConfig = import("./types").TalkAudioConfig;
@@ -864,12 +973,189 @@ export class ReolinkBaichuanApi {
   }
 
   /** GetDevInfo via Baichuan: host cmd_id 80, channel cmd_id 318 */
-  async getInfo(channel?: number): Promise<Record<string, string>> {
-    const req: { cmdId: number; channel?: number } = { cmdId: channel == null ? 80 : 318 };
+  async getInfo(
+    channel?: number,
+    options?: {
+      timeoutMs?: number;
+      /** List of XML tags to extract. Defaults to the canonical minimal set used by reolink_aio. */
+      tags?: string[];
+    },
+  ): Promise<Record<string, string>> {
+    const req: { cmdId: number; channel?: number; timeoutMs?: number } = { cmdId: channel == null ? 80 : 318 };
     if (channel !== undefined) req.channel = channel;
+    if (options?.timeoutMs != null) req.timeoutMs = options.timeoutMs;
     const xml = await this.sendXml(req);
-    // Keys used by reolink_aio: type, hardwareVersion, firmwareVersion, itemNo, serialNumber, name
-    return getXmlTexts(xml, ["type", "hardwareVersion", "firmwareVersion", "itemNo", "serialNumber", "name"]);
+    // Canonical minimal set used by reolink_aio: type, hardwareVersion, firmwareVersion, itemNo, serialNumber, name
+    const tags = options?.tags?.length
+      ? options.tags
+      : ["type", "hardwareVersion", "firmwareVersion", "itemNo", "serialNumber", "name"];
+    return getXmlTexts(xml, tags);
+  }
+
+  /**
+   * Convenience helper to get a minimal per-channel identity tuple.
+   *
+   * Note: the Baichuan DevInfo payload uses <type> as the model string on most firmwares.
+   */
+  async getChannelIdentity(
+    channel: number,
+    options?: {
+      timeoutMs?: number;
+    },
+  ): Promise<{ channel: number; model: string; name: string }> {
+    const info = await this.getInfo(channel, {
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+      tags: ["type", "name"],
+    });
+    return {
+      channel,
+      model: (info.type ?? "").trim(),
+      name: (info.name ?? "").trim(),
+    };
+  }
+
+  /**
+   * NVR/HomeHub helper: get a per-channel overview (model/name/uid/online/sleep).
+   *
+   * The method supports two sources:
+   * - `source: "cgi"` (default): uses CGI only (GetChannelstatus + GetChnTypeInfo)
+   * - `source: "baichuan"`: uses Baichuan only (AbilityInfo + per-channel DevInfo)
+   */
+  async getNvrChannelsInfo(options?: {
+    /** Which source to use. Default: "cgi". */
+    source?: "baichuan" | "cgi";
+    /** Per-request timeout for Baichuan channel probes (default: 3500ms). */
+    timeoutMs?: number;
+    /** Max channels to probe if enumeration is not available (default: 16). */
+    maxChannels?: number;
+    /** CGI timeout (default: 30000ms). */
+    cgiTimeoutMs?: number;
+  }): Promise<ReolinkNvrChannelInfo[]> {
+    const source = options?.source ?? "cgi";
+    const timeoutMs = options?.timeoutMs ?? 3500;
+    const maxChannels = options?.maxChannels ?? 16;
+    const cgiTimeoutMs = options?.cgiTimeoutMs ?? 30_000;
+
+    if (source === "cgi") {
+      const cgi = new ReolinkCgiApi({
+        host: this.host,
+        username: this.username,
+        password: this.password,
+        timeoutMs: cgiTimeoutMs,
+      });
+
+      try {
+        await cgi.login();
+
+        // Single HTTP request: batch GetChannelstatus + GetChnTypeInfo(0..maxChannels-1)
+        // We intentionally rely on response order to map each GetChnTypeInfo response to its channel.
+        const n = Number.isFinite(maxChannels) && maxChannels > 0 ? maxChannels : 16;
+        const batch = [
+          { cmd: "GetChannelstatus", action: 0 },
+          ...Array.from({ length: n }, (_, i) => ({ cmd: "GetChnTypeInfo", action: 0, param: { channel: i } })),
+        ];
+        const rsp = await cgi.callMany<any>(batch);
+
+        const statusRsp = rsp.length ? [rsp[0]!] : [];
+        const summaries = extractChannelSummariesFromChannelStatus(statusRsp);
+        const summaryByChannel = new Map<number, (typeof summaries)[number]>();
+        for (const s of summaries) summaryByChannel.set(s.channel, s);
+
+        const channelsFromCgi = summaries.map((s) => s.channel);
+        const channels = channelsFromCgi.length
+          ? [...new Set(channelsFromCgi)].sort((a, b) => a - b)
+          : Array.from({ length: n }, (_, i) => i);
+
+        const out: ReolinkNvrChannelInfo[] = [];
+        for (const channel of channels) {
+          const s = summaryByChannel.get(channel);
+
+          let model: string | undefined;
+          let firmwareVersion: string | undefined;
+          let boardInfo: string | undefined;
+
+          // In the batch, index 1..n correspond to channel 0..n-1
+          if (channel >= 0 && channel < n) {
+            const typeRsp = rsp[1 + channel];
+            const value = (typeRsp as any)?.value;
+            if (value && typeof value === "object") {
+              if (typeof (value as any).typeInfo === "string" && (value as any).typeInfo.trim()) model = (value as any).typeInfo.trim();
+              if (typeof (value as any).firmVer === "string" && (value as any).firmVer.trim()) firmwareVersion = (value as any).firmVer.trim();
+              if (typeof (value as any).boardInfo === "string" && (value as any).boardInfo.trim()) boardInfo = (value as any).boardInfo.trim();
+            }
+          }
+
+          const name = s?.name?.trim();
+          const finalModel = (model ?? s?.typeInfo)?.trim();
+          const uid = s?.uid?.trim();
+
+          out.push({
+            channel,
+            ...(finalModel ? { model: finalModel } : {}),
+            ...(name ? { name } : {}),
+            ...(uid ? { uid } : {}),
+            ...(s?.online !== undefined ? { online: s.online } : {}),
+            ...(s?.sleep !== undefined ? { sleep: s.sleep } : {}),
+            ...(firmwareVersion ? { firmwareVersion } : {}),
+            ...(boardInfo ? { boardInfo } : {}),
+            source: "cgi",
+          });
+        }
+
+        return out;
+      } finally {
+        // Intentionally do not logout here.
+        // Keeping the CGI token alive reduces session churn and avoids hitting max-session limits.
+      }
+    }
+
+    // source === "baichuan"
+    // 1) Enumerate channels via Baichuan AbilityInfo when available.
+    let channels: number[] = [];
+    try {
+      const abilityInfo = await this.getAbilityInfo();
+      const keys = Object.keys(abilityInfo ?? {}).filter((k) => k !== "Host");
+      channels = keys
+        .map((k) => Number(k))
+        .filter((n) => Number.isFinite(n))
+        .sort((a, b) => a - b);
+    } catch {
+      // ignore
+    }
+
+    if (channels.length === 0) {
+      const n = Number.isFinite(maxChannels) && maxChannels > 0 ? maxChannels : 16;
+      channels = Array.from({ length: n }, (_, i) => i);
+    }
+
+    // 2) Try Baichuan per-channel DevInfo.
+    const baichuanRows: ReolinkNvrChannelInfo[] = [];
+    for (const channel of channels) {
+      try {
+        const info = await this.getInfo(channel, {
+          timeoutMs,
+          tags: ["type", "name", "firmwareVersion"],
+        });
+        const model = (info.type ?? "").trim();
+        const name = (info.name ?? "").trim();
+        const firmwareVersion = (info.firmwareVersion ?? "").trim();
+
+        const hasAny = !!(model || name || firmwareVersion);
+        if (!hasAny) continue;
+
+        baichuanRows.push({
+          channel,
+          ...(model ? { model } : {}),
+          ...(name ? { name } : {}),
+          ...(firmwareVersion ? { firmwareVersion } : {}),
+          source: "baichuan",
+        });
+      } catch {
+        // ignore
+      }
+    }
+
+    return baichuanRows.sort((a, b) => a.channel - b.channel);
   }
 
   /** GetEnc via Baichuan: cmd_id 56 (returns raw XML). */
