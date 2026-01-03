@@ -107,7 +107,7 @@ async function runBatterySleepWakeTest() {
     password: batteryPassword,
     uid: batteryUid,
     transport: batteryTransport,
-    debug: true,
+    debugOptions: { general: true },
   });
 
   api.client.on("error", (err: any) => {

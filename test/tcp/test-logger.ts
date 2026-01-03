@@ -22,7 +22,7 @@ async function main() {
     password: config.password,
     channel: 0,
     logger: customLogger,
-    debug: true, // Enable debug to see logs
+    debugOptions: { general: true },
   });
 
   try {

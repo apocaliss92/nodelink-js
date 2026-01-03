@@ -47,7 +47,7 @@ async function runUdpTests() {
     password: config.udp.password,
     uid: config.udp.uid,
     transport: "udp",
-    debug: true, // Enable debug to see what's happening
+    debugOptions: { general: true },
   });
 
   // Handle errors

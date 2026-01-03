@@ -20,9 +20,8 @@ async function main() {
     password: PASS,
     uid: UID,
     transport: "udp",
-    debug: true,
     debugOptions: {
-        enabled: true,
+        general: true,
         traceStream: true,
     }
   });

@@ -11,7 +11,7 @@ export interface Logger {
 
 export type DebugOptions = {
   /** Enables generic debug logs. */
-  enabled?: boolean;
+  general?: boolean;
   /** Enables extra RTSP proxy/server debug logs (quiet by default). */
   debugRtsp?: boolean;
   /** Enables stream command tracing (tx/rx cmd_id 3/4 + rx stream frames). */
@@ -33,7 +33,7 @@ export type DebugOptions = {
 };
 
 export type DebugConfig = {
-  enabled: boolean;
+  general: boolean;
   debugRtsp: boolean;
   traceStream: boolean;
   traceTalk: boolean;
@@ -47,12 +47,12 @@ export type DebugConfig = {
 };
 
 export function normalizeDebugOptions(opts?: DebugOptions): DebugConfig {
-  const enabled = opts?.enabled === true;
+  const general = opts?.general === true;
   const debugRtsp = opts?.debugRtsp === true;
   const traceStream = opts?.traceStream === true;
   const traceTalk = opts?.traceTalk === true;
   const traceEvents = opts?.traceEvents === true;
-  const debugH264 = opts?.debugH264 === true || enabled;
+  const debugH264 = opts?.debugH264 === true;
   const debugParamSets = opts?.debugParamSets === true;
 
   const dumpEnabled = opts?.dump?.enabled === true;
@@ -60,7 +60,7 @@ export function normalizeDebugOptions(opts?: DebugOptions): DebugConfig {
   const dumpBcMedia = opts?.dump?.bcmedia ?? dumpEnabled;
   const dumpNals = opts?.dump?.nals ?? dumpEnabled;
 
-  return { enabled, debugRtsp, traceStream, traceTalk, traceEvents, debugH264, debugParamSets, dumpEnabled, dumpDir, dumpBcMedia, dumpNals };
+  return { general, debugRtsp, traceStream, traceTalk, traceEvents, debugH264, debugParamSets, dumpEnabled, dumpDir, dumpBcMedia, dumpNals };
 }
 
 export function ensureDumpDir(cfg: DebugConfig): void {
@@ -69,12 +69,12 @@ export function ensureDumpDir(cfg: DebugConfig): void {
 }
 
 export function debugLog(cfg: DebugConfig, logger: Logger, tag: string, message: string): void {
-  if (!cfg.enabled) return;
+  if (!cfg.general) return;
   logger.debug(`[${tag}] ${message}`);
 }
 
 export function debugWarn(cfg: DebugConfig, logger: Logger, tag: string, message: string): void {
-  if (!cfg.enabled) return;
+  if (!cfg.general) return;
   logger.warn(`[${tag}] ${message}`);
 }
 

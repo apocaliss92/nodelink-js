@@ -2204,6 +2204,15 @@ ${xmlDateTimePayload("endTime", end)}
       });
     } catch {
       // ignore
+    } finally {
+      // IMPORTANT: startVideoStream subscribes (MSG_ID_VIDEO=3, msgNum) to filter push frames and
+      // to drive keepalive/idle-disconnect decisions in BaichuanClient.
+      // Always unsubscribe when stopping the stream, even if VIDEO_STOP times out.
+      try {
+        if (msgNum !== undefined) this.client.unsubscribeVideoStream(BC_CMD_ID_VIDEO, msgNum);
+      } catch {
+        // ignore
+      }
     }
   }
 

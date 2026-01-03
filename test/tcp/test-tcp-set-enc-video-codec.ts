@@ -51,7 +51,7 @@ async function main(): Promise<void> {
     username: config.tcp.username,
     password: config.tcp.password,
     transport: "tcp",
-    debug: true,
+    debugOptions: { general: true },
   });
 
   try {

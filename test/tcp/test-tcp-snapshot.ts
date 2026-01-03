@@ -50,7 +50,7 @@ async function runSnapshotTest() {
     username: config.tcp.username,
     password: config.tcp.password,
     transport: "tcp",
-    debug: true, // Enable debug to see what's happening
+    debugOptions: { general: true },
   });
 
   // Handle errors

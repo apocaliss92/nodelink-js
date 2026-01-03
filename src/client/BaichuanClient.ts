@@ -36,12 +36,26 @@ export type BaichuanClientOptions = {
    * For standalone cameras: usually 0.
    */
   channel?: number;
-  /** If true, emits additional debug events. */
-  debug?: boolean;
-  /** Structured debug/tracing/dump options (preferred over env-based toggles). */
+  /** Structured debug/tracing/dump options. */
   debugOptions?: DebugOptions;
   /** Logger instance (e.g. console). If provided, debug logs will be sent here. */
   logger?: Logger;
+
+  /**
+   * Neolink-style idle disconnect.
+   *
+   * When enabled, the client will close its socket after a period of *user inactivity*
+   * (no explicit API calls), as long as there are:
+   * - no active video subscriptions on this client
+   * - no in-flight requests
+   * - no active permits
+   *
+   * Useful mainly for battery/BCUDP cameras to reduce the chance of keeping them awake.
+   */
+  idleDisconnect?: boolean;
+
+  /** Idle timeout used when `idleDisconnect` is enabled. Default: 30s (neolink behavior). */
+  idleDisconnectTimeoutMs?: number;
   /**
    * Transport to use:
    * - `tcp`: Baichuan TCP (typical for wired cameras)
@@ -91,6 +105,11 @@ export class BaichuanClient extends EventEmitter<{
 
   private keepAliveTimer: NodeJS.Timeout | undefined;
   private keepAlivePingInFlight = false;
+
+  private idleDisconnectTimer: NodeJS.Timeout | undefined;
+  private lastUserActivityAtMs: number | undefined;
+  private permitSeq = 1;
+  private readonly permits = new Map<number, { timer: NodeJS.Timeout | undefined; untilMs: number; reason: string | undefined }>();
 
   private lastRxAtMs: number | undefined;
   private lastTxAtMs: number | undefined;
@@ -156,8 +175,119 @@ export class BaichuanClient extends EventEmitter<{
     super();
     this.opts = options;
     this.logger = options.logger ?? console;
-    // Back-compat: `debug: true` enables generic debug logs.
-    this.debugCfg = normalizeDebugOptions({ ...(options.debug ? { enabled: true } : {}), ...(options.debugOptions ?? {}) });
+    this.debugCfg = normalizeDebugOptions(options.debugOptions);
+  }
+
+  private logFixed(event: string, data?: unknown): void {
+    const prefix = "[BaichuanClient]";
+    const msg = `${prefix} ${event}`;
+    const l: any = this.logger as any;
+
+    if (typeof l.info === "function") {
+      l.info(msg, data);
+      return;
+    }
+    if (typeof l.log === "function") {
+      l.log(msg, data);
+      return;
+    }
+    if (typeof l.warn === "function") {
+      l.warn(msg, data);
+    }
+  }
+
+  private getIdleDisconnectTimeoutMs(): number {
+    const v = this.opts.idleDisconnectTimeoutMs;
+    if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
+    return 30_000;
+  }
+
+  private isIdleDisconnectEnabled(): boolean {
+    return this.opts.idleDisconnect === true;
+  }
+
+  private clearIdleDisconnectTimer(): void {
+    if (!this.idleDisconnectTimer) return;
+    clearTimeout(this.idleDisconnectTimer);
+    this.idleDisconnectTimer = undefined;
+  }
+
+  private touchUserActivity(reason: string): void {
+    this.lastUserActivityAtMs = Date.now();
+    this.logDebug("user_activity", { reason, atMs: this.lastUserActivityAtMs });
+  }
+
+  private isIdleDisconnectEligibleNow(): boolean {
+    if (!this.isIdleDisconnectEnabled()) return false;
+    if (!this.isSocketConnected()) return false;
+    if (this.pending.size > 0) return false;
+    if (this.hasActiveVideoSubscriptionsInternal()) return false;
+    if (this.permits.size > 0) return false;
+    return true;
+  }
+
+  private kickIdleDisconnectTimer(): void {
+    if (!this.isIdleDisconnectEnabled()) return;
+    this.clearIdleDisconnectTimer();
+
+    if (!this.isIdleDisconnectEligibleNow()) return;
+    if (this.lastUserActivityAtMs == null) return;
+
+    const timeoutMs = this.getIdleDisconnectTimeoutMs();
+    const elapsedMs = Date.now() - this.lastUserActivityAtMs;
+    const delayMs = Math.max(0, timeoutMs - elapsedMs);
+
+    this.idleDisconnectTimer = setTimeout(() => {
+      try {
+        if (!this.isIdleDisconnectEligibleNow()) return;
+        if (this.lastUserActivityAtMs == null) return;
+        const elapsed2 = Date.now() - this.lastUserActivityAtMs;
+        if (elapsed2 < timeoutMs) {
+          this.kickIdleDisconnectTimer();
+          return;
+        }
+        this.logDebug("idle_disconnect", { elapsedMs: elapsed2, timeoutMs, transport: this.transport });
+        this.logFixed("idle_disconnect", { elapsedMs: elapsed2, timeoutMs, transport: this.transport, host: this.opts.host });
+        void this.close();
+      } catch (e) {
+        this.logDebug("idle_disconnect_error", e);
+      }
+    }, delayMs);
+    this.idleDisconnectTimer.unref?.();
+  }
+
+  /**
+   * Acquire a temporary permit to keep the connection open (neolink-style).
+   *
+   * Returns a release function.
+   */
+  acquirePermit(holdMs = this.getIdleDisconnectTimeoutMs(), reason?: string): () => void {
+    const ms = Math.max(0, Math.floor(holdMs));
+    const id = this.permitSeq++;
+    const untilMs = Date.now() + ms;
+
+    let timer: NodeJS.Timeout | undefined;
+    if (ms > 0) {
+      timer = setTimeout(() => this.releasePermit(id, "timeout"), ms);
+      timer.unref?.();
+    }
+
+    this.permits.set(id, { timer, untilMs, reason });
+    this.logDebug("permit_acquired", { id, holdMs: ms, untilMs, reason, permits: this.permits.size });
+
+    // A permit disables idle disconnect.
+    this.clearIdleDisconnectTimer();
+
+    return () => this.releasePermit(id, "manual");
+  }
+
+  private releasePermit(id: number, how: "manual" | "timeout" | "close"): void {
+    const p = this.permits.get(id);
+    if (!p) return;
+    if (p.timer) clearTimeout(p.timer);
+    this.permits.delete(id);
+    this.logDebug("permit_released", { id, how, permits: this.permits.size });
+    this.kickIdleDisconnectTimer();
   }
 
   private getDeviceRegistryKey(): string {
@@ -193,8 +323,7 @@ export class BaichuanClient extends EventEmitter<{
   }
 
   private logDebug(event: string, data?: unknown): void {
-    // Treat `debugOptions.enabled` as a superset of the legacy `debug: true`.
-    if (this.opts.debug || this.debugCfg.enabled) {
+    if (this.debugCfg.general) {
       this.logger.debug(`[BaichuanClient] ${event}`, data);
       this.emit("debug", event, data);
     }
@@ -297,17 +426,30 @@ export class BaichuanClient extends EventEmitter<{
   }
 
   /**
-   * Best-effort sleep heuristic for battery/BCUDP cameras.
+   * Sleep/idle inference for battery/BCUDP cameras.
    *
-   * This does NOT send any request to the camera.
-   * If there has been no inbound traffic for `idleMs`, the camera is *likely* sleeping
-   * (or the network path is down).
+   * With `idleDisconnect` enabled, this library can actively close the BCUDP socket when idle.
+   * In that mode we can rely on connection state instead of RX inactivity heuristics.
+   *
+   * Behavior:
+   * - If `idleDisconnect` is enabled: rely on connection state (socket closed => sleeping).
+   * - Otherwise: fallback to RX inactivity heuristics (no RX for `idleMs`).
    */
   isProbablySleeping(idleMs = 15_000): boolean {
     if (this.transport !== "udp") return false;
-    const last = this.lastRxAtMs;
-    if (last == null) return false;
-    return Date.now() - last >= idleMs;
+
+    // Deterministic mode: if we actively idle-disconnect, sleep maps to socket state.
+    if (this.isIdleDisconnectEnabled()) {
+      void idleMs; // kept for backward compatibility
+      return !this.isSocketConnected();
+    }
+
+    // Heuristic mode (back-compat): consider the device "probably sleeping" when we
+    // don't see RX traffic for a while. If we're disconnected, treat as sleeping.
+    if (!this.isSocketConnected()) return true;
+    if (this.isDeviceStreamingActive()) return false;
+    if (this.lastRxAtMs == null) return false;
+    return Date.now() - this.lastRxAtMs >= idleMs;
   }
 
   getDebugConfig(): DebugConfig {
@@ -396,7 +538,7 @@ export class BaichuanClient extends EventEmitter<{
     if (!this.udpSocket) return false;
     if (!this.loggedIn) return false;
 
-    // Neolink-style default: do NOT send periodic keepalive just because we're subscribed.
+    // Neolink-style default: do NOT send periodic keepalive unless we're actively streaming.
     // Battery cameras should be allowed to sleep; we still reply to camera-initiated keepalive frames.
     if (this.hasActiveVideoSubscriptionsInternal()) return true;
     return false;
@@ -451,6 +593,7 @@ export class BaichuanClient extends EventEmitter<{
         messageClass: BC_CLASS_MODERN_24,
         streamType: 0,
         extensionXml: "", // Keepalive has empty body
+        internal: true,
       });
     } catch (e) {
       // Ignore errors, just log debug
@@ -514,6 +657,13 @@ export class BaichuanClient extends EventEmitter<{
     sock.on("close", () => {
       this.stopKeepAlive();
       this.socketClosed = true;
+      this.logFixed("disconnected", {
+        transport: "tcp",
+        host: this.opts.host,
+        port: this.opts.port ?? BC_TCP_DEFAULT_PORT,
+        lastRx: this.lastRxInfo,
+        lastTx: this.lastTxInfo,
+      });
       this.emit("close");
       // Reject all pending promises asynchronously to allow catch handlers to be attached
       // This prevents unhandled rejections when the socket closes
@@ -538,7 +688,10 @@ export class BaichuanClient extends EventEmitter<{
       sock.once("error", (e) => reject(e));
     });
 
+    this.logFixed("connected", { transport: "tcp", host: this.opts.host, port: this.opts.port ?? BC_TCP_DEFAULT_PORT });
+
     this.startKeepAlive();
+    this.kickIdleDisconnectTimer();
   }
 
   private async connectUdp(): Promise<void> {
@@ -571,6 +724,13 @@ export class BaichuanClient extends EventEmitter<{
     sock.on("close", () => {
       this.stopKeepAlive();
       this.socketClosed = true;
+      this.logFixed("disconnected", {
+        transport: "udp",
+        host: this.opts.host,
+        uid: this.opts.uid,
+        lastRx: this.lastRxInfo,
+        lastTx: this.lastTxInfo,
+      });
       // Mark session state as invalid; a new connect/login is required.
       this.loggedIn = false;
       this.subscribed = false;
@@ -620,11 +780,20 @@ export class BaichuanClient extends EventEmitter<{
     });
 
     await sock.connect();
+
+    this.logFixed("connected", { transport: "udp", host: this.opts.host, uid: this.opts.uid });
     this.startKeepAlive();
+    this.kickIdleDisconnectTimer();
   }
 
   async close(): Promise<void> {
     this.stopKeepAlive();
+    this.clearIdleDisconnectTimer();
+
+    // Drop permits on close.
+    for (const id of Array.from(this.permits.keys())) {
+      this.releasePermit(id, "close");
+    }
 
     // Ensure we drop any global streaming contribution before tearing down sockets.
     if (this.contributesToGlobalStreamingRegistry) {
@@ -662,7 +831,7 @@ export class BaichuanClient extends EventEmitter<{
 
     // Temporary global RX logging: show every received cmdId.
     // Throttle cmdId=3 (stream) to avoid flooding logs.
-    if (this.debugCfg.enabled) {
+    if (this.debugCfg.general) {
       if (frame.header.cmdId === 3) {
         const s = this.rxCmdTraceStats.get(3) ?? { lastLogMs: now, frames: 0 };
         s.frames++;
@@ -817,6 +986,9 @@ export class BaichuanClient extends EventEmitter<{
 
     // Keep global streaming registry in sync.
     this.recomputeGlobalStreamingContribution();
+
+    // Re-evaluate idle disconnect eligibility (streaming changes it).
+    this.kickIdleDisconnectTimer();
   }
 
   /**
@@ -844,6 +1016,9 @@ export class BaichuanClient extends EventEmitter<{
 
     // Keep global streaming registry in sync.
     this.recomputeGlobalStreamingContribution();
+
+    // If streaming stopped, we may now be eligible for idle disconnect.
+    this.kickIdleDisconnectTimer();
   }
 
   /**
@@ -1116,8 +1291,13 @@ export class BaichuanClient extends EventEmitter<{
     messageClass?: number;
     streamType?: number;
     encryption?: EncryptionProtocol;
+    /** Internal operations should not count as user activity for idle disconnect. */
+    internal?: boolean;
   }): Promise<void> {
+    const internal = params.internal === true;
+    if (!internal) this.touchUserActivity(`sendBinaryPayloadNoReply cmdId=${params.cmdId}`);
     await this.connect();
+    if (!internal) this.kickIdleDisconnectTimer();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
     const channelId = params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
@@ -1156,6 +1336,8 @@ export class BaichuanClient extends EventEmitter<{
     }
     this.recordTx({ cmdId, responseCode: 0, msgNum, channelId, streamType: params.streamType ?? 0 });
     this.writeWire(wire);
+
+    if (!internal) this.kickIdleDisconnectTimer();
   }
 
   tryDecryptXml(buf: Buffer, channelId: number, preferred: EncryptionProtocol): string {
@@ -1201,8 +1383,13 @@ export class BaichuanClient extends EventEmitter<{
     encryption?: EncryptionProtocol;
     /** Timeout ms. */
     timeoutMs?: number;
+    /** Internal operations (keepalive/ping) should not count as user activity for idle disconnect. */
+    internal?: boolean;
   }): Promise<string> {
+    const internal = params.internal === true;
+    if (!internal) this.touchUserActivity(`sendXml cmdId=${params.cmdId}`);
     await this.connect();
+    if (!internal) this.kickIdleDisconnectTimer();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
     const channelId = params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1); // default: reolink_aio-style
@@ -1302,11 +1489,15 @@ export class BaichuanClient extends EventEmitter<{
 
     // split + decrypt (extension/payload concatenated as in body)
     const body = frame.body;
-    if (body.length === 0) return "";
+    if (body.length === 0) {
+      if (!internal) this.kickIdleDisconnectTimer();
+      return "";
+    }
 
     // For modern 24-byte frames: extension+payload; we decrypt full body as one stream just like references do.
     // (In practice extension and payload are separately encrypted but concatenation preserves it.)
     const xml = this.tryDecryptXml(body, frame.header.channelId, enc);
+    if (!internal) this.kickIdleDisconnectTimer();
     return xml;
   }
 
@@ -1327,8 +1518,13 @@ export class BaichuanClient extends EventEmitter<{
     streamType?: number;
     encryption?: EncryptionProtocol;
     timeoutMs?: number;
+    /** Internal operations (keepalive/ping) should not count as user activity for idle disconnect. */
+    internal?: boolean;
   }): Promise<BaichuanFrame> {
+    const internal = params.internal === true;
+    if (!internal) this.touchUserActivity(`sendFrame cmdId=${params.cmdId}`);
     await this.connect();
+    if (!internal) this.kickIdleDisconnectTimer();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
     const channelId = params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
@@ -1413,6 +1609,7 @@ export class BaichuanClient extends EventEmitter<{
         `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`
       );
     }
+    if (!internal) this.kickIdleDisconnectTimer();
     return frame;
   }
 
@@ -1431,21 +1628,30 @@ export class BaichuanClient extends EventEmitter<{
     streamType?: number;
     encryption?: EncryptionProtocol;
     timeoutMs?: number;
+    /** Internal operations should not count as user activity for idle disconnect. */
+    internal?: boolean;
   }): Promise<Buffer> {
+    const internal = params.internal === true;
+    if (!internal) this.touchUserActivity(`sendBinary cmdId=${params.cmdId}`);
     // Snapshot (cmdId=109) is special: many firmwares deliver the binary payload via unsolicited "push" frames
     // and do not necessarily reply on the request's cmdId:msgNum pending slot. In that case, waiting on
     // `pending` will timeout. Handle it by sending without pending and collecting push chunks.
     if (params.cmdId === 109) {
-      return await this.sendBinarySnapshot109(params);
+      const res = await this.sendBinarySnapshot109(params);
+      if (!internal) this.kickIdleDisconnectTimer();
+      return res;
     }
 
     // File download (neolink dissector class=0x6482) is often delivered as a sequence of binary chunks.
     // Handle it similarly to snapshot: send without pending and collect frames until completion.
     if ((params.messageClass ?? BC_CLASS_MODERN_24) === BC_CLASS_FILE_DOWNLOAD) {
-      return await this.sendBinaryFileDownload6482(params);
+      const res = await this.sendBinaryFileDownload6482(params);
+      if (!internal) this.kickIdleDisconnectTimer();
+      return res;
     }
 
     await this.connect();
+    if (!internal) this.kickIdleDisconnectTimer();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
     const channelId = params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
@@ -1524,6 +1730,7 @@ export class BaichuanClient extends EventEmitter<{
     if (payload.length === 0) return Buffer.alloc(0);
 
     const decrypted = this.tryDecryptBinary(payload, frame.header.channelId, enc);
+    if (!internal) this.kickIdleDisconnectTimer();
     return decrypted;
   }
 
@@ -1641,7 +1848,7 @@ export class BaichuanClient extends EventEmitter<{
 
           // Debug-only progress hint for long downloads (avoid noisy logs).
           const now = Date.now();
-          if ((this.opts.debug || this.debugCfg.enabled) && now - lastProgressLogAt >= 2_000) {
+          if (this.debugCfg.general && now - lastProgressLogAt >= 2_000) {
             lastProgressLogAt = now;
             this.logDebug("file_download_progress", { cmdId, msgNum, bytes: receivedBytes });
           }

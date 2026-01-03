@@ -251,9 +251,8 @@ async function testUdpVideoStreamRecording() {
     password: config.udp.password,
     uid: config.udp.uid,
     transport: "udp",
-    debug: true, // Enable debug to see what's happening
     debugOptions: {
-      enabled: true,
+      general: true,
       traceStream: true, // Enable stream command tracing (tx/rx cmd_id 3/4 + rx stream frames)
       debugH264: true, // Enable H.264-centric debug logs
       debugParamSets: true, // Enable SPS/PPS cache/prepend debug logs
