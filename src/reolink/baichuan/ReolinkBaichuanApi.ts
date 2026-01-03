@@ -521,9 +521,9 @@ export class ReolinkBaichuanApi {
 
   private lastSleepProbe:
     | {
-        atMs: number;
-        status: SleepStatus;
-      }
+      atMs: number;
+      status: SleepStatus;
+    }
     | undefined;
 
   constructor(opts: BaichuanClientOptions) {
@@ -596,14 +596,14 @@ export class ReolinkBaichuanApi {
     this.simpleEventSubscribeInFlight = (async () => {
       await this.subscribeEvents();
       this.simpleEventSubscribed = true;
-      
+
       // Only check current state and start polling for TCP connections (not UDP/battery cameras)
       // UDP/battery cameras should rely on event pushes only, not polling
       const isUdp = this.client.getTransport?.() === "udp";
       if (!isUdp) {
         // Check current state and dispatch events immediately (TCP only)
         await this.checkAndDispatchCurrentState();
-        
+
         // Start periodic polling if not already running (TCP only)
         this.startStatePolling();
       }
@@ -721,7 +721,7 @@ export class ReolinkBaichuanApi {
 
       // Decrypt and return XML
       if (frame.body.length === 0) return "";
-      const xml = (this.client as any).tryDecryptXml(frame.body, frame.header.channelId, this.client.enc);
+      const xml = this.client.tryDecryptXml(frame.body, frame.header.channelId, this.client.enc);
       return xml;
     } catch (error) {
       // If it's already an Error from sendFrame (timeout, etc.), just throw it
@@ -1077,11 +1077,11 @@ export class ReolinkBaichuanApi {
           // In the batch, index 1..n correspond to channel 0..n-1
           if (channel >= 0 && channel < n) {
             const typeRsp = rsp[1 + channel];
-            const value = (typeRsp as any)?.value;
+            const value = (typeRsp)?.value;
             if (value && typeof value === "object") {
-              if (typeof (value as any).typeInfo === "string" && (value as any).typeInfo.trim()) model = (value as any).typeInfo.trim();
-              if (typeof (value as any).firmVer === "string" && (value as any).firmVer.trim()) firmwareVersion = (value as any).firmVer.trim();
-              if (typeof (value as any).boardInfo === "string" && (value as any).boardInfo.trim()) boardInfo = (value as any).boardInfo.trim();
+              if (typeof (value).typeInfo === "string" && (value).typeInfo.trim()) model = (value).typeInfo.trim();
+              if (typeof (value).firmVer === "string" && (value).firmVer.trim()) firmwareVersion = (value).firmVer.trim();
+              if (typeof (value).boardInfo === "string" && (value).boardInfo.trim()) boardInfo = (value).boardInfo.trim();
             }
           }
 
@@ -2214,7 +2214,7 @@ ${xmlDateTimePayload("endTime", end)}
         }
 
         if (statusUpper.includes("VIS")) {
-          (out as any).visitor = { detected: true, timestamp: now };
+          (out).visitor = { detected: true, timestamp: now };
         }
       }
       return out;
@@ -2227,7 +2227,7 @@ ${xmlDateTimePayload("endTime", end)}
     if (statusUpper.includes("MD")) out.motion = { state: 1, timestamp: now, source: "md" };
     if (statusUpper.includes("PIR")) out.motion = { state: 1, timestamp: now, source: "pir" };
     if (aiTypeRaw || statusUpper.includes("AI")) out.ai = { channel: ch, alarm_state: 1, type: aiTypeRaw || undefined };
-    if (statusUpper.includes("VIS")) (out as any).visitor = { detected: true, timestamp: now };
+    if (statusUpper.includes("VIS")) (out).visitor = { detected: true, timestamp: now };
 
     return out;
   }
@@ -2656,7 +2656,7 @@ ${xmlDateTimePayload("endTime", end)}
       if (frame.body.length > 0) {
         try {
           // Access private method via type assertion (needed for error details)
-          const tryDecryptXml = (this.client as any).tryDecryptXml;
+          const tryDecryptXml = (this.client).tryDecryptXml;
           if (tryDecryptXml) {
             const errorXml = tryDecryptXml.call(this.client, frame.body, frame.header.channelId, this.client.enc);
             if (errorXml) {
@@ -3039,8 +3039,8 @@ ${xmlDateTimePayload("endTime", end)}
     const windowMs = opts?.windowMs ?? opts?.idleMs ?? 10_000;
     const nonWakingCmdIds = new Set<number>(
       opts?.nonWakingCmdIds ??
-        opts?.ignoreCmdIds ??
-        [BC_CMD_ID_UDP_KEEP_ALIVE, BC_CMD_ID_GET_BATTERY_INFO_LIST, BC_CMD_ID_GET_BATTERY_INFO, BC_CMD_ID_FLOODLIGHT_STATUS_LIST]
+      opts?.ignoreCmdIds ??
+      [BC_CMD_ID_UDP_KEEP_ALIVE, BC_CMD_ID_GET_BATTERY_INFO_LIST, BC_CMD_ID_GET_BATTERY_INFO, BC_CMD_ID_FLOODLIGHT_STATUS_LIST]
     );
     const transport = this.client.getTransport?.();
     if (transport !== "udp") {
@@ -3998,8 +3998,8 @@ ${xmlDateTimePayload("endTime", end)}
       ? (
         channelProvided
           ? ({
-            ...(typeof (abilitiesRaw as any).Host === "object" ? { Host: (abilitiesRaw as any).Host } : {}),
-            ...(typeof (abilitiesRaw as any)[ch] === "object" ? { [ch]: (abilitiesRaw as any)[ch] } : {}),
+            ...(typeof (abilitiesRaw).Host === "object" ? { Host: (abilitiesRaw).Host } : {}),
+            ...(typeof (abilitiesRaw)[ch] === "object" ? { [ch]: (abilitiesRaw)[ch] } : {}),
           } as DeviceAbilities)
           : abilitiesRaw
       )
@@ -4035,14 +4035,14 @@ ${xmlDateTimePayload("endTime", end)}
 
     const features: DeviceSupportFlags | undefined = support
       ? {
-        rtsp: truthy((support as any).rtsp),
-        onvif: truthy((support as any).onvif),
-        wifi: truthy((support as any).wifi),
-        record: truthy((support as any).record),
-        ftp: truthy((support as any).ftp),
-        email: truthy((support as any).email),
-        pushAlarm: truthy((support as any).pushAlarm),
-        audioTalk: truthy((support as any).audioTalk),
+        rtsp: truthy((support).rtsp),
+        onvif: truthy((support).onvif),
+        wifi: truthy((support).wifi),
+        record: truthy((support).record),
+        ftp: truthy((support).ftp),
+        email: truthy((support).email),
+        pushAlarm: truthy((support).pushAlarm),
+        audioTalk: truthy((support).audioTalk),
       }
       : undefined;
 
@@ -4102,7 +4102,7 @@ ${xmlDateTimePayload("endTime", end)}
       };
 
       const lightTypes = channelSupportItems
-        .map((i) => parseLightType(i as any))
+        .map((i) => parseLightType(i))
         .filter((v): v is number => Number.isFinite(v));
 
       // If firmware explicitly says there is no white LED/floodlight, do not probe.
@@ -4244,7 +4244,7 @@ ${xmlDateTimePayload("endTime", end)}
           videoCodec = stream.videoEncType;
         }
       } else if (metadata && typeof metadata === "object" && "streams" in metadata) {
-        const streams = (metadata as any).streams;
+        const streams = (metadata).streams;
         if (Array.isArray(streams)) {
           const stream = streams.find((s: any) => s?.profile === profile);
           if (stream?.videoEncType) {
