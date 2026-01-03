@@ -1,4 +1,5 @@
 import http from "node:http";
+import { spawn } from "node:child_process";
 
 import type { BaichuanClientOptions } from "../../client/BaichuanClient";
 import type { StreamProfile } from "./types";
@@ -124,6 +125,110 @@ export function createBaichuanEndpointsServer(opts: BaichuanEndpointsServerOptio
         res.setHeader("Content-Disposition", `attachment; filename="${outName}"`);
         res.setHeader("Content-Length", String(buf.length));
         res.end(buf);
+        return;
+      }
+
+      if (u.pathname === "/vod/stream" || u.pathname === "/vod/download") {
+        const channel = parseIntParam(u.searchParams.get("channel"), 0);
+        const fileName = (u.searchParams.get("fileName") ?? "").trim();
+        const streamType = (u.searchParams.get("streamType") ?? "mainStream").trim();
+        const rtspTransport = (u.searchParams.get("rtmpTransport") ?? "tcp").trim();
+
+        if (!fileName) {
+          res.statusCode = 400;
+          res.end("Missing fileName");
+          return;
+        }
+        if (streamType !== "mainStream" && streamType !== "subStream") {
+          res.statusCode = 400;
+          res.end("Invalid streamType (must be mainStream or subStream)");
+          return;
+        }
+        if (rtspTransport !== "tcp" && rtspTransport !== "udp") {
+          res.statusCode = 400;
+          res.end("Invalid rtmpTransport (must be tcp or udp)");
+          return;
+        }
+
+        const rtmpUrl = await api.getVodRtmpUrl({
+          channel,
+          fileName,
+          streamType: streamType as any,
+          ensureEnabled: true,
+        });
+
+        const outName = fileName.split("/").filter(Boolean).at(-1) ?? "recording.mp4";
+
+        if (u.pathname === "/vod/stream") {
+          // Stream-only: RTMP -> MPEG-TS passthrough.
+          res.writeHead(200, {
+            "Content-Type": "video/mp2t",
+            "Cache-Control": "no-cache",
+            Connection: "close",
+          });
+
+          const ff = spawn("ffmpeg", [
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-rtmp_live",
+            "live",
+            "-i",
+            rtmpUrl,
+            "-c",
+            "copy",
+            "-f",
+            "mpegts",
+            "pipe:1",
+          ]);
+
+          ff.stdout.pipe(res);
+
+          const cleanup = () => {
+            ff.kill("SIGKILL");
+          };
+          req.on("close", cleanup);
+          res.on("close", cleanup);
+          ff.on("close", () => {
+            res.end();
+          });
+          return;
+        }
+
+        // Download/export: RTMP -> MP4 (best-effort streamable MP4).
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "video/mp4");
+        res.setHeader("Content-Disposition", `attachment; filename="${outName}"`);
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("Connection", "close");
+
+        const ff = spawn("ffmpeg", [
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-rtmp_live",
+          "live",
+          "-i",
+          rtmpUrl,
+          "-c",
+          "copy",
+          "-movflags",
+          "frag_keyframe+empty_moov",
+          "-f",
+          "mp4",
+          "pipe:1",
+        ]);
+
+        ff.stdout.pipe(res);
+
+        const cleanup = () => {
+          ff.kill("SIGKILL");
+        };
+        req.on("close", cleanup);
+        res.on("close", cleanup);
+        ff.on("close", () => {
+          res.end();
+        });
         return;
       }
 

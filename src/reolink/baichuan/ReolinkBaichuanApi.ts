@@ -1,6 +1,9 @@
 import { BaichuanRtspServer, type BaichuanRtspServerOptions } from "../../baichuan/stream/BaichuanRtspServer";
 import { BaichuanClient, type BaichuanClientOptions } from "../../client/BaichuanClient";
 import { type Logger } from "../../debug/DebugConfig";
+import { spawn } from "node:child_process";
+import { mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
 import {
   BC_CLASS_MODERN_24,
   BC_CLASS_FILE_DOWNLOAD,
@@ -67,6 +70,7 @@ import {
   type DownloadRecordingParams,
   type ListRecordingsParams,
   type RecordingFile,
+  type RecordingStreamType,
 } from "./types";
 
 import { parseRecordingFileName } from "./recordingFileName";
@@ -393,6 +397,9 @@ export class ReolinkBaichuanApi {
   readonly client: BaichuanClient;
   readonly logger: Logger;
   private readonly httpClient: ReolinkHttpClient;
+  private readonly host: string;
+  private readonly username: string;
+  private readonly password: string;
   private readonly simpleEventListeners = new Set<(event: ReolinkSimpleEvent) => void>();
   private simpleEventSubscribed = false;
   private simpleEventSubscribeInFlight: Promise<void> | undefined;
@@ -413,6 +420,9 @@ export class ReolinkBaichuanApi {
   constructor(opts: BaichuanClientOptions) {
     this.logger = opts.logger ?? console;
     this.client = new BaichuanClient(opts);
+    this.host = opts.host;
+    this.username = opts.username;
+    this.password = opts.password;
     this.httpClient = new ReolinkHttpClient({
       host: opts.host,
       username: opts.username,
@@ -1391,6 +1401,204 @@ ${xmlDateTimePayload("endTime", end)}
   async listRecordingFileNames(params: ListRecordingsParams): Promise<string[]> {
     const recs = await this.listRecordings(params);
     return recs.map((r) => r.fileName);
+  }
+
+  /**
+   * Build an RTMP VOD/playback URL for a given recording.
+   *
+   * This follows the same logic used by reolink_aio get_vod_source():
+   * `rtmp://<host>:<rtmpPort>/vod/<filename-with-"/"->"%20">?channel=<ch>&stream=<type>&user=<u>&password=<p>`
+   *
+   * Note: this is intended for *export/streaming via playback* (strategy B), not for bit-identical file download.
+   */
+  async getVodRtmpUrl(params: {
+    channel: number;
+    fileName: string;
+    streamType?: RecordingStreamType;
+    /** Ensure RTMP is enabled on the device before returning the URL (default true). */
+    ensureEnabled?: boolean;
+    /** Override RTMP port if known. */
+    rtmpPort?: number;
+  }): Promise<string> {
+    await this.client.login();
+
+    const channel = this.normalizeChannel(params.channel);
+    const streamType = params.streamType ?? "mainStream";
+    const ensureEnabled = params.ensureEnabled ?? true;
+
+    let rtmpPort = params.rtmpPort;
+    try {
+      const ports = await this.getNetPort();
+      const rtmp = ports.rtmp;
+      const enable = typeof rtmp?.enable === "number" ? rtmp.enable : undefined;
+      const port = typeof rtmp?.port === "number" ? rtmp.port : undefined;
+      if (rtmpPort == null && port != null && Number.isFinite(port) && port > 0) rtmpPort = port;
+      if (ensureEnabled && enable === 0) {
+        await this.setPortEnabled({ port: "rtmp", enable: true });
+      }
+    } catch {
+      // Best-effort: if NetPort is unavailable, assume defaults.
+    }
+
+    if (rtmpPort == null) rtmpPort = 1935;
+
+    const streamTypeInt = streamType === "subStream" ? 1 : 0;
+
+    // Most cameras return absolute paths like `/mnt/sda/Mp4Record/...` but RTMP VOD usually
+    // expects a path starting at `Mp4Record/...` (reolink_aio examples).
+    let source = params.fileName.trim();
+    const idx = source.indexOf("Mp4Record/");
+    if (idx >= 0) source = source.slice(idx);
+    source = source.replace(/^\/+/, "");
+
+    // reolink_aio replaces '/' with '%20' for vod paths.
+    const vodPath = source.replace(/\//g, "%20").replace(/ /g, "%20");
+    const user = encodeURIComponent(this.username);
+    const pass = encodeURIComponent(this.password);
+
+    return `rtmp://${this.host}:${rtmpPort}/vod/${vodPath}?channel=${channel}&stream=${streamTypeInt}&user=${user}&password=${pass}`;
+  }
+
+  /**
+   * Predownload/export a recording locally as an MP4 file (strategy B).
+   *
+   * This is intended to be reliable for battery cameras where bit-identical
+   * FileInfoList download (class 0x6482) can time out.
+   *
+   * Requirements:
+   * - `ffmpeg` must be available in PATH.
+   * - The device must expose an RTMP VOD/playback stream for the given `fileName`.
+   */
+  async predownloadRecordingMp4(params: {
+    channel: number;
+    fileName: string;
+    outputPath: string;
+    streamType?: RecordingStreamType;
+    /** If true, attempt to wake a sleeping battery camera before download (default false). */
+    ensureAwake?: boolean;
+    /** Override ffmpeg binary path (default: "ffmpeg" from PATH). */
+    ffmpegPath?: string;
+    /** Overwrite outputPath if it already exists (default true). */
+    overwrite?: boolean;
+  }): Promise<void> {
+    await this.client.login();
+
+    const channel = this.normalizeChannel(params.channel);
+    const streamType = params.streamType ?? "mainStream";
+    const ensureAwake = params.ensureAwake ?? false;
+    const ffmpegPath = params.ffmpegPath ?? "ffmpeg";
+    const overwrite = params.overwrite ?? true;
+
+    await mkdir(dirname(params.outputPath), { recursive: true });
+
+    const runOnce = async (): Promise<void> => {
+      if (ensureAwake) {
+        // Best-effort: keep battery cams awake for the heavy transfer.
+        await this.wakeUp(channel, { waitAfterWakeMs: 1500, attempts: 3 });
+      }
+
+      const rtmpUrl = await this.getVodRtmpUrl({
+        channel,
+        fileName: params.fileName,
+        streamType,
+        ensureEnabled: true,
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        const ff = spawn(ffmpegPath, [
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          ...(overwrite ? ["-y"] : []),
+          "-rtmp_live",
+          "live",
+          "-i",
+          rtmpUrl,
+          "-c",
+          "copy",
+          "-movflags",
+          "frag_keyframe+empty_moov",
+          "-f",
+          "mp4",
+          params.outputPath,
+        ]);
+
+        let stderr = "";
+        ff.stderr.on("data", (d) => {
+          stderr += String(d);
+        });
+
+        ff.on("close", (code) => {
+          if (code === 0) return resolve();
+          reject(new Error(`ffmpeg exited with code ${code}\n${stderr}`));
+        });
+
+        ff.on("error", reject);
+      });
+    };
+
+    try {
+      await runOnce();
+    } catch (e) {
+      // One retry helps with battery cams going to sleep / stale sessions.
+      if (ensureAwake) {
+        try {
+          await this.wakeUp(channel, { waitAfterWakeMs: 3000, attempts: 3, reconnect: true });
+        } catch {
+          // ignore
+        }
+      }
+      await runOnce();
+    }
+  }
+
+  /**
+   * Generate a single-frame screenshot from a local MP4 file at the given timestamp.
+   *
+   * Requirements:
+   * - `ffmpeg` must be available in PATH, or provide `ffmpegPath`.
+   */
+  async generateMp4Screenshot(params: {
+    inputPath: string;
+    outputPath: string;
+    atSeconds: number;
+    /** Override ffmpeg binary path (default: "ffmpeg" from PATH). */
+    ffmpegPath?: string;
+  }): Promise<void> {
+    const ffmpegPath = params.ffmpegPath ?? "ffmpeg";
+    const atSeconds = Number.isFinite(params.atSeconds) && params.atSeconds >= 0 ? params.atSeconds : 0;
+
+    await mkdir(dirname(params.outputPath), { recursive: true });
+
+    await new Promise<void>((resolve, reject) => {
+      const ff = spawn(ffmpegPath, [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-ss",
+        String(atSeconds),
+        "-i",
+        params.inputPath,
+        "-frames:v",
+        "1",
+        "-q:v",
+        "2",
+        params.outputPath,
+      ]);
+
+      let stderr = "";
+      ff.stderr.on("data", (d) => {
+        stderr += String(d);
+      });
+
+      ff.on("close", (code) => {
+        if (code === 0) return resolve();
+        reject(new Error(`ffmpeg screenshot exited with code ${code}\n${stderr}`));
+      });
+
+      ff.on("error", reject);
+    });
   }
 
   /**
