@@ -11,6 +11,7 @@ export * from "./client/BaichuanClient";
 export * from "./bcudp/BcUdpStream";
 export * from "./reolink/http/ReolinkHttpClient";
 export * from "./reolink/http/types";
+export * from "./reolink/types";
 export * from "./reolink/cgi/ReolinkCgiApi";
 export * from "./reolink/baichuan/ReolinkBaichuanApi";
 export * from "./reolink/baichuan/types";

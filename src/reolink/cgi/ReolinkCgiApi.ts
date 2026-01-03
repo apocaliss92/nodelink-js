@@ -1,5 +1,6 @@
 import { ReolinkHttpClient, type ReolinkHttpClientOptions } from "../http/ReolinkHttpClient";
 import type { ReolinkCmdRequest, ReolinkCmdResponse } from "../http/types";
+import type { ReolinkDeviceInfo, ReolinkDeviceInfoTag } from "../types";
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonObject = { [key: string]: JsonValue };
@@ -370,6 +371,49 @@ export class ReolinkCgiApi {
   async GetDevInfo(channel?: number): Promise<Array<ReolinkCmdResponseExt<CgiGetDevInfoValue>>> {
     const param = channel == null ? {} : { channel };
     return await this.call("GetDevInfo", param);
+  }
+
+  /**
+   * CGI equivalent of Baichuan `getInfo()`.
+   *
+   * Uses `GetDevInfo` and returns a minimal normalized map compatible with the Baichuan helper:
+   * - type
+   * - hardwareVersion
+   * - firmwareVersion
+   * - itemNo
+   * - serialNumber
+   * - name
+   */
+  async getInfo(
+    channel?: number,
+    options?: {
+      /** List of normalized fields to return. Defaults to the canonical minimal set used by Baichuan getInfo(). */
+      tags?: ReolinkDeviceInfoTag[];
+    },
+  ): Promise<Partial<ReolinkDeviceInfo>> {
+    const rsp = await this.GetDevInfo(channel);
+    const devInfo = (rsp as any)?.[0]?.value?.DevInfo as CgiDevInfo | undefined;
+
+    const normalized: Partial<ReolinkDeviceInfo> = {};
+    const type = (devInfo?.type ?? devInfo?.model ?? devInfo?.exactType) as string | undefined;
+    const itemNo = (devInfo?.exactType ?? devInfo?.model ?? devInfo?.detail) as string | undefined;
+    if (typeof type === "string") normalized.type = type;
+    if (typeof devInfo?.hardVer === "string") normalized.hardwareVersion = devInfo.hardVer;
+    if (typeof devInfo?.firmVer === "string") normalized.firmwareVersion = devInfo.firmVer;
+    if (typeof itemNo === "string") normalized.itemNo = itemNo;
+    if (typeof devInfo?.serial === "string") normalized.serialNumber = devInfo.serial;
+    if (typeof devInfo?.name === "string") normalized.name = devInfo.name;
+
+    const tags: ReolinkDeviceInfoTag[] = options?.tags?.length
+      ? options.tags
+      : (["type", "hardwareVersion", "firmwareVersion", "itemNo", "serialNumber", "name"] satisfies ReolinkDeviceInfoTag[]);
+
+    const out: Partial<ReolinkDeviceInfo> = {};
+    for (const t of tags) {
+      const v = normalized[t];
+      if (typeof v === "string") out[t] = v;
+    }
+    return out;
   }
 
   async GetChnTypeInfo(channel?: number): Promise<ReolinkCmdResponse[]> {

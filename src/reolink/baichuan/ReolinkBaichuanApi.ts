@@ -75,6 +75,7 @@ import {
 import { parseRecordingFileName } from "./recordingFileName";
 
 import { ReolinkCgiApi } from "../cgi/ReolinkCgiApi";
+import type { ReolinkDeviceInfo, ReolinkDeviceInfoTag } from "../types";
 import { ReolinkHttpClient } from "../http/ReolinkHttpClient";
 import type { ReolinkCmdResponse } from "../http/types";
 import { computeDeviceCapabilities, flattenAbilitiesForChannel, parseSupportXml } from "./capabilities";
@@ -978,9 +979,9 @@ export class ReolinkBaichuanApi {
     options?: {
       timeoutMs?: number;
       /** List of XML tags to extract. Defaults to the canonical minimal set used by reolink_aio. */
-      tags?: string[];
+      tags?: ReolinkDeviceInfoTag[];
     },
-  ): Promise<Record<string, string>> {
+  ): Promise<Partial<ReolinkDeviceInfo>> {
     const req: { cmdId: number; channel?: number; timeoutMs?: number } = { cmdId: channel == null ? 80 : 318 };
     if (channel !== undefined) req.channel = channel;
     if (options?.timeoutMs != null) req.timeoutMs = options.timeoutMs;
@@ -989,7 +990,7 @@ export class ReolinkBaichuanApi {
     const tags = options?.tags?.length
       ? options.tags
       : ["type", "hardwareVersion", "firmwareVersion", "itemNo", "serialNumber", "name"];
-    return getXmlTexts(xml, tags);
+    return getXmlTexts(xml, tags) as Partial<ReolinkDeviceInfo>;
   }
 
   /**
