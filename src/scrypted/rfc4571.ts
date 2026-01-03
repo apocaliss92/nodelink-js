@@ -476,11 +476,40 @@ export class Rfc4571Muxer {
     private audioRtp: RtpWriter | undefined;
 
     // Timestamp tracking
-    private videoBaseUs: number | undefined;
-    private videoBaseTs: number | undefined;
-    private videoLastTs: number | undefined;
+    // bcmedia microseconds is a u32 clock that may wrap (2^32) and may reset on stream restarts.
+    // Additionally, it may jump forward unexpectedly. Since we do not buffer, large forward jumps
+    // cause downstream schedulers (e.g. Scrypted) to detect discontinuities.
+    //
+    // Strategy:
+    // - unwrap u32 wraps when likely
+    // - treat backwards jumps as restarts
+    // - use microseconds deltas only when "reasonable"; otherwise advance using a smoothed/fallback delta
+    private videoLastUsRaw: number | undefined;
+    private videoUsWrapOffset = 0;
+    private videoLastAbsUs: number | undefined;
+    private videoAvgDeltaUs: number | undefined;
     private readonly videoClockRate = 90000;
     private readonly fallbackVideoIncrement: number;
+    private readonly fallbackVideoDeltaUs: number;
+    private readonly maxTrustedDeltaUs = 500_000; // 0.5s
+    private readonly emaAlpha = 0.1;
+
+    // Throttled logging to avoid spamming in hot paths.
+    private videoTimingLogState: {
+        lastUntrustedDeltaLogMs: number;
+        lastWrapLogMs: number;
+        lastResetLogMs: number;
+        untrustedDeltaCount: number;
+        wrapCount: number;
+        resetCount: number;
+    } = {
+        lastUntrustedDeltaLogMs: 0,
+        lastWrapLogMs: 0,
+        lastResetLogMs: 0,
+        untrustedDeltaCount: 0,
+        wrapCount: 0,
+        resetCount: 0,
+    };
 
     private cachedH264ParamSetsAnnexB: Buffer | undefined;
     private cachedH265ParamSetsAnnexB: Buffer | undefined;
@@ -497,6 +526,7 @@ export class Rfc4571Muxer {
             this.audioRtp = new RtpWriter(audioPayloadType);
         }
         this.fallbackVideoIncrement = Math.max(1, Math.round(this.videoClockRate / Math.max(1, videoFpsFallback)));
+        this.fallbackVideoDeltaUs = Math.max(1, Math.round((this.fallbackVideoIncrement * 1_000_000) / this.videoClockRate));
     }
 
     addClient(socket: net.Socket) {
@@ -616,29 +646,98 @@ export class Rfc4571Muxer {
         }
     }
 
-    setVideoTimestampFromMicroseconds(frameMicroseconds: number | null | undefined) {
-        if (frameMicroseconds === null || frameMicroseconds === undefined) return;
-        if (!Number.isFinite(frameMicroseconds)) return;
+    private resetVideoTimestampMapping(): void {
+        // Reset microseconds tracking/mapping, but keep RTP writer state (seq/ssrc/timestamp).
+        this.videoLastUsRaw = undefined;
+        this.videoUsWrapOffset = 0;
+        this.videoLastAbsUs = undefined;
+        this.videoAvgDeltaUs = undefined;
+    }
 
-        if (this.videoBaseUs === undefined) {
-            this.videoBaseUs = frameMicroseconds >>> 0;
-            if (this.videoBaseTs === undefined) this.videoBaseTs = this.videoRtp.getTimestamp();
-            this.videoLastTs = this.videoRtp.getTimestamp();
+    private logVideoTiming(kind: 'untrusted-delta' | 'wrap' | 'reset', message: string): void {
+        const now = Date.now();
+        const intervalMs = 5000;
+        const state = this.videoTimingLogState;
+        if (kind === 'untrusted-delta') {
+            state.untrustedDeltaCount++;
+            if (now - state.lastUntrustedDeltaLogMs < intervalMs) return;
+            state.lastUntrustedDeltaLogMs = now;
+            this.logger.warn(`[rfc4571] video timing: ${message} (untrustedDeltaCount=${state.untrustedDeltaCount})`);
+            return;
+        }
+        if (kind === 'wrap') {
+            state.wrapCount++;
+            if (now - state.lastWrapLogMs < intervalMs) return;
+            state.lastWrapLogMs = now;
+            this.logger.warn(`[rfc4571] video timing: ${message} (wrapCount=${state.wrapCount})`);
+            return;
+        }
+        state.resetCount++;
+        if (now - state.lastResetLogMs < intervalMs) return;
+        state.lastResetLogMs = now;
+        this.logger.warn(`[rfc4571] video timing: ${message} (resetCount=${state.resetCount})`);
+    }
+
+    private advanceVideoTimestampFallback(): void {
+        this.videoRtp.advanceTimestamp(this.fallbackVideoIncrement);
+    }
+
+    setVideoTimestampFromMicroseconds(frameMicroseconds: number | null | undefined) {
+        if (frameMicroseconds === null || frameMicroseconds === undefined) {
+            this.advanceVideoTimestampFallback();
+            return;
+        }
+        if (!Number.isFinite(frameMicroseconds)) {
+            this.advanceVideoTimestampFallback();
             return;
         }
 
-        const baseUs = this.videoBaseUs >>> 0;
-        const curUs = frameMicroseconds >>> 0;
-        const deltaUs = (curUs - baseUs) >>> 0;
-        const baseTs = (this.videoBaseTs ?? 0) >>> 0;
-        let ts = (baseTs + Math.round((deltaUs * this.videoClockRate) / 1_000_000)) >>> 0;
+        const curUsRaw = (frameMicroseconds >>> 0) as number;
 
-        if (this.videoLastTs !== undefined && ts <= (this.videoLastTs >>> 0)) {
-            ts = ((this.videoLastTs >>> 0) + 1) >>> 0;
+        if (this.videoLastUsRaw !== undefined) {
+            const lastUsRaw = this.videoLastUsRaw;
+            if (curUsRaw < lastUsRaw) {
+                // Heuristic: treat as wrap only if last is near max and current is near min.
+                const wrapLikely = lastUsRaw > 0xf0000000 && curUsRaw < 0x0fffffff;
+                if (wrapLikely) {
+                    this.videoUsWrapOffset += 0x1_0000_0000;
+                    this.logVideoTiming('wrap', `detected u32 wrap (lastUsRaw=${lastUsRaw} curUsRaw=${curUsRaw} wrapOffset=${this.videoUsWrapOffset})`);
+                } else {
+                    // Likely stream restart / discontinuity: reset mapping.
+                    this.logVideoTiming('reset', `detected backwards jump; resetting mapping (lastUsRaw=${lastUsRaw} curUsRaw=${curUsRaw})`);
+                    this.resetVideoTimestampMapping();
+                }
+            }
         }
 
-        this.videoRtp.setTimestamp(ts);
-        this.videoLastTs = ts;
+        this.videoLastUsRaw = curUsRaw;
+        const absUs = this.videoUsWrapOffset + curUsRaw;
+
+        if (this.videoLastAbsUs === undefined) {
+            this.videoLastAbsUs = absUs;
+            if (this.videoAvgDeltaUs === undefined) this.videoAvgDeltaUs = this.fallbackVideoDeltaUs;
+            return;
+        }
+
+        const deltaUs = absUs - this.videoLastAbsUs;
+        this.videoLastAbsUs = absUs;
+
+        const trusted = Number.isFinite(deltaUs) && deltaUs > 0 && deltaUs <= this.maxTrustedDeltaUs;
+        let effectiveDeltaUs: number;
+        if (trusted) {
+            const prevAvg = this.videoAvgDeltaUs ?? deltaUs;
+            this.videoAvgDeltaUs = prevAvg + (deltaUs - prevAvg) * this.emaAlpha;
+            effectiveDeltaUs = deltaUs;
+        }
+        else {
+            this.logVideoTiming(
+                'untrusted-delta',
+                `discarded deltaUs=${deltaUs} (absUs=${absUs} lastAbsUs=${this.videoLastAbsUs} avgDeltaUs=${this.videoAvgDeltaUs ?? 'n/a'}); using fallback`);
+            effectiveDeltaUs = this.videoAvgDeltaUs ?? this.fallbackVideoDeltaUs;
+        }
+
+        const inc = Math.max(1, Math.round((effectiveDeltaUs * this.videoClockRate) / 1_000_000));
+        this.videoRtp.advanceTimestamp(inc);
     }
 
     sendVideoAccessUnit(videoType: VideoType, accessUnitAnnexB: Buffer, isKeyframe: boolean, microseconds: number | null | undefined) {
@@ -714,11 +813,6 @@ export class Rfc4571Muxer {
                 : packetizeH264(nal, this.videoRtp, opts, true, isLastNal);
 
             for (const pkt of packets) this.writeRtpPacketToClients(pkt, shouldSendTo);
-        }
-
-        // if microseconds isn't usable, increment at a fixed fps.
-        if (this.videoBaseUs === undefined) {
-            this.videoRtp.advanceTimestamp(this.fallbackVideoIncrement);
         }
 
         // mark clients as started when the keyframe passes through

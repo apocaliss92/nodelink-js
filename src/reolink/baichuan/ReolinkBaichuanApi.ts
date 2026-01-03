@@ -3976,6 +3976,7 @@ ${xmlDateTimePayload("endTime", end)}
       probeFloodlight?: boolean;
     },
   ): Promise<DeviceCapabilitiesResult> {
+    const channelProvided = channel !== undefined && channel !== null;
     const ch = this.normalizeChannel(channel);
     const probeCfg = {
       probe: options?.probe ?? true,
@@ -3988,8 +3989,32 @@ ${xmlDateTimePayload("endTime", end)}
       this.getSupportInfo(),
     ]);
 
-    const abilities = abilitiesResult.status === "fulfilled" ? abilitiesResult.value : undefined;
-    const support = supportResult.status === "fulfilled" ? supportResult.value : undefined;
+    const abilitiesRaw = abilitiesResult.status === "fulfilled" ? abilitiesResult.value : undefined;
+    const supportRaw = supportResult.status === "fulfilled" ? supportResult.value : undefined;
+
+    // If a channel is explicitly requested, filter returned metadata to avoid confusing callers.
+    // Capabilities are always computed for `ch` (0-based).
+    const abilities: DeviceAbilities | undefined = abilitiesRaw
+      ? (
+        channelProvided
+          ? ({
+            ...(typeof (abilitiesRaw as any).Host === "object" ? { Host: (abilitiesRaw as any).Host } : {}),
+            ...(typeof (abilitiesRaw as any)[ch] === "object" ? { [ch]: (abilitiesRaw as any)[ch] } : {}),
+          } as DeviceAbilities)
+          : abilitiesRaw
+      )
+      : undefined;
+
+    const support: SupportInfo | undefined = supportRaw
+      ? (
+        channelProvided
+          ? ({
+            ...supportRaw,
+            items: (supportRaw.items ?? []).filter((i) => i.chnID === ch),
+          } satisfies SupportInfo)
+          : supportRaw
+      )
+      : undefined;
 
     const computeArgs: { channel: number; abilities?: DeviceAbilities; support?: SupportInfo } = { channel: ch };
     if (abilities) computeArgs.abilities = abilities;

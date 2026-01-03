@@ -565,24 +565,27 @@ export class ReolinkCgiApi {
     return { devicesData: ret, response, channels, channelsResponse, requestBody: body };
   }
 
-  async getEvents(channelsMap: Map<number, DeviceInputData>): Promise<{
+  async getAllChannelsEvents(): Promise<{
     parsed: Record<number, EventsResponse>;
     response: ReolinkCmdResponse[];
-  }>{
-    const body: ReolinkCmdRequest[] = [];
-    const index: Record<number, { events?: number; motion?: number }> = {};
+    channels: number[];
+    channelsResponse: Array<ReolinkCmdResponseExt<CgiGetChannelstatusValue>>;
+    requestBody: ReolinkCmdRequest[];
+  }> {
+    const { channels, channelsResponse } = await this.getChannels();
 
-    for (const [channel, info] of channelsMap.entries()) {
+    // Always call all relevant endpoints per channel and merge.
+    const body: ReolinkCmdRequest[] = [];
+    const index: Record<number, { events?: number; motion?: number; ai?: number }> = {};
+
+    for (const channel of channels) {
       index[channel] = {};
-      if (info.hasPirEvents) {
-        body.push({ cmd: "GetEvents", action: 0, param: { channel } });
-        index[channel].events = body.length - 1;
-      } else {
-        body.push({ cmd: "GetMdState", action: 0, param: { channel } });
-        index[channel].motion = body.length - 1;
-        body.push({ cmd: "GetAiState", action: 0, param: { channel } });
-        index[channel].events = body.length - 1;
-      }
+      body.push({ cmd: "GetEvents", action: 0, param: { channel } });
+      index[channel].events = body.length - 1;
+      body.push({ cmd: "GetMdState", action: 0, param: { channel } });
+      index[channel].motion = body.length - 1;
+      body.push({ cmd: "GetAiState", action: 0, param: { channel } });
+      index[channel].ai = body.length - 1;
     }
 
     const response = await this.callMany(body);
@@ -598,40 +601,41 @@ export class ReolinkCgiApi {
     };
 
     const parsed: Record<number, EventsResponse> = {};
-    for (const [channel, info] of channelsMap.entries()) {
-      const { events, motion } = index[channel] ?? {};
-      parsed[channel] = { motion: false, objects: [], entries: [] };
+    for (const channel of channels) {
+      const { events, motion, ai } = index[channel] ?? {};
+      const eventsEntry = events != null ? response[events] : undefined;
+      const motionEntry = motion != null ? response[motion] : undefined;
+      const aiEntry = ai != null ? response[ai] : undefined;
 
-      if (info.hasPirEvents) {
-        const eventsEntry = events != null ? response[events] : undefined;
-        const classes = processDetections((eventsEntry as any)?.value?.ai);
-        parsed[channel].motion = classes.includes("other") || classes.length > 0;
-        parsed[channel].objects = classes.filter((cl) => cl !== "other");
-        parsed[channel].entries.push(eventsEntry);
-      } else {
-        const eventsEntry = events != null ? response[events] : undefined;
-        const motionEntry = motion != null ? response[motion] : undefined;
-        const classes = processDetections((eventsEntry as any)?.value);
-        parsed[channel].motion = !!(motionEntry as any)?.value?.state || classes.length > 0;
-        parsed[channel].objects = classes.filter((cl) => cl !== "other");
-        parsed[channel].entries.push(eventsEntry, motionEntry);
-      }
+      const classes = new Set<string>();
+      for (const c of processDetections((aiEntry as any)?.value)) classes.add(c);
+      for (const c of processDetections((eventsEntry as any)?.value?.ai ?? (eventsEntry as any)?.value)) classes.add(c);
+
+      const list = Array.from(classes);
+      const objects = list.filter((cl) => cl !== "other");
+      const hasMotion = !!(motionEntry as any)?.value?.state || list.length > 0;
+
+      parsed[channel] = {
+        motion: hasMotion,
+        objects,
+        entries: [eventsEntry as any, motionEntry as any, aiEntry as any],
+      };
     }
 
-    return { parsed, response };
+    return { parsed, response, channels, channelsResponse, requestBody: body };
   }
 
-  async getBatteryInfo(channelsMap: Map<number, DeviceInputData>): Promise<{
+  async getAllChannelsBatteryInfo(): Promise<{
     batteryInfoData: Record<number, BatteryInfoResponse>;
     response: Array<ReolinkCmdResponseExt<JsonValue>>;
-  }>{
+    channels: number[];
+    channelsResponse: Array<ReolinkCmdResponseExt<CgiGetChannelstatusValue>>;
+    requestBody: ReolinkCmdRequest[];
+  }> {
+    const { channels, channelsResponse } = await this.getChannels();
+
+    // Always call battery info for every channel and merge with Channelstatus.
     const body: ReolinkCmdRequest[] = [{ cmd: "GetChannelstatus" }];
-
-    const channels: number[] = [];
-    for (const [channel, info] of channelsMap.entries()) {
-      if (info.hasBattery) channels.push(channel);
-    }
-
     const index: Record<number, number> = {};
     for (const channel of channels) {
       body.push({ cmd: "GetBatteryInfo", action: 0, param: { channel } });
@@ -652,7 +656,7 @@ export class ReolinkCgiApi {
       };
     }
 
-    return { batteryInfoData, response };
+    return { batteryInfoData, response, channels, channelsResponse, requestBody: body };
   }
 
   async getStatusInfo(channelsMap: Map<number, DeviceInputData>): Promise<{

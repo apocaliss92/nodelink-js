@@ -28,15 +28,15 @@ export function flattenAbilitiesForChannel(
 ): AbilityInfo | undefined {
   if (!abilities || typeof abilities !== "object") return undefined;
 
-  // AbilityInfo channel ids are sometimes 0-based, but some firmwares use 1-based.
-  const ch0 = (abilities as any)[channel] as AbilityInfo | undefined;
-  const ch1 = (abilities as any)[channel + 1] as AbilityInfo | undefined;
-  const host = (abilities as any).Host as AbilityInfo | undefined;
+  // NOTE: callers always pass channel as 0-based.
+  // Do not attempt 1-based fallbacks here: it is ambiguous and can mix in data from the wrong channel.
+  const anyAbilities = abilities as any;
+  const channelAbilities = anyAbilities[channel] as AbilityInfo | undefined;
+  const host = anyAbilities.Host as AbilityInfo | undefined;
 
   const merged: AbilityInfo = {
     ...(host && typeof host === "object" ? host : {}),
-    ...(ch0 && typeof ch0 === "object" ? ch0 : {}),
-    ...(ch1 && typeof ch1 === "object" ? ch1 : {}),
+    ...(channelAbilities && typeof channelAbilities === "object" ? channelAbilities : {}),
   };
 
   return Object.keys(merged).length ? merged : undefined;
@@ -124,7 +124,7 @@ export function parseSupportXml(xml: string): SupportInfo | undefined {
 function getSupportItemForChannel(support: SupportInfo | undefined, channel: number): SupportItem | undefined {
   if (!support?.items?.length) return undefined;
 
-  // Most observed firmwares use 0-based chnID.
+  // NOTE: callers always pass channel as 0-based and we only match that exact chnID.
   // Some firmwares return multiple <item> entries with the same chnID:
   // - smartHome items (googleHome/amazonAlexa) with only {name, ver}
   // - a "real" capability item with many numeric fields (ptzType, ledCtrl, lightType, etc.)
@@ -168,7 +168,7 @@ function getSupportItemForChannel(support: SupportInfo | undefined, channel: num
       .sort((a, b) => scoreSupportItem(b) - scoreSupportItem(a))[0];
   };
 
-  return pickBest(channel) ?? pickBest(channel + 1);
+  return pickBest(channel);
 }
 
 export function computeDeviceCapabilities(params: {
@@ -183,10 +183,20 @@ export function computeDeviceCapabilities(params: {
   const ptzModeRaw = params.support?.ptzMode;
   const ptzMode = typeof ptzModeRaw === "string" ? ptzModeRaw.toLowerCase() : undefined;
 
+  // Per-channel PTZ signals from SupportInfo item.
+  // On some hub/NVR firmwares, top-level <ptzMode> reflects the host and may be "none"
+  // even when specific channels are PTZ.
+  const ptzTypeRaw = supportItem ? (supportItem as any).ptzType : undefined;
+  const ptzControlRaw = supportItem ? (supportItem as any).ptzControl : undefined;
+  const hasPtzFromSupportItem =
+    isTruthyNumberLike(ptzTypeRaw) ||
+    isTruthyNumberLike(ptzControlRaw) ||
+    isTruthyNumberLike((supportItem as any)?.ptzPreset);
+
   // Some battery cameras expose legacy/host PTZ abilities (e.g. preset_rw/ptzInfo_ro) even when
   // the actual channel PTZ is explicitly disabled. When support.ptzMode says "none", treat it
-  // as authoritative and do NOT expose PTZ/presets/pan/tilt/zoom based on abilities heuristics.
-  const ptzDisabledBySupport = ptzMode === "none" || ptzMode === "0";
+  // as authoritative ONLY if the channel support item does not indicate PTZ.
+  const ptzDisabledBySupport = (ptzMode === "none" || ptzMode === "0") && !hasPtzFromSupportItem;
 
   const hasBatteryFromSupport = supportItem ? isTruthyNumberLike((supportItem as any).battery) : false;
   // NOTE: ledCtrl is typically the indicator/status LED control, NOT the floodlight.
@@ -202,7 +212,7 @@ export function computeDeviceCapabilities(params: {
   const lightTypeRaw = supportItem ? (supportItem as any).lightType : undefined;
   const lightType = typeof lightTypeRaw === "number" ? lightTypeRaw : typeof lightTypeRaw === "string" ? Number(lightTypeRaw) : undefined;
 
-  const hasPtzFromSupport = ptzMode ? ptzMode !== "none" && ptzMode !== "0" : false;
+  const hasPtzFromSupport = hasPtzFromSupportItem || (ptzMode ? ptzMode !== "none" && ptzMode !== "0" : false);
   const hasPanTiltFromSupport = ptzMode ? ptzMode.includes("pt") || ptzMode === "pt" || ptzMode === "ptz" : false;
   const hasZoomFromSupport = ptzMode ? ptzMode.includes("z") : false;
 
@@ -223,7 +233,19 @@ export function computeDeviceCapabilities(params: {
     abilitiesHasAny(flat, /(^|_)pir/i) || abilitiesHasAny(flat, /rfAlarm/i) || abilitiesHasAny(flat, /mdWithPir/i);
 
   // Some firmwares expose rfCfg in SupportInfo items; treat it as a hint for PIR support.
-  const hasPirFromSupport = supportItem ? isTruthyNumberLike((supportItem as any).rfCfg) : false;
+  // Observed variants:
+  // - rfCfg (older)
+  // - newRfCfg (common)
+  // - rfVersion (present even when *Cfg is 0)
+  // Additionally, many battery cams are PIR-based; treat battery>0 as a weak hint.
+  const hasPirFromSupport = supportItem
+    ? (
+      isTruthyNumberLike((supportItem as any).rfCfg) ||
+      isTruthyNumberLike((supportItem as any).newRfCfg) ||
+      isTruthyNumberLike((supportItem as any).rfVersion) ||
+      isTruthyNumberLike((supportItem as any).battery)
+    )
+    : false;
 
   const hasPan = hasPanTiltFromSupport || hasPanTiltFromAbilities;
   const hasTilt = hasPanTiltFromSupport || hasPanTiltFromAbilities;
