@@ -860,6 +860,11 @@ export class ReolinkBaichuanApi {
   async createTalkSession(channel = 0, options?: { blocksPerPayload?: number }): Promise<TalkSession> {
     if (!this.client.loggedIn) await this.client.login();
 
+    // BCUDP/battery firmwares often expect 0-based header channelId (neolink-style).
+    // Talk is particularly sensitive because the binary Extension must be decrypted.
+    const isUdp = this.client.getTransport?.() === "udp";
+    const channelIdOverride = isUdp ? channel : undefined;
+
     const ability = await this.getTalkAbility(channel);
     const audioConfig = ability.audioConfigList.find((c) => c.audioType.toLowerCase() === "adpcm") ?? ability.audioConfigList[0];
     if (!audioConfig) {
@@ -888,6 +893,7 @@ export class ReolinkBaichuanApi {
       const frame = await this.client.sendFrame({
         cmdId: BC_CMD_ID_TALK_CONFIG,
         channel,
+        ...(channelIdOverride != null ? { channelIdOverride } : {}),
         payloadXml,
         messageClass: BC_CLASS_MODERN_24,
       });
@@ -896,6 +902,7 @@ export class ReolinkBaichuanApi {
         await this.client.sendFrame({
           cmdId: BC_CMD_ID_TALK_RESET,
           channel,
+          ...(channelIdOverride != null ? { channelIdOverride } : {}),
           // TalkReset has no payload; extension is enough.
           payloadXml: "",
           messageClass: BC_CLASS_MODERN_24,
@@ -903,6 +910,7 @@ export class ReolinkBaichuanApi {
         const retryFrame = await this.client.sendFrame({
           cmdId: BC_CMD_ID_TALK_CONFIG,
           channel,
+          ...(channelIdOverride != null ? { channelIdOverride } : {}),
           payloadXml,
           messageClass: BC_CLASS_MODERN_24,
         });
@@ -953,6 +961,7 @@ export class ReolinkBaichuanApi {
       await this.client.sendBinaryPayloadNoReply({
         cmdId: BC_CMD_ID_TALK,
         channel,
+        ...(channelIdOverride != null ? { channelIdOverride } : {}),
         extensionXml: buildBinaryExtensionXml(channel),
         payload: Buffer.concat(parts),
         messageClass: BC_CLASS_MODERN_24,
@@ -1015,6 +1024,7 @@ export class ReolinkBaichuanApi {
       const frame = await this.client.sendFrame({
         cmdId: BC_CMD_ID_TALK_RESET,
         channel,
+        ...(channelIdOverride != null ? { channelIdOverride } : {}),
         payloadXml: "",
         messageClass: BC_CLASS_MODERN_24,
       });
