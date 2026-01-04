@@ -1187,11 +1187,67 @@ export class ReolinkBaichuanApi {
     const streams: StreamMetadata[] = [];
     let audioEnabled = true;
 
+    const dbg = this.client.getDebugConfig?.();
+    const debugParamSets = dbg?.debugParamSets === true;
+
     // Some firmwares include placeholder stream sections (not actually supported)
     // with 0x0 resolution and/or 0 FPS/bitrate. Treat those as unavailable.
     const isPlausibleStream = (s: { width: number; height: number; frameRate: number; bitRate: number }): boolean => {
       return s.width > 0 && s.height > 0 && (s.frameRate > 0 || s.bitRate > 0);
     };
+
+    const logDebugStreamBlock = (tag: string, blockXml: string | undefined) => {
+      if (!debugParamSets) return;
+
+      if (!blockXml) {
+        (this.logger.warn ?? this.logger.log).call(this.logger, `[ReolinkBaichuanApi] getStreamMetadata(debugParamSets): channel=${ch} tag=<${tag}> missing`);
+        return;
+      }
+
+      const raw = blockXml;
+      const widthText = getXmlText(raw, "width") ?? getXmlText(raw, "Width");
+      const heightText = getXmlText(raw, "height") ?? getXmlText(raw, "Height");
+      const frameText = getXmlText(raw, "frame") ?? getXmlText(raw, "Frame");
+      const bitRateText = getXmlText(raw, "bitRate") ?? getXmlText(raw, "BitRate");
+      const videoEncTypeText = getXmlText(raw, "videoEncType") ?? getXmlText(raw, "VideoEncType");
+      const audioText = getXmlText(raw, "audio") ?? getXmlText(raw, "Audio");
+      const enableText = getXmlText(raw, "enable") ?? getXmlText(raw, "Enable");
+
+      const width = Number(widthText ?? "0");
+      const height = Number(heightText ?? "0");
+      const frameRate = Number(frameText ?? "0");
+      const bitRate = Number(bitRateText ?? "0");
+      const audio = Number(audioText ?? "0");
+      const isEnabled = enableText === undefined || enableText === "1" || enableText === "true";
+      const plausible = isEnabled && isPlausibleStream({ width, height, frameRate, bitRate });
+
+      const previewMax = 1400;
+      const xmlPreview = raw.length <= previewMax ? raw : raw.slice(0, previewMax) + `\n...truncated (+${raw.length - previewMax} chars)`;
+
+      (this.logger.warn ?? this.logger.log).call(this.logger,
+        `[ReolinkBaichuanApi] getStreamMetadata(debugParamSets): channel=${ch} tag=<${tag}> ` +
+        `enabled=${isEnabled} plausible=${plausible} ` +
+        `width=${width} height=${height} frame=${frameRate} bitRate=${bitRate} audio=${audio} videoEncType=${videoEncTypeText ?? "?"} ` +
+        `rawFields=${JSON.stringify({ widthText, heightText, frameText, bitRateText, videoEncTypeText, audioText, enableText })} ` +
+        `blockXml=${JSON.stringify(xmlPreview)}`
+      );
+    };
+
+    if (debugParamSets) {
+      const headMax = 1600;
+      const xmlHead = xml.length <= headMax ? xml : xml.slice(0, headMax) + `\n...truncated (+${xml.length - headMax} chars)`;
+      const tagsPresent = {
+        mainStream: /<mainStream\b/.test(xml),
+        subStream: /<subStream\b/.test(xml),
+        extStream: /<extStream\b/.test(xml),
+        thirdStream: /<thirdStream\b/.test(xml),
+        externStream: /<externStream\b/.test(xml),
+        extraStream: /<extraStream\b/.test(xml),
+      };
+      (this.logger.warn ?? this.logger.log).call(this.logger,
+        `[ReolinkBaichuanApi] getStreamMetadata(debugParamSets): channel=${ch} xmlLen=${xml.length} tagsPresent=${JSON.stringify(tagsPresent)} xmlHead=${JSON.stringify(xmlHead)}`
+      );
+    }
 
     // Video encoding type mapping (from reolink-aio EncodingEnum)
     const videoCodecMap: Record<number, VideoCodec> = {
@@ -1205,6 +1261,7 @@ export class ReolinkBaichuanApi {
     const mainMatch = xml.match(/<mainStream[^>]*>([\s\S]*?)<\/mainStream>/);
     if (mainMatch) {
       const mainXml = mainMatch[1] ?? "";
+      logDebugStreamBlock("mainStream", mainXml);
       const width = Number(getXmlText(mainXml, "width") ?? "0");
       const height = Number(getXmlText(mainXml, "height") ?? "0");
       const videoEncTypeInt = Number(getXmlText(mainXml, "videoEncType") ?? "0");
@@ -1234,6 +1291,7 @@ export class ReolinkBaichuanApi {
     const subMatch = xml.match(/<subStream[^>]*>([\s\S]*?)<\/subStream>/);
     if (subMatch) {
       const subXml = subMatch[1] ?? "";
+      logDebugStreamBlock("subStream", subXml);
       const width = Number(getXmlText(subXml, "width") ?? "0");
       const height = Number(getXmlText(subXml, "height") ?? "0");
       const videoEncTypeInt = Number(getXmlText(subXml, "videoEncType") ?? "0");
@@ -1268,6 +1326,7 @@ export class ReolinkBaichuanApi {
       if (!extMatch) continue;
 
       const extXml = extMatch[1] ?? "";
+      logDebugStreamBlock(tag, extXml);
       const width = Number(getXmlText(extXml, "width") ?? "0");
       const height = Number(getXmlText(extXml, "height") ?? "0");
       const videoEncTypeInt = Number(getXmlText(extXml, "videoEncType") ?? "0");
