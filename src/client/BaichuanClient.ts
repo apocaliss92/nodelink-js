@@ -99,6 +99,22 @@ export class BaichuanClient extends EventEmitter<{
   private readonly pending = new Map<PendingKey, { resolve: (f: BaichuanFrame) => void; reject: (e: Error) => void }>();
   private socketClosed = false;
 
+  private pendingCloseInfo:
+    | {
+      atMs: number;
+      reason: string;
+    }
+    | undefined;
+
+  private lastDisconnectInfo:
+    | {
+      atMs: number;
+      transport: "tcp" | "udp";
+      voluntary: boolean;
+      reason: string;
+    }
+    | undefined;
+
   private msgNum = 0;
   loggedIn = false; // Public to allow ReolinkBaichuanApi to check login status
   subscribed = false; // Public to allow ReolinkBaichuanApi to check subscription status
@@ -115,24 +131,24 @@ export class BaichuanClient extends EventEmitter<{
   private lastTxAtMs: number | undefined;
   private lastRxInfo:
     | {
-        atMs: number;
-        cmdId: number;
-        responseCode: number;
-        msgNum: number;
-        channelId: number;
-        streamType: number;
-      }
+      atMs: number;
+      cmdId: number;
+      responseCode: number;
+      msgNum: number;
+      channelId: number;
+      streamType: number;
+    }
     | undefined;
 
   private lastTxInfo:
     | {
-        atMs: number;
-        cmdId: number;
-        responseCode: number;
-        msgNum: number;
-        channelId: number;
-        streamType: number;
-      }
+      atMs: number;
+      cmdId: number;
+      responseCode: number;
+      msgNum: number;
+      channelId: number;
+      streamType: number;
+    }
     | undefined;
 
   // Ring-buffer of the last received frames (metadata only). Used for sleep inference heuristics.
@@ -157,7 +173,7 @@ export class BaichuanClient extends EventEmitter<{
 
   enc: EncryptionProtocol = { kind: "none" }; // Public to allow ReolinkBaichuanApi to access for audio decryption
   private nonce?: string;
-  
+
   // Video stream subscriptions: map of cmdId -> Set of msgNum that are subscribed
   // Similar to neolink's connection.subscribe(MSG_ID_VIDEO, msg_num)
   private videoSubscriptions = new Map<number, Set<number>>();
@@ -248,12 +264,27 @@ export class BaichuanClient extends EventEmitter<{
         }
         this.logDebug("idle_disconnect", { elapsedMs: elapsed2, timeoutMs, transport: this.transport });
         this.logFixed("idle_disconnect", { elapsedMs: elapsed2, timeoutMs, transport: this.transport, host: this.opts.host });
-        void this.close();
+        void this.close({ reason: "idle_disconnect" });
       } catch (e) {
         this.logDebug("idle_disconnect_error", e);
       }
     }, delayMs);
     this.idleDisconnectTimer.unref?.();
+  }
+
+  /**
+   * Metadata about the last TCP/UDP disconnect.
+   * Useful for higher-level heuristics (e.g. disconnect storm handling).
+   */
+  getLastDisconnectInfo():
+    | {
+      atMs: number;
+      transport: "tcp" | "udp";
+      voluntary: boolean;
+      reason: string;
+    }
+    | undefined {
+    return this.lastDisconnectInfo;
   }
 
   /**
@@ -332,7 +363,7 @@ export class BaichuanClient extends EventEmitter<{
   getTransport(): "tcp" | "udp" {
     return this.transport;
   }
-  
+
   getConfiguredChannel(): number {
     return this.opts.channel ?? 0;
   }
@@ -357,13 +388,13 @@ export class BaichuanClient extends EventEmitter<{
   /** Metadata about the last received Baichuan frame, if any. */
   getLastRxInfo():
     | {
-        atMs: number;
-        cmdId: number;
-        responseCode: number;
-        msgNum: number;
-        channelId: number;
-        streamType: number;
-      }
+      atMs: number;
+      cmdId: number;
+      responseCode: number;
+      msgNum: number;
+      channelId: number;
+      streamType: number;
+    }
     | undefined {
     return this.lastRxInfo;
   }
@@ -388,13 +419,13 @@ export class BaichuanClient extends EventEmitter<{
   /** Metadata about the last transmitted Baichuan frame, if any. */
   getLastTxInfo():
     | {
-        atMs: number;
-        cmdId: number;
-        responseCode: number;
-        msgNum: number;
-        channelId: number;
-        streamType: number;
-      }
+      atMs: number;
+      cmdId: number;
+      responseCode: number;
+      msgNum: number;
+      channelId: number;
+      streamType: number;
+    }
     | undefined {
     return this.lastTxInfo;
   }
@@ -581,7 +612,7 @@ export class BaichuanClient extends EventEmitter<{
 
     // Avoid pings before login; some firmwares treat them as invalid and may drop the session.
     if (!this.loggedIn) return;
-    
+
     // TCP keepalive: MSG_ID_PING (93)
     try {
       // We use sendFrame which waits for response.
@@ -617,7 +648,7 @@ export class BaichuanClient extends EventEmitter<{
       // We use Promise.race to timeout TCP connection attempt
       await Promise.race([
         this.connectTcp(),
-        new Promise<void>((_, reject) => 
+        new Promise<void>((_, reject) =>
           setTimeout(() => reject(new Error("TCP connection timeout (falling back to UDP)")), 4000)
         )
       ]);
@@ -657,13 +688,23 @@ export class BaichuanClient extends EventEmitter<{
     sock.on("close", () => {
       this.stopKeepAlive();
       this.socketClosed = true;
-      this.logFixed("disconnected", {
+
+      const pending = this.pendingCloseInfo;
+      this.pendingCloseInfo = undefined;
+      this.lastDisconnectInfo = {
+        atMs: Date.now(),
+        transport: "tcp",
+        voluntary: pending != null,
+        reason: pending?.reason ?? "socket_closed",
+      };
+
+      this.logFixed("disconnected", JSON.stringify({
         transport: "tcp",
         host: this.opts.host,
         port: this.opts.port ?? BC_TCP_DEFAULT_PORT,
-        lastRx: this.lastRxInfo,
-        lastTx: this.lastTxInfo,
-      });
+        lastRx: this.lastRxInfo?.cmdId,
+        lastTx: this.lastTxInfo?.cmdId,
+      }));
       this.emit("close");
       // Reject all pending promises asynchronously to allow catch handlers to be attached
       // This prevents unhandled rejections when the socket closes
@@ -724,6 +765,16 @@ export class BaichuanClient extends EventEmitter<{
     sock.on("close", () => {
       this.stopKeepAlive();
       this.socketClosed = true;
+
+      const pending = this.pendingCloseInfo;
+      this.pendingCloseInfo = undefined;
+      this.lastDisconnectInfo = {
+        atMs: Date.now(),
+        transport: "udp",
+        voluntary: pending != null,
+        reason: pending?.reason ?? "socket_closed",
+      };
+
       this.logFixed("disconnected", {
         transport: "udp",
         host: this.opts.host,
@@ -773,7 +824,7 @@ export class BaichuanClient extends EventEmitter<{
       }
       this.emit("error", err);
     });
-    
+
     // Forward BcUdpStream debug events
     sock.on("debug", (event: string, data?: unknown) => {
       this.logDebug(`udp_${event}`, data);
@@ -786,7 +837,15 @@ export class BaichuanClient extends EventEmitter<{
     this.kickIdleDisconnectTimer();
   }
 
-  async close(): Promise<void> {
+  async close(options?: { reason?: string }): Promise<void> {
+    const hasSocket = Boolean((this.tcpSocket && !this.tcpSocket.destroyed) || this.udpSocket);
+    if (hasSocket) {
+      this.pendingCloseInfo = {
+        atMs: Date.now(),
+        reason: (options?.reason ?? "manual_close").trim() || "manual_close",
+      };
+    }
+
     this.stopKeepAlive();
     this.clearIdleDisconnectTimer();
 
@@ -954,8 +1013,8 @@ export class BaichuanClient extends EventEmitter<{
             this.logger,
             "BaichuanEvent",
             `dispatch cmdId=33 msgNum=${frame.header.msgNum} channelId=${frame.header.channelId} type=${event.type} eventChannel=${event.channel}` +
-              (event.type === "ai" ? ` aiType=${(event.ai as any)?.type ?? "unknown"} detected=${(event.ai as any)?.detected ?? ""}` : "") +
-              (event.type === "motion" ? ` source=${(event.motion as any)?.source ?? ""}` : "")
+            (event.type === "ai" ? ` aiType=${(event.ai as any)?.type ?? "unknown"} detected=${(event.ai as any)?.detected ?? ""}` : "") +
+            (event.type === "motion" ? ` source=${(event.motion as any)?.source ?? ""}` : "")
           );
           this.emit("event", event);
         }
@@ -1000,7 +1059,7 @@ export class BaichuanClient extends EventEmitter<{
   unsubscribeVideoStream(cmdId: number, msgNum?: number): void {
     const subscribedMsgNums = this.videoSubscriptions.get(cmdId);
     if (!subscribedMsgNums) return;
-    
+
     if (msgNum !== undefined) {
       subscribedMsgNums.delete(msgNum);
       if (subscribedMsgNums.size === 0) {
@@ -1093,9 +1152,9 @@ export class BaichuanClient extends EventEmitter<{
 
         const aiTypeToken = aiTypeRaw
           ? aiTypeRaw
-              .split(",")
-              .map((t) => t.trim())
-              .find((t) => t.length > 0 && t.toLowerCase() !== "none")
+            .split(",")
+            .map((t) => t.trim())
+            .find((t) => t.length > 0 && t.toLowerCase() !== "none")
           : undefined;
         if (aiTypeToken) {
           const t = aiTypeToken.toLowerCase();
@@ -1171,9 +1230,9 @@ export class BaichuanClient extends EventEmitter<{
 
     const aiTypeToken = aiTypeRaw
       ? aiTypeRaw
-          .split(",")
-          .map((t) => t.trim())
-          .find((t) => t.length > 0 && t.toLowerCase() !== "none")
+        .split(",")
+        .map((t) => t.trim())
+        .find((t) => t.length > 0 && t.toLowerCase() !== "none")
       : undefined;
     if (aiTypeToken) {
       const t = aiTypeToken.toLowerCase();
@@ -1439,7 +1498,7 @@ export class BaichuanClient extends EventEmitter<{
         },
       });
     });
-    
+
     // CRITICAL: Add catch handler IMMEDIATELY after promise creation, BEFORE any operations
     // This must happen synchronously, before writeWire or any async operations
     // This prevents unhandled rejections when socket closes during writeWire
@@ -1574,7 +1633,7 @@ export class BaichuanClient extends EventEmitter<{
         },
       });
     });
-    
+
     // CRITICAL: Add catch handler IMMEDIATELY after promise creation, BEFORE any operations
     // This must happen synchronously, before writeWire or any async operations
     // This prevents unhandled rejections when socket closes during writeWire
@@ -1702,7 +1761,7 @@ export class BaichuanClient extends EventEmitter<{
         },
       });
     });
-    
+
     // CRITICAL: Add catch handler IMMEDIATELY after promise creation, BEFORE any operations
     // This must happen synchronously, before writeWire or any async operations
     // This prevents unhandled rejections when socket closes during writeWire
@@ -2091,127 +2150,132 @@ export class BaichuanClient extends EventEmitter<{
     const maxAttempts = 3;
     let lastError: unknown;
 
+    // Some NVR/HomeHub firmwares are picky about encryption negotiation.
+    // If the nonce/encryption negotiation fails (socket close / timeout), automatically
+    // downgrade the requested encryption to keep the connection stable.
+    let effectiveMaxEncryption: MaxEncryption = maxEncryption;
+
     const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         // 1) legacy header-only login upgrade to obtain nonce + encryption type
 
-    // 1) legacy header-only login upgrade to obtain nonce + encryption type
-    // IMPORTANT (neolink): AES request uses 0xdc12.
-    // Some cameras will close the socket if you request an unsupported enc byte (es. 0xdc02).
-    const encByte =
-      maxEncryption === "none"
-        ? 0xdc00
-        : maxEncryption === "bc"
-          ? 0xdc01
-          : /* aes/full_aes */ 0xdc12;
+        // 1) legacy header-only login upgrade to obtain nonce + encryption type
+        // IMPORTANT (neolink): AES request uses 0xdc12.
+        // Some cameras will close the socket if you request an unsupported enc byte (es. 0xdc02).
+        const encByte =
+          effectiveMaxEncryption === "none"
+            ? 0xdc00
+            : effectiveMaxEncryption === "bc"
+              ? 0xdc01
+              : /* aes/full_aes */ 0xdc12;
 
-    await this.connect();
-    // legacy login is supported on both transports
+        await this.connect();
+        // legacy login is supported on both transports
 
-    const msgNum = this.nextMsgNum();
-    const cmdId = 1;
-    const channelId = 250; // host
+        const msgNum = this.nextMsgNum();
+        const cmdId = 1;
+        const channelId = 250; // host
 
-    const header = encodeHeader({
-      cmdId,
-      bodyLen: 0,
-      channelId,
-      streamType: 0,
-      msgNum,
-      responseCode: encByte,
-      messageClass: BC_CLASS_LEGACY,
-    });
-    const pendingKey: PendingKey = `${cmdId}:${msgNum}`;
+        const header = encodeHeader({
+          cmdId,
+          bodyLen: 0,
+          channelId,
+          streamType: 0,
+          msgNum,
+          responseCode: encByte,
+          messageClass: BC_CLASS_LEGACY,
+        });
+        const pendingKey: PendingKey = `${cmdId}:${msgNum}`;
 
-    const framePromise = new Promise<BaichuanFrame>((resolve, reject) => {
-      const t = setTimeout(() => {
-        this.pending.delete(pendingKey);
-        reject(new Error("Baichuan timeout waiting for nonce"));
-      }, 10_000);
-      this.pending.set(pendingKey, {
-        resolve: (f) => {
-          clearTimeout(t);
-          resolve(f);
-        },
-        reject: (e) => {
-          clearTimeout(t);
-          reject(e);
-        },
-      });
-    });
-    
-    // CRITICAL: Add catch handler IMMEDIATELY after promise creation, BEFORE writeWire
-    // This must happen synchronously, before any operations that might cause socket to close
-    // This prevents unhandled rejections when socket closes during writeWire
-    framePromise.catch(() => {
-      // Silently handle rejections from socket closures
-      // The caller will handle the error when they await the promise
-    });
+        const framePromise = new Promise<BaichuanFrame>((resolve, reject) => {
+          const t = setTimeout(() => {
+            this.pending.delete(pendingKey);
+            reject(new Error("Baichuan timeout waiting for nonce"));
+          }, 10_000);
+          this.pending.set(pendingKey, {
+            resolve: (f) => {
+              clearTimeout(t);
+              resolve(f);
+            },
+            reject: (e) => {
+              clearTimeout(t);
+              reject(e);
+            },
+          });
+        });
 
-    this.writeWire(header); // header-only
-    const nonceFrame = await framePromise;
+        // CRITICAL: Add catch handler IMMEDIATELY after promise creation, BEFORE writeWire
+        // This must happen synchronously, before any operations that might cause socket to close
+        // This prevents unhandled rejections when socket closes during writeWire
+        framePromise.catch(() => {
+          // Silently handle rejections from socket closures
+          // The caller will handle the error when they await the promise
+        });
 
-    // This reply contains <Encryption><nonce>...</nonce></Encryption> and response_code 0xDD??
-    const resp = nonceFrame.header.responseCode;
-    if ((resp >>> 8) !== 0xdd) throw new Error(`Baichuan login: expected encryption info (0xDDxx), got 0x${resp.toString(16)}`);
-    const encType = resp & 0xff;
+        this.writeWire(header); // header-only
+        const nonceFrame = await framePromise;
 
-    // During negotiation the payload is at most BCEncrypt (even if AES is supported).
-    const nonceXml = this.tryDecryptXml(nonceFrame.body, nonceFrame.header.channelId, encType === 0x00 ? { kind: "none" } : { kind: "bc" });
-    const nonce = getXmlText(nonceXml, "nonce");
-    if (!nonce) throw new Error("Baichuan login: nonce not found in XML");
-    this.nonce = nonce;
+        // This reply contains <Encryption><nonce>...</nonce></Encryption> and response_code 0xDD??
+        const resp = nonceFrame.header.responseCode;
+        if ((resp >>> 8) !== 0xdd) throw new Error(`Baichuan login: expected encryption info (0xDDxx), got 0x${resp.toString(16)}`);
+        const encType = resp & 0xff;
 
-    // set encryption mode for post-login traffic
-    if (encType === 0x00) this.enc = { kind: "none" };
-    else if (encType === 0x01) this.enc = { kind: "bc" };
-    else if (encType === 0x02) this.enc = { kind: "aes", key: deriveAesKey(nonce, this.opts.password) };
-    else if (encType === 0x12) this.enc = { kind: "full_aes", key: deriveAesKey(nonce, this.opts.password) };
-    else throw new Error(`Baichuan login: unknown encType=0x${encType.toString(16)}`);
+        // During negotiation the payload is at most BCEncrypt (even if AES is supported).
+        const nonceXml = this.tryDecryptXml(nonceFrame.body, nonceFrame.header.channelId, encType === 0x00 ? { kind: "none" } : { kind: "bc" });
+        const nonce = getXmlText(nonceXml, "nonce");
+        if (!nonce) throw new Error("Baichuan login: nonce not found in XML");
+        this.nonce = nonce;
 
-      // 2) modern login with username/password hashes
-    const userHash = md5StrModern(`${this.opts.username}${nonce}`);
-    const passHash = md5StrModern(`${this.opts.password}${nonce}`);
-    const loginXml = buildLoginXml(userHash, passHash);
-    
-    this.logDebug("login_hash", { 
-      username: this.opts.username,
-      nonce,
-      userHash,
-      passHashLength: passHash.length,
-      loginXmlLength: loginXml.length,
-      loginXmlPreview: loginXml.substring(0, 200)
-    });
+        // set encryption mode for post-login traffic
+        if (encType === 0x00) this.enc = { kind: "none" };
+        else if (encType === 0x01) this.enc = { kind: "bc" };
+        else if (encType === 0x02) this.enc = { kind: "aes", key: deriveAesKey(nonce, this.opts.password) };
+        else if (encType === 0x12) this.enc = { kind: "full_aes", key: deriveAesKey(nonce, this.opts.password) };
+        else throw new Error(`Baichuan login: unknown encType=0x${encType.toString(16)}`);
 
-    // For login, explicitly use channelId 250 (host) and no extension XML
-    // This ensures correct BCEncrypt channelId offset (channelId 250 = 0xFA = offset 250)
-    // Use sendFrame directly (not sendXml from ReolinkBaichuanApi) to avoid recursion
-    // since sendXml might call login() which would cause infinite recursion
-    // Don't pass channel to use channelId 250 (host)
-    const replyFrame = await this.sendFrame({
-      cmdId: 1,
-      payloadXml: loginXml,
-      extensionXml: "",
-      messageClass: BC_CLASS_MODERN_24,
-      // For the login message itself, many firmwares expect BCEncrypt regardless of negotiated encryption.
-      // This matches neolink/reolink-aio behavior: always use BCEncrypt for login.
-      encryption: { kind: "bc" },
-      timeoutMs: 10_000,
-    });
-    
-    const replyXml = this.tryDecryptXml(replyFrame.body, replyFrame.header.channelId, { kind: "bc" });
+        // 2) modern login with username/password hashes
+        const userHash = md5StrModern(`${this.opts.username}${nonce}`);
+        const passHash = md5StrModern(`${this.opts.password}${nonce}`);
+        const loginXml = buildLoginXml(userHash, passHash);
 
-    // If login succeeded, camera replies with 200 in responseCode on modern frames.
-    // responseCode 400 typically means authentication failed (bad credentials)
-    // responseCode 200 means success
-    this.logDebug("login_reply", { 
-        replyLength: replyXml.length, 
-        replyPreview: replyXml.substring(0, 200),
-        startsWithXml: replyXml.startsWith("<?xml")
-      });
-    
+        this.logDebug("login_hash", {
+          username: this.opts.username,
+          nonce,
+          userHash,
+          passHashLength: passHash.length,
+          loginXmlLength: loginXml.length,
+          loginXmlPreview: loginXml.substring(0, 200)
+        });
+
+        // For login, explicitly use channelId 250 (host) and no extension XML
+        // This ensures correct BCEncrypt channelId offset (channelId 250 = 0xFA = offset 250)
+        // Use sendFrame directly (not sendXml from ReolinkBaichuanApi) to avoid recursion
+        // since sendXml might call login() which would cause infinite recursion
+        // Don't pass channel to use channelId 250 (host)
+        const replyFrame = await this.sendFrame({
+          cmdId: 1,
+          payloadXml: loginXml,
+          extensionXml: "",
+          messageClass: BC_CLASS_MODERN_24,
+          // For the login message itself, many firmwares expect BCEncrypt regardless of negotiated encryption.
+          // This matches neolink/reolink-aio behavior: always use BCEncrypt for login.
+          encryption: { kind: "bc" },
+          timeoutMs: 10_000,
+        });
+
+        const replyXml = this.tryDecryptXml(replyFrame.body, replyFrame.header.channelId, { kind: "bc" });
+
+        // If login succeeded, camera replies with 200 in responseCode on modern frames.
+        // responseCode 400 typically means authentication failed (bad credentials)
+        // responseCode 200 means success
+        this.logDebug("login_reply", {
+          replyLength: replyXml.length,
+          replyPreview: replyXml.substring(0, 200),
+          startsWithXml: replyXml.startsWith("<?xml")
+        });
+
         // Check if reply is empty.
         // This is commonly seen on sleeping/waking battery cameras, but can also indicate bad credentials.
         if (replyXml.length === 0) {
@@ -2219,17 +2283,34 @@ export class BaichuanClient extends EventEmitter<{
             "Baichuan login failed: empty reply (camera may be sleeping/waking, session may be stale, or username/password may be invalid)",
           );
         }
-    
-    if (!replyXml.startsWith("<?xml")) {
-      const preview = replyXml.length > 0 ? replyXml.substring(0, 100) : "(empty)";
-      throw new Error(`Baichuan login: unexpected non-XML reply (length: ${replyXml.length}, preview: ${preview})`);
-    }
+
+        if (!replyXml.startsWith("<?xml")) {
+          const preview = replyXml.length > 0 ? replyXml.substring(0, 100) : "(empty)";
+          throw new Error(`Baichuan login: unexpected non-XML reply (length: ${replyXml.length}, preview: ${preview})`);
+        }
 
         this.loggedIn = true;
         return;
       } catch (e) {
         lastError = e;
         this.loggedIn = false;
+
+        const msg = e && typeof e === "object" && "message" in e ? String((e as any).message) : String(e);
+        const looksLikeNegotiationFailure =
+          msg.includes("timeout waiting for nonce") ||
+          msg.includes("expected encryption info") ||
+          msg.includes("Baichuan socket closed") ||
+          msg.includes("ECONNRESET") ||
+          msg.includes("EPIPE");
+
+        // If negotiation is failing, try a less aggressive encryption mode on next attempt.
+        if (looksLikeNegotiationFailure) {
+          if (effectiveMaxEncryption === "full_aes" || effectiveMaxEncryption === "aes") {
+            effectiveMaxEncryption = "bc";
+          } else if (effectiveMaxEncryption === "bc") {
+            effectiveMaxEncryption = "none";
+          }
+        }
         try {
           await this.close();
         } catch {

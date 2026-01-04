@@ -343,7 +343,11 @@ export class BaichuanVideoStream extends EventEmitter<{
     this.restarting = true;
 
     try {
-      this.logger?.warn(`[BaichuanVideoStream] Watchdog restarting native stream (${params.reason})`);
+      const transport = this.client.getTransport?.() ?? "unknown";
+      const msgNum = this.activeMsgNum ?? "unknown";
+      this.logger?.warn(
+        `[BaichuanVideoStream] Watchdog restarting native stream (channel=${this.channel} profile=${this.profile} streamType=${this.expectedStreamType} msgNum=${msgNum} transport=${transport} reason=${params.reason})`,
+      );
 
       // Reset parsers to avoid carrying corrupt state across a restart.
       this.depacketizer.reset();

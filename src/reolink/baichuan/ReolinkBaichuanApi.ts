@@ -510,6 +510,11 @@ export class ReolinkBaichuanApi {
   private readonly host: string;
   private readonly username: string;
   private readonly password: string;
+
+  private rebootAfterDisconnectionsPerMinute: number | undefined;
+  private readonly disconnectStormVoluntaryAtMs: number[] = [];
+  private disconnectStormRebootInFlight: Promise<void> | undefined;
+  private disconnectStormLastRebootAtMs: number | undefined;
   private readonly simpleEventListeners = new Set<(event: ReolinkSimpleEvent) => void>();
   private simpleEventSubscribed = false;
   private simpleEventSubscribeInFlight: Promise<void> | undefined;
@@ -517,6 +522,8 @@ export class ReolinkBaichuanApi {
   private statePollingInterval: NodeJS.Timeout | undefined;
   private lastMotionState: boolean | undefined;
   private lastAiState: AIState | undefined;
+  private aiStatePollingDisabled = false;
+  private aiStatePollingDisabledLogged = false;
   private rtspServers = new Set<BaichuanRtspServer>(); // Track all RTSP servers for cleanup
   private readonly activeVideoMsgNums = new Map<string, number>();
 
@@ -527,7 +534,15 @@ export class ReolinkBaichuanApi {
     }
     | undefined;
 
-  constructor(opts: BaichuanClientOptions) {
+  constructor(opts: BaichuanClientOptions & {
+    /**
+     * Reboot the device if there are too many *voluntary* disconnects within 60 seconds.
+     *
+     * The count is based on `BaichuanClient.close({ reason: ... })` / idle disconnects.
+     * Remote/firmware-initiated closes are ignored.
+     */
+    rebootAfterDisconnectionsPerMinute?: number;
+  }) {
     this.logger = opts.logger ?? console;
     this.client = new BaichuanClient(opts);
     this.host = opts.host;
@@ -555,6 +570,98 @@ export class ReolinkBaichuanApi {
         }
       }
     });
+
+    const v = opts.rebootAfterDisconnectionsPerMinute;
+    if (typeof v === "number" && Number.isFinite(v) && v > 0) {
+      this.rebootAfterDisconnectionsPerMinute = Math.floor(v);
+      this.client.on("close", () => {
+        try {
+          void this.maybeRebootOnDisconnectStorm();
+        } catch {
+          // never throw from close handler
+        }
+      });
+    }
+  }
+
+  private async maybeRebootOnDisconnectStorm(): Promise<void> {
+    const threshold = this.rebootAfterDisconnectionsPerMinute;
+    if (threshold == null) return;
+
+    const info = this.client.getLastDisconnectInfo?.();
+    if (!info?.voluntary) return;
+
+    const now = Date.now();
+    const windowMs = 60_000;
+    const cutoff = now - windowMs;
+    while (this.disconnectStormVoluntaryAtMs.length && this.disconnectStormVoluntaryAtMs[0]! < cutoff) {
+      this.disconnectStormVoluntaryAtMs.shift();
+    }
+    this.disconnectStormVoluntaryAtMs.push(now);
+
+    if (this.disconnectStormVoluntaryAtMs.length < threshold) return;
+
+    if (this.disconnectStormRebootInFlight) return;
+    const cooldownMs = 10 * 60_000;
+    if (this.disconnectStormLastRebootAtMs != null && now - this.disconnectStormLastRebootAtMs < cooldownMs) return;
+
+    this.disconnectStormLastRebootAtMs = now;
+    (this.logger.warn ?? this.logger.error).call(this.logger, "[ReolinkBaichuanApi] disconnect storm detected; rebooting device", {
+      transport: info.transport,
+      reason: info.reason,
+      voluntaryDisconnectsInWindow: this.disconnectStormVoluntaryAtMs.length,
+      windowMs,
+      threshold,
+      cooldownMs,
+      method: "auto",
+    });
+
+    this.disconnectStormRebootInFlight = this.rebootFromDisconnectStorm("auto")
+      .catch((e) => {
+        (this.logger.warn ?? this.logger.error).call(this.logger, "[ReolinkBaichuanApi] disconnect-storm reboot failed", e);
+      })
+      .finally(() => {
+        this.disconnectStormRebootInFlight = undefined;
+      });
+  }
+
+  private async rebootFromDisconnectStorm(method: "auto" | "baichuan" | "cgi"): Promise<void> {
+    let lastErr: unknown;
+
+    if (method === "auto" || method === "baichuan") {
+      try {
+        await this.reboot();
+        return;
+      } catch (e) {
+        lastErr = e;
+        if (method === "baichuan") throw e;
+      }
+    }
+
+    if (method === "auto" || method === "cgi") {
+      const cgi = new ReolinkCgiApi({
+        host: this.host,
+        username: this.username,
+        password: this.password,
+        timeoutMs: 60_000,
+      });
+      try {
+        await cgi.login();
+        await cgi.Reboot();
+        return;
+      } catch (e) {
+        lastErr = e;
+        throw e;
+      } finally {
+        try {
+          await cgi.logout();
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr ?? "disconnect-storm reboot failed"));
   }
 
   /**
@@ -595,15 +702,20 @@ export class ReolinkBaichuanApi {
     if (this.simpleEventSubscribeInFlight) return await this.simpleEventSubscribeInFlight;
 
     this.simpleEventSubscribeInFlight = (async () => {
-      await this.subscribeEvents();
+      // If the caller already subscribed (e.g. NVR shared connection using subscribeToAllEvents),
+      // don't resubscribe.
+      if (!this.client.subscribed) {
+        await this.subscribeEvents();
+      }
       this.simpleEventSubscribed = true;
 
       // Only check current state and start polling for TCP connections (not UDP/battery cameras)
       // UDP/battery cameras should rely on event pushes only, not polling
       const isUdp = this.client.getTransport?.() === "udp";
       if (!isUdp) {
+        const channel = this.client.getConfiguredChannel?.() ?? 0;
         // Check current state and dispatch events immediately (TCP only)
-        await this.checkAndDispatchCurrentState();
+        await this.checkAndDispatchCurrentState(channel);
 
         // Start periodic polling if not already running (TCP only)
         this.startStatePolling();
@@ -1537,18 +1649,64 @@ export class ReolinkBaichuanApi {
    */
   async getAiState(channel?: number): Promise<AIState> {
     const cmdId = 342; // From reolink-aio GetAiAlarm
-    // NOTE: Many firmwares require an explicit aiType for cmd 342.
-    // The correct payload (per reolink_aio + neolink dissector) is <AiDetectCfg><chn/><type/>.
-    // This legacy helper keeps behavior best-effort and may return empty state on firmwares
-    // that reject cmd 342 without a type.
-    const xml = await this.sendXml({ cmdId, ...(channel !== undefined ? { channel } : {}) });
-    // Parse AI state XML
-    const state: AIState = {
-      channel: channel ?? 0,
-      alarm_state: Number(getXmlText(xml, "alarm_state") ?? "0"),
-      support: Number(getXmlText(xml, "support") ?? "0"),
+    const ch = this.normalizeChannel(channel);
+
+    // NOTE: Many firmwares require an explicit ai type for cmd 342.
+    // Correct payload (reolink_aio): <AiDetectCfg><chn>0-based</chn><type>people</type></AiDetectCfg>
+    // NVR/HomeHub firmwares often behave more like neolink (0-based header channel id).
+    const candidateTypes = ["people", "vehicle", "dog_cat", "face", "package"]; // best-effort
+    let lastErr: unknown;
+
+    const tryOnce = async (type: string, channelIdOverride?: number): Promise<string> => {
+      const payloadXml = `<?xml version="1.0" encoding="UTF-8" ?>` +
+        `<body>` +
+        `<AiDetectCfg version="1.1">` +
+        `<chn>${ch}</chn>` +
+        `<type>${xmlEscape(type)}</type>` +
+        `</AiDetectCfg>` +
+        `</body>`;
+
+      return await this.sendXml({
+        cmdId,
+        channel: ch,
+        payloadXml,
+        ...(channelIdOverride != null ? { channelIdOverride } : {}),
+      }, 0);
     };
-    return state;
+
+    // 1) Try neolink-style header channelId (0-based) first.
+    for (const type of candidateTypes) {
+      try {
+        const xml = await tryOnce(type, ch);
+        if (xml) {
+          return {
+            channel: ch,
+            alarm_state: Number(getXmlText(xml, "alarm_state") ?? "0"),
+            support: Number(getXmlText(xml, "support") ?? "0"),
+          };
+        }
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+
+    // 2) Fallback to default client behavior (reolink_aio-style header mapping).
+    for (const type of candidateTypes) {
+      try {
+        const xml = await tryOnce(type, undefined);
+        if (xml) {
+          return {
+            channel: ch,
+            alarm_state: Number(getXmlText(xml, "alarm_state") ?? "0"),
+            support: Number(getXmlText(xml, "support") ?? "0"),
+          };
+        }
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr ?? "getAiState failed"));
   }
 
   /**
@@ -2037,22 +2195,18 @@ ${xmlDateTimePayload("endTime", end)}
   async subscribeEvents(): Promise<void> {
     await this.client.login();
     // NOTE: Some battery firmwares reject the old "channelId=251 Extension" approach with responseCode=421.
-    // Neolink sends MSG_ID 31 with *empty* body and channel_id set to the camera channel.
+    // Neolink sends MSG_ID 31 with *empty* body and channel_id set to the camera channel (0-based).
     const channel = this.client.getConfiguredChannel?.() ?? 0;
-    // IMPORTANT: In neolink, BcCameraOpt.channel_id is 0 for standalone cameras (no +1 offset).
-    // Our library defaults to reolink_aio-style (channel+1) for most requests, so we try
-    // the exact neolink mapping first and keep +1 as a compatibility fallback.
-    const neolinkChannelId = channel;
-    const reolinkAioChannelId = channel + 1;
 
     const attempts: Array<{ label: string; params: Parameters<BaichuanClient["sendFrame"]>[0] }> = [
       {
-        label: `neolink-style channelId=${neolinkChannelId} bodyLen=0`,
-        params: { cmdId: 31, channelIdOverride: neolinkChannelId, messageClass: BC_CLASS_MODERN_24 },
+        label: `neolink-style channelId=${channel} bodyLen=0`,
+        params: { cmdId: 31, channelIdOverride: channel, messageClass: BC_CLASS_MODERN_24 },
       },
       {
-        label: `reolink_aio-style channelId=${reolinkAioChannelId} bodyLen=0`,
-        params: { cmdId: 31, channelIdOverride: reolinkAioChannelId, messageClass: BC_CLASS_MODERN_24 },
+        // reolink_aio uses ch_id=251 for push subscription.
+        label: "reolink_aio-style push channelId=251 bodyLen=0",
+        params: { cmdId: 31, channelIdOverride: 251, messageClass: BC_CLASS_MODERN_24 },
       },
       {
         label: "host channelId=250 bodyLen=0",
@@ -2088,6 +2242,97 @@ ${xmlDateTimePayload("endTime", end)}
   }
 
   /**
+   * Subscribe to events for all "own" channels.
+   *
+   * Intended for NVR/HomeHub setups where multiple channels share the same host.
+   *
+   * Implementation notes:
+   * - neolink sends cmd_id=31 with empty body and 0-based header channel_id per channel.
+   * - some firmwares instead accept a single push subscription (header channelId=251).
+   */
+  async subscribeToAllEvents(options?: {
+    /** Prefer CGI enumeration (default true). */
+    preferCgi?: boolean;
+    /** Max channels to probe when enumerating (default 16). */
+    maxChannels?: number;
+    /** Timeout for each subscribe attempt (default 10000ms). */
+    timeoutMs?: number;
+  }): Promise<void> {
+    await this.client.login();
+
+    const preferCgi = options?.preferCgi ?? true;
+    const maxChannels = options?.maxChannels ?? 16;
+    const timeoutMs = options?.timeoutMs ?? 10_000;
+
+    let channels: number[] = [];
+    try {
+      const info = await this.getNvrChannelsInfo({
+        source: preferCgi ? "cgi" : "baichuan",
+        maxChannels,
+      });
+
+      // Filter out empty channels when we can. (Keep online/sleeping channels.)
+      const filtered = info
+        .filter((c) => Boolean((c.uid ?? "").trim()) || Boolean((c.name ?? "").trim()) || c.online === true || c.sleep === true)
+        .map((c) => c.channel)
+        .filter((c) => Number.isInteger(c) && c >= 0);
+
+      channels = (filtered.length ? filtered : info.map((c) => c.channel))
+        .filter((c) => Number.isInteger(c) && c >= 0)
+        .slice(0, maxChannels);
+    } catch {
+      // ignore: fallback below
+    }
+
+    if (!channels.length) {
+      const configured = this.client.getConfiguredChannel?.() ?? 0;
+      channels = [configured];
+    }
+
+    channels = [...new Set(channels)].sort((a, b) => a - b);
+
+    let okCount = 0;
+    let lastCode: number | undefined;
+    for (const channel of channels) {
+      const frame = await this.client.sendFrame({
+        cmdId: 31,
+        channelIdOverride: channel,
+        messageClass: BC_CLASS_MODERN_24,
+        timeoutMs,
+      });
+      lastCode = frame.header.responseCode;
+      if (frame.header.responseCode === 200) {
+        okCount++;
+      } else {
+        (this.logger.debug ?? this.logger.log).call(
+          this.logger,
+          `[ReolinkBaichuanApi] subscribeToAllEvents rejected (channel=${channel}) responseCode=${frame.header.responseCode}`,
+        );
+      }
+    }
+
+    if (okCount > 0) {
+      this.client.subscribed = true;
+      this.client.refreshKeepAlive?.();
+      return;
+    }
+
+    // Fallback for firmwares that only accept a single push subscription.
+    try {
+      await this.subscribeEvents();
+      return;
+    } catch {
+      // ignore; throw consolidated error below.
+    }
+
+    this.client.subscribed = false;
+    this.client.refreshKeepAlive?.();
+    throw new Error(
+      `subscribeToAllEvents failed: camera rejected cmdId=31 for all channels (last responseCode=${lastCode ?? "unknown"})`,
+    );
+  }
+
+  /**
    * Unsubscribe from events.
    */
   async unsubscribeEvents(): Promise<void> {
@@ -2120,39 +2365,52 @@ ${xmlDateTimePayload("endTime", end)}
       }
 
       // Check AI state (if supported)
-      try {
-        const aiState = await this.getAiState(channel);
-        if (aiState && aiState.alarm_state !== undefined) {
-          // Check if AI state changed
-          const aiStateChanged = !this.lastAiState ||
-            this.lastAiState.alarm_state !== aiState.alarm_state ||
-            this.lastAiState.support !== aiState.support;
+      if (!this.aiStatePollingDisabled) {
+        try {
+          const aiState = await this.getAiState(channel);
+          if (aiState && aiState.alarm_state !== undefined) {
+            const aiStateChanged =
+              !this.lastAiState ||
+              this.lastAiState.alarm_state !== aiState.alarm_state ||
+              this.lastAiState.support !== aiState.support;
 
-          if (aiStateChanged) {
-            this.lastAiState = aiState;
+            if (aiStateChanged) {
+              this.lastAiState = aiState;
 
-            // If alarm_state indicates detection, dispatch appropriate AI event
-            // alarm_state: 0 = no detection, 1 = detection active
-            if (aiState.alarm_state === 1) {
-              // Try to determine AI type from state
-              // For now, dispatch "other" if we can't determine the specific type
-              // The actual AI type should come from the event stream, but we dispatch a generic event here
-              const event: ReolinkSimpleEvent = {
-                type: "other", // Generic AI detection
-                channel,
-                timestamp: Date.now(),
-              };
-              this.dispatchSimpleEvent(event);
+              if (aiState.alarm_state === 1) {
+                const event: ReolinkSimpleEvent = {
+                  type: "other",
+                  channel,
+                  timestamp: Date.now(),
+                };
+                this.dispatchSimpleEvent(event);
+              }
             }
           }
-        }
-      } catch (e) {
-        // AI state check may fail on cameras without AI support - ignore
-        // Only log if it's not a common "not supported" error
-        if (e && typeof e === 'object' && 'message' in e) {
-          const msg = String(e.message);
-          if (!msg.includes('not supported') && !msg.includes('unsupported')) {
-            (this.logger.debug ?? this.logger.log)?.call(this.logger, "[ReolinkBaichuanApi] getAiState failed (may not be supported)", e);
+        } catch (error) {
+          // Some firmwares/NVRs reject cmd 342 and may also tear down the TCP session.
+          // To avoid a reconnect loop, disable AI polling after the first failure.
+          this.aiStatePollingDisabled = true;
+
+          const msg =
+            error && typeof error === "object" && "message" in error
+              ? String((error as any).message)
+              : String(error);
+
+          if (!msg.includes("not supported") && !msg.includes("unsupported")) {
+            (this.logger.debug ?? this.logger.log)?.call(
+              this.logger,
+              "[ReolinkBaichuanApi] getAiState failed; disabling AI polling",
+              error,
+            );
+          }
+
+          if (!this.aiStatePollingDisabledLogged) {
+            this.aiStatePollingDisabledLogged = true;
+            this.logger.debug?.(
+              "[ReolinkBaichuanApi] AI polling disabled after getAiState failure",
+              error,
+            );
           }
         }
       }
@@ -2169,10 +2427,13 @@ ${xmlDateTimePayload("endTime", end)}
     for (const cb of this.simpleEventListeners) {
       try {
         cb(event);
-      }
-      catch (e) {
+      } catch (e) {
         // Never allow user handlers to break the event loop
-        (this.logger.warn ?? this.logger.error)?.call(this.logger, "[ReolinkBaichuanApi] onSimpleEvent handler error", e);
+        (this.logger.warn ?? this.logger.error)?.call(
+          this.logger,
+          "[ReolinkBaichuanApi] onSimpleEvent handler error",
+          e,
+        );
       }
     }
   }
@@ -2201,15 +2462,19 @@ ${xmlDateTimePayload("endTime", end)}
 
     // Poll every 5 seconds (TCP only)
     this.statePollingInterval = setInterval(async () => {
-      // Only poll if there are still listeners
-      if (this.simpleEventListeners.size === 0) {
-        this.stopStatePolling();
-        return;
-      }
+      try {
+        // Only poll if there are still listeners
+        if (this.simpleEventListeners.size === 0) {
+          this.stopStatePolling();
+          return;
+        }
 
-      // Check state for channel 0 (default)
-      // TODO: Support multiple channels if needed
-      await this.checkAndDispatchCurrentState(0);
+        const channel = this.client.getConfiguredChannel?.() ?? 0;
+        await this.checkAndDispatchCurrentState(channel);
+      } catch (e) {
+        // Never allow polling errors to crash callers.
+        this.logger.debug?.("[ReolinkBaichuanApi] state polling tick failed", e);
+      }
     }, 5000);
   }
 
