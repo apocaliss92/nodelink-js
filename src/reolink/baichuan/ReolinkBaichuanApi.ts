@@ -521,6 +521,9 @@ export class ReolinkBaichuanApi {
   private simpleEventSubscribed = false;
   private simpleEventSubscribeInFlight: Promise<void> | undefined;
   private simpleEventUnsubscribeInFlight: Promise<void> | undefined;
+  private simpleEventResubscribeTimer: NodeJS.Timeout | undefined;
+  private simpleEventResubscribeInFlight: Promise<void> | undefined;
+  private readonly simpleEventResubscribeIntervalMs = 5 * 60_000;
   private statePollingInterval: NodeJS.Timeout | undefined;
   private lastMotionState: boolean | undefined;
   private lastAiState: AIState | undefined;
@@ -783,6 +786,7 @@ export class ReolinkBaichuanApi {
   async onSimpleEvent(callback: (event: ReolinkSimpleEvent) => void): Promise<void> {
     this.simpleEventListeners.add(callback);
     await this.ensureSimpleEventSubscribed();
+    this.startSimpleEventResubscribeTimer();
   }
 
   /**
@@ -798,6 +802,7 @@ export class ReolinkBaichuanApi {
     }
 
     if (this.simpleEventListeners.size === 0) {
+      this.stopSimpleEventResubscribeTimer();
       await this.ensureSimpleEventUnsubscribed();
     } else {
       // If there are still listeners, keep polling running (TCP only)
@@ -806,6 +811,43 @@ export class ReolinkBaichuanApi {
         this.startStatePolling();
       }
     }
+  }
+
+  private startSimpleEventResubscribeTimer(): void {
+    if (this.simpleEventResubscribeTimer) return;
+    if (this.simpleEventListeners.size === 0) return;
+
+    this.simpleEventResubscribeTimer = setInterval(() => {
+      // Best-effort renew: some devices silently drop subscriptions without closing the socket.
+      void this.renewSimpleEventSubscription();
+    }, this.simpleEventResubscribeIntervalMs);
+  }
+
+  private stopSimpleEventResubscribeTimer(): void {
+    if (!this.simpleEventResubscribeTimer) return;
+    clearInterval(this.simpleEventResubscribeTimer);
+    this.simpleEventResubscribeTimer = undefined;
+  }
+
+  private async renewSimpleEventSubscription(): Promise<void> {
+    if (this.simpleEventListeners.size === 0) return;
+    if (this.simpleEventResubscribeInFlight) return await this.simpleEventResubscribeInFlight;
+
+    this.simpleEventResubscribeInFlight = (async () => {
+      try {
+        await this.subscribeEvents();
+        this.simpleEventSubscribed = true;
+        (this.logger.debug ?? this.logger.log).call(this.logger, "[ReolinkBaichuanApi] renewed simple event subscription", {
+          intervalMs: this.simpleEventResubscribeIntervalMs,
+        });
+      } catch (e) {
+        (this.logger.debug ?? this.logger.log).call(this.logger, "[ReolinkBaichuanApi] failed to renew event subscription", e);
+      }
+    })().finally(() => {
+      this.simpleEventResubscribeInFlight = undefined;
+    });
+
+    return await this.simpleEventResubscribeInFlight;
   }
 
   private async ensureSimpleEventSubscribed(): Promise<void> {
@@ -855,6 +897,9 @@ export class ReolinkBaichuanApi {
     this.simpleEventUnsubscribeInFlight = (async () => {
       await this.unsubscribeEvents();
       this.simpleEventSubscribed = false;
+
+      // Stop renew timer when unsubscribed.
+      this.stopSimpleEventResubscribeTimer();
 
       // Stop polling when no more listeners
       this.stopStatePolling();

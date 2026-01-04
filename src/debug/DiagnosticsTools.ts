@@ -92,12 +92,14 @@ export async function collectNativeDiagnostics(params: {
     collectedAt: new Date().toISOString(),
   };
 
-  const [info, ports, streamMetadata, abilities, capabilities] = await Promise.all([
+  const [info, ports, streamMetadata, abilities, capabilities, talkAbility, twoWayAudio] = await Promise.all([
     tryCall(() => api.getInfo(channel)),
     tryCall(() => api.getPorts()),
     tryCall(() => api.getStreamMetadata(channel)),
     tryCall(() => api.getAbilityInfo()),
     tryCall(() => api.getDeviceCapabilities(channel, { probe: false })),
+    tryCall(() => api.getTalkAbility(channel)),
+    tryCall(() => api.getTwoWayAudioConfig(channel)),
   ]);
 
   result.info = info;
@@ -105,6 +107,19 @@ export async function collectNativeDiagnostics(params: {
   result.streamMetadata = streamMetadata;
   result.abilityInfo = abilities;
   result.deviceCapabilities = capabilities;
+  result.talkAbility = talkAbility;
+  result.twoWayAudio = twoWayAudio;
+
+  // Convenience: derive a "recommended" config (no side effects) from TalkAbility.
+  if (talkAbility?.ok && talkAbility.value) {
+    const v: any = talkAbility.value as any;
+    const recommended = {
+      duplex: Array.isArray(v.duplexList) ? v.duplexList[0] : undefined,
+      audioStreamMode: Array.isArray(v.audioStreamModeList) ? v.audioStreamModeList[0] : undefined,
+      audioConfig: Array.isArray(v.audioConfigList) ? v.audioConfigList[0] : undefined,
+    };
+    result.intercomRecommended = recommended;
+  }
 
   return result;
 }
