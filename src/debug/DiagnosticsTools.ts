@@ -9,6 +9,7 @@ import type { StreamProfile } from "../reolink/baichuan/types";
 import { buildRtspUrl } from "../rtsp/urls";
 import { splitAnnexBToNalPayloads } from "../baichuan/stream/H264Converter";
 import { getH265NalType, splitAnnexBToNalPayloads as splitH265AnnexBToNalPayloads } from "../baichuan/stream/H265Converter";
+import type { Logger } from "./DebugConfig";
 
 export type DiagnosticsStreamKind = "native" | "rtsp" | "rtmp";
 
@@ -184,6 +185,9 @@ export type StreamSamplingOptions = {
   channel?: number;
   selection: StreamSamplingSelection;
 
+  /** Optional logger for human-readable progress logs. */
+  logger?: Logger;
+
   // RTSP: if enabled, build the direct-camera RTSP URL.
   rtsp?: {
     host: string;
@@ -332,11 +336,27 @@ export async function sampleStreams(opts: StreamSamplingOptions): Promise<void> 
   const durationMs = Math.max(250, Math.round(opts.durationSeconds * 1000));
   const snapshotIntervalSeconds = opts.snapshotIntervalSeconds ?? 2;
 
+  const logger = opts.logger;
+  const log = (level: "log" | "warn" | "error", msg: string, extra?: unknown) => {
+    const fn = (logger?.[level] ?? logger?.log) as ((...args: any[]) => void) | undefined;
+    if (!fn) return;
+    if (extra !== undefined) fn.call(logger, msg, extra);
+    else fn.call(logger, msg);
+  };
+
   const profiles = normalizeProfiles(opts.selection.profiles) as StreamProfile[];
   const selectedProfiles: StreamProfile[] = profiles.length ? profiles : ["main", "sub", "ext"];
 
   const outDir = opts.outDir;
   mkdirp(outDir);
+
+  log("log", "[Diagnostics] stream sampling start", {
+    outDir,
+    channel,
+    durationSeconds: opts.durationSeconds,
+    snapshotIntervalSeconds,
+    selection: opts.selection,
+  });
 
   const eventsPath = path.join(outDir, "events.ndjson");
   appendNdjson(eventsPath, {
@@ -355,11 +375,13 @@ export async function sampleStreams(opts: StreamSamplingOptions): Promise<void> 
       mkdirp(baseDir);
 
       appendNdjson(eventsPath, { t: Date.now(), type: "stream_begin", kind, profile, channel });
+      log("log", "[Diagnostics] stream begin", { kind, profile, channel });
 
       if (kind === "native") {
         const api = opts.native?.api;
         if (!api) {
           appendNdjson(eventsPath, { t: Date.now(), type: "stream_skip", kind, profile, reason: "native api missing" });
+          log("warn", "[Diagnostics] stream skip (native api missing)", { kind, profile, channel });
           continue;
         }
 
@@ -539,6 +561,7 @@ export async function sampleStreams(opts: StreamSamplingOptions): Promise<void> 
           writeJson(clipInfoPath, clipInfo);
 
           appendNdjson(eventsPath, { t: Date.now(), type: "native_done", ...clipInfo });
+          log("log", "[Diagnostics] stream done", clipInfo);
         }
 
         continue;
@@ -547,6 +570,7 @@ export async function sampleStreams(opts: StreamSamplingOptions): Promise<void> 
       if (kind === "rtsp") {
         if (!opts.rtsp) {
           appendNdjson(eventsPath, { t: Date.now(), type: "stream_skip", kind, profile, reason: "rtsp config missing" });
+          log("warn", "[Diagnostics] stream skip (rtsp config missing)", { kind, profile, channel });
           continue;
         }
 
@@ -589,6 +613,15 @@ export async function sampleStreams(opts: StreamSamplingOptions): Promise<void> 
           snapshots: snapsRes,
         });
 
+        log("log", "[Diagnostics] stream done", {
+          kind,
+          profile,
+          channel,
+          mp4Path,
+          record: recordRes,
+          snapshots: snapsRes,
+        });
+
         continue;
       }
 
@@ -596,6 +629,7 @@ export async function sampleStreams(opts: StreamSamplingOptions): Promise<void> 
         const url = opts.rtmp?.urlsByProfile?.[profile];
         if (!url) {
           appendNdjson(eventsPath, { t: Date.now(), type: "stream_skip", kind, profile, reason: "rtmp url missing" });
+          log("warn", "[Diagnostics] stream skip (rtmp url missing)", { kind, profile, channel });
           continue;
         }
 
@@ -624,6 +658,15 @@ export async function sampleStreams(opts: StreamSamplingOptions): Promise<void> 
           type: "rtmp_done",
           kind,
           profile,
+          mp4Path,
+          record: recordRes,
+          snapshots: snapsRes,
+        });
+
+        log("log", "[Diagnostics] stream done", {
+          kind,
+          profile,
+          channel,
           mp4Path,
           record: recordRes,
           snapshots: snapsRes,

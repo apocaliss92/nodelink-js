@@ -5,6 +5,7 @@ import { BaichuanRtspServer, type BaichuanRtspServerOptions } from "../../baichu
 import { BaichuanClient, type BaichuanClientOptions } from "../../client/BaichuanClient";
 import { type Logger } from "../../debug/DebugConfig";
 import { createDiagnosticsBundle, sampleStreams, type StreamSamplingSelection, type StreamSamplingOptions } from "../../debug/DiagnosticsTools";
+import { zipDirectory } from "../../debug/zip";
 import {
   BC_CLASS_FILE_DOWNLOAD,
   BC_CLASS_MODERN_24,
@@ -626,6 +627,14 @@ export class ReolinkBaichuanApi {
     const runDirName = new Date().toISOString().replace(/[:.]/g, "-");
     const runDir = join(baseOutDir, runDirName);
 
+    (this.logger.log ?? console.log).call(this.logger, "[Diagnostics] starting run", {
+      outDir: baseOutDir,
+      runDir,
+      channel,
+      durationSeconds: params.durationSeconds,
+      selection: params.selection,
+    });
+
     const cgiEnabled = params.cgi === true || (typeof params.cgi === "object" && params.cgi != null);
     const cgiApi = cgiEnabled
       ? new ReolinkCgiApi({
@@ -644,6 +653,12 @@ export class ReolinkBaichuanApi {
       native: { api: this, channel },
       ...(cgiApi ? { cgi: { cgi: cgiApi, channel } } : {}),
       ...(params.extra ? { extra: params.extra } : {}),
+    });
+
+    (this.logger.log ?? console.log).call(this.logger, "[Diagnostics] diagnostics bundle collected", {
+      diagnosticsPath: diagnosticsRes.diagnosticsPath,
+      runDir: diagnosticsRes.outDir,
+      cgiEnabled,
     });
 
     const streamsDir = join(runDir, "streams");
@@ -667,24 +682,16 @@ export class ReolinkBaichuanApi {
       ...(params.rtmp ? { rtmp: params.rtmp } : {}),
       native: { api: this },
       ...(params.limits ? { limits: params.limits } : {}),
+      logger: this.logger,
     });
 
+    (this.logger.log ?? console.log).call(this.logger, "[Diagnostics] stream sampling completed", { streamsDir });
+
     const zipPath = join(baseOutDir, `${runDirName}.zip`);
-    await new Promise<void>((resolve, reject) => {
-      const p = spawn("zip", ["-r", zipPath, "."], { cwd: runDir });
-      let stderr = "";
-      p.on("error", reject);
-      p.stderr.on("data", (d) => {
-        stderr += d instanceof Buffer ? d.toString() : String(d);
-      });
-      p.on("close", (code) => {
-        if (code === 0) {
-          resolve();
-          return;
-        }
-        reject(new Error(`zip failed with code ${code}${stderr ? `: ${stderr.slice(-2000)}` : ""}`));
-      });
-    });
+
+    (this.logger.log ?? console.log).call(this.logger, "[Diagnostics] creating zip bundle", { zipPath });
+    await zipDirectory({ sourceDir: runDir, zipPath });
+    (this.logger.log ?? console.log).call(this.logger, "[Diagnostics] zip bundle created", { zipPath });
 
     return { runDir: diagnosticsRes.outDir, zipPath, diagnosticsPath: diagnosticsRes.diagnosticsPath, streamsDir };
   }

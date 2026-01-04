@@ -45,4 +45,5 @@ export {
 } from "./baichuan/stream/H265Converter";
 export type { DebugOptions, DebugConfig } from "./debug/DebugConfig";
 export * from "./debug/DiagnosticsTools";
+export * from "./debug/zip";
 

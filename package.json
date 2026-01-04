@@ -95,6 +95,7 @@
     "@eslint/js": "^9.0.0",
     "@microsoft/api-extractor": "^7.53.0",
     "@types/node": "^24.0.0",
+    "@types/yazl": "^2.4.6",
     "eslint": "^9.0.0",
     "globals": "^16.0.0",
     "tsup": "^8.0.0",
@@ -103,6 +104,7 @@
   "dependencies": {
     "alawmulaw": "^6.0.0",
     "dotenv": "^17.2.3",
-    "undici": "^7.16.0"
+    "undici": "^7.16.0",
+    "yazl": "^3.3.1"
   }
 }
