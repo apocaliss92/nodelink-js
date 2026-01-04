@@ -219,7 +219,14 @@ export function computeDeviceCapabilities(params: {
   const hasBatteryFromAbilities = abilitiesHasAny(flat, /battery/i);
   const hasFloodlightFromAbilities = abilitiesHasAny(flat, /white\s*led|whiteLed|flood\s*light|floodlight/i);
   const hasSirenFromAbilities = abilitiesHasAny(flat, /audio\s*alarm|audioAlarm|siren|pushAlarn|audioPlay/i);
-  const hasIntercomFromSupport = isTruthyNumberLike(params.support?.audioTalk);
+
+  // Two-way audio (intercom/talk) capability.
+  // Observed signals:
+  // - `support.audioTalk` (some firmwares)
+  // - per-channel SupportInfo item `ipcAudioTalk` (common on NVR doorbells)
+  const hasIntercomFromSupport =
+    isTruthyNumberLike((params.support as any)?.audioTalk) ||
+    (supportItem ? isTruthyNumberLike((supportItem as any).ipcAudioTalk) : false);
 
   const hasPanTiltFromAbilities = abilitiesHasAny(flat, /ptz/i);
   const hasZoomFromAbilities = abilitiesHasAny(flat, /zoom|zoomFocus|StartZoomFocus/i);
