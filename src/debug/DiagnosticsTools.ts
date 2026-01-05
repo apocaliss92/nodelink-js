@@ -232,6 +232,21 @@ export type StreamSamplingOptions = {
 
 type FfmpegResult = { ok: true } | { ok: false; error: string };
 
+/**
+ * Sanitize error messages by removing credentials from URLs.
+ * Replaces patterns like "rtsp://username:password@host" with "rtsp://***:***@host"
+ */
+function sanitizeFfmpegError(error: string): string {
+  // Replace credentials in URLs (rtsp://, rtmp://, http://, https://)
+  return error.replace(
+    /([a-z]+:\/\/)([^:@\/\s]+):([^@\/\s]+)@/gi,
+    (match, protocol, username, password) => {
+      // Keep the protocol, but hide username and password
+      return `${protocol}***:***@`;
+    },
+  );
+}
+
 function spawnFfmpeg(args: string[], logPath: string): Promise<FfmpegResult> {
   return new Promise((resolve) => {
     mkdirp(path.dirname(logPath));
@@ -248,7 +263,8 @@ function spawnFfmpeg(args: string[], logPath: string): Promise<FfmpegResult> {
     p.stderr.on("data", (d: Buffer) => {
       const s = d.toString();
       stderr += s;
-      logStream.write(s);
+      // Sanitize credentials before writing to log file
+      logStream.write(sanitizeFfmpegError(s));
     });
 
     p.on("close", (code) => {
@@ -257,7 +273,8 @@ function spawnFfmpeg(args: string[], logPath: string): Promise<FfmpegResult> {
         resolve({ ok: true });
         return;
       }
-      resolve({ ok: false, error: `ffmpeg exited with code ${code}\n${stderr.slice(-4000)}` });
+      const errorMsg = `ffmpeg exited with code ${code}\n${stderr.slice(-4000)}`;
+      resolve({ ok: false, error: sanitizeFfmpegError(errorMsg) });
     });
   });
 }
@@ -304,12 +321,14 @@ async function testStreamWithFfmpeg(params: {
       if (code === 0 || hasData) {
         resolve({ ok: true, value: { duration } });
       } else {
-        resolve({ ok: false, error: `ffmpeg exited with code ${code}\n${stderr.slice(-1000)}` });
+        const errorMsg = `ffmpeg exited with code ${code}\n${stderr.slice(-1000)}`;
+        resolve({ ok: false, error: sanitizeFfmpegError(errorMsg) });
       }
     });
 
     p.on("error", (e) => {
-      resolve({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      resolve({ ok: false, error: sanitizeFfmpegError(errorMsg) });
     });
   });
 }

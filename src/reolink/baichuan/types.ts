@@ -475,6 +475,8 @@ export interface DualLensChannelInfo {
   hasMotion: boolean;
   /** Indicates whether this channel supports intercom (two-way audio) */
   hasIntercom: boolean;
+  /** Indicates whether this channel supports PTZ presets */
+  hasPresets: boolean;
   /** Channel type: "wide" for wide-angle lens, "telephoto" for telephoto lens */
   lensType?: "wide" | "telephoto" | undefined;
   /** Available streams for this channel */
@@ -504,5 +506,22 @@ export interface DualLensChannelAnalysis {
   logicalChannelCount?: number | undefined;
   /** Detailed information for each channel */
   channels: DualLensChannelInfo[];
+  /** Maps each capability to the list of channel numbers (0-based) that support it.
+   * Use this to determine which channels to send commands to.
+   */
+  capabilityChannels: {
+    /** Channel numbers that support pan */
+    pan: number[];
+    /** Channel numbers that support tilt */
+    tilt: number[];
+    /** Channel numbers that support zoom */
+    zoom: number[];
+    /** Channel numbers that support motion detection */
+    motion: number[];
+    /** Channel numbers that support intercom (two-way audio) */
+    intercom: number[];
+    /** Channel numbers that support PTZ presets */
+    presets: number[];
+  };
 }
 

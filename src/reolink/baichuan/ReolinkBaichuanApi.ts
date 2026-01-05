@@ -4711,18 +4711,29 @@ ${xmlDateTimePayload("endTime", end)}
 
   /**
    * Analyzes channel capabilities for dual lens models.
-   * Determines which channels support pan, tilt, zoom, motion detection, intercom
+   * Determines which channels support pan, tilt, zoom, motion detection, intercom, presets
    * and which streaming types are available (RTSP, RTMP, Native).
    * 
-   * @returns Detailed information about dual lens channels
+   * @returns Detailed information about dual lens channels, including which channels support each capability
    * 
    * @example
    * ```typescript
    * const analysis = await api.getDualLensChannelInfo();
    * if (analysis.isDualLens) {
+   *   // Get channels that support specific capabilities
+   *   const panChannels = analysis.capabilityChannels.pan; // [0, 1]
+   *   const zoomChannels = analysis.capabilityChannels.zoom; // [1] for TrackMix
+   *   const presetChannels = analysis.capabilityChannels.presets; // [0]
+   *   
+   *   // Send pan command to first channel that supports it
+   *   if (panChannels.length > 0) {
+   *     await api.ptzControl(panChannels[0], { pan: 1 });
+   *   }
+   *   
+   *   // Detailed info per channel
    *   for (const ch of analysis.channels) {
    *     console.log(`Channel ${ch.channel}: pan=${ch.hasPan}, tilt=${ch.hasTilt}, zoom=${ch.hasZoom}`);
-   *     console.log(`  Motion: ${ch.hasMotion}, Intercom: ${ch.hasIntercom}`);
+   *     console.log(`  Motion: ${ch.hasMotion}, Intercom: ${ch.hasIntercom}, Presets: ${ch.hasPresets}`);
    *     console.log(`  Stream: RTSP=${ch.availableStreams.rtsp}, RTMP=${ch.availableStreams.rtmp}, Native=${ch.availableStreams.native}`);
    *   }
    * }
@@ -4804,6 +4815,14 @@ ${xmlDateTimePayload("endTime", end)}
         streamChannelCount: channelNum,
         logicalChannelCount: channelNum,
         channels: [],
+        capabilityChannels: {
+          pan: [],
+          tilt: [],
+          zoom: [],
+          motion: [],
+          intercom: [],
+          presets: [],
+        },
       };
     }
 
@@ -4921,13 +4940,22 @@ ${xmlDateTimePayload("endTime", end)}
           lensType = "telephoto";
         }
 
+        // For TrackMix (single_motion) models, channel 1 (telephoto) has optical zoom
+        // even if capabilities don't explicitly report it
+        let hasZoom = caps.hasZoom ?? false;
+        if (dualLensType === "single_motion" && ch === 1 && lensType === "telephoto") {
+          // Telephoto lens on TrackMix has zoom capability
+          hasZoom = true;
+        }
+
         channelInfos.push({
           channel: ch,
           hasPan: caps.hasPan ?? false,
           hasTilt: caps.hasTilt ?? false,
-          hasZoom: caps.hasZoom ?? false,
+          hasZoom,
           hasMotion,
           hasIntercom: caps.hasIntercom ?? false,
+          hasPresets: caps.hasPresets ?? false,
           lensType,
           availableStreams,
         });
@@ -4940,6 +4968,16 @@ ${xmlDateTimePayload("endTime", end)}
       }
     }
 
+    // Build capability channel maps: for each capability, list all channels that support it
+    const capabilityChannels = {
+      pan: channelInfos.filter((ch) => ch.hasPan).map((ch) => ch.channel),
+      tilt: channelInfos.filter((ch) => ch.hasTilt).map((ch) => ch.channel),
+      zoom: channelInfos.filter((ch) => ch.hasZoom).map((ch) => ch.channel),
+      motion: channelInfos.filter((ch) => ch.hasMotion).map((ch) => ch.channel),
+      intercom: channelInfos.filter((ch) => ch.hasIntercom).map((ch) => ch.channel),
+      presets: channelInfos.filter((ch) => ch.hasPresets).map((ch) => ch.channel),
+    };
+
     return {
       isDualLens: true,
       dualLensType,
@@ -4947,6 +4985,7 @@ ${xmlDateTimePayload("endTime", end)}
       streamChannelCount: streamChannels.length,
       logicalChannelCount: logicalChannels.length,
       channels: channelInfos,
+      capabilityChannels,
     };
   }
 
@@ -5058,11 +5097,19 @@ ${xmlDateTimePayload("endTime", end)}
    */
   async buildVideoStreamOptions(
     channel?: number,
+    options?: {
+      /** If true, the `url` field will contain the URL with authentication credentials embedded.
+       * If false or undefined, `url` will not include credentials (use `urlWithAuth` for authenticated URLs).
+       * Default: false
+       */
+      includeAuth?: boolean;
+    },
   ): Promise<{
     nativeStreams: ReolinkSupportedStream[];
     rtspStreams: ReolinkSupportedStream[];
     rtmpStreams: ReolinkSupportedStream[];
   }> {
+    const includeAuth = options?.includeAuth;
     const ch = this.normalizeChannel(channel);
 
     const rtspStreams: ReolinkSupportedStream[] = [];
@@ -5103,7 +5150,7 @@ ${xmlDateTimePayload("endTime", end)}
           container: "rtsp",
           channel: ch,
           profile,
-          url: rtspUrl,
+          url: includeAuth ? rtspUrlWithAuth : rtspUrl,
           urlWithAuth: rtspUrlWithAuth,
           path: rtspPath,
           port: rtspPort,
@@ -5145,7 +5192,7 @@ ${xmlDateTimePayload("endTime", end)}
           container: "rtmp",
           channel: ch,
           profile,
-          url: rtmpUrl.toString(),
+          url: includeAuth ? rtmpUrlWithAuth.toString() : rtmpUrl.toString(),
           urlWithAuth: rtmpUrlWithAuth.toString(),
           path: rtmpPath,
           port: rtmpPort,
