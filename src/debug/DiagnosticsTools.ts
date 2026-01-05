@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { spawn } from "node:child_process";
 
 import type { ReolinkBaichuanApi } from "../reolink/baichuan/ReolinkBaichuanApi";
-import type { ReolinkCgiApi } from "../reolink/cgi/ReolinkCgiApi";
+import type { ReolinkCgiApi, DeviceInputData } from "../reolink/cgi/ReolinkCgiApi";
 import { BaichuanVideoStream } from "../baichuan/stream/BaichuanVideoStream";
 import type { StreamProfile } from "../reolink/baichuan/types";
 import { buildRtspUrl } from "../rtsp/urls";
@@ -693,4 +693,402 @@ export async function sampleStreams(opts: StreamSamplingOptions): Promise<void> 
   }
 
   appendNdjson(eventsPath, { t: Date.now(), type: "sampling_done" });
+}
+
+/**
+ * Comprehensive NVR/HUB diagnostics function.
+ * Collects and prints all available information about the NVR/HUB device and all its channels.
+ */
+export async function collectNvrDiagnostics(params: {
+  cgi: ReolinkCgiApi;
+  logger?: Logger;
+}): Promise<Record<string, unknown>> {
+  const { cgi, logger } = params;
+  const log = (msg: string, data?: unknown) => {
+    if (logger?.log) {
+      if (data !== undefined) logger.log(msg, data);
+      else logger.log(msg);
+    } else {
+      console.log(msg);
+      if (data !== undefined) console.log(JSON.stringify(data, null, 2));
+    }
+  };
+
+  const result: Record<string, unknown> = {
+    kind: "nvr_diagnostics",
+    collectedAt: new Date().toISOString(),
+  };
+
+  log("=".repeat(80));
+  log("NVR/HUB DIAGNOSTICS - Starting comprehensive data collection");
+  log("=".repeat(80));
+
+  // 1. NVR/HUB Device Information
+  log("\n[1/7] Collecting NVR/HUB device information...");
+  const nvrInfo = await tryCall(() => cgi.getNvrInfo());
+  result.nvrInfo = nvrInfo;
+  if (nvrInfo.ok) {
+    log("✓ NVR/HUB info collected", {
+      model: nvrInfo.value.devInfo?.type,
+      name: nvrInfo.value.devInfo?.name,
+      firmware: nvrInfo.value.devInfo?.firmVer,
+      hardware: nvrInfo.value.devInfo?.hardVer,
+      serial: nvrInfo.value.devInfo?.serial,
+    });
+  } else {
+    log("✗ Failed to collect NVR/HUB info", nvrInfo.error);
+  }
+
+  // 2. Get all channels
+  log("\n[2/7] Discovering channels...");
+  const channelsResult = await tryCall(() => cgi.getChannels());
+  result.channels = channelsResult;
+  if (channelsResult.ok) {
+    const channels = channelsResult.value.channels;
+    log(`✓ Found ${channels.length} channel(s): ${channels.join(", ")}`);
+    result.channelList = channels;
+  } else {
+    log("✗ Failed to discover channels", channelsResult.error);
+    result.channelList = [];
+  }
+
+  const channels = channelsResult.ok ? channelsResult.value.channels : [];
+
+  // 3. Devices Information (per-channel: type, AI, encoding)
+  log("\n[3/7] Collecting devices information for all channels...");
+  const devicesInfo = await tryCall(() => cgi.getDevicesInfo());
+  result.devicesInfo = devicesInfo;
+  if (devicesInfo.ok) {
+    log(`✓ Devices info collected for ${Object.keys(devicesInfo.value.devicesData).length} channel(s)`);
+    for (const [channel, device] of Object.entries(devicesInfo.value.devicesData)) {
+      const ch = Number(channel);
+      const info = device as any;
+      log(`  Channel ${ch}:`, {
+        model: info.channelInfo?.typeInfo || info.channelStatus?.typeInfo,
+        name: info.channelStatus?.name,
+        online: info.channelStatus?.online === 1,
+        sleeping: info.channelStatus?.sleep === 1,
+        uid: info.channelStatus?.uid,
+        firmware: info.channelInfo?.firmVer,
+        boardInfo: info.channelInfo?.boardInfo,
+      });
+    }
+  } else {
+    log("✗ Failed to collect devices info", devicesInfo.error);
+  }
+
+  // 4. Events and Detection (motion, AI)
+  log("\n[4/7] Collecting events and detection states for all channels...");
+  const eventsInfo = await tryCall(() => cgi.getAllChannelsEvents());
+  result.eventsInfo = eventsInfo;
+  if (eventsInfo.ok) {
+    log(`✓ Events info collected for ${Object.keys(eventsInfo.value.parsed).length} channel(s)`);
+    for (const [channel, events] of Object.entries(eventsInfo.value.parsed)) {
+      const ch = Number(channel);
+      const evt = events as any;
+      log(`  Channel ${ch}:`, {
+        motion: evt.motion,
+        detectedObjects: evt.objects,
+      });
+    }
+  } else {
+    log("✗ Failed to collect events info", eventsInfo.error);
+  }
+
+  // 5. Battery Information
+  log("\n[5/7] Collecting battery information for all channels...");
+  const batteryInfo = await tryCall(() => cgi.getAllChannelsBatteryInfo());
+  result.batteryInfo = batteryInfo;
+  if (batteryInfo.ok) {
+    log(`✓ Battery info collected for ${Object.keys(batteryInfo.value.batteryInfoData).length} channel(s)`);
+    for (const [channel, battery] of Object.entries(batteryInfo.value.batteryInfoData)) {
+      const ch = Number(channel);
+      const bat = battery as any;
+      log(`  Channel ${ch}:`, {
+        batteryLevel: bat.batteryLevel,
+        sleeping: bat.sleeping,
+      });
+    }
+  } else {
+    log("✗ Failed to collect battery info", batteryInfo.error);
+  }
+
+  // 6. Build DeviceInputData map for status info
+  log("\n[6/7] Building device capabilities map...");
+  const channelsMap = new Map<number, DeviceInputData>();
+  if (devicesInfo.ok && batteryInfo.ok) {
+    for (const channel of channels) {
+      const device = devicesInfo.value.devicesData[channel];
+      const battery = batteryInfo.value.batteryInfoData[channel];
+      const abilities = device?.abilities;
+      
+      channelsMap.set(channel, {
+        hasBattery: battery?.batteryLevel !== undefined && battery.batteryLevel > 0,
+        hasPirEvents: !!(abilities as any)?.pirAlarm,
+        hasFloodlight: !!(abilities as any)?.ledCtrl,
+        hasPtz: !!(abilities as any)?.ptz,
+        sleeping: battery?.sleeping ?? false,
+      });
+    }
+    log(`✓ Built capabilities map for ${channelsMap.size} channel(s)`);
+  }
+
+  // 7. Status Information (OSD, Floodlight, PIR, PTZ Presets)
+  log("\n[7/7] Collecting status information (OSD, Floodlight, PIR, PTZ) for all channels...");
+  const statusInfo = await tryCall(() => cgi.getStatusInfo(channelsMap));
+  result.statusInfo = statusInfo;
+  if (statusInfo.ok) {
+    log(`✓ Status info collected for ${Object.keys(statusInfo.value.deviceStatusData).length} channel(s)`);
+    for (const [channel, status] of Object.entries(statusInfo.value.deviceStatusData)) {
+      const ch = Number(channel);
+      const st = status as any;
+      log(`  Channel ${ch}:`, {
+        osd: st.osd ? "configured" : "not available",
+        floodlightEnabled: st.floodlightEnabled,
+        pirEnabled: st.pirEnabled,
+        ptzPresets: st.ptzPresets?.length ?? 0,
+      });
+    }
+  } else {
+    log("✗ Failed to collect status info", statusInfo.error);
+  }
+
+  // 8. Additional per-channel details
+  log("\n[8/8] Collecting additional per-channel details...");
+  const perChannelDetails: Record<number, Record<string, unknown>> = {};
+  
+  for (const channel of channels) {
+    const channelDetails: Record<string, unknown> = {};
+    
+    // OSD
+    const osd = await tryCall(() => cgi.GetOsd(channel));
+    if (osd.ok) channelDetails.osd = osd.value;
+    
+    // Local Link / WiFi
+    const localLink = await tryCall(() => cgi.getLocalLink(channel));
+    if (localLink.ok) channelDetails.localLink = localLink.value;
+    
+    // PIR State
+    const pirState = await tryCall(() => cgi.getPirState(channel));
+    if (pirState.ok) channelDetails.pirState = pirState.value;
+    
+    // Siren/Audio Alarm
+    const siren = await tryCall(() => cgi.getSiren(channel));
+    if (siren.ok) channelDetails.siren = siren.value;
+    
+    // PTZ Presets
+    const ptzPresets = await tryCall(() => cgi.GetPtzPreset(channel));
+    if (ptzPresets.ok) channelDetails.ptzPresets = ptzPresets.value;
+    
+    // White LED / Floodlight
+    const whiteLed = await tryCall(() => cgi.GetWhiteLed(channel));
+    if (whiteLed.ok) channelDetails.whiteLed = whiteLed.value;
+    
+    // Encoding Configuration
+    const enc = await tryCall(() => cgi.GetEnc(channel));
+    if (enc.ok) channelDetails.encoding = enc.value;
+    
+    // AI State
+    const aiState = await tryCall(() => cgi.GetAiState(channel));
+    if (aiState.ok) channelDetails.aiState = aiState.value;
+    
+    // Motion Detection State
+    const mdState = await tryCall(() => cgi.GetMdState(channel));
+    if (mdState.ok) channelDetails.motionDetection = mdState.value;
+    
+    // Battery Info
+    const battery = await tryCall(() => cgi.GetBatteryInfo(channel));
+    if (battery.ok) channelDetails.battery = battery.value;
+    
+    // Channel Type Info
+    const chnType = await tryCall(() => cgi.GetChnTypeInfo(channel));
+    if (chnType.ok) channelDetails.channelType = chnType.value;
+    
+    // WiFi Signal
+    const wifiSignal = await tryCall(() => cgi.GetWifiSignal(channel));
+    if (wifiSignal.ok) channelDetails.wifiSignal = wifiSignal.value;
+    
+    perChannelDetails[channel] = channelDetails;
+    log(`  Channel ${channel}: collected ${Object.keys(channelDetails).length} detail(s)`);
+  }
+  
+  result.perChannelDetails = perChannelDetails;
+  log(`✓ Additional details collected for ${Object.keys(perChannelDetails).length} channel(s)`);
+
+  // Summary
+  log("\n" + "=".repeat(80));
+  log("NVR/HUB DIAGNOSTICS - Summary");
+  log("=".repeat(80));
+  log(`Total Channels: ${channels.length}`);
+  log(`NVR Info: ${nvrInfo.ok ? "✓" : "✗"}`);
+  log(`Devices Info: ${devicesInfo.ok ? "✓" : "✗"}`);
+  log(`Events Info: ${eventsInfo.ok ? "✓" : "✗"}`);
+  log(`Battery Info: ${batteryInfo.ok ? "✓" : "✗"}`);
+  log(`Status Info: ${statusInfo.ok ? "✓" : "✗"}`);
+  log(`Per-Channel Details: ✓ (${Object.keys(perChannelDetails).length} channels)`);
+  log("=".repeat(80));
+
+  return result;
+}
+
+/**
+ * Print NVR/HUB diagnostics in a human-readable format.
+ */
+export function printNvrDiagnostics(diagnostics: Record<string, unknown>, logger?: Logger): void {
+  const log = (msg: string, data?: unknown) => {
+    if (logger?.log) {
+      if (data !== undefined) logger.log(msg, data);
+      else logger.log(msg);
+    } else {
+      console.log(msg);
+      if (data !== undefined) console.log(JSON.stringify(data, null, 2));
+    }
+  };
+
+  log("\n" + "=".repeat(80));
+  log("NVR/HUB DIAGNOSTICS REPORT");
+  log("=".repeat(80));
+
+  // NVR/HUB Info
+  const nvrInfo = diagnostics.nvrInfo as DiagnosticsCollectorResult<any> | undefined;
+  if (nvrInfo?.ok) {
+    log("\n📡 NVR/HUB DEVICE:");
+    const devInfo = nvrInfo.value.devInfo;
+    if (devInfo) {
+      log(`  Model: ${devInfo.type || "N/A"}`);
+      log(`  Name: ${devInfo.name || "N/A"}`);
+      log(`  Firmware: ${devInfo.firmVer || "N/A"}`);
+      log(`  Hardware: ${devInfo.hardVer || "N/A"}`);
+      log(`  Serial: ${devInfo.serial || "N/A"}`);
+      log(`  Item No: ${devInfo.exactType || devInfo.model || "N/A"}`);
+    }
+  }
+
+  // Channels
+  const channels = (diagnostics.channelList as number[]) || [];
+  log(`\n📺 CHANNELS (${channels.length}):`);
+
+  // Devices Info
+  const devicesInfo = diagnostics.devicesInfo as DiagnosticsCollectorResult<any> | undefined;
+  if (devicesInfo?.ok) {
+    for (const channel of channels) {
+      const device = devicesInfo.value.devicesData?.[channel];
+      if (!device) continue;
+
+      log(`\n  ┌─ Channel ${channel} ────────────────────────────────────────────────────`);
+      
+      const status = device.channelStatus;
+      if (status) {
+        log(`  │ Status:`);
+        log(`  │   Online: ${status.online === 1 ? "✓" : "✗"}`);
+        log(`  │   Sleeping: ${status.sleep === 1 ? "Yes" : "No"}`);
+        log(`  │   UID: ${status.uid || "N/A"}`);
+        log(`  │   Name: ${status.name || "N/A"}`);
+      }
+
+      const channelInfo = device.channelInfo;
+      if (channelInfo) {
+        log(`  │ Device Info:`);
+        log(`  │   Model: ${channelInfo.typeInfo || "N/A"}`);
+        log(`  │   Firmware: ${channelInfo.firmVer || "N/A"}`);
+        log(`  │   Board Info: ${channelInfo.boardInfo || "N/A"}`);
+      }
+
+      const enc = device.enc;
+      if (enc) {
+        const encData = enc.Enc;
+        log(`  │ Encoding:`);
+        if (encData) {
+          log(`  │   Main Stream: ${encData.mainStream?.vType || "N/A"} ${encData.mainStream?.vSize || ""}`);
+          log(`  │   Sub Stream: ${encData.subStream?.vType || "N/A"} ${encData.subStream?.vSize || ""}`);
+        }
+      }
+
+      const ai = device.ai;
+      if (ai) {
+        log(`  │ AI Detection:`);
+        const aiKeys = Object.keys(ai).filter(k => k !== "channel");
+        if (aiKeys.length > 0) {
+          for (const key of aiKeys) {
+            const state = (ai as any)[key];
+            if (state?.support === 1) {
+              log(`  │   ${key}: ${state.alarm_state === 1 ? "Enabled" : "Disabled"}`);
+            }
+          }
+        } else {
+          log(`  │   No AI detection available`);
+        }
+      }
+
+      const abilities = device.abilities;
+      if (abilities) {
+        log(`  │ Capabilities:`);
+        log(`  │   Battery: ${(abilities as any).battery ? "Yes" : "No"}`);
+        log(`  │   PTZ: ${(abilities as any).ptz ? "Yes" : "No"}`);
+        log(`  │   Floodlight: ${(abilities as any).ledCtrl ? "Yes" : "No"}`);
+        log(`  │   PIR: ${(abilities as any).pirAlarm ? "Yes" : "No"}`);
+      }
+
+      // Events
+      const eventsInfo = diagnostics.eventsInfo as DiagnosticsCollectorResult<any> | undefined;
+      if (eventsInfo?.ok) {
+        const events = eventsInfo.value.parsed?.[channel];
+        if (events) {
+          log(`  │ Events:`);
+          log(`  │   Motion: ${events.motion ? "Yes" : "No"}`);
+          log(`  │   Detected Objects: ${events.objects?.join(", ") || "None"}`);
+        }
+      }
+
+      // Battery
+      const batteryInfo = diagnostics.batteryInfo as DiagnosticsCollectorResult<any> | undefined;
+      if (batteryInfo?.ok) {
+        const battery = batteryInfo.value.batteryInfoData?.[channel];
+        if (battery) {
+          log(`  │ Battery:`);
+          log(`  │   Level: ${battery.batteryLevel}%`);
+          log(`  │   Sleeping: ${battery.sleeping ? "Yes" : "No"}`);
+        }
+      }
+
+      // Status
+      const statusInfo = diagnostics.statusInfo as DiagnosticsCollectorResult<any> | undefined;
+      if (statusInfo?.ok) {
+        const status = statusInfo.value.deviceStatusData?.[channel];
+        if (status) {
+          log(`  │ Status:`);
+          if (status.osd) log(`  │   OSD: Configured`);
+          if (status.floodlightEnabled !== undefined) {
+            log(`  │   Floodlight: ${status.floodlightEnabled ? "On" : "Off"}`);
+          }
+          if (status.pirEnabled !== undefined) {
+            log(`  │   PIR: ${status.pirEnabled ? "Enabled" : "Disabled"}`);
+          }
+          if (status.ptzPresets) {
+            log(`  │   PTZ Presets: ${status.ptzPresets.length}`);
+          }
+        }
+      }
+
+      // Per-channel details
+      const perChannelDetails = diagnostics.perChannelDetails as Record<number, Record<string, unknown>> | undefined;
+      if (perChannelDetails?.[channel]) {
+        const details = perChannelDetails[channel];
+        log(`  │ Additional Details:`);
+        if (details.localLink) {
+          const ll = details.localLink as any;
+          log(`  │   Connection: ${ll.activeLink || "N/A"}`);
+          log(`  │   WiFi Signal: ${ll.wifiSignal !== undefined ? `${ll.wifiSignal}/4` : "N/A"}`);
+        }
+        if (details.siren) {
+          const siren = details.siren as any;
+          log(`  │   Siren: ${siren.enabled ? "Enabled" : "Disabled"}`);
+        }
+      }
+
+      log(`  └────────────────────────────────────────────────────────────────────`);
+    }
+  }
+
+  log("\n" + "=".repeat(80));
 }

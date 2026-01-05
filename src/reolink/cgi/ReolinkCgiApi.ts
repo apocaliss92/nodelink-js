@@ -1,6 +1,8 @@
 import { ReolinkHttpClient, type ReolinkHttpClientOptions } from "../http/ReolinkHttpClient";
 import type { ReolinkCmdRequest, ReolinkCmdResponse } from "../http/types";
 import type { ReolinkDeviceInfo, ReolinkDeviceInfoTag } from "../types";
+import type { Logger } from "../../debug/DebugConfig";
+import { collectNvrDiagnostics, printNvrDiagnostics } from "../../debug/DiagnosticsTools";
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonObject = { [key: string]: JsonValue };
@@ -860,6 +862,33 @@ export class ReolinkCgiApi {
     }
 
     return { activeLink, wifiSignal, isWifi };
+  }
+
+  /**
+   * Comprehensive NVR/HUB diagnostics.
+   * Collects and returns all available information about the NVR/HUB device and all its channels.
+   * 
+   * @param options - Optional configuration
+   * @param options.logger - Optional logger for progress messages
+   * @returns Complete diagnostics data including NVR info, channels, and per-channel details
+   */
+  async collectNvrDiagnostics(options?: {
+    logger?: Logger;
+  }): Promise<Record<string, unknown>> {
+    return await collectNvrDiagnostics({
+      cgi: this,
+      logger: options?.logger,
+    });
+  }
+
+  /**
+   * Print NVR/HUB diagnostics in a human-readable format.
+   * 
+   * @param diagnostics - Diagnostics data returned by collectNvrDiagnostics()
+   * @param logger - Optional logger for output
+   */
+  printNvrDiagnostics(diagnostics: Record<string, unknown>, logger?: Logger): void {
+    printNvrDiagnostics(diagnostics, logger);
   }
 }
 
