@@ -23,7 +23,7 @@ async function main(): Promise<void> {
   });
 
   // One round-trip each (batched inside methods).
-  const hubInfo = await api.getHubInfo();
+  const hubInfo = await api.getNvrInfo();
   const devicesInfo = await api.getDevicesInfo();
 
   const dump = {

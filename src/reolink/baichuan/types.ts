@@ -437,11 +437,11 @@ export interface ListRecordingsParams {
   start: Date;
   end: Date;
   streamType?: RecordingStreamType;
-  /** Comma-separated list per Reolink XML, e.g. "manual, sched, io, md, people". */
+  /** Comma-separated list for Reolink XML, e.g. "manual, sched, io, md, people". */
   recordType?: string;
   /**
    * If true (default), when FileInfoList returns no results, try the alternate Baichuan listing
-   * based on <findAlarmVideo> (cmdId 272/273/274) used by reolink_aio.
+   * based on <findAlarmVideo> (cmdId 272/273/274).
    */
   fallbackToAlarmVideo?: boolean;
   /** Safety limit for pagination/iterations (default 50). */

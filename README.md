@@ -227,11 +227,11 @@ npm run typecheck
 npm run test:tcp:new-apis
 ```
 
-## Implementation Notes
+## Note di Implementazione
 
-This library is based on:
-- `neolink` (Rust): `crates/core/src/bc/*` + `crates/core/src/bc_protocol/*`
-- `reolink_aio` (Python): `reolink_aio/baichuan/*`
+Questa libreria è stata sviluppata a partire da implementazioni di riferimento in Rust e Python per il protocollo Baichuan,
+adattate e razionalizzate per l'ecosistema TypeScript. I sorgenti di riferimento non sono parte del pacchetto e vengono
+utilizzati solo come documentazione tecnica del protocollo.
 
 ## License
 

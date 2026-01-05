@@ -78,7 +78,7 @@ const imaStepTable = Int16Array.from([
 
 function encodeImaAdpcm(pcm: Int16Array, blockSizeBytes: number): Buffer {
   // Block layout: 4-byte header + blockSizeBytes of nibbles (2 samples per byte).
-  // This matches the Reolink TalkAbility lengthPerEncoder relationship used by neolink.
+  // This matches the Reolink TalkAbility lengthPerEncoder relationship.
   const samplesPerBlock = blockSizeBytes * 2 + 1;
   const totalBlocks = Math.ceil(pcm.length / samplesPerBlock);
   const outBlocks: Buffer[] = [];

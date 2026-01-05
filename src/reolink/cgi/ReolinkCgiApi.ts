@@ -358,7 +358,7 @@ export class ReolinkCgiApi {
   }
 
   async call<TValue = JsonValue, TParam = JsonValue>(cmd: string, param?: TParam, action = 0): Promise<ReolinkCmdResponse<TValue>[]> {
-    // evita `param: undefined` con exactOptionalPropertyTypes
+    // Avoid `param: undefined` with exactOptionalPropertyTypes
     if (param === undefined) return await this.client.call<TValue, TParam>(cmd, { action });
     return await this.client.call<TValue, TParam>(cmd, { action, param });
   }
@@ -367,7 +367,7 @@ export class ReolinkCgiApi {
     return await this.client.callMany<TValue>(cmds);
   }
 
-  // Wrapper comuni (stesso naming reolink_aio)
+  // Common wrappers
   async GetDevInfo(channel?: number): Promise<Array<ReolinkCmdResponseExt<CgiGetDevInfoValue>>> {
     const param = channel == null ? {} : { channel };
     return await this.call("GetDevInfo", param);
@@ -422,7 +422,6 @@ export class ReolinkCgiApi {
   }
 
   async GetChannelstatus(): Promise<Array<ReolinkCmdResponseExt<CgiGetChannelstatusValue>>> {
-    // reolink_aio usa "GetChannelstatus" (minuscola s)
     return await this.call("GetChannelstatus", undefined, 0);
   }
 
@@ -529,7 +528,7 @@ export class ReolinkCgiApi {
   // --------------------
 
   /** Returns the list of channels that have a non-empty UID (typically the connected cameras on NVR/Home Hub). */
-  async getChannels(): Promise<{ channels: number[]; channelsResponse: Array<ReolinkCmdResponseExt<CgiGetChannelstatusValue>> }>{
+  async getChannels(): Promise<{ channels: number[]; channelsResponse: Array<ReolinkCmdResponseExt<CgiGetChannelstatusValue>> }> {
     const channelsResponse = await this.GetChannelstatus();
     const status = channelsResponse?.[0]?.value?.status;
     const channels = (status ?? [])
@@ -539,7 +538,7 @@ export class ReolinkCgiApi {
     return { channels, channelsResponse };
   }
 
-  async getHubInfo(): Promise<{ abilities: CgiAbility | undefined; hubData: CgiGetDevInfoValue | undefined; devInfo: CgiDevInfo | undefined; response: Array<ReolinkCmdResponseExt<JsonValue>> }>{
+  async getNvrInfo(): Promise<{ abilities: CgiAbility | undefined; nvrData: CgiGetDevInfoValue | undefined; devInfo: CgiDevInfo | undefined; response: Array<ReolinkCmdResponseExt<JsonValue>> }> {
     const username = this.client.getUsername();
     const body: ReolinkCmdRequest[] = [
       { cmd: "GetAbility", action: 0, param: { User: { userName: username } } },
@@ -547,11 +546,11 @@ export class ReolinkCgiApi {
     ];
 
     const response = (await this.callMany(body)) as Array<ReolinkCmdResponseExt<JsonValue>>;
-    const abilities = (response as any).find((item: any) => item?.cmd === "GetAbility")?.value as CgiAbility | undefined;
-    const hubData = (response as any).find((item: any) => item?.cmd === "GetDevInfo")?.value as CgiGetDevInfoValue | undefined;
-    const devInfo = hubData?.DevInfo;
+    const abilities = response.find((item: any) => item?.cmd === "GetAbility")?.value as CgiAbility | undefined;
+    const nvrData = response.find((item: any) => item?.cmd === "GetDevInfo")?.value as CgiGetDevInfoValue | undefined;
+    const devInfo = nvrData?.DevInfo;
 
-    return { abilities, hubData, devInfo, response };
+    return { abilities, nvrData, devInfo, response };
   }
 
   async getDevicesInfo(): Promise<{
@@ -560,7 +559,7 @@ export class ReolinkCgiApi {
     channels: number[];
     channelsResponse: Array<ReolinkCmdResponseExt<CgiGetChannelstatusValue>>;
     requestBody: ReolinkCmdRequest[];
-  }>{
+  }> {
     const { channels, channelsResponse } = await this.getChannels();
 
     const username = this.client.getUsername();
@@ -706,7 +705,7 @@ export class ReolinkCgiApi {
   async getStatusInfo(channelsMap: Map<number, DeviceInputData>): Promise<{
     deviceStatusData: Record<number, DeviceStatusResponse>;
     response: Array<ReolinkCmdResponseExt<JsonValue>>;
-  }>{
+  }> {
     const body: ReolinkCmdRequest[] = [];
     const index: Record<number, { osd?: number; floodlight?: number; pir?: number; presets?: number }> = {};
 
@@ -802,12 +801,12 @@ export class ReolinkCgiApi {
     return await this.client.snap(channel, { timeoutMs });
   }
 
-  async getSiren(channel: number): Promise<{ enabled: boolean }>{
+  async getSiren(channel: number): Promise<{ enabled: boolean }> {
     const rsp = await this.GetAudioAlarmV20(channel);
     return { enabled: (rsp as any)?.[0]?.value?.Audio?.enable === 1 };
   }
 
-  async setSiren(channel: number, on: boolean, duration?: number): Promise<{ value: JsonValue | undefined; data: Array<ReolinkCmdResponseExt<JsonValue>> }>{
+  async setSiren(channel: number, on: boolean, duration?: number): Promise<{ value: JsonValue | undefined; data: Array<ReolinkCmdResponseExt<JsonValue>> }> {
     const params: CgiAudioAlarmPlayParam = duration
       ? { channel, alarm_mode: "times", times: duration }
       : { channel, alarm_mode: "manul", manual_switch: on ? 1 : 0 };
@@ -823,7 +822,7 @@ export class ReolinkCgiApi {
     await this.SetWhiteLed({ WhiteLed: settings });
   }
 
-  async getPirState(channel: number): Promise<{ enabled: boolean; state: CgiPirInfo | undefined }>{
+  async getPirState(channel: number): Promise<{ enabled: boolean; state: CgiPirInfo | undefined }> {
     const rsp = await this.GetPirInfo(channel);
     const state = (rsp as any)?.[0]?.value?.pirInfo as CgiPirInfo | undefined;
     return { enabled: state?.enable === 1, state };
@@ -843,7 +842,7 @@ export class ReolinkCgiApi {
     await this.SetPirInfo({ pirInfo });
   }
 
-  async getLocalLink(channel: number): Promise<{ activeLink: string | undefined; wifiSignal: number | undefined; isWifi: boolean }>{
+  async getLocalLink(channel: number): Promise<{ activeLink: string | undefined; wifiSignal: number | undefined; isWifi: boolean }> {
     const body: ReolinkCmdRequest[] = [
       { cmd: "GetLocalLink", action: 0, param: {} },
       { cmd: "GetWifiSignal", action: 0, param: { channel } },

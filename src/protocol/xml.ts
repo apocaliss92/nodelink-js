@@ -12,7 +12,6 @@ export function xmlEscape(text: string | undefined | null): string {
 }
 
 export function buildLoginXml(userNameHash: string, passwordHash: string): string {
-  // Template mirrors reolink_aio `LOGIN_XML`
   return `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <LoginUser version="1.1">
@@ -50,9 +49,7 @@ export function buildBinaryExtensionXml(channelId: number | string | undefined |
 
 /**
  * Build Preview XML for video stream request.
- * Based on neolink stream.rs: uses Preview element with handle and stream_type.
- * 
- * Reference: https://github.com/QuantumEntangledAndy/neolink/blob/master/crates/core/src/bc_protocol/stream.rs#L108
+ * Uses Preview element with handle and stream_type.
  * 
  * @param handle - Handle value: 0 for main, 256 for sub, 1024 for extern
  * @param streamType - Stream type name: "mainStream", "subStream", or "externStream"
@@ -60,7 +57,6 @@ export function buildBinaryExtensionXml(channelId: number | string | undefined |
  * @returns XML string for Preview element
  */
 export function buildPreviewXml(handle: number, streamType: string | undefined | null, channelId?: number): string {
-  // Based on neolink stream.rs:
   // Preview includes channelId + handle + streamType.
   if (!streamType || typeof streamType !== "string") {
     throw new Error(`buildPreviewXml: streamType is required (string) but got: ${typeof streamType} = ${streamType}`);
@@ -77,7 +73,7 @@ ${channelIdXml}<handle>${handle}</handle>
 
 /**
  * Build Preview XML for video stream stop request.
- * Based on neolink stream.rs: uses Preview element without stream_type.
+ * Uses Preview element without stream_type.
  * 
  * @param handle - Handle value: 0 for main, 256 for sub, 1024 for extern
  * @param channelId - Channel ID (optional, not used in working format)
@@ -105,7 +101,6 @@ export function getXmlText(xml: string, tagName: string): string | undefined {
 
 /**
  * Build PTZ Control XML for pan/tilt/zoom commands.
- * Based on neolink ptz.rs implementation.
  * 
  * @param channelId - Channel ID (1-based)
  * @param command - PTZ command: "up", "down", "left", "right", "stop"
@@ -113,9 +108,8 @@ export function getXmlText(xml: string, tagName: string): string | undefined {
  * @returns XML string for PtzControl element
  */
 export function buildPtzControlXml(channelId: number, command: string, speed: number): string {
-  // Neolink uses xml_ver() which returns "1.1" (checked in crates/core/src/bc/xml.rs:1619)
-  // Based on neolink PtzControl struct: channel_id (u8), speed (f32), command (String)
-  // No timeout or id fields in neolink implementation
+  // PtzControl structure: channel_id, speed, command
+  // Version is "1.1"
   return `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <PtzControl version="1.1">
@@ -128,7 +122,6 @@ export function buildPtzControlXml(channelId: number, command: string, speed: nu
 
 /**
  * Build PTZ Preset XML for setting or moving to preset.
- * Based on neolink ptz.rs implementation.
  * 
  * @param channelId - Channel ID (1-based)
  * @param presetId - Preset ID (1-255)
@@ -180,7 +173,6 @@ ${enableXml}
 
 /**
  * Build StartZoomFocus XML for zooming to an absolute position.
- * Based on neolink ptz.rs implementation.
  *
  * cmd_id: 295 (MSG_ID_SET_ZOOM_FOCUS)
  *
@@ -200,7 +192,6 @@ export function buildStartZoomFocusXml(channelId: number, movePos: number): stri
 
 /**
  * Build Siren/Audio Alarm XML for manual control.
- * Based on reolink_aio xmls.py SirenManual template.
  * 
  * @param channelId - Channel ID (1-based, optional for hub-level)
  * @param enable - Enable/disable siren (1 or 0)
@@ -222,7 +213,6 @@ ${channelXml}
 
 /**
  * Build Siren/Audio Alarm XML for times-based control.
- * Based on reolink_aio xmls.py SirenTimes template.
  * 
  * @param channelId - Channel ID (1-based, optional for hub-level)
  * @param times - Number of times to play
@@ -244,7 +234,7 @@ ${channelXml}
 
 /**
  * Build FloodlightManual XML.
- * Matches neolink dissector for cmd_id 288.
+ * Used for cmd_id 288.
  *
  * Notes:
  * - channelId is 0-based (same as Baichuan channel id)
@@ -272,18 +262,13 @@ export function buildWhiteLedStateXml(channelId: number, state: number): string 
 
 /**
  * Build AbilityInfo extension XML for requesting device capabilities.
- * Based on neolink crates/core/src/bc_protocol/abilityinfo.rs which requests:
- * "system, streaming, PTZ, IO, security, replay, disk, network, alarm, record, video, image"
- * 
- * Note: reolink_aio only requests "image, video", but neolink requests all available tokens
- * to get complete ability information.
+ * Requests all available tokens: "system, streaming, PTZ, IO, security, replay, disk, network, alarm, record, video, image"
  * 
  * @param username - Username for the request
  * @returns XML string for Extension element with AbilityInfo request
  */
 export function buildAbilityInfoExtensionXml(username: string): string {
-  // Request all available ability tokens (based on neolink implementation)
-  // This provides much more comprehensive ability information than just "image, video"
+  // Request all available ability tokens to get comprehensive ability information
   return `<?xml version="1.0" encoding="UTF-8" ?>
 <Extension version="1.1">
 <userName>${xmlEscape(username)}</userName>

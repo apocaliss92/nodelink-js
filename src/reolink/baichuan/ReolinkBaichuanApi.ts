@@ -199,17 +199,17 @@ type TalkSessionInfo = import("./types").TalkSessionInfo;
 export type ReolinkBaichuanPorts = Record<string, Record<string, number>>;
 
 export type WakeUpOptions = {
-  /** Timeout per singolo tentativo (default: 20000). */
+  /** Timeout per single attempt (default: 20000). */
   timeoutMs?: number;
-  /** Numero di tentativi (default: 3). */
+  /** Number of attempts (default: 3). */
   attempts?: number;
-  /** Delay dopo un tentativo che “sblocca” la camera (default: 1500). */
+  /** Delay after an attempt that "unlocks" the camera (default: 1500). */
   waitAfterWakeMs?: number;
-  /** Delay tra tentativi falliti (default: 1500). */
+  /** Delay between failed attempts (default: 1500). */
   backoffMs?: number;
   /**
    * Se true, chiude la connessione e forza un reconnect prima del retry.
-   * Default: true per UDP (battery), false per TCP.
+   * Default: true for UDP (battery), false for TCP.
    */
   reconnect?: boolean;
 };
@@ -595,7 +595,7 @@ export class ReolinkBaichuanApi {
    * This collects:
    * - Native (Baichuan) diagnostics
    * - Optional CGI diagnostics (if enabled)
-   * - Stream sampling (native/rtsp/rtmp, per `selection`)
+   * - Stream sampling (native/rtsp/rtmp, for `selection`)
    *
    * Output layout:
    * - `outDir/<timestamp>/...` contains the raw run artifacts
@@ -616,7 +616,7 @@ export class ReolinkBaichuanApi {
     cgi?: boolean | Partial<ReolinkHttpClientOptions>;
     /** Enable RTSP sampling. `true` uses the same host/creds as the Baichuan client. */
     rtsp?: boolean | Partial<NonNullable<StreamSamplingOptions["rtsp"]>>;
-    /** Optional RTMP URLs per profile. */
+    /** Optional RTMP URLs for each profile. */
     rtmp?: StreamSamplingOptions["rtmp"];
     /** Optional dump limits (native raw frames). */
     limits?: StreamSamplingOptions["limits"];
@@ -1001,7 +1001,7 @@ export class ReolinkBaichuanApi {
 
   /**
    * Fetch TalkAbility (cmd_id=10) which describes supported two-way audio formats.
-   * Based on neolink MSG_ID_TALKABILITY.
+   * Uses MSG_ID_TALKABILITY.
    */
   async getTalkAbility(channel?: number): Promise<TalkAbility> {
     const xml = await this.sendXml({ cmdId: BC_CMD_ID_TALK_ABILITY, ...(channel !== undefined ? { channel } : {}) });
@@ -1017,7 +1017,7 @@ export class ReolinkBaichuanApi {
   async createTalkSession(channel = 0, options?: { blocksPerPayload?: number }): Promise<TalkSession> {
     if (!this.client.loggedIn) await this.client.login();
 
-    // BCUDP/battery firmwares often expect 0-based header channelId (neolink-style).
+    // BCUDP/battery firmwares often expect 0-based header channelId.
     // Talk is particularly sensitive because the binary Extension must be decrypted.
     const isUdp = this.client.getTransport?.() === "udp";
     const channelIdOverride = isUdp ? channel : undefined;
@@ -1097,7 +1097,7 @@ export class ReolinkBaichuanApi {
     let pumping = false;
     let expectedStreamEndMs = Date.now();
 
-    // Neolink uses 4 blocks per payload. Lower values reduce end-to-end latency
+    // Use 4 blocks per payload. Lower values reduce end-to-end latency
     // (smaller bursts, earlier first audio) at the cost of more packets.
     const BLOCKS_PER_PAYLOAD = Math.max(1, Math.min(8, Math.floor(options?.blocksPerPayload ?? 1)));
 
@@ -1173,7 +1173,7 @@ export class ReolinkBaichuanApi {
       closed = true;
       await pump();
 
-      // Wait a tiny bit after the expected end, like neolink does, to avoid cutting off playback.
+      // Wait a tiny bit after the expected end to avoid cutting off playback.
       const remaining = expectedStreamEndMs - Date.now();
       if (remaining > 0) await sleepMs(remaining + 100);
       else await sleepMs(100);
@@ -1211,7 +1211,7 @@ export class ReolinkBaichuanApi {
   }
 
   // --------------------
-  // Main operations (from reolink_aio/baichuan.py)
+  // Main operations
   // --------------------
 
   /** GetNetPort via Baichuan: cmd_id 37 */
@@ -1257,7 +1257,7 @@ export class ReolinkBaichuanApi {
     channel?: number,
     options?: {
       timeoutMs?: number;
-      /** List of XML tags to extract. Defaults to the canonical minimal set used by reolink_aio. */
+      /** List of XML tags to extract. Defaults to the canonical minimal set. */
       tags?: ReolinkDeviceInfoTag[];
     },
   ): Promise<Partial<ReolinkDeviceInfo>> {
@@ -1265,7 +1265,7 @@ export class ReolinkBaichuanApi {
     if (channel !== undefined) req.channel = channel;
     if (options?.timeoutMs != null) req.timeoutMs = options.timeoutMs;
     const xml = await this.sendXml(req);
-    // Canonical minimal set used by reolink_aio: type, hardwareVersion, firmwareVersion, itemNo, serialNumber, name
+    // Canonical minimal set: type, hardwareVersion, firmwareVersion, itemNo, serialNumber, name
     const tags = options?.tags?.length
       ? options.tags
       : ["type", "hardwareVersion", "firmwareVersion", "itemNo", "serialNumber", "name"];
@@ -1528,7 +1528,7 @@ export class ReolinkBaichuanApi {
       );
     }
 
-    // Video encoding type mapping (from reolink-aio EncodingEnum)
+    // Video encoding type mapping
     const videoCodecMap: Record<number, VideoCodec> = {
       0: "H.264",
       1: "H.265",
@@ -1696,7 +1696,7 @@ export class ReolinkBaichuanApi {
     await this.setEncXml(ch, updated);
   }
 
-  /** Bulk SetNetPort helper (reolink_aio-style): accepts NetPort with onvifEnable/rtmpEnable/rtspEnable. */
+  /** Bulk SetNetPort helper: accepts NetPort with onvifEnable/rtmpEnable/rtspEnable. */
   async setNetPort(netPort: { onvifEnable?: number; rtmpEnable?: number; rtspEnable?: number }): Promise<void> {
     if (netPort.onvifEnable != null) await this.setPortEnabled({ port: "onvif", enable: netPort.onvifEnable === 1 });
     if (netPort.rtmpEnable != null) await this.setPortEnabled({ port: "rtmp", enable: netPort.rtmpEnable === 1 });
@@ -1742,11 +1742,11 @@ export class ReolinkBaichuanApi {
 
   /**
    * GetMotionState via Baichuan.
-   * cmd_id: 46 (from reolink-aio GetMdAlarm)
+   * cmd_id: 46 (GetMdAlarm)
    * Returns true if motion detection is enabled.
    */
   async getMotionState(channel?: number): Promise<boolean> {
-    const cmdId = 46; // From reolink-aio GetMdAlarm
+    const cmdId = 46; // GetMdAlarm
     const xml = await this.sendXml({ cmdId, ...(channel !== undefined ? { channel } : {}) });
     // Parse XML to extract motion state from sensInfoNew
     // Expected format: <sensInfoNew><enable>1</enable>...</sensInfoNew>
@@ -1756,11 +1756,11 @@ export class ReolinkBaichuanApi {
 
   /**
    * GetOsd via Baichuan.
-   * cmd_id: 26 (GetImage - includes OSD settings from reolink-aio)
+   * cmd_id: 26 (GetImage - includes OSD settings)
    */
   async getOsd(channel?: number): Promise<OsdConfig> {
     const ch = this.normalizeChannel(channel);
-    const cmdId = 26; // From reolink-aio GetImage (includes OSD)
+    const cmdId = 26; // GetImage (includes OSD)
     const xml = await this.sendXml({ cmdId, channel: ch });
     // Parse OSD XML structure from VideoInput/OsdChannel and OsdTime
     // This is a placeholder - actual parsing depends on XML structure
@@ -1781,14 +1781,14 @@ export class ReolinkBaichuanApi {
 
   /**
    * SetOsd via Baichuan.
-   * cmd_id: 25 (SetImage - includes OSD settings from reolink-aio)
+   * cmd_id: 25 (SetImage - includes OSD settings)
    */
   async setOsd(osd: OsdConfig, channel?: number): Promise<void>;
   async setOsd(channel: number, osd: OsdConfig): Promise<void>;
   async setOsd(channelOrOsd: number | OsdConfig, osdMaybe?: OsdConfig | number): Promise<void> {
     const ch = typeof channelOrOsd === "number" ? this.normalizeChannel(channelOrOsd) : this.normalizeChannel(osdMaybe as number | undefined);
     const osd = typeof channelOrOsd === "number" ? (osdMaybe as OsdConfig) : channelOrOsd;
-    const cmdId = 25; // From reolink-aio SetImage (includes OSD)
+    const cmdId = 25; // SetImage (includes OSD)
     const xml =
       `<?xml version="1.0" encoding="UTF-8" ?>` +
       `<body>` +
@@ -1811,16 +1811,16 @@ export class ReolinkBaichuanApi {
 
   /**
    * GetAiState via Baichuan.
-   * cmd_id: 342 (from reolink-aio GetAiAlarm)
+   * cmd_id: 342 (GetAiAlarm)
    * Note: GetAiAlarm requires ai_type parameter, this is a simplified wrapper
    */
   async getAiState(channel?: number): Promise<AIState> {
-    const cmdId = 342; // From reolink-aio GetAiAlarm
+    const cmdId = 342; // GetAiAlarm
     const ch = this.normalizeChannel(channel);
 
     // NOTE: Many firmwares require an explicit ai type for cmd 342.
-    // Correct payload (reolink_aio): <AiDetectCfg><chn>0-based</chn><type>people</type></AiDetectCfg>
-    // NVR/HomeHub firmwares often behave more like neolink (0-based header channel id).
+    // Correct payload: <AiDetectCfg><chn>0-based</chn><type>people</type></AiDetectCfg>
+    // NVR/HomeHub firmwares often use 0-based header channel id.
     const candidateTypes = ["people", "vehicle", "dog_cat", "face", "package"]; // best-effort
     let lastErr: unknown;
 
@@ -1841,7 +1841,7 @@ export class ReolinkBaichuanApi {
       }, 0);
     };
 
-    // 1) Try neolink-style header channelId (0-based) first.
+    // 1) Try header channelId (0-based) first.
     for (const type of candidateTypes) {
       try {
         const xml = await tryOnce(type, ch);
@@ -1857,7 +1857,7 @@ export class ReolinkBaichuanApi {
       }
     }
 
-    // 2) Fallback to default client behavior (reolink_aio-style header mapping).
+    // 2) Fallback to default client behavior.
     for (const type of candidateTypes) {
       try {
         const xml = await tryOnce(type, undefined);
@@ -1878,7 +1878,7 @@ export class ReolinkBaichuanApi {
 
   /**
    * GetSnapshot via Baichuan (binary response).
-   * cmd_id: 109 (from reolink-aio snapshot)
+   * cmd_id: 109 (snapshot)
    * Returns JPEG image as Buffer.
    * Note: Snapshot uses a special message ID system for binary responses
    */
@@ -1886,13 +1886,13 @@ export class ReolinkBaichuanApi {
     const cmdId = 109;
 
     // 1. Send Snap request (XML)
-    // Neolink: <Snap version="1.1"><channelId>...</channelId><logicChannel>...</logicChannel><time>0</time><fullFrame>0</fullFrame><streamType>main</streamType></Snap>
+    // Snap XML: <Snap version="1.1"><channelId>...</channelId><logicChannel>...</logicChannel><time>0</time><fullFrame>0</fullFrame><streamType>main</streamType></Snap>
     // Must be wrapped in <body>
     const xml = `<body><Snap version="1.1"><channelId>${channel}</channelId><logicChannel>${channel}</logicChannel><time>0</time><fullFrame>0</fullFrame><streamType>main</streamType></Snap></body>`;
 
     await this.client.login();
 
-    // IMPORTANT (neolink-compatible): the Snap request Extension must NOT include <binaryData>1</binaryData>.
+    // IMPORTANT: the Snap request Extension must NOT include <binaryData>1</binaryData>.
     // The binary chunks in response will have <binaryData>1</binaryData> in their Extension.
     // Delegate to the client binary handler. cmdId=109 (snapshot) is special and is delivered via push frames
     // on many firmwares; BaichuanClient.sendBinary handles that.
@@ -1906,9 +1906,9 @@ export class ReolinkBaichuanApi {
   }
 
   /**
-   * List camera recordings via Baichuan FileInfoList (neolink-style).
+   * List camera recordings via Baichuan FileInfoList.
    *
-   * Flow (based on reolink_aio XML templates + neolink dissector msg IDs):
+   * Flow:
    * - cmdId=14: open search -> returns <handle>
    * - cmdId=15: get page(s) -> returns file list and optional <bFinished>
    * - cmdId=16: close handle
@@ -1996,7 +1996,7 @@ ${xmlDateTimePayload("endTime", params.end)}
 
     if (unique.length > 0 || !fallbackToAlarmVideo) return unique;
 
-    // Fallback path: <findAlarmVideo> (reolink_aio: cmdId 272/273/274).
+    // Fallback path: <findAlarmVideo> (cmdId 272/273/274).
     // This often returns "alarm videos" when FileInfoList is unsupported/empty.
     const uidBase = uid.split("_")[0] ?? uid;
     const streamTypeInt = streamType === "subStream" ? 1 : 0;
@@ -2077,7 +2077,7 @@ ${xmlDateTimePayload("endTime", end)}
   /**
    * Build an RTMP VOD/playback URL for a given recording.
    *
-   * This follows the same logic used by reolink_aio get_vod_source():
+   * This follows the same logic:
    * `rtmp://<host>:<rtmpPort>/vod/<filename-with-"/"->"%20">?channel=<ch>&stream=<type>&user=<u>&password=<p>`
    *
    * Note: this is intended for *export/streaming via playback* (strategy B), not for bit-identical file download.
@@ -2116,13 +2116,13 @@ ${xmlDateTimePayload("endTime", end)}
     const streamTypeInt = streamType === "subStream" ? 1 : 0;
 
     // Most cameras return absolute paths like `/mnt/sda/Mp4Record/...` but RTMP VOD usually
-    // expects a path starting at `Mp4Record/...` (reolink_aio examples).
+    // expects a path starting at `Mp4Record/...`.
     let source = params.fileName.trim();
     const idx = source.indexOf("Mp4Record/");
     if (idx >= 0) source = source.slice(idx);
     source = source.replace(/^\/+/, "");
 
-    // reolink_aio replaces '/' with '%20' for vod paths.
+    // Replace '/' with '%20' for vod paths.
     const vodPath = source.replace(/\//g, "%20").replace(/ /g, "%20");
     const user = encodeURIComponent(this.username);
     const pass = encodeURIComponent(this.password);
@@ -2312,11 +2312,11 @@ ${xmlDateTimePayload("endTime", end)}
     } catch (e) {
       if (!fallbackToHttp) throw e;
 
-      // Fallback: HTTP CGI Download (reolink_aio approach).
+      // Fallback: HTTP CGI Download.
       // Many firmwares expose recordings for download via /cgi-bin/api.cgi?cmd=Download&source=...
       const wantedFilename = fileName.replaceAll("/", "_").replaceAll("\\", "_");
       try {
-        // reolink_aio: if filename matches Rec* pattern, include `start=YYYYMMDDHHMMSS`
+        // If filename matches Rec* pattern, include `start=YYYYMMDDHHMMSS`
         // to help the firmware locate the clip.
         const m = /Rec(\w{3})(?:_|_DST)(\d{8})_(\d{6})_.*/.exec(fileName);
         const startParam = m ? `${m[2]}${m[3]}` : undefined;
@@ -2356,23 +2356,23 @@ ${xmlDateTimePayload("endTime", end)}
 
   /**
    * Subscribe to events (motion/AI/visitor) via Baichuan.
-   * cmd_id: 31 (from reolink-aio subscribe_events)
+   * cmd_id: 31 (subscribe_events)
    * After subscribing, events will be emitted via client.on("event", ...)
    */
   async subscribeEvents(): Promise<void> {
     await this.client.login();
     // NOTE: Some battery firmwares reject the old "channelId=251 Extension" approach with responseCode=421.
-    // Neolink sends MSG_ID 31 with *empty* body and channel_id set to the camera channel (0-based).
+    // Send MSG_ID 31 with *empty* body and channel_id set to the camera channel (0-based).
     const channel = this.client.getConfiguredChannel?.() ?? 0;
 
     const attempts: Array<{ label: string; params: Parameters<BaichuanClient["sendFrame"]>[0] }> = [
       {
-        label: `neolink-style channelId=${channel} bodyLen=0`,
+        label: `channelId=${channel} bodyLen=0`,
         params: { cmdId: 31, channelIdOverride: channel, messageClass: BC_CLASS_MODERN_24 },
       },
       {
-        // reolink_aio uses ch_id=251 for push subscription.
-        label: "reolink_aio-style push channelId=251 bodyLen=0",
+        // Use ch_id=251 for push subscription.
+        label: "push channelId=251 bodyLen=0",
         params: { cmdId: 31, channelIdOverride: 251, messageClass: BC_CLASS_MODERN_24 },
       },
       {
@@ -2414,7 +2414,7 @@ ${xmlDateTimePayload("endTime", end)}
    * Intended for NVR/HomeHub setups where multiple channels share the same host.
    *
    * Implementation notes:
-   * - neolink sends cmd_id=31 with empty body and 0-based header channel_id per channel.
+   * - Send cmd_id=31 with empty body and 0-based header channel_id per channel.
    * - some firmwares instead accept a single push subscription (header channelId=251).
    */
   async subscribeToAllEvents(options?: {
@@ -2503,7 +2503,7 @@ ${xmlDateTimePayload("endTime", end)}
    * Unsubscribe from events.
    */
   async unsubscribeEvents(): Promise<void> {
-    // Note: reolink-aio doesn't have explicit unsubscribe, but closing connection unsubscribes
+    // Note: There's no explicit unsubscribe, but closing connection unsubscribes
     // For now, we just mark as unsubscribed
     this.client.subscribed = false;
     // For BCUDP/battery cameras: allow the camera to sleep when idle.
@@ -2657,7 +2657,7 @@ ${xmlDateTimePayload("endTime", end)}
 
   /**
    * GetEvents via Baichuan (legacy - use subscribeEvents for real-time events).
-   * cmd_id: 33 (Motion/AI/Visitor event from reolink-aio _parse_xml)
+   * cmd_id: 33 (Motion/AI/Visitor event)
    * Note: Events are typically pushed via cmd_id 33, not requested directly
    * Use subscribeEvents() to receive event pushes
    */
@@ -2665,14 +2665,14 @@ ${xmlDateTimePayload("endTime", end)}
     // Note: Events are typically pushed, not requested
     // cmd_id 33 is used for event pushes, cmd_id 31 is for subscribing
     // This is a placeholder - actual implementation may need event subscription
-    const cmdId = 33; // From reolink-aio _parse_xml (event push)
+    const cmdId = 33; // Event push
     const xml = await this.sendXml({ cmdId, ...(channel !== undefined ? { channel } : {}) });
     const ch = this.normalizeChannel(channel);
     const now = Date.now();
 
     const out: Events = { channel: ch };
 
-    // Neolink format: AlarmEventList
+    // Format: AlarmEventList
     if (xml.includes("<AlarmEventList")) {
       const alarmEventMatches = xml.matchAll(/<AlarmEvent\b[^>]*>([\s\S]*?)<\/AlarmEvent>/g);
       for (const match of alarmEventMatches) {
@@ -2726,14 +2726,14 @@ ${xmlDateTimePayload("endTime", end)}
 
   /**
    * Get two-way audio capability via Baichuan.
-   * cmd_id: 10 (from reolink-aio - checks if two-way audio is supported)
+   * cmd_id: 10 (checks if two-way audio is supported)
    * Returns true if two-way audio is available.
    * 
    * Note: Both "mixAudioStream" and "followVideoStream" modes support two-way audio.
    * The difference is how audio is mixed with the video stream.
    */
   async getTwoWayAudioConfig(channel?: number): Promise<TwoWayAudioConfig> {
-    const cmdId = 10; // From reolink-aio two-way audio check
+    const cmdId = 10; // Two-way audio check
     const xml = await this.sendXml({ cmdId, ...(channel !== undefined ? { channel } : {}) });
     // Check for audioStreamMode - both mixAudioStream and followVideoStream support two-way audio
     const audioStreamMode = getXmlText(xml, "audioStreamMode");
@@ -2752,22 +2752,22 @@ ${xmlDateTimePayload("endTime", end)}
 
   /**
    * Start two-way audio session via Baichuan.
-   * cmd_id: 10 (from reolink-aio - two-way audio)
-   * Based on neolink implementation: uses cmd_id 10 with audioStreamMode = "mixAudioStream"
+   * cmd_id: 10 (two-way audio)
+   * Uses cmd_id 10 with audioStreamMode = "mixAudioStream"
    * 
    * Note: After starting, audio frames are received via push events with streamType indicating audio.
    * Audio is typically G.711 (alaw/ulaw) at 8kHz sample rate.
    */
   async startTwoWayAudio(channel?: number): Promise<void> {
-    const cmdId = 10; // From reolink-aio two-way audio
+    const cmdId = 10; // Two-way audio
     // Start two-way audio with mixAudioStream mode
-    // Based on neolink: cmd_id 10 enables two-way audio
+    // cmd_id 10 enables two-way audio
     await this.sendXml({ cmdId, ...(channel !== undefined ? { channel } : {}) });
   }
 
   /**
    * Send audio data via Baichuan protocol.
-   * Based on neolink implementation: audio is sent via cmd_id 10 with binary audio data.
+   * Audio is sent via cmd_id 10 with binary audio data.
    * 
    * Audio Format Requirements:
    * - Format: G.711 A-law (pcm_alaw)
@@ -2783,7 +2783,7 @@ ${xmlDateTimePayload("endTime", end)}
    */
   async sendAudioData(audioData: Buffer, channel?: number): Promise<void> {
     const cmdId = 10; // Two-way audio command
-    // Based on neolink: audio data is sent as binary payload with cmd_id 10
+    // Audio data is sent as binary payload with cmd_id 10
     // streamType in header may indicate audio stream (typically 1 for audio)
     // Note: Actual implementation may need to use sendBinary or a specialized method
     // For now, this is a placeholder - needs testing with real device
@@ -2806,11 +2806,11 @@ ${xmlDateTimePayload("endTime", end)}
 
   /**
    * Stop two-way audio session.
-   * Based on neolink: stopping typically involves closing the audio stream or sending stop command.
+   * Stopping typically involves closing the audio stream or sending stop command.
    */
   async stopTwoWayAudio(channel?: number): Promise<void> {
     // Note: May need specific cmd_id or parameters to stop
-    // Based on neolink, stopping may involve:
+    // Stopping may involve:
     // - Closing the audio stream connection
     // - Sending a stop command (if supported)
     // For now, this is a placeholder - needs testing with real device
@@ -2818,9 +2818,7 @@ ${xmlDateTimePayload("endTime", end)}
 
   /**
    * Start video stream via Baichuan protocol.
-   * Based on neolink stream.rs implementation.
-   * 
-   * Reference: https://github.com/QuantumEntangledAndy/neolink/blob/master/crates/core/src/bc_protocol/stream.rs#L108
+   * Video stream subscription implementation.
    * 
    * Uses MSG_ID_VIDEO command with Preview XML payload containing:
    * - channelId: Channel ID (1-based)
@@ -2833,10 +2831,10 @@ ${xmlDateTimePayload("endTime", end)}
    */
   async startVideoStream(channel?: number, profile: StreamProfile = "sub"): Promise<void> {
     const ch = this.normalizeChannel(channel);
-    // Neolink uses the same 0-based channel_id everywhere (header, Extension, payload).
+    // Use the same 0-based channel_id everywhere (header, Extension, payload).
     const channelId = ch;
 
-    // Map profile to handle and stream_type values (from neolink stream.rs)
+    // Map profile to handle and stream_type values
     // handle: 0 for main, 256 for sub, 1024 for extern
     // stream_type in header: 0 for main, 1 for sub, 0 for extern
     const profileConfig: Record<StreamProfile, { handle: number; streamType: number; streamName: string }> = {
@@ -2853,7 +2851,7 @@ ${xmlDateTimePayload("endTime", end)}
       throw new Error(`Stream name not found for profile: ${profile}, config: ${JSON.stringify(config)}`);
     }
 
-    // Build Preview XML payload (from neolink stream.rs line 171-189)
+    // Build Preview XML payload
     // BcXml serializes as <body>...</body> with Preview inside
     // IMPORTANT: channelId is NOT in Preview XML - it's handled via channelId in header
     // The working format (response_code 200) is Preview WITHOUT channelId
@@ -2864,7 +2862,7 @@ ${xmlDateTimePayload("endTime", end)}
     }
     const payloadXml = buildPreviewXml(config.handle, streamName, channelId);
 
-    // Neolink subscribes (MSG_ID_VIDEO, msg_num) BEFORE sending the command.
+    // Subscribe (MSG_ID_VIDEO, msg_num) BEFORE sending the command.
     // On some BCUDP/battery models, the start-stream request can sporadically timeout;
     // retry a few times and ensure we unsubscribe on failures.
     const isUdp = this.client.getTransport?.() === "udp";
@@ -2889,11 +2887,11 @@ ${xmlDateTimePayload("endTime", end)}
 
         if (frame.header.responseCode !== 200) {
           throw new Error(
-            `Video stream request rejected (response_code ${frame.header.responseCode}). Neolink expects response_code 200, camera returned ${frame.header.responseCode}`
+            `Video stream request rejected (response_code ${frame.header.responseCode}). Expected response_code 200, camera returned ${frame.header.responseCode}`
           );
         }
 
-        // Remember msgNum so we can stop the stream with the same msgNum (neolink behavior).
+        // Remember msgNum so we can stop the stream with the same msgNum.
         this.activeVideoMsgNums.set(`${ch}:${profile}`, frame.header.msgNum);
 
         // Success.
@@ -2917,7 +2915,7 @@ ${xmlDateTimePayload("endTime", end)}
     // Success - stream should start and frames will arrive as push events with cmd_id 3
 
     // Check for response code 200 (success)
-    // neolink expects response_code: 200 in the reply
+    // Expect response_code: 200 in the reply
     // If response_code is not 200, the stream request was rejected
     // Note: sendXml doesn't expose response_code directly, but it throws on 400 errors
     // For video streaming, we might need to check the actual frame response_code
@@ -2935,9 +2933,7 @@ ${xmlDateTimePayload("endTime", end)}
 
   /**
    * Stop video stream via Baichuan protocol.
-   * Based on neolink stream.rs implementation.
-   * 
-   * Reference: https://github.com/QuantumEntangledAndy/neolink/blob/master/crates/core/src/bc_protocol/stream.rs
+   * Stop video stream subscription.
    * 
    * Uses MSG_ID_VIDEO_STOP command with Preview XML payload (without stream_type).
    * 
@@ -2946,10 +2942,10 @@ ${xmlDateTimePayload("endTime", end)}
    */
   async stopVideoStream(channel?: number, profile: StreamProfile = "sub"): Promise<void> {
     const ch = this.normalizeChannel(channel);
-    // Neolink uses the same 0-based channel_id everywhere (header, Extension, payload).
+    // Use the same 0-based channel_id everywhere (header, Extension, payload).
     const channelId = ch;
 
-    // Map profile to handle value (from neolink stream.rs)
+    // Map profile to handle value
     const profileConfig: Record<StreamProfile, { handle: number; streamType: number }> = {
       main: { handle: 0, streamType: 0 },
       sub: { handle: 256, streamType: 1 },
@@ -2966,7 +2962,7 @@ ${xmlDateTimePayload("endTime", end)}
     const msgNum = this.activeVideoMsgNums.get(key);
     this.activeVideoMsgNums.delete(key);
 
-    // Neolink sends VIDEO_STOP with the same msg_num as VIDEO.
+    // Send VIDEO_STOP with the same msg_num as VIDEO.
     // Some cameras don't reliably reply; treat this as best-effort with a short timeout.
     try {
       await this.client.sendFrame({
@@ -3000,15 +2996,15 @@ ${xmlDateTimePayload("endTime", end)}
 
   /**
    * Get PTZ preset list via Baichuan.
-   * cmd_id: 190 (MSG_ID_GET_PTZ_PRESET from neolink)
+   * cmd_id: 190 (MSG_ID_GET_PTZ_PRESET)
    * 
    * @param channel - Channel number (0-based)
    * @returns Array of PTZ presets
    */
   async getPtzPresets(channel?: number): Promise<PtzPreset[]> {
     const ch = this.normalizeChannel(channel);
-    // Neolink uses the same channel_id everywhere (header, Extension, payload).
-    // In neolink this is 0-based.
+    // Use the same channel_id everywhere (header, Extension, payload).
+    // This is 0-based.
     const channelId = ch;
     const xml = await this.sendXml({
       cmdId: BC_CMD_ID_GET_PTZ_PRESET,
@@ -3071,7 +3067,7 @@ ${xmlDateTimePayload("endTime", end)}
 
   /**
    * Send PTZ control command (pan/tilt/zoom).
-   * cmd_id: 18 (MSG_ID_PTZ_CONTROL from neolink)
+   * cmd_id: 18 (MSG_ID_PTZ_CONTROL)
    * 
    * @param channel - Channel number (0-based)
    * @param command - PTZ command
@@ -3082,11 +3078,11 @@ ${xmlDateTimePayload("endTime", end)}
   async ptz(channelOrCommand: number | PtzCommand, command?: PtzCommand): Promise<void> {
     const ch = typeof channelOrCommand === "number" ? this.normalizeChannel(channelOrCommand) : 0;
     const resolvedCommand = typeof channelOrCommand === "number" ? command! : channelOrCommand;
-    // Neolink uses the same channel_id in meta header, Extension and payload XML.
-    // In neolink this is 0-based.
+    // Use the same channel_id in meta header, Extension and payload XML.
+    // This is 0-based.
     const channelId = ch;
 
-    // Neolink supports only: "up", "down", "left", "right", "stop" via MSG_ID_PTZ_CONTROL.
+    // Support only: "up", "down", "left", "right", "stop" via MSG_ID_PTZ_CONTROL.
     // Zoom/focus are separate messages (e.g. 294/295).
     let direction: "up" | "down" | "left" | "right" | "stop";
     if (resolvedCommand.action === "stop") {
@@ -3105,7 +3101,7 @@ ${xmlDateTimePayload("endTime", end)}
       direction = mapped;
     }
 
-    // Neolink uses speed as f32; typical values are ~32 (CLI defaults to 32).
+    // Speed is f32; typical values are ~32.
     // Some integrations provide a normalized 0..1 speed; map that to 0..64.
     let speed: number;
     if (direction === "stop") {
@@ -3123,15 +3119,15 @@ ${xmlDateTimePayload("endTime", end)}
 
     const payloadXml = buildPtzControlXml(channelId, direction, speed);
 
-    // Neolink includes Extension with channel_id for PTZ commands.
+    // Include Extension with channel_id for PTZ commands.
     const extensionXml = buildChannelExtensionXml(channelId);
 
-    // Neolink does subscribe before sending PTZ commands
+    // Subscribe before sending PTZ commands
     // However, sendFrame already handles the response via pending map using cmdId:messageKey
-    // The subscribe in neolink is for routing responses, which sendFrame already does
+    // The subscribe is for routing responses, which sendFrame already does
     // So we don't need explicit subscribeVideoStream here
 
-    // Use sendFrame to check response_code (neolink expects 200)
+    // Use sendFrame to check response_code (expects 200)
     const frame = await this.client.sendFrame({
       cmdId: BC_CMD_ID_PTZ_CONTROL,
       channel: ch,
@@ -3178,7 +3174,7 @@ ${xmlDateTimePayload("endTime", end)}
 
   /**
    * Move to PTZ preset position.
-   * cmd_id: 19 (MSG_ID_PTZ_CONTROL_PRESET from neolink)
+   * cmd_id: 19 (MSG_ID_PTZ_CONTROL_PRESET)
    * 
    * @param channel - Channel number (0-based)
    * @param presetId - Preset ID
@@ -3192,7 +3188,7 @@ ${xmlDateTimePayload("endTime", end)}
     const channelId = ch;
     const payloadXml = buildPtzPresetXml(channelId, presetId, "toPos");
 
-    // Neolink includes extension with channel_id for PTZ preset commands
+    // Include extension with channel_id for PTZ preset commands
     const extensionXml = buildChannelExtensionXml(channelId);
 
     const frame = await this.client.sendFrame({
@@ -3212,7 +3208,7 @@ ${xmlDateTimePayload("endTime", end)}
 
   /**
    * Save current position as PTZ preset.
-   * cmd_id: 19 (MSG_ID_PTZ_CONTROL_PRESET from neolink)
+   * cmd_id: 19 (MSG_ID_PTZ_CONTROL_PRESET)
    * 
    * @param channel - Channel number (0-based)
    * @param presetId - Preset ID
@@ -3229,7 +3225,7 @@ ${xmlDateTimePayload("endTime", end)}
     // Sending enable=1 ensures the slot becomes visible again.
     const payloadXml = buildPtzPresetXmlV2(channelId, presetId, "setPos", { name, enable: 1 });
 
-    // Neolink includes extension with channel_id for PTZ preset commands
+    // Include extension with channel_id for PTZ preset commands
     const extensionXml = buildChannelExtensionXml(channelId);
 
 
@@ -3361,7 +3357,7 @@ ${xmlDateTimePayload("endTime", end)}
 
   /**
    * Get current PTZ position.
-   * cmd_id: 433 (from reolink_aio)
+   * cmd_id: 433 (Get PTZ position)
    * 
    * @param channel - Channel number (0-based)
    * @returns PTZ position (pan and tilt)
@@ -3427,7 +3423,7 @@ ${xmlDateTimePayload("endTime", end)}
 
   /**
    * Zoom to a given zoom factor, where 1.0 is normal.
-   * Uses movePos where 1000 == 1.0x (neolink behavior).
+   * Uses movePos where 1000 == 1.0x.
    * cmd_id: 295 (MSG_ID_SET_ZOOM_FOCUS)
    */
   async zoomToFactor(zoomFactor: number, channel?: number): Promise<void>;
@@ -3514,7 +3510,7 @@ ${xmlDateTimePayload("endTime", end)}
    * Best-effort sleeping inference for battery/BCUDP cameras.
    *
    * This method does NOT send any request to the camera.
-   * Rule (per neolink): consider the camera sleeping if, in the last 10 seconds,
+   * Rule: consider the camera sleeping if, in the last 10 seconds,
    * we only received/sent Baichuan commands that are known to be non-waking.
    */
   getSleepStatus(opts?: {
@@ -3523,7 +3519,7 @@ ${xmlDateTimePayload("endTime", end)}
     /** Back-compat alias for `windowMs`. */
     idleMs?: number;
     channel?: number;
-    /** List of cmdIds that do NOT wake the camera. If omitted, uses neolink-derived defaults. */
+    /** List of cmdIds that do NOT wake the camera. If omitted, uses default values. */
     nonWakingCmdIds?: number[];
     /** Back-compat alias for `nonWakingCmdIds`. */
     ignoreCmdIds?: number[];
@@ -3680,7 +3676,7 @@ ${xmlDateTimePayload("endTime", end)}
   /**
    * Get battery status for battery-powered cameras, including sleep state.
    * This is a comprehensive API that returns battery info AND checks if the camera is sleeping.
-    * cmd_id: 253 (MSG_ID_BATTERY_INFO from neolink)
+    * cmd_id: 253 (MSG_ID_BATTERY_INFO)
    * 
    * @param channel - Channel number (0-based)
    * @returns Battery information including sleep status
@@ -3737,7 +3733,7 @@ ${xmlDateTimePayload("endTime", end)}
 
   /**
    * Get battery information via Baichuan.
-   * cmd_id: 253 (MSG_ID_BATTERY_INFO from neolink)
+   * cmd_id: 253 (MSG_ID_BATTERY_INFO)
    * 
    * Note: Battery info can be pushed via events (cmd_id 252 BatteryInfoList), but on-demand request
    * is cmd_id 253.
@@ -3773,12 +3769,10 @@ ${xmlDateTimePayload("endTime", end)}
 
   /**
    * Wake up a sleeping battery camera by sending a "waking command".
-   * Based on reolink_aio: WAKING_COMMANDS like GetEnc (cmd_id 56) can wake up sleeping cameras.
-   * 
-   * Reference: reolink_aio/const.py - WAKING_COMMANDS includes "GetEnc"
+   * WAKING_COMMANDS like GetEnc (cmd_id 56) can wake up sleeping cameras.
    * 
    * @param channel - Channel number (0-based)
-   * @param waitAfterWake - Optional delay in milliseconds after sending wake command (default: 1500ms, as in reolink_aio)
+   * @param waitAfterWake - Optional delay in milliseconds after sending wake command (default: 1500ms)
    */
   async wakeUp(channel?: number, options?: number | WakeUpOptions): Promise<void> {
     const ch = this.normalizeChannel(channel);
@@ -3795,7 +3789,7 @@ ${xmlDateTimePayload("endTime", end)}
     let lastError: unknown;
     for (let attempt = 1; attempt <= attempts; attempt++) {
       try {
-        // Use GetEnc (cmd_id 56) which is a WAKING_COMMAND per reolink_aio.
+        // Use GetEnc (cmd_id 56) which is a WAKING_COMMAND.
         // If the session is stale (common on battery/BCUDP), this may timeout.
         await this.getEncXml(ch, { timeoutMs });
 
@@ -3875,7 +3869,7 @@ ${xmlDateTimePayload("endTime", end)}
 
   /**
    * Get PIR (Passive Infrared) detection settings via Baichuan.
-   * cmd_id: 212 (MSG_ID_GET_PIR_ALARM from neolink)
+   * cmd_id: 212 (MSG_ID_GET_PIR_ALARM)
    * 
    * @param channel - Channel number (0-based)
    * @returns PIR state information
@@ -3943,7 +3937,7 @@ ${xmlDateTimePayload("endTime", end)}
 
   /**
    * Set PIR (Passive Infrared) detection settings via Baichuan.
-   * cmd_id: 213 (MSG_ID_START_PIR_ALARM from neolink)
+   * cmd_id: 213 (MSG_ID_START_PIR_ALARM)
    * 
    * @param channel - Channel number (0-based)
    * @param params - PIR settings (enable is required)
@@ -4006,7 +4000,7 @@ ${xmlDateTimePayload("endTime", end)}
 
   /**
    * Set motion detection settings via Baichuan.
-   * cmd_id: 47 (SetMdAlarm from reolink_aio)
+   * cmd_id: 47 (SetMdAlarm)
    * 
    * @param channel - Channel number (0-based)
    * @param enabled - Enable/disable motion detection
@@ -4046,7 +4040,7 @@ ${xmlDateTimePayload("endTime", end)}
 
   /**
    * Set AI detection settings via Baichuan.
-   * cmd_id: 343 (SetAiAlarm from reolink_aio)
+   * cmd_id: 343 (SetAiAlarm)
    * 
    * @param channel - Channel number (0-based)
    * @param aiType - AI type (e.g., "people", "vehicle", "dog_cat", "face", "package")
@@ -4062,7 +4056,7 @@ ${xmlDateTimePayload("endTime", end)}
     const stayTime = typeof arg1 === "number" ? arg4 : arg3;
     const ch = this.normalizeChannel(channel);
     // First get current settings for this AI type.
-    // Correct cmd 342 payload (reolink_aio): <AiDetectCfg><chn>0-based</chn><type>people</type></AiDetectCfg>
+    // Correct cmd 342 payload: <AiDetectCfg><chn>0-based</chn><type>people</type></AiDetectCfg>
     const getXml = `<?xml version="1.0" encoding="UTF-8" ?>
   <body>
   <AiDetectCfg version="1.1">
@@ -4131,7 +4125,7 @@ ${xmlDateTimePayload("endTime", end)}
 
   /**
    * Play siren/audio alarm via Baichuan.
-   * cmd_id: 263 (MSG_ID_PLAY_AUDIO from neolink)
+   * cmd_id: 263 (MSG_ID_PLAY_AUDIO)
    * 
    * @param channel - Channel number (0-based, optional for hub-level)
    * @param on - Enable/disable siren (for manual mode)
@@ -4163,7 +4157,7 @@ ${xmlDateTimePayload("endTime", end)}
         payloadXml,
       });
     } catch (error) {
-      // If manual mode fails, try times mode with 2 times (reolink_aio fallback)
+      // If manual mode fails, try times mode with 2 times
       if (on === true && duration === undefined) {
         payloadXml = buildSirenTimesXml(channelId, 2);
         await this.sendXml({
@@ -4183,7 +4177,7 @@ ${xmlDateTimePayload("endTime", end)}
 
   /**
    * Get white LED/floodlight state via Baichuan.
-   * cmd_id: 289 (GetWhiteLed/Floodlight from reolink_aio)
+   * cmd_id: 289 (GetWhiteLed/Floodlight)
    * 
    * @param channel - Channel number (0-based)
    * @returns White LED state
@@ -4226,7 +4220,7 @@ ${xmlDateTimePayload("endTime", end)}
     const brightness = typeof arg1 === "number" ? arg3 : (arg2 as number | undefined);
     const ch = this.normalizeChannel(channel);
 
-    // Neolink (and many firmwares) use:
+    // Many firmwares use:
     // - cmd 288: FloodlightManual (write) for manual on/off
     // - cmd 290: FloodlightTask (write) for task config / brightness
     // Historically we sent a <WhiteLed> payload which can yield 400 on many cameras.
@@ -4291,13 +4285,13 @@ ${xmlDateTimePayload("endTime", end)}
 
   /**
    * Get device abilities/capabilities via Baichuan.
-   * cmd_id: 151 (MSG_ID_ABILITY_INFO from neolink)
+   * cmd_id: 151 (MSG_ID_ABILITY_INFO)
    * 
    * Returns a dictionary of device capabilities and their version numbers.
    * This is used to determine what features are supported by the device.
    * 
    * The token used requests all available sections: system, streaming, PTZ, IO, security, 
-   * replay, disk, network, alarm, record, video, image (based on neolink implementation).
+   * replay, disk, network, alarm, record, video, image.
    * 
    * @param username - Username for the request (required)
    * @returns Dictionary of capability names to version numbers or values, keyed by channel number or "Host"
@@ -4313,7 +4307,7 @@ ${xmlDateTimePayload("endTime", end)}
     });
 
     // Parse AbilityInfo XML
-    // Expected format based on neolink: multiple token sections (system, network, alarm, image, video, security, replay, PTZ, IO, streaming, disk, record)
+    // Expected format: multiple token sections (system, network, alarm, image, video, security, replay, PTZ, IO, streaming, disk, record)
     // Each section can contain subModule elements with channelId and abilityValue
     // <AbilityInfo>
     //   <system><subModule>...</subModule></system>
@@ -4326,7 +4320,7 @@ ${xmlDateTimePayload("endTime", end)}
     // </AbilityInfo>
     const abilities: Partial<Record<number | "Host", Record<string, number | string | undefined>>> = {};
 
-    // List of all possible token sections (based on neolink implementation)
+    // List of all possible token sections
     const tokenSections = [
       "system", "streaming", "PTZ", "IO", "security", "replay",
       "disk", "network", "alarm", "record", "video", "image"
@@ -4440,7 +4434,7 @@ ${xmlDateTimePayload("endTime", end)}
 
   /**
    * Get device support info via Baichuan.
-   * cmd_id: 199 (MSG_ID_SUPPORT from neolink)
+   * cmd_id: 199 (MSG_ID_SUPPORT)
    *
    * Returns host-level support info including ptzMode and per-channel flags (battery, ledCtrl, etc).
    */

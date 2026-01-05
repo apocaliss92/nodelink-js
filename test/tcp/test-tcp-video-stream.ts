@@ -136,7 +136,7 @@ async function testVideoStream() {
       
       try {
         // Aggiorna temporaneamente il valore in constants
-        // Per ora testiamo direttamente con sendXml usando il pattern di neolink
+        // Test directly with sendXml
         const channelId = channel + 1;
         const profileStr = profile as "main" | "sub" | "ext";
         let handle: number;
@@ -157,7 +157,7 @@ async function testVideoStream() {
         }
         
         // Try different payload XML / Extension combinations.
-        // neolink uses Bc::new_from_xml with BcMeta and BcXml, where Preview is in the payload.
+        // Preview is in the payload.
         // Some devices may also require an Extension XML containing channelId.
         const testVariants = [
           // Variant 1: without <body> wrapper, without extension
@@ -366,7 +366,7 @@ async function testVideoStream() {
       console.log(`Possible causes:`);
       console.log(`- Tested cmd_id values are not correct`);
       console.log(`- Video stream requires different parameters`);
-      console.log(`- Check values in neolink crates/core/src/bc/model.rs`);
+      console.log(`- Check command ID values`);
     }
 
   } catch (error) {

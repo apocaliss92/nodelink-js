@@ -61,7 +61,7 @@ async function main() {
   let skipped = 0;
   let pframesDumped = 0;
 
-  // Parser stream (neolink-style): concateniamo i chunk in un buffer e chiamiamo parseBcMedia in loop.
+  // Parser stream: concatenate chunks in a buffer and call parseBcMedia in loop.
   let streamBuf = Buffer.alloc(0);
   const isMagicAt = (b: Buffer, i: number): boolean => {
     if (i + 4 > b.length) return false;

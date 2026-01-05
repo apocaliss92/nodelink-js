@@ -2,7 +2,7 @@
  * Baichuan HTTP Stream Server - Serves a Baichuan video stream over HTTP (MPEG-TS).
  * A simpler alternative to an RTSP server.
  *
- * Inspired by neolink: neolink uses GStreamer for RTSP; here we use HTTP for simplicity.
+ * Uses HTTP for simplicity (alternative to RTSP).
  */
 
 import { BaichuanVideoStream } from "./BaichuanVideoStream";
@@ -160,7 +160,7 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
       this.httpServer!.on("error", reject);
     });
 
-    // Avvia ffmpeg per convertire H.264 in MPEG-TS e inviare ai client
+    // Start ffmpeg to convert H.264 to MPEG-TS and send to clients
     this.logger.info(`[BaichuanHttpStreamServer] Starting ffmpeg for H.264 -> MPEG-TS conversion...`);
     
     const ffmpeg = spawn("ffmpeg", [
@@ -178,7 +178,7 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
       "-muxpreload", "0",
       "-muxdelay", "0",
       "-f", "mpegts", // Output format MPEG-TS
-      "pipe:1", // Scrive su stdout
+      "pipe:1", // Write to stdout
     ], {
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -351,9 +351,9 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
    */
   async stop(): Promise<void> {
     // Stop must be idempotent: even if `active` is already false (e.g. ffmpeg crashed),
-    // dobbiamo comunque chiudere server/socket e killare processi per permettere a Node di uscire.
+    // we still need to close server/socket and kill processes to allow Node to exit.
 
-    // Chiudi tutti i client
+    // Close all clients
     for (const client of this.clients) {
       if (!client.destroyed) {
         client.end();
@@ -361,21 +361,21 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
     }
     this.clients.clear();
 
-    // Ferma lo stream video
+    // Stop the video stream
     try {
       await this.videoStream.stop();
     } catch {
       // ignore
     }
 
-    // Rimuovi listener per evitare leak tra start/stop
+    // Remove listeners to avoid leaks between start/stop
     if (this.videoListener) {
       this.videoStream.removeListener("videoAccessUnit" as any, this.videoListener as any);
       this.videoStream.removeListener("videoFrame", this.videoListener as any);
     }
     this.videoListener = undefined;
 
-    // Ferma ffmpeg
+    // Stop ffmpeg
     if (this.ffmpegProcess) {
       const proc = this.ffmpegProcess;
       try {
@@ -403,7 +403,7 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
     }
     this.ffmpegProcess = undefined;
 
-    // Ferma server HTTP
+    // Stop HTTP server
     if (this.httpServer) {
       await new Promise<void>((resolve) => {
         // best-effort: close connections and then the server (modern Node versions)

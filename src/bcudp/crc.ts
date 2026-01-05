@@ -1,5 +1,5 @@
 // CRC32 used by BCUDP discovery packets.
-// Ported to match `neolink` `bcudp/crc.rs` effective behavior:
+// CRC calculation for BCUDP packets:
 // CRC-32/ISO-HDLC table, but with init=0x00000000 and xorout=0x00000000.
 
 let table: Uint32Array | undefined;

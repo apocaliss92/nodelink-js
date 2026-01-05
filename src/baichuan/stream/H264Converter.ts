@@ -2,7 +2,7 @@
  * H.264 Format Converter
  * Converts H.264 data from length-prefixed (AVCC) to Annex-B (start codes).
  *
- * Based on neolink: BcMedia payloads can be length-prefixed and must be converted
+ * BcMedia payloads can be length-prefixed and must be converted
  * to Annex-B for ffmpeg/RTSP streaming.
  */
 
@@ -414,7 +414,7 @@ export class H264RtpDepacketizer {
       } else if (this.fuNalHeader != null) {
         this.fuParts.push(frag);
       } else {
-        // frammento senza start: scarta
+        // fragment without start: discard
         return [];
       }
 
@@ -433,23 +433,23 @@ export class H264RtpDepacketizer {
 
 /**
  * Converte dati H.264 da Annex-B a length-prefixed (se necessario)
- * Non usato per ffmpeg, ma utile per altri scopi
+ * Not used for ffmpeg, but useful for other purposes
  */
 export function convertToLengthPrefixed(data: Buffer): Buffer {
   const result: Buffer[] = [];
   let offset = 0;
   
   while (offset < data.length) {
-    // Cerca start code
+    // Search for start code
     let startCodeOffset = -1;
     let startCodeLength = 0;
     
-    // Cerca 4-byte start code
+    // Search for 4-byte start code
     if (offset + 4 <= data.length && data.subarray(offset, offset + 4).equals(NAL_START_CODE_4B)) {
       startCodeOffset = offset;
       startCodeLength = 4;
     }
-    // Cerca 3-byte start code
+    // Search for 3-byte start code
     else if (offset + 3 <= data.length && data.subarray(offset, offset + 3).equals(NAL_START_CODE_3B)) {
       startCodeOffset = offset;
       startCodeLength = 3;
@@ -461,10 +461,10 @@ export function convertToLengthPrefixed(data: Buffer): Buffer {
       break;
     }
     
-    // Salta lo start code
+    // Skip the start code
     offset = startCodeOffset + startCodeLength;
     
-    // Trova il prossimo start code o la fine dei dati
+    // Find the next start code or end of data
     let nextStartCode = -1;
     let nextStartCodeLength = 0;
     

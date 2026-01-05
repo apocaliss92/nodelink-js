@@ -61,8 +61,7 @@ export type BcUdpStreamOptions =
 type SendEntry = { packetId: number; buf: Buffer; ts: number };
 
 /**
- * Implements BCUDP as a reliable "byte stream" (ACK + resend),
- * following `neolink` (`UdpPayloadSource`).
+ * Implements BCUDP as a reliable "byte stream" (ACK + resend).
  */
 export class BcUdpStream extends EventEmitter<{
   data: [Buffer];
@@ -95,7 +94,7 @@ export class BcUdpStream extends EventEmitter<{
   private ackScheduled = false;
   private ackLatency = new AckLatency();
 
-  // Neolink pattern: compute the ACK payload when state changes (on data receive),
+  // Pattern: compute the ACK payload when state changes (on data receive),
   // but send the latest ACK on a tight interval. This keeps the send path cheap,
   // which is important in Node under heavy load.
   private lastAckPacket: Buffer = Buffer.alloc(0);
@@ -110,7 +109,7 @@ export class BcUdpStream extends EventEmitter<{
   private drainScheduled = false;
 
   private getKeepAliveTid(): number {
-    // `neolink` keeps a stable TID for device keepalive.
+    // Keep a stable TID for device keepalive.
     // Many cameras appear to associate the session with that TID.
     if (this.discoveryTid != null) return this.discoveryTid;
     return (Math.floor(Math.random() * 255) | 0) >>> 0;
@@ -167,7 +166,7 @@ export class BcUdpStream extends EventEmitter<{
     if (this.opts.mode !== "uid") throw new Error("Internal: discoveryUid called for non-uid mode");
     // Internal defaults (do not expose knobs):
     // - Battery cameras may be sleeping -> keep a longer timeout.
-    // - Send to both discovery ports 2015/2018 (neolink behavior).
+    // - Send to both discovery ports 2015/2018.
     // - Use broadcast to discover by UID.
     const ports = [BCUDP_DISCOVERY_PORT_LOCAL_ANY, BCUDP_DISCOVERY_PORT_LOCAL_UID];
     const host = "255.255.255.255";
@@ -181,7 +180,7 @@ export class BcUdpStream extends EventEmitter<{
     const cid = (Math.floor(Math.random() * 0x7fffffff) | 0) || 82000;
 
     // Build discovery packet (will be reused for retries)
-    // Neolink uses "MAC" as OS for discovery (see discovery.rs:361)
+    // Default OS is "MAC" for discovery
     const xml = buildC2dC({ uid: this.opts.uid, clientPort: localPort, cid, mtu: this.mtu });
 
     const reply = await new Promise<{ cid: number; did: number; rhost: string; rport: number; sid?: number; tid?: number }>((resolve, reject) => {
@@ -223,7 +222,7 @@ export class BcUdpStream extends EventEmitter<{
       const sendT = (rhost: string, rport: number) => {
         if (sentT) return;
         if (!discovered) return;
-        // Neolink direct-connect path does NOT send C2D_T when SID is unknown.
+        // Do NOT send C2D_T when SID is unknown.
         // Some cameras appear to treat unsolicited C2D_T as an error and later disconnect (D2C_DISC).
         if (discoveredSid == null) return;
         try {
@@ -325,7 +324,7 @@ export class BcUdpStream extends EventEmitter<{
       };
       sock.on("message", onMsg);
 
-      // Send initial discovery packet to all ports (neolink behavior)
+      // Send initial discovery packet to all ports
       const sendDiscovery = () => {
         const tid = (Math.floor(Math.random() * 255) | 0) >>> 0;
         const packet = encodeDiscoveryPacket(tid, xml);
@@ -344,7 +343,6 @@ export class BcUdpStream extends EventEmitter<{
       sendDiscovery();
 
       // Retry sending discovery packets at regular intervals to wake up sleeping cameras
-      // This mimics neolink behavior for battery cameras
       retryTimer = setIntervalNode(() => {
         sendDiscovery();
       }, retryInterval);
@@ -366,10 +364,10 @@ export class BcUdpStream extends EventEmitter<{
     // Initialize ACK packet (empty)
     this.updateAckPacket();
 
-    // Send initial heartbeat immediately (neolink behavior)
+    // Send initial heartbeat immediately
     this.sendHeartbeat();
 
-    // ACK every 10ms (official client / neolink behavior)
+    // ACK every 10ms (official client behavior)
     this.ackTimer = setIntervalNode(() => {
       try {
         this.sendAckFast();
@@ -387,7 +385,7 @@ export class BcUdpStream extends EventEmitter<{
       }
     }, 500);
 
-    // Heartbeat: match `neolink` behavior (1s, stable TID). Some cameras disconnect if the heartbeat
+    // Heartbeat: send every 1s with stable TID. Some cameras disconnect if the heartbeat
     // isn't sent frequently enough.
     this.hbTimer = setIntervalNode(() => {
       try {
@@ -400,11 +398,11 @@ export class BcUdpStream extends EventEmitter<{
 
   private sendHeartbeat(): void {
     if (!this.sock || !this.remote || this.clientId == null || this.cameraId == null) return;
-    // Keep a stable TID for keepalive (matches `neolink`).
+    // Keep a stable TID for keepalive.
     const tid = this.getKeepAliveTid();
 
     let xml: string;
-    // Neolink sends C2D_HB as soon as it has CID and DID, even if SID is not yet assigned (or is 0).
+    // Send C2D_HB as soon as it has CID and DID, even if SID is not yet assigned (or is 0).
     // This keeps the session alive and seems to be what the camera expects after the initial handshake.
     xml = buildC2dHb({ cid: this.clientId, did: this.cameraId });
 
@@ -415,8 +413,8 @@ export class BcUdpStream extends EventEmitter<{
     // Send to current remote (data port)
     this.sock.send(pkt, this.remote.port, this.remote.host);
 
-    // Neolink does NOT seem to send heartbeats to discovery ports (2015/2018) in the main loop.
-    // It only sends to the connected address.
+    // Do NOT send heartbeats to discovery ports (2015/2018) in the main loop.
+    // Only send to the connected address.
     // Sending to discovery ports can confuse some cameras and may cause the stream to drop.
   }
 
@@ -425,7 +423,7 @@ export class BcUdpStream extends EventEmitter<{
     // Keep it comfortably below that.
     const MAX_ACK_PAYLOAD_BYTES = 200;
 
-    // Match neolink/offical client behavior: until we've received and consumed at least
+    // Match official client behavior: until we've received and consumed at least
     // one packet (packetsWant>0), send the special "empty" ACK.
     // This uses group_id=0xffffffff + packet_id=0xffffffff + empty payload.
     // Avoid sending packet_id=0xffffffff with a non-empty truth-table.
@@ -462,7 +460,7 @@ export class BcUdpStream extends EventEmitter<{
     const { packetId, payload } = this.buildAckPayload();
     this.lastAckPacket = encodeAckPacket({
       connectionId: this.cameraId, // towards camera: did
-      // In neolink: group_id=0xffffffff is only used for the special empty ACK.
+      // group_id=0xffffffff is only used for the special empty ACK.
       groupId: packetId === 0xffffffff && payload.length === 0 ? 0xffffffff : 0,
       packetId,
       maybeLatency: this.ackLatency.getValue(),
@@ -505,7 +503,7 @@ export class BcUdpStream extends EventEmitter<{
   }
 
   private handleAckFromCamera(packetId: number, payload: Buffer): void {
-    // Porting of neolink behavior: camera ACKs what it received from us.
+    // Camera ACKs what it received from us.
     // Remove <= packetId and those marked 1 in payload (relative to packetId).
     if (packetId !== 0xffffffff) {
       for (const k of this.sent.keys()) {

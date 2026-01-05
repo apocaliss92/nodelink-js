@@ -143,7 +143,7 @@ function parseDateTimeLocal(yyyymmdd: string, hhmmss: string): Date | undefined 
 /**
  * Best-effort parse of Reolink VOD recording filenames.
  *
- * Formats observed in reolink_aio:
+ * Formats observed:
  * - Mp4Record/2020-12-22/RecM01_20201222_075939_080140_<HEX>_<SIZE>.mp4
  * - Mp4Record/2023-04-26/RecS02_DST20230426_145918_150032_<HEX>_<SIZE>.mp4
  * - .../RecS07_20250219_111146_111238_0_<HEX>_<SIZE>.mp4

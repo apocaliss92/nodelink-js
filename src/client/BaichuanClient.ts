@@ -42,7 +42,7 @@ export type BaichuanClientOptions = {
   logger?: Logger;
 
   /**
-   * Neolink-style idle disconnect.
+   * Idle disconnect.
    *
    * When enabled, the client will close its socket after a period of *user inactivity*
    * (no explicit API calls), as long as there are:
@@ -54,7 +54,7 @@ export type BaichuanClientOptions = {
    */
   idleDisconnect?: boolean;
 
-  /** Idle timeout used when `idleDisconnect` is enabled. Default: 30s (neolink behavior). */
+  /** Idle timeout used when `idleDisconnect` is enabled. Default: 30s. */
   idleDisconnectTimeoutMs?: number;
   /**
    * Transport to use:
@@ -175,7 +175,6 @@ export class BaichuanClient extends EventEmitter<{
   private nonce?: string;
 
   // Video stream subscriptions: map of cmdId -> Set of msgNum that are subscribed
-  // Similar to neolink's connection.subscribe(MSG_ID_VIDEO, msg_num)
   private videoSubscriptions = new Map<number, Set<number>>();
 
   // Tracks whether THIS client currently contributes to the global streaming registry.
@@ -288,7 +287,7 @@ export class BaichuanClient extends EventEmitter<{
   }
 
   /**
-   * Acquire a temporary permit to keep the connection open (neolink-style).
+   * Acquire a temporary permit to keep the connection open.
    *
    * Returns a release function.
    */
@@ -511,7 +510,7 @@ export class BaichuanClient extends EventEmitter<{
 
     // Defaults:
     // - TCP: prevent idle socket closures by camera/NAT.
-    // - UDP/BCUDP: neolink-style dynamic keepalive.
+    // - UDP/BCUDP: dynamic keepalive.
     //   * When subscribed/streaming: send periodic keepalive to keep push/stream reliable.
     //   * When idle: do not send keepalive, allowing battery cameras to sleep.
     let interval = 30_000;
@@ -569,7 +568,7 @@ export class BaichuanClient extends EventEmitter<{
     if (!this.udpSocket) return false;
     if (!this.loggedIn) return false;
 
-    // Neolink-style default: do NOT send periodic keepalive unless we're actively streaming.
+    // Default: do NOT send periodic keepalive unless we're actively streaming.
     // Battery cameras should be allowed to sleep; we still reply to camera-initiated keepalive frames.
     if (this.hasActiveVideoSubscriptionsInternal()) return true;
     return false;
@@ -642,9 +641,9 @@ export class BaichuanClient extends EventEmitter<{
       await this.connectUdp();
       return;
     }
-    // auto: try TCP first, then fallback to UDP (like neolink)
+    // auto: try TCP first, then fallback to UDP
     try {
-      // Neolink uses a timeout for TCP discovery (TCP_WAIT = 4 seconds)
+      // Use a timeout for TCP discovery (TCP_WAIT = 4 seconds)
       // We use Promise.race to timeout TCP connection attempt
       await Promise.race([
         this.connectTcp(),
@@ -654,7 +653,7 @@ export class BaichuanClient extends EventEmitter<{
       ]);
     } catch (e) {
       this.logDebug("auto:tcp_failed", e);
-      // Fallback to UDP discovery (like neolink "local discovery")
+      // Fallback to UDP discovery
       // Requires UID.
       if (!this.opts.uid) {
         throw new Error("TCP connection failed and UDP fallback requires `options.uid` (BCUDP discovery UID).");
@@ -916,8 +915,8 @@ export class BaichuanClient extends EventEmitter<{
     }
 
     // Battery cameras (BCUDP) expect the client to respond to UDP keep-alive frames.
-    // Neolink always replies with response_code=200 using the same msg_num/channel_id/stream_type
-    // and does not special-case the incoming response_code.
+    // Always reply with response_code=200 using the same msg_num/channel_id/stream_type
+    // and do not special-case the incoming response_code.
     // Some firmwares send these with response_code=200 already; we still reply to keep the session alive.
     if (this.transport === "udp" && frame.header.cmdId === BC_CMD_ID_UDP_KEEP_ALIVE) {
       try {
@@ -969,7 +968,7 @@ export class BaichuanClient extends EventEmitter<{
     }
 
     // Check if this frame matches a video stream subscription
-    // Similar to neolink's subscribe mechanism: frames with matching cmdId and msgNum
+    // Frames with matching cmdId and msgNum
     const subscribedMsgNums = this.videoSubscriptions.get(frame.header.cmdId);
     if (subscribedMsgNums && subscribedMsgNums.size > 0) {
       // If there are active subscriptions for this cmdId (typically MSG_ID_VIDEO=3),
@@ -1026,7 +1025,6 @@ export class BaichuanClient extends EventEmitter<{
 
   /**
    * Subscribe to video stream frames with a specific cmdId and msgNum.
-   * Similar to neolink's connection.subscribe(MSG_ID_VIDEO, msg_num).
    * 
    * @param cmdId - Command ID to subscribe to (e.g., 3 for MSG_ID_VIDEO)
    * @param msgNum - Message number to subscribe to
@@ -1082,7 +1080,7 @@ export class BaichuanClient extends EventEmitter<{
 
   /**
    * Parses event frame (cmd_id 33) into one or more ReolinkEvent.
-   * Primary format (neolink): <AlarmEventList><AlarmEvent>...</AlarmEvent>...</AlarmEventList>
+   * Primary format: <AlarmEventList><AlarmEvent>...</AlarmEvent>...</AlarmEventList>
    * Fallback format (seen on some firmwares): <Event>...</Event>
    */
   private parseEvents(frame: BaichuanFrame): ReolinkEvent[] {
@@ -1108,7 +1106,7 @@ export class BaichuanClient extends EventEmitter<{
 
     const now = Date.now();
 
-    // 1) Neolink format: AlarmEventList
+    // 1) Format: AlarmEventList
     if (xml.includes("<AlarmEventList")) {
       const out: ReolinkEvent[] = [];
       const alarmEventMatches = xml.matchAll(/<AlarmEvent\b[^>]*>([\s\S]*?)<\/AlarmEvent>/g);
@@ -1134,7 +1132,7 @@ export class BaichuanClient extends EventEmitter<{
         // Unlike older implementations, a single AlarmEvent may encode multiple independent states
         // (e.g. motion + ai + visitor). Emit all applicable events.
 
-        // Motion inference (neolink): treat as motion start when status != "none" OR aiType != "none".
+        // Motion inference: treat as motion start when status != "none" OR aiType != "none".
         // Battery cams often use status "other" for PIR-based motion.
         const statusLower = status.toLowerCase();
         const statusIndicatesMotion = statusLower.length > 0 && statusLower !== "none";
@@ -1324,7 +1322,7 @@ export class BaichuanClient extends EventEmitter<{
   private encodeBodyBinary(extXml: string, payload: Buffer, channelId: number, enc: EncryptionProtocol): Buffer {
     const extBuf = Buffer.from(extXml, "utf8");
 
-    // Neolink behavior: binary payloads are sent unencrypted, while the Extension is still encrypted.
+    // Binary payloads are sent unencrypted, while the Extension is still encrypted.
     if (enc.kind === "none") return Buffer.concat([extBuf, payload]);
     if (enc.kind === "bc") return Buffer.concat([bcEncrypt(extBuf, channelId), payload]);
     if (enc.kind === "aes" || enc.kind === "full_aes") return Buffer.concat([aesEncrypt(extBuf, enc.key), payload]);
@@ -1451,7 +1449,7 @@ export class BaichuanClient extends EventEmitter<{
     if (!internal) this.kickIdleDisconnectTimer();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
-    const channelId = params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1); // default: reolink_aio-style
+    const channelId = params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
 
     const msgNum = this.nextMsgNum();
     const cmdId = params.cmdId;
@@ -1701,7 +1699,7 @@ export class BaichuanClient extends EventEmitter<{
       return res;
     }
 
-    // File download (neolink dissector class=0x6482) is often delivered as a sequence of binary chunks.
+    // File download (class=0x6482) is often delivered as a sequence of binary chunks.
     // Handle it similarly to snapshot: send without pending and collect frames until completion.
     if ((params.messageClass ?? BC_CLASS_MODERN_24) === BC_CLASS_FILE_DOWNLOAD) {
       const res = await this.sendBinaryFileDownload6482(params);
@@ -1912,7 +1910,7 @@ export class BaichuanClient extends EventEmitter<{
             this.logDebug("file_download_progress", { cmdId, msgNum, bytes: receivedBytes });
           }
 
-          // Neolink-style completion commonly uses responseCode=201 for the final chunk.
+          // Completion commonly uses responseCode=201 for the final chunk.
           if (frame.header.responseCode === 201) {
             finish(Buffer.concat(chunks));
           }
@@ -1958,7 +1956,7 @@ export class BaichuanClient extends EventEmitter<{
     const msgNum = this.nextMsgNum();
     const cmdId = params.cmdId;
 
-    // Per Snap (cmdId=109) la request usa solo channelId (niente <binaryData>1</binaryData>).
+    // For Snap (cmdId=109) the request uses only channelId (no <binaryData>1</binaryData>).
     // I chunk binari in risposta saranno marcati con <binaryData>1</binaryData> nella Extension.
     const extXml = params.extensionXml ?? (params.channel != null ? buildChannelExtensionXml(channel) : "");
     const payloadXml = params.payloadXml ?? "";
@@ -2036,7 +2034,7 @@ export class BaichuanClient extends EventEmitter<{
         }
 
         try {
-          // Snapshot flow (neolink):
+          // Snapshot flow:
           // - reply 1: XML body (no binaryData)
           // - reply 2..n: Extension has <binaryData>1</binaryData>, payload is binary chunks (responseCode 200/201)
           let isBinaryChunk = false;
@@ -2142,7 +2140,6 @@ export class BaichuanClient extends EventEmitter<{
 
   /**
    * Login flow: legacy "upgrade" -> receive nonce/encryption -> modern login.
-   * Ispirato a `neolink` (Rust) e `reolink_aio` (Python).
    */
   async login(maxEncryption: MaxEncryption = "full_aes"): Promise<void> {
     if (this.loggedIn) return;
@@ -2162,7 +2159,7 @@ export class BaichuanClient extends EventEmitter<{
         // 1) legacy header-only login upgrade to obtain nonce + encryption type
 
         // 1) legacy header-only login upgrade to obtain nonce + encryption type
-        // IMPORTANT (neolink): AES request uses 0xdc12.
+        // IMPORTANT: AES request uses 0xdc12.
         // Some cameras will close the socket if you request an unsupported enc byte (es. 0xdc02).
         const encByte =
           effectiveMaxEncryption === "none"
@@ -2260,7 +2257,7 @@ export class BaichuanClient extends EventEmitter<{
           extensionXml: "",
           messageClass: BC_CLASS_MODERN_24,
           // For the login message itself, many firmwares expect BCEncrypt regardless of negotiated encryption.
-          // This matches neolink/reolink-aio behavior: always use BCEncrypt for login.
+          // Always use BCEncrypt for login.
           encryption: { kind: "bc" },
           timeoutMs: 10_000,
         });

@@ -1,6 +1,5 @@
 /**
  * BcMedia Parser - Parses Baichuan media packets (video/audio frames)
- * Based on neolink crates/core/src/bcmedia/*
  * 
  * BcMedia packets have magic headers that identify the packet type:
  * - InfoV1: 0x31303031
@@ -18,11 +17,11 @@ export interface BcMediaIframe {
   videoType: "H264" | "H265";
   microseconds: number;
   time?: number;
-  /** Header addizionale raw (se presente) */
+  /** Raw additional header (if present) */
   additionalHeader?: Buffer;
-  /** Dimensione header addizionale */
+  /** Additional header size */
   additionalHeaderSize?: number;
-  /** Unknown u32 field after microseconds (neolink ignores it) */
+  /** Unknown u32 field after microseconds */
   unknown?: number;
   data: Buffer; // Raw video data (H.264/H.265 NAL units)
 }
@@ -31,11 +30,11 @@ export interface BcMediaPframe {
   type: "Pframe";
   videoType: "H264" | "H265";
   microseconds: number;
-  /** Header addizionale raw (se presente) */
+  /** Raw additional header (if present) */
   additionalHeader?: Buffer;
-  /** Dimensione header addizionale */
+  /** Additional header size */
   additionalHeaderSize?: number;
-  /** Unknown u32 field after microseconds (neolink ignores it) */
+  /** Unknown u32 field after microseconds */
   unknown?: number;
   data: Buffer; // Raw video data (H.264/H.265 NAL units)
 }
@@ -104,7 +103,6 @@ const PAD_SIZE = 8; // Media packets use 8 byte padding
 
 /**
  * Parse BcMedia packet from binary data.
- * Based on neolink crates/core/src/bcmedia/de.rs
  */
 export function parseBcMedia(buf: Buffer): { media: BcMedia; consumed: number } | null {
   if (buf.length < 4) return null;
@@ -203,8 +201,8 @@ function parseIframe(buf: Buffer): { media: BcMediaIframe; consumed: number } | 
   offset += 4;
 
   let time: number | undefined;
-  // In neolink, I-frame ha time (u32) dentro l'additional header, ma per alcuni modelli
-  // l'intero additional header potrebbe essere rilevante (es. IV/flags). Quindi lo conserviamo COMPLETO.
+  // I-frame has time (u32) in the additional header, but for some models
+  // the entire additional header might be relevant (e.g. IV/flags). So we preserve it COMPLETELY.
   if (buf.length < offset + additionalHeaderSize) return null;
   const additionalHeader = buf.subarray(offset, offset + additionalHeaderSize);
   if (additionalHeaderSize >= 4) {
@@ -289,7 +287,7 @@ function parseAac(buf: Buffer): { media: BcMediaAac; consumed: number } | null {
 
   if (payloadSize !== payloadSizeB) return null;
 
-  // In neolink, after the payload there is 8-byte alignment padding (based on payloadSize)
+  // After the payload there is 8-byte alignment padding (based on payloadSize)
   const headerLen = 8; // magic(4) + size(2) + sizeB(2)
   const padSize = payloadSize % PAD_SIZE === 0 ? 0 : PAD_SIZE - (payloadSize % PAD_SIZE);
   const totalLen = headerLen + payloadSize + padSize;
@@ -305,7 +303,7 @@ function parseAac(buf: Buffer): { media: BcMediaAac; consumed: number } | null {
 }
 
 function parseAdpcm(buf: Buffer): { media: BcMediaAdpcm; consumed: number } | null {
-  // neolink:
+  // Structure:
   // magic(4) + payload_size(u16) + payload_size_b(u16) + magic_data(u16=0x0100) + half_block_size(u16) + data(block_size) + padding
   if (buf.length < 12) return null;
 
@@ -318,7 +316,7 @@ function parseAdpcm(buf: Buffer): { media: BcMediaAdpcm; consumed: number } | nu
   const magicData = buf.readUInt16LE(8);
   if (magicData !== 0x0100) return null;
 
-  // half_block_size (neolink reads it but does not use it to compute the length)
+  // half_block_size (read but not used to compute the length)
   const halfBlockSize = buf.readUInt16LE(10);
   void halfBlockSize;
 

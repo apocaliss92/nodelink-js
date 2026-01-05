@@ -1,6 +1,5 @@
 /**
  * BcMedia Codec - Assembles fragmented BcMedia packets from stream
- * Based on neolink crates/core/src/bcmedia/codex.rs
  * 
  * BcMedia packets can be fragmented across multiple Baichuan frames.
  * This codec buffers incomplete packets and assembles them when complete.
@@ -52,7 +51,7 @@ export class BcMediaCodec {
         this.buffer = this.buffer.subarray(result.consumed);
       } else {
         // No complete packet yet.
-        // Follow neolink's approach: if the buffer does NOT start with a known magic,
+        // If the buffer does NOT start with a known magic,
         // in non-strict mode we drop the whole buffer (prevents desync and "fake" packets).
         const magic = this.buffer.readUInt32LE(0);
         const isInfoV1 = magic === 0x31303031;

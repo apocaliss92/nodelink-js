@@ -7,7 +7,7 @@ export type ReolinkHttpClientOptions = {
   password: string;
   port?: number;
   useHttps?: boolean;
-  /** Disable TLS verification for HTTPS (default: true, like reolink_aio). */
+  /** Disable TLS verification for HTTPS (default: true). */
   insecureTLS?: boolean;
   timeoutMs?: number;
 };
@@ -33,8 +33,8 @@ export class ReolinkHttpClient {
   private token: string | undefined;
   private tokenExpiresAt: number | undefined; // epoch ms
 
-  // `fetch` in Node usa `undici` e accetta `dispatcher`, ma le typings possono differire
-  // tra `undici` e `undici-types` (Node). Manteniamo il tipo permissivo.
+  // `fetch` in Node uses `undici` and accepts `dispatcher`, but typings may differ
+  // between `undici` and `undici-types` (Node). We keep a permissive type.
   private httpsAgent: unknown;
 
   constructor(opts: ReolinkHttpClientOptions) {
@@ -272,7 +272,7 @@ export class ReolinkHttpClient {
   /**
    * Download a VOD/recording via CGI `cmd=Download`.
    *
-   * This matches reolink_aio's approach (POST with a dummy JSON body and query params).
+   * Uses POST with a dummy JSON body and query params.
    * Returns the raw binary payload (often mp4).
    */
   async downloadVod(source: string, output?: string, start?: string): Promise<Buffer> {
@@ -280,8 +280,7 @@ export class ReolinkHttpClient {
     if (!this.token) throw new Error("Missing token after login");
 
     // NOTE: Do NOT URL-encode '/' in `source`. Many Reolink firmwares expect raw paths
-    // like "/mnt/sda/..." and return 404 when `%2F` is used. Match reolink_aio behavior:
-    // encode spaces only.
+    // like "/mnt/sda/..." and return 404 when `%2F` is used. Only encode spaces.
     const scheme = this.useHttps ? "https" : "http";
     const port = this.port ?? (this.useHttps ? 443 : 80);
     const sourceForQuery = source.replaceAll(" ", "%20");

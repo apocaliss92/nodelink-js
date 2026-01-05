@@ -19,7 +19,7 @@ export const BC_CLASS_LEGACY = 0x6514;
 export const BC_CLASS_MODERN_20 = 0x6614;
 export const BC_CLASS_MODERN_24 = 0x6414;
 export const BC_CLASS_MODERN_24_ALT = 0x0000;
-// Neolink dissector: "modern (file download)" message class, still uses 24-byte header with payloadOffset.
+// Modern (file download) message class, still uses 24-byte header with payloadOffset.
 export const BC_CLASS_FILE_DOWNLOAD = 0x6482;
 
 export function bcHeaderHasPayloadOffset(messageClass: number): boolean {
@@ -28,18 +28,15 @@ export function bcHeaderHasPayloadOffset(messageClass: number): boolean {
 
 /**
  * Baichuan command IDs for video streaming.
- * Based on neolink model.rs implementation.
  * 
- * Reference: https://github.com/QuantumEntangledAndy/neolink/blob/master/crates/core/src/bc/model.rs
- * 
- * Values verified from neolink crates/core/src/bc/model.rs:
+ * Values:
  * - MSG_ID_VIDEO = 3: Video and Audio Streams messages
  * - MSG_ID_VIDEO_STOP = 4: ID used to stop the video stream
  */
 export const BC_CMD_ID_VIDEO = 3; // MSG_ID_VIDEO - Video and Audio Streams messages
 export const BC_CMD_ID_VIDEO_STOP = 4; // MSG_ID_VIDEO_STOP - ID used to stop the video stream
 
-// Replay / recordings / file list (neolink dissector)
+// Replay / recordings / file list
 export const BC_CMD_ID_FILE_INFO_LIST_REPLAY = 5; // <FileInfoList> (replay)
 export const BC_CMD_ID_FILE_INFO_LIST_STOP = 7; // <FileInfoList> (stop)
 export const BC_CMD_ID_FILE_INFO_LIST_DL_VIDEO = 8; // <FileInfoList> (DL Video)
@@ -48,39 +45,38 @@ export const BC_CMD_ID_FILE_INFO_LIST_OPEN = 14; // <FileInfoList> (open/list)
 export const BC_CMD_ID_FILE_INFO_LIST_GET = 15; // <FileInfoList> (get/list page)
 export const BC_CMD_ID_FILE_INFO_LIST_CLOSE = 16; // <FileInfoList> (close)
 
-// Recording search (alarm video list) used by reolink_aio Baichuan implementation
+// Recording search (alarm video list)
 export const BC_CMD_ID_FIND_REC_VIDEO_OPEN = 272; // <findAlarmVideo> (open)
 export const BC_CMD_ID_FIND_REC_VIDEO_GET = 273; // <findAlarmVideo> (get)
 export const BC_CMD_ID_FIND_REC_VIDEO_CLOSE = 274; // <findAlarmVideo> (close)
 
-// Talk / two-way audio command IDs (from neolink model.rs)
+// Talk / two-way audio command IDs
 export const BC_CMD_ID_TALK_ABILITY = 10; // MSG_ID_TALKABILITY - get talk ability/config
 export const BC_CMD_ID_TALK_RESET = 11; // MSG_ID_TALKRESET - stop/reset talk session
 export const BC_CMD_ID_TALK_CONFIG = 201; // MSG_ID_TALKCONFIG - configure talk audio format
 export const BC_CMD_ID_TALK = 202; // MSG_ID_TALK - send talk binary (BcMedia ADPCM)
 
-// PTZ Control command IDs (from neolink model.rs)
+// PTZ Control command IDs
 export const BC_CMD_ID_PTZ_CONTROL = 18; // MSG_ID_PTZ_CONTROL - Pan/tilt/zoom control
 export const BC_CMD_ID_PTZ_CONTROL_PRESET = 19; // MSG_ID_PTZ_CONTROL_PRESET - Set/move to preset
 export const BC_CMD_ID_GET_PTZ_PRESET = 190; // MSG_ID_GET_PTZ_PRESET - Get preset list
-export const BC_CMD_ID_GET_PTZ_POSITION = 433; // Get current PTZ position (from reolink_aio)
+export const BC_CMD_ID_GET_PTZ_POSITION = 433; // Get current PTZ position
 
-// PTZ Zoom/Focus command IDs (from neolink model.rs)
+// PTZ Zoom/Focus command IDs
 export const BC_CMD_ID_GET_ZOOM_FOCUS = 294; // MSG_ID_GET_ZOOM_FOCUS - Read zoom/focus min/max/current
 export const BC_CMD_ID_SET_ZOOM_FOCUS = 295; // MSG_ID_SET_ZOOM_FOCUS - Write zoom/focus position
 
 // Battery Info command IDs
-// Neolink:
 // - 252: MSG_ID_BATTERY_INFO_LIST (camera-initiated status/event)
 // - 253: MSG_ID_BATTERY_INFO (client-initiated request)
 export const BC_CMD_ID_GET_BATTERY_INFO_LIST = 252; // MSG_ID_BATTERY_INFO_LIST
 export const BC_CMD_ID_GET_BATTERY_INFO = 253; // MSG_ID_BATTERY_INFO
 
-// UDP Keep Alive command ID (from neolink model.rs)
+// UDP Keep Alive command ID
 // Battery cameras (BCUDP) periodically send this and expect a 200 response.
 export const BC_CMD_ID_UDP_KEEP_ALIVE = 234; // MSG_ID_UDP_KEEP_ALIVE
 
-// PIR State command IDs (from neolink model.rs)
+// PIR State command IDs
 export const BC_CMD_ID_GET_PIR_INFO = 212; // MSG_ID_GET_PIR_ALARM - Get PIR settings
 export const BC_CMD_ID_SET_PIR_INFO = 213; // MSG_ID_START_PIR_ALARM - Set PIR settings
 
@@ -100,7 +96,7 @@ export const BC_CMD_ID_AUDIO_ALARM_PLAY = 263; // MSG_ID_PLAY_AUDIO - Play siren
 export const BC_CMD_ID_GET_WHITE_LED = 289; // GetWhiteLed/Floodlight - Get floodlight state
 export const BC_CMD_ID_SET_WHITE_LED_STATE = 288; // SetWhiteLed state
 export const BC_CMD_ID_SET_WHITE_LED_TASK = 290; // SetWhiteLed task (brightness, mode, etc.)
-// Floodlight status report pushed by camera (from neolink model.rs)
+// Floodlight status report pushed by camera
 export const BC_CMD_ID_FLOODLIGHT_STATUS_LIST = 291; // MSG_ID_FLOODLIGHT_STATUS_LIST
 
 // Ability Info command ID
@@ -110,6 +106,6 @@ export const BC_CMD_ID_ABILITY_INFO = 151; // MSG_ID_ABILITY_INFO - Get device c
 // Returns a <Support> XML block with ptzMode and per-channel flags (e.g. battery, ledCtrl).
 export const BC_CMD_ID_SUPPORT = 199; // MSG_ID_SUPPORT
 
-// Ping command ID (from neolink model.rs)
+// Ping command ID
 export const BC_CMD_ID_PING = 93; // MSG_ID_PING - Keep connection alive / check status
 

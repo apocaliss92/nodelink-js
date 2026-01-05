@@ -50,7 +50,7 @@ abstract class BaseFlow implements RtspFlow {
   }
 
   async startKeepAlive(api: ReolinkBaichuanApi): Promise<void> {
-    // Neolink-style keepalive for battery/UDP cameras:
+    // Keepalive for battery/UDP cameras:
     // - BCUDP ACK + resend
     // - BCUDP heartbeat (C2D_HB)
     // - Respond to camera-initiated Baichuan UDP keepalive frames (cmd_id=234)

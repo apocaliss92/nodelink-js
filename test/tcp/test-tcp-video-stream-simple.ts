@@ -100,7 +100,7 @@ async function testVideoStreamSimple() {
     logSuccess("Login completed");
 
     // cmd_id 3 (MSG_ID_VIDEO) - parameter variants.
-    // Based on neolink stream.rs: BcXml serializes as <body> with Preview inside.
+    // BcXml serializes as <body> with Preview inside.
     // Try with and without Extension XML (response_code 421 suggests extension may be needed).
     const testCases = [
       {
@@ -129,7 +129,7 @@ async function testVideoStreamSimple() {
     for (const testCase of testCases) {
       log(`\nTest: ${testCase.name}`);
       
-      // Based on neolink: BcXml serializes as <body> with Preview inside.
+      // BcXml serializes as <body> with Preview inside.
       // Preview has version as an attribute (@version in serde).
       const payloadXml = `<?xml version="1.0" encoding="UTF-8" ?>
 <body>

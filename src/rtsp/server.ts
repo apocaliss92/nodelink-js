@@ -20,7 +20,7 @@ export type RtspProxyServerOptions = {
  * Server Node.js minimale che espone:
  * - `GET /stream?channel=0&profile=main`
  *
- * Implementazione: usa `ffmpeg` per leggere RTSP e fare passthrough in MPEG-TS su HTTP.
+ * Implementation: uses `ffmpeg` to read RTSP and passthrough to MPEG-TS over HTTP.
  * Richiede `ffmpeg` installato nel sistema.
  */
 export function createRtspProxyServer(opts: RtspProxyServerOptions): http.Server {

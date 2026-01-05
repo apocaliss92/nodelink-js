@@ -226,7 +226,7 @@ async function testVideoStreamDetailed() {
     logSuccess("Login completed");
 
     // Send Preview command (sub stream).
-    // Note: neolink calls connection.subscribe(MSG_ID_VIDEO, msg_num) BEFORE sending the command.
+    // Note: subscribe(MSG_ID_VIDEO, msg_num) BEFORE sending the command.
     // This creates a dedicated channel. In our case, frames arrive as push events.
     log("Sending Preview command for sub stream");
     
@@ -260,10 +260,10 @@ async function testVideoStreamDetailed() {
 </Preview>
 </body>`;
 
-    // neolink does NOT use Extension XML for the Preview command.
-    // Test variants without extension XML (like neolink).
+    // Some implementations do NOT use Extension XML for the Preview command.
+    // Test variants without extension XML.
     const variants = [
-      { name: "Preview with channelId WITHOUT extension (like neolink)", payload: payloadXml1, extension: undefined },
+      { name: "Preview with channelId WITHOUT extension", payload: payloadXml1, extension: undefined },
       { name: "Preview without channelId WITHOUT extension", payload: payloadXml2, extension: undefined },
       { name: "Preview without version WITHOUT extension", payload: payloadXml3, extension: undefined },
       // Also test with extension for comparison
@@ -400,7 +400,7 @@ async function testVideoStreamDetailed() {
       logError("No video frames identified with NAL units", new Error("No video frames found"));
       console.log("\nHints:");
       console.log("   - Video frames may be encapsulated in a different format");
-      console.log("   - A subscribe mechanism (like neolink) may be required");
+      console.log("   - A subscribe mechanism may be required");
       console.log("   - Verify whether cmd_id 3 frames contain video data");
     }
 

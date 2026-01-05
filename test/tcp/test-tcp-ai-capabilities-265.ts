@@ -171,7 +171,7 @@ async function main(): Promise<void> {
     logSection("getDeviceCapabilities(0).objects", caps.objects ?? null);
 
     // Read AiCfg (cmd 299) which often exposes a comma-separated detectType list.
-    // Neolink dissector example:
+    // Example:
     // <AiCfg><detectType>people,vehicle,dog_cat</detectType>...</AiCfg>
     try {
       const aiCfgXml = await api.sendXml({ cmdId: 299, channel: 0 });

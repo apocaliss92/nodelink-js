@@ -1,9 +1,7 @@
 /**
  * Baichuan Video Stream - Builds a video stream from the native Baichuan protocol.
  *
- * Based on neolink: receives video frames via `push` events and exposes them as access units.
- *
- * Reference: neolink crates/core/src/bc_protocol/*
+ * Receives video frames via `push` events and exposes them as access units.
  */
 
 import { BaichuanClient } from "../../client/BaichuanClient";
@@ -157,7 +155,6 @@ export interface BaichuanVideoStreamOptions {
  * Video frames arrive as `push` events from `BaichuanClient`.
  * This stream receives frames, decodes BcMedia packets and emits H.264/H.265 access units.
  *
- * Based on neolink:
  * - cmd_id is the stream message id (typically 3)
  * - streamType: 0 for main/ext, 1 for sub
  * - body/payload contains embedded BcMedia packets (H.264/H.265 + audio)
@@ -215,7 +212,7 @@ export class BaichuanVideoStream extends EventEmitter<{
   private restartCountInWindow = 0;
   private readonly idleRestartMs: number;
   // Note: reassembly happens at the BcMediaCodec transport level, so we do not
-  // accumulate frames here (same approach as neolink).
+  // accumulate frames here.
 
   private static scoreBcMediaLike(b: Buffer): { score: number; first: number } {
     if (b.length < 4) return { score: -1, first: -1 };
@@ -264,7 +261,7 @@ export class BaichuanVideoStream extends EventEmitter<{
     this.channel = options.channel;
     this.profile = options.profile;
     this.logger = options.logger;
-    // Stream type: 0 for main/ext, 1 for sub (neolink + ReolinkBaichuanApi mapping)
+    // Stream type: 0 for main/ext, 1 for sub
     this.expectedStreamType = this.profile === "sub" ? 1 : 0;
     this.bcMediaCodec = new BcMediaCodec(false, this.logger); // non-strict mode for error recovery
     // Debug is configured on the client; the library must not read env vars.
@@ -453,7 +450,7 @@ export class BaichuanVideoStream extends EventEmitter<{
         }
       }
 
-      // Note (from neolink): the media stream is often NOT encrypted like control messages.
+      // Note: the media stream is often NOT encrypted like control messages.
       // So we first try to parse the `payload` directly (if present), and only as a fallback
       // we try stateless decryption.
       const enc = this.client.enc;
@@ -473,7 +470,7 @@ export class BaichuanVideoStream extends EventEmitter<{
       // If the session uses encryption, some models send an encrypted stream at the frame level.
       // If we find a BcMedia magic in the raw payload, it's not a guarantee the content is NOT encrypted
       // (it can be a false positive). So we also try stateless decryption and pick
-      // the most "BcMedia-like" candidate (neolink decrypts before deserializing).
+      // the most "BcMedia-like" candidate (decrypt before deserializing).
 
       const dataAfterXml = this.chooseDecryptedOrRawCandidate({
         raw: dataToParse,
@@ -492,7 +489,7 @@ export class BaichuanVideoStream extends EventEmitter<{
       }
       if (dbg.dumpEnabled) ensureDumpDir(dbg);
 
-      // Dumps the exact chunks fed to the BcMedia decoder (neolink-style payload_stream()).
+      // Dumps the exact chunks fed to the BcMedia decoder.
       if (dbg.dumpBcMedia && this.dumpChunkIdx < 200) {
         const outDir = dbg.dumpDir;
         const idx = String(this.dumpChunkIdx).padStart(4, "0");
@@ -545,7 +542,7 @@ export class BaichuanVideoStream extends EventEmitter<{
       }
       
       // Process complete BcMedia packets.
-      // In neolink, each BcMedia::Iframe/Pframe already contains a complete frame (access unit).
+      // Each BcMedia::Iframe/Pframe already contains a complete frame (access unit).
       // BcMediaCodec only handles transport fragmentation, not "half frames".
       let videoFramesEmitted = 0;
       let audioFramesEmitted = 0;
@@ -740,7 +737,7 @@ export class BaichuanVideoStream extends EventEmitter<{
         };
 
         // Media payloads are expected to be plaintext here because we select the best
-        // raw vs decrypted candidate before running BcMedia decoding (neolink-style).
+        // raw vs decrypted candidate before running BcMedia decoding.
         const isPlausibleH264Sps = (nal: Buffer): boolean => {
           // nal is a payload without a start code. nal[0] is the NAL header (type=7)
           if (nal.length < 4) return false;
