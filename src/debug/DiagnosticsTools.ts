@@ -10,6 +10,8 @@ import { buildRtspUrl } from "../rtsp/urls";
 import { splitAnnexBToNalPayloads } from "../baichuan/stream/H264Converter";
 import { getH265NalType, splitAnnexBToNalPayloads as splitH265AnnexBToNalPayloads } from "../baichuan/stream/H265Converter";
 import type { Logger } from "./DebugConfig";
+import { BC_CMD_ID_VIDEO } from "../protocol/constants";
+import type { BaichuanFrame } from "../protocol/framing";
 
 export type DiagnosticsStreamKind = "native" | "rtsp" | "rtmp";
 
@@ -256,6 +258,58 @@ function spawnFfmpeg(args: string[], logPath: string): Promise<FfmpegResult> {
         return;
       }
       resolve({ ok: false, error: `ffmpeg exited with code ${code}\n${stderr.slice(-4000)}` });
+    });
+  });
+}
+
+/**
+ * Test stream availability with ffmpeg (short session).
+ * Returns success if ffmpeg can connect and receive data.
+ */
+async function testStreamWithFfmpeg(params: {
+  url: string;
+  kind: "rtsp" | "rtmp";
+  durationSeconds?: number;
+}): Promise<DiagnosticsCollectorResult<{ duration: number }>> {
+  const duration = params.durationSeconds ?? 2;
+  const args = [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    ...(params.kind === "rtsp" ? ["-rtsp_transport", "tcp"] : []),
+    "-i",
+    params.url,
+    "-t",
+    String(duration),
+    "-f",
+    "null",
+    "-", // Output to null (we just want to test connection)
+  ];
+
+  return new Promise((resolve) => {
+    const p = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    let hasData = false;
+
+    p.stderr.on("data", (d: Buffer) => {
+      const s = d.toString();
+      stderr += s;
+      // Check for successful connection indicators
+      if (s.includes("Stream #0") || s.includes("Video:") || s.includes("Audio:") || s.includes("Duration:")) {
+        hasData = true;
+      }
+    });
+
+    p.on("close", (code) => {
+      if (code === 0 || hasData) {
+        resolve({ ok: true, value: { duration } });
+      } else {
+        resolve({ ok: false, error: `ffmpeg exited with code ${code}\n${stderr.slice(-1000)}` });
+      }
+    });
+
+    p.on("error", (e) => {
+      resolve({ ok: false, error: e instanceof Error ? e.message : String(e) });
     });
   });
 }
@@ -1091,4 +1145,333 @@ export function printNvrDiagnostics(diagnostics: Record<string, unknown>, logger
   }
 
   log("\n" + "=".repeat(80));
+}
+
+/**
+ * Test all available streams for a specific channel.
+ * Tests RTSP, RTMP, and native Baichuan streams with all profiles (main, sub, ext).
+ * 
+ * @param params - Parameters for stream testing
+ * @returns Test results for all stream types and profiles
+ */
+export async function testChannelStreams(params: {
+  api: ReolinkBaichuanApi;
+  channel: number;
+  logger?: Logger;
+}): Promise<Record<string, unknown>> {
+  const { api, channel, logger } = params;
+  const log = (msg: string, data?: unknown) => {
+    if (logger?.log) {
+      if (data !== undefined) logger.log(msg, data);
+      else logger.log(msg);
+    } else {
+      console.log(msg);
+      if (data !== undefined) console.log(JSON.stringify(data, null, 2));
+    }
+  };
+
+  const result: Record<string, unknown> = {
+    kind: "channel_stream_test",
+    channel,
+    collectedAt: new Date().toISOString(),
+    streams: {},
+  };
+
+  log("=".repeat(80));
+  log(`STREAM TEST - Channel ${channel}`);
+  log("=".repeat(80));
+
+  // Get all available stream options
+  log(`\n[1/3] Getting available stream options for channel ${channel}...`);
+  const streamOptionsResult = await tryCall(() => api.buildVideoStreamOptions(channel));
+  if (!streamOptionsResult.ok) {
+    log(`✗ Failed to get stream options: ${streamOptionsResult.error}`);
+    result.error = streamOptionsResult.error;
+    return result;
+  }
+
+  const { nativeStreams, rtspStreams, rtmpStreams } = streamOptionsResult.value;
+  log(`✓ Found ${nativeStreams.length} native, ${rtspStreams.length} RTSP, ${rtmpStreams.length} RTMP stream(s)`);
+
+  // Test each stream type
+  const streamTests: Record<string, Record<string, unknown>> = {};
+
+  // Test RTSP streams with ffmpeg
+  log(`\n[2/3] Testing RTSP streams with ffmpeg...`);
+  for (const stream of rtspStreams) {
+    const key = `rtsp_${stream.profile}`;
+    log(`  Testing RTSP ${stream.profile}...`);
+    
+    const testResult: Record<string, unknown> = {
+      available: false,
+      profile: stream.profile,
+      container: stream.container,
+      url: stream.url,
+      urlWithAuth: stream.urlWithAuth,
+      metadata: stream.metadata,
+    };
+
+    // Test with ffmpeg - short session (2 seconds)
+    const testUrl = stream.urlWithAuth;
+    const ffmpegTest = await testStreamWithFfmpeg({
+      url: testUrl,
+      kind: "rtsp",
+      durationSeconds: 2,
+    });
+
+    if (ffmpegTest.ok) {
+      testResult.available = true;
+      testResult.ffmpegSuccess = true;
+      if (stream.metadata) {
+        testResult.codec = stream.metadata.videoEncType;
+        testResult.width = stream.metadata.width;
+        testResult.height = stream.metadata.height;
+        testResult.fps = stream.metadata.frameRate;
+        testResult.bitRate = stream.metadata.bitRate;
+        testResult.audio = stream.metadata.audio === 1;
+        log(`    ✓ Available: ${stream.metadata.width}x${stream.metadata.height} @ ${stream.metadata.frameRate}fps, ${stream.metadata.videoEncType}`);
+      } else {
+        log(`    ✓ Available (ffmpeg test passed)`);
+      }
+    } else {
+      testResult.available = false;
+      testResult.error = ffmpegTest.error;
+      log(`    ✗ Not available: ${ffmpegTest.error}`);
+    }
+
+    streamTests[key] = testResult;
+  }
+
+  // Test RTMP streams with ffmpeg
+  log(`\n[3/4] Testing RTMP streams with ffmpeg...`);
+  for (const stream of rtmpStreams) {
+    const key = `rtmp_${stream.profile}`;
+    log(`  Testing RTMP ${stream.profile}...`);
+    
+    const testResult: Record<string, unknown> = {
+      available: false,
+      profile: stream.profile,
+      container: stream.container,
+      url: stream.url,
+      urlWithAuth: stream.urlWithAuth,
+      metadata: stream.metadata,
+    };
+
+    // Test with ffmpeg - short session (2 seconds)
+    const testUrl = stream.urlWithAuth;
+    const ffmpegTest = await testStreamWithFfmpeg({
+      url: testUrl,
+      kind: "rtmp",
+      durationSeconds: 2,
+    });
+
+    if (ffmpegTest.ok) {
+      testResult.available = true;
+      testResult.ffmpegSuccess = true;
+      if (stream.metadata) {
+        testResult.codec = stream.metadata.videoEncType;
+        testResult.width = stream.metadata.width;
+        testResult.height = stream.metadata.height;
+        testResult.fps = stream.metadata.frameRate;
+        testResult.bitRate = stream.metadata.bitRate;
+        testResult.audio = stream.metadata.audio === 1;
+        log(`    ✓ Available: ${stream.metadata.width}x${stream.metadata.height} @ ${stream.metadata.frameRate}fps, ${stream.metadata.videoEncType}`);
+      } else {
+        log(`    ✓ Available (ffmpeg test passed)`);
+      }
+    } else {
+      testResult.available = false;
+      testResult.error = ffmpegTest.error;
+      log(`    ✗ Not available: ${ffmpegTest.error}`);
+    }
+
+    streamTests[key] = testResult;
+  }
+
+  // Test native Baichuan streams with short session
+  log(`\n[4/4] Testing native Baichuan streams...`);
+  for (const stream of nativeStreams) {
+    const key = `native_${stream.profile}`;
+    log(`  Testing native ${stream.profile}...`);
+    
+    const testResult: Record<string, unknown> = {
+      available: false,
+      profile: stream.profile,
+      container: stream.container,
+      metadata: stream.metadata,
+    };
+
+    // Test with short session - subscribe and wait for at least one frame
+    try {
+      await api.startVideoStream(channel, stream.profile);
+      
+      // Wait for at least one video frame (max 5 seconds)
+      const framePromise = new Promise<boolean>((resolve) => {
+        let frameReceived = false;
+        const timeout = setTimeout(() => {
+          api.client.off("push", onFrame);
+          resolve(frameReceived);
+        }, 5000);
+
+        const onFrame = (frame: BaichuanFrame) => {
+          // Check if it's a video frame (cmd_id 3)
+          if (frame?.header?.cmdId === BC_CMD_ID_VIDEO) {
+            frameReceived = true;
+            clearTimeout(timeout);
+            api.client.off("push", onFrame);
+            resolve(true);
+          }
+        };
+
+        api.client.on("push", onFrame);
+      });
+
+      const frameReceived = await framePromise;
+      
+      if (frameReceived) {
+        testResult.available = true;
+        testResult.frameReceived = true;
+        
+        if (stream.metadata) {
+          testResult.codec = stream.metadata.videoEncType;
+          testResult.width = stream.metadata.width;
+          testResult.height = stream.metadata.height;
+          testResult.fps = stream.metadata.frameRate;
+          testResult.bitRate = stream.metadata.bitRate;
+          testResult.audio = stream.metadata.audio === 1;
+          log(`    ✓ Available: ${stream.metadata.width}x${stream.metadata.height} @ ${stream.metadata.frameRate}fps, ${stream.metadata.videoEncType}`);
+        } else {
+          log(`    ✓ Available (frame received)`);
+        }
+      } else {
+        testResult.available = false;
+        testResult.error = "Timeout waiting for video frame";
+        log(`    ✗ Not available: timeout waiting for video frame`);
+      }
+
+      // Stop the stream
+      await api.stopVideoStream(channel, stream.profile);
+    } catch (error) {
+      testResult.available = false;
+      testResult.error = safeStringifyError(error);
+      log(`    ✗ Not available: ${testResult.error}`);
+    }
+
+    streamTests[key] = testResult;
+  }
+
+  result.streams = streamTests;
+
+  // Summary
+  log("\n" + "=".repeat(80));
+  log("STREAM TEST SUMMARY");
+  log("=".repeat(80));
+  const available = Object.values(streamTests).filter((s: any) => s.available === true).length;
+  const total = Object.keys(streamTests).length;
+  log(`Available streams: ${available}/${total}`);
+  for (const [key, test] of Object.entries(streamTests)) {
+    const t = test as any;
+    log(`  ${key}: ${t.available ? "✓" : "✗"} ${t.codec || "N/A"} ${t.width || ""}x${t.height || ""}`);
+  }
+  log("=".repeat(80));
+
+  return result;
+}
+
+/**
+ * Comprehensive diagnostics for multi-focal devices.
+ * Tests all channels and all available streams for each channel.
+ * 
+ * @param params - Parameters for multi-focal diagnostics (see inline types for property descriptions)
+ * @returns Complete diagnostics for all channels and streams
+ */
+export async function collectMultifocalDiagnostics(params: {
+  /** ReolinkBaichuanApi instance */
+  api: ReolinkBaichuanApi;
+  /** Optional logger for output */
+  logger: Logger;
+}): Promise<Record<string, unknown>> {
+  const { api, logger } = params;
+  const log = (msg: string, data?: unknown) => {
+    if (logger?.log) {
+      if (data !== undefined) logger.log(msg, data);
+      else logger.log(msg);
+    } else {
+      console.log(msg);
+      if (data !== undefined) console.log(JSON.stringify(data, null, 2));
+    }
+  };
+
+  const result: Record<string, unknown> = {
+    kind: "multifocal_diagnostics",
+    collectedAt: new Date().toISOString(),
+  };
+
+  log("=".repeat(80));
+  log("MULTI-FOCAL DEVICE DIAGNOSTICS - Starting comprehensive analysis");
+  log("=".repeat(80));
+
+  // Check if device is multi-focal
+  log("\n[1/4] Checking device capabilities...");
+  const capabilitiesResult = await tryCall(() => api.getDeviceCapabilities());
+  if (!capabilitiesResult.ok) {
+    log(`✗ Failed to get device capabilities: ${capabilitiesResult.error}`);
+    result.error = capabilitiesResult.error;
+    return result;
+  }
+
+  const support = capabilitiesResult.value.support;
+  const channelNum = support?.channelNum ?? 1;
+
+  log(`✓ Device channelNum: ${channelNum}`);
+
+  if (channelNum !== 2 && channelNum !== 3) {
+    log(`⚠ Warning: channelNum is ${channelNum}, expected 2 or 3 for multi-focal device`);
+    result.warning = `channelNum is ${channelNum}, expected 2 or 3`;
+  }
+
+  result.channelNum = channelNum;
+  result.deviceInfo = await tryCall(() => api.getInfo());
+
+  // Get device info
+  log("\n[2/4] Getting device information...");
+  const deviceInfoResult = await tryCall(() => api.getInfo());
+  if (deviceInfoResult.ok) {
+    log(`✓ Device: ${deviceInfoResult.value.type || "N/A"}`);
+    result.deviceInfo = deviceInfoResult.value;
+  }
+
+  // Test all channels
+  log(`\n[3/4] Testing all ${channelNum} channel(s)...`);
+  const channelResults: Record<number, Record<string, unknown>> = {};
+
+  for (let ch = 0; ch < channelNum; ch++) {
+    log(`\n--- Channel ${ch} ---`);
+    const channelTest = await testChannelStreams({
+      api,
+      channel: ch,
+      logger,
+    });
+    channelResults[ch] = channelTest;
+  }
+
+  result.channels = channelResults;
+
+  // Summary
+  log("\n" + "=".repeat(80));
+  log("MULTI-FOCAL DIAGNOSTICS SUMMARY");
+  log("=".repeat(80));
+  log(`Total Channels: ${channelNum}`);
+  for (let ch = 0; ch < channelNum; ch++) {
+    const channelData = channelResults[ch];
+    if (channelData?.streams) {
+      const streams = channelData.streams as Record<string, any>;
+      const available = Object.values(streams).filter((s: any) => s.available === true).length;
+      const total = Object.keys(streams).length;
+      log(`  Channel ${ch}: ${available}/${total} streams available`);
+    }
+  }
+  log("=".repeat(80));
+
+  return result;
 }

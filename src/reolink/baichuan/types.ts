@@ -128,6 +128,7 @@ export type VideoCodec = "H.264" | "H.265" | "MJPEG" | "MPEG4" | string;
 export interface StreamMetadata {
   profile: StreamProfile;
   audio: number; // 0 or 1
+  audioCodec: string;
   width: number;
   height: number;
   videoEncType: VideoCodec;
@@ -456,5 +457,52 @@ export interface DownloadRecordingParams {
   /** If true, fall back to HTTP CGI `cmd=Download` when Baichuan download fails/times out. Default: false (socket-first). */
   fallbackToHttp?: boolean;
   timeoutMs?: number;
+}
+
+/**
+ * Detailed information about channel capabilities for dual lens models.
+ */
+export interface DualLensChannelInfo {
+  /** Channel number (0-based) */
+  channel: number;
+  /** Indicates whether this channel supports pan */
+  hasPan: boolean;
+  /** Indicates whether this channel supports tilt */
+  hasTilt: boolean;
+  /** Indicates whether this channel supports zoom */
+  hasZoom: boolean;
+  /** Indicates whether this channel supports motion detection */
+  hasMotion: boolean;
+  /** Indicates whether this channel supports intercom (two-way audio) */
+  hasIntercom: boolean;
+  /** Channel type: "wide" for wide-angle lens, "telephoto" for telephoto lens */
+  lensType?: "wide" | "telephoto" | undefined;
+  /** Available streams for this channel */
+  availableStreams: {
+    /** RTSP stream available */
+    rtsp: boolean;
+    /** RTMP stream available */
+    rtmp: boolean;
+    /** Native Baichuan stream available */
+    native: boolean;
+  };
+}
+
+/**
+ * Result of dual lens channel analysis.
+ */
+export interface DualLensChannelAnalysis {
+  /** Indicates whether the device is a dual lens model */
+  isDualLens: boolean;
+  /** Dual lens model type: "dual_motion" (Duo) or "single_motion" (TrackMix) */
+  dualLensType?: "dual_motion" | "single_motion" | undefined;
+  /** Device model */
+  model?: string | undefined;
+  /** Total number of available stream channels */
+  streamChannelCount?: number | undefined;
+  /** Total number of logical channels */
+  logicalChannelCount?: number | undefined;
+  /** Detailed information for each channel */
+  channels: DualLensChannelInfo[];
 }
 

@@ -54,6 +54,8 @@ import {
   type DeviceCapabilitiesResult,
   type DeviceSupportFlags,
   type DownloadRecordingParams,
+  type DualLensChannelAnalysis,
+  type DualLensChannelInfo,
   type Events,
   type ListRecordingsParams,
   type OsdConfig,
@@ -197,6 +199,25 @@ type TalkSession = import("./types").TalkSession;
 type TalkSessionInfo = import("./types").TalkSessionInfo;
 
 export type ReolinkBaichuanPorts = Record<string, Record<string, number>>;
+
+/**
+ * Complete media stream options with all available metadata.
+ * Includes RTSP, RTMP, and native Baichuan stream information.
+ */
+export interface ReolinkSupportedStream {
+  // Basic identification
+  name: string;
+  id: string;
+  container: "rtsp" | "rtmp" | "rtp";
+  channel: number;
+  profile: StreamProfile;
+  url: string; // URL without authentication credentials
+  urlWithAuth: string; // URL with authentication credentials
+  streamType?: number; // Stream type: 0 for main/ext, 1 for sub (RTMP)
+  path?: string; // Stream path (e.g., /h264Preview_01_main, /bcs/channel0_main.bcs)
+  port?: number; // Port number (RTSP/RTMP)
+  metadata?: StreamMetadata; // Complete original stream metadata
+}
 
 export type WakeUpOptions = {
   /** Timeout per single attempt (default: 20000). */
@@ -426,6 +447,23 @@ function parseTalkAbilityXml(xml: string): TalkAbility {
   };
 }
 
+// Constants to identify dual lens models (based on reolink_aio/api.py)
+export const DUAL_LENS_DUAL_MOTION_MODELS = new Set<string>([
+  "Reolink Duo PoE",
+  "Reolink Duo WiFi",
+]);
+
+export const DUAL_LENS_SINGLE_MOTION_MODELS = new Set<string>([
+  "Reolink TrackMix PoE",
+  "Reolink TrackMix WiFi",
+  "RLC-81MA",
+]);
+
+export const DUAL_LENS_MODELS = new Set<string>([
+  ...DUAL_LENS_DUAL_MOTION_MODELS,
+  ...DUAL_LENS_SINGLE_MOTION_MODELS,
+]);
+
 function mapToSimpleEvent(event: ReolinkEvent): ReolinkSimpleEvent | null {
   const timestamp = event.timestamp ?? Date.now();
 
@@ -641,14 +679,14 @@ export class ReolinkBaichuanApi {
     const cgiEnabled = params.cgi === true || (typeof params.cgi === "object" && params.cgi != null);
     const cgiApi = cgiEnabled
       ? new ReolinkCgiApi({
-          host: (typeof params.cgi === "object" ? params.cgi.host : undefined) ?? this.host,
-          username: (typeof params.cgi === "object" ? params.cgi.username : undefined) ?? this.username,
-          password: (typeof params.cgi === "object" ? params.cgi.password : undefined) ?? this.password,
-          ...(typeof params.cgi === "object" && params.cgi.port != null ? { port: params.cgi.port } : {}),
-          ...(typeof params.cgi === "object" && params.cgi.useHttps != null ? { useHttps: params.cgi.useHttps } : {}),
-          ...(typeof params.cgi === "object" && params.cgi.insecureTLS != null ? { insecureTLS: params.cgi.insecureTLS } : {}),
-          ...(typeof params.cgi === "object" && params.cgi.timeoutMs != null ? { timeoutMs: params.cgi.timeoutMs } : {}),
-        })
+        host: (typeof params.cgi === "object" ? params.cgi.host : undefined) ?? this.host,
+        username: (typeof params.cgi === "object" ? params.cgi.username : undefined) ?? this.username,
+        password: (typeof params.cgi === "object" ? params.cgi.password : undefined) ?? this.password,
+        ...(typeof params.cgi === "object" && params.cgi.port != null ? { port: params.cgi.port } : {}),
+        ...(typeof params.cgi === "object" && params.cgi.useHttps != null ? { useHttps: params.cgi.useHttps } : {}),
+        ...(typeof params.cgi === "object" && params.cgi.insecureTLS != null ? { insecureTLS: params.cgi.insecureTLS } : {}),
+        ...(typeof params.cgi === "object" && params.cgi.timeoutMs != null ? { timeoutMs: params.cgi.timeoutMs } : {}),
+      })
       : undefined;
 
     const diagnosticsRes = await createDiagnosticsBundle({
@@ -668,11 +706,11 @@ export class ReolinkBaichuanApi {
     const rtspEnabled = params.rtsp === true || (typeof params.rtsp === "object" && params.rtsp != null);
     const rtspCfg: StreamSamplingOptions["rtsp"] | undefined = rtspEnabled
       ? {
-          host: (typeof params.rtsp === "object" ? params.rtsp.host : undefined) ?? this.host,
-          username: (typeof params.rtsp === "object" ? params.rtsp.username : undefined) ?? this.username,
-          password: (typeof params.rtsp === "object" ? params.rtsp.password : undefined) ?? this.password,
-          ...(typeof params.rtsp === "object" && params.rtsp.port != null ? { port: params.rtsp.port } : {}),
-        }
+        host: (typeof params.rtsp === "object" ? params.rtsp.host : undefined) ?? this.host,
+        username: (typeof params.rtsp === "object" ? params.rtsp.username : undefined) ?? this.username,
+        password: (typeof params.rtsp === "object" ? params.rtsp.password : undefined) ?? this.password,
+        ...(typeof params.rtsp === "object" && params.rtsp.port != null ? { port: params.rtsp.port } : {}),
+      }
       : undefined;
 
     await sampleStreams({
@@ -1561,6 +1599,7 @@ export class ReolinkBaichuanApi {
           videoEncTypeInt,
           frameRate,
           bitRate,
+          audioCodec: 'aac'
         });
         audioEnabled = audioEnabled && audio === 1;
       }
@@ -1591,6 +1630,7 @@ export class ReolinkBaichuanApi {
           videoEncTypeInt,
           frameRate,
           bitRate,
+          audioCodec: 'aac'
         });
         audioEnabled = audioEnabled && audio === 1;
       }
@@ -1625,6 +1665,7 @@ export class ReolinkBaichuanApi {
           videoEncTypeInt,
           frameRate,
           bitRate,
+          audioCodec: 'aac'
         });
         audioEnabled = audioEnabled && audio === 1;
       }
@@ -4669,6 +4710,191 @@ ${xmlDateTimePayload("endTime", end)}
   }
 
   /**
+   * Analyzes channel capabilities for dual lens models.
+   * Determines which channels support pan, tilt, zoom, motion detection, intercom
+   * and which streaming types are available (RTSP, RTMP, Native).
+   * 
+   * @returns Detailed information about dual lens channels
+   * 
+   * @example
+   * ```typescript
+   * const analysis = await api.getDualLensChannelInfo();
+   * if (analysis.isDualLens) {
+   *   for (const ch of analysis.channels) {
+   *     console.log(`Channel ${ch.channel}: pan=${ch.hasPan}, tilt=${ch.hasTilt}, zoom=${ch.hasZoom}`);
+   *     console.log(`  Motion: ${ch.hasMotion}, Intercom: ${ch.hasIntercom}`);
+   *     console.log(`  Stream: RTSP=${ch.availableStreams.rtsp}, RTMP=${ch.availableStreams.rtmp}, Native=${ch.availableStreams.native}`);
+   *   }
+   * }
+   * ```
+   */
+  async getDualLensChannelInfo(): Promise<DualLensChannelAnalysis> {
+
+    // 1. Get device information
+    let model: string | undefined;
+    let channelNum: number | undefined;
+    let supportInfo: SupportInfo | undefined;
+
+    try {
+      const deviceInfo = await this.getInfo(0, { tags: ["type"] });
+      model = deviceInfo.type?.trim();
+    } catch {
+      // ignore
+    }
+
+    try {
+      const capabilities = await this.getDeviceCapabilities(0);
+      channelNum = capabilities.support?.channelNum;
+      supportInfo = capabilities.support;
+    } catch {
+      // ignore
+    }
+
+    // 2. Check if it's a dual lens model
+    const normalizedModel = model ? model.trim() : undefined;
+    const isDualMotionModel = normalizedModel ? DUAL_LENS_DUAL_MOTION_MODELS.has(normalizedModel) : false;
+    const isSingleMotionModel = normalizedModel ? DUAL_LENS_SINGLE_MOTION_MODELS.has(normalizedModel) : false;
+    const isDualLens = isDualMotionModel || isSingleMotionModel;
+
+    if (!isDualLens) {
+      return {
+        isDualLens: false,
+        model: normalizedModel,
+        streamChannelCount: channelNum,
+        logicalChannelCount: channelNum,
+        channels: [],
+      };
+    }
+
+    // 3. Determine dual lens type and available channels
+    const dualLensType: "dual_motion" | "single_motion" | undefined = isDualMotionModel
+      ? "dual_motion"
+      : isSingleMotionModel
+        ? "single_motion"
+        : undefined;
+
+    // For SINGLE_MOTION_MODELS (TrackMix): stream_channels=[0,1] but channels=[0]
+    // For DUAL_MOTION_MODELS (Duo): different behavior
+    const streamChannels: number[] = [];
+    const logicalChannels: number[] = [];
+
+    if (dualLensType === "single_motion") {
+      // TrackMix: stream channels 0 and 1, but only channel 0 has motion/controls
+      streamChannels.push(0, 1);
+      logicalChannels.push(0);
+    } else if (dualLensType === "dual_motion") {
+      // Duo: both channels have motion detection
+      if (channelNum === 2) {
+        streamChannels.push(0, 1);
+        logicalChannels.push(0, 1);
+      } else {
+        streamChannels.push(0);
+        logicalChannels.push(0);
+      }
+    } else {
+      // Fallback: use channelNum if available
+      if (channelNum && channelNum >= 2) {
+        for (let i = 0; i < channelNum; i++) {
+          streamChannels.push(i);
+          logicalChannels.push(i);
+        }
+      } else {
+        // Default: assume 2 channels
+        streamChannels.push(0, 1);
+        logicalChannels.push(0);
+      }
+    }
+
+    // 4. Analyze each channel
+    const channelInfos: DualLensChannelInfo[] = [];
+
+    for (const ch of streamChannels) {
+      try {
+        // Get capabilities for this channel
+        const chCapabilities = await this.getDeviceCapabilities(ch);
+        const caps = chCapabilities.capabilities;
+        const chSupport = chCapabilities.support;
+        const chFeatures = chCapabilities.features;
+
+        // Check motion detection
+        // For SINGLE_MOTION: only channel 0 has motion
+        // For DUAL_MOTION: both channels have motion
+        let hasMotion = false;
+        if (dualLensType === "single_motion") {
+          hasMotion = ch === 0; // Only channel 0 for TrackMix
+        } else if (dualLensType === "dual_motion") {
+          hasMotion = logicalChannels.includes(ch); // All logical channels for Duo
+        } else {
+          // Fallback: assume channel 0 has motion
+          hasMotion = ch === 0;
+        }
+
+        // Check available streaming
+        const availableStreams = {
+          rtsp: false,
+          rtmp: false,
+          native: true, // Baichuan is always available
+        };
+
+        // RTSP: check from support or features
+        if (chFeatures?.rtsp || chSupport?.rtsp) {
+          availableStreams.rtsp = true;
+        } else {
+          // Try to verify if RTSP is available
+          try {
+            // RTSP is generally available if the device supports streaming
+            // Based on reolink_aio, RTSP is available if support.rtsp > 0
+            if (chSupport && typeof (chSupport as any).rtsp === "number" && (chSupport as any).rtsp > 0) {
+              availableStreams.rtsp = true;
+            }
+          } catch {
+            // ignore
+          }
+        }
+
+        // RTMP: check from support or features
+        if (chSupport && typeof (chSupport as any).rtmp === "number" && (chSupport as any).rtmp > 0) {
+          availableStreams.rtmp = true;
+        }
+
+        // Determine lens type
+        let lensType: "wide" | "telephoto" | undefined;
+        if (ch === 0) {
+          lensType = "wide";
+        } else if (ch === 1) {
+          lensType = "telephoto";
+        }
+
+        channelInfos.push({
+          channel: ch,
+          hasPan: caps.hasPan ?? false,
+          hasTilt: caps.hasTilt ?? false,
+          hasZoom: caps.hasZoom ?? false,
+          hasMotion,
+          hasIntercom: caps.hasIntercom ?? false,
+          lensType,
+          availableStreams,
+        });
+      } catch (err) {
+        // If it fails for a channel, continue with the others
+        (this.logger.warn ?? this.logger.log).call(
+          this.logger,
+          `[ReolinkBaichuanApi] getDualLensChannelInfo: error in channel ${ch}: ${err}`
+        );
+      }
+    }
+
+    return {
+      isDualLens: true,
+      dualLensType,
+      model: normalizedModel,
+      streamChannelCount: streamChannels.length,
+      logicalChannelCount: logicalChannels.length,
+      channels: channelInfos,
+    };
+  }
+
+  /**
    * Create an RTSP server for a video stream.
    * Automatically detects video codec (H.264 or H.265) and configures ffmpeg accordingly.
    * 
@@ -4765,6 +4991,167 @@ ${xmlDateTimePayload("endTime", end)}
     });
 
     return server;
+  }
+
+  /**
+   * Build all available video stream options for a channel.
+   * Returns RTSP, RTMP, and native Baichuan stream options.
+   * 
+   * @param channel - Channel number (0-based)
+   * @returns Array of stream options
+   */
+  async buildVideoStreamOptions(
+    channel?: number,
+  ): Promise<{
+    nativeStreams: ReolinkSupportedStream[];
+    rtspStreams: ReolinkSupportedStream[];
+    rtmpStreams: ReolinkSupportedStream[];
+  }> {
+    const ch = this.normalizeChannel(channel);
+
+    const rtspStreams: ReolinkSupportedStream[] = [];
+    const rtmpStreams: ReolinkSupportedStream[] = [];
+    const nativeStreams: ReolinkSupportedStream[] = [];
+
+    // Get network ports (RTSP/RTMP configuration)
+    const netPort = await this.getNetPort();
+    const rtspEnabled = netPort.rtsp?.enable === 1;
+    const rtmpEnabled = netPort.rtmp?.enable === 1;
+    const rtspPort = netPort.rtsp?.port ?? 554;
+    const rtmpPort = netPort.rtmp?.port ?? 1935;
+
+    // Get stream metadata to build options
+    const streamMetadata = await this.getStreamMetadata(ch);
+    const streams = streamMetadata?.streams || [];
+
+    for (const metadata of streams) {
+      const profile = metadata.profile as StreamProfile;
+
+      // Build RTSP URL if enabled (RTSP doesn't support ext stream, only main and sub)
+      if (rtspEnabled && profile !== "ext") {
+        // RTSP format: rtsp://ip:port/h264Preview_XX_profile
+        // XX is 1-based channel with 2-digit padding
+        const channelStr = String(ch + 1).padStart(2, "0");
+        const profileStr = profile === "main" ? "main" : "sub";
+        const rtspPath = `/h264Preview_${channelStr}_${profileStr}`;
+        const rtspId = `h264Preview_${channelStr}_${profileStr}`;
+
+        const user = encodeURIComponent(this.username);
+        const pass = encodeURIComponent(this.password);
+        const rtspUrl = `rtsp://${this.host}:${rtspPort}${rtspPath}`;
+        const rtspUrlWithAuth = `rtsp://${user}:${pass}@${this.host}:${rtspPort}${rtspPath}`;
+
+        rtspStreams.push({
+          name: `RTSP ${rtspId}`,
+          id: rtspId,
+          container: "rtsp",
+          channel: ch,
+          profile,
+          url: rtspUrl,
+          urlWithAuth: rtspUrlWithAuth,
+          path: rtspPath,
+          port: rtspPort,
+          metadata,
+        });
+      }
+
+      // Build RTMP URL if enabled (RTMP supports main, sub, and ext streams)
+      if (rtmpEnabled) {
+        // RTMP format: /bcs/channelX_stream.bcs?channel=X&stream=stream_type&user=username&password=password
+        // Based on reolink_aio api.py:
+        // - stream in path is "main", "sub", or "ext" (not "main.bcs")
+        // - stream_type in query: 0 for main/ext, 1 for sub
+        // - credentials: user and password as query parameters
+        const streamName = profile === "main" ? "main" : profile === "sub" ? "sub" : "ext";
+        const streamType = profile === "sub" ? 1 : 0; // 0 for main/ext, 1 for sub
+        const rtmpId = `${streamName}.bcs`; // ID for Scrypted (main.bcs, sub.bcs, ext.bcs)
+
+        // Use channel directly (0-based) in path, matching reolink_aio behavior
+        const rtmpPath = `/bcs/channel${ch}_${streamName}.bcs`;
+
+        // URL without authentication
+        const rtmpUrl = new URL(`rtmp://${this.host}:${rtmpPort}${rtmpPath}`);
+        const params = rtmpUrl.searchParams;
+        params.set("channel", ch.toString());
+        params.set("stream", streamType.toString());
+
+        // URL with authentication
+        const rtmpUrlWithAuth = new URL(`rtmp://${this.host}:${rtmpPort}${rtmpPath}`);
+        const paramsWithAuth = rtmpUrlWithAuth.searchParams;
+        paramsWithAuth.set("channel", ch.toString());
+        paramsWithAuth.set("stream", streamType.toString());
+        paramsWithAuth.set("user", this.username);
+        paramsWithAuth.set("password", this.password);
+
+        rtmpStreams.push({
+          name: `RTMP ${rtmpId}`,
+          id: rtmpId,
+          container: "rtmp",
+          channel: ch,
+          profile,
+          url: rtmpUrl.toString(),
+          urlWithAuth: rtmpUrlWithAuth.toString(),
+          path: rtmpPath,
+          port: rtmpPort,
+          streamType,
+          metadata,
+        });
+      }
+
+      // Build native Baichuan stream option
+      // Native streams use BaichuanVideoStream and are identified by profile
+      // Native streams don't have separate auth URLs since authentication is handled at the API level
+      const nativeUrl = `baichuan://${this.host}/channel/${ch}/profile/${profile}`;
+      nativeStreams.push({
+        name: `Native ${profile}`,
+        id: `native_${profile}`,
+        container: "rtp", // Special container type for native Baichuan streams
+        channel: ch,
+        profile,
+        url: nativeUrl,
+        urlWithAuth: nativeUrl, // Same URL since auth is at API level
+        metadata,
+      });
+    }
+
+    return {
+      nativeStreams,
+      rtmpStreams,
+      rtspStreams,
+    };
+  }
+
+  /**
+   * Test all available streams for a specific channel.
+   * Tests RTSP, RTMP, and native Baichuan streams with all profiles (main, sub, ext).
+   * 
+   * @param channel - Channel number to test (0-based)
+   * @param logger - Optional logger for output
+   * @returns Test results for all stream types and profiles
+   */
+  async testChannelStreams(channel?: number, logger?: import("../../debug/DebugConfig").Logger): Promise<Record<string, unknown>> {
+    const { testChannelStreams } = await import("../../debug/DiagnosticsTools");
+    return await testChannelStreams({
+      api: this,
+      channel: this.normalizeChannel(channel),
+      ...(logger !== undefined ? { logger } : {}),
+    });
+  }
+
+  /**
+   * Comprehensive diagnostics for multi-focal devices.
+   * Tests all channels and all available streams for each channel.
+   * Checks if support.channelNum is 2 or 3 and iterates all channels.
+   * 
+   * @param logger - logger for output
+   * @returns Complete diagnostics for all channels and streams
+   */
+  async collectMultifocalDiagnostics(logger: import("../../debug/DebugConfig").Logger): Promise<Record<string, unknown>> {
+    const { collectMultifocalDiagnostics } = await import("../../debug/DiagnosticsTools");
+    return await collectMultifocalDiagnostics({
+      api: this,
+      logger,
+    });
   }
 }
 
