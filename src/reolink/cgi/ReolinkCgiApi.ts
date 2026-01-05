@@ -530,13 +530,28 @@ export class ReolinkCgiApi {
   // --------------------
 
   /** Returns the list of channels that have a non-empty UID (typically the connected cameras on NVR/Home Hub). */
-  async getChannels(): Promise<{ channels: number[]; channelsResponse: Array<ReolinkCmdResponseExt<CgiGetChannelstatusValue>> }> {
+  async getChannels(options?: { useChannelNumFallback?: boolean }): Promise<{ channels: number[]; channelsResponse: Array<ReolinkCmdResponseExt<CgiGetChannelstatusValue>> }> {
     const channelsResponse = await this.GetChannelstatus();
     const status = channelsResponse?.[0]?.value?.status;
-    const channels = (status ?? [])
+    let channels = (status ?? [])
       .filter((s) => !!s?.uid)
       .map((s) => Number(s?.channel))
       .filter((n) => Number.isFinite(n));
+    
+    // Fallback for multi-focal cameras: if no channels found and fallback is enabled, use channelNum from GetDevInfo
+    if (channels.length === 0 && options?.useChannelNumFallback) {
+      try {
+        const devInfoRsp = await this.GetDevInfo();
+        const devInfo = (devInfoRsp as any)?.[0]?.value?.DevInfo as CgiDevInfo | undefined;
+        const channelNum = devInfo?.channelNum;
+        if (channelNum != null && channelNum > 0) {
+          channels = Array.from({ length: channelNum }, (_, i) => i);
+        }
+      } catch (error) {
+        // Ignore errors when trying to get channelNum fallback
+      }
+    }
+    
     return { channels, channelsResponse };
   }
 
@@ -555,14 +570,14 @@ export class ReolinkCgiApi {
     return { abilities, nvrData, devInfo, response };
   }
 
-  async getDevicesInfo(): Promise<{
+  async getDevicesInfo(options?: { useChannelNumFallback?: boolean }): Promise<{
     devicesData: Record<number, DeviceInfoResponse>;
     response: Array<ReolinkCmdResponseExt<JsonValue>>;
     channels: number[];
     channelsResponse: Array<ReolinkCmdResponseExt<CgiGetChannelstatusValue>>;
     requestBody: ReolinkCmdRequest[];
   }> {
-    const { channels, channelsResponse } = await this.getChannels();
+    const { channels, channelsResponse } = await this.getChannels(options);
 
     const username = this.client.getUsername();
 
@@ -610,14 +625,14 @@ export class ReolinkCgiApi {
     return { devicesData: ret, response, channels, channelsResponse, requestBody: body };
   }
 
-  async getAllChannelsEvents(): Promise<{
+  async getAllChannelsEvents(options?: { useChannelNumFallback?: boolean }): Promise<{
     parsed: Record<number, EventsResponse>;
     response: ReolinkCmdResponse[];
     channels: number[];
     channelsResponse: Array<ReolinkCmdResponseExt<CgiGetChannelstatusValue>>;
     requestBody: ReolinkCmdRequest[];
   }> {
-    const { channels, channelsResponse } = await this.getChannels();
+    const { channels, channelsResponse } = await this.getChannels(options);
 
     // Always call all relevant endpoints per channel and merge.
     const body: ReolinkCmdRequest[] = [];
@@ -670,14 +685,14 @@ export class ReolinkCgiApi {
     return { parsed, response, channels, channelsResponse, requestBody: body };
   }
 
-  async getAllChannelsBatteryInfo(): Promise<{
+  async getAllChannelsBatteryInfo(options?: { useChannelNumFallback?: boolean }): Promise<{
     batteryInfoData: Record<number, BatteryInfoResponse>;
     response: Array<ReolinkCmdResponseExt<JsonValue>>;
     channels: number[];
     channelsResponse: Array<ReolinkCmdResponseExt<CgiGetChannelstatusValue>>;
     requestBody: ReolinkCmdRequest[];
   }> {
-    const { channels, channelsResponse } = await this.getChannels();
+    const { channels, channelsResponse } = await this.getChannels(options);
 
     // Always call battery info for every channel and merge with Channelstatus.
     const body: ReolinkCmdRequest[] = [{ cmd: "GetChannelstatus" }];

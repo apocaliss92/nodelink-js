@@ -741,10 +741,12 @@ export async function collectNvrDiagnostics(params: {
 
   // 2. Get all channels
   log("\n[2/7] Discovering channels...");
-  const channelsResult = await tryCall(() => cgi.getChannels());
+  // Use channelNum fallback for multi-focal cameras
+  const channelsResult = await tryCall(() => cgi.getChannels({ useChannelNumFallback: true }));
   result.channels = channelsResult;
+  let channels: number[] = [];
   if (channelsResult.ok) {
-    const channels = channelsResult.value.channels;
+    channels = channelsResult.value.channels;
     log(`✓ Found ${channels.length} channel(s): ${channels.join(", ")}`);
     result.channelList = channels;
   } else {
@@ -752,11 +754,9 @@ export async function collectNvrDiagnostics(params: {
     result.channelList = [];
   }
 
-  const channels = channelsResult.ok ? channelsResult.value.channels : [];
-
   // 3. Devices Information (per-channel: type, AI, encoding)
   log("\n[3/7] Collecting devices information for all channels...");
-  const devicesInfo = await tryCall(() => cgi.getDevicesInfo());
+  const devicesInfo = await tryCall(() => cgi.getDevicesInfo({ useChannelNumFallback: true }));
   result.devicesInfo = devicesInfo;
   if (devicesInfo.ok) {
     log(`✓ Devices info collected for ${Object.keys(devicesInfo.value.devicesData).length} channel(s)`);
@@ -779,7 +779,7 @@ export async function collectNvrDiagnostics(params: {
 
   // 4. Events and Detection (motion, AI)
   log("\n[4/7] Collecting events and detection states for all channels...");
-  const eventsInfo = await tryCall(() => cgi.getAllChannelsEvents());
+  const eventsInfo = await tryCall(() => cgi.getAllChannelsEvents({ useChannelNumFallback: true }));
   result.eventsInfo = eventsInfo;
   if (eventsInfo.ok) {
     log(`✓ Events info collected for ${Object.keys(eventsInfo.value.parsed).length} channel(s)`);
@@ -797,7 +797,7 @@ export async function collectNvrDiagnostics(params: {
 
   // 5. Battery Information
   log("\n[5/7] Collecting battery information for all channels...");
-  const batteryInfo = await tryCall(() => cgi.getAllChannelsBatteryInfo());
+  const batteryInfo = await tryCall(() => cgi.getAllChannelsBatteryInfo({ useChannelNumFallback: true }));
   result.batteryInfo = batteryInfo;
   if (batteryInfo.ok) {
     log(`✓ Battery info collected for ${Object.keys(batteryInfo.value.batteryInfoData).length} channel(s)`);
