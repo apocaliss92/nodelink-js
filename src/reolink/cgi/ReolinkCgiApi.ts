@@ -868,16 +868,15 @@ export class ReolinkCgiApi {
    * Comprehensive NVR/HUB diagnostics.
    * Collects and returns all available information about the NVR/HUB device and all its channels.
    * 
-   * @param options - Optional configuration
-   * @param options.logger - Optional logger for progress messages
+   * @param options - Configuration object with logger property for progress messages
    * @returns Complete diagnostics data including NVR info, channels, and per-channel details
    */
-  async collectNvrDiagnostics(options?: {
-    logger?: Logger;
+  async collectNvrDiagnostics(options: {
+    logger: Logger;
   }): Promise<Record<string, unknown>> {
     return await collectNvrDiagnostics({
       cgi: this,
-      logger: options?.logger,
+      logger: options.logger,
     });
   }
 
