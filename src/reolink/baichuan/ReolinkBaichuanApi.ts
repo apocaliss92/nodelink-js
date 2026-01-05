@@ -4751,10 +4751,51 @@ ${xmlDateTimePayload("endTime", end)}
     }
 
     // 2. Check if it's a dual lens model
-    const normalizedModel = model ? model.trim() : undefined;
-    const isDualMotionModel = normalizedModel ? DUAL_LENS_DUAL_MOTION_MODELS.has(normalizedModel) : false;
-    const isSingleMotionModel = normalizedModel ? DUAL_LENS_SINGLE_MOTION_MODELS.has(normalizedModel) : false;
-    const isDualLens = isDualMotionModel || isSingleMotionModel;
+    // Try multiple sources for model name
+    let normalizedModel = model ? model.trim() : undefined;
+    
+    // If model not found via getInfo, try getDeviceCapabilities or SupportInfo
+    if (!normalizedModel && supportInfo) {
+      // SupportInfo might have model info in items
+      for (const item of supportInfo.items ?? []) {
+        if ((item as any).typeInfo) {
+          normalizedModel = String((item as any).typeInfo).trim();
+          break;
+        }
+      }
+    }
+
+    // Check against known dual lens models (case-insensitive and partial match)
+    const modelLower = normalizedModel?.toLowerCase().trim() ?? "";
+    
+    // More flexible matching: check exact match first, then partial match
+    const checkModelMatch = (knownModels: Set<string>, modelToCheck: string): boolean => {
+      if (!modelToCheck || modelToCheck.length === 0) return false;
+      const lower = modelToCheck.toLowerCase().trim();
+      for (const known of knownModels) {
+        const knownLower = known.toLowerCase().trim();
+        // Exact match (case-insensitive)
+        if (lower === knownLower) return true;
+        // Partial match: model contains known or known contains model
+        // Also check if model starts with known or vice versa
+        if (lower.includes(knownLower) || knownLower.includes(lower)) return true;
+        // Check for key words: "trackmix" or "duo"
+        if (lower.includes("trackmix") && knownLower.includes("trackmix")) return true;
+        if (lower.includes("duo") && knownLower.includes("duo")) return true;
+      }
+      return false;
+    };
+    
+    const isDualMotionModel = normalizedModel ? checkModelMatch(DUAL_LENS_DUAL_MOTION_MODELS, normalizedModel) : false;
+    const isSingleMotionModel = normalizedModel ? checkModelMatch(DUAL_LENS_SINGLE_MOTION_MODELS, normalizedModel) : false;
+    
+    // Also check if channelNum suggests dual lens (2-3 channels)
+    // Handle both number and string types for channelNum
+    const channelNumValue = typeof channelNum === "string" ? Number.parseInt(channelNum, 10) : channelNum;
+    const hasDualLensChannelCount = (channelNumValue === 2 || channelNumValue === 3) && Number.isFinite(channelNumValue);
+    
+    // Consider it dual lens if model matches OR if channelNum suggests it
+    const isDualLens = isDualMotionModel || isSingleMotionModel || hasDualLensChannelCount;
 
     if (!isDualLens) {
       return {
@@ -4767,11 +4808,26 @@ ${xmlDateTimePayload("endTime", end)}
     }
 
     // 3. Determine dual lens type and available channels
-    const dualLensType: "dual_motion" | "single_motion" | undefined = isDualMotionModel
+    // If we detected via channelNum but model doesn't match, infer type from model name
+    let dualLensType: "dual_motion" | "single_motion" | undefined = isDualMotionModel
       ? "dual_motion"
       : isSingleMotionModel
         ? "single_motion"
         : undefined;
+    
+    // If we detected via channelNum but model doesn't match known types exactly,
+    // try to infer from model name pattern
+    if (!dualLensType && hasDualLensChannelCount) {
+      const modelLower = normalizedModel?.toLowerCase() ?? "";
+      if (modelLower.includes("trackmix")) {
+        dualLensType = "single_motion";
+      } else if (modelLower.includes("duo")) {
+        dualLensType = "dual_motion";
+      } else if (channelNumValue === 2) {
+        // Default to single_motion for 2-channel devices (TrackMix behavior)
+        dualLensType = "single_motion";
+      }
+    }
 
     // For SINGLE_MOTION_MODELS (TrackMix): stream_channels=[0,1] but channels=[0]
     // For DUAL_MOTION_MODELS (Duo): different behavior
@@ -4784,7 +4840,7 @@ ${xmlDateTimePayload("endTime", end)}
       logicalChannels.push(0);
     } else if (dualLensType === "dual_motion") {
       // Duo: both channels have motion detection
-      if (channelNum === 2) {
+      if (channelNumValue === 2) {
         streamChannels.push(0, 1);
         logicalChannels.push(0, 1);
       } else {
@@ -4793,8 +4849,8 @@ ${xmlDateTimePayload("endTime", end)}
       }
     } else {
       // Fallback: use channelNum if available
-      if (channelNum && channelNum >= 2) {
-        for (let i = 0; i < channelNum; i++) {
+      if (channelNumValue && Number.isFinite(channelNumValue) && channelNumValue >= 2) {
+        for (let i = 0; i < channelNumValue; i++) {
           streamChannels.push(i);
           logicalChannels.push(i);
         }

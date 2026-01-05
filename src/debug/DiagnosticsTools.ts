@@ -1183,6 +1183,37 @@ export async function testChannelStreams(params: {
 
   // Get all available stream options
   log(`\n[1/3] Getting available stream options for channel ${channel}...`);
+  
+  // Get raw XML from GetEnc to inspect what streams are actually available
+  const encXmlResult = await tryCall(() => api.getEncXml(channel));
+  if (encXmlResult.ok) {
+    // Check what stream tags are present in the XML
+    const xml = encXmlResult.value;
+    const tagsPresent = {
+      mainStream: /<mainStream\b/.test(xml),
+      subStream: /<subStream\b/.test(xml),
+      extStream: /<extStream\b/.test(xml),
+      thirdStream: /<thirdStream\b/.test(xml),
+      externStream: /<externStream\b/.test(xml),
+      extraStream: /<extraStream\b/.test(xml),
+    };
+    log(`  Raw GetEnc XML stream tags present: ${JSON.stringify(tagsPresent)}`);
+    
+    // Log a preview of the XML (first 2000 chars)
+    const xmlPreview = xml.length > 2000 ? xml.substring(0, 2000) + `\n... (truncated, total length: ${xml.length})` : xml;
+    log(`  GetEnc XML preview:\n${xmlPreview}`);
+    
+    // Also get parsed metadata to see what streams were detected
+    const metadataResult = await tryCall(() => api.getStreamMetadata(channel));
+    if (metadataResult.ok) {
+      const detectedProfiles = metadataResult.value.streams.map((s) => s.profile);
+      log(`  Parsed streams from metadata: ${detectedProfiles.join(", ")} (${detectedProfiles.length} total)`);
+      result.rawEncXml = xml;
+      result.encXmlTagsPresent = tagsPresent;
+      result.parsedStreamProfiles = detectedProfiles;
+    }
+  }
+  
   const streamOptionsResult = await tryCall(() => api.buildVideoStreamOptions(channel));
   if (!streamOptionsResult.ok) {
     log(`✗ Failed to get stream options: ${streamOptionsResult.error}`);
@@ -1192,6 +1223,14 @@ export async function testChannelStreams(params: {
 
   const { nativeStreams, rtspStreams, rtmpStreams } = streamOptionsResult.value;
   log(`✓ Found ${nativeStreams.length} native, ${rtspStreams.length} RTSP, ${rtmpStreams.length} RTMP stream(s)`);
+  
+  // Log detailed breakdown of profiles found
+  const nativeProfiles = nativeStreams.map((s) => s.profile).join(", ");
+  const rtspProfiles = rtspStreams.map((s) => s.profile).join(", ");
+  const rtmpProfiles = rtmpStreams.map((s) => s.profile).join(", ");
+  log(`  Native profiles: [${nativeProfiles || "none"}]`);
+  log(`  RTSP profiles: [${rtspProfiles || "none"}]`);
+  log(`  RTMP profiles: [${rtmpProfiles || "none"}]`);
 
   // Test each stream type
   const streamTests: Record<string, Record<string, unknown>> = {};

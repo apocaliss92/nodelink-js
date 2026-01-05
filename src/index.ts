@@ -47,4 +47,5 @@ export type { DebugOptions, DebugConfig } from "./debug/DebugConfig";
 export * from "./debug/DiagnosticsTools";
 export * from "./debug/zip";
 export * from "./reolink/autodetect";
+export * from "./reolink/discovery";
 
