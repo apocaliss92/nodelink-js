@@ -249,7 +249,7 @@ async function probeHttpDevice(
 /**
  * Discover devices via HTTP port scanning.
  */
-async function discoverViaHttpScan(options: DiscoveryOptions): Promise<DiscoveredDevice[]> {
+export async function discoverViaHttpScan(options: DiscoveryOptions): Promise<DiscoveredDevice[]> {
   if (!options.enableHttpScanning) return [];
 
   const logger = options.logger;

@@ -780,7 +780,10 @@ export class BaichuanClient extends EventEmitter<{
         `transport=udp`,
         `host=${this.opts.host}`,
       ];
-      if (this.opts.uid) udpDisconnectParts.push(`uid=${this.opts.uid}`);
+      if (this.opts.uid) {
+        const shortUid = this.opts.uid.substring(0, 5);
+        udpDisconnectParts.push(`uid=${shortUid}`);
+      }
       if (this.lastRxInfo?.cmdId != null) udpDisconnectParts.push(`lastRxCmdId=${this.lastRxInfo.cmdId}`);
       if (this.lastTxInfo?.cmdId != null) udpDisconnectParts.push(`lastTxCmdId=${this.lastTxInfo.cmdId}`);
       this.logFixed("disconnected", udpDisconnectParts.join(" "));
@@ -834,7 +837,8 @@ export class BaichuanClient extends EventEmitter<{
 
     await sock.connect();
 
-    this.logFixed("connected", `transport=udp host=${this.opts.host} uid=${this.opts.uid}`);
+    const shortUid = this.opts.uid ? this.opts.uid.substring(0, 5) : "";
+    this.logFixed("connected", `transport=udp host=${this.opts.host} uid=${shortUid}`);
     this.startKeepAlive();
     this.kickIdleDisconnectTimer();
   }
