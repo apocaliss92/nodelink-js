@@ -49,4 +49,6 @@ export * from "./debug/DiagnosticsTools";
 export * from "./debug/zip";
 export * from "./reolink/autodetect";
 export * from "./reolink/discovery";
+export * from "./multifocal/compositeStream";
+export * from "./multifocal/compositeRtspServer";
 
