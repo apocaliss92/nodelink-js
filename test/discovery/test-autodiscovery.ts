@@ -32,21 +32,16 @@ function logSection(title: string) {
 }
 
 async function main(): Promise<void> {
-  logSection("AUTODISCOVERY CLIENT TEST");
+  logSection("AUTODISCOVERY CLIENT TEST (UDP ONLY)");
   console.log(`Configuration:`);
-  console.log(`  Username: ${config.tcp?.username || config.udp?.username || "admin"}`);
-  console.log(`  Password: ${config.tcp?.password || config.udp?.password || "(not provided)"}`);
+  console.log(`  Discovery method: UDP broadcast only (no HTTP scanning)`);
   console.log(`  Test duration: 2 minutes`);
   console.log(`  Scan interval: 30 seconds`);
 
-  const username = config.tcp?.username || config.udp?.username || "admin";
-  const password = config.tcp?.password || config.udp?.password || "";
-
-  // Create the client
-  logSection("Creating AutodiscoveryClient");
+  // Create the client - UDP discovery only (no HTTP scanning)
+  logSection("Creating AutodiscoveryClient (UDP only)");
   const client = new AutodiscoveryClient({
-    username,
-    password: password || undefined,
+    discoveryMethod: "udp", // UDP broadcast only
     scanIntervalMs: 30_000, // 30 seconds between scans
     autoStart: false, // Start manually
     logger: {

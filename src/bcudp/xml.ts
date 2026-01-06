@@ -4,6 +4,14 @@ export function buildP2pXml(inner: string): string {
   return `<P2P>${inner}</P2P>`;
 }
 
+/**
+ * Build C2D_S message for general UDP broadcast discovery (without UID).
+ * This is sent to discover any cameras on the network.
+ */
+export function buildC2dS(params: { clientPort: number }): string {
+  return buildP2pXml(`<C2D_S><to><port>${params.clientPort}</port></to></C2D_S>`);
+}
+
 export function buildC2dC(params: { uid: string; clientPort: number; cid: number; mtu: number; os?: string }): string {
   // Default OS is "MAC" for discovery
   const os = params.os ?? "MAC";

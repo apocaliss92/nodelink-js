@@ -184,12 +184,21 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
 
     logger?.log?.(`[AutoDetect] TCP connection successful. channelNum=${channelNum}, model=${model ?? "unknown"}`);
 
-    // Check if it's a multi-focal device using the dual lens model map
+    // Check if it's a multi-focal device using the dual lens model map or channelNum fallback
     const normalizedModel = model ? model.trim() : undefined;
-    const isMultifocal = normalizedModel ? DUAL_LENS_MODELS.has(normalizedModel) : false;
+    const isMultifocalByModel = normalizedModel ? DUAL_LENS_MODELS.has(normalizedModel) : false;
+    
+    // Also check if channelNum suggests dual lens (2-3 channels)
+    // Handle both number and string types for channelNum
+    const channelNumValue = typeof channelNum === "string" ? Number.parseInt(channelNum, 10) : channelNum;
+    const hasDualLensChannelCount = (channelNumValue === 2 || channelNumValue === 3) && Number.isFinite(channelNumValue);
+    
+    // Consider it dual lens if model matches OR if channelNum suggests it
+    const isMultifocal = isMultifocalByModel || hasDualLensChannelCount;
 
     if (isMultifocal) {
-      logger?.log?.(`[AutoDetect] Detected multi-focal device (model: ${normalizedModel}, channelNum=${channelNum})`);
+      const detectionMethod = isMultifocalByModel ? "model match" : "channelNum fallback";
+      logger?.log?.(`[AutoDetect] Detected multi-focal device (${detectionMethod}: model=${normalizedModel ?? "unknown"}, channelNum=${channelNum})`);
       await tcpApi.close();
       return {
         type: "multifocal",
@@ -255,13 +264,22 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
       const channelNum = capabilities?.support?.channelNum ?? 1;
       const model = deviceInfo.type?.trim();
 
-      // Check if it's a multi-focal device using the dual lens model map
+      // Check if it's a multi-focal device using the dual lens model map or channelNum fallback
       // Multi-focal devices can also be UDP (battery multi-focal cameras)
       const normalizedModel = model ? model.trim() : undefined;
-      const isMultifocal = normalizedModel ? DUAL_LENS_MODELS.has(normalizedModel) : false;
+      const isMultifocalByModel = normalizedModel ? DUAL_LENS_MODELS.has(normalizedModel) : false;
+      
+      // Also check if channelNum suggests dual lens (2-3 channels)
+      // Handle both number and string types for channelNum
+      const channelNumValue = typeof channelNum === "string" ? Number.parseInt(channelNum, 10) : channelNum;
+      const hasDualLensChannelCount = (channelNumValue === 2 || channelNumValue === 3) && Number.isFinite(channelNumValue);
+      
+      // Consider it dual lens if model matches OR if channelNum suggests it
+      const isMultifocal = isMultifocalByModel || hasDualLensChannelCount;
 
       if (isMultifocal) {
-        logger?.log?.(`[AutoDetect] UDP connection successful. Detected multi-focal device (model: ${normalizedModel}, channelNum=${channelNum}).`);
+        const detectionMethod = isMultifocalByModel ? "model match" : "channelNum fallback";
+        logger?.log?.(`[AutoDetect] UDP connection successful. Detected multi-focal device (${detectionMethod}: model=${normalizedModel ?? "unknown"}, channelNum=${channelNum}).`);
         await udpApi.close();
         return {
           type: "multifocal",

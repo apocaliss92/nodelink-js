@@ -3,8 +3,8 @@ import { networkInterfaces } from "node:os";
 import { ReolinkCgiApi } from "./cgi/ReolinkCgiApi";
 import type { Logger } from "../debug/DebugConfig";
 import { BCUDP_DISCOVERY_PORT_LOCAL_ANY, BCUDP_DISCOVERY_PORT_LOCAL_UID } from "../bcudp/constants";
-import { decodeBcUdpPacket } from "../bcudp/packets";
-import { parseD2cDisc } from "../bcudp/xml";
+import { decodeBcUdpPacket, encodeDiscoveryPacket } from "../bcudp/packets";
+import { buildC2dS, parseD2cCr, parseD2cDisc } from "../bcudp/xml";
 
 export interface DiscoveredDevice {
   /** Device IP address */
@@ -320,7 +320,7 @@ export async function discoverViaHttpScan(options: DiscoveryOptions): Promise<Di
 /**
  * Discover devices via UDP broadcast (for battery cameras).
  */
-async function discoverViaUdpBroadcast(options: DiscoveryOptions): Promise<DiscoveredDevice[]> {
+export async function discoverViaUdpBroadcast(options: DiscoveryOptions): Promise<DiscoveredDevice[]> {
   if (!options.enableUdpDiscovery) return [];
 
   const logger = options.logger;
@@ -339,12 +339,37 @@ async function discoverViaUdpBroadcast(options: DiscoveryOptions): Promise<Disco
         const packet = decodeBcUdpPacket(msg);
         if (packet.kind === "discovery") {
           try {
-            // Try to parse D2C_DISC (discovery response)
-            const disc = parseD2cDisc(packet.xml);
             const host = rinfo.address;
+            
+            // Try to parse D2C_CR (discovery response to C2D_S/C2D_C)
+            const cr = parseD2cCr(packet.xml);
+            if (cr && !devices.has(host)) {
+              logger?.log?.(`[Discovery] Found device via UDP broadcast: ${host} (cid=${cr.cid}, did=${cr.did})`);
+              const result: DiscoveredDevice = {
+                host,
+                discoveryMethod: "udp_broadcast",
+              };
+              
+              // Try to extract UID, model, name from XML if present
+              const uidMatch = /<uid>([^<]+)<\/uid>/i.exec(packet.xml);
+              const modelMatch = /<model>([^<]+)<\/model>/i.exec(packet.xml);
+              const nameMatch = /<name>([^<]+)<\/name>/i.exec(packet.xml);
+              const deviceIdMatch = /<deviceId>([^<]+)<\/deviceId>/i.exec(packet.xml);
 
-            // D2C_DISC contains cid and did, but not UID/model/name directly
-            // We need to extract additional info from the XML if available
+              const uid = uidMatch?.[1] ?? deviceIdMatch?.[1];
+              const model = modelMatch?.[1];
+              const name = nameMatch?.[1];
+
+              if (model) result.model = model.trim();
+              if (uid) result.uid = uid.trim();
+              if (name) result.name = name.trim();
+              
+              devices.set(host, result);
+              return;
+            }
+            
+            // Fallback: try to parse D2C_DISC (disconnect message, but might contain info)
+            const disc = parseD2cDisc(packet.xml);
             if (disc && !devices.has(host)) {
               // Try to extract UID, model, name from XML if present
               const uidMatch = /<uid>([^<]+)<\/uid>/i.exec(packet.xml);
@@ -384,19 +409,28 @@ async function discoverViaUdpBroadcast(options: DiscoveryOptions): Promise<Disco
 
     socket.bind(() => {
       socket.setBroadcast(true);
+      const localPort = socket.address().port;
 
-      // Send discovery packets
+      // Send discovery packets using proper C2D_S messages
+      // Port 2015: general discovery (C2D_S without UID)
+      // Port 2018: UID-specific discovery (would use C2D_C, but we don't have UIDs here)
       const discoveryPorts = [BCUDP_DISCOVERY_PORT_LOCAL_ANY, BCUDP_DISCOVERY_PORT_LOCAL_UID];
+      
       for (const port of discoveryPorts) {
         try {
-          // Send a simple broadcast packet (empty payload should trigger discovery responses)
-          socket.send(Buffer.alloc(0), port, "255.255.255.255", (err) => {
+          // Build C2D_S message for general discovery
+          const tid = Math.floor(Math.random() * 0xff) || 1;
+          const xml = buildC2dS({ clientPort: localPort });
+          const packet = encodeDiscoveryPacket(tid, xml);
+          
+          // Send to broadcast address
+          socket.send(packet, port, "255.255.255.255", (err) => {
             if (err) {
               logger?.warn?.(`[Discovery] Failed to send UDP broadcast to port ${port}: ${err.message}`);
             }
           });
         } catch (err) {
-          // Ignore send errors
+          logger?.warn?.(`[Discovery] Error encoding discovery packet for port ${port}: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
 

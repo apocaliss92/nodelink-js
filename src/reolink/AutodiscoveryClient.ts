@@ -1,5 +1,5 @@
 import type { Logger } from "../debug/DebugConfig";
-import { discoverViaHttpScan, type DiscoveredDevice, type DiscoveryOptions } from "./discovery";
+import { discoverReolinkDevices, discoverViaHttpScan, discoverViaUdpBroadcast, type DiscoveredDevice, type DiscoveryOptions } from "./discovery";
 
 export interface AutodiscoveryClientOptions {
   /** Network CIDR to scan (e.g., "192.168.1.0/24"). If not provided, auto-detects local network */
@@ -20,11 +20,15 @@ export interface AutodiscoveryClientOptions {
   scanIntervalMs?: number;
   /** Whether to start discovery automatically on construction (default: false) */
   autoStart?: boolean;
+  /** Discovery method to use: "http" (TCP/IPC), "udp" (broadcast), or "both" (default: "http") */
+  discoveryMethod?: "http" | "udp" | "both";
+  /** Timeout for UDP broadcast in milliseconds (default: 5000) */
+  udpBroadcastTimeoutMs?: number;
 }
 
 /**
  * Client per discovery continuato di telecamere Reolink sulla rete.
- * Utilizza solo TCP/IPC (HTTP/HTTPS scanning), non UDP.
+ * Supporta TCP/IPC (HTTP/HTTPS scanning) e/o UDP broadcast discovery.
  * 
  * Mantiene una lista aggiornata delle telecamere discoverate e offre
  * metodi per ottenere la lista corrente e controllare il processo di discovery.
@@ -83,6 +87,12 @@ export class AutodiscoveryClient {
     }
     if (options.httpPorts !== undefined) {
       this.options.httpPorts = options.httpPorts;
+    }
+    if (options.discoveryMethod !== undefined) {
+      this.options.discoveryMethod = options.discoveryMethod;
+    }
+    if (options.udpBroadcastTimeoutMs !== undefined) {
+      this.options.udpBroadcastTimeoutMs = options.udpBroadcastTimeoutMs;
     }
 
     if (this.options.autoStart) {
@@ -208,9 +218,10 @@ export class AutodiscoveryClient {
       try {
         this.options.logger?.log?.("[Autodiscovery] Starting scan...");
 
+        const discoveryMethod = this.options.discoveryMethod ?? "http";
         const discoveryOptions: DiscoveryOptions = {
-          enableHttpScanning: true,
-          enableUdpDiscovery: false, // Solo TCP/IPC
+          enableHttpScanning: discoveryMethod === "http" || discoveryMethod === "both",
+          enableUdpDiscovery: discoveryMethod === "udp" || discoveryMethod === "both",
         };
         if (this.options.networkCidr !== undefined) {
           discoveryOptions.networkCidr = this.options.networkCidr;
@@ -233,8 +244,20 @@ export class AutodiscoveryClient {
         if (this.options.httpPorts !== undefined) {
           discoveryOptions.httpPorts = this.options.httpPorts;
         }
+        if (this.options.udpBroadcastTimeoutMs !== undefined) {
+          discoveryOptions.udpBroadcastTimeoutMs = this.options.udpBroadcastTimeoutMs;
+        }
 
-        const discovered = await discoverViaHttpScan(discoveryOptions);
+        // Use the appropriate discovery method(s)
+        let discovered: DiscoveredDevice[] = [];
+        if (discoveryMethod === "http" || discoveryMethod === "both") {
+          const httpDevices = await discoverViaHttpScan(discoveryOptions);
+          discovered.push(...httpDevices);
+        }
+        if (discoveryMethod === "udp" || discoveryMethod === "both") {
+          const udpDevices = await discoverViaUdpBroadcast(discoveryOptions);
+          discovered.push(...udpDevices);
+        }
 
         // Aggiorna la mappa dei dispositivi
         const beforeCount = this.discoveredDevices.size;
