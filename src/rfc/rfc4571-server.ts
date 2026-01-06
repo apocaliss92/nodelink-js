@@ -3,7 +3,7 @@ import netImpl from 'node:net';
 import type { ReolinkBaichuanApi } from '../reolink/baichuan/ReolinkBaichuanApi';
 import type { StreamProfile } from '../reolink/baichuan/types';
 import { BaichuanVideoStream } from '../baichuan/stream/BaichuanVideoStream';
-import { CompositeStream } from '../multifocal/compositeStream';
+import { CompositeStream, type CompositeStreamPipOptions } from '../multifocal/compositeStream';
 import {
   buildRfc4571Sdp,
   extractH264ParamSetsFromAccessUnit,
@@ -52,18 +52,7 @@ export interface Rfc4571TcpServerOptions {
   requireAuth?: boolean;
 
   /** Composite stream options (only used when channel is undefined) */
-  compositeOptions?: {
-    /** Wider channel (default: 0) */
-    widerChannel?: number;
-    /** Tele channel (default: 1) */
-    teleChannel?: number;
-    /** PIP position (default: "bottom-right") */
-    pipPosition?: "top-left" | "top-right" | "bottom-left" | "bottom-right" | "center" | "top-center" | "bottom-center" | "left-center" | "right-center";
-    /** PIP size (default: 0.25) */
-    pipSize?: number;
-    /** PIP margin in pixels (default: 10) */
-    pipMargin?: number;
-  };
+  compositeOptions?: CompositeStreamPipOptions;
 }
 
 export interface Rfc4571TcpServer {

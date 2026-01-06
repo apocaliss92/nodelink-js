@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { BaichuanRtspServer, type BaichuanRtspServerOptions } from "../../baichuan/stream/BaichuanRtspServer";
 import { BaichuanClient, type BaichuanClientOptions } from "../../client/BaichuanClient";
 import { type Logger } from "../../debug/DebugConfig";
+import type { CompositeStreamPipOptions } from "../../multifocal/compositeStream";
 import { createDiagnosticsBundle, sampleStreams, type StreamSamplingSelection, type StreamSamplingOptions } from "../../debug/DiagnosticsTools";
 import { zipDirectory } from "../../debug/zip";
 import {
@@ -83,6 +84,7 @@ import type { ReolinkDeviceInfo, ReolinkDeviceInfoTag } from "../types";
 import { ReolinkHttpClient, type ReolinkHttpClientOptions } from "../http/ReolinkHttpClient";
 import type { ReolinkCmdResponse } from "../http/types";
 import { computeDeviceCapabilities, flattenAbilitiesForChannel, parseSupportXml } from "./capabilities";
+import sharp from "sharp";
 
 export type ReolinkNvrChannelInfo = {
   channel: number;
@@ -209,7 +211,7 @@ export interface ReolinkSupportedStream {
   name: string;
   id: string;
   container: "rtsp" | "rtmp" | "rtp";
-  channel: number;
+  channel?: number; // undefined for composite streams (multifocal devices)
   profile: StreamProfile;
   url: string; // URL without authentication credentials
   urlWithAuth: string; // URL with authentication credentials
@@ -1923,13 +1925,80 @@ export class ReolinkBaichuanApi {
    * Returns JPEG image as Buffer.
    * Note: Snapshot uses a special message ID system for binary responses
    */
-  async getSnapshot(channel: number = 0): Promise<Buffer> {
+  async getSnapshot(channel?: number, compositeOptions?: CompositeStreamPipOptions): Promise<Buffer> {
     const cmdId = 109;
+
+    // If composite options are provided, combine wider and tele snapshots with PIP
+    if (compositeOptions) {
+      const widerChannel = compositeOptions.widerChannel ?? 0;
+      const teleChannel = compositeOptions.teleChannel ?? 1;
+      const pipPosition = compositeOptions.pipPosition ?? "bottom-right";
+      const pipSize = compositeOptions.pipSize ?? 0.25;
+      const pipMargin = compositeOptions.pipMargin ?? 10;
+
+      // Get snapshots from both channels in parallel
+      const [widerSnapshot, teleSnapshot] = await Promise.all([
+        this.getSnapshot(widerChannel),
+        this.getSnapshot(teleChannel),
+      ]);
+
+      // Combine snapshots using sharp
+      try {
+        // Load both images
+        const widerImage = sharp(widerSnapshot);
+        const teleImage = sharp(teleSnapshot);
+
+        // Get dimensions
+        const widerMetadata = await widerImage.metadata();
+        const teleMetadata = await teleImage.metadata();
+        
+        const mainWidth = widerMetadata.width ?? 1920;
+        const mainHeight = widerMetadata.height ?? 1080;
+        const teleWidth = teleMetadata.width ?? 1920;
+        const teleHeight = teleMetadata.height ?? 1080;
+
+        // Calculate PIP dimensions and position
+        const pipWidth = Math.floor(mainWidth * pipSize);
+        const pipHeight = Math.floor((teleHeight / teleWidth) * pipWidth); // Maintain aspect ratio
+
+        // Calculate overlay position using the same logic as CompositeStream
+        const { x, y } = this.calculateSnapshotOverlayPosition(
+          pipPosition,
+          mainWidth,
+          mainHeight,
+          pipWidth,
+          pipHeight,
+          pipMargin
+        );
+
+        // Resize tele image to PIP size and composite onto wider image
+        const compositeBuffer = await widerImage
+          .composite([
+            {
+              input: await teleImage.resize(pipWidth, pipHeight).toBuffer(),
+              left: x,
+              top: y,
+            },
+          ])
+          .jpeg()
+          .toBuffer();
+
+        return compositeBuffer;
+      } catch (error) {
+        if (error instanceof Error && error.message.includes("Cannot find module 'sharp'")) {
+          throw new Error("sharp library is required for composite snapshots. Install it with: npm install sharp");
+        }
+        throw error;
+      }
+    }
+
+    // Regular snapshot for single channel
+    const ch = channel !== undefined ? this.normalizeChannel(channel) : 0;
 
     // 1. Send Snap request (XML)
     // Snap XML: <Snap version="1.1"><channelId>...</channelId><logicChannel>...</logicChannel><time>0</time><fullFrame>0</fullFrame><streamType>main</streamType></Snap>
     // Must be wrapped in <body>
-    const xml = `<body><Snap version="1.1"><channelId>${channel}</channelId><logicChannel>${channel}</logicChannel><time>0</time><fullFrame>0</fullFrame><streamType>main</streamType></Snap></body>`;
+    const xml = `<body><Snap version="1.1"><channelId>${ch}</channelId><logicChannel>${ch}</logicChannel><time>0</time><fullFrame>0</fullFrame><streamType>main</streamType></Snap></body>`;
 
     await this.client.login();
 
@@ -1939,11 +2008,50 @@ export class ReolinkBaichuanApi {
     // on many firmwares; BaichuanClient.sendBinary handles that.
     return await this.client.sendBinary({
       cmdId,
-      channel,
+      channel: ch,
       payloadXml: xml,
-      extensionXml: buildChannelExtensionXml(channel),
+      extensionXml: buildChannelExtensionXml(ch),
       timeoutMs: 15_000,
     });
+  }
+
+  /**
+   * Calculate overlay position for composite snapshot (same logic as CompositeStream)
+   */
+  private calculateSnapshotOverlayPosition(
+    position: import("../../multifocal/compositeStream").PipPosition,
+    mainWidth: number,
+    mainHeight: number,
+    pipWidth: number,
+    pipHeight: number,
+    margin: number
+  ): { x: number; y: number } {
+    const pipW = Math.floor(pipWidth);
+    const pipH = Math.floor(pipHeight);
+    const m = margin;
+
+    switch (position) {
+      case "top-left":
+        return { x: m, y: m };
+      case "top-right":
+        return { x: mainWidth - pipW - m, y: m };
+      case "bottom-left":
+        return { x: m, y: mainHeight - pipH - m };
+      case "bottom-right":
+        return { x: mainWidth - pipW - m, y: mainHeight - pipH - m };
+      case "center":
+        return { x: Math.floor((mainWidth - pipW) / 2), y: Math.floor((mainHeight - pipH) / 2) };
+      case "top-center":
+        return { x: Math.floor((mainWidth - pipW) / 2), y: m };
+      case "bottom-center":
+        return { x: Math.floor((mainWidth - pipW) / 2), y: mainHeight - pipH - m };
+      case "left-center":
+        return { x: m, y: Math.floor((mainHeight - pipH) / 2) };
+      case "right-center":
+        return { x: mainWidth - pipW - m, y: Math.floor((mainHeight - pipH) / 2) };
+      default:
+        return { x: m, y: m };
+    }
   }
 
   /**
@@ -5110,11 +5218,52 @@ ${xmlDateTimePayload("endTime", end)}
     rtmpStreams: ReolinkSupportedStream[];
   }> {
     const includeAuth = options?.includeAuth;
-    const ch = this.normalizeChannel(channel);
+    const isComposite = channel === undefined;
 
     const rtspStreams: ReolinkSupportedStream[] = [];
     const rtmpStreams: ReolinkSupportedStream[] = [];
     const nativeStreams: ReolinkSupportedStream[] = [];
+
+    // For composite streams (multifocal devices), return composite stream options
+    if (isComposite) {
+      // Get stream metadata from wider channel (channel 0) for composite stream metadata
+      const widerMetadata = await this.getStreamMetadata(0);
+      const widerStreams = widerMetadata?.streams || [];
+
+      for (const metadata of widerStreams) {
+        const profile = metadata.profile as StreamProfile;
+
+        // Build composite native stream option
+        // Composite streams combine wider (channel 0) and tele (channel 1) with PIP
+        const compositeUrl = new URL(`baichuan://${this.host}/composite/profile/${profile}`);
+        const compositeUrlWithAuth = new URL(`baichuan://${this.host}/composite/profile/${profile}`);
+        compositeUrlWithAuth.username = this.username;
+        compositeUrlWithAuth.password = this.password;
+        
+        nativeStreams.push({
+          name: `Composite ${profile}`,
+          id: `composite_${profile}`,
+          container: "rtp", // Composite streams use RFC4571 (rtp container)
+          profile,
+          url: compositeUrl.toString(),
+          urlWithAuth: compositeUrlWithAuth.toString(),
+          metadata,
+        });
+      }
+
+      // Note: RTSP and RTMP composite streams are not yet supported
+      // They would require combining two RTSP/RTMP streams which is more complex
+      // For now, only native composite streams are supported
+
+      return {
+        nativeStreams,
+        rtmpStreams,
+        rtspStreams,
+      };
+    }
+
+    // Regular stream building for specific channel
+    const ch = this.normalizeChannel(channel);
 
     // Get network ports (RTSP/RTMP configuration)
     const netPort = await this.getNetPort();
@@ -5139,10 +5288,10 @@ ${xmlDateTimePayload("endTime", end)}
         const rtspPath = `/h264Preview_${channelStr}_${profileStr}`;
         const rtspId = `h264Preview_${channelStr}_${profileStr}`;
 
-        const user = encodeURIComponent(this.username);
-        const pass = encodeURIComponent(this.password);
-        const rtspUrl = `rtsp://${this.host}:${rtspPort}${rtspPath}`;
-        const rtspUrlWithAuth = `rtsp://${user}:${pass}@${this.host}:${rtspPort}${rtspPath}`;
+        const rtspUrl = new URL(`rtsp://${this.host}:${rtspPort}${rtspPath}`);
+        const rtspUrlWithAuth = new URL(`rtsp://${this.host}:${rtspPort}${rtspPath}`);
+        rtspUrlWithAuth.username = this.username;
+        rtspUrlWithAuth.password = this.password;
 
         rtspStreams.push({
           name: `RTSP ${rtspId}`,
@@ -5150,8 +5299,8 @@ ${xmlDateTimePayload("endTime", end)}
           container: "rtsp",
           channel: ch,
           profile,
-          url: includeAuth ? rtspUrlWithAuth : rtspUrl,
-          urlWithAuth: rtspUrlWithAuth,
+          url: rtspUrl.toString(),
+          urlWithAuth: rtspUrlWithAuth.toString(),
           path: rtspPath,
           port: rtspPort,
           metadata,
@@ -5203,16 +5352,19 @@ ${xmlDateTimePayload("endTime", end)}
 
       // Build native Baichuan stream option
       // Native streams use BaichuanVideoStream and are identified by profile
-      // Native streams don't have separate auth URLs since authentication is handled at the API level
-      const nativeUrl = `baichuan://${this.host}/channel/${ch}/profile/${profile}`;
+      const nativeUrl = new URL(`baichuan://${this.host}/channel/${ch}/profile/${profile}`);
+      const nativeUrlWithAuth = new URL(`baichuan://${this.host}/channel/${ch}/profile/${profile}`);
+      nativeUrlWithAuth.username = this.username;
+      nativeUrlWithAuth.password = this.password;
+      
       nativeStreams.push({
         name: `Native ${profile}`,
         id: `native_${profile}`,
         container: "rtp", // Special container type for native Baichuan streams
         channel: ch,
         profile,
-        url: nativeUrl,
-        urlWithAuth: nativeUrl, // Same URL since auth is at API level
+        url: nativeUrl.toString(),
+        urlWithAuth: nativeUrlWithAuth.toString(),
         metadata,
       });
     }

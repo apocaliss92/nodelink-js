@@ -22,6 +22,7 @@ export type AutoDetectResult = {
   uid: string;
   deviceInfo?: Partial<ReolinkDeviceInfo>;
   channelNum?: number;
+  api: ReolinkBaichuanApi; // The API instance that was successfully used for detection
 };
 
 /**
@@ -199,38 +200,41 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
     if (isMultifocal) {
       const detectionMethod = isMultifocalByModel ? "model match" : "channelNum fallback";
       logger?.log?.(`[AutoDetect] Detected multi-focal device (${detectionMethod}: model=${normalizedModel ?? "unknown"}, channelNum=${channelNum})`);
-      await tcpApi.close();
+      // Don't close the API, return it for continued use
       return {
         type: "multifocal",
         transport: "tcp",
         uid: uid || "",
         deviceInfo,
         channelNum,
+        api: tcpApi,
       };
     }
 
     // If channelNum > 1, it's likely an NVR
     if (channelNum > 1) {
       logger?.log?.(`[AutoDetect] Detected NVR (${channelNum} channels)`);
-      await tcpApi.close();
+      // Don't close the API, return it for continued use
       return {
         type: "nvr",
         transport: "tcp",
         uid: uid || "",
         deviceInfo,
         channelNum,
+        api: tcpApi,
       };
     }
 
     // Single channel device - regular camera
     logger?.log?.(`[AutoDetect] Detected regular camera (single channel)`);
-    await tcpApi.close();
+    // Don't close the API, return it for continued use
     return {
       type: "camera",
       transport: "tcp",
       uid: uid || "",
       deviceInfo,
       channelNum: 1,
+      api: tcpApi,
     };
   } catch (tcpError) {
     // TCP failed, try UDP (battery camera)
@@ -280,19 +284,20 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
       if (isMultifocal) {
         const detectionMethod = isMultifocalByModel ? "model match" : "channelNum fallback";
         logger?.log?.(`[AutoDetect] UDP connection successful. Detected multi-focal device (${detectionMethod}: model=${normalizedModel ?? "unknown"}, channelNum=${channelNum}).`);
-        await udpApi.close();
+        // Don't close the API, return it for continued use
         return {
           type: "multifocal",
           transport: "udp",
           uid: normalizedUid,
           deviceInfo,
           channelNum,
+          api: udpApi,
         };
       }
 
       // Regular battery camera
       logger?.log?.(`[AutoDetect] UDP connection successful. Detected battery camera.`);
-      await udpApi.close();
+      // Don't close the API, return it for continued use
 
       return {
         type: "battery-cam",
@@ -300,6 +305,7 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
         uid: normalizedUid,
         deviceInfo,
         channelNum: 1,
+        api: udpApi,
       };
     } catch (udpError) {
       logger?.log?.(

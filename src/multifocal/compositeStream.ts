@@ -25,6 +25,19 @@ export type PipPosition =
   | "left-center"
   | "right-center";
 
+export interface CompositeStreamPipOptions {
+  /** Wider channel (default: 0) */
+  widerChannel?: number;
+  /** Tele channel (default: 1) */
+  teleChannel?: number;
+  /** PIP position (default: "bottom-right") */
+  pipPosition?: PipPosition;
+  /** PIP size (default: 0.25) */
+  pipSize?: number;
+  /** PIP margin in pixels (default: 10) */
+  pipMargin?: number;
+}
+
 export type CompositeStreamOptions = {
   api: ReolinkBaichuanApi;
   /** Channel for wider stream (typically 0) */
