@@ -16,7 +16,7 @@ import * as dgram from "node:dgram";
 import type { StreamProfile } from "../../reolink/baichuan/types";
 import type { ReolinkBaichuanApi } from "../../reolink/baichuan/ReolinkBaichuanApi";
 import type { Logger } from "../../debug/DebugConfig";
-import { createNativeStream } from "../../scrypted/helpers";
+import { createNativeStream } from "../../rfc/helpers";
 import { createRtspFlow, type RtspFlow, type RtspVideoType } from "./rtspFlow";
 import { convertToAnnexB as convertH264ToAnnexB } from "./H264Converter";
 import { convertToAnnexB as convertH265ToAnnexB, isH265Irap, splitAnnexBToNalPayloads } from "./H265Converter";

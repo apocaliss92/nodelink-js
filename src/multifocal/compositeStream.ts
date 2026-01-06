@@ -1,10 +1,10 @@
 /**
  * Multifocal Camera Composite Stream
  * 
- * Combina gli stream di una telecamera multifocal (wider e tele) in un nuovo stream composito
- * con picture-in-picture (PIP) configurabile.
+ * Combines streams from a multifocal camera (wider and tele) into a new composite stream
+ * with configurable picture-in-picture (PIP).
  * 
- * Utilizza ffmpeg per fare overlay del stream tele sul wider in varie posizioni.
+ * Uses ffmpeg to overlay the tele stream on the wider stream in various positions.
  */
 
 import { spawn } from "node:child_process";
@@ -12,7 +12,7 @@ import { EventEmitter } from "node:events";
 import type { ReolinkBaichuanApi } from "../reolink/baichuan/ReolinkBaichuanApi";
 import type { StreamProfile } from "../reolink/baichuan/types";
 import type { Logger } from "../debug/DebugConfig";
-import { createNativeStream } from "../scrypted/helpers";
+import { createNativeStream } from "../rfc/helpers";
 
 export type PipPosition = 
   | "top-left" 
@@ -27,26 +27,26 @@ export type PipPosition =
 
 export type CompositeStreamOptions = {
   api: ReolinkBaichuanApi;
-  /** Channel per wider (solitamente 0) */
+  /** Channel for wider stream (typically 0) */
   widerChannel: number;
-  /** Channel per tele (solitamente 1) */
+  /** Channel for tele stream (typically 1) */
   teleChannel: number;
-  /** Profile per wider stream */
+  /** Profile for wider stream */
   widerProfile: StreamProfile;
-  /** Profile per tele stream */
+  /** Profile for tele stream */
   teleProfile: StreamProfile;
-  /** Posizione PIP del tele sul wider */
+  /** PIP position of tele on wider */
   pipPosition?: PipPosition;
-  /** Dimensione relativa del PIP (0.1 = 10%, 0.3 = 30%, ecc.) */
+  /** Relative size of PIP (0.1 = 10%, 0.3 = 30%, etc.) */
   pipSize?: number;
-  /** Margine dal bordo in pixel */
+  /** Margin from edge in pixels */
   pipMargin?: number;
-  /** Logger opzionale */
+  /** Optional logger */
   logger?: Logger;
 };
 
 /**
- * Calcola la posizione dell'overlay in base alla posizione PIP richiesta
+ * Calculate overlay position based on requested PIP position
  */
 function calculateOverlayPosition(
   position: PipPosition,
@@ -85,7 +85,7 @@ function calculateOverlayPosition(
 }
 
 /**
- * CompositeStream - Combina stream wider e tele con PIP configurabile
+ * CompositeStream - Combines wider and tele streams with configurable PIP
  */
 export class CompositeStream extends EventEmitter<{
   videoFrame: [Buffer];
@@ -111,7 +111,7 @@ export class CompositeStream extends EventEmitter<{
   }
 
   /**
-   * Avvia il stream composito
+   * Start the composite stream
    */
   async start(): Promise<void> {
     if (this.active) {
@@ -122,7 +122,7 @@ export class CompositeStream extends EventEmitter<{
     this.logger.log?.("[CompositeStream] Starting composite stream...");
 
     try {
-      // Ottieni metadata per determinare risoluzioni
+      // Get metadata to determine resolutions
       const widerMetadata = await this.options.api.getStreamMetadata(this.options.widerChannel);
       const teleMetadata = await this.options.api.getStreamMetadata(this.options.teleChannel);
 
@@ -151,7 +151,7 @@ export class CompositeStream extends EventEmitter<{
         `[CompositeStream] Main: ${mainWidth}x${mainHeight}, PIP: ${pipWidth}x${pipHeight} at (${position.x}, ${position.y})`
       );
 
-      // Avvia gli stream nativi
+      // Start native streams
       this.widerStream = createNativeStream(
         this.options.api,
         this.options.widerChannel,
@@ -163,7 +163,7 @@ export class CompositeStream extends EventEmitter<{
         this.options.teleProfile
       );
 
-      // Avvia ffmpeg per composizione
+      // Start ffmpeg for composition
       await this.startFfmpegComposition(mainWidth, mainHeight, pipWidth, pipHeight, position);
 
       this.logger.log?.("[CompositeStream] Composite stream started");
@@ -175,7 +175,7 @@ export class CompositeStream extends EventEmitter<{
   }
 
   /**
-   * Avvia ffmpeg per fare composizione con overlay
+   * Start ffmpeg for composition with overlay
    */
   private async startFfmpegComposition(
     mainWidth: number,
@@ -184,15 +184,15 @@ export class CompositeStream extends EventEmitter<{
     pipHeight: number,
     position: { x: number; y: number }
   ): Promise<void> {
-    // Determina codec video (assumiamo H.264 per semplicità, potrebbe essere H.265)
+    // Determine video codec (assume H.264 for simplicity, could be H.265)
     const widerMetadata = await this.options.api.getStreamMetadata(this.options.widerChannel);
     const widerStreamInfo = widerMetadata.streams.find((s) => s.profile === this.options.widerProfile);
     const videoCodec = widerStreamInfo?.videoEncType?.toLowerCase().includes("265") ? "hevc" : "h264";
 
-    // ffmpeg args per composizione
+    // ffmpeg args for composition
     // Input 0: wider stream (main)
     // Input 1: tele stream (PIP)
-    // Output: stream composito con overlay
+    // Output: composite stream with overlay
     const ffmpegArgs = [
       "-hide_banner",
       "-loglevel", "error",
@@ -203,11 +203,11 @@ export class CompositeStream extends EventEmitter<{
       // Input 1: tele stream (PIP)
       "-f", videoCodec === "hevc" ? "hevc" : "h264",
       "-i", "pipe:1",
-      // Filtro per scalare e posizionare il PIP
+      // Filter to scale and position PIP
       "-filter_complex",
       `[1:v]scale=${pipWidth}:${pipHeight}[pip];[0:v][pip]overlay=${position.x}:${position.y}[out]`,
       "-map", "[out]",
-      "-c:v", "libx264", // Ricodifica per garantire compatibilità
+      "-c:v", "libx264", // Re-encode for compatibility
       "-preset", "ultrafast",
       "-tune", "zerolatency",
       "-crf", "23",
@@ -223,7 +223,7 @@ export class CompositeStream extends EventEmitter<{
       stdio: ["pipe", "pipe", "pipe"],
     });
 
-    // Gestisci errori ffmpeg
+    // Handle ffmpeg errors
     this.ffmpegProcess.on("error", (error) => {
       this.logger.error?.("[CompositeStream] FFmpeg error:", error);
       this.emit("error", error);
@@ -236,12 +236,12 @@ export class CompositeStream extends EventEmitter<{
       this.emit("close");
     });
 
-    // Leggi output video composito
+    // Read composite video output
     this.ffmpegProcess.stdout?.on("data", (data: Buffer) => {
       this.emit("videoFrame", data);
     });
 
-    // Leggi stderr per debug
+    // Read stderr for debug
     this.ffmpegProcess.stderr?.on("data", (data: Buffer) => {
       const output = data.toString();
       if (output.includes("error") || output.includes("Error")) {
@@ -249,13 +249,13 @@ export class CompositeStream extends EventEmitter<{
       }
     });
 
-    // Feed frames agli input di ffmpeg
+    // Feed frames to ffmpeg inputs
     this.feedFramesToFfmpeg();
   }
 
   /**
-   * Feed frames dagli stream nativi a ffmpeg
-   * Usa due loop separati per scrivere i frame in modo continuo
+   * Feed frames from native streams to ffmpeg
+   * Uses two separate loops to write frames continuously
    */
   private async feedFramesToFfmpeg(): Promise<void> {
     if (!this.ffmpegProcess || !this.widerStream || !this.teleStream) {
@@ -338,7 +338,7 @@ export class CompositeStream extends EventEmitter<{
       }
     };
 
-    // Avvia entrambi i feed in parallelo
+    // Start both feeds in parallel
     Promise.all([feedWider(), feedTele()]).catch((error) => {
       if (this.active) {
         this.logger.error?.("[CompositeStream] Error in frame processing:", error);
@@ -348,7 +348,7 @@ export class CompositeStream extends EventEmitter<{
   }
 
   /**
-   * Ferma il stream composito
+   * Stop the composite stream
    */
   async stop(): Promise<void> {
     if (!this.active) {
@@ -358,7 +358,7 @@ export class CompositeStream extends EventEmitter<{
     this.active = false;
     this.logger.log?.("[CompositeStream] Stopping composite stream...");
 
-    // Ferma ffmpeg
+    // Stop ffmpeg
     if (this.ffmpegProcess) {
       try {
         this.ffmpegProcess.stdin?.end();
@@ -372,7 +372,7 @@ export class CompositeStream extends EventEmitter<{
       this.ffmpegProcess = null;
     }
 
-    // Gli stream nativi verranno chiusi automaticamente quando i generatori terminano
+    // Native streams will be closed automatically when generators terminate
     this.widerStream = null;
     this.teleStream = null;
 
@@ -380,10 +380,9 @@ export class CompositeStream extends EventEmitter<{
   }
 
   /**
-   * Verifica se il stream è attivo
+   * Check if stream is active
    */
   isActive(): boolean {
     return this.active;
   }
 }
-

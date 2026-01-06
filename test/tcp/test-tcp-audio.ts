@@ -6,7 +6,7 @@
  */
 
 // @ts-expect-error - Path resolution at runtime
-import { ReolinkBaichuanApi, ScryptedIntercom } from "../../index";
+import { ReolinkBaichuanApi, Intercom } from "../../index";
 import { config } from "../env";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -253,9 +253,9 @@ async function testSendAudioData(api: ReolinkBaichuanApi, channel: number = 0) {
   }
 }
 
-async function testScryptedIntercom(api: ReolinkBaichuanApi, channel: number = 0) {
+async function testIntercom(api: ReolinkBaichuanApi, channel: number = 0) {
   try {
-    log(`Testing ScryptedIntercom (channel ${channel})`);
+    log(`Testing Intercom (channel ${channel})`);
 
     // Check if supported
     const audioConfig = await api.getTwoWayAudioConfig(channel);
@@ -275,15 +275,14 @@ async function testScryptedIntercom(api: ReolinkBaichuanApi, channel: number = 0
     };
 
     // Create intercom
-    const intercom = new ScryptedIntercom({
+    const intercom = new Intercom({
       channel,
       api,
-      onAudioData: audioCallback,
     });
 
     // Start intercom
     await intercom.start();
-    logSuccess("ScryptedIntercom started");
+    logSuccess("Intercom started");
 
     // Load test audio file (WAV PCM)
     const audioSamplePath = join(process.cwd(), "test", "audio-samples", "test-tone.wav");
@@ -291,7 +290,7 @@ async function testScryptedIntercom(api: ReolinkBaichuanApi, channel: number = 0
     
     try {
       const audioFileData = readFileSync(audioSamplePath);
-      log(`Audio file loaded for ScryptedIntercom: ${audioSamplePath}`);
+      log(`Audio file loaded for Intercom: ${audioSamplePath}`);
       
       // Extract PCM from WAV (test only)
       const extracted = extractPCMFromWav(audioFileData);
@@ -308,9 +307,9 @@ async function testScryptedIntercom(api: ReolinkBaichuanApi, channel: number = 0
       pcmData = Buffer.alloc(1600); // 100ms silence
     }
 
-    // Send audio via ScryptedIntercom (handles encoding internally)
+    // Send audio via Intercom
     await intercom.sendAudio(pcmData);
-    logSuccess(`Audio sent via ScryptedIntercom (${pcmData.length} bytes PCM)`);
+    logSuccess(`Audio sent via Intercom (${pcmData.length} bytes PCM)`);
 
     // Wait a bit for any audio coming back
     await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -323,11 +322,11 @@ async function testScryptedIntercom(api: ReolinkBaichuanApi, channel: number = 0
 
     // Stop intercom
     await intercom.stop();
-    logSuccess("ScryptedIntercom stopped");
+    logSuccess("Intercom stopped");
 
     return true;
   } catch (error) {
-    logError("Error while running ScryptedIntercom test", error);
+    logError("Error while running Intercom test", error);
     return false;
   }
 }
@@ -376,8 +375,8 @@ async function runAudioTests() {
     // Test Send Audio Data
     results.sendAudioData = await testSendAudioData(api, channel);
 
-    // Test ScryptedIntercom
-    results.scryptedIntercom = await testScryptedIntercom(api, channel);
+    // Test Intercom
+    results.intercom = await testIntercom(api, channel);
 
     // Summary
     console.log("\n");

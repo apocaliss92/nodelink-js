@@ -478,7 +478,7 @@ export class Rfc4571Muxer {
     // Timestamp tracking
     // bcmedia microseconds is a u32 clock that may wrap (2^32) and may reset on stream restarts.
     // Additionally, it may jump forward unexpectedly. Since we do not buffer, large forward jumps
-    // cause downstream schedulers (e.g. Scrypted) to detect discontinuities.
+    // cause downstream schedulers to detect discontinuities.
     //
     // Strategy:
     // - unwrap u32 wraps when likely

@@ -1,6 +1,6 @@
 /**
  * TypeScript types for Baichuan API responses and parameters.
- * Based on Scrypted reolink-api.ts and Reolink API documentation.
+ * Based on Reolink API documentation.
  */
 
 export interface OsdChannel {

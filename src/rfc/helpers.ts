@@ -1,11 +1,6 @@
 /**
- * Helper functions and snippets for Scrypted integration.
- * Based on Scrypted plugins: wyze (getVideoStream) and tapo (startIntercom).
- * 
- * References:
- * - https://github.com/koush/scrypted/blob/main/plugins/wyze/src/main.py
- * - https://github.com/koush/scrypted/blob/2cc7ab08fd6fc58638dba82e0fd83c4cb7d0bb87/plugins/tapo/src/main.ts
- * - https://github.com/koush/scrypted/blob/2cc7ab08fd6fc58638dba82e0fd83c4cb7d0bb87/plugins/onvif/src/onvif-intercom.ts
+ * Helper functions for video streaming and two-way audio integration.
+ * Based on implementations from various plugins (wyze, tapo, onvif).
  */
 
 import type { ReolinkBaichuanApi } from "../reolink/baichuan/ReolinkBaichuanApi";
@@ -15,9 +10,9 @@ import { spawn } from "node:child_process";
 import { BaichuanVideoStream } from "../baichuan/stream/BaichuanVideoStream";
 
 /**
- * Scrypted VideoStream options
+ * VideoStream options
  */
-export interface ScryptedVideoStreamOptions {
+export interface VideoStreamOptions {
   channel: number;
   profile: StreamProfile; // "main" | "sub" | "ext"
   api: ReolinkBaichuanApi;
@@ -28,9 +23,9 @@ export interface ScryptedVideoStreamOptions {
 }
 
 /**
- * Scrypted MediaStream response
+ * MediaStream response
  */
-export interface ScryptedMediaStream {
+export interface MediaStream {
   url?: string;
   container?: string;
   video?: {
@@ -46,8 +41,7 @@ export interface ScryptedMediaStream {
 }
 
 /**
- * Scrypted ResponseMediaStreamOptions (similar to Scrypted SDK)
- * Based on Scrypted Reolink plugin implementation
+ * ResponseMediaStreamOptions - Stream profile metadata
  */
 export interface ResponseMediaStreamOptions {
   id: string;
@@ -69,12 +63,12 @@ export interface ResponseMediaStreamOptions {
 }
 
 /**
- * Get video stream for Scrypted integration.
+ * Get video stream metadata and RTSP URL.
  * Similar to wyze getVideoStream implementation.
  * 
- * Returns a MediaStream object compatible with Scrypted VideoCamera interface.
+ * Returns a MediaStream object with stream information and RTSP URL.
  */
-export async function getVideoStream(options: ScryptedVideoStreamOptions): Promise<ScryptedMediaStream> {
+export async function getVideoStream(options: VideoStreamOptions): Promise<MediaStream> {
   const { channel, profile, api, rtspHost, rtspPort, rtspUsername, rtspPassword } = options;
 
   // Get stream metadata to determine codec and resolution
@@ -95,7 +89,7 @@ export async function getVideoStream(options: ScryptedVideoStreamOptions): Promi
     stream: profile,
   });
 
-  // Map video codec to Scrypted format
+  // Map video codec to standard format
   const videoCodecMap: Record<string, string> = {
     "H.264": "h264",
     "H.265": "hevc",
@@ -105,7 +99,7 @@ export async function getVideoStream(options: ScryptedVideoStreamOptions): Promi
 
   const videoCodec = videoCodecMap[stream.videoEncType] ?? stream.videoEncType.toLowerCase();
 
-  const result: ScryptedMediaStream = {
+  const result: MediaStream = {
     url: rtspUrl,
     container: "rtsp",
     video: {
@@ -129,11 +123,9 @@ export async function getVideoStream(options: ScryptedVideoStreamOptions): Promi
 }
 
 /**
- * Get constructed video stream options for Scrypted integration.
- * Similar to Scrypted Reolink plugin getConstructedVideoStreamOptions().
+ * Get constructed video stream options for all available profiles.
  * 
  * Returns all available stream profiles (main, sub, ext) with their metadata.
- * Based on: https://github.com/koush/scrypted/blob/main/plugins/reolink/src/main.ts
  */
 export async function getConstructedVideoStreamOptions(
   channel: number,
@@ -147,7 +139,7 @@ export async function getConstructedVideoStreamOptions(
   const metadata = await api.getStreamMetadata(channel);
   const options: ResponseMediaStreamOptions[] = [];
 
-  // Map video codec to Scrypted format
+  // Map video codec to standard format
   const videoCodecMap: Record<string, string> = {
     "H.264": "h264",
     "H.265": "hevc",
@@ -189,15 +181,15 @@ export async function getConstructedVideoStreamOptions(
 }
 
 /**
- * Two-way audio intercom options for Scrypted
+ * Two-way audio intercom options
  */
-export interface ScryptedIntercomOptions {
+export interface IntercomOptions {
   channel: number;
   api: ReolinkBaichuanApi;
 }
 
 /**
- * ScryptedIntercom - Two-way audio support for Reolink cameras via Baichuan protocol.
+ * Intercom - Two-way audio support for Reolink cameras via Baichuan protocol.
  * 
  * Audio Format Requirements (for sending audio TO camera):
  * =========================================================
@@ -207,20 +199,18 @@ export interface ScryptedIntercomOptions {
  * `TalkConfig` (cmd_id=201). Audio data is then sent as BcMedia ADPCM packets
  * inside Talk (cmd_id=202) payloads.
  *
- * This helper assumes Scrypted/ffmpeg is responsible for producing the correct
+ * This helper assumes the caller (e.g., ffmpeg) is responsible for producing the correct
  * ADPCM byte stream. No encoding is performed here.
  * 
  * Note: Audio reception is handled via the video stream, not through this intercom interface.
- * 
- * Reference: https://github.com/koush/scrypted/blob/2cc7ab08fd6fc58638dba82e0fd83c4cb7d0bb87/plugins/onvif/src/onvif-intercom.ts
  */
-export class ScryptedIntercom {
+export class Intercom {
   private api: ReolinkBaichuanApi;
   private channel: number;
   private active = false;
   private session: Awaited<ReturnType<ReolinkBaichuanApi["createTalkSession"]>> | undefined;
 
-  constructor(options: ScryptedIntercomOptions) {
+  constructor(options: IntercomOptions) {
     this.api = options.api;
     this.channel = options.channel;
   }
@@ -242,7 +232,7 @@ export class ScryptedIntercom {
   /**
    * Send audio data to camera.
    * 
-   * @param audioData - ADPCM byte stream produced by Scrypted/ffmpeg.
+   * @param audioData - ADPCM byte stream produced by the caller (e.g., ffmpeg).
    *                    No encoding is performed - data is sent directly to the camera.
    */
   async sendAudio(audioData: Buffer): Promise<void> {
@@ -273,10 +263,10 @@ export class ScryptedIntercom {
 }
 
 /**
- * Event handler for Scrypted integration.
- * Subscribes to events and emits them in Scrypted-compatible format.
+ * Event handler for Baichuan events.
+ * Subscribes to events and emits them in a standard format.
  */
-export class ScryptedEventEmitter {
+export class BaichuanEventEmitter {
   private api: ReolinkBaichuanApi;
   private subscribed = false;
   private onEventHandler: ((event: ReolinkEvent) => void) | undefined;
@@ -321,7 +311,7 @@ export class ScryptedEventEmitter {
 }
 
 /**
- * Stream frame data for Scrypted rebroadcast.
+ * Stream frame data for rebroadcast.
  * Similar to Wyze forkAndStream() implementation.
  * 
  * Returns an async generator that yields:
@@ -330,9 +320,7 @@ export class ScryptedEventEmitter {
  * - codec: string | null (audio codec name, null for video)
  * - sampleRate: number | null (audio sample rate, null for video)
  * 
- * Reference: https://github.com/koush/scrypted/blob/main/plugins/wyze/src/main.py#L393
- * 
- * Usage in Scrypted:
+ * Usage example:
  * ```typescript
  * async *forkAndStream(profile: StreamProfile) {
  *   const gen = createNativeStream(this.api, this.channel, profile);

@@ -81,7 +81,7 @@ export class BaichuanClient extends EventEmitter<{
    * Process-wide streaming activity registry.
    *
    * Why this exists:
-   * - Consumers (e.g. Scrypted) may create multiple BaichuanClient instances per device:
+   * - Consumers may create multiple BaichuanClient instances per device:
    *   one for control/polling and one for streaming.
    * - Passive sleep inference should treat the device as awake while ANY client is actively streaming,
    *   even if the current client instance is idle/disconnected.

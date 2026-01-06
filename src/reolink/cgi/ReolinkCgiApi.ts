@@ -791,7 +791,7 @@ export class ReolinkCgiApi {
     return rsp?.[0];
   }
 
-  /** Set channel OSD. Accepts either a full `Osd` object (like Scrypted) or a minimal `{ Osd: ... }` payload. */
+  /** Set channel OSD. Accepts either a full `Osd` object or a minimal `{ Osd: ... }` payload. */
   async setOsd(channel: number, osd: any): Promise<void> {
     const valueOsd = osd?.value?.Osd ?? osd?.Osd;
     const osdChannel = valueOsd?.osdChannel ?? osd?.osdChannel;

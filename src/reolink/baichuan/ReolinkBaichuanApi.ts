@@ -2816,10 +2816,10 @@ ${xmlDateTimePayload("endTime", end)}
    * - Channels: 1 (mono)
    * - Bitrate: 64k (typical)
    * 
-   * Note: Audio data should already be in G.711 A-law format (from Scrypted/ffmpeg).
+   * Note: Audio data should already be in G.711 A-law format (from ffmpeg).
    *       No encoding is performed - data is sent directly to the camera.
    * 
-   * @param audioData - G.711 A-law encoded audio data (from Scrypted/ffmpeg)
+   * @param audioData - G.711 A-law encoded audio data (from ffmpeg)
    * @param channel - Channel number (optional)
    */
   async sendAudioData(audioData: Buffer, channel?: number): Promise<void> {
@@ -5167,7 +5167,7 @@ ${xmlDateTimePayload("endTime", end)}
         // - credentials: user and password as query parameters
         const streamName = profile === "main" ? "main" : profile === "sub" ? "sub" : "ext";
         const streamType = profile === "sub" ? 1 : 0; // 0 for main/ext, 1 for sub
-        const rtmpId = `${streamName}.bcs`; // ID for Scrypted (main.bcs, sub.bcs, ext.bcs)
+        const rtmpId = `${streamName}.bcs`; // ID (main.bcs, sub.bcs, ext.bcs)
 
         // Use channel directly (0-based) in path, matching reolink_aio behavior
         const rtmpPath = `/bcs/channel${ch}_${streamName}.bcs`;

@@ -1,24 +1,20 @@
 /**
- * Example integration with Scrypted.
- * This file shows how to use the library with Scrypted's VideoCamera and TwoWayAudio interfaces.
- * 
- * Based on:
- * - wyze plugin: https://github.com/koush/scrypted/blob/main/plugins/wyze/src/main.py
- * - tapo plugin: https://github.com/koush/scrypted/blob/2cc7ab08fd6fc58638dba82e0fd83c4cb7d0bb87/plugins/tapo/src/main.ts
+ * Example integration for video streaming and two-way audio.
+ * This file shows how to use the library with video camera and intercom interfaces.
  */
 
 import { ReolinkBaichuanApi } from "../reolink/baichuan/ReolinkBaichuanApi";
-import { getVideoStream, getConstructedVideoStreamOptions, ScryptedIntercom, ScryptedEventEmitter } from "./helpers";
+import { getVideoStream, getConstructedVideoStreamOptions, Intercom, BaichuanEventEmitter } from "./helpers";
 import type { ReolinkEvent, StreamProfile } from "../reolink/baichuan/types";
 import type { ResponseMediaStreamOptions } from "./helpers";
 
 /**
- * Example Scrypted VideoCamera implementation
+ * Example Reolink camera implementation
  */
-export class ScryptedReolinkCamera {
+export class ReolinkCamera {
   private api: ReolinkBaichuanApi;
   private channel: number;
-  private eventEmitter: ScryptedEventEmitter;
+  private eventEmitter: BaichuanEventEmitter;
 
   constructor(
     host: string,
@@ -37,11 +33,11 @@ export class ScryptedReolinkCamera {
       channel,
     });
     this.channel = channel;
-    this.eventEmitter = new ScryptedEventEmitter(this.api);
+    this.eventEmitter = new BaichuanEventEmitter(this.api);
   }
 
   /**
-   * Get video stream for Scrypted VideoCamera interface.
+   * Get video stream metadata and RTSP URL.
    * Similar to wyze getVideoStream().
    */
   async getVideoStream(
@@ -68,8 +64,7 @@ export class ScryptedReolinkCamera {
   }
 
   /**
-   * Get constructed video stream options for Scrypted.
-   * Similar to Scrypted Reolink plugin getConstructedVideoStreamOptions().
+   * Get constructed video stream options for all available profiles.
    * Returns all available stream profiles with their metadata.
    */
   async getConstructedVideoStreamOptions(
@@ -113,13 +108,11 @@ export class ScryptedReolinkCamera {
    * Audio Format Requirements (for sending audio TO camera):
    * - Format: G.711 A-law (pcm_alaw), 8kHz, mono, 64k bitrate
    * - Audio reception is handled via the video stream, not through this interface
-   * 
-   * Reference: https://github.com/koush/scrypted/blob/2cc7ab08fd6fc58638dba82e0fd83c4cb7d0bb87/plugins/onvif/src/onvif-intercom.ts
    */
-  async startIntercom(): Promise<ScryptedIntercom> {
+  async startIntercom(): Promise<Intercom> {
     await this.api.login();
 
-    const intercom = new ScryptedIntercom({
+    const intercom = new Intercom({
       channel: this.channel,
       api: this.api,
     });
@@ -138,16 +131,16 @@ export class ScryptedReolinkCamera {
 }
 
 /**
- * Example usage in Scrypted plugin:
+ * Example usage:
  * 
  * ```typescript
- * import { ScryptedReolinkCamera } from "baichuan-protocol/scrypted/example";
+ * import { ReolinkCamera } from "baichuan-protocol/rfc/example";
  * 
  * class ReolinkPlugin implements DeviceProvider, VideoCamera {
- *   private camera: ScryptedReolinkCamera;
+ *   private camera: ReolinkCamera;
  * 
  *   constructor() {
- *     this.camera = new ScryptedReolinkCamera(
+ *     this.camera = new ReolinkCamera(
  *       "192.168.1.50",
  *       "admin",
  *       "password",

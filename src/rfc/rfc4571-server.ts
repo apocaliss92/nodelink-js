@@ -3,6 +3,7 @@ import netImpl from 'node:net';
 import type { ReolinkBaichuanApi } from '../reolink/baichuan/ReolinkBaichuanApi';
 import type { StreamProfile } from '../reolink/baichuan/types';
 import { BaichuanVideoStream } from '../baichuan/stream/BaichuanVideoStream';
+import { CompositeStream } from '../multifocal/compositeStream';
 import {
   buildRfc4571Sdp,
   extractH264ParamSetsFromAccessUnit,
@@ -14,9 +15,11 @@ import {
   type VideoType,
 } from './rfc4571';
 
-export interface ScryptedRfc4571TcpServerOptions {
+export interface Rfc4571TcpServerOptions {
   api: ReolinkBaichuanApi;
-  channel: number;
+  /** Channel number. If undefined, uses composite stream (multifocal cameras). */
+  channel?: number;
+  /** Stream profile. For composite streams, this is used for both wider and tele streams. */
   profile: StreamProfile;
   logger: Console;
 
@@ -47,9 +50,23 @@ export interface ScryptedRfc4571TcpServerOptions {
   password: string;
   /** If true, requires authentication before allowing stream access. Default: false. */
   requireAuth?: boolean;
+
+  /** Composite stream options (only used when channel is undefined) */
+  compositeOptions?: {
+    /** Wider channel (default: 0) */
+    widerChannel?: number;
+    /** Tele channel (default: 1) */
+    teleChannel?: number;
+    /** PIP position (default: "bottom-right") */
+    pipPosition?: "top-left" | "top-right" | "bottom-left" | "bottom-right" | "center" | "top-center" | "bottom-center" | "left-center" | "right-center";
+    /** PIP size (default: 0.25) */
+    pipSize?: number;
+    /** PIP margin in pixels (default: 10) */
+    pipMargin?: number;
+  };
 }
 
-export interface ScryptedRfc4571TcpServer {
+export interface Rfc4571TcpServer {
   host: string;
   port: number;
   sdp: string;
@@ -59,14 +76,14 @@ export interface ScryptedRfc4571TcpServer {
   password: string;
 
   server: net.Server;
-  videoStream: BaichuanVideoStream;
+  videoStream: BaichuanVideoStream | CompositeStream;
 
   close: (reason?: unknown) => Promise<void>;
 }
 
-export async function createScryptedRfc4571TcpServer(
-  options: ScryptedRfc4571TcpServerOptions,
-): Promise<ScryptedRfc4571TcpServer> {
+export async function createRfc4571TcpServer(
+  options: Rfc4571TcpServerOptions,
+): Promise<Rfc4571TcpServer> {
   const {
     api,
     channel,
@@ -83,70 +100,148 @@ export async function createScryptedRfc4571TcpServer(
     username,
     password,
     requireAuth = false,
+    compositeOptions,
   } = options;
 
-  const logPrefix = `[native-rfc4571 ch=${channel} profile=${profile}]`;
+  const isComposite = channel === undefined;
+  const logPrefix = isComposite 
+    ? `[native-rfc4571 composite profile=${profile}]`
+    : `[native-rfc4571 ch=${channel} profile=${profile}]`;
   const log = (message: string) => logger.warn(`${logPrefix} ${message}`);
 
   log(
-    `starting (host=${host} videoPT=${videoPayloadType} audioPT=${audioPayloadType} expectedVideoType=${expectedVideoType ?? 'n/a'} keyframeTimeoutMs=${keyframeTimeoutMs} uptimeRestartMs=${uptimeRestartMs} idleTeardownMs=${idleTeardownMs})`,
+    `starting (host=${host} videoPT=${videoPayloadType} audioPT=${audioPayloadType} expectedVideoType=${expectedVideoType ?? 'n/a'} keyframeTimeoutMs=${keyframeTimeoutMs} uptimeRestartMs=${uptimeRestartMs} idleTeardownMs=${idleTeardownMs} composite=${isComposite})`,
   );
 
-  const videoStream = new BaichuanVideoStream({
-    client: api.client,
-    api,
-    channel,
-    profile,
-    logger,
-  });
+  let videoStream: BaichuanVideoStream | CompositeStream;
+  let isCompositeStream = false;
 
-  await videoStream.start();
+  if (isComposite) {
+    // Use composite stream for multifocal cameras
+    const widerChannel = compositeOptions?.widerChannel ?? 0;
+    const teleChannel = compositeOptions?.teleChannel ?? 1;
+    // Profile is used for both wider and tele streams
+    const widerProfile = profile;
+    const teleProfile = profile;
 
-  log('baichuan stream started; waiting for keyframe to extract parameter sets');
+    log(`creating composite stream: wider(ch=${widerChannel}, profile=${widerProfile}), tele(ch=${teleChannel}, profile=${teleProfile})`);
+
+    videoStream = new CompositeStream({
+      api,
+      widerChannel,
+      teleChannel,
+      widerProfile,
+      teleProfile,
+      pipPosition: compositeOptions?.pipPosition ?? "bottom-right",
+      pipSize: compositeOptions?.pipSize ?? 0.25,
+      pipMargin: compositeOptions?.pipMargin ?? 10,
+      logger,
+    });
+
+    isCompositeStream = true;
+    await videoStream.start();
+    log('composite stream started; waiting for keyframe to extract parameter sets');
+  } else {
+    // Use regular BaichuanVideoStream
+    videoStream = new BaichuanVideoStream({
+      client: api.client,
+      api,
+      channel,
+      profile,
+      logger,
+    });
+
+    await videoStream.start();
+    log('baichuan stream started; waiting for keyframe to extract parameter sets');
+  }
 
   const waitForKeyframe = async (): Promise<
     { videoType: VideoType; accessUnit: Buffer } &
       { profileLevelId?: string; h264?: { sps: Buffer; pps: Buffer }; h265?: { vps: Buffer; sps: Buffer; pps: Buffer } }
   > => {
-    return await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        cleanup();
-        reject(new Error(`Timeout waiting for keyframe on native stream channel=${channel} profile=${profile}`));
-      }, keyframeTimeoutMs);
-
-      const onError = (e: unknown) => {
-        cleanup();
-        reject(e instanceof Error ? e : new Error(String(e)));
-      };
-
-      const onAu = (au: any) => {
-        if (!au?.isKeyframe) return;
-        const videoType = au.videoType as VideoType;
-        const accessUnit = au.data as Buffer;
-
-        if (videoType === 'H264') {
-          const { sps, pps, profileLevelId } = extractH264ParamSetsFromAccessUnit(accessUnit);
-          if (!sps || !pps) return;
+    if (isCompositeStream) {
+      // For composite stream, wait for first video frame and extract parameter sets
+      return await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
           cleanup();
-          resolve({ videoType, accessUnit, ...(profileLevelId ? { profileLevelId } : {}), h264: { sps, pps } });
-          return;
-        }
+          reject(new Error(`Timeout waiting for keyframe on composite stream profile=${profile}`));
+        }, keyframeTimeoutMs);
 
-        const { vps, sps, pps } = extractH265ParamSetsFromAccessUnit(accessUnit);
-        if (!vps || !sps || !pps) return;
-        cleanup();
-        resolve({ videoType, accessUnit, h265: { vps, sps, pps } });
-      };
+        const onError = (e: unknown) => {
+          cleanup();
+          reject(e instanceof Error ? e : new Error(String(e)));
+        };
 
-      const cleanup = () => {
-        clearTimeout(timeout);
-        videoStream.removeListener('error' as any, onError as any);
-        videoStream.removeListener('videoAccessUnit' as any, onAu as any);
-      };
+        const onFrame = (frame: Buffer) => {
+          // Composite stream outputs H.264 frames from ffmpeg
+          // Extract parameter sets from the first frame
+          const videoType: VideoType = 'H264'; // Composite stream always outputs H.264
+          
+          try {
+            const { sps, pps, profileLevelId } = extractH264ParamSetsFromAccessUnit(frame);
+            if (!sps || !pps) {
+              // Not a keyframe yet, wait for next
+              return;
+            }
+            cleanup();
+            resolve({ videoType, accessUnit: frame, ...(profileLevelId ? { profileLevelId } : {}), h264: { sps, pps } });
+          } catch (e) {
+            // If extraction fails, wait for next frame
+            return;
+          }
+        };
 
-      videoStream.on('error' as any, onError as any);
-      videoStream.on('videoAccessUnit' as any, onAu as any);
-    });
+        const cleanup = () => {
+          clearTimeout(timeout);
+          (videoStream as CompositeStream).removeListener('error' as any, onError as any);
+          (videoStream as CompositeStream).removeListener('videoFrame' as any, onFrame as any);
+        };
+
+        (videoStream as CompositeStream).on('error' as any, onError as any);
+        (videoStream as CompositeStream).on('videoFrame' as any, onFrame as any);
+      });
+    } else {
+      // For regular BaichuanVideoStream
+      return await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          cleanup();
+          reject(new Error(`Timeout waiting for keyframe on native stream channel=${channel} profile=${profile}`));
+        }, keyframeTimeoutMs);
+
+        const onError = (e: unknown) => {
+          cleanup();
+          reject(e instanceof Error ? e : new Error(String(e)));
+        };
+
+        const onAu = (au: any) => {
+          if (!au?.isKeyframe) return;
+          const videoType = au.videoType as VideoType;
+          const accessUnit = au.data as Buffer;
+
+          if (videoType === 'H264') {
+            const { sps, pps, profileLevelId } = extractH264ParamSetsFromAccessUnit(accessUnit);
+            if (!sps || !pps) return;
+            cleanup();
+            resolve({ videoType, accessUnit, ...(profileLevelId ? { profileLevelId } : {}), h264: { sps, pps } });
+            return;
+          }
+
+          const { vps, sps, pps } = extractH265ParamSetsFromAccessUnit(accessUnit);
+          if (!vps || !sps || !pps) return;
+          cleanup();
+          resolve({ videoType, accessUnit, h265: { vps, sps, pps } });
+        };
+
+        const cleanup = () => {
+          clearTimeout(timeout);
+          (videoStream as BaichuanVideoStream).removeListener('error' as any, onError as any);
+          (videoStream as BaichuanVideoStream).removeListener('videoAccessUnit' as any, onAu as any);
+        };
+
+        (videoStream as BaichuanVideoStream).on('error' as any, onError as any);
+        (videoStream as BaichuanVideoStream).on('videoAccessUnit' as any, onAu as any);
+      });
+    }
   };
 
   const keyframe = await waitForKeyframe();
@@ -159,15 +254,29 @@ export async function createScryptedRfc4571TcpServer(
   // Best-effort framerate for raw elementary-stream input.
   let fps = 25;
   try {
-    const metadata: any = await api.getStreamMetadata(channel);
-    const streams: any[] = Array.isArray(metadata)
-      ? metadata
-      : Array.isArray(metadata?.streams)
-        ? metadata.streams
-        : [];
-    const stream = streams.find((s: any) => s?.profile === profile);
-    const fr = Number(stream?.frameRate);
-    if (Number.isFinite(fr) && fr > 0) fps = fr;
+    if (isComposite) {
+      // For composite stream, get framerate from wider stream
+      const widerChannel = compositeOptions?.widerChannel ?? 0;
+      const metadata: any = await api.getStreamMetadata(widerChannel);
+      const streams: any[] = Array.isArray(metadata)
+        ? metadata
+        : Array.isArray(metadata?.streams)
+          ? metadata.streams
+          : [];
+      const stream = streams.find((s: any) => s?.profile === profile);
+      const fr = Number(stream?.frameRate);
+      if (Number.isFinite(fr) && fr > 0) fps = fr;
+    } else {
+      const metadata: any = await api.getStreamMetadata(channel!);
+      const streams: any[] = Array.isArray(metadata)
+        ? metadata
+        : Array.isArray(metadata?.streams)
+          ? metadata.streams
+          : [];
+      const stream = streams.find((s: any) => s?.profile === profile);
+      const fr = Number(stream?.frameRate);
+      if (Number.isFinite(fr) && fr > 0) fps = fr;
+    }
   } catch {
     // ignore
   }
@@ -175,8 +284,15 @@ export async function createScryptedRfc4571TcpServer(
   log(`video framerate hint: ${fps} fps`);
 
   // Prime audio: detect ADTS and extract AudioSpecificConfig.
+  // Note: CompositeStream doesn't emit audio frames (ffmpeg handles audio internally if needed)
   let audio: { sampleRate: number; channels: number; configHex: string } | undefined;
   const tryPrimeAudio = async (): Promise<typeof audio> => {
+    if (isCompositeStream) {
+      // Composite stream doesn't emit audio frames separately
+      // Audio would need to be extracted from the wider stream if needed
+      return undefined;
+    }
+
     return await new Promise((resolve) => {
       let sawAnyAudio = false;
       let debugLogsLeft = 3;
@@ -204,10 +320,10 @@ export async function createScryptedRfc4571TcpServer(
 
       const cleanup = () => {
         clearTimeout(timeout);
-        videoStream.removeListener('audioFrame' as any, onAudio as any);
+        (videoStream as BaichuanVideoStream).removeListener('audioFrame' as any, onAudio as any);
       };
 
-      videoStream.on('audioFrame' as any, onAudio as any);
+      (videoStream as BaichuanVideoStream).on('audioFrame' as any, onAudio as any);
     });
   };
 
@@ -348,6 +464,13 @@ export async function createScryptedRfc4571TcpServer(
       restarting = false;
       close(e).catch(() => {});
       return;
+    }
+
+    // For composite stream, we need to wait for a new keyframe
+    // For BaichuanVideoStream, it will emit videoAccessUnit events automatically
+    if (isCompositeStream) {
+      // Composite stream will emit videoFrame events automatically after restart
+      // No need to wait for keyframe here as we'll get frames from ffmpeg
     }
 
     restarting = false;
@@ -496,24 +619,64 @@ export async function createScryptedRfc4571TcpServer(
   });
 
   // Attach stream forwarding.
-  videoStream.on('videoAccessUnit' as any, (au: any) => {
-    touchActivity();
-    try {
-      muxer.sendVideoAccessUnit(au.videoType, au.data, au.isKeyframe, au.microseconds);
-    } catch (e) {
-      close(e).catch(() => {});
-    }
-  });
-
-  if (aacAudio) {
-    videoStream.on('audioFrame' as any, (frame: Buffer) => {
+  if (isCompositeStream) {
+    // Composite stream emits videoFrame (Buffer) - H.264 frames from ffmpeg in Annex-B format
+    (videoStream as CompositeStream).on('videoFrame' as any, (frame: Buffer) => {
       touchActivity();
       try {
-        muxer.sendAudioAdtsFrame(frame);
+        // Composite stream always outputs H.264
+        // Detect if it's a keyframe by checking for IDR NAL unit (type 5)
+        let isKeyframe = false;
+        try {
+          // Check for start codes and IDR NAL units
+          for (let i = 0; i < frame.length - 4; i++) {
+            if (frame[i] === 0x00 && frame[i + 1] === 0x00) {
+              let nalStart = -1;
+              if (frame[i + 2] === 0x01) {
+                nalStart = i + 3;
+              } else if (frame[i + 2] === 0x00 && frame[i + 3] === 0x01) {
+                nalStart = i + 4;
+              }
+              
+              if (nalStart >= 0 && nalStart < frame.length) {
+                const nalType = (frame[nalStart] ?? 0) & 0x1f;
+                if (nalType === 5) {
+                  // IDR NAL unit - this is a keyframe
+                  isKeyframe = true;
+                  break;
+                }
+              }
+            }
+          }
+        } catch {
+          // If detection fails, assume it's not a keyframe
+        }
+        muxer.sendVideoAccessUnit('H264', frame, isKeyframe, undefined);
       } catch (e) {
         close(e).catch(() => {});
       }
     });
+  } else {
+    // BaichuanVideoStream emits videoAccessUnit with metadata
+    (videoStream as BaichuanVideoStream).on('videoAccessUnit' as any, (au: any) => {
+      touchActivity();
+      try {
+        muxer.sendVideoAccessUnit(au.videoType, au.data, au.isKeyframe, au.microseconds);
+      } catch (e) {
+        close(e).catch(() => {});
+      }
+    });
+
+    if (aacAudio) {
+      (videoStream as BaichuanVideoStream).on('audioFrame' as any, (frame: Buffer) => {
+        touchActivity();
+        try {
+          muxer.sendAudioAdtsFrame(frame);
+        } catch (e) {
+          close(e).catch(() => {});
+        }
+      });
+    }
   }
 
   videoStream.on('error' as any, (e: unknown) => {
