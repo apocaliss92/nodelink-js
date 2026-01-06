@@ -697,13 +697,15 @@ export class BaichuanClient extends EventEmitter<{
         reason: pending?.reason ?? "socket_closed",
       };
 
-      this.logFixed("disconnected", JSON.stringify({
-        transport: "tcp",
-        host: this.opts.host,
-        port: this.opts.port ?? BC_TCP_DEFAULT_PORT,
-        lastRx: this.lastRxInfo?.cmdId,
-        lastTx: this.lastTxInfo?.cmdId,
-      }));
+      const tcpDisconnectParts: string[] = [
+        `transport=tcp`,
+        `host=${this.opts.host}`,
+      ];
+      const tcpPort = this.opts.port ?? BC_TCP_DEFAULT_PORT;
+      if (tcpPort != null) tcpDisconnectParts.push(`port=${tcpPort}`);
+      if (this.lastRxInfo?.cmdId != null) tcpDisconnectParts.push(`lastRxCmdId=${this.lastRxInfo.cmdId}`);
+      if (this.lastTxInfo?.cmdId != null) tcpDisconnectParts.push(`lastTxCmdId=${this.lastTxInfo.cmdId}`);
+      this.logFixed("disconnected", tcpDisconnectParts.join(" "));
       this.emit("close");
       // Reject all pending promises asynchronously to allow catch handlers to be attached
       // This prevents unhandled rejections when the socket closes
@@ -728,7 +730,7 @@ export class BaichuanClient extends EventEmitter<{
       sock.once("error", (e) => reject(e));
     });
 
-    this.logFixed("connected", { transport: "tcp", host: this.opts.host, port: this.opts.port ?? BC_TCP_DEFAULT_PORT });
+    this.logFixed("connected", `transport=tcp host=${this.opts.host} port=${port}`);
 
     this.startKeepAlive();
     this.kickIdleDisconnectTimer();
@@ -774,13 +776,14 @@ export class BaichuanClient extends EventEmitter<{
         reason: pending?.reason ?? "socket_closed",
       };
 
-      this.logFixed("disconnected", {
-        transport: "udp",
-        host: this.opts.host,
-        uid: this.opts.uid,
-        lastRx: this.lastRxInfo,
-        lastTx: this.lastTxInfo,
-      });
+      const udpDisconnectParts: string[] = [
+        `transport=udp`,
+        `host=${this.opts.host}`,
+      ];
+      if (this.opts.uid) udpDisconnectParts.push(`uid=${this.opts.uid}`);
+      if (this.lastRxInfo?.cmdId != null) udpDisconnectParts.push(`lastRxCmdId=${this.lastRxInfo.cmdId}`);
+      if (this.lastTxInfo?.cmdId != null) udpDisconnectParts.push(`lastTxCmdId=${this.lastTxInfo.cmdId}`);
+      this.logFixed("disconnected", udpDisconnectParts.join(" "));
       // Mark session state as invalid; a new connect/login is required.
       this.loggedIn = false;
       this.subscribed = false;
@@ -831,7 +834,7 @@ export class BaichuanClient extends EventEmitter<{
 
     await sock.connect();
 
-    this.logFixed("connected", { transport: "udp", host: this.opts.host, uid: this.opts.uid });
+    this.logFixed("connected", `transport=udp host=${this.opts.host} uid=${this.opts.uid}`);
     this.startKeepAlive();
     this.kickIdleDisconnectTimer();
   }
