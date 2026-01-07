@@ -714,6 +714,19 @@ export class BaichuanClient extends EventEmitter<{
       for (const f of frames) this.handleFrame(f);
     });
     sock.on("close", () => {
+      // Ensure socket is completely destroyed and listeners are removed
+      if (sock === this.tcpSocket) {
+        this.tcpSocket = undefined;
+      }
+      
+      // Remove all listeners to prevent memory leaks
+      sock.removeAllListeners();
+      
+      // Ensure socket is destroyed
+      if (!sock.destroyed) {
+        sock.destroy();
+      }
+
       this.stopKeepAlive();
       this.socketClosed = true;
 
@@ -735,6 +748,11 @@ export class BaichuanClient extends EventEmitter<{
       if (this.lastRxInfo?.cmdId != null) tcpDisconnectParts.push(`lastRxCmdId=${this.lastRxInfo.cmdId}`);
       if (this.lastTxInfo?.cmdId != null) tcpDisconnectParts.push(`lastTxCmdId=${this.lastTxInfo.cmdId}`);
       this.logFixed("disconnected", tcpDisconnectParts.join(" "));
+      
+      // Reset state flags
+      this.loggedIn = false;
+      this.subscribed = false;
+      
       this.emit("close");
       // Reject all pending promises asynchronously to allow catch handlers to be attached
       // This prevents unhandled rejections when the socket closes
@@ -793,6 +811,16 @@ export class BaichuanClient extends EventEmitter<{
       for (const f of frames) this.handleFrame(f);
     });
     sock.on("close", () => {
+      // Ensure socket is completely cleaned up
+      if (sock === this.udpSocket) {
+        this.udpSocket = undefined;
+      }
+      
+      // Remove all listeners to prevent memory leaks
+      if (sock.removeAllListeners) {
+        sock.removeAllListeners();
+      }
+
       this.stopKeepAlive();
       this.socketClosed = true;
 
@@ -824,8 +852,6 @@ export class BaichuanClient extends EventEmitter<{
         this.videoSubscriptions.clear();
         this.recomputeGlobalStreamingContribution();
       }
-      // Drop the UDP stream so subsequent operations recreate it.
-      if (this.udpSocket === sock) this.udpSocket = undefined;
       this.emit("close");
       // Reject all pending promises asynchronously to allow catch handlers to be attached
       // This prevents unhandled rejections when the socket closes
@@ -895,17 +921,49 @@ export class BaichuanClient extends EventEmitter<{
       this.recomputeGlobalStreamingContribution();
     }
 
+    // Clean up TCP socket completely
     const tcp = this.tcpSocket;
     this.tcpSocket = undefined;
-    if (tcp) {
+    if (tcp && !tcp.destroyed) {
+      // Remove all listeners to prevent memory leaks
+      tcp.removeAllListeners();
+      // Destroy the socket completely
+      tcp.destroy();
+      // Wait for socket to be fully destroyed
       await new Promise<void>((resolve) => {
+        if (tcp.destroyed) {
+          resolve();
+          return;
+        }
         tcp.once("close", () => resolve());
-        tcp.destroy();
+        // Fallback timeout in case close event doesn't fire
+        setTimeout(() => resolve(), 100);
       });
     }
+
+    // Clean up UDP socket completely
     const udp = this.udpSocket;
     this.udpSocket = undefined;
-    if (udp) await udp.close();
+    if (udp) {
+      try {
+        // Remove all listeners before closing
+        if (udp.removeAllListeners) {
+          udp.removeAllListeners();
+        }
+        await udp.close();
+      } catch (e) {
+        // Ignore errors during UDP close
+        this.logDebug("udp_close_error", e);
+      }
+    }
+
+    // Clear pending operations
+    this.pending.clear();
+    
+    // Reset state flags
+    this.loggedIn = false;
+    this.subscribed = false;
+    this.socketClosed = true;
   }
 
   private handleFrame(frame: BaichuanFrame): void {
