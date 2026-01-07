@@ -456,6 +456,7 @@ export const DUAL_LENS_DUAL_MOTION_MODELS = new Set<string>([
 ]);
 
 export const DUAL_LENS_SINGLE_MOTION_MODELS = new Set<string>([
+  "Reolink TrackMix",
   "Reolink TrackMix PoE",
   "Reolink TrackMix WiFi",
   "RLC-81MA",
@@ -552,6 +553,7 @@ export class ReolinkBaichuanApi {
   private readonly host: string;
   private readonly username: string;
   private readonly password: string;
+  private readonly uid: string | undefined;
 
   private rebootAfterDisconnectionsPerMinute: number | undefined;
   private readonly disconnectStormVoluntaryAtMs: number[] = [];
@@ -593,6 +595,7 @@ export class ReolinkBaichuanApi {
     this.host = opts.host;
     this.username = opts.username;
     this.password = opts.password;
+    this.uid = opts.uid;
     this.httpClient = new ReolinkHttpClient({
       host: opts.host,
       username: opts.username,
@@ -2221,6 +2224,111 @@ ${xmlDateTimePayload("endTime", end)}
   async listRecordingFileNames(params: ListRecordingsParams): Promise<string[]> {
     const recs = await this.listRecordings(params);
     return recs.map((r) => r.fileName);
+  }
+
+  /**
+   * Convenience helper to list recordings in a given time window, optionally limiting the count.
+   *
+   * This wraps {@link ReolinkBaichuanApi.listRecordings | listRecordings} and post-filters/sorts the results by startTime.
+   */
+  async listRecordingsByTime(params: {
+    channel: number;
+    /** UID of the device; if omitted, defaults to this.uid when available. */
+    uid?: string;
+    start: Date;
+    end: Date;
+    streamType?: RecordingStreamType;
+    /** Comma-separated list of record types, e.g. "manual, sched, io, md, people". */
+    recordType?: string;
+    /**
+     * Maximum number of recordings to return (after filtering/sorting by time).
+     * If omitted, all recordings in the window are returned.
+     */
+    count?: number;
+    /** See {@link ListRecordingsParams.fallbackToAlarmVideo}. */
+    fallbackToAlarmVideo?: boolean;
+    /** See {@link ListRecordingsParams.maxIterations}. */
+    maxIterations?: number;
+  }): Promise<RecordingFile[]> {
+    const { channel, uid, start, end, streamType, recordType, count, fallbackToAlarmVideo, maxIterations } = params;
+
+    const effectiveUid = uid ?? this.uid;
+    if (!effectiveUid) {
+      throw new Error(
+        "UID is required to list recordings. Pass params.uid explicitly or ensure this.uid is set.",
+      );
+    }
+
+    const listParams: ListRecordingsParams = {
+      channel,
+      uid: effectiveUid,
+      start,
+      end,
+      ...(recordType ? { recordType } : {}),
+      ...(fallbackToAlarmVideo !== undefined ? { fallbackToAlarmVideo } : {}),
+      ...(maxIterations !== undefined ? { maxIterations } : {}),
+      ...(streamType ? { streamType } : {}),
+    };
+
+    const recs = await this.listRecordings(listParams);
+
+    // Normalize and filter by time window (defensive: some firmwares may return a wider range).
+    const startMs = start.getTime();
+    const endMs = end.getTime();
+    const normalized: RecordingFile[] = recs.map((r) => {
+      const s = r.startTime ?? r.parsedFileName?.start;
+      const e = r.endTime ?? r.parsedFileName?.end;
+      // Only set properties when defined to keep optional types happy with exactOptionalPropertyTypes.
+      return {
+        ...r,
+        ...(s ? { startTime: s } : {}),
+        ...(e ? { endTime: e } : {}),
+      };
+    });
+
+    const filtered = normalized
+      .filter((r) => {
+        if (!r.startTime) return false;
+        const t = r.startTime.getTime();
+        return t >= startMs && t <= endMs;
+      })
+      .sort((a, b) => {
+        const as = a.startTime?.getTime() ?? 0;
+        const bs = b.startTime?.getTime() ?? 0;
+        return as - bs;
+      });
+
+    if (typeof count === "number" && Number.isFinite(count) && count > 0) {
+      return filtered.slice(0, count);
+    }
+
+    return filtered;
+  }
+
+  /**
+   * Convenience helper to build playback/download URLs for a single recording.
+   *
+   * Currently returns the RTMP VOD URL (suitable for streaming/export via playback).
+   * Use {@link ReolinkBaichuanApi.downloadRecording | downloadRecording} for bit-identical file download.
+   */
+  async getRecordingPlaybackUrls(params: {
+    channel: number;
+    fileName: string;
+    streamType?: RecordingStreamType;
+    /** If true (default), ensure RTMP is enabled before returning the URL. */
+    ensureEnabled?: boolean;
+  }): Promise<{
+    /** RTMP VOD URL for playback/export. */
+    rtmpVodUrl: string;
+  }> {
+    const rtmpVodUrl = await this.getVodRtmpUrl({
+      channel: params.channel,
+      fileName: params.fileName,
+      ...(params.streamType ? { streamType: params.streamType } : {}),
+      ...(params.ensureEnabled !== undefined ? { ensureEnabled: params.ensureEnabled } : {}),
+    });
+
+    return { rtmpVodUrl };
   }
 
   /**
