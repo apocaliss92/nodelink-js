@@ -432,6 +432,65 @@ export interface RecordingFile {
   parsedFileName?: ParsedRecordingFileName;
 }
 
+/**
+ * Enriched recording file with all parsed metadata, ready for consumption.
+ * Contains detection flags, duration, timestamps in milliseconds, and playback URLs.
+ */
+export interface EnrichedRecordingFile {
+  /** Original file name/path from the camera */
+  fileName: string;
+  /** Unique identifier for the recording */
+  id: string;
+  /** Start time in milliseconds since epoch */
+  startTimeMs: number;
+  /** End time in milliseconds since epoch */
+  endTimeMs: number;
+  /** Duration in milliseconds */
+  durationMs: number;
+  /** File size in bytes (if available) */
+  sizeBytes?: number;
+  
+  // Detection flags (from hex decoding or recordType parsing)
+  /** Person/people detected */
+  hasPerson: boolean;
+  /** Vehicle detected */
+  hasVehicle: boolean;
+  /** Animal (dog/cat) detected */
+  hasAnimal: boolean;
+  /** Face detected */
+  hasFace: boolean;
+  /** Motion detected */
+  hasMotion: boolean;
+  /** Scheduled recording */
+  hasSchedule: boolean;
+  /** Doorbell/visitor event */
+  hasDoorbell: boolean;
+  /** Package event */
+  hasPackage: boolean;
+  /** RF sensor trigger */
+  hasRf: boolean;
+  /** Other AI detection */
+  hasOther: boolean;
+  
+  /** Original record type string from camera (e.g. "md,people,dog_cat") */
+  recordType?: string;
+  
+  /** RTMP VOD playback URL (if available) */
+  rtmpUrl?: string;
+  
+  /** Stream type hint (main/sub/unknown) */
+  streamHint: RecordingVodStreamHint;
+  
+  /** Device type (cam/hub) */
+  devType: RecordingDevType;
+  
+  /** Raw parsed filename data for advanced usage */
+  parsedFileName?: ParsedRecordingFileName;
+  
+  /** Original RecordingFile for reference */
+  raw: RecordingFile;
+}
+
 export interface ListRecordingsParams {
   channel: number;
   uid: string;

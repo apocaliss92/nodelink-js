@@ -2159,6 +2159,154 @@ export class BaichuanClient extends EventEmitter<{
   }
 
   /**
+   * Send CoverPreview command (cmd_id=298) to get an I-frame from a past recording.
+   * Similar to sendBinarySnapshot109 but handles the stream header + frame format
+   * instead of JPEG.
+   */
+  async sendBinaryCoverPreview(params: {
+    cmdId: number;
+    channel?: number;
+    payloadXml?: string;
+    extensionXml?: string;
+    messageClass?: number;
+    streamType?: number;
+    encryption?: EncryptionProtocol;
+    timeoutMs?: number;
+  }): Promise<Buffer> {
+    await this.connect();
+
+    const channel = params.channel ?? this.opts.channel ?? 0;
+    const channelId = params.channel == null ? 250 : channel + 1;
+
+    const msgNum = this.nextMsgNum();
+    const cmdId = params.cmdId;
+
+    const extXml = params.extensionXml ?? (params.channel != null ? buildChannelExtensionXml(channel) : "");
+    const payloadXml = params.payloadXml ?? "";
+
+    const messageClass = params.messageClass ?? BC_CLASS_MODERN_24;
+    const payloadOffset = Buffer.byteLength(extXml, "utf8");
+    const bodyLen = payloadOffset + Buffer.byteLength(payloadXml, "utf8");
+
+    const header = encodeHeader({
+      cmdId,
+      bodyLen,
+      channelId,
+      streamType: params.streamType ?? 0,
+      msgNum,
+      responseCode: 0,
+      messageClass,
+      payloadOffset,
+    });
+
+    const enc = params.encryption ?? this.enc;
+    const bodyBytes = this.encodeBodyXml(extXml, payloadXml, channelId, enc);
+    const wire = Buffer.concat([header, bodyBytes]);
+
+    const timeoutMs = params.timeoutMs ?? 30_000;
+    const chunks: Buffer[] = [];
+    let seenStreamHeader = false;
+
+    return await new Promise<Buffer>((resolve, reject) => {
+      let timeout: NodeJS.Timeout | undefined;
+      let done = false;
+
+      const cleanup = () => {
+        this.off("frame", onFrame);
+        if (timeout) clearTimeout(timeout);
+      };
+
+      const finish = (buf: Buffer) => {
+        if (done) return;
+        done = true;
+        cleanup();
+        resolve(buf);
+      };
+
+      const fail = (e: unknown) => {
+        if (done) return;
+        done = true;
+        cleanup();
+        reject(e instanceof Error ? e : new Error(String(e)));
+      };
+
+      const onFrame = (frame: BaichuanFrame) => {
+        if (frame.header.cmdId !== cmdId) return;
+
+        // If the request itself was rejected, fail fast
+        if (frame.header.msgNum === msgNum && frame.header.responseCode >= 400) {
+          fail(new Error(`Baichuan CoverPreview request rejected (cmdId=${cmdId} msgNum=${msgNum} responseCode=${frame.header.responseCode})`));
+          return;
+        }
+
+        try {
+          // CoverPreview flow:
+          // - reply 1: XML body (no binaryData)
+          // - reply 2..n: Extension has <binaryData>1</binaryData>, payload is binary chunks
+          let isBinaryChunk = false;
+          if (frame.extension.length > 0) {
+            const extDec = this.tryDecryptXml(frame.extension, frame.header.channelId, enc);
+            if (extDec.includes("<binaryData>1</binaryData>")) {
+              isBinaryChunk = true;
+            }
+          }
+
+          const decrypted = this.tryDecryptBinary(frame.payload, frame.header.channelId, enc);
+          if (decrypted.length === 0) return;
+
+          // Skip XML responses
+          const head = decrypted.subarray(0, Math.min(16, decrypted.length)).toString("utf8");
+          const looksLikeXml = head.startsWith("<?xml") || head.trimStart().startsWith("<");
+          if (!isBinaryChunk && looksLikeXml) return;
+
+          // For CoverPreview, look for stream header magic "1001"
+          if (!seenStreamHeader) {
+            const streamMagic = decrypted.subarray(0, 4).toString("ascii");
+            if (streamMagic === "1001") {
+              seenStreamHeader = true;
+              chunks.push(decrypted);
+            } else if (isBinaryChunk) {
+              // Binary chunk but no stream header yet - might be continuation
+              chunks.push(decrypted);
+            }
+          } else {
+            chunks.push(decrypted);
+          }
+
+          // CoverPreview ends when responseCode is 201 (end of stream)
+          if (frame.header.responseCode === 201) {
+            const combined = Buffer.concat(chunks);
+            finish(combined);
+          }
+        } catch (e) {
+          fail(e);
+        }
+      };
+
+      timeout = setTimeout(() => {
+        // If we have data, return what we have instead of failing
+        if (chunks.length > 0) {
+          const combined = Buffer.concat(chunks);
+          finish(combined);
+        } else {
+          fail(new Error(`Baichuan timeout waiting CoverPreview push cmdId=${cmdId} msgNum=${msgNum}`));
+        }
+      }, timeoutMs);
+
+      // Attach listener BEFORE sending request
+      this.on("frame", onFrame);
+
+      try {
+        this.logDebug("tx", { cmdId, msgNum, channelId, messageClass, bodyLen, binary: true, coverPreview: true });
+        this.recordTx({ cmdId, responseCode: 0, msgNum, channelId, streamType: params.streamType ?? 0 });
+        this.writeWire(wire);
+      } catch (e) {
+        fail(e);
+      }
+    });
+  }
+
+  /**
    * Decrypts binary data (similar to tryDecryptXml but for binary responses).
    * Public method to allow ReolinkBaichuanApi to decrypt audio frames.
    */

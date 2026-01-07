@@ -46,35 +46,36 @@ import {
   BC_CMD_ID_VIDEO_STOP,
 } from "../../protocol/constants";
 import { buildAbilityInfoExtensionXml, buildBinaryExtensionXml, buildChannelExtensionXml, buildFloodlightManualXml, buildPreviewStopXml, buildPreviewXml, buildPtzControlXml, buildPtzPresetXml, buildPtzPresetXmlV2, buildSirenManualXml, buildSirenTimesXml, buildStartZoomFocusXml, getXmlText, xmlEscape } from "../../protocol/xml";
-import {
-  type AIEvent,
-  type AIState,
-  type BatteryInfo,
-  type ChannelStreamMetadata,
-  type DeviceAbilities,
-  type DeviceCapabilitiesResult,
-  type DeviceSupportFlags,
-  type DownloadRecordingParams,
-  type DualLensChannelAnalysis,
-  type DualLensChannelInfo,
-  type Events,
-  type ListRecordingsParams,
-  type OsdConfig,
-  type PirState,
-  type PtzCommand,
-  type PtzPreset,
-  type RecordingFile,
-  type RecordingStreamType,
-  type ReolinkEvent,
-  type ReolinkSimpleEvent,
-  type ReolinkSimpleEventType,
-  type SleepStatus,
-  type StreamMetadata,
-  type StreamProfile,
-  type SupportInfo,
-  type TwoWayAudioConfig,
-  type VideoCodec,
-  type WhiteLedState
+import type {
+  AIEvent,
+  AIState,
+  BatteryInfo,
+  ChannelStreamMetadata,
+  DeviceAbilities,
+  DeviceCapabilitiesResult,
+  DeviceSupportFlags,
+  DownloadRecordingParams,
+  DualLensChannelAnalysis,
+  DualLensChannelInfo,
+  EnrichedRecordingFile,
+  Events,
+  ListRecordingsParams,
+  OsdConfig,
+  PirState,
+  PtzCommand,
+  PtzPreset,
+  RecordingFile,
+  RecordingStreamType,
+  ReolinkEvent,
+  ReolinkSimpleEvent,
+  ReolinkSimpleEventType,
+  SleepStatus,
+  StreamMetadata,
+  StreamProfile,
+  SupportInfo,
+  TwoWayAudioConfig,
+  VideoCodec,
+  WhiteLedState
 } from "./types";
 
 import { parseRecordingFileName } from "./recordingFileName";
@@ -85,6 +86,7 @@ import { ReolinkHttpClient, type ReolinkHttpClientOptions } from "../http/Reolin
 import type { ReolinkCmdResponse } from "../http/types";
 import { computeDeviceCapabilities, flattenAbilitiesForChannel, parseSupportXml } from "./capabilities";
 import sharp from "sharp";
+import { channel } from "node:diagnostics_channel";
 
 export type ReolinkNvrChannelInfo = {
   channel: number;
@@ -615,7 +617,54 @@ export class ReolinkBaichuanApi {
     /** TTL in milliseconds (default 5 minutes) */
     ttlMs: number;
   }>();
-  
+
+  /**
+   * Queue for serializing listRecordings calls to prevent socket crashes from concurrent requests.
+   */
+  private recordingsQueue: Array<{
+    resolve: (value: any) => void;
+    reject: (error: any) => void;
+    operation: () => Promise<any>;
+  }> = [];
+  private recordingsQueueProcessing = false;
+
+  /**
+   * Process recordings queue sequentially to prevent socket crashes from concurrent requests.
+   */
+  private async processRecordingsQueue(): Promise<void> {
+    if (this.recordingsQueueProcessing || this.recordingsQueue.length === 0) {
+      return;
+    }
+
+    this.recordingsQueueProcessing = true;
+
+    while (this.recordingsQueue.length > 0) {
+      const item = this.recordingsQueue.shift()!;
+      try {
+        const result = await item.operation();
+        item.resolve(result);
+      } catch (error) {
+        item.reject(error);
+      }
+    }
+
+    this.recordingsQueueProcessing = false;
+  }
+
+  /**
+   * Enqueue a recordings operation to be processed sequentially.
+   */
+  private async enqueueRecordingsOperation<T>(operation: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      this.recordingsQueue.push({
+        resolve,
+        reject,
+        operation,
+      });
+      this.processRecordingsQueue();
+    });
+  }
+
   /** Default TTL for recordings cache (5 minutes) */
   private recordingsCacheTtlMs = 5 * 60 * 1000;
 
@@ -692,16 +741,16 @@ export class ReolinkBaichuanApi {
   private getCachedRecordings(channel: number, start: Date, end: Date, streamType: string): RecordingFile[] | undefined {
     const key = this.getRecordingsCacheKey(channel, start, end, streamType);
     const cached = this.recordingsCache.get(key);
-    
+
     if (!cached) return undefined;
-    
+
     const now = Date.now();
     if (now - cached.cachedAt > cached.ttlMs) {
       // Cache expired, remove it
       this.recordingsCache.delete(key);
       return undefined;
     }
-    
+
     return cached.recordings;
   }
 
@@ -1103,15 +1152,32 @@ export class ReolinkBaichuanApi {
       // NOTE: several firmwares return responseCode=400 with empty body when the camera is sleeping,
       // waking up, or when the session has expired (not only for bad credentials).
       if (frame.header.responseCode === 400) {
+        // Special case: FILE_INFO_LIST_GET with 400+empty body during pagination means no more pages.
+        // Don't retry to avoid disconnection loops - let the caller handle it as end of pagination.
+        if (params.cmdId === BC_CMD_ID_FILE_INFO_LIST_GET && frame.body.length === 0) {
+          throw new Error(
+            'Baichuan request failed (responseCode 400, empty body). Possible causes: camera sleeping/waking (battery), expired session, or invalid username/password.',
+          );
+        }
+
         if (retry > 0) {
           // If the body is empty, try forcing a re-login once before backing off.
           // This helps for expired sessions while staying safe for sleeping cameras.
+          // However, avoid re-login if the socket is not connected to prevent disconnection loops
           if (frame.body.length === 0) {
-            try {
-              this.client.loggedIn = false;
-              await this.client.login();
-            } catch {
-              // ignore; we will still back off and retry
+            const isConnected = this.client.isSocketConnected();
+            if (isConnected) {
+              try {
+                this.client.loggedIn = false;
+                await this.client.login();
+              } catch {
+                // ignore; we will still back off and retry
+              }
+            } else {
+              // Socket not connected, don't try to login - wait for reconnection
+              const delayMs = 2000;
+              await new Promise((resolve) => setTimeout(resolve, delayMs));
+              return await this.sendXml(params, retry - 1);
             }
           }
 
@@ -2155,19 +2221,14 @@ export class ReolinkBaichuanApi {
    * - cmdId=16: close handle
    */
   async listRecordings(params: ListRecordingsParams): Promise<RecordingFile[]> {
-    const dbg = this.client.getDebugConfig?.();
-    const logger = this.logger;
-
-    try {
-      recordingsTraceLog(dbg, logger, "listRecordings", `Init recordings lookup: ${JSON.stringify(params)}`);
+    // Enqueue the operation to prevent concurrent calls that crash the socket
+    return await this.enqueueRecordingsOperation(async () => {
+      const dbg = this.client.getDebugConfig?.();
+      const logger = this.logger;
 
       try {
-        await this.client.login();
-        recordingsTraceLog(dbg, logger, "listRecordings", `Login successful`);
-      } catch (e) {
-        recordingsTraceLog(dbg, logger, "listRecordings", `Login failed: ${e instanceof Error ? e.message : String(e)}`);
-        throw e;
-      }
+        recordingsTraceLog(dbg, logger, "listRecordings", `Init recordings lookup: ${JSON.stringify(params)}`);
+
 
       const channel = this.normalizeChannel(params.channel);
       const uid = params.uid;
@@ -2179,26 +2240,26 @@ export class ReolinkBaichuanApi {
 
       recordingsTraceLog(dbg, logger, "listRecordings", `Normalized params: channel=${channel}, uid=${uid}, streamType=${streamType}, maxIterations=${maxIterations}`);
 
-    // Log the date components that will be sent to camera (xmlDateTimePayload uses local time methods)
-    const startLocalParts = {
-      year: params.start.getFullYear(),
-      month: params.start.getMonth() + 1,
-      day: params.start.getDate(),
-      hour: params.start.getHours(),
-      minute: params.start.getMinutes(),
-      second: params.start.getSeconds(),
-    };
-    const endLocalParts = {
-      year: params.end.getFullYear(),
-      month: params.end.getMonth() + 1,
-      day: params.end.getDate(),
-      hour: params.end.getHours(),
-      minute: params.end.getMinutes(),
-      second: params.end.getSeconds(),
-    };
-    recordingsTraceLog(dbg, logger, "listRecordings", `Date components for camera (local): start=${startLocalParts.year}-${String(startLocalParts.month).padStart(2, '0')}-${String(startLocalParts.day).padStart(2, '0')} ${String(startLocalParts.hour).padStart(2, '0')}:${String(startLocalParts.minute).padStart(2, '0')}:${String(startLocalParts.second).padStart(2, '0')} (UTC: ${params.start.toISOString()}), end=${endLocalParts.year}-${String(endLocalParts.month).padStart(2, '0')}-${String(endLocalParts.day).padStart(2, '0')} ${String(endLocalParts.hour).padStart(2, '0')}:${String(endLocalParts.minute).padStart(2, '0')}:${String(endLocalParts.second).padStart(2, '0')} (UTC: ${params.end.toISOString()})`);
+      // Log the date components that will be sent to camera (xmlDateTimePayload uses local time methods)
+      const startLocalParts = {
+        year: params.start.getFullYear(),
+        month: params.start.getMonth() + 1,
+        day: params.start.getDate(),
+        hour: params.start.getHours(),
+        minute: params.start.getMinutes(),
+        second: params.start.getSeconds(),
+      };
+      const endLocalParts = {
+        year: params.end.getFullYear(),
+        month: params.end.getMonth() + 1,
+        day: params.end.getDate(),
+        hour: params.end.getHours(),
+        minute: params.end.getMinutes(),
+        second: params.end.getSeconds(),
+      };
+      recordingsTraceLog(dbg, logger, "listRecordings", `Date components for camera (local): start=${startLocalParts.year}-${String(startLocalParts.month).padStart(2, '0')}-${String(startLocalParts.day).padStart(2, '0')} ${String(startLocalParts.hour).padStart(2, '0')}:${String(startLocalParts.minute).padStart(2, '0')}:${String(startLocalParts.second).padStart(2, '0')} (UTC: ${params.start.toISOString()}), end=${endLocalParts.year}-${String(endLocalParts.month).padStart(2, '0')}-${String(endLocalParts.day).padStart(2, '0')} ${String(endLocalParts.hour).padStart(2, '0')}:${String(endLocalParts.minute).padStart(2, '0')}:${String(endLocalParts.second).padStart(2, '0')} (UTC: ${params.end.toISOString()})`);
 
-    const openXml = `<?xml version="1.0" encoding="UTF-8" ?>
+      const openXml = `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <FileInfoList version="1.1">
 <FileInfo>
@@ -2215,20 +2276,36 @@ ${xmlDateTimePayload("endTime", params.end)}
 </body>`;
 
       recordingsTraceLog(dbg, logger, "listRecordings", `Opening FileInfoList: channel=${channel}, uid=${uid}, streamType=${streamType}`);
-    // Use explicit timeout for recording operations (15 seconds per request)
-    const openResp = await this.sendXml({ cmdId: BC_CMD_ID_FILE_INFO_LIST_OPEN, channel, payloadXml: openXml, timeoutMs: 15_000 });
-    const handleText = getXmlText(openResp, "handle");
-    if (!handleText) {
-      throw new Error("FileInfoList open did not return <handle>");
-    }
+      
+      // Check connection state before opening FileInfoList
+      const isConnectedBefore = this.client.isSocketConnected();
+      const isLoggedInBefore = this.client.loggedIn;
+      recordingsTraceLog(dbg, logger, "listRecordings", `Before FILE_INFO_LIST_OPEN: connected=${isConnectedBefore}, loggedIn=${isLoggedInBefore}`);
+      
+      // Use explicit timeout for recording operations (15 seconds per request)
+      let openResp: string;
+      try {
+        recordingsTraceLog(dbg, logger, "listRecordings", `Sending FILE_INFO_LIST_OPEN (cmdId=${BC_CMD_ID_FILE_INFO_LIST_OPEN})`);
+        openResp = await this.sendXml({ cmdId: BC_CMD_ID_FILE_INFO_LIST_OPEN, channel, payloadXml: openXml, timeoutMs: 15_000 });
+        recordingsTraceLog(dbg, logger, "listRecordings", `FILE_INFO_LIST_OPEN successful`);
+      } catch (e) {
+        const isConnectedAfter = this.client.isSocketConnected();
+        const isLoggedInAfter = this.client.loggedIn;
+        recordingsTraceLog(dbg, logger, "listRecordings", `FILE_INFO_LIST_OPEN failed: ${e instanceof Error ? e.message : String(e)}, connected=${isConnectedAfter}, loggedIn=${isLoggedInAfter}`);
+        throw e;
+      }
+      const handleText = getXmlText(openResp, "handle");
+      if (!handleText) {
+        throw new Error("FileInfoList open did not return <handle>");
+      }
 
-    const handle = Number.parseInt(handleText, 10);
-    if (!Number.isFinite(handle)) {
-      throw new Error(`FileInfoList open returned invalid handle: ${handleText}`);
-    }
-    recordingsTraceLog(dbg, logger, "listRecordings", `FileInfoList opened with handle=${handle}`);
+      const handle = Number.parseInt(handleText, 10);
+      if (!Number.isFinite(handle)) {
+        throw new Error(`FileInfoList open returned invalid handle: ${handleText}`);
+      }
+      recordingsTraceLog(dbg, logger, "listRecordings", `FileInfoList opened with handle=${handle}`);
 
-    const pageXml = `<?xml version="1.0" encoding="UTF-8" ?>
+      const pageXml = `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <FileInfoList version="1.1">
 <FileInfo>
@@ -2243,26 +2320,34 @@ ${xmlDateTimePayload("endTime", params.end)}
       const files: RecordingFile[] = [];
       // Typical page size for Reolink cameras - if we get this many results, there might be more pages
       const TYPICAL_PAGE_SIZE = 40;
-      
+
       try {
         let finished = false;
         for (let i = 0; i < maxIterations && !finished; i++) {
           recordingsTraceLog(dbg, logger, "listRecordings", `Fetching page ${i + 1}/${maxIterations} (handle=${handle})`);
-          
+
           let resp: string;
           try {
             // Use explicit timeout for each pagination request (15 seconds)
             resp = await this.sendXml({ cmdId: BC_CMD_ID_FILE_INFO_LIST_GET, channel, payloadXml: pageXml, timeoutMs: 15_000 });
             recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1} GET response received`);
           } catch (e) {
-            recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1} GET failed: ${e instanceof Error ? e.message : String(e)}, stack: ${e instanceof Error ? e.stack : 'no stack'}`);
+            // For FILE_INFO_LIST_GET, a 400 with empty body during pagination typically means
+            // no more pages available or handle expired - treat as end of pagination
+            const errorMsg = e instanceof Error ? e.message : String(e);
+            if (errorMsg.includes('responseCode 400, empty body')) {
+              recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1} GET returned 400 (empty body) - treating as end of pagination`);
+              finished = true;
+              break;
+            }
+            recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1} GET failed: ${errorMsg}, stack: ${e instanceof Error ? e.stack : 'no stack'}`);
             throw e;
           }
 
           const pageFiles = parseRecordingFilesFromXml(resp);
           files.push(...pageFiles);
           recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1}: found ${pageFiles.length} files (total: ${files.length})`);
-          
+
           const bFinishedText = getXmlText(resp, "bFinished") ?? getXmlText(resp, "finished");
           if (bFinishedText != null) {
             // Explicit finished flag from camera
@@ -2286,7 +2371,7 @@ ${xmlDateTimePayload("endTime", params.end)}
             }
           }
         }
-        
+
         if (!finished) {
           recordingsTraceLog(dbg, logger, "listRecordings", `WARNING: Reached maxIterations (${maxIterations}) without finishing pagination`);
         }
@@ -2319,14 +2404,14 @@ ${xmlDateTimePayload("endTime", params.end)}
         return unique;
       }
 
-    recordingsTraceLog(dbg, logger, "listRecordings", `FileInfoList returned no files, falling back to findAlarmVideo`);
-    // Fallback path: <findAlarmVideo> (cmdId 272/273/274).
-    // This often returns "alarm videos" when FileInfoList is unsupported/empty.
-    const uidBase = uid.split("_")[0] ?? uid;
-    const streamTypeInt = streamType === "subStream" ? 1 : 0;
-    const alarmType = "md, pir, io, people, face, vehicle, dog_cat, visitor, other, package, cry, crossline, intrusion, loitering, legacy, loss";
+      recordingsTraceLog(dbg, logger, "listRecordings", `FileInfoList returned no files, falling back to findAlarmVideo`);
+      // Fallback path: <findAlarmVideo> (cmdId 272/273/274).
+      // This often returns "alarm videos" when FileInfoList is unsupported/empty.
+      const uidBase = uid.split("_")[0] ?? uid;
+      const streamTypeInt = streamType === "subStream" ? 1 : 0;
+      const alarmType = "md, pir, io, people, face, vehicle, dog_cat, visitor, other, package, cry, crossline, intrusion, loitering, legacy, loss";
 
-    const findOpenXml = (start: Date, end: Date) => `<?xml version="1.0" encoding="UTF-8" ?>
+      const findOpenXml = (start: Date, end: Date) => `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <findAlarmVideo version="1.1">
 <channelId>${channel}</channelId>
@@ -2340,7 +2425,7 @@ ${xmlDateTimePayload("endTime", end)}
 </findAlarmVideo>
 </body>`;
 
-    const findGetXml = (fileHandle: string) => `<?xml version="1.0" encoding="UTF-8" ?>
+      const findGetXml = (fileHandle: string) => `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <findAlarmVideo version="1.1">
 <channelId>${channel}</channelId>
@@ -2353,7 +2438,7 @@ ${xmlDateTimePayload("endTime", end)}
       try {
         for (let i = 0; i < maxIterations; i++) {
           recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo iteration ${i + 1}/${maxIterations}: start=${currentStart.toISOString()}, end=${params.end.toISOString()}`);
-          
+
           let openResp: string;
           try {
             openResp = await this.sendXml({ cmdId: BC_CMD_ID_FIND_REC_VIDEO_OPEN, channel, payloadXml: findOpenXml(currentStart, params.end) });
@@ -2362,7 +2447,7 @@ ${xmlDateTimePayload("endTime", end)}
             recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo OPEN failed: ${e instanceof Error ? e.message : String(e)}`);
             break;
           }
-          
+
           const fileHandle = getXmlText(openResp, "fileHandle")?.trim();
           if (!fileHandle) {
             recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: no fileHandle in response, breaking`);
@@ -2372,7 +2457,7 @@ ${xmlDateTimePayload("endTime", end)}
           const getXml = findGetXml(fileHandle);
           try {
             recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: fetching with handle=${fileHandle}`);
-            
+
             let getResp: string;
             try {
               getResp = await this.sendXml({ cmdId: BC_CMD_ID_FIND_REC_VIDEO_GET, channel, payloadXml: getXml });
@@ -2381,7 +2466,7 @@ ${xmlDateTimePayload("endTime", end)}
               recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo GET failed: ${e instanceof Error ? e.message : String(e)}`);
               throw e;
             }
-            
+
             const pageFiles = parseRecordingFilesFromXml(getResp);
             alarmFiles.push(...pageFiles);
             recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo page ${i + 1}: found ${pageFiles.length} files (total: ${alarmFiles.length})`);
@@ -2425,10 +2510,11 @@ ${xmlDateTimePayload("endTime", end)}
       });
       recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo complete: returning ${result.length} unique files`);
       return result;
-    } catch (e) {
-      recordingsTraceLog(dbg, logger, "listRecordings", `ERROR: ${e instanceof Error ? e.message : String(e)}, stack: ${e instanceof Error ? e.stack : 'no stack'}`);
-      throw e;
-    }
+      } catch (e) {
+        recordingsTraceLog(dbg, logger, "listRecordings", `ERROR: ${e instanceof Error ? e.message : String(e)}, stack: ${e instanceof Error ? e.stack : 'no stack'}`);
+        throw e;
+      }
+    });
   }
 
   /**
@@ -2500,7 +2586,7 @@ ${xmlDateTimePayload("endTime", end)}
         const cachedRecs = this.getCachedRecordings(effectiveChannel, start, end, effectiveStreamType);
         if (cachedRecs) {
           recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Cache hit: returning ${cachedRecs.length} cached recordings`);
-          
+
           // Apply count limit if specified
           if (typeof count === "number" && Number.isFinite(count) && count > 0) {
             return cachedRecs.slice(0, count);
@@ -2526,7 +2612,7 @@ ${xmlDateTimePayload("endTime", end)}
       // Adjust to 23:59:59 of that day for the search
       const adjustedStart = new Date(start);
       const adjustedEnd = new Date(end);
-      
+
       if (adjustedEnd.getHours() === 0 && adjustedEnd.getMinutes() === 0 && adjustedEnd.getSeconds() === 0) {
         adjustedEnd.setSeconds(-1); // Go back 1 second to 23:59:59 of previous day
       }
@@ -2574,7 +2660,7 @@ ${xmlDateTimePayload("endTime", end)}
               EndTime: endTimePayload,
             }
           };
-          
+
           recordingsTraceLog(dbg, logger, "listRecordingsByTime", `HTTP API Search payload: ${JSON.stringify(searchPayload)}`);
 
           const httpResponse = await this.cgiApi.call('Search', searchPayload, 0);
@@ -2635,7 +2721,7 @@ ${xmlDateTimePayload("endTime", end)}
       } else {
         // Use Baichuan API (default behavior)
         recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Calling listRecordings with params: channel=${listParams.channel}, uid=${listParams.uid}, start=${listParams.start.toISOString()} (original UTC: ${start.toISOString()}), end=${listParams.end.toISOString()} (original UTC: ${end.toISOString()})`);
-        
+
         try {
           recs = await this.listRecordings(listParams);
           recordingsTraceLog(dbg, logger, "listRecordingsByTime", `listRecordings returned ${recs.length} recordings`);
@@ -2649,7 +2735,7 @@ ${xmlDateTimePayload("endTime", end)}
       const startMs = start.getTime();
       const endMs = end.getTime();
       recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Filtering recordings: startMs=${startMs}, endMs=${endMs}`);
-      
+
       const normalized: RecordingFile[] = recs.map((r) => {
         const s = r.startTime ?? r.parsedFileName?.start;
         const e = r.endTime ?? r.parsedFileName?.end;
@@ -2694,10 +2780,241 @@ ${xmlDateTimePayload("endTime", end)}
   }
 
   /**
+   * Parse detection flags from recordType string (e.g. "md,people,dog_cat").
+   * This complements the hex-decoded flags from the filename.
+   */
+  private parseRecordTypeFlags(recordType?: string): {
+    hasPerson: boolean;
+    hasVehicle: boolean;
+    hasAnimal: boolean;
+    hasFace: boolean;
+    hasMotion: boolean;
+    hasSchedule: boolean;
+    hasDoorbell: boolean;
+    hasPackage: boolean;
+    hasRf: boolean;
+    hasOther: boolean;
+  } {
+    const flags = {
+      hasPerson: false,
+      hasVehicle: false,
+      hasAnimal: false,
+      hasFace: false,
+      hasMotion: false,
+      hasSchedule: false,
+      hasDoorbell: false,
+      hasPackage: false,
+      hasRf: false,
+      hasOther: false,
+    };
+
+    if (!recordType) return flags;
+
+    const types = recordType.toLowerCase().split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
+
+    for (const t of types) {
+      if (t === "people" || t === "person") flags.hasPerson = true;
+      else if (t === "vehicle" || t === "car") flags.hasVehicle = true;
+      else if (t === "dog_cat" || t === "animal" || t === "pet") flags.hasAnimal = true;
+      else if (t === "face") flags.hasFace = true;
+      else if (t === "md" || t === "motion") flags.hasMotion = true;
+      else if (t === "sched" || t === "schedule" || t === "timer") flags.hasSchedule = true;
+      else if (t === "visitor" || t === "doorbell") flags.hasDoorbell = true;
+      else if (t === "package") flags.hasPackage = true;
+      else if (t === "rf" || t === "io" || t === "pir") flags.hasRf = true;
+      else if (t === "other" || t === "manual") flags.hasOther = true;
+    }
+
+    return flags;
+  }
+
+  /**
+   * Enrich a RecordingFile with all parsed metadata.
+   * Combines filename parsing with recordType parsing to get complete detection flags.
+   */
+  private enrichRecordingFile(rec: RecordingFile, rtmpUrl?: string): EnrichedRecordingFile {
+    // Parse filename if not already parsed
+    const parsed = rec.parsedFileName ?? (rec.fileName ? parseRecordingFileName(rec.fileName) : undefined);
+
+    // Get times from various sources
+    const startTime = rec.startTime ?? parsed?.start;
+    const endTime = rec.endTime ?? parsed?.end;
+
+    const startTimeMs = startTime?.getTime() ?? 0;
+    const endTimeMs = endTime?.getTime() ?? startTimeMs;
+
+    // Calculate duration - prefer parsed duration if available and valid
+    let durationMs = parsed?.durationMs ?? 0;
+    if (durationMs === 0 && endTimeMs > startTimeMs) {
+      durationMs = endTimeMs - startTimeMs;
+    }
+
+    // Get flags from hex decoding
+    const hexFlags = parsed?.flags;
+
+    // Get flags from recordType string
+    const typeFlags = this.parseRecordTypeFlags(rec.recordType);
+
+    // Merge flags: OR them together (if either source says true, it's true)
+    const hasPerson = (hexFlags?.aiPerson ?? false) || typeFlags.hasPerson;
+    const hasVehicle = (hexFlags?.aiVehicle ?? false) || typeFlags.hasVehicle;
+    const hasAnimal = (hexFlags?.aiAnimal ?? false) || typeFlags.hasAnimal;
+    const hasFace = (hexFlags?.aiFace ?? false) || typeFlags.hasFace;
+    const hasMotion = (hexFlags?.motion ?? false) || typeFlags.hasMotion;
+    const hasSchedule = (hexFlags?.schedule ?? false) || typeFlags.hasSchedule;
+    const hasDoorbell = (hexFlags?.doorbell ?? false) || typeFlags.hasDoorbell;
+    const hasPackage = (hexFlags?.package ?? false) || typeFlags.hasPackage;
+    const hasRf = (hexFlags?.rf ?? false) || typeFlags.hasRf;
+    const hasOther = (hexFlags?.aiOther ?? false) || typeFlags.hasOther;
+
+    const enriched: EnrichedRecordingFile = {
+      fileName: rec.fileName,
+      id: rec.id ?? rec.fileName,
+      startTimeMs,
+      endTimeMs,
+      durationMs,
+      hasPerson,
+      hasVehicle,
+      hasAnimal,
+      hasFace,
+      hasMotion,
+      hasSchedule,
+      hasDoorbell,
+      hasPackage,
+      hasRf,
+      hasOther,
+      streamHint: parsed?.streamHint ?? "unknown",
+      devType: parsed?.devType ?? "cam",
+      raw: rec,
+    };
+
+    if (rec.sizeBytes !== undefined) enriched.sizeBytes = rec.sizeBytes;
+    if (rec.recordType) enriched.recordType = rec.recordType;
+    if (rtmpUrl) enriched.rtmpUrl = rtmpUrl;
+    if (parsed) enriched.parsedFileName = parsed;
+
+    return enriched;
+  }
+
+  /**
+   * List recordings in a given time window with full enriched metadata.
+   * 
+   * Returns EnrichedRecordingFile[] with:
+   * - Detection flags (person, vehicle, animal, face, motion, etc.)
+   * - Duration in milliseconds
+   * - Start/end times in milliseconds
+   * - RTMP playback URL (optional, if fetchRtmpUrls is true)
+   * 
+   * This is a higher-level wrapper around listRecordingsByTime that provides
+   * a fully parsed and enriched result ready for consumption.
+   */
+  async listEnrichedRecordingsByTime(params: {
+    /** Logical channel to query. If omitted, uses the client's configured channel (or 0). */
+    channel?: number;
+    start: Date;
+    end: Date;
+    streamType?: RecordingStreamType;
+    /** Comma-separated list of record types, e.g. "manual, sched, io, md, people". */
+    recordType?: string;
+    /**
+     * Maximum number of recordings to return (after filtering/sorting by time).
+     * If omitted, all recordings in the window are returned.
+     */
+    count?: number;
+    /** See {@link ListRecordingsParams.fallbackToAlarmVideo}. */
+    fallbackToAlarmVideo?: boolean;
+    /** See {@link ListRecordingsParams.maxIterations}. */
+    maxIterations?: number;
+    /**
+     * If true (default), try HTTP CGI API fallback when Baichuan API returns no results or fails.
+     */
+    httpFallback?: boolean;
+    /**
+     * If true, bypass the cache and fetch fresh data from the camera.
+     * Default: false (use cache if available).
+     */
+    bypassCache?: boolean;
+    /**
+     * Custom TTL for caching this request's results (in milliseconds).
+     * If not provided, uses the default TTL (5 minutes).
+     */
+    cacheTtlMs?: number;
+    /**
+     * If true, fetch RTMP playback URLs for each recording.
+     * This adds latency as it requires additional API calls.
+     * Default: false.
+     */
+    fetchRtmpUrls?: boolean;
+  }): Promise<EnrichedRecordingFile[]> {
+    const dbg = this.client.getDebugConfig?.();
+    const logger = this.logger;
+
+    try {
+      recordingsTraceLog(dbg, logger, "listEnrichedRecordingsByTime", `Init: ${JSON.stringify({ params })}`);
+
+      // Get raw recordings - build params object carefully to avoid undefined values with exactOptionalPropertyTypes
+      const listParams: Parameters<typeof this.listRecordingsByTime>[0] = {
+        start: params.start,
+        end: params.end,
+      };
+
+      const effectiveChannel = params.channel ?? (this.client.getConfiguredChannel?.() ?? 0);
+      const uid = await this.ensureUidForRecordings(effectiveChannel);
+      listParams.uid = uid;
+
+      if (params.channel !== undefined) listParams.channel = params.channel;
+      if (params.streamType !== undefined) listParams.streamType = params.streamType;
+      if (params.recordType !== undefined) listParams.recordType = params.recordType;
+      if (params.count !== undefined) listParams.count = params.count;
+      if (params.fallbackToAlarmVideo !== undefined) listParams.fallbackToAlarmVideo = params.fallbackToAlarmVideo;
+      if (params.maxIterations !== undefined) listParams.maxIterations = params.maxIterations;
+      if (params.httpFallback !== undefined) listParams.httpFallback = params.httpFallback;
+      if (params.bypassCache !== undefined) listParams.bypassCache = params.bypassCache;
+      if (params.cacheTtlMs !== undefined) listParams.cacheTtlMs = params.cacheTtlMs;
+
+      const rawRecordings = await this.listRecordingsByTime(listParams);
+
+      recordingsTraceLog(dbg, logger, "listEnrichedRecordingsByTime", `Got ${rawRecordings.length} raw recordings`);
+
+      // Enrich each recording
+      const enriched: EnrichedRecordingFile[] = [];
+
+      for (const rec of rawRecordings) {
+        let rtmpUrl: string | undefined;
+
+        // Optionally fetch RTMP URL
+        if (params.fetchRtmpUrls) {
+          try {
+            const playbackParams: Parameters<typeof this.getRecordingPlaybackUrls>[0] = {
+              channel: effectiveChannel,
+              fileName: rec.fileName,
+            };
+            if (params.streamType !== undefined) playbackParams.streamType = params.streamType;
+
+            const urls = await this.getRecordingPlaybackUrls(playbackParams);
+            rtmpUrl = urls.rtmpVodUrl;
+          } catch (e) {
+            // Silently ignore - not all recordings may have playback URLs available
+            recordingsTraceLog(dbg, logger, "listEnrichedRecordingsByTime", `Failed to get RTMP URL for ${rec.fileName}: ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
+
+        enriched.push(this.enrichRecordingFile(rec, rtmpUrl));
+      }
+
+      recordingsTraceLog(dbg, logger, "listEnrichedRecordingsByTime", `Returning ${enriched.length} enriched recordings`);
+      return enriched;
+    } catch (e) {
+      recordingsTraceLog(dbg, logger, "listEnrichedRecordingsByTime", `ERROR: ${e instanceof Error ? e.message : String(e)}`);
+      throw e;
+    }
+  }
+
+  /**
    * Convenience helper to build playback/download URLs for a single recording.
    *
    * Currently returns the RTMP VOD URL (suitable for streaming/export via playback).
-   * Use {@link ReolinkBaichuanApi.downloadRecording | downloadRecording} for bit-identical file download.
+     * Use {@link ReolinkBaichuanApi#downloadRecording | downloadRecording} for bit-identical file download.
    */
   async getRecordingPlaybackUrls(params: {
     /** Logical channel to query. If omitted, uses the client's configured channel (or 0). */
@@ -2734,9 +3051,9 @@ ${xmlDateTimePayload("endTime", end)}
   private async ensureUidForRecordings(channel: number, explicitUid?: string): Promise<string> {
     const dbg = this.client.getDebugConfig?.();
     const logger = this.logger;
-    
+
     recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `Checking UID: explicitUid=${explicitUid}, this.uid=${this.uid}`);
-    
+
     if (explicitUid && explicitUid.trim()) {
       recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `Using explicit UID: ${explicitUid.trim()}`);
       return explicitUid.trim();
@@ -2748,7 +3065,7 @@ ${xmlDateTimePayload("endTime", end)}
     }
 
     recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `No UID available, attempting auto-discovery for channel ${channel}`);
-    
+
     // Try to auto-discover UID using the same logic as test-tcp-uid-discovery
     const extractUidLike = (value: unknown): string | undefined => {
       const seen = new Set<unknown>();
@@ -2869,6 +3186,277 @@ ${xmlDateTimePayload("endTime", end)}
   }
 
   /**
+   * Get a video I-frame (keyframe) from a past recording at a specific timestamp.
+   * 
+   * Uses the Baichuan CoverPreview command (cmd_id=298) to retrieve an I-frame
+   * directly from the camera without external dependencies.
+   * 
+   * The returned data is a raw H.264 or H.265 I-frame. To convert it to JPEG,
+   * you can use ffmpeg or a video decoder library.
+   * 
+   * Inspired by reolink_aio's snapshot_past functionality.
+   * 
+   * @param params - Parameters for the snapshot
+   * @returns Object containing the raw I-frame data and metadata
+   */
+  async snapshotFromPlayback(params: {
+    /** Channel number (0-based) */
+    channel?: number;
+    /** Timestamp to capture */
+    time: Date;
+    /** Stream type for snapshot quality ("main" or "sub", default: "sub") */
+    snapType?: "main" | "sub";
+    /** Timeout in milliseconds (default: 30000) */
+    timeoutMs?: number;
+  }): Promise<{
+    /** Raw I-frame data (H.264 or H.265) */
+    frame: Buffer;
+    /** Video encoding type detected from frame header */
+    encoding: string;
+    /** Frame length in bytes */
+    frameLength: number;
+    /** Frame timestamp (Unix seconds) if available */
+    frameTime?: number;
+    /** Stream metadata from header */
+    streamInfo: {
+      width?: number;
+      height?: number;
+      frameRate?: number;
+    };
+  }> {
+    await this.client.login();
+
+    const channel = this.normalizeChannel(params.channel);
+    const snapType = params.snapType ?? "sub";
+    const timeoutMs = params.timeoutMs ?? 30_000;
+    const time = params.time;
+
+    // CoverPreview requires a time range - use 10 seconds from the target time
+    const endTime = new Date(time.getTime() + 10_000);
+
+    // Build CoverPreview XML (cmd_id=298)
+    const xml = `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<CoverPreview version="1.1">
+<channelId>${channel}</channelId>
+<streamType>${snapType}</streamType>
+<startTime>
+<year>${time.getFullYear()}</year>
+<month>${time.getMonth() + 1}</month>
+<day>${time.getDate()}</day>
+<hour>${time.getHours()}</hour>
+<minute>${time.getMinutes()}</minute>
+<second>${time.getSeconds()}</second>
+</startTime>
+<endTime>
+<year>${endTime.getFullYear()}</year>
+<month>${endTime.getMonth() + 1}</month>
+<day>${endTime.getDate()}</day>
+<hour>${endTime.getHours()}</hour>
+<minute>${endTime.getMinutes()}</minute>
+<second>${endTime.getSeconds()}</second>
+</endTime>
+</CoverPreview>
+</body>`;
+
+    // Send the CoverPreview command and receive binary payload
+    const payload = await this.client.sendBinaryCoverPreview({
+      cmdId: 298,
+      channel,
+      payloadXml: xml,
+      timeoutMs,
+    });
+
+    // Parse stream header (first 32 bytes)
+    if (payload.length < 32) {
+      throw new Error(`CoverPreview payload too short: ${payload.length} bytes`);
+    }
+
+    const streamHeader = payload.subarray(0, 32);
+    const magic = streamHeader.subarray(0, 4).toString("ascii");
+
+    if (magic !== "1001") {
+      throw new Error(`CoverPreview payload did not start with stream header magic '1001' but with '${magic}'`);
+    }
+
+    // Parse stream header fields
+    const width = streamHeader.readUInt32LE(8);
+    const height = streamHeader.readUInt32LE(12);
+    const frameRate = streamHeader.length > 17 ? streamHeader[17] : 0;
+
+    // Search for frame magic "00dc" after stream header
+    const frameSearchArea = payload.subarray(32);
+    const frameMagic = Buffer.from("00dc", "ascii");
+    let frameMagicIndex = -1;
+
+    for (let i = 0; i <= frameSearchArea.length - 4; i++) {
+      if (
+        frameSearchArea[i] === frameMagic[0] &&
+        frameSearchArea[i + 1] === frameMagic[1] &&
+        frameSearchArea[i + 2] === frameMagic[2] &&
+        frameSearchArea[i + 3] === frameMagic[3]
+      ) {
+        frameMagicIndex = i;
+        break;
+      }
+    }
+
+    if (frameMagicIndex === -1) {
+      throw new Error(`CoverPreview frame magic '00dc' not found. First bytes after header: ${frameSearchArea.subarray(0, 30).toString("hex")}`);
+    }
+
+    const idx = 32 + frameMagicIndex;
+
+    // Parse frame header
+    // Frame header structure:
+    // - 0-4: magic "00dc"
+    // - 4-8: encoding (e.g., "H264", "H265")
+    // - 8-12: frame length
+    // - 12-16: additional header length
+    // - 16-20: frame microsecond
+    // - 24-28: frame time (Unix timestamp)
+    const frameHeaderStart = idx;
+    const additionalHeaderLen = payload.readUInt32LE(frameHeaderStart + 12);
+    const headerLen = 24 + additionalHeaderLen;
+    const frameHeader = payload.subarray(frameHeaderStart, frameHeaderStart + headerLen);
+
+    const encoding = frameHeader.subarray(4, 8).toString("ascii").replace(/\0/g, "");
+    const frameLen = frameHeader.readUInt32LE(8);
+    const frameTime = headerLen >= 28 ? frameHeader.readUInt32LE(24) : undefined;
+
+    // Extract frame data
+    const frameStart = frameHeaderStart + headerLen;
+    const frameEnd = frameStart + frameLen;
+
+    if (frameEnd > payload.length) {
+      throw new Error(`Frame data extends beyond payload: frameEnd=${frameEnd}, payloadLength=${payload.length}`);
+    }
+
+    const frame = payload.subarray(frameStart, frameEnd);
+
+    // Build streamInfo conditionally to satisfy exactOptionalPropertyTypes
+    const streamInfo: { width?: number; height?: number; frameRate?: number } = {};
+    if (width > 0) streamInfo.width = width;
+    if (height > 0) streamInfo.height = height;
+    const fr = frameRate ?? 0;
+    if (fr > 0) streamInfo.frameRate = fr;
+
+    // Build result conditionally for frameTime
+    const result: {
+      frame: Buffer;
+      encoding: string;
+      frameLength: number;
+      frameTime?: number;
+      streamInfo: { width?: number; height?: number; frameRate?: number };
+    } = {
+      frame,
+      encoding,
+      frameLength: frameLen,
+      streamInfo,
+    };
+    if (frameTime !== undefined) result.frameTime = frameTime;
+
+    return result;
+  }
+
+  /**
+   * Get a JPEG snapshot from a specific recording file at a given offset.
+   * 
+   * This is a lower-level version that takes a fileName directly instead of searching.
+   * 
+   * @param params - Parameters for the snapshot
+   * @returns JPEG image bytes
+   */
+  async snapshotFromRecording(params: {
+    /** Channel number (0-based) */
+    channel?: number;
+    /** Recording file name/path */
+    fileName: string;
+    /** Seek position in seconds from the start of the recording (default: 0) */
+    seekSeconds?: number;
+    /** Stream type ("mainStream" or "subStream", default: "subStream") */
+    streamType?: RecordingStreamType;
+    /** Path to ffmpeg binary (default: "ffmpeg" from PATH) */
+    ffmpegPath?: string;
+    /** Timeout in milliseconds for ffmpeg (default: 30000) */
+    timeoutMs?: number;
+  }): Promise<Buffer> {
+    await this.client.login();
+
+    const channel = this.normalizeChannel(params.channel);
+    const streamType = params.streamType ?? "subStream";
+    const ffmpegPath = params.ffmpegPath ?? "ffmpeg";
+    const timeoutMs = params.timeoutMs ?? 30_000;
+    const seekSeconds = params.seekSeconds ?? 0;
+
+    // Get RTMP VOD URL
+    const rtmpUrl = await this.getVodRtmpUrl({
+      channel,
+      fileName: params.fileName,
+      streamType,
+      ensureEnabled: true,
+    });
+
+    // Use ffmpeg to extract a single frame
+    return new Promise<Buffer>((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      let stderr = "";
+      let timedOut = false;
+
+      const ff = spawn(ffmpegPath, [
+        "-hide_banner",
+        "-loglevel", "error",
+        "-rtmp_live", "live",
+        ...(seekSeconds > 0 ? ["-ss", seekSeconds.toFixed(3)] : []),
+        "-i", rtmpUrl,
+        "-frames:v", "1",
+        "-f", "image2",
+        "-c:v", "mjpeg",
+        "-q:v", "2",
+        "pipe:1",
+      ]);
+
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        ff.kill("SIGKILL");
+        reject(new Error(`ffmpeg timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      ff.stdout.on("data", (chunk: Buffer) => {
+        chunks.push(chunk);
+      });
+
+      ff.stderr.on("data", (data: Buffer) => {
+        stderr += data.toString();
+      });
+
+      ff.on("close", (code) => {
+        clearTimeout(timeout);
+        if (timedOut) return;
+
+        if (code !== 0) {
+          reject(new Error(`ffmpeg exited with code ${code}: ${stderr}`));
+          return;
+        }
+
+        const imageBuffer = Buffer.concat(chunks);
+        if (imageBuffer.length === 0) {
+          reject(new Error(`ffmpeg produced no output. stderr: ${stderr}`));
+          return;
+        }
+
+        resolve(imageBuffer);
+      });
+
+      ff.on("error", (err) => {
+        clearTimeout(timeout);
+        if (timedOut) return;
+        reject(new Error(`ffmpeg error: ${err.message}`));
+      });
+    });
+  }
+
+  /**
    * Build an RTMP VOD/playback URL for a given recording.
    *
    * This follows the same logic:
@@ -2885,8 +3473,8 @@ ${xmlDateTimePayload("endTime", end)}
     /** Override RTMP port if known. */
     rtmpPort?: number;
   }): Promise<string> {
-    await this.client.login();
-
+    // Note: login() is not called here to avoid unnecessary reconnections
+    // The caller should ensure the client is already connected and logged in via ensureClient()
     const channel = this.normalizeChannel(params.channel);
     const streamType = params.streamType ?? "mainStream";
     const ensureEnabled = params.ensureEnabled ?? true;
