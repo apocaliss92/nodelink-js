@@ -1,11 +1,28 @@
 import { EventEmitter } from "node:events";
 import net from "node:net";
 import { BcUdpStream } from "../bcudp/BcUdpStream";
-import { debugLog, eventTraceLog, normalizeDebugOptions, talkTraceLog, traceLog, type DebugConfig, type DebugOptions, type Logger } from "../debug/DebugConfig";
+import {
+  debugLog,
+  eventTraceLog,
+  normalizeDebugOptions,
+  recordingsTraceLog,
+  talkTraceLog,
+  traceLog,
+  type DebugConfig,
+  type DebugOptions,
+  type Logger
+} from "../debug/DebugConfig";
 import {
   BC_CLASS_LEGACY,
   BC_CLASS_FILE_DOWNLOAD,
   BC_CLASS_MODERN_24,
+  BC_CMD_ID_FILE_INFO_LIST_CLOSE,
+  BC_CMD_ID_FILE_INFO_LIST_DOWNLOAD,
+  BC_CMD_ID_FILE_INFO_LIST_GET,
+  BC_CMD_ID_FILE_INFO_LIST_OPEN,
+  BC_CMD_ID_FIND_REC_VIDEO_CLOSE,
+  BC_CMD_ID_FIND_REC_VIDEO_GET,
+  BC_CMD_ID_FIND_REC_VIDEO_OPEN,
   BC_CMD_ID_PING,
   BC_CMD_ID_TALK,
   BC_CMD_ID_TALK_ABILITY,
@@ -171,6 +188,17 @@ export class BaichuanClient extends EventEmitter<{
     streamType: number;
   }> = [];
 
+  // Recording-related command IDs (FileInfoList + findAlarmVideo).
+  private static readonly recordingCmdIds = new Set<number>([
+    BC_CMD_ID_FILE_INFO_LIST_DOWNLOAD,
+    BC_CMD_ID_FILE_INFO_LIST_OPEN,
+    BC_CMD_ID_FILE_INFO_LIST_GET,
+    BC_CMD_ID_FILE_INFO_LIST_CLOSE,
+    BC_CMD_ID_FIND_REC_VIDEO_OPEN,
+    BC_CMD_ID_FIND_REC_VIDEO_GET,
+    BC_CMD_ID_FIND_REC_VIDEO_CLOSE,
+  ]);
+
   enc: EncryptionProtocol = { kind: "none" }; // Public to allow ReolinkBaichuanApi to access for audio decryption
   private nonce?: string;
 
@@ -191,6 +219,7 @@ export class BaichuanClient extends EventEmitter<{
     this.opts = options;
     this.logger = options.logger ?? console;
     this.debugCfg = normalizeDebugOptions(options.debugOptions);
+    // this.logger.log("BaichuanClient constructor", { options, dgfg: this.debugCfg });
   }
 
   private logFixed(event: string, data?: unknown): void {
@@ -1648,6 +1677,14 @@ export class BaichuanClient extends EventEmitter<{
     });
 
     this.logDebug("tx", { cmdId, msgNum, channelId, messageClass, bodyLen });
+    if (BaichuanClient.recordingCmdIds.has(cmdId)) {
+      recordingsTraceLog(
+        this.debugCfg,
+        this.logger,
+        "BaichuanRecordings",
+        `tx recording cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=${params.streamType ?? 0} bodyLen=${bodyLen}`,
+      );
+    }
     if (this.debugCfg.traceStream && (cmdId === 3 || cmdId === 4)) {
       traceLog(this.debugCfg, this.logger, "BaichuanTrace", `tx cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=${params.streamType ?? 0} class=0x${messageClass.toString(16)} bodyLen=${bodyLen} payloadOffset=${payloadOffset}`);
     }
@@ -1663,6 +1700,14 @@ export class BaichuanClient extends EventEmitter<{
 
     const frame = await framePromise;
     this.logDebug("rx", { cmdId: frame.header.cmdId, responseCode: frame.header.responseCode, msgNum: frame.header.msgNum });
+    if (BaichuanClient.recordingCmdIds.has(frame.header.cmdId)) {
+      recordingsTraceLog(
+        this.debugCfg,
+        this.logger,
+        "BaichuanRecordings",
+        `rx recording cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`,
+      );
+    }
     if (this.debugCfg.traceStream && (cmdId === 3 || cmdId === 4)) {
       traceLog(this.debugCfg, this.logger, "BaichuanTrace", `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`);
     }

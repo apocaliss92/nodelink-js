@@ -16,6 +16,11 @@ export type DebugOptions = {
   debugRtsp?: boolean;
   /** Enables stream command tracing (tx/rx cmd_id 3/4 + rx stream frames). */
   traceStream?: boolean;
+  /**
+   * Enables detailed tracing for recording-related commands (FileInfoList, findAlarmVideo, download).
+   * Useful to understand what is happening on the wire for recordings only.
+   */
+  traceRecordings?: boolean;
   /** Enables talkback tracing (tx/rx cmd_id 10/11/201/202). */
   traceTalk?: boolean;
   /** Enables per-event tracing for cmd_id 33 (AlarmEventList push). */
@@ -36,6 +41,7 @@ export type DebugConfig = {
   general: boolean;
   debugRtsp: boolean;
   traceStream: boolean;
+  traceRecordings: boolean;
   traceTalk: boolean;
   traceEvents: boolean;
   debugH264: boolean;
@@ -50,6 +56,7 @@ export function normalizeDebugOptions(opts?: DebugOptions): DebugConfig {
   const general = opts?.general === true;
   const debugRtsp = opts?.debugRtsp === true;
   const traceStream = opts?.traceStream === true;
+  const traceRecordings = opts?.traceRecordings === true;
   const traceTalk = opts?.traceTalk === true;
   const traceEvents = opts?.traceEvents === true;
   const debugH264 = opts?.debugH264 === true;
@@ -60,7 +67,25 @@ export function normalizeDebugOptions(opts?: DebugOptions): DebugConfig {
   const dumpBcMedia = opts?.dump?.bcmedia ?? dumpEnabled;
   const dumpNals = opts?.dump?.nals ?? dumpEnabled;
 
-  return { general, debugRtsp, traceStream, traceTalk, traceEvents, debugH264, debugParamSets, dumpEnabled, dumpDir, dumpBcMedia, dumpNals };
+  return {
+      general,
+      debugRtsp,
+      traceStream,
+      traceRecordings,
+      traceTalk,
+      traceEvents,
+      debugH264,
+      debugParamSets,
+      dumpEnabled,
+      dumpDir,
+      dumpBcMedia,
+      dumpNals,
+  };
+}
+
+export function recordingsTraceLog(cfg: DebugConfig, logger: Logger, tag: string, message: string): void {
+  if (!cfg.traceRecordings) return;
+  logger.log(`[${tag}] ${message}`);
 }
 
 export function ensureDumpDir(cfg: DebugConfig): void {

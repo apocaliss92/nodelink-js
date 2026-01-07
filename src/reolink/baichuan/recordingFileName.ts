@@ -137,7 +137,11 @@ function parseDateTimeLocal(yyyymmdd: string, hhmmss: string): Date | undefined 
   const minute = Number.parseInt(hhmmss.slice(2, 4), 10);
   const second = Number.parseInt(hhmmss.slice(4, 6), 10);
   if (![year, month, day, hour, minute, second].every(Number.isFinite)) return undefined;
-  return new Date(year, month - 1, day, hour, minute, second);
+  // Parse as UTC to avoid timezone shifts when serializing to JSON.
+  // This ensures dates from filenames match the exact values without timezone conversion.
+  // The camera stores timestamps in local time in the filename, but we parse as UTC to preserve
+  // the exact values when comparing with other UTC dates.
+  return new Date(Date.UTC(year, month - 1, day, hour, minute, second));
 }
 
 /**
@@ -148,8 +152,34 @@ function parseDateTimeLocal(yyyymmdd: string, hhmmss: string): Date | undefined 
  * - Mp4Record/2023-04-26/RecS02_DST20230426_145918_150032_<HEX>_<SIZE>.mp4
  * - .../RecS07_20250219_111146_111238_0_<HEX>_<SIZE>.mp4
  * - .../RecM02_DST20240827_090302_090334_0_800_800_<HEX>_<SIZE>.mp4
+ * - 0120260107000000 (numeric identifier format: [channel][YYYYMMDD][HHMMSS])
  */
 export function parseRecordingFileName(fileName: string): ParsedRecordingFileName | undefined {
+  // Try numeric identifier format first (e.g., "0120260107000000")
+  // Format: [channel][YYYYMMDD][HHMMSS] where channel is 2 digits, date is 8 digits, time is 6 digits
+  const numericMatch = /^(\d{2})(\d{8})(\d{6})$/.exec(fileName);
+  if (numericMatch) {
+    const channelStr = numericMatch[1];
+    const dateStr = numericMatch[2];
+    const timeStr = numericMatch[3];
+    if (channelStr && dateStr && timeStr) {
+      const start = parseDateTimeLocal(dateStr, timeStr);
+      if (start) {
+        // For numeric format, assume 20 second duration (common for motion detection clips)
+        const end = new Date(start.getTime() + 20_000);
+        return {
+          baseName: fileName,
+          ext: "",
+          streamHint: "main",
+          version: 0,
+          devType: "cam",
+          start,
+          end,
+          durationMs: 20_000,
+        };
+      }
+    }
+  }
   const dot = fileName.lastIndexOf(".");
   if (dot <= 0 || dot === fileName.length - 1) return undefined;
   const ext = fileName.slice(dot + 1);

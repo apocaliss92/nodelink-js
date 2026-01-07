@@ -3,7 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { BaichuanRtspServer, type BaichuanRtspServerOptions } from "../../baichuan/stream/BaichuanRtspServer";
 import { BaichuanClient, type BaichuanClientOptions } from "../../client/BaichuanClient";
-import { type Logger } from "../../debug/DebugConfig";
+import { type Logger, recordingsTraceLog } from "../../debug/DebugConfig";
 import type { CompositeStreamPipOptions } from "../../multifocal/compositeStream";
 import { createDiagnosticsBundle, sampleStreams, type StreamSamplingSelection, type StreamSamplingOptions } from "../../debug/DiagnosticsTools";
 import { zipDirectory } from "../../debug/zip";
@@ -261,6 +261,21 @@ function getXmlBlocks(xml: string, tagName: string): string[] {
   return out;
 }
 
+/**
+ * Helper to derive a "global" UID for devices that expose per-channel UIDs (e.g. NVRs).
+ * Preference order:
+ * - First non-empty channel UID
+ * - Fallback to the constructor-provided UID (if any)
+ */
+function deriveGlobalUidFromChannels(channels: ReolinkNvrChannelInfo[], fallbackUid?: string): string | undefined {
+  for (const ch of channels) {
+    if (ch.uid && ch.uid.trim()) {
+      return ch.uid.trim();
+    }
+  }
+  return fallbackUid;
+}
+
 function parseXmlDateTimeBlock(block: string): Date | undefined {
   const year = Number.parseInt(getXmlText(block, "year") ?? "", 10);
   const month = Number.parseInt(getXmlText(block, "month") ?? "", 10);
@@ -269,11 +284,15 @@ function parseXmlDateTimeBlock(block: string): Date | undefined {
   const minute = Number.parseInt(getXmlText(block, "minute") ?? "", 10);
   const second = Number.parseInt(getXmlText(block, "second") ?? "", 10);
   if (![year, month, day, hour, minute, second].every(Number.isFinite)) return undefined;
-  // Treat as local time; camera typically returns local timestamps.
-  return new Date(year, month - 1, day, hour, minute, second);
+  // Treat as UTC to avoid timezone shifts when serializing to JSON.
+  // Camera timestamps are typically in local time, but we parse as UTC to preserve
+  // the exact values without timezone conversion artifacts.
+  return new Date(Date.UTC(year, month - 1, day, hour, minute, second));
 }
 
 function xmlDateTimePayload(tag: "startTime" | "endTime", d: Date): string {
+  // Use local time methods - the camera expects dates in local time format
+  // This matches the behavior of test-tcp-videoclips.ts which uses setHours(0, 0, 0, 0)
   return `<${tag}><year>${d.getFullYear()}</year><month>${d.getMonth() + 1}</month><day>${d.getDate()}</day><hour>${d.getHours()}</hour><minute>${d.getMinutes()}</minute><second>${d.getSeconds()}</second></${tag}>`;
 }
 
@@ -550,10 +569,15 @@ export class ReolinkBaichuanApi {
   readonly client: BaichuanClient;
   readonly logger: Logger;
   private readonly httpClient: ReolinkHttpClient;
+  private readonly cgiApi: ReolinkCgiApi;
   private readonly host: string;
   private readonly username: string;
   private readonly password: string;
-  private readonly uid: string | undefined;
+  /**
+   * Cached camera UID. May be initially undefined if not provided in the constructor.
+   * Will be lazily populated on demand when needed (e.g. for recordings).
+   */
+  private uid: string | undefined;
 
   private rebootAfterDisconnectionsPerMinute: number | undefined;
   private readonly disconnectStormVoluntaryAtMs: number[] = [];
@@ -581,6 +605,20 @@ export class ReolinkBaichuanApi {
     }
     | undefined;
 
+  /**
+   * Local cache for recordings. Key is a composite of channel, start, end, streamType.
+   * Value contains the cached recordings and timestamp.
+   */
+  private recordingsCache = new Map<string, {
+    recordings: RecordingFile[];
+    cachedAt: number;
+    /** TTL in milliseconds (default 5 minutes) */
+    ttlMs: number;
+  }>();
+  
+  /** Default TTL for recordings cache (5 minutes) */
+  private recordingsCacheTtlMs = 5 * 60 * 1000;
+
   constructor(opts: BaichuanClientOptions & {
     /**
      * Reboot the device if there are too many *voluntary* disconnects within 60 seconds.
@@ -601,6 +639,11 @@ export class ReolinkBaichuanApi {
       username: opts.username,
       password: opts.password,
       timeoutMs: 600_000,
+    });
+    this.cgiApi = new ReolinkCgiApi({
+      host: opts.host,
+      username: opts.username,
+      password: opts.password,
     });
 
     // Dispatch parsed events in a minimal, stable shape.
@@ -630,6 +673,71 @@ export class ReolinkBaichuanApi {
         }
       });
     }
+  }
+
+  // --------------------
+  // Recordings Cache Methods
+  // --------------------
+
+  /**
+   * Generate a cache key for recordings lookup.
+   */
+  private getRecordingsCacheKey(channel: number, start: Date, end: Date, streamType: string): string {
+    return `${channel}:${start.getTime()}:${end.getTime()}:${streamType}`;
+  }
+
+  /**
+   * Get cached recordings if available and not expired.
+   */
+  private getCachedRecordings(channel: number, start: Date, end: Date, streamType: string): RecordingFile[] | undefined {
+    const key = this.getRecordingsCacheKey(channel, start, end, streamType);
+    const cached = this.recordingsCache.get(key);
+    
+    if (!cached) return undefined;
+    
+    const now = Date.now();
+    if (now - cached.cachedAt > cached.ttlMs) {
+      // Cache expired, remove it
+      this.recordingsCache.delete(key);
+      return undefined;
+    }
+    
+    return cached.recordings;
+  }
+
+  /**
+   * Cache recordings for future lookups.
+   */
+  private cacheRecordings(channel: number, start: Date, end: Date, streamType: string, recordings: RecordingFile[], ttlMs?: number): void {
+    const key = this.getRecordingsCacheKey(channel, start, end, streamType);
+    this.recordingsCache.set(key, {
+      recordings,
+      cachedAt: Date.now(),
+      ttlMs: ttlMs ?? this.recordingsCacheTtlMs,
+    });
+  }
+
+  /**
+   * Clear all cached recordings.
+   */
+  clearRecordingsCache(): void {
+    this.recordingsCache.clear();
+  }
+
+  /**
+   * Clear cached recordings for a specific time range.
+   */
+  clearRecordingsCacheForRange(channel: number, start: Date, end: Date, streamType: string): void {
+    const key = this.getRecordingsCacheKey(channel, start, end, streamType);
+    this.recordingsCache.delete(key);
+  }
+
+  /**
+   * Set the default TTL for recordings cache.
+   * @param ttlMs - TTL in milliseconds (default: 5 minutes = 300000ms)
+   */
+  setRecordingsCacheTtl(ttlMs: number): void {
+    this.recordingsCacheTtlMs = ttlMs;
   }
 
   /**
@@ -797,25 +905,13 @@ export class ReolinkBaichuanApi {
     }
 
     if (method === "auto" || method === "cgi") {
-      const cgi = new ReolinkCgiApi({
-        host: this.host,
-        username: this.username,
-        password: this.password,
-        timeoutMs: 60_000,
-      });
       try {
-        await cgi.login();
-        await cgi.Reboot();
+        await this.cgiApi.login();
+        await this.cgiApi.Reboot();
         return;
       } catch (e) {
         lastErr = e;
-        throw e;
-      } finally {
-        try {
-          await cgi.logout();
-        } catch {
-          // ignore
-        }
+        if (method === "cgi") throw e;
       }
     }
 
@@ -1360,15 +1456,8 @@ export class ReolinkBaichuanApi {
     const cgiTimeoutMs = options?.cgiTimeoutMs ?? 30_000;
 
     if (source === "cgi") {
-      const cgi = new ReolinkCgiApi({
-        host: this.host,
-        username: this.username,
-        password: this.password,
-        timeoutMs: cgiTimeoutMs,
-      });
-
       try {
-        await cgi.login();
+        await this.cgiApi.login();
 
         // Single HTTP request: batch GetChannelstatus + GetChnTypeInfo(0..maxChannels-1)
         // We intentionally rely on response order to map each GetChnTypeInfo response to its channel.
@@ -1377,7 +1466,7 @@ export class ReolinkBaichuanApi {
           { cmd: "GetChannelstatus", action: 0 },
           ...Array.from({ length: n }, (_, i) => ({ cmd: "GetChnTypeInfo", action: 0, param: { channel: i } })),
         ];
-        const rsp = await cgi.callMany<any>(batch);
+        const rsp = await this.cgiApi.callMany<any>(batch);
 
         const statusRsp = rsp.length ? [rsp[0]!] : [];
         const summaries = extractChannelSummariesFromChannelStatus(statusRsp);
@@ -1954,7 +2043,7 @@ export class ReolinkBaichuanApi {
         // Get dimensions
         const widerMetadata = await widerImage.metadata();
         const teleMetadata = await teleImage.metadata();
-        
+
         const mainWidth = widerMetadata.width ?? 1920;
         const mainHeight = widerMetadata.height ?? 1080;
         const teleWidth = teleMetadata.width ?? 1920;
@@ -2066,15 +2155,48 @@ export class ReolinkBaichuanApi {
    * - cmdId=16: close handle
    */
   async listRecordings(params: ListRecordingsParams): Promise<RecordingFile[]> {
-    await this.client.login();
+    const dbg = this.client.getDebugConfig?.();
+    const logger = this.logger;
 
-    const channel = this.normalizeChannel(params.channel);
-    const uid = params.uid;
-    const streamType = params.streamType ?? "mainStream";
-    const recordType =
-      params.recordType ?? "manual, sched, io, md, people, face, vehicle, dog_cat, visitor, other, package";
-    const maxIterations = params.maxIterations ?? 50;
-    const fallbackToAlarmVideo = params.fallbackToAlarmVideo ?? true;
+    try {
+      recordingsTraceLog(dbg, logger, "listRecordings", `Init recordings lookup: ${JSON.stringify(params)}`);
+
+      try {
+        await this.client.login();
+        recordingsTraceLog(dbg, logger, "listRecordings", `Login successful`);
+      } catch (e) {
+        recordingsTraceLog(dbg, logger, "listRecordings", `Login failed: ${e instanceof Error ? e.message : String(e)}`);
+        throw e;
+      }
+
+      const channel = this.normalizeChannel(params.channel);
+      const uid = params.uid;
+      const streamType = params.streamType ?? "mainStream";
+      const recordType =
+        params.recordType ?? "manual, sched, io, md, people, face, vehicle, dog_cat, visitor, other, package";
+      const maxIterations = params.maxIterations ?? 50;
+      const fallbackToAlarmVideo = params.fallbackToAlarmVideo ?? true;
+
+      recordingsTraceLog(dbg, logger, "listRecordings", `Normalized params: channel=${channel}, uid=${uid}, streamType=${streamType}, maxIterations=${maxIterations}`);
+
+    // Log the date components that will be sent to camera (xmlDateTimePayload uses local time methods)
+    const startLocalParts = {
+      year: params.start.getFullYear(),
+      month: params.start.getMonth() + 1,
+      day: params.start.getDate(),
+      hour: params.start.getHours(),
+      minute: params.start.getMinutes(),
+      second: params.start.getSeconds(),
+    };
+    const endLocalParts = {
+      year: params.end.getFullYear(),
+      month: params.end.getMonth() + 1,
+      day: params.end.getDate(),
+      hour: params.end.getHours(),
+      minute: params.end.getMinutes(),
+      second: params.end.getSeconds(),
+    };
+    recordingsTraceLog(dbg, logger, "listRecordings", `Date components for camera (local): start=${startLocalParts.year}-${String(startLocalParts.month).padStart(2, '0')}-${String(startLocalParts.day).padStart(2, '0')} ${String(startLocalParts.hour).padStart(2, '0')}:${String(startLocalParts.minute).padStart(2, '0')}:${String(startLocalParts.second).padStart(2, '0')} (UTC: ${params.start.toISOString()}), end=${endLocalParts.year}-${String(endLocalParts.month).padStart(2, '0')}-${String(endLocalParts.day).padStart(2, '0')} ${String(endLocalParts.hour).padStart(2, '0')}:${String(endLocalParts.minute).padStart(2, '0')}:${String(endLocalParts.second).padStart(2, '0')} (UTC: ${params.end.toISOString()})`);
 
     const openXml = `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
@@ -2092,7 +2214,9 @@ ${xmlDateTimePayload("endTime", params.end)}
 </FileInfoList>
 </body>`;
 
-    const openResp = await this.sendXml({ cmdId: BC_CMD_ID_FILE_INFO_LIST_OPEN, channel, payloadXml: openXml });
+      recordingsTraceLog(dbg, logger, "listRecordings", `Opening FileInfoList: channel=${channel}, uid=${uid}, streamType=${streamType}`);
+    // Use explicit timeout for recording operations (15 seconds per request)
+    const openResp = await this.sendXml({ cmdId: BC_CMD_ID_FILE_INFO_LIST_OPEN, channel, payloadXml: openXml, timeoutMs: 15_000 });
     const handleText = getXmlText(openResp, "handle");
     if (!handleText) {
       throw new Error("FileInfoList open did not return <handle>");
@@ -2102,6 +2226,7 @@ ${xmlDateTimePayload("endTime", params.end)}
     if (!Number.isFinite(handle)) {
       throw new Error(`FileInfoList open returned invalid handle: ${handleText}`);
     }
+    recordingsTraceLog(dbg, logger, "listRecordings", `FileInfoList opened with handle=${handle}`);
 
     const pageXml = `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
@@ -2115,39 +2240,86 @@ ${xmlDateTimePayload("endTime", params.end)}
 </FileInfoList>
 </body>`;
 
-    const files: RecordingFile[] = [];
-    try {
-      let finished = false;
-      for (let i = 0; i < maxIterations && !finished; i++) {
-        const resp = await this.sendXml({ cmdId: BC_CMD_ID_FILE_INFO_LIST_GET, channel, payloadXml: pageXml });
-        files.push(...parseRecordingFilesFromXml(resp));
-        const bFinishedText = getXmlText(resp, "bFinished") ?? getXmlText(resp, "finished");
-        if (bFinishedText != null) {
-          finished = bFinishedText.trim() === "1";
-        } else {
-          // If firmware doesn't provide a finished flag, assume one-page response.
-          finished = true;
+      const files: RecordingFile[] = [];
+      // Typical page size for Reolink cameras - if we get this many results, there might be more pages
+      const TYPICAL_PAGE_SIZE = 40;
+      
+      try {
+        let finished = false;
+        for (let i = 0; i < maxIterations && !finished; i++) {
+          recordingsTraceLog(dbg, logger, "listRecordings", `Fetching page ${i + 1}/${maxIterations} (handle=${handle})`);
+          
+          let resp: string;
+          try {
+            // Use explicit timeout for each pagination request (15 seconds)
+            resp = await this.sendXml({ cmdId: BC_CMD_ID_FILE_INFO_LIST_GET, channel, payloadXml: pageXml, timeoutMs: 15_000 });
+            recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1} GET response received`);
+          } catch (e) {
+            recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1} GET failed: ${e instanceof Error ? e.message : String(e)}, stack: ${e instanceof Error ? e.stack : 'no stack'}`);
+            throw e;
+          }
+
+          const pageFiles = parseRecordingFilesFromXml(resp);
+          files.push(...pageFiles);
+          recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1}: found ${pageFiles.length} files (total: ${files.length})`);
+          
+          const bFinishedText = getXmlText(resp, "bFinished") ?? getXmlText(resp, "finished");
+          if (bFinishedText != null) {
+            // Explicit finished flag from camera
+            finished = bFinishedText.trim() === "1";
+            recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1}: bFinished=${bFinishedText}, finished=${finished}`);
+          } else {
+            // No finished flag in response - use heuristic based on page size
+            // If we received a full page (TYPICAL_PAGE_SIZE), there might be more results
+            // If we received fewer, we're likely at the end
+            if (pageFiles.length >= TYPICAL_PAGE_SIZE) {
+              finished = false;
+              recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1}: no finished flag, but got ${pageFiles.length} files (>= ${TYPICAL_PAGE_SIZE}), continuing pagination`);
+            } else if (pageFiles.length === 0) {
+              // Empty page means we're done
+              finished = true;
+              recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1}: no finished flag and empty page, assuming done`);
+            } else {
+              // Got some results but less than a full page - likely the last page
+              finished = true;
+              recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1}: no finished flag, got ${pageFiles.length} files (< ${TYPICAL_PAGE_SIZE}), assuming done`);
+            }
+          }
+        }
+        
+        if (!finished) {
+          recordingsTraceLog(dbg, logger, "listRecordings", `WARNING: Reached maxIterations (${maxIterations}) without finishing pagination`);
+        }
+      } catch (e) {
+        recordingsTraceLog(dbg, logger, "listRecordings", `Pagination loop failed: ${e instanceof Error ? e.message : String(e)}, stack: ${e instanceof Error ? e.stack : 'no stack'}`);
+        throw e;
+      } finally {
+        // Best-effort close.
+        try {
+          recordingsTraceLog(dbg, logger, "listRecordings", `Closing FileInfoList handle=${handle}`);
+          await this.sendXml({ cmdId: BC_CMD_ID_FILE_INFO_LIST_CLOSE, channel, payloadXml: pageXml, timeoutMs: 5_000 });
+          recordingsTraceLog(dbg, logger, "listRecordings", `FileInfoList closed successfully`);
+        } catch (e) {
+          recordingsTraceLog(dbg, logger, "listRecordings", `FileInfoList CLOSE failed (ignored): ${e instanceof Error ? e.message : String(e)}`);
+          // ignore
         }
       }
-    } finally {
-      // Best-effort close.
-      try {
-        await this.sendXml({ cmdId: BC_CMD_ID_FILE_INFO_LIST_CLOSE, channel, payloadXml: pageXml });
-      } catch {
-        // ignore
+
+      // De-dup (pagination can repeat).
+      const seen = new Set<string>();
+      const unique = files.filter((f) => {
+        if (seen.has(f.fileName)) return false;
+        seen.add(f.fileName);
+        return true;
+      });
+
+      recordingsTraceLog(dbg, logger, "listRecordings", `FileInfoList complete: ${unique.length} unique files (from ${files.length} total)`);
+      if (unique.length > 0 || !fallbackToAlarmVideo) {
+        recordingsTraceLog(dbg, logger, "listRecordings", `Returning ${unique.length} files from FileInfoList`);
+        return unique;
       }
-    }
 
-    // De-dup (pagination can repeat).
-    const seen = new Set<string>();
-    const unique = files.filter((f) => {
-      if (seen.has(f.fileName)) return false;
-      seen.add(f.fileName);
-      return true;
-    });
-
-    if (unique.length > 0 || !fallbackToAlarmVideo) return unique;
-
+    recordingsTraceLog(dbg, logger, "listRecordings", `FileInfoList returned no files, falling back to findAlarmVideo`);
     // Fallback path: <findAlarmVideo> (cmdId 272/273/274).
     // This often returns "alarm videos" when FileInfoList is unsupported/empty.
     const uidBase = uid.split("_")[0] ?? uid;
@@ -2176,43 +2348,87 @@ ${xmlDateTimePayload("endTime", end)}
 </findAlarmVideo>
 </body>`;
 
-    const alarmFiles: RecordingFile[] = [];
-    let currentStart = params.start;
-    for (let i = 0; i < maxIterations; i++) {
-      const openResp = await this.sendXml({ cmdId: BC_CMD_ID_FIND_REC_VIDEO_OPEN, channel, payloadXml: findOpenXml(currentStart, params.end) });
-      const fileHandle = getXmlText(openResp, "fileHandle")?.trim();
-      if (!fileHandle) break;
-
-      const getXml = findGetXml(fileHandle);
+      const alarmFiles: RecordingFile[] = [];
+      let currentStart = params.start;
       try {
-        const getResp = await this.sendXml({ cmdId: BC_CMD_ID_FIND_REC_VIDEO_GET, channel, payloadXml: getXml });
-        const pageFiles = parseRecordingFilesFromXml(getResp);
-        alarmFiles.push(...pageFiles);
+        for (let i = 0; i < maxIterations; i++) {
+          recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo iteration ${i + 1}/${maxIterations}: start=${currentStart.toISOString()}, end=${params.end.toISOString()}`);
+          
+          let openResp: string;
+          try {
+            openResp = await this.sendXml({ cmdId: BC_CMD_ID_FIND_REC_VIDEO_OPEN, channel, payloadXml: findOpenXml(currentStart, params.end) });
+            recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo OPEN response received`);
+          } catch (e) {
+            recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo OPEN failed: ${e instanceof Error ? e.message : String(e)}`);
+            break;
+          }
+          
+          const fileHandle = getXmlText(openResp, "fileHandle")?.trim();
+          if (!fileHandle) {
+            recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: no fileHandle in response, breaking`);
+            break;
+          }
 
-        const bFinishedText = getXmlText(getResp, "bFinished")?.trim();
-        const finished = bFinishedText === "1";
-        if (finished) break;
+          const getXml = findGetXml(fileHandle);
+          try {
+            recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: fetching with handle=${fileHandle}`);
+            
+            let getResp: string;
+            try {
+              getResp = await this.sendXml({ cmdId: BC_CMD_ID_FIND_REC_VIDEO_GET, channel, payloadXml: getXml });
+              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo GET response received`);
+            } catch (e) {
+              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo GET failed: ${e instanceof Error ? e.message : String(e)}`);
+              throw e;
+            }
+            
+            const pageFiles = parseRecordingFilesFromXml(getResp);
+            alarmFiles.push(...pageFiles);
+            recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo page ${i + 1}: found ${pageFiles.length} files (total: ${alarmFiles.length})`);
 
-        // If not finished, advance start to the last returned event startTime if possible.
-        const lastWithStart = [...pageFiles].reverse().find((f) => f.startTime != null);
-        if (!lastWithStart?.startTime) break;
-        currentStart = lastWithStart.startTime;
-      } finally {
-        // Best-effort close.
-        try {
-          await this.sendXml({ cmdId: BC_CMD_ID_FIND_REC_VIDEO_CLOSE, channel, payloadXml: getXml });
-        } catch {
-          // ignore
+            const bFinishedText = getXmlText(getResp, "bFinished")?.trim();
+            const finished = bFinishedText === "1";
+            if (finished) {
+              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: finished=true, breaking`);
+              break;
+            }
+
+            // If not finished, advance start to the last returned event startTime if possible.
+            const lastWithStart = [...pageFiles].reverse().find((f) => f.startTime != null);
+            if (!lastWithStart?.startTime) {
+              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: no startTime in files, breaking`);
+              break;
+            }
+            currentStart = lastWithStart.startTime;
+          } finally {
+            // Best-effort close.
+            try {
+              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: closing handle=${fileHandle}`);
+              await this.sendXml({ cmdId: BC_CMD_ID_FIND_REC_VIDEO_CLOSE, channel, payloadXml: getXml });
+              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: closed successfully`);
+            } catch (e) {
+              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo CLOSE failed (ignored): ${e instanceof Error ? e.message : String(e)}`);
+              // ignore
+            }
+          }
         }
+      } catch (e) {
+        recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo loop failed: ${e instanceof Error ? e.message : String(e)}, stack: ${e instanceof Error ? e.stack : 'no stack'}`);
+        throw e;
       }
-    }
 
-    const seenAlarm = new Set<string>();
-    return alarmFiles.filter((f) => {
-      if (seenAlarm.has(f.fileName)) return false;
-      seenAlarm.add(f.fileName);
-      return true;
-    });
+      const seenAlarm = new Set<string>();
+      const result = alarmFiles.filter((f) => {
+        if (seenAlarm.has(f.fileName)) return false;
+        seenAlarm.add(f.fileName);
+        return true;
+      });
+      recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo complete: returning ${result.length} unique files`);
+      return result;
+    } catch (e) {
+      recordingsTraceLog(dbg, logger, "listRecordings", `ERROR: ${e instanceof Error ? e.message : String(e)}, stack: ${e instanceof Error ? e.stack : 'no stack'}`);
+      throw e;
+    }
   }
 
   /**
@@ -2230,9 +2446,11 @@ ${xmlDateTimePayload("endTime", end)}
    * Convenience helper to list recordings in a given time window, optionally limiting the count.
    *
    * This wraps {@link ReolinkBaichuanApi.listRecordings | listRecordings} and post-filters/sorts the results by startTime.
+   * Results are cached locally to avoid redundant API calls.
    */
   async listRecordingsByTime(params: {
-    channel: number;
+    /** Logical channel to query. If omitted, uses the client's configured channel (or 0). */
+    channel?: number;
     /** UID of the device; if omitted, defaults to this.uid when available. */
     uid?: string;
     start: Date;
@@ -2249,60 +2467,230 @@ ${xmlDateTimePayload("endTime", end)}
     fallbackToAlarmVideo?: boolean;
     /** See {@link ListRecordingsParams.maxIterations}. */
     maxIterations?: number;
+    /**
+     * If true (default), try HTTP CGI API fallback when Baichuan API returns no results or fails.
+     */
+    httpFallback?: boolean;
+    /**
+     * If true, bypass the cache and fetch fresh data from the camera.
+     * Default: false (use cache if available).
+     */
+    bypassCache?: boolean;
+    /**
+     * Custom TTL for caching this request's results (in milliseconds).
+     * If not provided, uses the default TTL (5 minutes).
+     */
+    cacheTtlMs?: number;
   }): Promise<RecordingFile[]> {
-    const { channel, uid, start, end, streamType, recordType, count, fallbackToAlarmVideo, maxIterations } = params;
+    const dbg = this.client.getDebugConfig?.();
+    const logger = this.logger;
 
-    const effectiveUid = uid ?? this.uid;
-    if (!effectiveUid) {
-      throw new Error(
-        "UID is required to list recordings. Pass params.uid explicitly or ensure this.uid is set.",
-      );
-    }
+    try {
+      recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Init: ${JSON.stringify({ params })}`);
 
-    const listParams: ListRecordingsParams = {
-      channel,
-      uid: effectiveUid,
-      start,
-      end,
-      ...(recordType ? { recordType } : {}),
-      ...(fallbackToAlarmVideo !== undefined ? { fallbackToAlarmVideo } : {}),
-      ...(maxIterations !== undefined ? { maxIterations } : {}),
-      ...(streamType ? { streamType } : {}),
-    };
+      const { channel, uid, start, end, streamType, recordType, count, fallbackToAlarmVideo, maxIterations, httpFallback = true, bypassCache = false, cacheTtlMs } = params;
 
-    const recs = await this.listRecordings(listParams);
+      // Fallback to the client's configured channel (or 0) when not explicitly provided.
+      const effectiveChannel = channel ?? (this.client.getConfiguredChannel?.() ?? 0);
+      const effectiveStreamType = streamType || "mainStream";
+      recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Effective channel: ${effectiveChannel}`);
 
-    // Normalize and filter by time window (defensive: some firmwares may return a wider range).
-    const startMs = start.getTime();
-    const endMs = end.getTime();
-    const normalized: RecordingFile[] = recs.map((r) => {
-      const s = r.startTime ?? r.parsedFileName?.start;
-      const e = r.endTime ?? r.parsedFileName?.end;
-      // Only set properties when defined to keep optional types happy with exactOptionalPropertyTypes.
-      return {
-        ...r,
-        ...(s ? { startTime: s } : {}),
-        ...(e ? { endTime: e } : {}),
+      // Check cache first (unless bypassed)
+      if (!bypassCache) {
+        const cachedRecs = this.getCachedRecordings(effectiveChannel, start, end, effectiveStreamType);
+        if (cachedRecs) {
+          recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Cache hit: returning ${cachedRecs.length} cached recordings`);
+          
+          // Apply count limit if specified
+          if (typeof count === "number" && Number.isFinite(count) && count > 0) {
+            return cachedRecs.slice(0, count);
+          }
+          return cachedRecs;
+        }
+        recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Cache miss: fetching from camera`);
+      } else {
+        recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Cache bypassed: fetching fresh data`);
+      }
+
+      let effectiveUid: string;
+      try {
+        effectiveUid = await this.ensureUidForRecordings(effectiveChannel, uid);
+        recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Effective UID: ${effectiveUid}`);
+      } catch (e) {
+        recordingsTraceLog(dbg, logger, "listRecordingsByTime", `ensureUidForRecordings failed: ${e instanceof Error ? e.message : String(e)}`);
+        throw e;
+      }
+
+      // Adjust dates for camera API
+      // If end time is exactly midnight, it means "end of the previous day"
+      // Adjust to 23:59:59 of that day for the search
+      const adjustedStart = new Date(start);
+      const adjustedEnd = new Date(end);
+      
+      if (adjustedEnd.getHours() === 0 && adjustedEnd.getMinutes() === 0 && adjustedEnd.getSeconds() === 0) {
+        adjustedEnd.setSeconds(-1); // Go back 1 second to 23:59:59 of previous day
+      }
+
+      const listParams: ListRecordingsParams = {
+        channel: effectiveChannel,
+        uid: effectiveUid,
+        start: adjustedStart,
+        end: adjustedEnd,
+        ...(recordType ? { recordType } : {}),
+        ...(fallbackToAlarmVideo !== undefined ? { fallbackToAlarmVideo } : {}),
+        ...(maxIterations !== undefined ? { maxIterations } : {}),
+        ...(streamType ? { streamType } : {}),
       };
-    });
 
-    const filtered = normalized
-      .filter((r) => {
-        if (!r.startTime) return false;
-        const t = r.startTime.getTime();
-        return t >= startMs && t <= endMs;
-      })
-      .sort((a, b) => {
-        const as = a.startTime?.getTime() ?? 0;
-        const bs = b.startTime?.getTime() ?? 0;
-        return as - bs;
+      let recs: RecordingFile[];
+
+      // If httpFallback is true, use HTTP API directly instead of Baichuan
+      if (httpFallback) {
+        recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Using HTTP API directly (httpFallback=true)`);
+        try {
+          // Ensure CGI API is logged in (reuse existing session if already logged in)
+          await this.cgiApi.login();
+
+          // Get recordings via HTTP CGI API using "Search" command
+          // Format dates according to Reolink API format: { year, mon, day, hour, min, sec }
+          // Use local time values since the camera expects times in its local timezone
+          const formatReolinkTime = (date: Date) => ({
+            year: date.getFullYear(),
+            mon: date.getMonth() + 1, // JavaScript months are 0-based, Reolink expects 1-based
+            day: date.getDate(),
+            hour: date.getHours(),
+            min: date.getMinutes(),
+            sec: date.getSeconds(),
+          });
+
+          const startTimePayload = formatReolinkTime(adjustedStart);
+          const endTimePayload = formatReolinkTime(adjustedEnd);
+          const searchPayload = {
+            Search: {
+              channel: effectiveChannel,
+              onlyStatus: 0, // 0 = get files, 1 = only status
+              streamType: effectiveStreamType,
+              StartTime: startTimePayload,
+              EndTime: endTimePayload,
+            }
+          };
+          
+          recordingsTraceLog(dbg, logger, "listRecordingsByTime", `HTTP API Search payload: ${JSON.stringify(searchPayload)}`);
+
+          const httpResponse = await this.cgiApi.call('Search', searchPayload, 0);
+
+          recordingsTraceLog(dbg, logger, "listRecordingsByTime", `HTTP API returned response: ${JSON.stringify(httpResponse)}`);
+
+          // Parse HTTP response and convert to RecordingFile format
+          recs = [];
+          if (Array.isArray(httpResponse) && httpResponse.length > 0) {
+            for (const data of httpResponse) {
+              if (data.code !== 0) {
+                recordingsTraceLog(dbg, logger, "listRecordingsByTime", `HTTP API returned error code ${data.code}`);
+                continue;
+              }
+
+              // Type-safe access to SearchResult
+              const value = data.value;
+              if (!value || typeof value !== 'object' || Array.isArray(value)) {
+                continue;
+              }
+
+              const searchResult = (value as Record<string, any>).SearchResult;
+              if (!searchResult || typeof searchResult !== 'object') {
+                continue;
+              }
+
+              // Parse file list from response
+              const files = (searchResult as Record<string, any>).File;
+              if (Array.isArray(files)) {
+                for (const file of files) {
+                  // Convert Reolink time format to Date
+                  const parseReolinkTime = (t: any): Date => {
+                    return new Date(t.year, t.mon - 1, t.day, t.hour, t.min, t.sec);
+                  };
+
+                  const fileStartTime = file.StartTime ? parseReolinkTime(file.StartTime) : undefined;
+                  const fileEndTime = file.EndTime ? parseReolinkTime(file.EndTime) : undefined;
+
+                  // Build RecordingFile with proper optional property handling
+                  const recFile: RecordingFile = {
+                    fileName: file.name || '',
+                  };
+                  if (file.size !== undefined) recFile.sizeBytes = file.size;
+                  if (fileStartTime) recFile.startTime = fileStartTime;
+                  if (fileEndTime) recFile.endTime = fileEndTime;
+                  if (file.type !== undefined) recFile.recordType = file.type;
+
+                  recs.push(recFile);
+                }
+              }
+            }
+            recordingsTraceLog(dbg, logger, "listRecordingsByTime", `HTTP API parsed ${recs.length} recordings`);
+          }
+        } catch (httpError: any) {
+          recordingsTraceLog(dbg, logger, "listRecordingsByTime", `HTTP API failed: ${httpError instanceof Error ? httpError.message : String(httpError)}`);
+          throw httpError;
+        }
+      } else {
+        // Use Baichuan API (default behavior)
+        recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Calling listRecordings with params: channel=${listParams.channel}, uid=${listParams.uid}, start=${listParams.start.toISOString()} (original UTC: ${start.toISOString()}), end=${listParams.end.toISOString()} (original UTC: ${end.toISOString()})`);
+        
+        try {
+          recs = await this.listRecordings(listParams);
+          recordingsTraceLog(dbg, logger, "listRecordingsByTime", `listRecordings returned ${recs.length} recordings`);
+        } catch (e) {
+          recordingsTraceLog(dbg, logger, "listRecordingsByTime", `listRecordings failed: ${e instanceof Error ? e.message : String(e)}, stack: ${e instanceof Error ? e.stack : 'no stack'}`);
+          throw e;
+        }
+      }
+
+      // Normalize and filter by time window (defensive: some firmwares may return a wider range).
+      const startMs = start.getTime();
+      const endMs = end.getTime();
+      recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Filtering recordings: startMs=${startMs}, endMs=${endMs}`);
+      
+      const normalized: RecordingFile[] = recs.map((r) => {
+        const s = r.startTime ?? r.parsedFileName?.start;
+        const e = r.endTime ?? r.parsedFileName?.end;
+        // Only set properties when defined to keep optional types happy with exactOptionalPropertyTypes.
+        return {
+          ...r,
+          ...(s ? { startTime: s } : {}),
+          ...(e ? { endTime: e } : {}),
+        };
       });
 
-    if (typeof count === "number" && Number.isFinite(count) && count > 0) {
-      return filtered.slice(0, count);
-    }
+      const filtered = normalized
+        .filter((r) => {
+          if (!r.startTime) return false;
+          const t = r.startTime.getTime();
+          return t >= startMs && t <= endMs;
+        })
+        .sort((a, b) => {
+          const as = a.startTime?.getTime() ?? 0;
+          const bs = b.startTime?.getTime() ?? 0;
+          return as - bs;
+        });
 
-    return filtered;
+      recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Filtered to ${filtered.length} recordings in time window`);
+
+      // Cache the filtered results for future lookups
+      this.cacheRecordings(effectiveChannel, start, end, effectiveStreamType, filtered, cacheTtlMs);
+      recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Cached ${filtered.length} recordings`);
+
+      if (typeof count === "number" && Number.isFinite(count) && count > 0) {
+        const result = filtered.slice(0, count);
+        recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Returning ${result.length} recordings (limited by count=${count})`);
+        return result;
+      }
+
+      recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Returning ${filtered.length} recordings`);
+      return filtered;
+    } catch (e) {
+      recordingsTraceLog(dbg, logger, "listRecordingsByTime", `ERROR: ${e instanceof Error ? e.message : String(e)}, stack: ${e instanceof Error ? e.stack : 'no stack'}`);
+      throw e;
+    }
   }
 
   /**
@@ -2312,7 +2700,8 @@ ${xmlDateTimePayload("endTime", end)}
    * Use {@link ReolinkBaichuanApi.downloadRecording | downloadRecording} for bit-identical file download.
    */
   async getRecordingPlaybackUrls(params: {
-    channel: number;
+    /** Logical channel to query. If omitted, uses the client's configured channel (or 0). */
+    channel?: number;
     fileName: string;
     streamType?: RecordingStreamType;
     /** If true (default), ensure RTMP is enabled before returning the URL. */
@@ -2321,14 +2710,162 @@ ${xmlDateTimePayload("endTime", end)}
     /** RTMP VOD URL for playback/export. */
     rtmpVodUrl: string;
   }> {
+    const effectiveChannel = params.channel ?? (this.client.getConfiguredChannel?.() ?? 0);
+
     const rtmpVodUrl = await this.getVodRtmpUrl({
-      channel: params.channel,
+      channel: effectiveChannel,
       fileName: params.fileName,
       ...(params.streamType ? { streamType: params.streamType } : {}),
       ...(params.ensureEnabled !== undefined ? { ensureEnabled: params.ensureEnabled } : {}),
     });
 
     return { rtmpVodUrl };
+  }
+
+  /**
+   * Ensure we have a UID suitable for recording-related operations.
+   *
+   * If an explicit UID is provided, it is returned as-is.
+   * Otherwise, this method returns the cached `this.uid` if already known.
+   *
+   * No automatic discovery is performed here: callers must ensure that a UID is available
+   * either via explicit parameter or via the client configuration.
+   */
+  private async ensureUidForRecordings(channel: number, explicitUid?: string): Promise<string> {
+    const dbg = this.client.getDebugConfig?.();
+    const logger = this.logger;
+    
+    recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `Checking UID: explicitUid=${explicitUid}, this.uid=${this.uid}`);
+    
+    if (explicitUid && explicitUid.trim()) {
+      recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `Using explicit UID: ${explicitUid.trim()}`);
+      return explicitUid.trim();
+    }
+
+    if (this.uid && this.uid.trim()) {
+      recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `Using configured UID: ${this.uid.trim()}`);
+      return this.uid;
+    }
+
+    recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `No UID available, attempting auto-discovery for channel ${channel}`);
+    
+    // Try to auto-discover UID using the same logic as test-tcp-uid-discovery
+    const extractUidLike = (value: unknown): string | undefined => {
+      const seen = new Set<unknown>();
+      const walk = (v: unknown): string | undefined => {
+        if (v == null) return undefined;
+        if (typeof v === "string") {
+          const s = v.trim();
+          // Typical Reolink UID: uppercase alnum, ~16 chars (e.g. 9527000HZ56U1ORU)
+          if (/^[0-9A-Z]{12,24}$/.test(s) && /[A-Z]/.test(s)) return s;
+          return undefined;
+        }
+        if (typeof v !== "object") return undefined;
+        if (seen.has(v)) return undefined;
+        seen.add(v);
+
+        if (Array.isArray(v)) {
+          for (const it of v) {
+            const r = walk(it);
+            if (r) return r;
+          }
+          return undefined;
+        }
+
+        for (const vv of Object.values(v as Record<string, unknown>)) {
+          const r = walk(vv);
+          if (r) return r;
+        }
+        return undefined;
+      };
+      return walk(value);
+    };
+
+    let discoveredUid: string | undefined;
+
+    // 1) Try getInfo() -> serialNumber
+    try {
+      recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `Attempting auto-discovery via getInfo()`);
+      const info = await this.getInfo(channel);
+      const serial = (info.serialNumber ?? "").trim();
+      recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `getInfo().serialNumber: ${serial || "(missing)"}`);
+      if (serial && /^[0-9A-Z]{12,24}$/.test(serial) && /[A-Z]/.test(serial)) {
+        discoveredUid = serial;
+        recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `Found UID from serialNumber: ${discoveredUid}`);
+      }
+    } catch (e) {
+      recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `getInfo() failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    // 2) Try HTTP CGI GetP2p / GetDevInfo / GetChannelstatus
+    if (!discoveredUid) {
+      try {
+        recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `Attempting auto-discovery via HTTP CGI API`);
+        await this.cgiApi.login();
+
+        try {
+          const p2p = await this.cgiApi.call("GetP2p", {});
+          const fromP2p = extractUidLike(p2p);
+          recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `[HTTP CGI] GetP2p UID candidate: ${fromP2p || "(none)"}`);
+          discoveredUid = discoveredUid ?? fromP2p ?? undefined;
+        } catch (e) {
+          recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `[HTTP CGI] GetP2p failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+
+        if (!discoveredUid) {
+          try {
+            const devInfo = await this.cgiApi.GetDevInfo();
+            const fromDevInfo = extractUidLike(devInfo);
+            recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `[HTTP CGI] GetDevInfo UID candidate: ${fromDevInfo || "(none)"}`);
+            discoveredUid = discoveredUid ?? fromDevInfo ?? undefined;
+          } catch (e) {
+            recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `[HTTP CGI] GetDevInfo failed: ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
+
+        if (!discoveredUid) {
+          try {
+            const ch = await this.cgiApi.GetChannelstatus();
+            const fromChannelStatus = extractUidLike(ch);
+            recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `[HTTP CGI] GetChannelstatus UID candidate: ${fromChannelStatus || "(none)"}`);
+            discoveredUid = discoveredUid ?? fromChannelStatus ?? undefined;
+          } catch (e) {
+            recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `[HTTP CGI] GetChannelstatus failed: ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
+      } catch (e) {
+        recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `[HTTP CGI] Login or requests failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+
+    // 3) Try Baichuan GetP2p via sendXml(cmdId=114)
+    if (!discoveredUid) {
+      try {
+        recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `Attempting auto-discovery via cmdId=114 (GetP2p)`);
+        const p2pXml = await this.sendXml({ cmdId: 114, timeoutMs: 10_000 });
+        const fromBaichuanP2p = extractUidLike(p2pXml);
+        if (fromBaichuanP2p) {
+          discoveredUid = fromBaichuanP2p;
+          recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `Found UID from cmdId=114: ${discoveredUid}`);
+        } else {
+          recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `cmdId=114 did not return UID`);
+        }
+      } catch (e) {
+        recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `cmdId=114 failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+
+    if (discoveredUid) {
+      // Cache the discovered UID for future use
+      this.uid = discoveredUid;
+      recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `Auto-discovered and cached UID: ${discoveredUid}`);
+      return discoveredUid;
+    }
+
+    recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `Auto-discovery failed - no UID found`);
+    throw new Error(
+      "UID is required to access recordings. Provide a UID explicitly or configure the client with a UID.",
+    );
   }
 
   /**
@@ -2537,7 +3074,7 @@ ${xmlDateTimePayload("endTime", end)}
     await this.client.login();
 
     const channel = this.normalizeChannel(params.channel);
-    const uid = params.uid;
+    const uid = await this.ensureUidForRecordings(channel, params.uid);
     const fileName = params.fileName;
 
     const name = fileName.includes("/") ? fileName.split("/").filter(Boolean).at(-1) ?? fileName : fileName;
@@ -4980,7 +5517,7 @@ ${xmlDateTimePayload("endTime", end)}
     // 2. Check if it's a dual lens model
     // Try multiple sources for model name
     let normalizedModel = model ? model.trim() : undefined;
-    
+
     // If model not found via getInfo, try getDeviceCapabilities or SupportInfo
     if (!normalizedModel && supportInfo) {
       // SupportInfo might have model info in items
@@ -4994,7 +5531,7 @@ ${xmlDateTimePayload("endTime", end)}
 
     // Check against known dual lens models (case-insensitive and partial match)
     const modelLower = normalizedModel?.toLowerCase().trim() ?? "";
-    
+
     // More flexible matching: check exact match first, then partial match
     const checkModelMatch = (knownModels: Set<string>, modelToCheck: string): boolean => {
       if (!modelToCheck || modelToCheck.length === 0) return false;
@@ -5012,15 +5549,15 @@ ${xmlDateTimePayload("endTime", end)}
       }
       return false;
     };
-    
+
     const isDualMotionModel = normalizedModel ? checkModelMatch(DUAL_LENS_DUAL_MOTION_MODELS, normalizedModel) : false;
     const isSingleMotionModel = normalizedModel ? checkModelMatch(DUAL_LENS_SINGLE_MOTION_MODELS, normalizedModel) : false;
-    
+
     // Also check if channelNum suggests dual lens (2-3 channels)
     // Handle both number and string types for channelNum
     const channelNumValue = typeof channelNum === "string" ? Number.parseInt(channelNum, 10) : channelNum;
     const hasDualLensChannelCount = (channelNumValue === 2 || channelNumValue === 3) && Number.isFinite(channelNumValue);
-    
+
     // Consider it dual lens if model matches OR if channelNum suggests it
     const isDualLens = isDualMotionModel || isSingleMotionModel || hasDualLensChannelCount;
 
@@ -5049,7 +5586,7 @@ ${xmlDateTimePayload("endTime", end)}
       : isSingleMotionModel
         ? "single_motion"
         : undefined;
-    
+
     // If we detected via channelNum but model doesn't match known types exactly,
     // try to infer from model name pattern
     if (!dualLensType && hasDualLensChannelCount) {
@@ -5347,7 +5884,7 @@ ${xmlDateTimePayload("endTime", end)}
         const compositeUrlWithAuth = new URL(`baichuan://${this.host}/composite/profile/${profile}`);
         compositeUrlWithAuth.username = this.username;
         compositeUrlWithAuth.password = this.password;
-        
+
         nativeStreams.push({
           name: `Composite ${profile}`,
           id: `composite_${profile}`,
@@ -5464,7 +6001,7 @@ ${xmlDateTimePayload("endTime", end)}
       const nativeUrlWithAuth = new URL(`baichuan://${this.host}/channel/${ch}/profile/${profile}`);
       nativeUrlWithAuth.username = this.username;
       nativeUrlWithAuth.password = this.password;
-      
+
       nativeStreams.push({
         name: `Native ${profile}`,
         id: `native_${profile}`,
