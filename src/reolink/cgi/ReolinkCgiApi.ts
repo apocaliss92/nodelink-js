@@ -400,12 +400,62 @@ export type VodSearchResponse = ReolinkCmdResponseExt<VodSearchResult> & {
   cmd: "Search";
 };
 
-type VodCacheKey = string;
+type RecordingsCacheKey = string;
 
-type VodCacheEntry = {
-  data: Array<VodSearchResponse>;
+type RecordingsCacheEntry = {
+  data: Array<EnrichedRecordingFile>;
   expiresAt: number;
 };
+
+/**
+ * Parameters for listing enriched recordings from NVR/Hub.
+ */
+export interface ListNvrRecordingsParams {
+  /** Channel number (0-based) */
+  channel: number;
+  /** Start date/time for search */
+  start: Date;
+  /** End date/time for search */
+  end: Date;
+  /** Stream type: "main" (default), "sub", "autotrack_main", "autotrack_sub", "telephoto_main", "telephoto_sub" */
+  streamType?: string;
+  /** For multifocal cameras: logical channel (0 or 1) */
+  iLogicChannel?: number;
+  /** If true, automatically search day-by-day when Status table is available (default: false) */
+  autoSearchByDay?: boolean;
+  /** If true, bypass cache and fetch fresh data (default: false) */
+  bypassCache?: boolean;
+  /**
+   * If true, fetch streaming URLs for each recording.
+   * This adds latency as it requires additional API calls.
+   * Default: false.
+   */
+  fetchStreamUrls?: boolean;
+  /** Stream URL type (only when fetchStreamUrls=true): "FLV" (default), "RTMP", "Playback" */
+  streamUrlType?: "FLV" | "RTMP" | "Playback";
+}
+
+/**
+ * Parameters for getting VOD URL for playback, download, or streaming.
+ */
+export interface GetVodUrlParams {
+  /** Request type: "Playback" (default), "Download", "FLV", "RTMP", "NVR_DOWNLOAD" */
+  requestType?: "Playback" | "Download" | "FLV" | "RTMP" | "NVR_DOWNLOAD";
+  /** Stream type for FLV/RTMP: "main" (default), "sub" */
+  streamType?: string;
+  /** Video stream type (alias for streamType, used when preparing from VodFile) */
+  videoStreamType?: string;
+  /** Start time string for Playback/Download */
+  startTime?: string;
+  /** Start time as JavaScript Date (for NVR preparation, will be converted to Reolink format) */
+  startTimeObj?: Date;
+  /** End time as JavaScript Date (for NVR preparation, will be converted to Reolink format) */
+  endTimeObj?: Date;
+  /** If true, automatically prepare file for NVR/Hub when VodFile is provided (default: true for Playback) */
+  prepare?: boolean;
+  /** Seek position in seconds (for FLV) */
+  seek?: number;
+}
 
 export class ReolinkCgiApi {
   readonly client: ReolinkHttpClient;
@@ -425,11 +475,12 @@ export class ReolinkCgiApi {
     dumpNals: false
   };
 
-  // VOD cache: key -> { data, expiresAt }
-  private vodCache = new Map<VodCacheKey, VodCacheEntry>();
+  // Recordings cache: key -> { data, expiresAt }
+  // Unified cache for both NVR and Device recordings (always enriched)
+  private recordingsCache = new Map<RecordingsCacheKey, RecordingsCacheEntry>();
 
   // Default cache TTL: 5 minutes
-  private vodCacheTtlMs = 5 * 60 * 1000;
+  private recordingsCacheTtlMs = 5 * 60 * 1000;
 
   constructor(opts: ReolinkHttpClientOptions & { logger?: Logger; debugConfig?: DebugConfig }) {
     this.client = new ReolinkHttpClient(opts);
@@ -456,31 +507,31 @@ export class ReolinkCgiApi {
   }
 
   /**
-   * Set VOD cache TTL (time to live) in milliseconds.
+   * Set recordings cache TTL (time to live) in milliseconds.
    * Default: 5 minutes (300000 ms)
    */
-  setVodCacheTtl(ttlMs: number): void {
-    this.vodCacheTtlMs = Math.max(0, ttlMs);
+  setRecordingsCacheTtl(ttlMs: number): void {
+    this.recordingsCacheTtlMs = Math.max(0, ttlMs);
   }
 
   /**
-   * Clear all VOD cache entries.
+   * Clear all recordings cache entries.
    */
-  clearVodCache(): void {
-    this.vodCache.clear();
+  clearRecordingsCache(): void {
+    this.recordingsCache.clear();
   }
 
   /**
-   * Get VOD cache statistics.
+   * Get recordings cache statistics.
    */
-  getVodCacheStats(): {
+  getRecordingsCacheStats(): {
     size: number;
     ttlMs: number;
     entries: Array<{ key: string; expiresAt: number; expired: boolean }>;
   } {
     const now = Date.now();
     const entries: Array<{ key: string; expiresAt: number; expired: boolean }> = [];
-    for (const [key, entry] of this.vodCache.entries()) {
+    for (const [key, entry] of this.recordingsCache.entries()) {
       entries.push({
         key,
         expiresAt: entry.expiresAt,
@@ -488,37 +539,36 @@ export class ReolinkCgiApi {
       });
     }
     return {
-      size: this.vodCache.size,
-      ttlMs: this.vodCacheTtlMs,
+      size: this.recordingsCache.size,
+      ttlMs: this.recordingsCacheTtlMs,
       entries,
     };
   }
 
   /**
-   * Clear expired VOD cache entries.
+   * Clear expired recordings cache entries.
    */
-  private cleanVodCache(): void {
+  private cleanRecordingsCache(): void {
     const now = Date.now();
-    for (const [key, entry] of this.vodCache.entries()) {
+    for (const [key, entry] of this.recordingsCache.entries()) {
       if (entry.expiresAt < now) {
-        this.vodCache.delete(key);
+        this.recordingsCache.delete(key);
       }
     }
   }
 
   /**
-   * Generate cache key for VOD search.
+   * Generate cache key for NVR recordings search.
    */
-  private getVodCacheKey(
+  private getNvrRecordingsCacheKey(
     channel: number,
     startTime: { year: number; mon: number; day: number; hour: number; min: number; sec: number },
     endTime: { year: number; mon: number; day: number; hour: number; min: number; sec: number },
     streamType: string,
-    statusOnly: boolean,
     iLogicChannel: number,
     autoSearchByDay: boolean
-  ): VodCacheKey {
-    return `vod:${channel}:${startTime.year}-${startTime.mon}-${startTime.day}-${startTime.hour}-${startTime.min}-${startTime.sec}:${endTime.year}-${endTime.mon}-${endTime.day}-${endTime.hour}-${endTime.min}-${endTime.sec}:${streamType}:${statusOnly ? 1 : 0}:${iLogicChannel}:${autoSearchByDay ? 1 : 0}`;
+  ): RecordingsCacheKey {
+    return `nvr:${channel}:${startTime.year}-${startTime.mon}-${startTime.day}-${startTime.hour}-${startTime.min}-${startTime.sec}:${endTime.year}-${endTime.mon}-${endTime.day}-${endTime.hour}-${endTime.min}-${endTime.sec}:${streamType}:${iLogicChannel}:${autoSearchByDay ? 1 : 0}`;
   }
 
   async login(): Promise<void> {
@@ -1080,40 +1130,21 @@ export class ReolinkCgiApi {
   // --------------------
 
   /**
-   * Search for VOD (Video On Demand) files on hub/NVR.
+   * List enriched recordings from NVR/Hub.
    * This command does NOT wake up battery cameras connected to the hub.
    * 
-   * Note: For best results, use statusOnly=true first to get the Status table,
-   * then search day-by-day using the days indicated in the table bitmap.
+   * Always returns enriched recording files with parsed metadata, detection flags, and timestamps.
+   * Note: For best results, use autoSearchByDay=true to automatically search day-by-day when Status table is available.
    * 
-   * @param channel - Channel number (0-based)
-   * @param start - Start date/time for search
-   * @param end - End date/time for search
-   * @param options - Optional search parameters
-   * @returns Search results with status and file list
+   * @param params - Search parameters
+   * @returns Array of enriched recording files
    */
-  async searchVodFiles(
-    channel: number,
-    start: Date,
-    end: Date,
-    options?: {
-      /** Stream type: "main" (default), "sub", "autotrack_main", "autotrack_sub", "telephoto_main", "telephoto_sub" */
-      streamType?: string;
-      /** Only return status (no file list) */
-      statusOnly?: boolean;
-      /** For multifocal cameras: logical channel (0 or 1) */
-      iLogicChannel?: number;
-      /** If true, automatically search day-by-day when Status table is available (default: false) */
-      autoSearchByDay?: boolean;
-      /** If true, bypass cache and fetch fresh data (default: false) */
-      bypassCache?: boolean;
-    }
-  ): Promise<Array<VodSearchResponse>> {
-    const streamType = options?.streamType ?? "main";
-    const onlyStatus = options?.statusOnly === true ? 1 : 0;
-    const iLogicChannel = options?.iLogicChannel ?? 0;
-    const autoSearchByDay = options?.autoSearchByDay ?? false;
-    const bypassCache = options?.bypassCache ?? false;
+  async listNvrRecordings(params: ListNvrRecordingsParams): Promise<Array<EnrichedRecordingFile>> {
+    const { channel, start, end } = params;
+    const streamType = params.streamType ?? "main";
+    const iLogicChannel = params.iLogicChannel ?? 0;
+    const autoSearchByDay = params.autoSearchByDay ?? false;
+    const bypassCache = params.bypassCache ?? false;
 
     // Convert Date to Reolink time format
     const startTime = this.dateToReolinkTime(start);
@@ -1121,16 +1152,22 @@ export class ReolinkCgiApi {
 
     // Check cache first (unless bypassing)
     if (!bypassCache) {
-      this.cleanVodCache();
-      const cacheKey = this.getVodCacheKey(channel, startTime, endTime, streamType, onlyStatus === 1, iLogicChannel, autoSearchByDay);
-      const cached = this.vodCache.get(cacheKey);
+      this.cleanRecordingsCache();
+      const cacheKey = this.getNvrRecordingsCacheKey(channel, startTime, endTime, streamType, iLogicChannel, autoSearchByDay);
+      const cached = this.recordingsCache.get(cacheKey);
       if (cached && cached.expiresAt > Date.now()) {
+        recordingsTraceLog(
+          this.debugConfig,
+          this.logger,
+          "listNvrRecordings",
+          `Cache hit: returning ${cached.data.length} cached enriched recordings`
+        );
         return cached.data;
       }
     }
 
-    // If autoSearchByDay is enabled and not statusOnly, first get status to find days with recordings
-    if (autoSearchByDay && onlyStatus === 0) {
+    // If autoSearchByDay is enabled, first get status to find days with recordings
+    if (autoSearchByDay) {
       const statusParam: any = {
         Search: {
           channel,
@@ -1204,7 +1241,7 @@ export class ReolinkCgiApi {
                       recordingsTraceLog(
                         this.debugConfig,
                         this.logger,
-                        "searchVodFiles",
+                        "listNvrRecordings",
                         `Raw API response for day ${day}/${month}/${year}: ${JSON.stringify({
                           fileCount: files.length,
                           sampleFile: {
@@ -1227,15 +1264,59 @@ export class ReolinkCgiApi {
       }
 
       if (allResults.length > 0) {
-        // Cache the result (unless bypassing cache)
+        // Collect all files from search results and enrich them
+        const allFiles: VodFile[] = [];
+        for (const res of allResults) {
+          if (res.code === 0) {
+            const searchResult = res.value?.SearchResult;
+            if (searchResult?.File) {
+              allFiles.push(...searchResult.File);
+            }
+          }
+        }
+
+        // Enrich all files
+        const enriched: EnrichedRecordingFile[] = [];
+        const fetchStreamUrls = params.fetchStreamUrls === true;
+        const streamUrlType = params.streamUrlType ?? "FLV";
+
+        for (const vodFile of allFiles) {
+          let streamUrl: string | undefined;
+
+          // Optionally fetch streaming URL
+          if (fetchStreamUrls) {
+            try {
+              const url = await this.getVodUrl(vodFile, channel, {
+                requestType: streamUrlType,
+                videoStreamType: streamType,
+                prepare: true,
+              });
+              streamUrl = url;
+            } catch (e) {
+              // Silently ignore - not all recordings may have streaming URLs available
+            }
+          }
+
+          enriched.push(this.enrichVodFile(vodFile, channel, streamUrl));
+        }
+
+        recordingsTraceLog(
+          this.debugConfig,
+          this.logger,
+          "listNvrRecordings",
+          `Returning ${enriched.length} enriched recording files from autoSearchByDay`
+        );
+
+        // Cache enriched results
         if (!bypassCache) {
-          const cacheKey = this.getVodCacheKey(channel, startTime, endTime, streamType, false, iLogicChannel, autoSearchByDay);
-          this.vodCache.set(cacheKey, {
-            data: allResults,
-            expiresAt: Date.now() + this.vodCacheTtlMs,
+          const cacheKey = this.getNvrRecordingsCacheKey(channel, startTime, endTime, streamType, iLogicChannel, autoSearchByDay);
+          this.recordingsCache.set(cacheKey, {
+            data: enriched,
+            expiresAt: Date.now() + this.recordingsCacheTtlMs,
           });
         }
-        return allResults;
+
+        return enriched;
       }
       // Fall through to normal search if no status found
     }
@@ -1244,7 +1325,7 @@ export class ReolinkCgiApi {
     const param: any = {
       Search: {
         channel,
-        onlyStatus,
+        onlyStatus: 0, // Always get files, not just status
         streamType,
         StartTime: startTime,
         EndTime: endTime,
@@ -1267,7 +1348,7 @@ export class ReolinkCgiApi {
           recordingsTraceLog(
             this.debugConfig,
             this.logger,
-            "searchVodFiles",
+            "listNvrRecordings",
             `Raw API response (normal search): ${JSON.stringify({
               fileCount: files.length,
               sampleFile: {
@@ -1283,16 +1364,87 @@ export class ReolinkCgiApi {
       }
     }
 
-    // Cache the result (unless bypassing cache)
+    // Collect all files from search results
+    const allFiles: VodFile[] = [];
+    for (const res of result) {
+      if (res.code === 0) {
+        const searchResult = res.value?.SearchResult;
+        if (searchResult?.File) {
+          allFiles.push(...searchResult.File);
+        }
+      }
+    }
+
+    recordingsTraceLog(
+      this.debugConfig,
+      this.logger,
+      "listNvrRecordings",
+      `Collected ${allFiles.length} raw VodFiles from API search results`
+    );
+    if (allFiles.length > 0) {
+      // Log first few files as sample
+      const sampleSize = Math.min(3, allFiles.length);
+      for (let i = 0; i < sampleSize; i++) {
+        const file = allFiles[i];
+        if (file) {
+          recordingsTraceLog(
+            this.debugConfig,
+            this.logger,
+            "listNvrRecordings",
+            `Sample file ${i + 1}/${allFiles.length}: ${JSON.stringify({
+              name: file.name,
+              type: file.type,
+              size: file.size,
+              StartTime: file.StartTime,
+              EndTime: file.EndTime,
+            })}`
+          );
+        }
+      }
+    }
+
+    // Enrich each file
+    const enriched: EnrichedRecordingFile[] = [];
+    const fetchStreamUrls = params.fetchStreamUrls === true;
+    const streamUrlType = params.streamUrlType ?? "FLV";
+
+    for (const vodFile of allFiles) {
+      let streamUrl: string | undefined;
+
+      // Optionally fetch streaming URL
+      if (fetchStreamUrls) {
+        try {
+          const url = await this.getVodUrl(vodFile, channel, {
+            requestType: streamUrlType,
+            videoStreamType: streamType,
+            prepare: true,
+          });
+          streamUrl = url;
+        } catch (e) {
+          // Silently ignore - not all recordings may have streaming URLs available
+        }
+      }
+
+      enriched.push(this.enrichVodFile(vodFile, channel, streamUrl));
+    }
+
+    recordingsTraceLog(
+      this.debugConfig,
+      this.logger,
+      "listNvrRecordings",
+      `Returning ${enriched.length} enriched recording files`
+    );
+
+    // Cache enriched results
     if (!bypassCache) {
-      const cacheKey = this.getVodCacheKey(channel, startTime, endTime, streamType, onlyStatus === 1, iLogicChannel, autoSearchByDay);
-      this.vodCache.set(cacheKey, {
-        data: result,
-        expiresAt: Date.now() + this.vodCacheTtlMs,
+      const cacheKey = this.getNvrRecordingsCacheKey(channel, startTime, endTime, streamType, iLogicChannel, autoSearchByDay);
+      this.recordingsCache.set(cacheKey, {
+        data: enriched,
+        expiresAt: Date.now() + this.recordingsCacheTtlMs,
       });
     }
 
-    return result;
+    return enriched;
   }
 
   /**
@@ -1421,97 +1573,107 @@ export class ReolinkCgiApi {
   }
 
   /**
-   * Get URL for VOD playback or download.
+   * Get URL for VOD playback, download, or streaming.
+   * Supports automatic file preparation for NVR/Hub when needed.
    * 
-   * @param filename - Filename from searchVodFiles or prepareNvrVodDownload
+   * @param filenameOrVodFile - Filename string or VodFile object from listNvrRecordings
    * @param channel - Channel number (0-based)
    * @param options - Optional parameters
-   * @returns URL string for playback/download
+   * @returns URL string
    */
   async getVodUrl(
-    filename: string,
+    filenameOrVodFile: string | VodFile,
     channel: number,
-    options?: {
-      /** Request type: "Playback" (default), "Download", "FLV", "RTMP", "NVR_DOWNLOAD" */
-      requestType?: "Playback" | "Download" | "FLV" | "RTMP" | "NVR_DOWNLOAD";
-      /** Stream type for FLV/RTMP: "main" (default), "sub" */
-      streamType?: string;
-      /** Start time string for Playback/Download */
-      startTime?: string;
-      /** Start time object (for NVR preparation) */
-      startTimeObj?: { year: number; mon: number; day: number; hour: number; min: number; sec: number };
-      /** End time object (for NVR preparation) */
-      endTimeObj?: { year: number; mon: number; day: number; hour: number; min: number; sec: number };
-    }
+    options?: GetVodUrlParams
   ): Promise<string> {
     await this.login();
     const requestType = options?.requestType ?? "Playback";
-    const streamType = options?.streamType ?? "main";
+    const streamType = options?.streamType ?? options?.videoStreamType ?? "main";
+    const videoStreamType = options?.videoStreamType ?? streamType;
+    const seek = options?.seek ?? 0;
+    const shouldPrepare = options?.prepare ?? (requestType === "Playback");
     let startTime = options?.startTime ?? "";
 
+    // Extract filename from VodFile or use string directly
+    let filename = typeof filenameOrVodFile === "string" ? filenameOrVodFile : filenameOrVodFile.name;
+    const vodFile = typeof filenameOrVodFile === "string" ? undefined : filenameOrVodFile;
+
+    // For NVR and Playback/Download, prepare the file first if needed
+    if (shouldPrepare && (requestType === "Playback" || requestType === "Download" || requestType === "NVR_DOWNLOAD")) {
+      // Try to prepare from startTimeObj/endTimeObj first
+      if (options?.startTimeObj && options?.endTimeObj) {
+        try {
+          // Convert Date to Reolink time format
+          const startTimeReolink = this.dateToReolinkTime(options.startTimeObj);
+          const endTimeReolink = this.dateToReolinkTime(options.endTimeObj);
+          
+          filename = await this.prepareNvrVodDownload(
+            channel,
+            startTimeReolink,
+            endTimeReolink,
+            streamType
+          );
+          // Extract start time from prepared filename if not provided
+          if (!startTime) {
+            const timeMatch = filename.match(/Rec\w{3}(?:_|_DST)?(\d{8})_(\d{6})_/);
+            if (timeMatch) {
+              startTime = `${timeMatch[1]}${timeMatch[2]}`;
+            }
+          }
+        } catch (error) {
+          // If preparation fails, continue with original filename
+        }
+      }
+      // Otherwise, try to prepare from VodFile if available
+      else if (vodFile && vodFile.StartTime && vodFile.EndTime) {
+        try {
+          filename = await this.prepareNvrVodDownload(
+            channel,
+            vodFile.StartTime,
+            vodFile.EndTime,
+            videoStreamType
+          );
+        } catch (error) {
+          // If preparation fails, continue with original filename
+        }
+      }
+    }
+
     const token = this.client.getToken();
-    if (!token) {
+    if (!token && (requestType === "Playback" || requestType === "Download" || requestType === "NVR_DOWNLOAD")) {
       throw new Error("Not logged in. Call login() first.");
     }
 
     // Get base URL from client (using private method access pattern)
-    // We need to construct the URL manually since we don't have direct access to host/port/useHttps
-    // Use the client's internal apiUrl method pattern
     const clientAny = this.client as any;
     const scheme = clientAny.useHttps ? "https" : "http";
     const port = clientAny.port ?? (clientAny.useHttps ? 443 : 80);
     const host = clientAny.host;
-
-    // For NVR and Playback/Download, prepare the file first if we have start/end time objects
-    if ((requestType === "Playback" || requestType === "Download" || requestType === "NVR_DOWNLOAD") && options?.startTimeObj && options?.endTimeObj) {
-      try {
-        // Prepare file using NvrDownload (like reolink_aio does for NVR_DOWNLOAD)
-        filename = await this.prepareNvrVodDownload(
-          channel,
-          options.startTimeObj,
-          options.endTimeObj,
-          streamType
-        );
-        // Extract start time from prepared filename if not provided
-        if (!startTime) {
-          const timeMatch = filename.match(/Rec\w{3}(?:_|_DST)?(\d{8})_(\d{6})_/);
-          if (timeMatch) {
-            startTime = `${timeMatch[1]}${timeMatch[2]}`;
-          }
-        }
-      } catch (error) {
-        // If preparation fails, continue with original filename
-        // This might work for some NVRs or might fail later
-      }
-    }
+    const rtmpPort = 1935; // Default RTMP port
 
     // Encode filename: replace spaces with %20, but keep '/' as-is (many firmwares expect raw paths)
     const encodedFilename = filename.replaceAll(" ", "%20");
 
+    // Map stream type to numeric value for FLV/RTMP
+    let streamTypeNum = 0; // main
+    if (videoStreamType === "sub") {
+      streamTypeNum = 1;
+    } else if (videoStreamType.startsWith("autotrack_") || videoStreamType.startsWith("telephoto_")) {
+      streamTypeNum = videoStreamType.includes("sub") ? 3 : 2;
+    }
+
+    let url: string;
+
     if (requestType === "FLV") {
       // FLV streaming URL - uses username/password authentication
-      const username = encodeURIComponent(clientAny.username);
-      const password = encodeURIComponent(clientAny.password);
-      // Map stream type to numeric value
-      let streamTypeNum = 0; // main
-      if (streamType === "sub") {
-        streamTypeNum = 1;
-      } else if (streamType.startsWith("autotrack_") || streamType.startsWith("telephoto_")) {
-        streamTypeNum = streamType.includes("sub") ? 3 : 2;
-      }
-      return `${scheme}://${host}:${port}/flv?port=1935&app=bcs&stream=playback.bcs&channel=${channel}&type=${streamTypeNum}&start=${encodedFilename}&seek=0&user=${username}&password=${password}`;
+      const username = encodeURIComponent(clientAny.username ?? "");
+      const password = encodeURIComponent(clientAny.password ?? "");
+      url = `${scheme}://${host}:${port}/flv?port=${rtmpPort}&app=bcs&stream=playback.bcs&channel=${channel}&type=${streamTypeNum}&start=${encodedFilename}&seek=${seek}&user=${username}&password=${password}`;
     } else if (requestType === "RTMP") {
       // RTMP streaming URL - uses username/password authentication
-      const username = encodeURIComponent(clientAny.username);
-      const password = encodeURIComponent(clientAny.password);
-      // Map stream type to numeric value
-      let streamTypeNum = 0; // main
-      if (streamType === "sub") {
-        streamTypeNum = 1;
-      } else if (streamType.startsWith("autotrack_") || streamType.startsWith("telephoto_")) {
-        streamTypeNum = streamType.includes("sub") ? 3 : 2;
-      }
-      return `rtmp://${host}:1935/vod/${encodedFilename}?channel=${channel}&stream=${streamTypeNum}&user=${username}&password=${password}`;
+      const username = encodeURIComponent(clientAny.username ?? "");
+      const password = encodeURIComponent(clientAny.password ?? "");
+      url = `rtmp://${host}:${rtmpPort}/vod/${encodedFilename}?channel=${channel}&stream=${streamTypeNum}&user=${username}&password=${password}`;
     } else {
       // Playback, Download, or NVR_DOWNLOAD
       const cmd = requestType === "NVR_DOWNLOAD" ? "Download" : requestType;
@@ -1536,127 +1698,18 @@ export class ReolinkCgiApi {
       // Construct URL: {scheme}://{host}:{port}/cgi-bin/api.cgi?cmd={cmd}&source={filename}&output={output}&start={time_start}&token={token}
       // Note: filename spaces are replaced with %20, but '/' stays as-is
       // Note: start parameter is NOT URL-encoded (just the raw time string)
-      return `${scheme}://${host}:${port}/cgi-bin/api.cgi?cmd=${cmd}&source=${encodedFilename}&output=${outputFilename}${startTimeParam}&token=${encodeURIComponent(token)}`;
+      url = `${scheme}://${host}:${port}/cgi-bin/api.cgi?cmd=${cmd}&source=${encodedFilename}&output=${outputFilename}${startTimeParam}&token=${encodeURIComponent(token ?? "")}`;
     }
+
+    return url;
   }
 
-  /**
-   * Get streaming URL for a specific VOD file.
-   * This method is optimized for streaming playback of VOD files from hub/NVR.
-   * For NVR, the file will be automatically prepared using NvrDownload if needed.
-   * 
-   * @param vodFile - VOD file from searchVodFiles() or filename string
-   * @param channel - Channel number (0-based)
-   * @param options - Optional streaming parameters
-   * @returns Streaming URL and metadata
-   */
-  async getVodStreamUrl(
-    vodFile: VodFile | string,
-    channel: number,
-    options?: {
-      /** Stream type: "FLV" (default, recommended for streaming), "RTMP", "Playback" */
-      streamType?: "FLV" | "RTMP" | "Playback";
-      /** Video stream type: "main" (default), "sub" */
-      videoStreamType?: string;
-      /** Seek position in seconds (for FLV) */
-      seek?: number;
-    }
-  ): Promise<{
-    url: string;
-    mimeType: string;
-    streamType: "FLV" | "RTMP" | "Playback";
-    filename: string;
-  }> {
-    await this.login();
-
-    // Extract filename from VodFile or use string directly
-    let filename = typeof vodFile === "string" ? vodFile : vodFile.name;
-    
-    const streamType = options?.streamType ?? "FLV";
-    const videoStreamType = options?.videoStreamType ?? "main";
-    const seek = options?.seek ?? 0;
-    
-    // For NVR and Playback, prepare the file first if we have start/end time
-    if (streamType === "Playback" && typeof vodFile !== "string" && vodFile.StartTime && vodFile.EndTime) {
-      try {
-        // Prepare file using NvrDownload (like reolink_aio does)
-        filename = await this.prepareNvrVodDownload(
-          channel,
-          vodFile.StartTime,
-          vodFile.EndTime,
-          videoStreamType
-        );
-      } catch (error) {
-        // If preparation fails, continue with original filename
-        // This might work for some NVRs or might fail later
-      }
-    }
-
-    // Get client info
-    const clientAny = this.client as any;
-    const scheme = clientAny.useHttps ? "https" : "http";
-    const port = clientAny.port ?? (clientAny.useHttps ? 443 : 80);
-    const host = clientAny.host;
-    const rtmpPort = 1935; // Default RTMP port
-
-    // Encode filename: replace spaces with %20, but keep '/' as-is
-    const encodedFilename = filename.replaceAll(" ", "%20");
-
-    // Map video stream type to numeric value for FLV/RTMP
-    let streamTypeNum = 0; // main
-    if (videoStreamType === "sub") {
-      streamTypeNum = 1;
-    } else if (videoStreamType.startsWith("autotrack_") || videoStreamType.startsWith("telephoto_")) {
-      streamTypeNum = videoStreamType.includes("sub") ? 3 : 2;
-    }
-
-    let url: string;
-    let mimeType: string;
-
-    if (streamType === "FLV") {
-      // FLV streaming - uses username/password authentication
-      const username = encodeURIComponent(clientAny.username);
-      const password = encodeURIComponent(clientAny.password);
-      url = `${scheme}://${host}:${port}/flv?port=${rtmpPort}&app=bcs&stream=playback.bcs&channel=${channel}&type=${streamTypeNum}&start=${encodedFilename}&seek=${seek}&user=${username}&password=${password}`;
-      mimeType = "application/x-mpegURL";
-    } else if (streamType === "RTMP") {
-      // RTMP streaming - uses username/password authentication
-      const username = encodeURIComponent(clientAny.username);
-      const password = encodeURIComponent(clientAny.password);
-      url = `rtmp://${host}:${rtmpPort}/vod/${encodedFilename}?channel=${channel}&stream=${streamTypeNum}&user=${username}&password=${password}`;
-      mimeType = "application/x-mpegURL";
-    } else {
-      const token = this.client.getToken();
-      if (!token) {
-        throw new Error("Not logged in. Call login() first.");
-      }
-
-      // Extract start time from filename if possible (format: RecM04_20260101_000624_...)
-      let startTimeParam = "";
-      let timeStart = "";
-      const timeMatch = filename.match(/Rec\w{3}(?:_|_DST)?(\d{8})_(\d{6})_/);
-      if (timeMatch) {
-        timeStart = `${timeMatch[1]}${timeMatch[2]}`;
-        startTimeParam = `&start=${timeStart}`;
-      }
-
-      url = `${scheme}://${host}:${port}/cgi-bin/api.cgi?cmd=Playback&source=${encodedFilename}&output=ha_playback_${timeStart || Date.now()}.mp4${startTimeParam}&token=${encodeURIComponent(token)}`;
-      mimeType = "video/mp4";
-    }
-
-    return {
-      url,
-      mimeType,
-      streamType,
-      filename,
-    };
-  }
 
   /**
    * Download a VOD file.
    * For NVR/Hub, use prepareNvrVodDownload first to get the filename.
    * 
-   * @param filename - Filename from searchVodFiles or prepareNvrVodDownload
+   * @param filename - Filename from listNvrRecordings or prepareNvrVodDownload
    * @param options - Optional download parameters
    * @returns Buffer containing the video file
    */
@@ -1967,117 +2020,5 @@ export class ReolinkCgiApi {
     return enriched;
   }
 
-  /**
-   * List enriched VOD files in a given time window.
-   * Similar to listEnrichedRecordingsByTime but uses HTTP Search API (non-waking for hub/NVR).
-   * 
-   * Returns EnrichedRecordingFile[] with:
-   * - Detection flags (person, vehicle, animal, face, motion, etc.) parsed from filename
-   * - Duration in milliseconds
-   * - Start/end times in milliseconds
-   * - Streaming URL (optional, if fetchStreamUrls is true)
-   * 
-   * @param params - Search parameters
-   * @returns Array of enriched recording files
-   */
-  async listEnrichedVodFiles(params: {
-    /** Channel number (0-based) */
-    channel: number;
-    /** Start date/time for search */
-    start: Date;
-    /** End date/time for search */
-    end: Date;
-    /** Stream type: "main" (default), "sub" */
-    streamType?: string;
-    /** If true, automatically search day-by-day when Status table is available (default: true) */
-    autoSearchByDay?: boolean;
-    /** If true, bypass cache and fetch fresh data (default: false) */
-    bypassCache?: boolean;
-    /**
-     * If true, fetch streaming URLs for each recording.
-     * This adds latency as it requires additional API calls.
-     * Default: false.
-     */
-    fetchStreamUrls?: boolean;
-    /** Stream URL type: "FLV" (default), "RTMP", "Playback" */
-    streamUrlType?: "FLV" | "RTMP" | "Playback";
-  }): Promise<EnrichedRecordingFile[]> {
-    const streamType = params.streamType ?? "main";
-    const autoSearchByDay = params.autoSearchByDay ?? true;
-    const bypassCache = params.bypassCache ?? false;
-    const fetchStreamUrls = params.fetchStreamUrls ?? false;
-    const streamUrlType = params.streamUrlType ?? "FLV";
-
-    // Search for VOD files (searchVodFiles now accepts Date directly)
-    const searchResults = await this.searchVodFiles(params.channel, params.start, params.end, {
-      streamType,
-      statusOnly: false,
-      autoSearchByDay,
-      bypassCache,
-    });
-
-    // Collect all files from search results
-    const allFiles: VodFile[] = [];
-    for (const result of searchResults) {
-      if (result.code === 0) {
-        const searchResult = result.value?.SearchResult;
-        if (searchResult?.File) {
-          allFiles.push(...searchResult.File);
-        }
-      }
-    }
-
-    recordingsTraceLog(
-      this.debugConfig,
-      this.logger,
-      "listEnrichedVodFiles",
-      `Collected ${allFiles.length} raw VodFiles from API search results`
-    );
-    if (allFiles.length > 0) {
-      // Log first few files as sample
-      const sampleSize = Math.min(3, allFiles.length);
-      for (let i = 0; i < sampleSize; i++) {
-        const file = allFiles[i];
-        if (file) {
-          recordingsTraceLog(
-            this.debugConfig,
-            this.logger,
-            "listEnrichedVodFiles",
-            `Sample file ${i + 1}/${allFiles.length}: ${JSON.stringify({
-              name: file.name,
-              type: file.type,
-              size: file.size,
-              StartTime: file.StartTime,
-              EndTime: file.EndTime,
-            })}`
-          );
-        }
-      }
-    }
-
-    // Enrich each file
-    const enriched: EnrichedRecordingFile[] = [];
-
-    for (const vodFile of allFiles) {
-      let streamUrl: string | undefined;
-
-      // Optionally fetch streaming URL
-      if (fetchStreamUrls) {
-        try {
-          const streamInfo = await this.getVodStreamUrl(vodFile, params.channel, {
-            streamType: streamUrlType,
-            videoStreamType: streamType,
-          });
-          streamUrl = streamInfo.url;
-        } catch (e) {
-          // Silently ignore - not all recordings may have streaming URLs available
-        }
-      }
-
-      enriched.push(this.enrichVodFile(vodFile, params.channel, streamUrl));
-    }
-
-    return enriched;
-  }
 }
 

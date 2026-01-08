@@ -133,8 +133,8 @@ async function main() {
 
     console.log(`\nFetching videoclips: ${start.toISOString()} -> ${end.toISOString()}`);
 
-    // Use listRecordingsByTime which is what getVideoClips uses internally
-    const recordings = await api.listRecordingsByTime({
+    // Use listDeviceRecordings which is what getVideoClips uses internally
+    const recordings = await api.listDeviceRecordings({
       channel: 0,
       ...(uid ? { uid } : {}),
       start,

@@ -81,7 +81,7 @@ import type {
 
 import { parseRecordingFileName } from "./recordingFileName";
 
-import { ReolinkCgiApi } from "../cgi/ReolinkCgiApi";
+import { ReolinkCgiApi, VodFile, type ListNvrRecordingsParams, type GetVodUrlParams } from "../cgi/ReolinkCgiApi";
 import type { ReolinkDeviceInfo, ReolinkDeviceInfoTag } from "../types";
 import { ReolinkHttpClient, type ReolinkHttpClientOptions } from "../http/ReolinkHttpClient";
 import type { ReolinkCmdResponse } from "../http/types";
@@ -623,10 +623,11 @@ export class ReolinkBaichuanApi {
 
   /**
    * Local cache for recordings. Key is a composite of channel, start, end, streamType.
-   * Value contains the cached recordings and timestamp.
+   * Value contains the cached enriched recordings and timestamp.
+   * Unified cache for both NVR and Device recordings (always enriched).
    */
   private recordingsCache = new Map<string, {
-    recordings: RecordingFile[];
+    recordings: EnrichedRecordingFile[];
     cachedAt: number;
     /** TTL in milliseconds (default 5 minutes) */
     ttlMs: number;
@@ -679,8 +680,7 @@ export class ReolinkBaichuanApi {
     });
   }
 
-  /** Default TTL for recordings cache (5 minutes) */
-  private recordingsCacheTtlMs = 5 * 60 * 1000;
+  private recordingsCacheTtlMs = 20 * 60 * 1000;
 
   constructor(opts: BaichuanClientOptions & {
     /**
@@ -761,7 +761,7 @@ export class ReolinkBaichuanApi {
   /**
    * Get cached recordings if available and not expired.
    */
-  private getCachedRecordings(channel: number, start: Date, end: Date, streamType: string): RecordingFile[] | undefined {
+  private getCachedRecordings(channel: number, start: Date, end: Date, streamType: string): EnrichedRecordingFile[] | undefined {
     const key = this.getRecordingsCacheKey(channel, start, end, streamType);
     const cached = this.recordingsCache.get(key);
 
@@ -780,7 +780,7 @@ export class ReolinkBaichuanApi {
   /**
    * Cache recordings for future lookups.
    */
-  private cacheRecordings(channel: number, start: Date, end: Date, streamType: string, recordings: RecordingFile[], ttlMs?: number): void {
+  private cacheRecordings(channel: number, start: Date, end: Date, streamType: string, recordings: EnrichedRecordingFile[], ttlMs?: number): void {
     const key = this.getRecordingsCacheKey(channel, start, end, streamType);
     this.recordingsCache.set(key, {
       recordings,
@@ -2825,7 +2825,14 @@ ${xmlDateTimePayload("endTime", end)}
    * This wraps {@link ReolinkBaichuanApi.listRecordings | listRecordings} and post-filters/sorts the results by startTime.
    * Results are cached locally to avoid redundant API calls.
    */
-  async listRecordingsByTime(params: {
+  /**
+   * List enriched recordings from Device (camera).
+   * Always returns enriched recording files with parsed metadata, detection flags, and timestamps.
+   * 
+   * @param params - Search parameters
+   * @returns Array of enriched recording files
+   */
+  async listDeviceRecordings(params: {
     /** Logical channel to query. If omitted, uses the client's configured channel (or 0). */
     channel?: number;
     /** UID of the device; if omitted, defaults to this.uid when available. */
@@ -2858,25 +2865,31 @@ ${xmlDateTimePayload("endTime", end)}
      * If not provided, uses the default TTL (5 minutes).
      */
     cacheTtlMs?: number;
-  }): Promise<RecordingFile[]> {
+    /**
+     * If true, fetch RTMP playback URLs for each recording.
+     * This adds latency as it requires additional API calls.
+     * Default: false.
+     */
+    fetchRtmpUrls?: boolean;
+  }): Promise<EnrichedRecordingFile[]> {
     const dbg = this.client.getDebugConfig?.();
     const logger = this.logger;
 
     try {
-      recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Init: ${JSON.stringify({ params })}`);
+      recordingsTraceLog(dbg, logger, "listDeviceRecordings", `Init: ${JSON.stringify({ params })}`);
 
-      const { channel, uid, start, end, streamType, recordType, count, fallbackToAlarmVideo, maxIterations, httpFallback = true, bypassCache = false, cacheTtlMs } = params;
+      const { channel, uid, start, end, streamType, recordType, count, fallbackToAlarmVideo, maxIterations, httpFallback = true, bypassCache = false, cacheTtlMs, fetchRtmpUrls = false } = params;
 
       // Fallback to the client's configured channel (or 0) when not explicitly provided.
       const effectiveChannel = channel ?? (this.client.getConfiguredChannel?.() ?? 0);
       const effectiveStreamType = streamType || "mainStream";
-      recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Effective channel: ${effectiveChannel}`);
+      recordingsTraceLog(dbg, logger, "listDeviceRecordings", `Effective channel: ${effectiveChannel}`);
 
       // Check cache first (unless bypassed)
       if (!bypassCache) {
         const cachedRecs = this.getCachedRecordings(effectiveChannel, start, end, effectiveStreamType);
         if (cachedRecs) {
-          recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Cache hit: returning ${cachedRecs.length} cached recordings`);
+          recordingsTraceLog(dbg, logger, "listDeviceRecordings", `Cache hit: returning ${cachedRecs.length} cached enriched recordings`);
 
           // Apply count limit if specified
           if (typeof count === "number" && Number.isFinite(count) && count > 0) {
@@ -2884,17 +2897,17 @@ ${xmlDateTimePayload("endTime", end)}
           }
           return cachedRecs;
         }
-        recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Cache miss: fetching from camera`);
+        recordingsTraceLog(dbg, logger, "listDeviceRecordings", `Cache miss: fetching from camera`);
       } else {
-        recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Cache bypassed: fetching fresh data`);
+        recordingsTraceLog(dbg, logger, "listDeviceRecordings", `Cache bypassed: fetching fresh data`);
       }
 
       let effectiveUid: string;
       try {
         effectiveUid = await this.ensureUidForRecordings(effectiveChannel, uid);
-        recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Effective UID: ${effectiveUid}`);
+        recordingsTraceLog(dbg, logger, "listDeviceRecordings", `Effective UID: ${effectiveUid}`);
       } catch (e) {
-        recordingsTraceLog(dbg, logger, "listRecordingsByTime", `ensureUidForRecordings failed: ${e instanceof Error ? e.message : String(e)}`);
+        recordingsTraceLog(dbg, logger, "listDeviceRecordings", `ensureUidForRecordings failed: ${e instanceof Error ? e.message : String(e)}`);
         throw e;
       }
 
@@ -2923,7 +2936,7 @@ ${xmlDateTimePayload("endTime", end)}
 
       // If httpFallback is true, use HTTP API directly instead of Baichuan
       if (httpFallback) {
-        recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Using HTTP API directly (httpFallback=true)`);
+        recordingsTraceLog(dbg, logger, "listDeviceRecordings", `Using HTTP API directly (httpFallback=true)`);
         try {
           // Ensure CGI API is logged in (reuse existing session if already logged in)
           await this.cgiApi.login();
@@ -2952,18 +2965,18 @@ ${xmlDateTimePayload("endTime", end)}
             }
           };
 
-          recordingsTraceLog(dbg, logger, "listRecordingsByTime", `HTTP API Search payload: ${JSON.stringify(searchPayload)}`);
+          recordingsTraceLog(dbg, logger, "listDeviceRecordings", `HTTP API Search payload: ${JSON.stringify(searchPayload)}`);
 
           const httpResponse = await this.cgiApi.call('Search', searchPayload, 0);
 
-          recordingsTraceLog(dbg, logger, "listRecordingsByTime", `HTTP API returned response: ${JSON.stringify(httpResponse)}`);
+          recordingsTraceLog(dbg, logger, "listDeviceRecordings", `HTTP API returned response: ${JSON.stringify(httpResponse)}`);
 
           // Parse HTTP response and convert to RecordingFile format
           recs = [];
           if (Array.isArray(httpResponse) && httpResponse.length > 0) {
             for (const data of httpResponse) {
               if (data.code !== 0) {
-                recordingsTraceLog(dbg, logger, "listRecordingsByTime", `HTTP API returned error code ${data.code}`);
+                recordingsTraceLog(dbg, logger, "listDeviceRecordings", `HTTP API returned error code ${data.code}`);
                 continue;
               }
 
@@ -3003,21 +3016,21 @@ ${xmlDateTimePayload("endTime", end)}
                 }
               }
             }
-            recordingsTraceLog(dbg, logger, "listRecordingsByTime", `HTTP API parsed ${recs.length} recordings`);
+            recordingsTraceLog(dbg, logger, "listDeviceRecordings", `HTTP API parsed ${recs.length} recordings`);
           }
         } catch (httpError: any) {
-          recordingsTraceLog(dbg, logger, "listRecordingsByTime", `HTTP API failed: ${httpError instanceof Error ? httpError.message : String(httpError)}`);
+          recordingsTraceLog(dbg, logger, "listDeviceRecordings", `HTTP API failed: ${httpError instanceof Error ? httpError.message : String(httpError)}`);
           throw httpError;
         }
       } else {
         // Use Baichuan API (default behavior)
-        recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Calling listRecordings with params: channel=${listParams.channel}, uid=${listParams.uid}, start=${listParams.start.toISOString()} (original UTC: ${start.toISOString()}), end=${listParams.end.toISOString()} (original UTC: ${end.toISOString()})`);
+        recordingsTraceLog(dbg, logger, "listDeviceRecordings", `Calling listRecordings with params: channel=${listParams.channel}, uid=${listParams.uid}, start=${listParams.start.toISOString()} (original UTC: ${start.toISOString()}), end=${listParams.end.toISOString()} (original UTC: ${end.toISOString()})`);
 
         try {
           recs = await this.listRecordings(listParams);
-          recordingsTraceLog(dbg, logger, "listRecordingsByTime", `listRecordings returned ${recs.length} recordings`);
+          recordingsTraceLog(dbg, logger, "listDeviceRecordings", `listRecordings returned ${recs.length} recordings`);
         } catch (e) {
-          recordingsTraceLog(dbg, logger, "listRecordingsByTime", `listRecordings failed: ${e instanceof Error ? e.message : String(e)}, stack: ${e instanceof Error ? e.stack : 'no stack'}`);
+          recordingsTraceLog(dbg, logger, "listDeviceRecordings", `listRecordings failed: ${e instanceof Error ? e.message : String(e)}, stack: ${e instanceof Error ? e.stack : 'no stack'}`);
           throw e;
         }
       }
@@ -3025,7 +3038,7 @@ ${xmlDateTimePayload("endTime", end)}
       // Normalize and filter by time window (defensive: some firmwares may return a wider range).
       const startMs = start.getTime();
       const endMs = end.getTime();
-      recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Filtering recordings: startMs=${startMs}, endMs=${endMs}`);
+      recordingsTraceLog(dbg, logger, "listDeviceRecordings", `Filtering recordings: startMs=${startMs}, endMs=${endMs}`);
 
       const normalized: RecordingFile[] = recs.map((r) => {
         const s = r.startTime ?? r.parsedFileName?.start;
@@ -3050,22 +3063,50 @@ ${xmlDateTimePayload("endTime", end)}
           return as - bs;
         });
 
-      recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Filtered to ${filtered.length} recordings in time window`);
+      recordingsTraceLog(dbg, logger, "listDeviceRecordings", `Filtered to ${filtered.length} recordings in time window`);
 
-      // Cache the filtered results for future lookups
-      this.cacheRecordings(effectiveChannel, start, end, effectiveStreamType, filtered, cacheTtlMs);
-      recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Cached ${filtered.length} recordings`);
+      // Always enrich the results
+      recordingsTraceLog(dbg, logger, "listDeviceRecordings", `Enriching ${filtered.length} recordings`);
+      const enriched: EnrichedRecordingFile[] = [];
 
+      for (const rec of filtered) {
+        let rtmpUrl: string | undefined;
+
+        // Optionally fetch RTMP URL
+        if (fetchRtmpUrls) {
+          try {
+            const playbackParams: Parameters<typeof this.getRecordingPlaybackUrls>[0] = {
+              channel: effectiveChannel,
+              fileName: rec.fileName,
+            };
+            if (streamType !== undefined) playbackParams.streamType = streamType;
+
+            const urls = await this.getRecordingPlaybackUrls(playbackParams);
+            rtmpUrl = urls.rtmpVodUrl;
+          } catch (e) {
+            // Silently ignore - not all recordings may have playback URLs available
+            recordingsTraceLog(dbg, logger, "listDeviceRecordings", `Failed to get RTMP URL for ${rec.fileName}: ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
+
+        enriched.push(this.enrichRecordingFile(rec, rtmpUrl));
+      }
+
+      // Cache the enriched results for future lookups
+      this.cacheRecordings(effectiveChannel, start, end, effectiveStreamType, enriched, cacheTtlMs);
+      recordingsTraceLog(dbg, logger, "listDeviceRecordings", `Cached ${enriched.length} enriched recordings`);
+
+      // Apply count limit if specified
       if (typeof count === "number" && Number.isFinite(count) && count > 0) {
-        const result = filtered.slice(0, count);
-        recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Returning ${result.length} recordings (limited by count=${count})`);
+        const result = enriched.slice(0, count);
+        recordingsTraceLog(dbg, logger, "listDeviceRecordings", `Returning ${result.length} enriched recordings (limited by count=${count})`);
         return result;
       }
 
-      recordingsTraceLog(dbg, logger, "listRecordingsByTime", `Returning ${filtered.length} recordings`);
-      return filtered;
+      recordingsTraceLog(dbg, logger, "listDeviceRecordings", `Returning ${enriched.length} enriched recordings`);
+      return enriched;
     } catch (e) {
-      recordingsTraceLog(dbg, logger, "listRecordingsByTime", `ERROR: ${e instanceof Error ? e.message : String(e)}, stack: ${e instanceof Error ? e.stack : 'no stack'}`);
+      recordingsTraceLog(dbg, logger, "listDeviceRecordings", `ERROR: ${e instanceof Error ? e.message : String(e)}, stack: ${e instanceof Error ? e.stack : 'no stack'}`);
       throw e;
     }
   }
@@ -3187,119 +3228,6 @@ ${xmlDateTimePayload("endTime", end)}
     return enriched;
   }
 
-  /**
-   * List recordings in a given time window with full enriched metadata.
-   * 
-   * Returns EnrichedRecordingFile[] with:
-   * - Detection flags (person, vehicle, animal, face, motion, etc.)
-   * - Duration in milliseconds
-   * - Start/end times in milliseconds
-   * - RTMP playback URL (optional, if fetchRtmpUrls is true)
-   * 
-   * This is a higher-level wrapper around listRecordingsByTime that provides
-   * a fully parsed and enriched result ready for consumption.
-   */
-  async listEnrichedRecordingsByTime(params: {
-    /** Logical channel to query. If omitted, uses the client's configured channel (or 0). */
-    channel?: number;
-    start: Date;
-    end: Date;
-    streamType?: RecordingStreamType;
-    /** Comma-separated list of record types, e.g. "manual, sched, io, md, people". */
-    recordType?: string;
-    /**
-     * Maximum number of recordings to return (after filtering/sorting by time).
-     * If omitted, all recordings in the window are returned.
-     */
-    count?: number;
-    /** See {@link ListRecordingsParams.fallbackToAlarmVideo}. */
-    fallbackToAlarmVideo?: boolean;
-    /** See {@link ListRecordingsParams.maxIterations}. */
-    maxIterations?: number;
-    /**
-     * If true (default), try HTTP CGI API fallback when Baichuan API returns no results or fails.
-     */
-    httpFallback?: boolean;
-    /**
-     * If true, bypass the cache and fetch fresh data from the camera.
-     * Default: false (use cache if available).
-     */
-    bypassCache?: boolean;
-    /**
-     * Custom TTL for caching this request's results (in milliseconds).
-     * If not provided, uses the default TTL (5 minutes).
-     */
-    cacheTtlMs?: number;
-    /**
-     * If true, fetch RTMP playback URLs for each recording.
-     * This adds latency as it requires additional API calls.
-     * Default: false.
-     */
-    fetchRtmpUrls?: boolean;
-  }): Promise<EnrichedRecordingFile[]> {
-    const dbg = this.client.getDebugConfig?.();
-    const logger = this.logger;
-
-    try {
-      recordingsTraceLog(dbg, logger, "listEnrichedRecordingsByTime", `Init: ${JSON.stringify({ params })}`);
-
-      // Get raw recordings - build params object carefully to avoid undefined values with exactOptionalPropertyTypes
-      const listParams: Parameters<typeof this.listRecordingsByTime>[0] = {
-        start: params.start,
-        end: params.end,
-      };
-
-      const effectiveChannel = params.channel ?? (this.client.getConfiguredChannel?.() ?? 0);
-      const uid = await this.ensureUidForRecordings(effectiveChannel);
-      listParams.uid = uid;
-
-      if (params.channel !== undefined) listParams.channel = params.channel;
-      if (params.streamType !== undefined) listParams.streamType = params.streamType;
-      if (params.recordType !== undefined) listParams.recordType = params.recordType;
-      if (params.count !== undefined) listParams.count = params.count;
-      if (params.fallbackToAlarmVideo !== undefined) listParams.fallbackToAlarmVideo = params.fallbackToAlarmVideo;
-      if (params.maxIterations !== undefined) listParams.maxIterations = params.maxIterations;
-      if (params.httpFallback !== undefined) listParams.httpFallback = params.httpFallback;
-      if (params.bypassCache !== undefined) listParams.bypassCache = params.bypassCache;
-      if (params.cacheTtlMs !== undefined) listParams.cacheTtlMs = params.cacheTtlMs;
-
-      const rawRecordings = await this.listRecordingsByTime(listParams);
-
-      recordingsTraceLog(dbg, logger, "listEnrichedRecordingsByTime", `Got ${rawRecordings.length} raw recordings`);
-
-      // Enrich each recording
-      const enriched: EnrichedRecordingFile[] = [];
-
-      for (const rec of rawRecordings) {
-        let rtmpUrl: string | undefined;
-
-        // Optionally fetch RTMP URL
-        if (params.fetchRtmpUrls) {
-          try {
-            const playbackParams: Parameters<typeof this.getRecordingPlaybackUrls>[0] = {
-              channel: effectiveChannel,
-              fileName: rec.fileName,
-            };
-            if (params.streamType !== undefined) playbackParams.streamType = params.streamType;
-
-            const urls = await this.getRecordingPlaybackUrls(playbackParams);
-            rtmpUrl = urls.rtmpVodUrl;
-          } catch (e) {
-            // Silently ignore - not all recordings may have playback URLs available
-            recordingsTraceLog(dbg, logger, "listEnrichedRecordingsByTime", `Failed to get RTMP URL for ${rec.fileName}: ${e instanceof Error ? e.message : String(e)}`);
-          }
-        }
-
-        enriched.push(this.enrichRecordingFile(rec, rtmpUrl));
-      }
-
-      recordingsTraceLog(dbg, logger, "listEnrichedRecordingsByTime", `Returning ${enriched.length} enriched recordings`);
-      return enriched;
-    } catch (e) {
-      recordingsTraceLog(dbg, logger, "listEnrichedRecordingsByTime", `ERROR: ${e instanceof Error ? e.message : String(e)}`);
-      throw e;
-    }
-  }
 
   /**
    * Convenience helper to build playback/download URLs for a single recording.
@@ -6932,5 +6860,106 @@ ${xmlDateTimePayload("endTime", end)}
       logger,
     });
   }
+
+  // ====================================================================
+  // VOD (Video On Demand) Passthrough Methods
+  // These methods delegate to the internal CGI API for NVR/Hub VOD operations
+  // ====================================================================
+
+  /**
+   * List enriched recordings from NVR/Hub.
+   * Passthrough to ReolinkCgiApi.listNvrRecordings for NVR/Hub support.
+   * 
+   * This method allows you to list enriched recordings from NVR/Hub devices using the same interface
+   * as the Baichuan API, but delegates to the CGI API internally.
+   * Always returns enriched recording files with parsed metadata, detection flags, and timestamps.
+   * 
+   * @param params - Search parameters
+   * @returns Array of enriched recording files
+   */
+  async listNvrRecordings(params: ListNvrRecordingsParams): Promise<Array<EnrichedRecordingFile>> {
+    await this.cgiApi.login();
+    return await this.cgiApi.listNvrRecordings(params);
+  }
+
+  /**
+   * Prepare NVR VOD download by requesting file list for a time range.
+   * Passthrough to ReolinkCgiApi.prepareNvrVodDownload for NVR/Hub support.
+   * 
+   * @param channel - Channel number (0-based)
+   * @param startTime - Start time object
+   * @param endTime - End time object
+   * @param streamType - Stream type (default: "main")
+   * @param options - Optional parameters
+   * @returns Filename for the prepared VOD file
+   */
+  async prepareNvrVodDownload(
+    channel: number,
+    startTime: {
+      year: number;
+      mon: number;
+      day: number;
+      hour: number;
+      min: number;
+      sec: number;
+    },
+    endTime: {
+      year: number;
+      mon: number;
+      day: number;
+      hour: number;
+      min: number;
+      sec: number;
+    },
+    streamType: string = "main",
+    options?: {
+      /** For multifocal cameras: logical channel (0 or 1) */
+      iLogicChannel?: number;
+    }
+  ): Promise<string> {
+    await this.cgiApi.login();
+    return await this.cgiApi.prepareNvrVodDownload(channel, startTime, endTime, streamType, options);
+  }
+
+  /**
+   * Get URL for VOD playback, download, or streaming.
+   * Passthrough to ReolinkCgiApi.getVodUrl for NVR/Hub support.
+   * 
+   * @param filenameOrVodFile - Filename string or VodFile object from listNvrRecordings
+   * @param channel - Channel number (0-based)
+   * @param options - Optional parameters
+   * @returns URL string
+   */
+  async getVodUrl(
+    filenameOrVodFile: string | VodFile,
+    channel: number,
+    options?: GetVodUrlParams
+  ): Promise<string> {
+    await this.cgiApi.login();
+    return await this.cgiApi.getVodUrl(filenameOrVodFile, channel, options);
+  }
+
+
+  /**
+   * Download a VOD file.
+   * Passthrough to ReolinkCgiApi.downloadVod for NVR/Hub support.
+   * 
+   * @param filename - Filename from listNvrRecordings or prepareNvrVodDownload
+   * @param options - Optional download parameters
+   * @returns Buffer containing the video file
+   */
+  async downloadVod(
+    filename: string,
+    options?: {
+      /** Output filename */
+      output?: string;
+      /** Start time string */
+      start?: string;
+    }
+  ): Promise<Buffer> {
+    await this.cgiApi.login();
+    return await this.cgiApi.downloadVod(filename, options);
+  }
+
 }
 
