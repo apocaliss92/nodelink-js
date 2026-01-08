@@ -4,6 +4,10 @@ import { spawn } from "node:child_process";
 
 import type { ReolinkBaichuanApi } from "../reolink/baichuan/ReolinkBaichuanApi";
 import type { ReolinkCgiApi, DeviceInputData } from "../reolink/cgi/ReolinkCgiApi";
+import type { ReolinkHttpClientOptions } from "../reolink/http/ReolinkHttpClient";
+import { ReolinkCgiApi as ReolinkCgiApiImpl } from "../reolink/cgi/ReolinkCgiApi";
+import { join } from "node:path";
+import { zipDirectory } from "./zip";
 import { BaichuanVideoStream } from "../baichuan/stream/BaichuanVideoStream";
 import type { StreamProfile } from "../reolink/baichuan/types";
 import { buildRtspUrl } from "../rtsp/urls";
@@ -1532,4 +1536,135 @@ export async function collectMultifocalDiagnostics(params: {
   log("=".repeat(80));
 
   return result;
+}
+
+/**
+ * Parameters for running all diagnostics consecutively.
+ */
+export interface RunAllDiagnosticsConsecutivelyParams {
+  /** ReolinkBaichuanApi instance */
+  api: ReolinkBaichuanApi;
+  /** Base output directory. A timestamped subfolder will be created for each run. */
+  outDir: string;
+  channel?: number;
+  /** Stream sampling duration. */
+  durationSeconds: number;
+  /** Snapshot interval used for RTSP/RTMP snapshots. Default: 2 seconds. */
+  snapshotIntervalSeconds?: number;
+  /** Which kinds/profiles to sample. */
+  selection: StreamSamplingSelection;
+
+  /** Enable CGI diagnostics. `true` uses the same host/creds as the Baichuan client. */
+  cgi?: boolean | Partial<ReolinkHttpClientOptions>;
+  /** Enable RTSP sampling. `true` uses the same host/creds as the Baichuan client. */
+  rtsp?: boolean | Partial<NonNullable<StreamSamplingOptions["rtsp"]>>;
+  /** Optional RTMP URLs for each profile. */
+  rtmp?: StreamSamplingOptions["rtmp"];
+  /** Optional dump limits (native raw frames). */
+  limits?: StreamSamplingOptions["limits"];
+
+  /** Extra user-provided metadata written into diagnostics.json */
+  extra?: Record<string, unknown>;
+  /** Logger for progress messages */
+  logger?: Logger;
+  /** Host for CGI/RTSP (if not provided in cgi/rtsp options) */
+  host: string;
+  /** Username for CGI/RTSP (if not provided in cgi/rtsp options) */
+  username: string;
+  /** Password for CGI/RTSP (if not provided in cgi/rtsp options) */
+  password: string;
+}
+
+/**
+ * Run all diagnostics consecutively: collect diagnostics bundle, sample streams, and create zip archive.
+ * 
+ * @param params - Configuration parameters
+ * @returns Results including run directory, zip path, diagnostics path, and streams directory
+ */
+export async function runAllDiagnosticsConsecutively(params: RunAllDiagnosticsConsecutivelyParams): Promise<{ runDir: string; zipPath: string; diagnosticsPath: string; streamsDir: string }> {
+  const { api, logger, host, username, password } = params;
+  const channel = params.channel ?? 0;
+  const log = (msg: string, data?: unknown) => {
+    if (logger?.log) {
+      if (data !== undefined) logger.log(msg, data);
+      else logger.log(msg);
+    } else {
+      console.log(msg);
+      if (data !== undefined) console.log(JSON.stringify(data, null, 2));
+    }
+  };
+
+  const baseOutDir = params.outDir;
+  const runDirName = new Date().toISOString().replace(/[:.]/g, "-");
+  const runDir = join(baseOutDir, runDirName);
+
+  log("[Diagnostics] starting run", {
+    outDir: baseOutDir,
+    runDir,
+    channel,
+    durationSeconds: params.durationSeconds,
+    selection: params.selection,
+  });
+
+  const cgiEnabled = params.cgi === true || (typeof params.cgi === "object" && params.cgi != null);
+  const cgiApi = cgiEnabled
+    ? new ReolinkCgiApiImpl({
+      host: (typeof params.cgi === "object" ? params.cgi.host : undefined) ?? host,
+      username: (typeof params.cgi === "object" ? params.cgi.username : undefined) ?? username,
+      password: (typeof params.cgi === "object" ? params.cgi.password : undefined) ?? password,
+      ...(logger ? { logger } : {}),
+      ...(api.client.getDebugConfig?.() ? { debugConfig: api.client.getDebugConfig?.() } : {}),
+      ...(typeof params.cgi === "object" && params.cgi.port != null ? { port: params.cgi.port } : {}),
+      ...(typeof params.cgi === "object" && params.cgi.useHttps != null ? { useHttps: params.cgi.useHttps } : {}),
+      ...(typeof params.cgi === "object" && params.cgi.insecureTLS != null ? { insecureTLS: params.cgi.insecureTLS } : {}),
+      ...(typeof params.cgi === "object" && params.cgi.timeoutMs != null ? { timeoutMs: params.cgi.timeoutMs } : {}),
+    })
+    : undefined;
+
+  const diagnosticsRes = await createDiagnosticsBundle({
+    outDir: runDir,
+    native: { api, channel },
+    ...(cgiApi ? { cgi: { cgi: cgiApi, channel } } : {}),
+    ...(params.extra ? { extra: params.extra } : {}),
+  });
+
+  log("[Diagnostics] diagnostics bundle collected", {
+    diagnosticsPath: diagnosticsRes.diagnosticsPath,
+    runDir: diagnosticsRes.outDir,
+    cgiEnabled,
+  });
+
+  const streamsDir = join(runDir, "streams");
+  const rtspEnabled = params.rtsp === true || (typeof params.rtsp === "object" && params.rtsp != null);
+  const rtspCfg: StreamSamplingOptions["rtsp"] | undefined = rtspEnabled
+    ? {
+      host: (typeof params.rtsp === "object" ? params.rtsp.host : undefined) ?? host,
+      username: (typeof params.rtsp === "object" ? params.rtsp.username : undefined) ?? username,
+      password: (typeof params.rtsp === "object" ? params.rtsp.password : undefined) ?? password,
+      ...(typeof params.rtsp === "object" && params.rtsp.port != null ? { port: params.rtsp.port } : {}),
+    }
+    : undefined;
+
+  await sampleStreams({
+    outDir: streamsDir,
+    durationSeconds: params.durationSeconds,
+    ...(params.snapshotIntervalSeconds != null ? { snapshotIntervalSeconds: params.snapshotIntervalSeconds } : {}),
+    channel,
+    selection: params.selection,
+    ...(rtspCfg ? { rtsp: rtspCfg } : {}),
+    ...(params.rtmp ? { rtmp: params.rtmp } : {}),
+    native: { api },
+    ...(params.limits ? { limits: params.limits } : {}),
+    ...(logger ? { logger } : {}),
+  });
+
+  log("[Diagnostics] stream sampling completed", { streamsDir });
+
+  const zipPath = join(baseOutDir, `${runDirName}.zip`);
+
+  log("[Diagnostics] creating zip bundle", { zipPath });
+  await zipDirectory({ sourceDir: runDir, zipPath });
+  log("[Diagnostics] zip bundle created", { zipPath });
+
+  return { runDir: diagnosticsRes.outDir, zipPath, diagnosticsPath: diagnosticsRes.diagnosticsPath, streamsDir };
 }

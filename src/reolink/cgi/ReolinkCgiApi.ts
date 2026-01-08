@@ -1,11 +1,11 @@
+import type { DebugConfig, Logger } from "../../debug/DebugConfig";
+import { recordingsTraceLog } from "../../debug/DebugConfig";
+import { collectNvrDiagnostics } from "../../debug/DiagnosticsTools";
+import { parseRecordingFileName } from "../baichuan/recordingFileName";
+import type { EnrichedRecordingFile, RecordingFile } from "../baichuan/types";
 import { ReolinkHttpClient, type ReolinkHttpClientOptions } from "../http/ReolinkHttpClient";
 import type { ReolinkCmdRequest, ReolinkCmdResponse } from "../http/types";
 import type { ReolinkDeviceInfo, ReolinkDeviceInfoTag } from "../types";
-import type { DebugConfig, Logger } from "../../debug/DebugConfig";
-import { debugLog, recordingsTraceLog } from "../../debug/DebugConfig";
-import { collectNvrDiagnostics, printNvrDiagnostics } from "../../debug/DiagnosticsTools";
-import type { EnrichedRecordingFile, RecordingFile, RecordingStreamType } from "../baichuan/types";
-import { parseRecordingFileName } from "../baichuan/recordingFileName";
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonObject = { [key: string]: JsonValue };
@@ -433,6 +433,14 @@ export interface ListNvrRecordingsParams {
   fetchStreamUrls?: boolean;
   /** Stream URL type (only when fetchStreamUrls=true): "FLV" (default), "RTMP", "Playback" */
   streamUrlType?: "FLV" | "RTMP" | "Playback";
+}
+
+/**
+ * Options for collecting NVR diagnostics.
+ */
+export interface CollectNvrDiagnosticsOptions {
+  /** Logger for progress messages */
+  logger: Logger;
 }
 
 /**
@@ -1102,27 +1110,17 @@ export class ReolinkCgiApi {
   /**
    * Comprehensive NVR/HUB diagnostics.
    * Collects and returns all available information about the NVR/HUB device and all its channels.
+   * Automatically prints diagnostics after collection using the provided logger.
    * 
    * @param options - Configuration object with logger property for progress messages
    * @returns Complete diagnostics data including NVR info, channels, and per-channel details
    */
-  async collectNvrDiagnostics(options: {
-    logger: Logger;
-  }): Promise<Record<string, unknown>> {
-    return await collectNvrDiagnostics({
+  async collectNvrDiagnostics(options: CollectNvrDiagnosticsOptions): Promise<Record<string, unknown>> {
+    const diagnostics = await collectNvrDiagnostics({
       cgi: this,
       logger: options.logger,
     });
-  }
-
-  /**
-   * Print NVR/HUB diagnostics in a human-readable format.
-   * 
-   * @param diagnostics - Diagnostics data returned by collectNvrDiagnostics()
-   * @param logger - Optional logger for output
-   */
-  printNvrDiagnostics(diagnostics: Record<string, unknown>, logger?: Logger): void {
-    printNvrDiagnostics(diagnostics, logger);
+    return diagnostics;
   }
 
   // --------------------

@@ -1,12 +1,11 @@
 import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { BaichuanRtspServer, type BaichuanRtspServerOptions } from "../../baichuan/stream/BaichuanRtspServer";
 import { BaichuanClient, type BaichuanClientOptions } from "../../client/BaichuanClient";
-import { type Logger, recordingsTraceLog } from "../../debug/DebugConfig";
+import { recordingsTraceLog, type Logger } from "../../debug/DebugConfig";
+import { collectNvrDiagnostics, runAllDiagnosticsConsecutively, RunAllDiagnosticsConsecutivelyParams, type StreamSamplingOptions, type StreamSamplingSelection } from "../../debug/DiagnosticsTools";
 import type { CompositeStreamPipOptions } from "../../multifocal/compositeStream";
-import { createDiagnosticsBundle, sampleStreams, type StreamSamplingSelection, type StreamSamplingOptions } from "../../debug/DiagnosticsTools";
-import { zipDirectory } from "../../debug/zip";
 import {
   BC_CLASS_FILE_DOWNLOAD,
   BC_CLASS_MODERN_24,
@@ -81,13 +80,12 @@ import type {
 
 import { parseRecordingFileName } from "./recordingFileName";
 
-import { ReolinkCgiApi, VodFile, type ListNvrRecordingsParams, type GetVodUrlParams } from "../cgi/ReolinkCgiApi";
-import type { ReolinkDeviceInfo, ReolinkDeviceInfoTag } from "../types";
+import sharp from "sharp";
+import { ReolinkCgiApi, VodFile, type GetVodUrlParams, type ListNvrRecordingsParams } from "../cgi/ReolinkCgiApi";
 import { ReolinkHttpClient, type ReolinkHttpClientOptions } from "../http/ReolinkHttpClient";
 import type { ReolinkCmdResponse } from "../http/types";
+import type { ReolinkDeviceInfo, ReolinkDeviceInfoTag } from "../types";
 import { computeDeviceCapabilities, flattenAbilitiesForChannel, parseSupportXml } from "./capabilities";
-import sharp from "sharp";
-import { channel } from "node:diagnostics_channel";
 
 export type ReolinkNvrChannelInfo = {
   channel: number;
@@ -828,104 +826,15 @@ export class ReolinkBaichuanApi {
    * - `outDir/<timestamp>/...` contains the raw run artifacts
    * - `outDir/<timestamp>.zip` contains the zipped bundle
    */
-  async runAllDiagnosticsConsecutively(params: {
-    /** Base output directory. A timestamped subfolder will be created for each run. */
-    outDir: string;
-    channel?: number;
-    /** Stream sampling duration. */
-    durationSeconds: number;
-    /** Snapshot interval used for RTSP/RTMP snapshots. Default: 2 seconds. */
-    snapshotIntervalSeconds?: number;
-    /** Which kinds/profiles to sample. */
-    selection: StreamSamplingSelection;
-
-    /** Enable CGI diagnostics. `true` uses the same host/creds as the Baichuan client. */
-    cgi?: boolean | Partial<ReolinkHttpClientOptions>;
-    /** Enable RTSP sampling. `true` uses the same host/creds as the Baichuan client. */
-    rtsp?: boolean | Partial<NonNullable<StreamSamplingOptions["rtsp"]>>;
-    /** Optional RTMP URLs for each profile. */
-    rtmp?: StreamSamplingOptions["rtmp"];
-    /** Optional dump limits (native raw frames). */
-    limits?: StreamSamplingOptions["limits"];
-
-    /** Extra user-provided metadata written into diagnostics.json */
-    extra?: Record<string, unknown>;
-  }): Promise<{ runDir: string; zipPath: string; diagnosticsPath: string; streamsDir: string }> {
-    const channel = params.channel ?? 0;
-
-    const baseOutDir = params.outDir;
-    const runDirName = new Date().toISOString().replace(/[:.]/g, "-");
-    const runDir = join(baseOutDir, runDirName);
-
-    (this.logger.log ?? console.log).call(this.logger, "[Diagnostics] starting run", {
-      outDir: baseOutDir,
-      runDir,
-      channel,
-      durationSeconds: params.durationSeconds,
-      selection: params.selection,
-    });
-
-    const cgiEnabled = params.cgi === true || (typeof params.cgi === "object" && params.cgi != null);
-    const cgiApi = cgiEnabled
-      ? new ReolinkCgiApi({
-        host: (typeof params.cgi === "object" ? params.cgi.host : undefined) ?? this.host,
-        username: (typeof params.cgi === "object" ? params.cgi.username : undefined) ?? this.username,
-        password: (typeof params.cgi === "object" ? params.cgi.password : undefined) ?? this.password,
-        logger: this.logger,
-        debugConfig: this.client.getDebugConfig?.(),
-        ...(typeof params.cgi === "object" && params.cgi.port != null ? { port: params.cgi.port } : {}),
-        ...(typeof params.cgi === "object" && params.cgi.useHttps != null ? { useHttps: params.cgi.useHttps } : {}),
-        ...(typeof params.cgi === "object" && params.cgi.insecureTLS != null ? { insecureTLS: params.cgi.insecureTLS } : {}),
-        ...(typeof params.cgi === "object" && params.cgi.timeoutMs != null ? { timeoutMs: params.cgi.timeoutMs } : {}),
-      })
-      : undefined;
-
-    const diagnosticsRes = await createDiagnosticsBundle({
-      outDir: runDir,
-      native: { api: this, channel },
-      ...(cgiApi ? { cgi: { cgi: cgiApi, channel } } : {}),
-      ...(params.extra ? { extra: params.extra } : {}),
-    });
-
-    (this.logger.log ?? console.log).call(this.logger, "[Diagnostics] diagnostics bundle collected", {
-      diagnosticsPath: diagnosticsRes.diagnosticsPath,
-      runDir: diagnosticsRes.outDir,
-      cgiEnabled,
-    });
-
-    const streamsDir = join(runDir, "streams");
-    const rtspEnabled = params.rtsp === true || (typeof params.rtsp === "object" && params.rtsp != null);
-    const rtspCfg: StreamSamplingOptions["rtsp"] | undefined = rtspEnabled
-      ? {
-        host: (typeof params.rtsp === "object" ? params.rtsp.host : undefined) ?? this.host,
-        username: (typeof params.rtsp === "object" ? params.rtsp.username : undefined) ?? this.username,
-        password: (typeof params.rtsp === "object" ? params.rtsp.password : undefined) ?? this.password,
-        ...(typeof params.rtsp === "object" && params.rtsp.port != null ? { port: params.rtsp.port } : {}),
-      }
-      : undefined;
-
-    await sampleStreams({
-      outDir: streamsDir,
-      durationSeconds: params.durationSeconds,
-      ...(params.snapshotIntervalSeconds != null ? { snapshotIntervalSeconds: params.snapshotIntervalSeconds } : {}),
-      channel,
-      selection: params.selection,
-      ...(rtspCfg ? { rtsp: rtspCfg } : {}),
-      ...(params.rtmp ? { rtmp: params.rtmp } : {}),
-      native: { api: this },
-      ...(params.limits ? { limits: params.limits } : {}),
+  async runAllDiagnosticsConsecutively(params: RunAllDiagnosticsConsecutivelyParams): Promise<{ runDir: string; zipPath: string; diagnosticsPath: string; streamsDir: string }> {
+    return await runAllDiagnosticsConsecutively({
+      ...params,
+      api: this,
       logger: this.logger,
+      host: this.host,
+      username: this.username,
+      password: this.password,
     });
-
-    (this.logger.log ?? console.log).call(this.logger, "[Diagnostics] stream sampling completed", { streamsDir });
-
-    const zipPath = join(baseOutDir, `${runDirName}.zip`);
-
-    (this.logger.log ?? console.log).call(this.logger, "[Diagnostics] creating zip bundle", { zipPath });
-    await zipDirectory({ sourceDir: runDir, zipPath });
-    (this.logger.log ?? console.log).call(this.logger, "[Diagnostics] zip bundle created", { zipPath });
-
-    return { runDir: diagnosticsRes.outDir, zipPath, diagnosticsPath: diagnosticsRes.diagnosticsPath, streamsDir };
   }
 
   private async maybeRebootOnDisconnectStorm(): Promise<void> {
@@ -1531,10 +1440,10 @@ export class ReolinkBaichuanApi {
     // or <IOTInfoList><IOTInfo>...</IOTInfo></IOTInfoList>
     let channelBlocks = getXmlBlocks(xml, "ChannelInfo");
     const iotBlocks = getXmlBlocks(xml, "IOTInfo");
-    
+
     // Combine both types of blocks
     const allBlocks = [...channelBlocks, ...iotBlocks];
-    
+
     // this.logger.debug?.(`[ReolinkBaichuanApi] parseAndStoreChannelInfo: found ${channelBlocks.length} ChannelInfo blocks, ${iotBlocks.length} IOTInfo blocks`);
 
     for (const block of allBlocks) {
@@ -1600,7 +1509,7 @@ export class ReolinkBaichuanApi {
       for (const [channel, info] of result.entries()) {
         resultObj[channel] = info;
       }
-      
+
       this.logger.log?.(`[ReolinkBaichuanApi] Channel info received by the NVR: ${JSON.stringify({ result: resultObj, storedChannels: Array.from(this.channelInfoFromPush.keys()) })}`);
     }
   }
@@ -6969,5 +6878,20 @@ ${xmlDateTimePayload("endTime", end)}
     return await this.cgiApi.downloadVod(filename, options);
   }
 
+  /**
+   * Comprehensive NVR/HUB diagnostics.
+   * Calls collectNvrDiagnostics directly from DiagnosticsTools.
+   * Automatically prints diagnostics after collection using the provided logger.
+   * 
+   * @param options - Configuration object with logger property for progress messages
+   * @returns Complete diagnostics data including NVR info, channels, and per-channel details
+   */
+  async collectNvrDiagnostics(options: { logger: Logger }): Promise<Record<string, unknown>> {
+    const diagnostics = await collectNvrDiagnostics({
+      cgi: this.cgiApi,
+      logger: options.logger,
+    });
+    return diagnostics;
+  }
 }
 
