@@ -83,8 +83,8 @@ export function normalizeDebugOptions(opts?: DebugOptions): DebugConfig {
   };
 }
 
-export function recordingsTraceLog(cfg: DebugConfig, logger: Logger, tag: string, message: string): void {
-  if (!cfg.traceRecordings) return;
+export function recordingsTraceLog(cfg: DebugConfig | undefined, logger: Logger | undefined, tag: string, message: string): void {
+  if (!cfg?.traceRecordings || !logger) return;
   logger.log(`[${tag}] ${message}`);
 }
 

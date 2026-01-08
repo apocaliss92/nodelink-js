@@ -199,7 +199,11 @@ export class ReolinkHttpClient {
 
   async callMany<TValue = unknown>(cmds: ReolinkCmdRequest[]): Promise<ReolinkCmdResponse<TValue>[]> {
     await this.login();
-    return await this.sendJson<TValue>(cmds, { token: this.token }, { includeToken: true });
+    // Extract cmd from first request for query string (like reolink_aio does)
+    const cmd = cmds[0]?.cmd;
+    const query: Record<string, string | number | undefined> = { token: this.token };
+    if (cmd) query.cmd = cmd;
+    return await this.sendJson<TValue>(cmds, query, { includeToken: true });
   }
 
   private async sendJson<TValue>(

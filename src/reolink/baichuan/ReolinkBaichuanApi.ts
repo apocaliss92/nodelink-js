@@ -12,6 +12,7 @@ import {
   BC_CLASS_MODERN_24,
   BC_CMD_ID_ABILITY_INFO,
   BC_CMD_ID_AUDIO_ALARM_PLAY,
+  BC_CMD_ID_CHANNEL_INFO_ALL,
   BC_CMD_ID_FILE_INFO_LIST_CLOSE,
   BC_CMD_ID_FILE_INFO_LIST_DOWNLOAD,
   BC_CMD_ID_FILE_INFO_LIST_GET,
@@ -600,6 +601,19 @@ export class ReolinkBaichuanApi {
   private rtspServers = new Set<BaichuanRtspServer>(); // Track all RTSP servers for cleanup
   private readonly activeVideoMsgNums = new Map<string, number>();
 
+  /**
+   * Cached channel info from cmd_id 145 push (NVR sends this automatically on connection).
+   * Map of channel number to channel info.
+   */
+  private channelInfoFromPush: Map<number, {
+    typeInfo?: string;
+    firmVer?: string;
+    firmwareVersion?: string;
+    boardInfo?: string;
+    pakSuffix?: string;
+    name?: string;
+  }> = new Map();
+
   private lastSleepProbe:
     | {
       atMs: number;
@@ -708,6 +722,15 @@ export class ReolinkBaichuanApi {
           // Never allow user handlers to break the Baichuan client's event loop.
           (this.logger.warn ?? this.logger.error).call(this.logger, "[ReolinkBaichuanApi] onSimpleEvent handler error", e);
         }
+      }
+    });
+
+    // Handle channel info push from NVR (cmd_id 145)
+    this.client.on("channelInfo", (xml: string) => {
+      try {
+        this.parseAndStoreChannelInfo(xml);
+      } catch (e) {
+        this.logger.warn?.("[ReolinkBaichuanApi] Error parsing channel info from push", e);
       }
     });
 
@@ -1478,6 +1501,271 @@ export class ReolinkBaichuanApi {
   }
 
   /**
+   * Parse and store channel info from cmd_id 145 push XML.
+   * This is called automatically when the NVR sends channel info on connection.
+   * 
+   * The XML structure is typically:
+   * - <ChannelInfoList> with <ChannelInfo> blocks containing <channelId>, <devName>, <state>, <uid>, etc.
+   * - <IOTInfoList> with <IOTInfo> blocks (for IoT devices)
+   */
+  private parseAndStoreChannelInfo(xml: string): void {
+    const result = new Map<number, {
+      typeInfo?: string;
+      firmVer?: string;
+      firmwareVersion?: string;
+      boardInfo?: string;
+      pakSuffix?: string;
+      name?: string;
+      uid?: string;
+      state?: string;
+    }>();
+
+    // Parse ChannelInfoList (main camera channels) and IOTInfoList (IoT devices)
+    // The XML structure uses <ChannelInfoList><ChannelInfo>...</ChannelInfo></ChannelInfoList>
+    // or <IOTInfoList><IOTInfo>...</IOTInfo></IOTInfoList>
+    let channelBlocks = getXmlBlocks(xml, "ChannelInfo");
+    const iotBlocks = getXmlBlocks(xml, "IOTInfo");
+    
+    // Combine both types of blocks
+    const allBlocks = [...channelBlocks, ...iotBlocks];
+    
+    // this.logger.debug?.(`[ReolinkBaichuanApi] parseAndStoreChannelInfo: found ${channelBlocks.length} ChannelInfo blocks, ${iotBlocks.length} IOTInfo blocks`);
+
+    for (const block of allBlocks) {
+      // Extract channel number - cmd_id 145 uses <channelId> not <channel>
+      const channelText = getXmlText(block, "channelId");
+      if (!channelText) {
+        // this.logger.debug?.(`[ReolinkBaichuanApi] parseAndStoreChannelInfo: block missing channelId, block preview: ${block.substring(0, 200)}`);
+        continue;
+      }
+
+      const channel = Number.parseInt(channelText, 10);
+      if (!Number.isFinite(channel)) {
+        // this.logger.debug?.(`[ReolinkBaichuanApi] parseAndStoreChannelInfo: invalid channel number: ${channelText}`);
+        continue;
+      }
+
+      // Extract fields from ChannelInfo structure
+      // Note: cmd_id 145 doesn't include typeInfo/firmVer/boardInfo, but includes devName, uid, state
+      const name = getXmlText(block, "devName");
+      const uid = getXmlText(block, "uid");
+      const state = getXmlText(block, "state");
+
+      // Try to get typeInfo/firmVer/boardInfo if present (might be in some variants)
+      const typeInfo = getXmlText(block, "typeInfo") ?? getXmlText(block, "type");
+      const firmVer = getXmlText(block, "firmVer") ?? getXmlText(block, "firmwareVersion");
+      const firmwareVersion = firmVer || '';
+      const boardInfo = getXmlText(block, "boardInfo");
+      const pakSuffix = getXmlText(block, "pakSuffix");
+
+      // this.logger.debug?.(`[ReolinkBaichuanApi] parseAndStoreChannelInfo: channel ${channel} - name: ${name}, uid: ${uid}, state: ${state}, typeInfo: ${typeInfo}, firmVer: ${firmVer}, boardInfo: ${boardInfo}`);
+
+      // Only store if we have at least some useful info (name, uid, or state)
+      // Skip channels with state="none" as they're empty slots
+      if (state && state !== "none" && (name || uid || typeInfo || firmVer || boardInfo)) {
+        result.set(channel, {
+          ...(typeInfo ? { typeInfo } : {}),
+          ...(firmVer ? { firmVer, firmwareVersion } : {}),
+          ...(boardInfo ? { boardInfo } : {}),
+          ...(pakSuffix ? { pakSuffix } : {}),
+          ...(name ? { name } : {}),
+          ...(uid ? { uid } : {}),
+          ...(state ? { state } : {}),
+        });
+        // this.logger.debug?.(`[ReolinkBaichuanApi] parseAndStoreChannelInfo: stored channel ${channel}`);
+      } else {
+        // this.logger.debug?.(`[ReolinkBaichuanApi] parseAndStoreChannelInfo: skipping channel ${channel} - state: ${state}, hasName: ${!!name}, hasUid: ${!!uid}, hasTypeInfo: ${!!typeInfo}, hasFirmVer: ${!!firmVer}, hasBoardInfo: ${!!boardInfo}`);
+      }
+    }
+
+    // Update the cached channel info (merge with existing if any)
+    for (const [channel, info] of result.entries()) {
+      const existing = this.channelInfoFromPush.get(channel);
+      this.channelInfoFromPush.set(channel, {
+        ...existing,
+        ...info,
+      });
+    }
+
+    // Only log if we actually stored something new
+    if (result.size > 0) {
+      // Convert Map to object for logging
+      const resultObj: Record<number, any> = {};
+      for (const [channel, info] of result.entries()) {
+        resultObj[channel] = info;
+      }
+      
+      this.logger.log?.(`[ReolinkBaichuanApi] Channel info received by the NVR: ${JSON.stringify({ result: resultObj, storedChannels: Array.from(this.channelInfoFromPush.keys()) })}`);
+    }
+  }
+
+  /**
+   * GetChannelInfo via Baichuan: cmd_id 318 (channel-specific DevInfo).
+   * 
+   * This method extracts channel information similar to CGI GetChnTypeInfo,
+   * but using the Baichuan protocol. It returns typeInfo (model), firmwareVersion,
+   * and boardInfo if available in the XML response.
+   * 
+   * Following the Python implementation pattern from reolink_aio.
+   */
+  async getChannelInfo(
+    channel: number,
+    options?: {
+      timeoutMs?: number;
+    },
+  ): Promise<{
+    typeInfo?: string;
+    firmVer?: string;
+    firmwareVersion?: string;
+    boardInfo?: string;
+    pakSuffix?: string;
+  }> {
+    const req: { cmdId: number; channel: number; timeoutMs?: number } = { cmdId: 318, channel };
+    if (options?.timeoutMs != null) req.timeoutMs = options.timeoutMs;
+    const xml = await this.sendXml(req);
+
+    // Extract fields similar to CgiChnTypeInfoValue
+    // typeInfo can come from <type> tag in Baichuan response
+    const typeInfo = getXmlText(xml, "typeInfo") ?? getXmlText(xml, "type");
+    const firmVer = getXmlText(xml, "firmVer") ?? getXmlText(xml, "firmwareVersion");
+    const firmwareVersion = firmVer || '';
+    const boardInfo = getXmlText(xml, "boardInfo");
+    const pakSuffix = getXmlText(xml, "pakSuffix");
+
+    return {
+      ...(typeInfo ? { typeInfo } : {}),
+      ...(firmVer ? { firmVer, firmwareVersion } : {}),
+      ...(boardInfo ? { boardInfo } : {}),
+      ...(pakSuffix ? { pakSuffix } : {}),
+    };
+  }
+
+  /**
+   * GetAllChannelsInfo via Baichuan: cmd_id 145 (all channels info in a single request).
+   * 
+   * Note: The NVR sends a message with cmd_id 145 when connecting, but it seems to not allow
+   * requesting that id explicitly. This method will return an empty Map, and the caller should
+   * fall back to per-channel requests using getChannelInfo (cmd_id 318).
+   * 
+   * Returns a map of channel number to channel info (typically empty).
+   */
+  async getAllChannelsInfo(options?: {
+    timeoutMs?: number;
+  }): Promise<Map<number, {
+    typeInfo?: string;
+    firmVer?: string;
+    firmwareVersion?: string;
+    boardInfo?: string;
+    pakSuffix?: string;
+    name?: string;
+  }>> {
+    // Try with empty body XML first
+    const req: { cmdId: number; payloadXml?: string; timeoutMs?: number } = {
+      cmdId: BC_CMD_ID_CHANNEL_INFO_ALL,
+      payloadXml: `<?xml version="1.0" encoding="UTF-8" ?><body></body>`
+    };
+    if (options?.timeoutMs != null) req.timeoutMs = options.timeoutMs;
+
+    let xml = await this.sendXml(req);
+
+    // If empty response, try without body XML
+    if (!xml || xml.trim().length === 0) {
+      const reqNoBody: { cmdId: number; timeoutMs?: number } = { cmdId: BC_CMD_ID_CHANNEL_INFO_ALL };
+      if (options?.timeoutMs != null) reqNoBody.timeoutMs = options.timeoutMs;
+      xml = await this.sendXml(reqNoBody);
+    }
+
+    // If still empty, the command is likely not supported (NVR sends it but doesn't allow requesting it)
+    if (!xml || xml.trim().length === 0) {
+      return new Map();
+    }
+
+    const result = new Map<number, {
+      typeInfo?: string;
+      firmVer?: string;
+      firmwareVersion?: string;
+      boardInfo?: string;
+      pakSuffix?: string;
+      name?: string;
+    }>();
+
+    // The response typically contains multiple channel blocks
+    // Try common XML block patterns: <DevInfo>, <ChannelInfo>, <Channel>, etc.
+    let channelBlocks = getXmlBlocks(xml, "DevInfo");
+    if (channelBlocks.length === 0) {
+      channelBlocks = getXmlBlocks(xml, "ChannelInfo");
+    }
+    if (channelBlocks.length === 0) {
+      channelBlocks = getXmlBlocks(xml, "Channel");
+    }
+    if (channelBlocks.length === 0) {
+      channelBlocks = getXmlBlocks(xml, "channel");
+    }
+
+    for (const block of channelBlocks) {
+      // Try to extract channel number from various possible locations
+      const channelText = getXmlText(block, "channel") ??
+        getXmlText(block, "channelId") ??
+        getXmlText(block, "id");
+      const channel = channelText ? Number.parseInt(channelText, 10) : undefined;
+
+      if (channel === undefined || !Number.isFinite(channel)) {
+        // If no explicit channel number, try to infer from position or skip
+        continue;
+      }
+
+      // Extract fields similar to getChannelInfo
+      const typeInfo = getXmlText(block, "typeInfo") ?? getXmlText(block, "type");
+      const firmVer = getXmlText(block, "firmVer") ?? getXmlText(block, "firmwareVersion");
+      const firmwareVersion = firmVer || '';
+      const boardInfo = getXmlText(block, "boardInfo");
+      const pakSuffix = getXmlText(block, "pakSuffix");
+      const name = getXmlText(block, "name");
+
+      result.set(channel, {
+        ...(typeInfo ? { typeInfo } : {}),
+        ...(firmVer ? { firmVer, firmwareVersion } : {}),
+        ...(boardInfo ? { boardInfo } : {}),
+        ...(pakSuffix ? { pakSuffix } : {}),
+        ...(name ? { name } : {}),
+      });
+    }
+
+    // If no blocks found with channel numbers, try parsing the XML as a single response
+    // and extract channel info from nested structures
+    if (result.size === 0) {
+      // Fallback: try to find channel info in a different structure
+      // Some devices might return a flat structure with channel info embedded
+      const allChannels = getXmlBlocks(xml, "body");
+      for (const bodyBlock of allChannels) {
+        // Look for channel-specific attributes or nested structures
+        const channelText = getXmlText(bodyBlock, "channel");
+        if (channelText) {
+          const channel = Number.parseInt(channelText, 10);
+          if (Number.isFinite(channel)) {
+            const typeInfo = getXmlText(bodyBlock, "typeInfo") ?? getXmlText(bodyBlock, "type");
+            const firmVer = getXmlText(bodyBlock, "firmVer") ?? getXmlText(bodyBlock, "firmwareVersion");
+            const firmwareVersion = firmVer || '';
+            const boardInfo = getXmlText(bodyBlock, "boardInfo");
+            const pakSuffix = getXmlText(bodyBlock, "pakSuffix");
+            const name = getXmlText(bodyBlock, "name");
+
+            result.set(channel, {
+              ...(typeInfo ? { typeInfo } : {}),
+              ...(firmVer ? { firmVer, firmwareVersion } : {}),
+              ...(boardInfo ? { boardInfo } : {}),
+              ...(pakSuffix ? { pakSuffix } : {}),
+              ...(name ? { name } : {}),
+            });
+          }
+        }
+      }
+    }
+
+    return result;
+  }
+
+  /**
    * Convenience helper to get a minimal per-channel identity tuple.
    *
    * Note: the Baichuan DevInfo payload uses <type> as the model string on most firmwares.
@@ -1500,11 +1788,29 @@ export class ReolinkBaichuanApi {
   }
 
   /**
+   * Get devices info using cached channel info from cmd_id 145 push.
+   * This is the preferred method as it uses data automatically sent by the NVR on connection.
+   * 
+   * Returns channel info for all channels that were received in the cmd_id 145 push.
+   */
+  getDevicesInfo(): Map<number, {
+    typeInfo?: string;
+    firmVer?: string;
+    firmwareVersion?: string;
+    boardInfo?: string;
+    pakSuffix?: string;
+    name?: string;
+  }> {
+    return new Map(this.channelInfoFromPush);
+  }
+
+  /**
    * NVR/HomeHub helper: get a per-channel overview (model/name/uid/online/sleep).
    *
    * The method supports two sources:
    * - `source: "cgi"` (default): uses CGI only (GetChannelstatus + GetChnTypeInfo)
-   * - `source: "baichuan"`: uses Baichuan only (AbilityInfo + per-channel DevInfo)
+   * - `source: "baichuan"`: @deprecated Use getDevicesInfo() instead, which uses cached data from cmd_id 145 push.
+   *   This method makes individual requests for each channel which is inefficient.
    */
   async getNvrChannelsInfo(options?: {
     /** Which source to use. Default: "cgi". */
@@ -1513,13 +1819,10 @@ export class ReolinkBaichuanApi {
     timeoutMs?: number;
     /** Max channels to probe if enumeration is not available (default: 16). */
     maxChannels?: number;
-    /** CGI timeout (default: 30000ms). */
-    cgiTimeoutMs?: number;
   }): Promise<ReolinkNvrChannelInfo[]> {
     const source = options?.source ?? "cgi";
     const timeoutMs = options?.timeoutMs ?? 3500;
     const maxChannels = options?.maxChannels ?? 16;
-    const cgiTimeoutMs = options?.cgiTimeoutMs ?? 30_000;
 
     if (source === "cgi") {
       try {
@@ -1588,37 +1891,21 @@ export class ReolinkBaichuanApi {
     }
 
     // source === "baichuan"
-    // 1) Enumerate channels via Baichuan AbilityInfo when available.
-    let channels: number[] = [];
-    try {
-      const abilityInfo = await this.getAbilityInfo();
-      const keys = Object.keys(abilityInfo ?? {}).filter((k) => k !== "Host");
-      channels = keys
-        .map((k) => Number(k))
-        .filter((n) => Number.isFinite(n))
-        .sort((a, b) => a - b);
-    } catch {
-      // ignore
-    }
+    // @deprecated: Use getDevicesInfo() instead which uses cached data from cmd_id 145 push.
+    // This method is kept for backward compatibility but should not be used.
+    this.logger.warn?.("[ReolinkBaichuanApi] getNvrChannelsInfo with source='baichuan' is deprecated. Use getDevicesInfo() instead.");
 
-    if (channels.length === 0) {
-      const n = Number.isFinite(maxChannels) && maxChannels > 0 ? maxChannels : 16;
-      channels = Array.from({ length: n }, (_, i) => i);
-    }
+    // Use cached data from cmd_id 145 push if available
+    const cachedInfo = this.getDevicesInfo();
+    if (cachedInfo.size > 0) {
+      const baichuanRows: ReolinkNvrChannelInfo[] = [];
+      for (const [channel, channelInfo] of cachedInfo.entries()) {
+        const model = (channelInfo.typeInfo ?? "").trim();
+        const name = (channelInfo.name ?? "").trim();
+        const firmwareVersion = (channelInfo.firmwareVersion ?? channelInfo.firmVer ?? "").trim();
+        const boardInfo = (channelInfo.boardInfo ?? "").trim();
 
-    // 2) Try Baichuan per-channel DevInfo.
-    const baichuanRows: ReolinkNvrChannelInfo[] = [];
-    for (const channel of channels) {
-      try {
-        const info = await this.getInfo(channel, {
-          timeoutMs,
-          tags: ["type", "name", "firmwareVersion"],
-        });
-        const model = (info.type ?? "").trim();
-        const name = (info.name ?? "").trim();
-        const firmwareVersion = (info.firmwareVersion ?? "").trim();
-
-        const hasAny = !!(model || name || firmwareVersion);
+        const hasAny = !!(model || name || firmwareVersion || boardInfo);
         if (!hasAny) continue;
 
         baichuanRows.push({
@@ -1626,14 +1913,18 @@ export class ReolinkBaichuanApi {
           ...(model ? { model } : {}),
           ...(name ? { name } : {}),
           ...(firmwareVersion ? { firmwareVersion } : {}),
+          ...(boardInfo ? { boardInfo } : {}),
           source: "baichuan",
         });
-      } catch {
-        // ignore
+      }
+
+      if (baichuanRows.length > 0) {
+        return baichuanRows.sort((a, b) => a.channel - b.channel);
       }
     }
 
-    return baichuanRows.sort((a, b) => a.channel - b.channel);
+    // Fallback: return empty array (should not happen if cmd_id 145 push was received)
+    return [];
   }
 
   /** GetEnc via Baichuan: cmd_id 56 (returns raw XML). */
@@ -2230,36 +2521,36 @@ export class ReolinkBaichuanApi {
         recordingsTraceLog(dbg, logger, "listRecordings", `Init recordings lookup: ${JSON.stringify(params)}`);
 
 
-      const channel = this.normalizeChannel(params.channel);
-      const uid = params.uid;
-      const streamType = params.streamType ?? "mainStream";
-      const recordType =
-        params.recordType ?? "manual, sched, io, md, people, face, vehicle, dog_cat, visitor, other, package";
-      const maxIterations = params.maxIterations ?? 50;
-      const fallbackToAlarmVideo = params.fallbackToAlarmVideo ?? true;
+        const channel = this.normalizeChannel(params.channel);
+        const uid = params.uid;
+        const streamType = params.streamType ?? "mainStream";
+        const recordType =
+          params.recordType ?? "manual, sched, io, md, people, face, vehicle, dog_cat, visitor, other, package";
+        const maxIterations = params.maxIterations ?? 50;
+        const fallbackToAlarmVideo = params.fallbackToAlarmVideo ?? true;
 
-      recordingsTraceLog(dbg, logger, "listRecordings", `Normalized params: channel=${channel}, uid=${uid}, streamType=${streamType}, maxIterations=${maxIterations}`);
+        recordingsTraceLog(dbg, logger, "listRecordings", `Normalized params: channel=${channel}, uid=${uid}, streamType=${streamType}, maxIterations=${maxIterations}`);
 
-      // Log the date components that will be sent to camera (xmlDateTimePayload uses local time methods)
-      const startLocalParts = {
-        year: params.start.getFullYear(),
-        month: params.start.getMonth() + 1,
-        day: params.start.getDate(),
-        hour: params.start.getHours(),
-        minute: params.start.getMinutes(),
-        second: params.start.getSeconds(),
-      };
-      const endLocalParts = {
-        year: params.end.getFullYear(),
-        month: params.end.getMonth() + 1,
-        day: params.end.getDate(),
-        hour: params.end.getHours(),
-        minute: params.end.getMinutes(),
-        second: params.end.getSeconds(),
-      };
-      recordingsTraceLog(dbg, logger, "listRecordings", `Date components for camera (local): start=${startLocalParts.year}-${String(startLocalParts.month).padStart(2, '0')}-${String(startLocalParts.day).padStart(2, '0')} ${String(startLocalParts.hour).padStart(2, '0')}:${String(startLocalParts.minute).padStart(2, '0')}:${String(startLocalParts.second).padStart(2, '0')} (UTC: ${params.start.toISOString()}), end=${endLocalParts.year}-${String(endLocalParts.month).padStart(2, '0')}-${String(endLocalParts.day).padStart(2, '0')} ${String(endLocalParts.hour).padStart(2, '0')}:${String(endLocalParts.minute).padStart(2, '0')}:${String(endLocalParts.second).padStart(2, '0')} (UTC: ${params.end.toISOString()})`);
+        // Log the date components that will be sent to camera (xmlDateTimePayload uses local time methods)
+        const startLocalParts = {
+          year: params.start.getFullYear(),
+          month: params.start.getMonth() + 1,
+          day: params.start.getDate(),
+          hour: params.start.getHours(),
+          minute: params.start.getMinutes(),
+          second: params.start.getSeconds(),
+        };
+        const endLocalParts = {
+          year: params.end.getFullYear(),
+          month: params.end.getMonth() + 1,
+          day: params.end.getDate(),
+          hour: params.end.getHours(),
+          minute: params.end.getMinutes(),
+          second: params.end.getSeconds(),
+        };
+        recordingsTraceLog(dbg, logger, "listRecordings", `Date components for camera (local): start=${startLocalParts.year}-${String(startLocalParts.month).padStart(2, '0')}-${String(startLocalParts.day).padStart(2, '0')} ${String(startLocalParts.hour).padStart(2, '0')}:${String(startLocalParts.minute).padStart(2, '0')}:${String(startLocalParts.second).padStart(2, '0')} (UTC: ${params.start.toISOString()}), end=${endLocalParts.year}-${String(endLocalParts.month).padStart(2, '0')}-${String(endLocalParts.day).padStart(2, '0')} ${String(endLocalParts.hour).padStart(2, '0')}:${String(endLocalParts.minute).padStart(2, '0')}:${String(endLocalParts.second).padStart(2, '0')} (UTC: ${params.end.toISOString()})`);
 
-      const openXml = `<?xml version="1.0" encoding="UTF-8" ?>
+        const openXml = `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <FileInfoList version="1.1">
 <FileInfo>
@@ -2275,37 +2566,37 @@ ${xmlDateTimePayload("endTime", params.end)}
 </FileInfoList>
 </body>`;
 
-      recordingsTraceLog(dbg, logger, "listRecordings", `Opening FileInfoList: channel=${channel}, uid=${uid}, streamType=${streamType}`);
-      
-      // Check connection state before opening FileInfoList
-      const isConnectedBefore = this.client.isSocketConnected();
-      const isLoggedInBefore = this.client.loggedIn;
-      recordingsTraceLog(dbg, logger, "listRecordings", `Before FILE_INFO_LIST_OPEN: connected=${isConnectedBefore}, loggedIn=${isLoggedInBefore}`);
-      
-      // Use explicit timeout for recording operations (15 seconds per request)
-      let openResp: string;
-      try {
-        recordingsTraceLog(dbg, logger, "listRecordings", `Sending FILE_INFO_LIST_OPEN (cmdId=${BC_CMD_ID_FILE_INFO_LIST_OPEN})`);
-        openResp = await this.sendXml({ cmdId: BC_CMD_ID_FILE_INFO_LIST_OPEN, channel, payloadXml: openXml, timeoutMs: 15_000 });
-        recordingsTraceLog(dbg, logger, "listRecordings", `FILE_INFO_LIST_OPEN successful`);
-      } catch (e) {
-        const isConnectedAfter = this.client.isSocketConnected();
-        const isLoggedInAfter = this.client.loggedIn;
-        recordingsTraceLog(dbg, logger, "listRecordings", `FILE_INFO_LIST_OPEN failed: ${e instanceof Error ? e.message : String(e)}, connected=${isConnectedAfter}, loggedIn=${isLoggedInAfter}`);
-        throw e;
-      }
-      const handleText = getXmlText(openResp, "handle");
-      if (!handleText) {
-        throw new Error("FileInfoList open did not return <handle>");
-      }
+        recordingsTraceLog(dbg, logger, "listRecordings", `Opening FileInfoList: channel=${channel}, uid=${uid}, streamType=${streamType}`);
 
-      const handle = Number.parseInt(handleText, 10);
-      if (!Number.isFinite(handle)) {
-        throw new Error(`FileInfoList open returned invalid handle: ${handleText}`);
-      }
-      recordingsTraceLog(dbg, logger, "listRecordings", `FileInfoList opened with handle=${handle}`);
+        // Check connection state before opening FileInfoList
+        const isConnectedBefore = this.client.isSocketConnected();
+        const isLoggedInBefore = this.client.loggedIn;
+        recordingsTraceLog(dbg, logger, "listRecordings", `Before FILE_INFO_LIST_OPEN: connected=${isConnectedBefore}, loggedIn=${isLoggedInBefore}`);
 
-      const pageXml = `<?xml version="1.0" encoding="UTF-8" ?>
+        // Use explicit timeout for recording operations (15 seconds per request)
+        let openResp: string;
+        try {
+          recordingsTraceLog(dbg, logger, "listRecordings", `Sending FILE_INFO_LIST_OPEN (cmdId=${BC_CMD_ID_FILE_INFO_LIST_OPEN})`);
+          openResp = await this.sendXml({ cmdId: BC_CMD_ID_FILE_INFO_LIST_OPEN, channel, payloadXml: openXml, timeoutMs: 15_000 });
+          recordingsTraceLog(dbg, logger, "listRecordings", `FILE_INFO_LIST_OPEN successful`);
+        } catch (e) {
+          const isConnectedAfter = this.client.isSocketConnected();
+          const isLoggedInAfter = this.client.loggedIn;
+          recordingsTraceLog(dbg, logger, "listRecordings", `FILE_INFO_LIST_OPEN failed: ${e instanceof Error ? e.message : String(e)}, connected=${isConnectedAfter}, loggedIn=${isLoggedInAfter}`);
+          throw e;
+        }
+        const handleText = getXmlText(openResp, "handle");
+        if (!handleText) {
+          throw new Error("FileInfoList open did not return <handle>");
+        }
+
+        const handle = Number.parseInt(handleText, 10);
+        if (!Number.isFinite(handle)) {
+          throw new Error(`FileInfoList open returned invalid handle: ${handleText}`);
+        }
+        recordingsTraceLog(dbg, logger, "listRecordings", `FileInfoList opened with handle=${handle}`);
+
+        const pageXml = `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <FileInfoList version="1.1">
 <FileInfo>
@@ -2317,101 +2608,101 @@ ${xmlDateTimePayload("endTime", params.end)}
 </FileInfoList>
 </body>`;
 
-      const files: RecordingFile[] = [];
-      // Typical page size for Reolink cameras - if we get this many results, there might be more pages
-      const TYPICAL_PAGE_SIZE = 40;
+        const files: RecordingFile[] = [];
+        // Typical page size for Reolink cameras - if we get this many results, there might be more pages
+        const TYPICAL_PAGE_SIZE = 40;
 
-      try {
-        let finished = false;
-        for (let i = 0; i < maxIterations && !finished; i++) {
-          recordingsTraceLog(dbg, logger, "listRecordings", `Fetching page ${i + 1}/${maxIterations} (handle=${handle})`);
-
-          let resp: string;
-          try {
-            // Use explicit timeout for each pagination request (15 seconds)
-            resp = await this.sendXml({ cmdId: BC_CMD_ID_FILE_INFO_LIST_GET, channel, payloadXml: pageXml, timeoutMs: 15_000 });
-            recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1} GET response received`);
-          } catch (e) {
-            // For FILE_INFO_LIST_GET, a 400 with empty body during pagination typically means
-            // no more pages available or handle expired - treat as end of pagination
-            const errorMsg = e instanceof Error ? e.message : String(e);
-            if (errorMsg.includes('responseCode 400, empty body')) {
-              recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1} GET returned 400 (empty body) - treating as end of pagination`);
-              finished = true;
-              break;
-            }
-            recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1} GET failed: ${errorMsg}, stack: ${e instanceof Error ? e.stack : 'no stack'}`);
-            throw e;
-          }
-
-          const pageFiles = parseRecordingFilesFromXml(resp);
-          files.push(...pageFiles);
-          recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1}: found ${pageFiles.length} files (total: ${files.length})`);
-
-          const bFinishedText = getXmlText(resp, "bFinished") ?? getXmlText(resp, "finished");
-          if (bFinishedText != null) {
-            // Explicit finished flag from camera
-            finished = bFinishedText.trim() === "1";
-            recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1}: bFinished=${bFinishedText}, finished=${finished}`);
-          } else {
-            // No finished flag in response - use heuristic based on page size
-            // If we received a full page (TYPICAL_PAGE_SIZE), there might be more results
-            // If we received fewer, we're likely at the end
-            if (pageFiles.length >= TYPICAL_PAGE_SIZE) {
-              finished = false;
-              recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1}: no finished flag, but got ${pageFiles.length} files (>= ${TYPICAL_PAGE_SIZE}), continuing pagination`);
-            } else if (pageFiles.length === 0) {
-              // Empty page means we're done
-              finished = true;
-              recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1}: no finished flag and empty page, assuming done`);
-            } else {
-              // Got some results but less than a full page - likely the last page
-              finished = true;
-              recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1}: no finished flag, got ${pageFiles.length} files (< ${TYPICAL_PAGE_SIZE}), assuming done`);
-            }
-          }
-        }
-
-        if (!finished) {
-          recordingsTraceLog(dbg, logger, "listRecordings", `WARNING: Reached maxIterations (${maxIterations}) without finishing pagination`);
-        }
-      } catch (e) {
-        recordingsTraceLog(dbg, logger, "listRecordings", `Pagination loop failed: ${e instanceof Error ? e.message : String(e)}, stack: ${e instanceof Error ? e.stack : 'no stack'}`);
-        throw e;
-      } finally {
-        // Best-effort close.
         try {
-          recordingsTraceLog(dbg, logger, "listRecordings", `Closing FileInfoList handle=${handle}`);
-          await this.sendXml({ cmdId: BC_CMD_ID_FILE_INFO_LIST_CLOSE, channel, payloadXml: pageXml, timeoutMs: 5_000 });
-          recordingsTraceLog(dbg, logger, "listRecordings", `FileInfoList closed successfully`);
+          let finished = false;
+          for (let i = 0; i < maxIterations && !finished; i++) {
+            recordingsTraceLog(dbg, logger, "listRecordings", `Fetching page ${i + 1}/${maxIterations} (handle=${handle})`);
+
+            let resp: string;
+            try {
+              // Use explicit timeout for each pagination request (15 seconds)
+              resp = await this.sendXml({ cmdId: BC_CMD_ID_FILE_INFO_LIST_GET, channel, payloadXml: pageXml, timeoutMs: 15_000 });
+              recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1} GET response received`);
+            } catch (e) {
+              // For FILE_INFO_LIST_GET, a 400 with empty body during pagination typically means
+              // no more pages available or handle expired - treat as end of pagination
+              const errorMsg = e instanceof Error ? e.message : String(e);
+              if (errorMsg.includes('responseCode 400, empty body')) {
+                recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1} GET returned 400 (empty body) - treating as end of pagination`);
+                finished = true;
+                break;
+              }
+              recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1} GET failed: ${errorMsg}, stack: ${e instanceof Error ? e.stack : 'no stack'}`);
+              throw e;
+            }
+
+            const pageFiles = parseRecordingFilesFromXml(resp);
+            files.push(...pageFiles);
+            recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1}: found ${pageFiles.length} files (total: ${files.length})`);
+
+            const bFinishedText = getXmlText(resp, "bFinished") ?? getXmlText(resp, "finished");
+            if (bFinishedText != null) {
+              // Explicit finished flag from camera
+              finished = bFinishedText.trim() === "1";
+              recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1}: bFinished=${bFinishedText}, finished=${finished}`);
+            } else {
+              // No finished flag in response - use heuristic based on page size
+              // If we received a full page (TYPICAL_PAGE_SIZE), there might be more results
+              // If we received fewer, we're likely at the end
+              if (pageFiles.length >= TYPICAL_PAGE_SIZE) {
+                finished = false;
+                recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1}: no finished flag, but got ${pageFiles.length} files (>= ${TYPICAL_PAGE_SIZE}), continuing pagination`);
+              } else if (pageFiles.length === 0) {
+                // Empty page means we're done
+                finished = true;
+                recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1}: no finished flag and empty page, assuming done`);
+              } else {
+                // Got some results but less than a full page - likely the last page
+                finished = true;
+                recordingsTraceLog(dbg, logger, "listRecordings", `Page ${i + 1}: no finished flag, got ${pageFiles.length} files (< ${TYPICAL_PAGE_SIZE}), assuming done`);
+              }
+            }
+          }
+
+          if (!finished) {
+            recordingsTraceLog(dbg, logger, "listRecordings", `WARNING: Reached maxIterations (${maxIterations}) without finishing pagination`);
+          }
         } catch (e) {
-          recordingsTraceLog(dbg, logger, "listRecordings", `FileInfoList CLOSE failed (ignored): ${e instanceof Error ? e.message : String(e)}`);
-          // ignore
+          recordingsTraceLog(dbg, logger, "listRecordings", `Pagination loop failed: ${e instanceof Error ? e.message : String(e)}, stack: ${e instanceof Error ? e.stack : 'no stack'}`);
+          throw e;
+        } finally {
+          // Best-effort close.
+          try {
+            recordingsTraceLog(dbg, logger, "listRecordings", `Closing FileInfoList handle=${handle}`);
+            await this.sendXml({ cmdId: BC_CMD_ID_FILE_INFO_LIST_CLOSE, channel, payloadXml: pageXml, timeoutMs: 5_000 });
+            recordingsTraceLog(dbg, logger, "listRecordings", `FileInfoList closed successfully`);
+          } catch (e) {
+            recordingsTraceLog(dbg, logger, "listRecordings", `FileInfoList CLOSE failed (ignored): ${e instanceof Error ? e.message : String(e)}`);
+            // ignore
+          }
         }
-      }
 
-      // De-dup (pagination can repeat).
-      const seen = new Set<string>();
-      const unique = files.filter((f) => {
-        if (seen.has(f.fileName)) return false;
-        seen.add(f.fileName);
-        return true;
-      });
+        // De-dup (pagination can repeat).
+        const seen = new Set<string>();
+        const unique = files.filter((f) => {
+          if (seen.has(f.fileName)) return false;
+          seen.add(f.fileName);
+          return true;
+        });
 
-      recordingsTraceLog(dbg, logger, "listRecordings", `FileInfoList complete: ${unique.length} unique files (from ${files.length} total)`);
-      if (unique.length > 0 || !fallbackToAlarmVideo) {
-        recordingsTraceLog(dbg, logger, "listRecordings", `Returning ${unique.length} files from FileInfoList`);
-        return unique;
-      }
+        recordingsTraceLog(dbg, logger, "listRecordings", `FileInfoList complete: ${unique.length} unique files (from ${files.length} total)`);
+        if (unique.length > 0 || !fallbackToAlarmVideo) {
+          recordingsTraceLog(dbg, logger, "listRecordings", `Returning ${unique.length} files from FileInfoList`);
+          return unique;
+        }
 
-      recordingsTraceLog(dbg, logger, "listRecordings", `FileInfoList returned no files, falling back to findAlarmVideo`);
-      // Fallback path: <findAlarmVideo> (cmdId 272/273/274).
-      // This often returns "alarm videos" when FileInfoList is unsupported/empty.
-      const uidBase = uid.split("_")[0] ?? uid;
-      const streamTypeInt = streamType === "subStream" ? 1 : 0;
-      const alarmType = "md, pir, io, people, face, vehicle, dog_cat, visitor, other, package, cry, crossline, intrusion, loitering, legacy, loss";
+        recordingsTraceLog(dbg, logger, "listRecordings", `FileInfoList returned no files, falling back to findAlarmVideo`);
+        // Fallback path: <findAlarmVideo> (cmdId 272/273/274).
+        // This often returns "alarm videos" when FileInfoList is unsupported/empty.
+        const uidBase = uid.split("_")[0] ?? uid;
+        const streamTypeInt = streamType === "subStream" ? 1 : 0;
+        const alarmType = "md, pir, io, people, face, vehicle, dog_cat, visitor, other, package, cry, crossline, intrusion, loitering, legacy, loss";
 
-      const findOpenXml = (start: Date, end: Date) => `<?xml version="1.0" encoding="UTF-8" ?>
+        const findOpenXml = (start: Date, end: Date) => `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <findAlarmVideo version="1.1">
 <channelId>${channel}</channelId>
@@ -2425,7 +2716,7 @@ ${xmlDateTimePayload("endTime", end)}
 </findAlarmVideo>
 </body>`;
 
-      const findGetXml = (fileHandle: string) => `<?xml version="1.0" encoding="UTF-8" ?>
+        const findGetXml = (fileHandle: string) => `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <findAlarmVideo version="1.1">
 <channelId>${channel}</channelId>
@@ -2433,83 +2724,83 @@ ${xmlDateTimePayload("endTime", end)}
 </findAlarmVideo>
 </body>`;
 
-      const alarmFiles: RecordingFile[] = [];
-      let currentStart = params.start;
-      try {
-        for (let i = 0; i < maxIterations; i++) {
-          recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo iteration ${i + 1}/${maxIterations}: start=${currentStart.toISOString()}, end=${params.end.toISOString()}`);
+        const alarmFiles: RecordingFile[] = [];
+        let currentStart = params.start;
+        try {
+          for (let i = 0; i < maxIterations; i++) {
+            recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo iteration ${i + 1}/${maxIterations}: start=${currentStart.toISOString()}, end=${params.end.toISOString()}`);
 
-          let openResp: string;
-          try {
-            openResp = await this.sendXml({ cmdId: BC_CMD_ID_FIND_REC_VIDEO_OPEN, channel, payloadXml: findOpenXml(currentStart, params.end) });
-            recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo OPEN response received`);
-          } catch (e) {
-            recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo OPEN failed: ${e instanceof Error ? e.message : String(e)}`);
-            break;
-          }
-
-          const fileHandle = getXmlText(openResp, "fileHandle")?.trim();
-          if (!fileHandle) {
-            recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: no fileHandle in response, breaking`);
-            break;
-          }
-
-          const getXml = findGetXml(fileHandle);
-          try {
-            recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: fetching with handle=${fileHandle}`);
-
-            let getResp: string;
+            let openResp: string;
             try {
-              getResp = await this.sendXml({ cmdId: BC_CMD_ID_FIND_REC_VIDEO_GET, channel, payloadXml: getXml });
-              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo GET response received`);
+              openResp = await this.sendXml({ cmdId: BC_CMD_ID_FIND_REC_VIDEO_OPEN, channel, payloadXml: findOpenXml(currentStart, params.end) });
+              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo OPEN response received`);
             } catch (e) {
-              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo GET failed: ${e instanceof Error ? e.message : String(e)}`);
-              throw e;
-            }
-
-            const pageFiles = parseRecordingFilesFromXml(getResp);
-            alarmFiles.push(...pageFiles);
-            recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo page ${i + 1}: found ${pageFiles.length} files (total: ${alarmFiles.length})`);
-
-            const bFinishedText = getXmlText(getResp, "bFinished")?.trim();
-            const finished = bFinishedText === "1";
-            if (finished) {
-              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: finished=true, breaking`);
+              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo OPEN failed: ${e instanceof Error ? e.message : String(e)}`);
               break;
             }
 
-            // If not finished, advance start to the last returned event startTime if possible.
-            const lastWithStart = [...pageFiles].reverse().find((f) => f.startTime != null);
-            if (!lastWithStart?.startTime) {
-              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: no startTime in files, breaking`);
+            const fileHandle = getXmlText(openResp, "fileHandle")?.trim();
+            if (!fileHandle) {
+              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: no fileHandle in response, breaking`);
               break;
             }
-            currentStart = lastWithStart.startTime;
-          } finally {
-            // Best-effort close.
+
+            const getXml = findGetXml(fileHandle);
             try {
-              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: closing handle=${fileHandle}`);
-              await this.sendXml({ cmdId: BC_CMD_ID_FIND_REC_VIDEO_CLOSE, channel, payloadXml: getXml });
-              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: closed successfully`);
-            } catch (e) {
-              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo CLOSE failed (ignored): ${e instanceof Error ? e.message : String(e)}`);
-              // ignore
+              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: fetching with handle=${fileHandle}`);
+
+              let getResp: string;
+              try {
+                getResp = await this.sendXml({ cmdId: BC_CMD_ID_FIND_REC_VIDEO_GET, channel, payloadXml: getXml });
+                recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo GET response received`);
+              } catch (e) {
+                recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo GET failed: ${e instanceof Error ? e.message : String(e)}`);
+                throw e;
+              }
+
+              const pageFiles = parseRecordingFilesFromXml(getResp);
+              alarmFiles.push(...pageFiles);
+              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo page ${i + 1}: found ${pageFiles.length} files (total: ${alarmFiles.length})`);
+
+              const bFinishedText = getXmlText(getResp, "bFinished")?.trim();
+              const finished = bFinishedText === "1";
+              if (finished) {
+                recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: finished=true, breaking`);
+                break;
+              }
+
+              // If not finished, advance start to the last returned event startTime if possible.
+              const lastWithStart = [...pageFiles].reverse().find((f) => f.startTime != null);
+              if (!lastWithStart?.startTime) {
+                recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: no startTime in files, breaking`);
+                break;
+              }
+              currentStart = lastWithStart.startTime;
+            } finally {
+              // Best-effort close.
+              try {
+                recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: closing handle=${fileHandle}`);
+                await this.sendXml({ cmdId: BC_CMD_ID_FIND_REC_VIDEO_CLOSE, channel, payloadXml: getXml });
+                recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: closed successfully`);
+              } catch (e) {
+                recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo CLOSE failed (ignored): ${e instanceof Error ? e.message : String(e)}`);
+                // ignore
+              }
             }
           }
+        } catch (e) {
+          recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo loop failed: ${e instanceof Error ? e.message : String(e)}, stack: ${e instanceof Error ? e.stack : 'no stack'}`);
+          throw e;
         }
-      } catch (e) {
-        recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo loop failed: ${e instanceof Error ? e.message : String(e)}, stack: ${e instanceof Error ? e.stack : 'no stack'}`);
-        throw e;
-      }
 
-      const seenAlarm = new Set<string>();
-      const result = alarmFiles.filter((f) => {
-        if (seenAlarm.has(f.fileName)) return false;
-        seenAlarm.add(f.fileName);
-        return true;
-      });
-      recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo complete: returning ${result.length} unique files`);
-      return result;
+        const seenAlarm = new Set<string>();
+        const result = alarmFiles.filter((f) => {
+          if (seenAlarm.has(f.fileName)) return false;
+          seenAlarm.add(f.fileName);
+          return true;
+        });
+        recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo complete: returning ${result.length} unique files`);
+        return result;
       } catch (e) {
         recordingsTraceLog(dbg, logger, "listRecordings", `ERROR: ${e instanceof Error ? e.message : String(e)}, stack: ${e instanceof Error ? e.stack : 'no stack'}`);
         throw e;

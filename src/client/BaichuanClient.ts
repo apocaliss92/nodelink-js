@@ -16,6 +16,7 @@ import {
   BC_CLASS_LEGACY,
   BC_CLASS_FILE_DOWNLOAD,
   BC_CLASS_MODERN_24,
+  BC_CMD_ID_CHANNEL_INFO_ALL,
   BC_CMD_ID_FILE_INFO_LIST_CLOSE,
   BC_CMD_ID_FILE_INFO_LIST_DOWNLOAD,
   BC_CMD_ID_FILE_INFO_LIST_GET,
@@ -93,6 +94,7 @@ export class BaichuanClient extends EventEmitter<{
   error: [Error];
   debug: [string, unknown?];
   event: [ReolinkEvent]; // Parsed events (motion/AI)
+  channelInfo: [string]; // Channel info XML from cmd_id 145 push
 }> {
   /**
    * Process-wide streaming activity registry.
@@ -718,10 +720,10 @@ export class BaichuanClient extends EventEmitter<{
       if (sock === this.tcpSocket) {
         this.tcpSocket = undefined;
       }
-      
+
       // Remove all listeners to prevent memory leaks
       sock.removeAllListeners();
-      
+
       // Ensure socket is destroyed
       if (!sock.destroyed) {
         sock.destroy();
@@ -748,11 +750,11 @@ export class BaichuanClient extends EventEmitter<{
       if (this.lastRxInfo?.cmdId != null) tcpDisconnectParts.push(`lastRxCmdId=${this.lastRxInfo.cmdId}`);
       if (this.lastTxInfo?.cmdId != null) tcpDisconnectParts.push(`lastTxCmdId=${this.lastTxInfo.cmdId}`);
       this.logFixed("disconnected", tcpDisconnectParts.join(" "));
-      
+
       // Reset state flags
       this.loggedIn = false;
       this.subscribed = false;
-      
+
       this.emit("close");
       // Reject all pending promises asynchronously to allow catch handlers to be attached
       // This prevents unhandled rejections when the socket closes
@@ -815,7 +817,7 @@ export class BaichuanClient extends EventEmitter<{
       if (sock === this.udpSocket) {
         this.udpSocket = undefined;
       }
-      
+
       // Remove all listeners to prevent memory leaks
       if (sock.removeAllListeners) {
         sock.removeAllListeners();
@@ -959,7 +961,7 @@ export class BaichuanClient extends EventEmitter<{
 
     // Clear pending operations
     this.pending.clear();
-    
+
     // Reset state flags
     this.loggedIn = false;
     this.subscribed = false;
@@ -1091,6 +1093,32 @@ export class BaichuanClient extends EventEmitter<{
         this.emit("push", frame);
       }
       return;
+    }
+
+    // Handle cmd_id 145 (channel info push from NVR)
+    if (frame.header.cmdId === BC_CMD_ID_CHANNEL_INFO_ALL) {
+      try {
+        // Decrypt the body using the same method as sendXml
+        const xml = this.tryDecryptXml(frame.body, frame.header.channelId, this.enc);
+        if (xml && xml.startsWith("<?xml")) {
+          // Emit a special event with the parsed channel info
+          this.emit("channelInfo", xml);
+          // this.logFixed("channel_info_push", {
+          //   cmdId: frame.header.cmdId,
+          //   msgNum: frame.header.msgNum,
+          //   channelId: frame.header.channelId,
+          //   bodyLen: frame.body.length,
+          //   xmlLen: xml.length,
+          // });
+        } else {
+          this.logDebug("channel_info_push_decrypt_failed", {
+            bodyLen: frame.body.length,
+            xmlPreview: xml?.substring(0, 100),
+          });
+        }
+      } catch (e) {
+        this.logDebug("channel_info_push_error", e);
+      }
     }
 
     // No subscription: behave as before (generic push)

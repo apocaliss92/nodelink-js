@@ -109,3 +109,6 @@ export const BC_CMD_ID_SUPPORT = 199; // MSG_ID_SUPPORT
 // Ping command ID
 export const BC_CMD_ID_PING = 93; // MSG_ID_PING - Keep connection alive / check status
 
+// Channel Info command IDs
+export const BC_CMD_ID_CHANNEL_INFO_ALL = 145; // Get channel info for all channels in a single request
+
