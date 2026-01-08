@@ -612,6 +612,8 @@ export class ReolinkBaichuanApi {
     boardInfo?: string;
     pakSuffix?: string;
     name?: string;
+    uid?: string;
+    state?: string;
   }> = new Map();
 
   private lastSleepProbe:
@@ -707,6 +709,8 @@ export class ReolinkBaichuanApi {
       host: opts.host,
       username: opts.username,
       password: opts.password,
+      logger: this.logger,
+      debugConfig: this.client.getDebugConfig?.(),
     });
 
     // Dispatch parsed events in a minimal, stable shape.
@@ -867,6 +871,8 @@ export class ReolinkBaichuanApi {
         host: (typeof params.cgi === "object" ? params.cgi.host : undefined) ?? this.host,
         username: (typeof params.cgi === "object" ? params.cgi.username : undefined) ?? this.username,
         password: (typeof params.cgi === "object" ? params.cgi.password : undefined) ?? this.password,
+        logger: this.logger,
+        debugConfig: this.client.getDebugConfig?.(),
         ...(typeof params.cgi === "object" && params.cgi.port != null ? { port: params.cgi.port } : {}),
         ...(typeof params.cgi === "object" && params.cgi.useHttps != null ? { useHttps: params.cgi.useHttps } : {}),
         ...(typeof params.cgi === "object" && params.cgi.insecureTLS != null ? { insecureTLS: params.cgi.insecureTLS } : {}),
@@ -1800,6 +1806,8 @@ export class ReolinkBaichuanApi {
     boardInfo?: string;
     pakSuffix?: string;
     name?: string;
+    uid?: string;
+    state?: string;
   }> {
     return new Map(this.channelInfoFromPush);
   }

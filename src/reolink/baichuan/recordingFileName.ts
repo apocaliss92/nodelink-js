@@ -161,11 +161,12 @@ function parseDateTimeLocal(yyyymmdd: string, hhmmss: string): Date | undefined 
   const minute = Number.parseInt(hhmmss.slice(2, 4), 10);
   const second = Number.parseInt(hhmmss.slice(4, 6), 10);
   if (![year, month, day, hour, minute, second].every(Number.isFinite)) return undefined;
-  // Parse as UTC to avoid timezone shifts when serializing to JSON.
-  // This ensures dates from filenames match the exact values without timezone conversion.
-  // The camera stores timestamps in local time in the filename, but we parse as UTC to preserve
-  // the exact values when comparing with other UTC dates.
-  return new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  // IMPORTANT: Parse as LOCAL TIME because the camera stores timestamps in local time in the filename.
+  // When we create a Date object with new Date(year, month, day, hour, minute, second), JavaScript
+  // interprets these values as local time and stores the date internally as UTC timestamp.
+  // This means getTime() will return the correct UTC timestamp that represents that local time moment.
+  // This is correct because the filename values represent the actual local time shown on the camera.
+  return new Date(year, month - 1, day, hour, minute, second);
 }
 
 /**

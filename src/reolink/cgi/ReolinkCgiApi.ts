@@ -2,7 +2,7 @@ import { ReolinkHttpClient, type ReolinkHttpClientOptions } from "../http/Reolin
 import type { ReolinkCmdRequest, ReolinkCmdResponse } from "../http/types";
 import type { ReolinkDeviceInfo, ReolinkDeviceInfoTag } from "../types";
 import type { DebugConfig, Logger } from "../../debug/DebugConfig";
-import { recordingsTraceLog } from "../../debug/DebugConfig";
+import { debugLog, recordingsTraceLog } from "../../debug/DebugConfig";
 import { collectNvrDiagnostics, printNvrDiagnostics } from "../../debug/DiagnosticsTools";
 import type { EnrichedRecordingFile, RecordingFile, RecordingStreamType } from "../baichuan/types";
 import { parseRecordingFileName } from "../baichuan/recordingFileName";
@@ -1147,8 +1147,40 @@ export class ReolinkCgiApi {
     const bypassCache = params.bypassCache ?? false;
 
     // Convert Date to Reolink time format
-    const startTime = this.dateToReolinkTime(start);
-    const endTime = this.dateToReolinkTime(end);
+    let startTime = this.dateToReolinkTime(start);
+    let endTime = this.dateToReolinkTime(end);
+
+    // Sanitize end date: if it's midnight (00:00:00) of the next day, cap it to 23:59:59 of the same day as start
+    // This ensures we search until the end of the requested day, not the beginning of the next day
+    if (endTime.hour === 0 && endTime.min === 0 && endTime.sec === 0) {
+      // Check if end is on a different day than start
+      const startDateKey = `${startTime.year}-${startTime.mon}-${startTime.day}`;
+      const endDateKey = `${endTime.year}-${endTime.mon}-${endTime.day}`;
+
+      if (endDateKey !== startDateKey) {
+        // End is on the next day at midnight, so cap it to the end of start day (23:59:59)
+        endTime = {
+          year: startTime.year,
+          mon: startTime.mon,
+          day: startTime.day,
+          hour: 23,
+          min: 59,
+          sec: 59,
+        };
+      }
+    }
+
+    // Log date conversion for debugging (using both general debug and recordings trace)
+    // debugLog(this.debugConfig, this.logger, "listNvrRecordings", 
+    //   `Date conversion: start=${start.toISOString()} (local: ${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')} ${String(start.getHours()).padStart(2, '0')}:${String(start.getMinutes()).padStart(2, '0')}:${String(start.getSeconds()).padStart(2, '0')}) -> ReolinkTime=${JSON.stringify(startTime)}, ` +
+    //   `end=${end.toISOString()} (local: ${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-${String(end.getDate()).padStart(2, '0')} ${String(end.getHours()).padStart(2, '0')}:${String(end.getMinutes()).padStart(2, '0')}:${String(end.getSeconds()).padStart(2, '0')}) -> ReolinkTime=${JSON.stringify(endTime)}`
+    // );
+    recordingsTraceLog(
+      this.debugConfig,
+      this.logger,
+      "listNvrRecordings",
+      `Date conversion: start=${start.toISOString()} -> ReolinkTime=${JSON.stringify(startTime)}, end=${end.toISOString()} -> ReolinkTime=${JSON.stringify(endTime)}`
+    );
 
     // Check cache first (unless bypassing)
     if (!bypassCache) {
@@ -1321,23 +1353,74 @@ export class ReolinkCgiApi {
       // Fall through to normal search if no status found
     }
 
-    // Normal search
-    const param: any = {
-      Search: {
-        channel,
-        onlyStatus: 0, // Always get files, not just status
-        streamType,
-        StartTime: startTime,
-        EndTime: endTime,
-      },
-    };
+    // Normal search: if range spans multiple days, split into day-by-day queries
+    const allResults: Array<VodSearchResponse> = [];
+    const dayRanges = this.generateDayRanges(startTime, endTime);
 
-    if (iLogicChannel > 0) {
-      param.Search.iLogicChannel = iLogicChannel;
+    if (dayRanges.length === 0) {
+      // No valid range, return empty
+      return [];
     }
 
-    const response = await this.call<VodSearchResult>("Search", param, 0);
-    const result = response as Array<VodSearchResponse>;
+    if (dayRanges.length === 1) {
+      // Single day range, use original start/end times
+      const range = dayRanges[0];
+      if (!range) {
+        return [];
+      }
+      const param: any = {
+        Search: {
+          channel,
+          onlyStatus: 0,
+          streamType,
+          StartTime: range.start,
+          EndTime: range.end,
+        },
+      };
+
+      if (iLogicChannel > 0) {
+        param.Search.iLogicChannel = iLogicChannel;
+      }
+
+      const response = await this.call<VodSearchResult>("Search", param, 0);
+      allResults.push(...(response as Array<VodSearchResponse>));
+    } else {
+      // Multiple days: query each day separately
+      recordingsTraceLog(
+        this.debugConfig,
+        this.logger,
+        "listNvrRecordings",
+        `Range spans ${dayRanges.length} days, splitting into separate day queries`
+      );
+
+      for (const range of dayRanges) {
+        const param: any = {
+          Search: {
+            channel,
+            onlyStatus: 0,
+            streamType,
+            StartTime: range.start,
+            EndTime: range.end,
+          },
+        };
+
+        if (iLogicChannel > 0) {
+          param.Search.iLogicChannel = iLogicChannel;
+        }
+
+        recordingsTraceLog(
+          this.debugConfig,
+          this.logger,
+          "listNvrRecordings",
+          `Querying day: ${range.start.year}-${range.start.mon}-${range.start.day} (${range.start.hour}:${range.start.min}:${range.start.sec} to ${range.end.hour}:${range.end.min}:${range.end.sec})`
+        );
+
+        const response = await this.call<VodSearchResult>("Search", param, 0);
+        allResults.push(...(response as Array<VodSearchResponse>));
+      }
+    }
+
+    const result = allResults;
 
     // Log raw API response for debugging
     if (result && result.length > 0) {
@@ -1530,7 +1613,7 @@ export class ReolinkCgiApi {
     try {
       // Use callMany to send the request exactly as reolink_aio does
       const response = await this.callMany<{ fileList: Array<{ fileName: string; fileSize: number }> }>(body);
-      
+
       // Log the response for debugging
       recordingsTraceLog(
         this.debugConfig,
@@ -1538,7 +1621,7 @@ export class ReolinkCgiApi {
         "prepareNvrVodDownload",
         `Response: ${JSON.stringify(response)}`
       );
-      
+
       const first = response[0];
       if (!first || first.code !== 0 || !first.value?.fileList) {
         throw new Error(`NvrDownload failed: ${JSON.stringify(response)}`);
@@ -1606,7 +1689,7 @@ export class ReolinkCgiApi {
           // Convert Date to Reolink time format
           const startTimeReolink = this.dateToReolinkTime(options.startTimeObj);
           const endTimeReolink = this.dateToReolinkTime(options.endTimeObj);
-          
+
           filename = await this.prepareNvrVodDownload(
             channel,
             startTimeReolink,
@@ -1677,7 +1760,7 @@ export class ReolinkCgiApi {
     } else {
       // Playback, Download, or NVR_DOWNLOAD
       const cmd = requestType === "NVR_DOWNLOAD" ? "Download" : requestType;
-      
+
       // Extract time_start from filename (like reolink_aio does)
       // Pattern: RecXXX_YYYYMMDD_HHMMSS_... or RecXXX_DST_YYYYMMDD_HHMMSS_...
       let timeStart = "";
@@ -1691,10 +1774,10 @@ export class ReolinkCgiApi {
         timeStart = startTime;
         startTimeParam = `&start=${startTime}`;
       }
-      
+
       // Build output filename: ha_playback_{time_start}.mp4
       const outputFilename = `ha_playback_${timeStart || Date.now()}.mp4`;
-      
+
       // Construct URL: {scheme}://{host}:{port}/cgi-bin/api.cgi?cmd={cmd}&source={filename}&output={output}&start={time_start}&token={token}
       // Note: filename spaces are replaced with %20, but '/' stays as-is
       // Note: start parameter is NOT URL-encoded (just the raw time string)
@@ -1774,23 +1857,142 @@ export class ReolinkCgiApi {
   }
 
   /**
+   * Generate day-by-day ranges from startTime to endTime.
+   * Each range covers exactly one day (00:00:00 to 23:59:59), except the first and last day
+   * which use the original start/end times.
+   * 
+   * @param startTime - Start time in Reolink format
+   * @param endTime - End time in Reolink format
+   * @returns Array of day ranges, each with {start, end} in Reolink time format
+   */
+  private generateDayRanges(
+    startTime: { year: number; mon: number; day: number; hour: number; min: number; sec: number },
+    endTime: { year: number; mon: number; day: number; hour: number; min: number; sec: number }
+  ): Array<{ start: { year: number; mon: number; day: number; hour: number; min: number; sec: number }; end: { year: number; mon: number; day: number; hour: number; min: number; sec: number } }> {
+    const ranges: Array<{ start: { year: number; mon: number; day: number; hour: number; min: number; sec: number }; end: { year: number; mon: number; day: number; hour: number; min: number; sec: number } }> = [];
+
+    // Convert to Date objects to calculate day differences
+    const startDate = new Date(startTime.year, startTime.mon - 1, startTime.day, startTime.hour, startTime.min, startTime.sec);
+    const endDate = new Date(endTime.year, endTime.mon - 1, endTime.day, endTime.hour, endTime.min, endTime.sec);
+
+    if (endDate < startDate) {
+      // Invalid range, return empty
+      return [];
+    }
+
+    // Check if same day
+    const startDayKey = `${startTime.year}-${startTime.mon}-${startTime.day}`;
+    const endDayKey = `${endTime.year}-${endTime.mon}-${endTime.day}`;
+
+    if (startDayKey === endDayKey) {
+      // Same day: single range with original times
+      return [{ start: startTime, end: endTime }];
+    }
+
+    // Multiple days: generate ranges for each day
+    let currentDate = new Date(startDate);
+
+    while (currentDate <= endDate) {
+      const currentYear = currentDate.getFullYear();
+      const currentMonth = currentDate.getMonth() + 1;
+      const currentDay = currentDate.getDate();
+      const currentDayKey = `${currentYear}-${currentMonth}-${currentDay}`;
+
+      if (currentDayKey === startDayKey) {
+        // First day: use original start time, end at 23:59:59
+        ranges.push({
+          start: startTime,
+          end: {
+            year: currentYear,
+            mon: currentMonth,
+            day: currentDay,
+            hour: 23,
+            min: 59,
+            sec: 59,
+          },
+        });
+      } else if (currentDayKey === endDayKey) {
+        // Last day: start at 00:00:00, use original end time
+        ranges.push({
+          start: {
+            year: currentYear,
+            mon: currentMonth,
+            day: currentDay,
+            hour: 0,
+            min: 0,
+            sec: 0,
+          },
+          end: endTime,
+        });
+      } else {
+        // Middle day: full day (00:00:00 to 23:59:59)
+        ranges.push({
+          start: {
+            year: currentYear,
+            mon: currentMonth,
+            day: currentDay,
+            hour: 0,
+            min: 0,
+            sec: 0,
+          },
+          end: {
+            year: currentYear,
+            mon: currentMonth,
+            day: currentDay,
+            hour: 23,
+            min: 59,
+            sec: 59,
+          },
+        });
+      }
+
+      // Move to next day
+      currentDate.setDate(currentDate.getDate() + 1);
+      currentDate.setHours(0, 0, 0, 0);
+    }
+
+    return ranges;
+  }
+
+  /**
    * Convert Reolink time object to Date.
    */
   private reolinkTimeToDate(time: { year: number; mon: number; day: number; hour: number; min: number; sec: number }): Date {
-    return new Date(Date.UTC(time.year, time.mon - 1, time.day, time.hour, time.min, time.sec));
+    return new Date(time.year, time.mon - 1, time.day, time.hour, time.min, time.sec);
   }
 
   /**
    * Convert Date to Reolink time object.
+   * IMPORTANT: Uses LOCAL TIME values because the Reolink API interprets time values as local time
+   * (matching the timezone of the camera/NVR). This ensures that when we pass time values to the API,
+   * they match the values stored in filenames (e.g., "20260106_072650" means 6 January 2026, 07:26:50 local time).
+   * 
+   * To ensure correct extraction of local time values, we create a new Date object from the local time
+   * components, similar to how it's done in test files: `new Date().setHours(0, 0, 0, 0)`.
+   * This normalizes the Date to represent the exact local time moment, avoiding any UTC conversion issues.
    */
   private dateToReolinkTime(date: Date): { year: number; mon: number; day: number; hour: number; min: number; sec: number } {
+    // Extract local time components first (these are what we want to pass to the API)
+    const year = date.getFullYear();
+    const month = date.getMonth();
+    const day = date.getDate();
+    const hour = date.getHours();
+    const minute = date.getMinutes();
+    const second = date.getSeconds();
+
+    // Create a new Date object from these local time values to normalize it
+    // This ensures we're working with a Date that represents the exact local time moment
+    const normalizedDate = new Date(year, month, day, hour, minute, second);
+
+    // Extract again from normalized date to be absolutely sure we have local time values
+    // (This should be the same, but ensures consistency)
     return {
-      year: date.getUTCFullYear(),
-      mon: date.getUTCMonth() + 1,
-      day: date.getUTCDate(),
-      hour: date.getUTCHours(),
-      min: date.getUTCMinutes(),
-      sec: date.getUTCSeconds(),
+      year: normalizedDate.getFullYear(),
+      mon: normalizedDate.getMonth() + 1,
+      day: normalizedDate.getDate(),
+      hour: normalizedDate.getHours(),
+      min: normalizedDate.getMinutes(),
+      sec: normalizedDate.getSeconds(),
     };
   }
 
