@@ -1861,7 +1861,7 @@ export class ReolinkCgiApi {
    * 
    * @param startTime - Start time in Reolink format
    * @param endTime - End time in Reolink format
-   * @returns Array of day ranges, each with {start, end} in Reolink time format
+   * @returns Array of day ranges, each with \{start, end\} in Reolink time format
    */
   private generateDayRanges(
     startTime: { year: number; mon: number; day: number; hour: number; min: number; sec: number },
