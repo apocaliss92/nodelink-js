@@ -14,7 +14,7 @@ export type AutoDetectInputs = {
   debugOptions?: BaichuanClientOptions["debugOptions"];
   /**
    * Optional override for BCUDP discovery method.
-   * If omitted, autodetect will try `local`, then `remote`, then `relay`, then `map`.
+   * If omitted, autodetect will try `local-direct`, then `local-broadcast`, then `remote`, then `relay`, then `map`.
    */
   udpDiscoveryMethod?: BaichuanClientOptions["udpDiscoveryMethod"];
 };
@@ -292,7 +292,9 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
 
         if (isMultifocal) {
           const detectionMethod = isMultifocalByModel ? "model match" : "channelNum fallback";
-          logger?.log?.(`[AutoDetect] UDP connection successful. Detected multi-focal device (${detectionMethod}: model=${normalizedModel ?? "unknown"}, channelNum=${channelNum}).`);
+          logger?.log?.(
+            `[AutoDetect] UDP (${udpDiscoveryMethod}) connection successful. Detected multi-focal device (${detectionMethod}: model=${normalizedModel ?? "unknown"}, channelNum=${channelNum}).`,
+          );
           return {
             type: "multifocal",
             transport: "udp",
@@ -305,7 +307,7 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
         }
 
         // Regular battery camera
-        logger?.log?.(`[AutoDetect] UDP connection successful. Detected battery camera.`);
+        logger?.log?.(`[AutoDetect] UDP (${udpDiscoveryMethod}) connection successful. Detected battery camera.`);
         return {
           type: "battery-cam",
           transport: "udp",
@@ -318,7 +320,7 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
       };
 
       const methodsToTry: Array<NonNullable<BaichuanClientOptions["udpDiscoveryMethod"]>> =
-        inputs.udpDiscoveryMethod ? [inputs.udpDiscoveryMethod] : ["local", "remote", "relay", "map"];
+        ["local-direct", "local-broadcast", "remote", "relay", "map"];
 
       const udpErrors: string[] = [];
       for (const m of methodsToTry) {

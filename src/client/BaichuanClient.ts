@@ -51,9 +51,10 @@ export type BaichuanClientOptions = {
   uid?: string;
   /**
    * UDP discovery method to use when connecting via `uid`.
-   * Default: `local` (LAN broadcast). Use `remote`/`map`/`relay` for P2P discovery via Reolink servers.
+    * Default: `local-broadcast` (LAN broadcast). Use `local-direct` to try unicast to the known host first.
+   * Use `remote`/`map`/`relay` for P2P discovery via Reolink servers.
    */
-  udpDiscoveryMethod?: "local" | "remote" | "map" | "relay";
+  udpDiscoveryMethod?: "local-broadcast" | "local-direct" | "remote" | "map" | "relay";
   /**
    * For NVR: logical channel index (0-based).
    * For standalone cameras: usually 0.
@@ -811,6 +812,8 @@ export class BaichuanClient extends EventEmitter<{
     const sock = new BcUdpStream({
       mode: "uid",
       uid: this.opts.uid,
+      // If the camera IP/hostname is known, allow local-direct to try unicast before broadcast.
+      ...(this.opts.host?.trim() ? { directHost: this.opts.host.trim() } : {}),
       ...(this.opts.udpDiscoveryMethod ? { discoveryMethod: this.opts.udpDiscoveryMethod } : {}),
     });
     this.udpSocket = sock;
@@ -904,7 +907,11 @@ export class BaichuanClient extends EventEmitter<{
     await sock.connect();
 
     const shortUid = this.opts.uid ? this.opts.uid.substring(0, 5) : "";
-    this.logFixed("connected", `transport=udp host=${this.opts.host} uid=${shortUid}`);
+    const udpDiscoveryMethod = this.opts.udpDiscoveryMethod as string | undefined ?? 'local-direct';
+    this.logFixed(
+      "connected",
+      `transport=udp host=${this.opts.host} uid=${shortUid} udpDiscoveryMethod=${udpDiscoveryMethod}`,
+    );
     this.startKeepAlive();
     this.kickIdleDisconnectTimer();
   }

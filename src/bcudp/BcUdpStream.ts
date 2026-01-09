@@ -47,29 +47,48 @@ class AckLatency {
 
 export type BcUdpStreamOptions =
   | {
-      /** Local discovery via UID (typical for battery cameras). */
-      mode: "uid";
-      uid: string;
+    /** Local discovery via UID (typical for battery cameras). */
+    mode: "uid";
+    uid: string;
 
-      /**
-       * Discovery method for UID-based connection.
-       * - `local`: UDP broadcast to LAN (no Reolink servers)
-       * - `remote`: use Reolink servers to learn addresses, then try direct device connection
-       * - `map`: device-initiated via public (dmap) address
-       * - `relay`: fully relayed via Reolink servers
-       */
-      discoveryMethod?: BcUdpDiscoveryMethod;
-    }
+    /**
+     * Optional direct discovery target.
+     *
+     * When provided, discovery will first try sending UID discovery packets directly to this host
+     * (unicast) before falling back to LAN broadcast.
+     *
+     * Useful when the camera IP is already known and you want to avoid relying solely on broadcast.
+     */
+    directHost?: string;
+
+    /**
+     * Discovery method for UID-based connection.
+     * - `local-broadcast`: UDP broadcast to LAN (no Reolink servers)
+     * - `local`: legacy alias for `local-broadcast`
+     * - `local-broadcast`: legacy alias for `local-broadcast`
+     * - `remote`: use Reolink servers to learn addresses, then try direct device connection
+     * - `map`: device-initiated via public (dmap) address
+     * - `relay`: fully relayed via Reolink servers
+     */
+    discoveryMethod?: BcUdpDiscoveryMethod;
+  }
   | {
-      /** Direct connection with already-known parameters. */
-      mode: "direct";
-      host: string;
-      port: number;
-      clientId: number;
-      cameraId: number;
-    };
+    /** Direct connection with already-known parameters. */
+    mode: "direct";
+    host: string;
+    port: number;
+    clientId: number;
+    cameraId: number;
+  };
 
-export type BcUdpDiscoveryMethod = "local" | "remote" | "map" | "relay";
+export type BcUdpDiscoveryMethod =
+  | "local-broadcast"
+  | "local-direct"
+  | "remote"
+  | "map"
+  | "relay"
+
+type BcUdpP2pDiscoveryMethod = Exclude<BcUdpDiscoveryMethod, "local-broadcast" | "local-direct">;
 
 type SockAddr = { host: string; port: number };
 
@@ -168,7 +187,7 @@ export class BcUdpStream extends EventEmitter<{
     if (this.sock) return;
     const sock = dgram.createSocket("udp4");
     this.sock = sock;
-    
+
     try {
       sock.setRecvBufferSize(4 * 1024 * 1024);
       sock.setSendBufferSize(4 * 1024 * 1024);
@@ -203,10 +222,15 @@ export class BcUdpStream extends EventEmitter<{
   private async discoveryUid(sock: dgram.Socket): Promise<void> {
     if (this.opts.mode !== "uid") throw new Error("Internal: discoveryUid called for non-uid mode");
 
-    const method: BcUdpDiscoveryMethod = this.opts.discoveryMethod ?? "local";
-    if (method === "local") {
-      await this.discoveryUidLocal(sock);
+    const method: BcUdpDiscoveryMethod = this.opts.discoveryMethod ?? "local-direct";
+
+    if (method === "local-broadcast" || method === "local-direct") {
+      await this.discoveryUidLocal(sock, { localMode: method });
       return;
+    }
+
+    if (method !== "remote" && method !== "map" && method !== "relay") {
+      throw new Error(`Unsupported BCUDP discovery method: ${String(method)}`);
     }
 
     await this.discoveryUidP2p(sock, method);
@@ -226,7 +250,7 @@ export class BcUdpStream extends EventEmitter<{
     throw new Error("No non-loopback IPv4 address found (required for P2P discovery)");
   }
 
-  private async discoveryUidP2p(sock: dgram.Socket, method: Exclude<BcUdpDiscoveryMethod, "local">): Promise<void> {
+  private async discoveryUidP2p(sock: dgram.Socket, method: BcUdpP2pDiscoveryMethod): Promise<void> {
     if (this.opts.mode !== "uid") throw new Error("Internal: discoveryUidP2p called for non-uid mode");
 
     const addr = sock.address();
@@ -434,7 +458,7 @@ export class BcUdpStream extends EventEmitter<{
   private async p2pConnect(
     sock: dgram.Socket,
     reg: { reg: SockAddr; dev?: SockAddr; dmap?: SockAddr; relay?: SockAddr; sid: number; uid: string; cid: number },
-    method: Exclude<BcUdpDiscoveryMethod, "local">,
+    method: BcUdpP2pDiscoveryMethod,
   ): Promise<{ did: number; rhost: string; rport: number; tid: number }> {
     if (method === "remote") {
       const tasks: Array<Promise<{ did: number; rhost: string; rport: number; tid: number }>> = [];
@@ -599,16 +623,21 @@ export class BcUdpStream extends EventEmitter<{
     }
   }
 
-  private async discoveryUidLocal(sock: dgram.Socket): Promise<void> {
+  private async discoveryUidLocal(sock: dgram.Socket, opts?: { localMode?: "local-broadcast" | "local-direct" }): Promise<void> {
     if (this.opts.mode !== "uid") throw new Error("Internal: discoveryUidLocal called for non-uid mode");
     // Internal defaults (do not expose knobs):
     // - Battery cameras may be sleeping -> keep a longer timeout.
     // - Send to both discovery ports 2015/2018.
     // - Use broadcast to discover by UID.
     const ports = [BCUDP_DISCOVERY_PORT_LOCAL_ANY, BCUDP_DISCOVERY_PORT_LOCAL_UID];
-    const host = "255.255.255.255";
+    const broadcastHost = "255.255.255.255";
+    const directHost = (this.opts.directHost ?? "").trim();
+    const localMode = opts?.localMode ?? "local-broadcast";
+    const directFirstWindowMs = localMode === "local-direct" && directHost ? 3_000 : 0;
     const discoveryTimeout = 30_000;
     const retryInterval = 500;
+
+    const startMs = Date.now();
 
     sock.setBroadcast(true);
 
@@ -765,13 +794,31 @@ export class BcUdpStream extends EventEmitter<{
       const sendDiscovery = () => {
         const tid = (Math.floor(Math.random() * 255) | 0) >>> 0;
         const packet = encodeDiscoveryPacket(tid, xml);
-        for (const port of ports) {
-          try {
-            sock.send(packet, port, host);
-            retryCount++;
-            this.emit("debug", "discovery_send", { retryCount, host, port });
-          } catch (e) {
-            this.emit("error", e instanceof Error ? e : new Error(String(e)));
+
+        const elapsedMs = Date.now() - startMs;
+        const hosts = (() => {
+          if (localMode === "local-direct") {
+            if (directHost) {
+              // Prefer direct unicast first, then add broadcast as fallback.
+              if (directFirstWindowMs > 0 && elapsedMs < directFirstWindowMs) return [directHost];
+              return [directHost, broadcastHost];
+            }
+            // No direct host -> degrade gracefully to broadcast.
+            return [broadcastHost];
+          }
+          // local-broadcast: broadcast only.
+          return [broadcastHost];
+        })();
+
+        for (const host of Array.from(new Set(hosts))) {
+          for (const port of ports) {
+            try {
+              sock.send(packet, port, host);
+              retryCount++;
+              this.emit("debug", "discovery_send", { retryCount, host, port });
+            } catch (e) {
+              this.emit("error", e instanceof Error ? e : new Error(String(e)));
+            }
           }
         }
       };
@@ -844,7 +891,7 @@ export class BcUdpStream extends EventEmitter<{
     xml = buildC2dHb({ cid: this.clientId, did: this.cameraId });
 
     const pkt = encodeDiscoveryPacket(tid, xml);
-    
+
     this.emit("debug", "udp_hb_send", { tid, xml, host: this.remote.host, port: this.remote.port });
 
     // Send to current remote (data port)

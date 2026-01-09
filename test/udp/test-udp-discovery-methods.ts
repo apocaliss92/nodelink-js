@@ -3,13 +3,13 @@
  * UDP discovery methods integration test.
  *
  * Purpose:
- * - Iterates through all supported UDP discovery methods (local/remote/map/relay)
+ * - Iterates through all supported UDP discovery methods (local-direct/local-broadcast/remote/map/relay)
  * - Uses env config (see test/env.ts) and validates that login+ping works.
  * - Intended for fast local iteration while debugging discovery.
  *
  * Env vars:
  * - UDP_HOST / UDP_USERNAME / UDP_PASSWORD / UDP_UID: required connection settings
- * - UDP_DISCOVERY_METHOD: run only one method (local|remote|map|relay)
+ * - UDP_DISCOVERY_METHOD: run only one method (local-broadcast|local-direct|remote|map|relay)
  * - UDP_DISCOVERY_REQUIRE_ALL: if "1"/"true", fail if any method fails
  */
 
@@ -17,7 +17,7 @@
 import { ReolinkBaichuanApi } from "../../index.js";
 import { config } from "../env.js";
 
-type Method = "local" | "remote" | "map" | "relay";
+type Method = "local-broadcast" | "local-direct" | "remote" | "map" | "relay";
 
 function envStr(key: string): string | undefined {
   const v = process.env[key];
@@ -38,7 +38,8 @@ function envBool(key: string, defaultValue: boolean): boolean {
 function asMethod(v: string | undefined): Method | undefined {
   if (!v) return undefined;
   const s = v.trim().toLowerCase();
-  if (s === "local" || s === "remote" || s === "map" || s === "relay") return s;
+  // Back-compat aliases: local/local-broadcast -> local-broadcast.
+  if (s === "local-broadcast" || s === "local-direct" || s === "remote" || s === "map" || s === "relay") return s as Method;
   return undefined;
 }
 
@@ -116,7 +117,7 @@ async function main(): Promise<void> {
   const only = asMethod(envStr("UDP_DISCOVERY_METHOD"));
   const requireAll = envBool("UDP_DISCOVERY_REQUIRE_ALL", false);
 
-  const methods: Method[] = only ? [only] : ["local", "remote", "map", "relay"];
+  const methods: Method[] = only ? [only] : ["local-direct", "local-broadcast", "remote", "map", "relay"];
 
   console.log("Configuration:");
   console.log(`  Host (env UDP_HOST): ${config.udp.host || ""}`);
@@ -126,12 +127,9 @@ async function main(): Promise<void> {
   console.log(`  Methods: ${methods.join(", ")}`);
   console.log(`  Require all: ${requireAll ? "yes" : "no"}\n`);
 
-  const results: Record<Method, { ok: boolean; error?: string }> = {
-    local: { ok: false },
-    remote: { ok: false },
-    map: { ok: false },
-    relay: { ok: false },
-  };
+  const results: Record<Method, { ok: boolean; error?: string }> = Object.fromEntries(
+    methods.map((m) => [m, { ok: false }]),
+  ) as Record<Method, { ok: boolean; error?: string }>;
 
   for (const m of methods) {
     console.log(`\n[TEST] udpDiscoveryMethod=${m}`);
@@ -146,7 +144,7 @@ async function main(): Promise<void> {
     const r = results[m];
     const status = r.ok ? "OK" : "FAILED";
     const details = r.ok ? "" : ` - ${r.error}`;
-    console.log(`  ${m.padEnd(5)}: ${status}${details}`);
+    console.log(`  ${m.padEnd(14)}: ${status}${details}`);
   }
 
   const okCount = methods.filter((m) => results[m].ok).length;
