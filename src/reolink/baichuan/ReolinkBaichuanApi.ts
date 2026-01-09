@@ -69,6 +69,7 @@ import type {
   ReolinkEvent,
   ReolinkSimpleEvent,
   ReolinkSimpleEventType,
+  ReolinkBaichuanDeviceSummary,
   SleepStatus,
   StreamMetadata,
   StreamProfile,
@@ -81,9 +82,22 @@ import type {
 import { parseRecordingFileName } from "./recordingFileName";
 
 import sharp from "sharp";
-import { ReolinkCgiApi, VodFile, type GetVodUrlParams, type ListNvrRecordingsParams } from "../cgi/ReolinkCgiApi";
+import {
+  ReolinkCgiApi,
+  VodFile,
+  type CgiAiStateValue,
+  type CgiChannelStatusEntry,
+  type CgiDetectionState,
+  type CgiGetChannelstatusValue,
+  type CgiChnTypeInfoValue,
+  type DeviceInfoResponse,
+  type JsonValue,
+  type ReolinkCmdResponseExt,
+  type GetVodUrlParams,
+  type ListNvrRecordingsParams,
+} from "../cgi/ReolinkCgiApi";
 import { ReolinkHttpClient, type ReolinkHttpClientOptions } from "../http/ReolinkHttpClient";
-import type { ReolinkCmdResponse } from "../http/types";
+import type { ReolinkCmdRequest, ReolinkCmdResponse } from "../http/types";
 import type { ReolinkDeviceInfo, ReolinkDeviceInfoTag } from "../types";
 import { computeDeviceCapabilities, flattenAbilitiesForChannel, parseSupportXml } from "./capabilities";
 
@@ -147,52 +161,6 @@ function extractStatusArrayFromGetChannelstatus(rsp: ReolinkCmdResponse[]): any[
   }
 
   return Array.isArray(status) ? status : [];
-}
-
-function extractChannelSummariesFromChannelStatus(rsp: ReolinkCmdResponse[]): Array<{
-  channel: number;
-  online?: boolean;
-  sleep?: boolean;
-  name?: string;
-  uid?: string;
-  typeInfo?: string;
-}> {
-  const status = extractStatusArrayFromGetChannelstatus(rsp);
-  if (!status.length) return [];
-
-  const out: Array<{
-    channel: number;
-    online?: boolean;
-    sleep?: boolean;
-    name?: string;
-    uid?: string;
-    typeInfo?: string;
-  }> = [];
-
-  for (const ch of status) {
-    if (typeof ch !== "object" || ch === null) continue;
-
-    const channel = ch?.channel ?? ch?.id ?? ch?.channelId ?? ch?.Channel ?? ch?.ID ?? ch?.ChannelId;
-    if (typeof channel !== "number" || !Number.isFinite(channel)) continue;
-
-    const name = typeof ch?.name === "string" ? ch.name : undefined;
-    const uid = typeof ch?.uid === "string" ? ch.uid : undefined;
-    const typeInfo = typeof ch?.typeInfo === "string" ? ch.typeInfo : undefined;
-    const online = asBool01(ch?.online);
-    const sleep = asBool01(ch?.sleep);
-
-    out.push({
-      channel,
-      ...(online !== undefined ? { online } : {}),
-      ...(sleep !== undefined ? { sleep } : {}),
-      ...(name ? { name } : {}),
-      ...(uid ? { uid } : {}),
-      ...(typeInfo ? { typeInfo } : {}),
-    });
-  }
-
-  out.sort((a, b) => a.channel - b.channel);
-  return out;
 }
 
 type TalkAbility = import("./types").TalkAbility;
@@ -600,18 +568,23 @@ export class ReolinkBaichuanApi {
   private readonly activeVideoMsgNums = new Map<string, number>();
 
   /**
-   * Cached channel info from cmd_id 145 push (NVR sends this automatically on connection).
-   * Map of channel number to channel info.
+   * Cached per-channel data from cmd_id 145 push (NVR sends this automatically on connection).
+   *
+   * This unifies identity (name/uid/state) + best-effort flags (sleep/online).
    */
-  private channelInfoFromPush: Map<number, {
-    typeInfo?: string;
-    firmVer?: string;
-    firmwareVersion?: string;
-    boardInfo?: string;
-    pakSuffix?: string;
-    name?: string;
-    uid?: string;
-    state?: string;
+  private channelPushData: Map<number, {
+    name: string;
+    uid: string;
+    state: string;
+    /** Lowercased state for convenience (e.g. "connect", "none"). */
+    stateLower?: string;
+    /** Best-effort online flag derived from state. */
+    online?: boolean;
+    /** Best-effort sleeping flag derived from loginState/state. */
+    sleeping?: boolean;
+    /** Raw loginState when present (lowercased). */
+    loginState?: string;
+    updatedAtMs: number;
   }> = new Map();
 
   private lastSleepProbe:
@@ -1424,17 +1397,6 @@ export class ReolinkBaichuanApi {
    * - <IOTInfoList> with <IOTInfo> blocks (for IoT devices)
    */
   private parseAndStoreChannelInfo(xml: string): void {
-    const result = new Map<number, {
-      typeInfo?: string;
-      firmVer?: string;
-      firmwareVersion?: string;
-      boardInfo?: string;
-      pakSuffix?: string;
-      name?: string;
-      uid?: string;
-      state?: string;
-    }>();
-
     // Parse ChannelInfoList (main camera channels) and IOTInfoList (IoT devices)
     // The XML structure uses <ChannelInfoList><ChannelInfo>...</ChannelInfo></ChannelInfoList>
     // or <IOTInfoList><IOTInfo>...</IOTInfo></IOTInfoList>
@@ -1443,12 +1405,13 @@ export class ReolinkBaichuanApi {
 
     // Combine both types of blocks
     const allBlocks = [...channelBlocks, ...iotBlocks];
+    // this.logger.log(allBlocks);
 
     // this.logger.debug?.(`[ReolinkBaichuanApi] parseAndStoreChannelInfo: found ${channelBlocks.length} ChannelInfo blocks, ${iotBlocks.length} IOTInfo blocks`);
 
     for (const block of allBlocks) {
       // Extract channel number - cmd_id 145 uses <channelId> not <channel>
-      const channelText = getXmlText(block, "channelId");
+      const channelText = getXmlText(block, "channelId") ?? getXmlText(block, "channel") ?? getXmlText(block, "chnID");
       if (!channelText) {
         // this.logger.debug?.(`[ReolinkBaichuanApi] parseAndStoreChannelInfo: block missing channelId, block preview: ${block.substring(0, 200)}`);
         continue;
@@ -1462,55 +1425,119 @@ export class ReolinkBaichuanApi {
 
       // Extract fields from ChannelInfo structure
       // Note: cmd_id 145 doesn't include typeInfo/firmVer/boardInfo, but includes devName, uid, state
-      const name = getXmlText(block, "devName");
-      const uid = getXmlText(block, "uid");
-      const state = getXmlText(block, "state");
+      const name = (getXmlText(block, "devName") ?? "").trim();
+      const uid = (getXmlText(block, "uid") ?? "").trim();
+      const state = (getXmlText(block, "state") ?? "").trim();
 
-      // Try to get typeInfo/firmVer/boardInfo if present (might be in some variants)
-      const typeInfo = getXmlText(block, "typeInfo") ?? getXmlText(block, "type");
-      const firmVer = getXmlText(block, "firmVer") ?? getXmlText(block, "firmwareVersion");
-      const firmwareVersion = firmVer || '';
-      const boardInfo = getXmlText(block, "boardInfo");
-      const pakSuffix = getXmlText(block, "pakSuffix");
+      const nowMs = Date.now();
+      const existing = this.channelPushData.get(channel);
+      const stateLower = state.trim().toLowerCase();
 
-      // this.logger.debug?.(`[ReolinkBaichuanApi] parseAndStoreChannelInfo: channel ${channel} - name: ${name}, uid: ${uid}, state: ${state}, typeInfo: ${typeInfo}, firmVer: ${firmVer}, boardInfo: ${boardInfo}`);
+      // Some hubs send a follow-up ChannelInfoList with empty placeholders:
+      // <state>none</state> + empty devName/uid + streamSupport=none + index=0.
+      // Do NOT let that wipe previously known "connect" entries.
+      const loginState = (getXmlText(block, "loginState") ?? "").trim().toLowerCase();
+      const streamSupport = (getXmlText(block, "streamSupport") ?? "").trim().toLowerCase();
+      const indexText = (getXmlText(block, "index") ?? "").trim();
+      const isNonePlaceholder =
+        stateLower === "none" &&
+        !name &&
+        !uid &&
+        !loginState &&
+        (streamSupport === "none" || streamSupport === "") &&
+        (indexText === "0" || indexText === "");
 
-      // Only store if we have at least some useful info (name, uid, or state)
-      // Skip channels with state="none" as they're empty slots
-      if (state && state !== "none" && (name || uid || typeInfo || firmVer || boardInfo)) {
-        result.set(channel, {
-          ...(typeInfo ? { typeInfo } : {}),
-          ...(firmVer ? { firmVer, firmwareVersion } : {}),
-          ...(boardInfo ? { boardInfo } : {}),
-          ...(pakSuffix ? { pakSuffix } : {}),
-          ...(name ? { name } : {}),
-          ...(uid ? { uid } : {}),
-          ...(state ? { state } : {}),
-        });
-        // this.logger.debug?.(`[ReolinkBaichuanApi] parseAndStoreChannelInfo: stored channel ${channel}`);
-      } else {
-        // this.logger.debug?.(`[ReolinkBaichuanApi] parseAndStoreChannelInfo: skipping channel ${channel} - state: ${state}, hasName: ${!!name}, hasUid: ${!!uid}, hasTypeInfo: ${!!typeInfo}, hasFirmVer: ${!!firmVer}, hasBoardInfo: ${!!boardInfo}`);
+      if (isNonePlaceholder) {
+        const existingStateLower = (existing?.stateLower ?? existing?.state ?? "").toLowerCase();
+        if (existingStateLower === "connect") {
+          // Ignore placeholder downgrade.
+          continue;
+        }
+        // Also ignore storing pure placeholders when we have no prior data.
+        if (!existing) continue;
       }
-    }
 
-    // Update the cached channel info (merge with existing if any)
-    for (const [channel, info] of result.entries()) {
-      const existing = this.channelInfoFromPush.get(channel);
-      this.channelInfoFromPush.set(channel, {
-        ...existing,
-        ...info,
+      // Online/offline transition (best-effort).
+      // Some hubs report connect/none; treat connect => online, none => offline.
+      const inferredOnline: boolean | undefined =
+        stateLower === "connect" ? true : stateLower === "none" ? false : undefined;
+      if (inferredOnline !== undefined && existing?.online !== inferredOnline) {
+        const evt: ReolinkSimpleEvent = {
+          type: inferredOnline ? "online" : "offline",
+          channel,
+          timestamp: nowMs,
+        };
+        for (const cb of this.simpleEventListeners) {
+          try {
+            cb(evt);
+          } catch (e) {
+            (this.logger.warn ?? this.logger.error).call(this.logger, "[ReolinkBaichuanApi] onSimpleEvent handler error", e);
+          }
+        }
+      }
+
+      // Best-effort sleep state.
+      // reolink_aio treats cmd_id 145 ChannelInfoList as a sleep status source via <loginState>.
+      // Observed: loginState=="standby" => sleeping.
+      const prevSleep = existing?.sleeping;
+
+      // Infer sleep from loginState when available, otherwise from state.
+      // Observed on some NVR firmwares:
+      // - sleeping: state==connect + loginState==standby
+      // - awake:    state==connect and loginState omitted
+      // - offline/empty slot: state==none
+      const inferredSleep: boolean | undefined =
+        loginState
+          ? loginState === "standby"
+          : stateLower === "connect"
+            ? false
+            : stateLower === "none"
+              ? true
+              : undefined;
+
+      if (inferredSleep !== undefined) {
+        // Forward sleep transitions through the simpleEvent handler.
+        // Emit on change (or first observation) to keep noise low.
+        if (prevSleep !== inferredSleep) {
+          const evt: ReolinkSimpleEvent = {
+            type: inferredSleep ? "sleeping" : "awake",
+            channel,
+            timestamp: nowMs,
+          };
+          for (const cb of this.simpleEventListeners) {
+            try {
+              cb(evt);
+            } catch (e) {
+              (this.logger.warn ?? this.logger.error).call(this.logger, "[ReolinkBaichuanApi] onSimpleEvent handler error", e);
+            }
+          }
+        }
+      }
+
+      // this.logger.log('Setting:', channel, name, uid, state, inferredOnline, inferredSleep, loginState);
+      this.channelPushData.set(channel, {
+        name: name || existing?.name || "",
+        uid: uid || existing?.uid || "",
+        state: state || existing?.state || "",
+        ...(stateLower ? { stateLower } : existing?.stateLower ? { stateLower: existing.stateLower } : {}),
+        ...(inferredOnline !== undefined ? { online: inferredOnline } : existing?.online !== undefined ? { online: existing.online } : {}),
+        ...(inferredSleep !== undefined ? { sleeping: inferredSleep } : existing?.sleeping !== undefined ? { sleeping: existing.sleeping } : {}),
+        ...(loginState ? { loginState } : existing?.loginState ? { loginState: existing.loginState } : {}),
+        updatedAtMs: nowMs,
       });
     }
 
     // Only log if we actually stored something new
-    if (result.size > 0) {
-      // Convert Map to object for logging
+    if (allBlocks.length > 0) {
       const resultObj: Record<number, any> = {};
-      for (const [channel, info] of result.entries()) {
-        resultObj[channel] = info;
+      for (const [channel, info] of this.channelPushData.entries()) {
+        // keep the log payload small
+        if ((info.stateLower ?? info.state).toLowerCase() === "none") continue;
+        resultObj[channel] = { name: info.name, uid: info.uid, state: info.state };
       }
-
-      this.logger.log?.(`[ReolinkBaichuanApi] Channel info received by the NVR: ${JSON.stringify({ result: resultObj, storedChannels: Array.from(this.channelInfoFromPush.keys()) })}`);
+      this.logger.debug?.(
+        `[ReolinkBaichuanApi] Channel info received by the NVR: ${JSON.stringify({ result: resultObj, storedChannels: Object.keys(resultObj) })}`,
+      );
     }
   }
 
@@ -1703,145 +1730,135 @@ export class ReolinkBaichuanApi {
   }
 
   /**
-   * Get devices info using cached channel info from cmd_id 145 push.
-   * This is the preferred method as it uses data automatically sent by the NVR on connection.
-   * 
-   * Returns channel info for all channels that were received in the cmd_id 145 push.
+   * Read-only snapshot of the cached channel info received via cmd_id 145 push.
+   *
+   * This cache is populated automatically when the NVR sends channel info on connection.
    */
-  getDevicesInfo(): Map<number, {
-    typeInfo?: string;
-    firmVer?: string;
-    firmwareVersion?: string;
-    boardInfo?: string;
-    pakSuffix?: string;
-    name?: string;
-    uid?: string;
-    state?: string;
+  getChannelInfoFromPushCache(): Map<number, {
+    name: string;
+    uid: string;
+    state: string;
   }> {
-    return new Map(this.channelInfoFromPush);
+    const out = new Map<number, { name: string; uid: string; state: string }>();
+    for (const [channel, info] of this.channelPushData.entries()) {
+      const stateLower = (info.stateLower ?? info.state).toLowerCase();
+      if (stateLower === "none") continue;
+      out.set(channel, { name: info.name, uid: info.uid, state: info.state });
+    }
+    return out;
   }
 
   /**
-   * NVR/HomeHub helper: get a per-channel overview (model/name/uid/online/sleep).
+   * Read-only snapshot of the cached sleep state parsed from cmd_id 145 push.
    *
-   * The method supports two sources:
-   * - `source: "cgi"` (default): uses CGI only (GetChannelstatus + GetChnTypeInfo)
-   * - `source: "baichuan"`: @deprecated Use getDevicesInfo() instead, which uses cached data from cmd_id 145 push.
-   *   This method makes individual requests for each channel which is inefficient.
+   * Values are boolean when known.
    */
-  async getNvrChannelsInfo(options?: {
-    /** Which source to use. Default: "cgi". */
-    source?: "baichuan" | "cgi";
-    /** Per-request timeout for Baichuan channel probes (default: 3500ms). */
+  getChannelSleepFromPushCache(): Map<number, boolean> {
+    const out = new Map<number, boolean>();
+    for (const [channel, info] of this.channelPushData.entries()) {
+      if (typeof info.sleeping === "boolean") out.set(channel, info.sleeping);
+    }
+    return out;
+  }
+
+  /**
+   * Minimal per-channel inventory for NVR-connected devices.
+   *
+   * Intended to be fast: avoids AI/abilities and returns only the common identity + battery hints.
+   */
+  async getDevicesInfo(options?: {
+    channels?: number[];
     timeoutMs?: number;
-    /** Max channels to probe if enumeration is not available (default: 16). */
-    maxChannels?: number;
-  }): Promise<ReolinkNvrChannelInfo[]> {
-    const source = options?.source ?? "cgi";
-    const timeoutMs = options?.timeoutMs ?? 3500;
-    const maxChannels = options?.maxChannels ?? 16;
+  }): Promise<{
+    channels: number[];
+    devices: ReolinkBaichuanDeviceSummary[];
+  }> {
+    const timeoutMs = options?.timeoutMs;
 
-    if (source === "cgi") {
+    const pushInfo = this.getChannelInfoFromPushCache();
+    const channels = (options?.channels?.length ? options.channels : Array.from(pushInfo.keys()))
+      .map((c) => Number(c))
+      .filter((n) => Number.isFinite(n))
+      .sort((a, b) => a - b);
+
+    const support = await this.getSupportInfo().catch(() => undefined);
+
+    const truthyNumberLike = (v: unknown): boolean => {
+      if (typeof v === "number") return v > 0;
+      if (typeof v === "string") {
+        const n = Number(v);
+        if (Number.isFinite(n)) return n > 0;
+        return v.length > 0 && v !== "0";
+      }
+      return Boolean(v);
+    };
+
+    const isBatteryByChannel = new Map<number, boolean>();
+    const isDoorbellByChannel = new Map<number, boolean>();
+    if (support) {
+      for (const ch of channels) {
+        const caps = computeDeviceCapabilities({ channel: ch, support });
+        isBatteryByChannel.set(ch, Boolean(caps.hasBattery));
+        // Prefer explicit support flag when present.
+        const anySupportDoorbellLight = (support.items ?? []).some(
+          (i) => i.chnID === ch && truthyNumberLike((i as any).supportDoorbellLight),
+        );
+        isDoorbellByChannel.set(ch, Boolean(caps.isDoorbell) || anySupportDoorbellLight);
+      }
+    }
+
+    // Fetch minimal per-channel info in parallel.
+    const infoPromises = channels.map((channel) =>
+      this.getInfo(channel, {
+        ...(timeoutMs != null ? { timeoutMs } : {}),
+        tags: ["type", "name"],
+      }).catch(() => undefined),
+    );
+
+    // Battery info can be slow/time out for sleeping cams; keep it best-effort with a short timeout.
+    const batteryTimeoutMs = Math.min(1500, Math.max(300, Math.floor((timeoutMs ?? 1500) / 10)));
+    const batteryPromises = channels.map(async (channel) => {
+      if (!isBatteryByChannel.get(channel)) return undefined;
       try {
-        await this.cgiApi.login();
-
-        // Single HTTP request: batch GetChannelstatus + GetChnTypeInfo(0..maxChannels-1)
-        // We intentionally rely on response order to map each GetChnTypeInfo response to its channel.
-        const n = Number.isFinite(maxChannels) && maxChannels > 0 ? maxChannels : 16;
-        const batch = [
-          { cmd: "GetChannelstatus", action: 0 },
-          ...Array.from({ length: n }, (_, i) => ({ cmd: "GetChnTypeInfo", action: 0, param: { channel: i } })),
-        ];
-        const rsp = await this.cgiApi.callMany<any>(batch);
-
-        const statusRsp = rsp.length ? [rsp[0]!] : [];
-        const summaries = extractChannelSummariesFromChannelStatus(statusRsp);
-        const summaryByChannel = new Map<number, (typeof summaries)[number]>();
-        for (const s of summaries) summaryByChannel.set(s.channel, s);
-
-        const channelsFromCgi = summaries.map((s) => s.channel);
-        const channels = channelsFromCgi.length
-          ? [...new Set(channelsFromCgi)].sort((a, b) => a - b)
-          : Array.from({ length: n }, (_, i) => i);
-
-        const out: ReolinkNvrChannelInfo[] = [];
-        for (const channel of channels) {
-          const s = summaryByChannel.get(channel);
-
-          let model: string | undefined;
-          let firmwareVersion: string | undefined;
-          let boardInfo: string | undefined;
-
-          // In the batch, index 1..n correspond to channel 0..n-1
-          if (channel >= 0 && channel < n) {
-            const typeRsp = rsp[1 + channel];
-            const value = (typeRsp)?.value;
-            if (value && typeof value === "object") {
-              if (typeof (value).typeInfo === "string" && (value).typeInfo.trim()) model = (value).typeInfo.trim();
-              if (typeof (value).firmVer === "string" && (value).firmVer.trim()) firmwareVersion = (value).firmVer.trim();
-              if (typeof (value).boardInfo === "string" && (value).boardInfo.trim()) boardInfo = (value).boardInfo.trim();
-            }
-          }
-
-          const name = s?.name?.trim();
-          const finalModel = (model ?? s?.typeInfo)?.trim();
-          const uid = s?.uid?.trim();
-
-          out.push({
-            channel,
-            ...(finalModel ? { model: finalModel } : {}),
-            ...(name ? { name } : {}),
-            ...(uid ? { uid } : {}),
-            ...(s?.online !== undefined ? { online: s.online } : {}),
-            ...(s?.sleep !== undefined ? { sleep: s.sleep } : {}),
-            ...(firmwareVersion ? { firmwareVersion } : {}),
-            ...(boardInfo ? { boardInfo } : {}),
-            source: "cgi",
-          });
-        }
-
-        return out;
-      } finally {
-        // Intentionally do not logout here.
-        // Keeping the CGI token alive reduces session churn and avoids hitting max-session limits.
+        const xml = await this.sendXml({ cmdId: BC_CMD_ID_GET_BATTERY_INFO, channel, timeoutMs: batteryTimeoutMs });
+        const parsed = this.parseBatteryInfoXml(xml, channel);
+        return typeof parsed.batteryPercent === "number" ? parsed.batteryPercent : undefined;
+      } catch {
+        return undefined;
       }
-    }
+    });
 
-    // source === "baichuan"
-    // @deprecated: Use getDevicesInfo() instead which uses cached data from cmd_id 145 push.
-    // This method is kept for backward compatibility but should not be used.
-    this.logger.warn?.("[ReolinkBaichuanApi] getNvrChannelsInfo with source='baichuan' is deprecated. Use getDevicesInfo() instead.");
+    const [infoResults, batteryResults] = await Promise.all([
+      Promise.all(infoPromises),
+      Promise.all(batteryPromises),
+    ]);
 
-    // Use cached data from cmd_id 145 push if available
-    const cachedInfo = this.getDevicesInfo();
-    if (cachedInfo.size > 0) {
-      const baichuanRows: ReolinkNvrChannelInfo[] = [];
-      for (const [channel, channelInfo] of cachedInfo.entries()) {
-        const model = (channelInfo.typeInfo ?? "").trim();
-        const name = (channelInfo.name ?? "").trim();
-        const firmwareVersion = (channelInfo.firmwareVersion ?? channelInfo.firmVer ?? "").trim();
-        const boardInfo = (channelInfo.boardInfo ?? "").trim();
+    const devices = channels.map((channel, idx) => {
+      const cached = pushInfo.get(channel);
+      const info = infoResults[idx] as any;
 
-        const hasAny = !!(model || name || firmwareVersion || boardInfo);
-        if (!hasAny) continue;
+      const name = (
+        (typeof cached?.name === "string" && cached.name.trim() ? cached.name.trim() : undefined) ??
+        (typeof info?.name === "string" && info.name.trim() ? info.name.trim() : undefined)
+      );
+      const uid = typeof cached?.uid === "string" && cached.uid.trim() ? cached.uid.trim() : undefined;
+      const model = typeof info?.type === "string" && info.type.trim() ? info.type.trim() : undefined;
+      const isBattery = isBatteryByChannel.get(channel);
+      const isDoorbell = isDoorbellByChannel.get(channel);
+      const battery = batteryResults[idx];
 
-        baichuanRows.push({
-          channel,
-          ...(model ? { model } : {}),
-          ...(name ? { name } : {}),
-          ...(firmwareVersion ? { firmwareVersion } : {}),
-          ...(boardInfo ? { boardInfo } : {}),
-          source: "baichuan",
-        });
-      }
+      return {
+        channel,
+        ...(name ? { name } : {}),
+        ...(uid ? { uid } : {}),
+        ...(model ? { model } : {}),
+        ...(typeof isBattery === "boolean" ? { isBattery } : {}),
+        ...(typeof isDoorbell === "boolean" ? { isDoorbell } : {}),
+        ...(typeof battery === "number" ? { battery } : {}),
+      };
+    });
 
-      if (baichuanRows.length > 0) {
-        return baichuanRows.sort((a, b) => a.channel - b.channel);
-      }
-    }
-
-    // Fallback: return empty array (should not happen if cmd_id 145 push was received)
-    return [];
+    return { channels, devices };
   }
 
   /** GetEnc via Baichuan: cmd_id 56 (returns raw XML). */
@@ -3936,8 +3953,6 @@ ${xmlDateTimePayload("endTime", end)}
    * - some firmwares instead accept a single push subscription (header channelId=251).
    */
   async subscribeToAllEvents(options?: {
-    /** Prefer CGI enumeration (default true). */
-    preferCgi?: boolean;
     /** Max channels to probe when enumerating (default 16). */
     maxChannels?: number;
     /** Timeout for each subscribe attempt (default 10000ms). */
@@ -3945,43 +3960,24 @@ ${xmlDateTimePayload("endTime", end)}
   }): Promise<void> {
     await this.client.login();
 
-    const preferCgi = options?.preferCgi ?? true;
     const maxChannels = options?.maxChannels ?? 16;
     const timeoutMs = options?.timeoutMs ?? 10_000;
 
-    let channels: number[] = [];
-    try {
-      const info = await this.getNvrChannelsInfo({
-        source: preferCgi ? "cgi" : "baichuan",
-        maxChannels,
-      });
-
-      // Filter out empty channels when we can. (Keep online/sleeping channels.)
-      const filtered = info
-        .filter((c) => Boolean((c.uid ?? "").trim()) || Boolean((c.name ?? "").trim()) || c.online === true || c.sleep === true)
-        .map((c) => c.channel)
-        .filter((c) => Number.isInteger(c) && c >= 0);
-
-      channels = (filtered.length ? filtered : info.map((c) => c.channel))
-        .filter((c) => Number.isInteger(c) && c >= 0)
-        .slice(0, maxChannels);
-    } catch {
-      // ignore: fallback below
-    }
-
-    if (!channels.length) {
-      const configured = this.client.getConfiguredChannel?.() ?? 0;
-      channels = [configured];
-    }
-
-    channels = [...new Set(channels)].sort((a, b) => a - b);
+    // Prefer channels discovered via cmd_id 145 push.
+    // Filter out empty slots (state==none) and cap to maxChannels when present.
+    const channels = Array.from(this.channelPushData.entries())
+      .filter(([, v]) => (v.stateLower ?? v.state).toLowerCase() !== "none")
+      .map(([ch]) => ch)
+      .filter((ch) => Number.isFinite(ch))
+      .sort((a, b) => a - b)
+      .slice(0, maxChannels);
 
     let okCount = 0;
     let lastCode: number | undefined;
     for (const channel of channels) {
       const frame = await this.client.sendFrame({
         cmdId: 31,
-        channelIdOverride: channel,
+        channelIdOverride: Number(channel),
         messageClass: BC_CLASS_MODERN_24,
         timeoutMs,
       });
@@ -6776,6 +6772,33 @@ ${xmlDateTimePayload("endTime", end)}
       api: this,
       logger,
     });
+  }
+
+  // ====================================================================
+  // CGI Passthrough Methods
+  // These methods delegate to the internal CGI API (useful for NVR/Hub)
+  // ====================================================================
+
+  /**
+   * Passthrough to ReolinkCgiApi.getAllChannelsEvents.
+   * Fetches events/motion/AI state for all channels via CGI and merges results per channel.
+   */
+  async getAllChannelsEvents(
+    options?: Parameters<ReolinkCgiApi["getAllChannelsEvents"]>[0],
+  ): ReturnType<ReolinkCgiApi["getAllChannelsEvents"]> {
+    await this.cgiApi.login();
+    return await this.cgiApi.getAllChannelsEvents(options);
+  }
+
+  /**
+   * Passthrough to ReolinkCgiApi.getAllChannelsBatteryInfo.
+   * Fetches battery info for all channels via CGI (merged with channel status sleep flag).
+   */
+  async getAllChannelsBatteryInfo(
+    options?: Parameters<ReolinkCgiApi["getAllChannelsBatteryInfo"]>[0],
+  ): ReturnType<ReolinkCgiApi["getAllChannelsBatteryInfo"]> {
+    await this.cgiApi.login();
+    return await this.cgiApi.getAllChannelsBatteryInfo(options);
   }
 
   // ====================================================================

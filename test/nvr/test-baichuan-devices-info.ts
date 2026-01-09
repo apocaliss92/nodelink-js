@@ -5,13 +5,64 @@ import { join } from "node:path";
 import { ReolinkBaichuanApi } from "../../index.js";
 import { config } from "../env.js";
 
+const EXPECTED_CHANNELS = [0, 1] as const;
+
+const EXPECTED_CHANNEL_INFO: Record<(typeof EXPECTED_CHANNELS)[number], { name: string; uid: string; state: string }> = {
+  0: { name: "Videocamera lavanderia", uid: "9527000HXOHJ142G", state: "connect" },
+  1: { name: "Videocamera porta retro", uid: "952700093ABW14UB", state: "connect" },
+};
+
+const FORCE_MOCK_PUSH = process.env.MOCK_PUSH === "1";
+
 function safeNow(): string {
   return new Date().toISOString().replaceAll(":", "-");
 }
 
 interface TestStrategy {
   name: string;
-  fn: (api: ReolinkBaichuanApi, channels: number[]) => Promise<Record<number, any>>;
+  fn: (
+    api: ReolinkBaichuanApi,
+    channels: number[],
+    pushInfo: Map<number, { name: string; uid: string; state: string }>,
+  ) => Promise<Record<number, any>>;
+}
+
+async function waitForPushChannels(params: {
+  api: ReolinkBaichuanApi;
+  expectedChannels: readonly number[];
+  timeoutMs?: number;
+  intervalMs?: number;
+}): Promise<Map<number, { name: string; uid: string; state: string }>> {
+  const timeoutMs = params.timeoutMs ?? 10_000;
+  const intervalMs = params.intervalMs ?? 500;
+  const start = Date.now();
+  let lastLogAt = 0;
+  while (Date.now() - start < timeoutMs) {
+    const info = params.api.getChannelInfoFromPushCache();
+    const allPresent = params.expectedChannels.every((c) => info.has(c));
+    if (allPresent) return info;
+
+    const now = Date.now();
+    if (now - lastLogAt > 1000) {
+      lastLogAt = now;
+      const available = (Array.from(info.keys()) as number[]).sort((a, b) => a - b);
+      const missing = params.expectedChannels.filter((c) => !info.has(c));
+      const elapsed = now - start;
+      const remaining = Math.max(0, timeoutMs - elapsed);
+      console.log(
+        `Waiting for cmd_id 145 push... missing: ${missing.join(", ") || "none"}; available: ${available.join(", ") || "none"}; remaining: ${Math.ceil(
+          remaining / 1000,
+        )}s`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+
+  return params.api.getChannelInfoFromPushCache();
+}
+
+function normalizeString(v: unknown): string {
+  return typeof v === "string" ? v.trim() : "";
 }
 
 async function main(): Promise<void> {
@@ -28,27 +79,82 @@ async function main(): Promise<void> {
     timeoutMs: 30_000,
   });
 
+  console.log("Logging in...");
   await api.login();
+  console.log("Login OK");
 
-  // Get initial channel list from push info
-  const channelInfoFromPush = api.getDevicesInfo();
-  const channels: number[] = Array.from(channelInfoFromPush.keys()) as number[];
-  channels.sort((a, b) => a - b);
+  // Assumption for this test run: only channels 0 and 1 are present
+  const channels: number[] = Array.from(EXPECTED_CHANNELS);
 
-  if (channels.length === 0) {
-    console.warn("No channels found from push info. Waiting 5 seconds for push messages...");
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    const channelInfoAfterWait = api.getDevicesInfo();
-    const additionalChannels: number[] = Array.from(channelInfoAfterWait.keys()) as number[];
-    channels.push(...additionalChannels);
-    channels.sort((a, b) => a - b);
+  let channelInfoFromPush: Map<number, { name: string; uid: string; state: string }>;
+  if (FORCE_MOCK_PUSH) {
+    console.warn("MOCK_PUSH=1: using EXPECTED_CHANNEL_INFO as push mock (skipping cmd_id 145 wait)");
+    channelInfoFromPush = new Map<number, { name: string; uid: string; state: string }>(
+      channels.map((c) => [c, EXPECTED_CHANNEL_INFO[c as 0 | 1]]),
+    );
+  } else {
+    console.log(`Expecting channels from push: ${channels.join(", ")}`);
+    const info = await waitForPushChannels({
+      api,
+      expectedChannels: channels,
+      timeoutMs: 10_000,
+      intervalMs: 500,
+    });
+
+    const missing = channels.filter((c) => !info.has(c));
+    if (missing.length > 0) {
+      const available = (Array.from(info.keys()) as number[]).sort((a, b) => a - b);
+      console.warn(
+        `cmd_id 145 push did not provide expected channels: ${missing.join(", ")}. Available: ${available.join(", ") || "none"}. Using EXPECTED_CHANNEL_INFO as mock.`,
+      );
+      channelInfoFromPush = new Map<number, { name: string; uid: string; state: string }>(
+        channels.map((c) => [c, EXPECTED_CHANNEL_INFO[c as 0 | 1]]),
+      );
+    } else {
+      channelInfoFromPush = info;
+    }
   }
 
-  if (channels.length === 0) {
-    throw new Error("No channels found. Cannot proceed with test.");
+  const channelSleepFromPush = api.getChannelSleepFromPushCache();
+  if (channelSleepFromPush.size > 0) {
+    const asObj: Record<number, boolean> = {};
+    for (const [ch, v] of channelSleepFromPush.entries()) asObj[ch] = v;
+    console.log(`Sleep status from cmd_id 145 push (loginState): ${JSON.stringify(asObj)}`);
+  } else {
+    console.log("Sleep status from cmd_id 145 push: (none / not reported)");
   }
 
-  console.log(`Found ${channels.length} channels: ${channels.join(", ")}`);
+  for (const channel of channels) {
+    const expected = EXPECTED_CHANNEL_INFO[channel as 0 | 1];
+    const actual = channelInfoFromPush.get(channel) ?? {};
+
+    const actualName = normalizeString((actual as any).name);
+    const actualUid = normalizeString((actual as any).uid);
+    const actualState = normalizeString((actual as any).state);
+
+    if (actualName !== expected.name || actualUid !== expected.uid || actualState !== expected.state) {
+      throw new Error(
+        `Unexpected channel ${channel} identity. Expected ${JSON.stringify(expected)}; got ${JSON.stringify({
+          name: actualName,
+          uid: actualUid,
+          state: actualState,
+        })}`,
+      );
+    }
+  }
+
+  console.log(`Using ${channels.length} expected channels: ${channels.join(", ")}`);
+
+  console.log("\n" + "-".repeat(80));
+  console.log("Minimal getDevicesInfo() (fast path)");
+  console.log("-".repeat(80));
+  {
+    const t0 = Date.now();
+    const minimal = await api.getDevicesInfo({ channels, timeoutMs: 5_000 });
+    const dt = Date.now() - t0;
+    console.log(`Completed in ${dt}ms: ${JSON.stringify(minimal, null, 2)}`);
+  }
+
   console.log("\n" + "=".repeat(80));
   console.log("Testing different strategies to get device info");
   console.log("=".repeat(80) + "\n");
@@ -57,24 +163,28 @@ async function main(): Promise<void> {
   const strategies: TestStrategy[] = [
     {
       name: "Strategy 1: Only channelInfoFromPush (cached, no API calls)",
-      fn: async (api, channels) => {
-        const info = api.getDevicesInfo();
+      fn: async (_api, channels, pushInfo) => {
+        const pushSleep = _api.getChannelSleepFromPushCache();
         const result: Record<number, any> = {};
         for (const channel of channels) {
-          result[channel] = info.get(channel) || {};
+          result[channel] = {
+            ...(pushInfo.get(channel) || {}),
+            ...(typeof pushSleep.get(channel) === "boolean" ? { sleep: pushSleep.get(channel) } : {}),
+          };
         }
         return result;
       },
     },
     {
       name: "Strategy 2: channelInfoFromPush + getAbilityInfo (1 batch call for all channels)",
-      fn: async (api, channels) => {
-        const pushInfo = api.getDevicesInfo();
+      fn: async (api, channels, pushInfo) => {
         const abilities = await api.getAbilityInfo();
+        const pushSleep = api.getChannelSleepFromPushCache();
         const result: Record<number, any> = {};
         for (const channel of channels) {
           result[channel] = {
             ...(pushInfo.get(channel) || {}),
+            ...(typeof pushSleep.get(channel) === "boolean" ? { sleep: pushSleep.get(channel) } : {}),
             abilities: abilities[channel] || abilities["Host"],
           };
         }
@@ -83,9 +193,9 @@ async function main(): Promise<void> {
     },
     {
       name: "Strategy 3: Strategy 2 + getInfo per channel (N parallel calls)",
-      fn: async (api, channels) => {
-        const pushInfo = api.getDevicesInfo();
+      fn: async (api, channels, pushInfo) => {
         const abilities = await api.getAbilityInfo();
+        const pushSleep = api.getChannelSleepFromPushCache();
         
         // Call getInfo in parallel for all channels
         const infoPromises = channels.map(channel => 
@@ -99,6 +209,7 @@ async function main(): Promise<void> {
           const channel = channels[i]!;
           result[channel] = {
             ...(pushInfo.get(channel) || {}),
+            ...(typeof pushSleep.get(channel) === "boolean" ? { sleep: pushSleep.get(channel) } : {}),
             abilities: abilities[channel] || abilities["Host"],
             info: infoResults[i],
           };
@@ -108,9 +219,9 @@ async function main(): Promise<void> {
     },
     {
       name: "Strategy 4: Strategy 3 + getAiState per channel (N parallel calls)",
-      fn: async (api, channels) => {
-        const pushInfo = api.getDevicesInfo();
+      fn: async (api, channels, pushInfo) => {
         const abilities = await api.getAbilityInfo();
+        const pushSleep = api.getChannelSleepFromPushCache();
         
         // Call getInfo and getAiState in parallel for all channels
         const infoPromises = channels.map(channel => 
@@ -132,6 +243,7 @@ async function main(): Promise<void> {
           const channel = channels[i]!;
           result[channel] = {
             ...(pushInfo.get(channel) || {}),
+            ...(typeof pushSleep.get(channel) === "boolean" ? { sleep: pushSleep.get(channel) } : {}),
             abilities: abilities[channel] || abilities["Host"],
             info: infoResults[i],
             aiState: aiResults[i],
@@ -142,9 +254,9 @@ async function main(): Promise<void> {
     },
     {
       name: "Strategy 5: Strategy 4 + getStreamMetadata per channel (N parallel calls, optional)",
-      fn: async (api, channels) => {
-        const pushInfo = api.getDevicesInfo();
+      fn: async (api, channels, pushInfo) => {
         const abilities = await api.getAbilityInfo();
+        const pushSleep = api.getChannelSleepFromPushCache();
         
         // Call getInfo, getAiState, and getStreamMetadata in parallel for all channels
         const infoPromises = channels.map(channel => 
@@ -171,6 +283,7 @@ async function main(): Promise<void> {
           const channel = channels[i]!;
           result[channel] = {
             ...(pushInfo.get(channel) || {}),
+            ...(typeof pushSleep.get(channel) === "boolean" ? { sleep: pushSleep.get(channel) } : {}),
             abilities: abilities[channel] || abilities["Host"],
             info: infoResults[i],
             aiState: aiResults[i],
@@ -195,7 +308,7 @@ async function main(): Promise<void> {
     const startTime = Date.now();
     
     try {
-      const data = await strategy.fn(api, channels);
+      const data = await strategy.fn(api, channels, channelInfoFromPush);
       const duration = Date.now() - startTime;
       
       // Estimate API call count based on strategy

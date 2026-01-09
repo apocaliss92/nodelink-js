@@ -69,6 +69,25 @@ export interface BatteryInfo {
   channel?: number;
 }
 
+/**
+ * Minimal per-channel device summary returned by `ReolinkBaichuanApi.getDevicesInfo()`.
+ *
+ * This is optimized for speed and returns only common identity + battery/doorbell hints.
+ */
+export interface ReolinkBaichuanDeviceSummary {
+  channel: number;
+  name?: string;
+  uid?: string;
+  /** Model string (Baichuan <type>). */
+  model?: string;
+  /** Battery percentage (0-100) when available. */
+  battery?: number;
+  /** True when the channel is a battery camera (best-effort via SupportInfo). */
+  isBattery?: boolean;
+  /** True when the channel is a doorbell (best-effort via SupportInfo). */
+  isDoorbell?: boolean;
+}
+
 export type SleepState = "awake" | "sleeping" | "unknown";
 
 /**
@@ -199,6 +218,10 @@ export type ReolinkSimpleEventType =
   | "face"
   | "package"
   | "daynight"
+  | "sleeping"
+  | "awake"
+  | "online"
+  | "offline"
   | "other";
 
 export interface ReolinkSimpleEvent {
