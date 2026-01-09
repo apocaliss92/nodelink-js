@@ -456,6 +456,29 @@ export interface RecordingFile {
 }
 
 /**
+ * A RecordingFile associated with an explicit logical channel.
+ *
+ * Useful for NVR/Hub-style listings where you query multiple channels and
+ * want to keep the channel number alongside each returned file/event.
+ */
+export interface ChannelRecordingFile extends RecordingFile {
+  channel: number;
+  /** Optional UID used for the request (when known). */
+  uid?: string;
+}
+
+/**
+ * An EnrichedRecordingFile associated with an explicit logical channel.
+ *
+ * Useful for NVR/Hub-style listings where you want detection flags + timestamps
+ * while still keeping the channel context.
+ */
+export interface EnrichedChannelRecordingFile extends EnrichedRecordingFile {
+  channel: number;
+  uid?: string;
+}
+
+/**
  * Enriched recording file with all parsed metadata, ready for consumption.
  * Contains detection flags, duration, timestamps in milliseconds, and playback URLs.
  */

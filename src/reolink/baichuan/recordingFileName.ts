@@ -66,28 +66,6 @@ const FLAGS_HUB_V2: FlagSpec = {
   upload_flag: [38, 1],
 };
 
-// Version 4 might have different bit positions - try V0 format first as it's more similar
-// Based on reolink_aio, version 4 might use a different encoding
-const FLAGS_HUB_V4: FlagSpec = {
-  resolution_index: [0, 7],
-  tv_system: [7, 1],
-  framerate: [8, 7],
-  audio_index: [15, 2],
-  ai_pd: [17, 1],
-  ai_fd: [18, 1],
-  ai_vd: [19, 1],
-  ai_ad: [20, 1],
-  encoder_type_index: [21, 2],
-  is_schedule_record: [23, 1],
-  is_motion_record: [24, 1],
-  is_rf_record: [25, 1],
-  is_doorbell_record: [26, 1],
-  is_ai_other_record: [27, 1],
-  picture_layout_index: [28, 7],
-  package_delivered: [35, 1],
-  package_takenaway: [36, 1],
-  package_event: [37, 1],
-};
 
 const FLAGS_MAPPING: Record<RecordingDevType, Record<number, FlagSpec>> = {
   cam: {
@@ -102,7 +80,9 @@ const FLAGS_MAPPING: Record<RecordingDevType, Record<number, FlagSpec>> = {
     0: FLAGS_HUB_V0,
     1: FLAGS_HUB_V1,
     2: FLAGS_HUB_V2,
-    4: FLAGS_HUB_V4, // Version 4 uses V0-like format (is_ai_other_record instead of ai_other)
+    // NOTE: Home Hub / NVR firmware may emit hub filenames with higher versions (e.g. RecM04)
+    // and longer hex payloads. reolink_aio falls back to the highest known hub mapping (v2).
+    // We rely on the same fallback behavior here by not hardcoding a guessed v4 mapping.
   },
 };
 

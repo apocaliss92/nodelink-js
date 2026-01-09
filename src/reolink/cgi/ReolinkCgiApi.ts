@@ -1198,6 +1198,17 @@ export class ReolinkCgiApi {
 
     // If autoSearchByDay is enabled, first get status to find days with recordings
     if (autoSearchByDay) {
+      const startMs = start.getTime();
+      const endMs = end.getTime();
+
+      const clampDateToWindow = (d: Date): Date => {
+        const t = d.getTime();
+        if (!Number.isFinite(t)) return d;
+        if (t < startMs) return new Date(startMs);
+        if (t > endMs) return new Date(endMs);
+        return d;
+      };
+
       const statusParam: any = {
         Search: {
           channel,
@@ -1231,22 +1242,24 @@ export class ReolinkCgiApi {
               for (const day of daysWithRecordings) {
                 const year = status.year;
                 const month = status.mon || status.month || 1;
-                const dayStart = {
-                  year,
-                  mon: month,
-                  day,
-                  hour: 0,
-                  min: 0,
-                  sec: 0,
-                };
-                const dayEnd = {
-                  year,
-                  mon: month,
-                  day,
-                  hour: 23,
-                  min: 59,
-                  sec: 59,
-                };
+
+                // IMPORTANT: Status table is typically per-month, and may include days outside the
+                // requested window. Restrict queries to days that overlap [start,end], and clamp
+                // the per-day query range to the window.
+                const dayStartDate = new Date(year, month - 1, day, 0, 0, 0, 0);
+                const dayEndDate = new Date(year, month - 1, day, 23, 59, 59, 999);
+
+                // Skip days completely outside the requested window.
+                if (Number.isFinite(startMs) && Number.isFinite(endMs)) {
+                  if (dayEndDate.getTime() < startMs || dayStartDate.getTime() > endMs) continue;
+                }
+
+                const queryStartDate = clampDateToWindow(dayStartDate.getTime() < startMs ? new Date(startMs) : dayStartDate);
+                const queryEndDate = clampDateToWindow(dayEndDate.getTime() > endMs ? new Date(endMs) : dayEndDate);
+                if (queryStartDate.getTime() > queryEndDate.getTime()) continue;
+
+                const dayStart = this.dateToReolinkTime(queryStartDate);
+                const dayEnd = this.dateToReolinkTime(queryEndDate);
 
                 const dayParam: any = {
                   Search: {

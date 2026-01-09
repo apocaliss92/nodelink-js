@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { BaichuanRtspServer, type BaichuanRtspServerOptions } from "../../baichuan/stream/BaichuanRtspServer";
 import { BaichuanClient, type BaichuanClientOptions } from "../../client/BaichuanClient";
 import { recordingsTraceLog, type Logger } from "../../debug/DebugConfig";
-import { collectNvrDiagnostics, runAllDiagnosticsConsecutively, RunAllDiagnosticsConsecutivelyParams, type StreamSamplingOptions, type StreamSamplingSelection } from "../../debug/DiagnosticsTools";
+import { collectNvrDiagnostics, runAllDiagnosticsConsecutively, RunAllDiagnosticsConsecutivelyParams } from "../../debug/DiagnosticsTools";
 import type { CompositeStreamPipOptions } from "../../multifocal/compositeStream";
 import {
   BC_CLASS_FILE_DOWNLOAD,
@@ -50,6 +50,7 @@ import type {
   AIEvent,
   AIState,
   BatteryInfo,
+  ChannelRecordingFile,
   ChannelStreamMetadata,
   DeviceAbilities,
   DeviceCapabilitiesResult,
@@ -57,6 +58,7 @@ import type {
   DownloadRecordingParams,
   DualLensChannelAnalysis,
   DualLensChannelInfo,
+  EnrichedChannelRecordingFile,
   EnrichedRecordingFile,
   Events,
   ListRecordingsParams,
@@ -66,10 +68,10 @@ import type {
   PtzPreset,
   RecordingFile,
   RecordingStreamType,
+  ReolinkBaichuanDeviceSummary,
   ReolinkEvent,
   ReolinkSimpleEvent,
   ReolinkSimpleEventType,
-  ReolinkBaichuanDeviceSummary,
   SleepStatus,
   StreamMetadata,
   StreamProfile,
@@ -85,19 +87,11 @@ import sharp from "sharp";
 import {
   ReolinkCgiApi,
   VodFile,
-  type CgiAiStateValue,
-  type CgiChannelStatusEntry,
-  type CgiDetectionState,
-  type CgiGetChannelstatusValue,
-  type CgiChnTypeInfoValue,
-  type DeviceInfoResponse,
-  type JsonValue,
-  type ReolinkCmdResponseExt,
   type GetVodUrlParams,
-  type ListNvrRecordingsParams,
+  type ListNvrRecordingsParams
 } from "../cgi/ReolinkCgiApi";
-import { ReolinkHttpClient, type ReolinkHttpClientOptions } from "../http/ReolinkHttpClient";
-import type { ReolinkCmdRequest, ReolinkCmdResponse } from "../http/types";
+import { ReolinkHttpClient } from "../http/ReolinkHttpClient";
+import type { ReolinkCmdResponse } from "../http/types";
 import type { ReolinkDeviceInfo, ReolinkDeviceInfoTag } from "../types";
 import { computeDeviceCapabilities, flattenAbilitiesForChannel, parseSupportXml } from "./capabilities";
 
@@ -252,11 +246,30 @@ function parseXmlDateTimeBlock(block: string): Date | undefined {
   const hour = Number.parseInt(getXmlText(block, "hour") ?? "", 10);
   const minute = Number.parseInt(getXmlText(block, "minute") ?? "", 10);
   const second = Number.parseInt(getXmlText(block, "second") ?? "", 10);
-  if (![year, month, day, hour, minute, second].every(Number.isFinite)) return undefined;
-  // Treat as UTC to avoid timezone shifts when serializing to JSON.
-  // Camera timestamps are typically in local time, but we parse as UTC to preserve
-  // the exact values without timezone conversion artifacts.
-  return new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+
+  if ([year, month, day, hour, minute, second].every(Number.isFinite)) {
+    // Treat as UTC to avoid timezone shifts when serializing to JSON.
+    // Camera timestamps are typically in local time, but we parse as UTC to preserve
+    // the exact values without timezone conversion artifacts.
+    return new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  }
+
+  // Some firmwares encode the timestamp as plain text instead of nested tags.
+  // Examples observed on Reolink devices:
+  // - 2026-01-09 08:45:18
+  // - 2026/01/09 08:45:18
+  // - 2026-01-09T08:45:18
+  const text = block.replace(/<[^>]*>/g, "").trim();
+  const m = text.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
+  if (!m) return undefined;
+  const y = Number.parseInt(m[1] ?? "", 10);
+  const mo = Number.parseInt(m[2] ?? "", 10);
+  const da = Number.parseInt(m[3] ?? "", 10);
+  const ho = Number.parseInt(m[4] ?? "0", 10);
+  const mi = Number.parseInt(m[5] ?? "0", 10);
+  const se = Number.parseInt(m[6] ?? "0", 10);
+  if (![y, mo, da, ho, mi, se].every(Number.isFinite)) return undefined;
+  return new Date(Date.UTC(y, mo - 1, da, ho, mi, se));
 }
 
 function xmlDateTimePayload(tag: "startTime" | "endTime", d: Date): string {
@@ -303,7 +316,7 @@ function parseRecordingFilesFromXml(xml: string): RecordingFile[] {
   // Preferred: parse <File> blocks (common in many Reolink list responses).
   const fileBlocks = getXmlBlocks(xml, "File");
   for (const b of fileBlocks) {
-    const fileName = getXmlText(b, "fileName") ?? getXmlText(b, "name");
+    const fileName = (getXmlText(b, "fileName") ?? getXmlText(b, "name"))?.trim();
     if (!fileName) continue;
     const sizeText = getXmlText(b, "size") ?? getXmlText(b, "fileSize");
     const sizeBytes = sizeText ? Number.parseInt(sizeText, 10) : undefined;
@@ -330,11 +343,14 @@ function parseRecordingFilesFromXml(xml: string): RecordingFile[] {
   // Fallback: any <fileName> tags.
   if (out.length === 0) {
     const re = /<fileName>([\s\S]*?)<\/fileName>/g;
+    const seenNames = new Set<string>();
     let m: RegExpExecArray | null;
     // eslint-disable-next-line no-cond-assign
     while ((m = re.exec(xml))) {
       const fileName = (m[1] ?? "").trim();
       if (!fileName) continue;
+      if (seenNames.has(fileName)) continue;
+      seenNames.add(fileName);
       const item: RecordingFile = { fileName };
       const parsed = parseRecordingFileName(fileName);
       if (parsed) {
@@ -347,37 +363,56 @@ function parseRecordingFilesFromXml(xml: string): RecordingFile[] {
   }
 
   // Alarm video list: <alarmVideo><fileName>...</fileName><alarmType>...</alarmType>...</alarmVideo>
-  // Some firmwares use this API instead of FileInfoList for recordings.
-  if (out.length === 0) {
-    const alarmBlocks = getXmlBlocks(xml, "alarmVideo");
+  // Some firmwares return <alarmVideo> blocks that contain richer metadata (alarmType + start/end).
+  // We always parse and merge these when present, even if other parsing paths already collected fileName(s).
+  const alarmBlocks = getXmlBlocks(xml, "alarmVideo");
+  if (alarmBlocks.length > 0) {
+    const byName = new Map<string, RecordingFile>();
+    for (const existing of out) {
+      const key = existing.fileName.trim();
+      if (!key) continue;
+      // Keep the first occurrence so we update the same instance that will survive the final de-dup.
+      if (!byName.has(key)) byName.set(key, existing);
+    }
+
     for (const b of alarmBlocks) {
-      const fileName = getXmlText(b, "fileName") ?? getXmlText(b, "name");
+      const fileNameRaw = getXmlText(b, "fileName") ?? getXmlText(b, "name");
+      const fileName = fileNameRaw?.trim();
       if (!fileName) continue;
-      const item: RecordingFile = { fileName };
-      const alarmType = getXmlText(b, "alarmType");
-      if (alarmType != null) item.recordType = alarmType;
+
+      const alarmType = getXmlText(b, "alarmType")?.trim();
       const start = getXmlBlocks(b, "startTime")[0];
       const end = getXmlBlocks(b, "endTime")[0];
       const startDt = start ? parseXmlDateTimeBlock(start) : undefined;
       const endDt = end ? parseXmlDateTimeBlock(end) : undefined;
-      if (startDt) item.startTime = startDt;
-      if (endDt) item.endTime = endDt;
 
-      const parsed = parseRecordingFileName(item.fileName);
-      if (parsed) {
-        item.parsedFileName = parsed;
-        if (!item.startTime) item.startTime = parsed.start;
-        if (!item.endTime) item.endTime = parsed.end;
+      const target = byName.get(fileName) ?? ({ fileName } as RecordingFile);
+      if (alarmType) target.recordType = alarmType;
+      if (startDt) target.startTime = startDt;
+      if (endDt) target.endTime = endDt;
+
+      if (!target.parsedFileName) {
+        const parsed = parseRecordingFileName(target.fileName);
+        if (parsed) {
+          target.parsedFileName = parsed;
+          if (!target.startTime) target.startTime = parsed.start;
+          if (!target.endTime) target.endTime = parsed.end;
+        }
       }
-      out.push(item);
+
+      if (!byName.has(fileName)) {
+        out.push(target);
+        byName.set(fileName, target);
+      }
     }
   }
 
   // De-dup by fileName.
   const seen = new Set<string>();
   return out.filter((f) => {
-    if (seen.has(f.fileName)) return false;
-    seen.add(f.fileName);
+    const key = f.fileName.trim();
+    if (seen.has(key)) return false;
+    seen.add(key);
     return true;
   });
 }
@@ -1063,11 +1098,18 @@ export class ReolinkBaichuanApi {
       // NOTE: several firmwares return responseCode=400 with empty body when the camera is sleeping,
       // waking up, or when the session has expired (not only for bad credentials).
       if (frame.header.responseCode === 400) {
-        // Special case: FILE_INFO_LIST_GET with 400+empty body during pagination means no more pages.
-        // Don't retry to avoid disconnection loops - let the caller handle it as end of pagination.
-        if (params.cmdId === BC_CMD_ID_FILE_INFO_LIST_GET && frame.body.length === 0) {
+        // Special cases for NVR/Hub firmwares: some commands may return 400 with an empty body
+        // when unsupported (not just for auth/session issues). Retrying/login loops can stall tests.
+        //
+        // - FILE_INFO_LIST_GET with 400+empty body during pagination means "no more pages".
+        // - FILE_INFO_LIST_OPEN with 400+empty body often means "FileInfoList unsupported" on NVRs.
+        // In both cases, fail fast and let higher-level code fall back to findAlarmVideo/CGI.
+        if (
+          frame.body.length === 0 &&
+          (params.cmdId === BC_CMD_ID_FILE_INFO_LIST_GET || params.cmdId === BC_CMD_ID_FILE_INFO_LIST_OPEN)
+        ) {
           throw new Error(
-            'Baichuan request failed (responseCode 400, empty body). Possible causes: camera sleeping/waking (battery), expired session, or invalid username/password.',
+            'Baichuan request failed (responseCode 400, empty body). Possible causes: camera sleeping/waking (battery), expired session, invalid username/password, or unsupported command on NVR/Hub.',
           );
         }
 
@@ -1100,7 +1142,7 @@ export class ReolinkBaichuanApi {
         // Out of retries.
         if (frame.body.length === 0) {
           throw new Error(
-            'Baichuan request failed (responseCode 400, empty body). Possible causes: camera sleeping/waking (battery), expired session, or invalid username/password.',
+            'Baichuan request failed (responseCode 400, empty body). Possible causes: camera sleeping/waking (battery), expired session, invalid username/password, or unsupported command on NVR/Hub.',
           );
         }
       }
@@ -2500,6 +2542,113 @@ ${xmlDateTimePayload("endTime", params.end)}
 </FileInfoList>
 </body>`;
 
+        const runFindAlarmVideo = async (): Promise<RecordingFile[]> => {
+          recordingsTraceLog(dbg, logger, "listRecordings", `FileInfoList unavailable; falling back to findAlarmVideo`);
+
+          // Fallback path: <findAlarmVideo> (cmdId 272/273/274).
+          // This often returns "alarm videos" when FileInfoList is unsupported/empty.
+          const uidBase = uid.split("_")[0] ?? uid;
+          const streamTypeInt = streamType === "subStream" ? 1 : 0;
+          const alarmType = "md, pir, io, people, face, vehicle, dog_cat, visitor, other, package, cry, crossline, intrusion, loitering, legacy, loss";
+
+          // NOTE: channelId in the XML payload is 0-based (same as `channel`).
+          // The Baichuan transport header uses (channel + 1) internally.
+          const xmlChannelId = channel;
+
+          const findOpenXml = (start: Date, end: Date) => `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<findAlarmVideo version="1.1">
+      <channelId>${xmlChannelId}</channelId>
+<uid>${xmlEscape(uidBase)}</uid>
+<logicChnBitmap>255</logicChnBitmap>
+<streamType>${streamTypeInt}</streamType>
+<notSearchVideo>0</notSearchVideo>
+${xmlDateTimePayload("startTime", start)}
+${xmlDateTimePayload("endTime", end)}
+<alarmType>${alarmType}</alarmType>
+</findAlarmVideo>
+</body>`;
+
+          const findGetXml = (fileHandle: string) => `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<findAlarmVideo version="1.1">
+      <channelId>${xmlChannelId}</channelId>
+<fileHandle>${xmlEscape(fileHandle)}</fileHandle>
+</findAlarmVideo>
+</body>`;
+
+          const alarmFiles: RecordingFile[] = [];
+          let currentStart = params.start;
+          for (let i = 0; i < maxIterations; i++) {
+            recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo iteration ${i + 1}/${maxIterations}: start=${currentStart.toISOString()}, end=${params.end.toISOString()}`);
+
+            let openResp: string;
+            try {
+              // Use explicit timeouts for NVR/hub stability.
+              openResp = await this.sendXml({ cmdId: BC_CMD_ID_FIND_REC_VIDEO_OPEN, channel, payloadXml: findOpenXml(currentStart, params.end), timeoutMs: 15_000 });
+              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo OPEN response received`);
+            } catch (e) {
+              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo OPEN failed: ${e instanceof Error ? e.message : String(e)}`);
+              break;
+            }
+
+            const fileHandle = getXmlText(openResp, "fileHandle")?.trim();
+            if (!fileHandle) {
+              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: no fileHandle in response, breaking`);
+              break;
+            }
+
+            const getXml = findGetXml(fileHandle);
+            try {
+              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: fetching with handle=${fileHandle}`);
+              const getResp = await this.sendXml({ cmdId: BC_CMD_ID_FIND_REC_VIDEO_GET, channel, payloadXml: getXml, timeoutMs: 15_000 });
+              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo GET response received`);
+
+              const pageFiles = parseRecordingFilesFromXml(getResp);
+              alarmFiles.push(...pageFiles);
+              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo page ${i + 1}: found ${pageFiles.length} files (total: ${alarmFiles.length})`);
+
+              const bFinishedText = getXmlText(getResp, "bFinished")?.trim();
+              const finished = bFinishedText === "1";
+              if (finished) {
+                recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: finished=true, breaking`);
+                break;
+              }
+
+              // If not finished, advance start to the last returned event startTime if possible.
+              const lastWithStart = [...pageFiles].reverse().find((f) => f.startTime != null);
+              if (!lastWithStart?.startTime) {
+                recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: no startTime in files, breaking`);
+                break;
+              }
+              // Guard against non-progressing pagination.
+              if (currentStart.getTime() === lastWithStart.startTime.getTime()) {
+                recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: pagination did not advance (startTime unchanged), breaking to avoid loop`);
+                break;
+              }
+              currentStart = lastWithStart.startTime;
+            } finally {
+              // Best-effort close.
+              try {
+                recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: closing handle=${fileHandle}`);
+                await this.sendXml({ cmdId: BC_CMD_ID_FIND_REC_VIDEO_CLOSE, channel, payloadXml: getXml, timeoutMs: 10_000 });
+                recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: closed successfully`);
+              } catch (e) {
+                recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo CLOSE failed (ignored): ${e instanceof Error ? e.message : String(e)}`);
+              }
+            }
+          }
+
+          const seenAlarm = new Set<string>();
+          const result = alarmFiles.filter((f) => {
+            if (seenAlarm.has(f.fileName)) return false;
+            seenAlarm.add(f.fileName);
+            return true;
+          });
+          recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo complete: returning ${result.length} unique files`);
+          return result;
+        };
+
         recordingsTraceLog(dbg, logger, "listRecordings", `Opening FileInfoList: channel=${channel}, uid=${uid}, streamType=${streamType}`);
 
         // Check connection state before opening FileInfoList
@@ -2516,7 +2665,14 @@ ${xmlDateTimePayload("endTime", params.end)}
         } catch (e) {
           const isConnectedAfter = this.client.isSocketConnected();
           const isLoggedInAfter = this.client.loggedIn;
-          recordingsTraceLog(dbg, logger, "listRecordings", `FILE_INFO_LIST_OPEN failed: ${e instanceof Error ? e.message : String(e)}, connected=${isConnectedAfter}, loggedIn=${isLoggedInAfter}`);
+          const msg = e instanceof Error ? e.message : String(e);
+          recordingsTraceLog(dbg, logger, "listRecordings", `FILE_INFO_LIST_OPEN failed: ${msg}, connected=${isConnectedAfter}, loggedIn=${isLoggedInAfter}`);
+
+          // NVR/Hub often returns responseCode=400 with empty body for FileInfoList; fall back.
+          if (fallbackToAlarmVideo && msg.includes("responseCode 400, empty body")) {
+            return await runFindAlarmVideo();
+          }
+
           throw e;
         }
         const handleText = getXmlText(openResp, "handle");
@@ -2629,112 +2785,7 @@ ${xmlDateTimePayload("endTime", params.end)}
           return unique;
         }
 
-        recordingsTraceLog(dbg, logger, "listRecordings", `FileInfoList returned no files, falling back to findAlarmVideo`);
-        // Fallback path: <findAlarmVideo> (cmdId 272/273/274).
-        // This often returns "alarm videos" when FileInfoList is unsupported/empty.
-        const uidBase = uid.split("_")[0] ?? uid;
-        const streamTypeInt = streamType === "subStream" ? 1 : 0;
-        const alarmType = "md, pir, io, people, face, vehicle, dog_cat, visitor, other, package, cry, crossline, intrusion, loitering, legacy, loss";
-
-        const findOpenXml = (start: Date, end: Date) => `<?xml version="1.0" encoding="UTF-8" ?>
-<body>
-<findAlarmVideo version="1.1">
-<channelId>${channel}</channelId>
-<uid>${xmlEscape(uidBase)}</uid>
-<logicChnBitmap>255</logicChnBitmap>
-<streamType>${streamTypeInt}</streamType>
-<notSearchVideo>0</notSearchVideo>
-${xmlDateTimePayload("startTime", start)}
-${xmlDateTimePayload("endTime", end)}
-<alarmType>${alarmType}</alarmType>
-</findAlarmVideo>
-</body>`;
-
-        const findGetXml = (fileHandle: string) => `<?xml version="1.0" encoding="UTF-8" ?>
-<body>
-<findAlarmVideo version="1.1">
-<channelId>${channel}</channelId>
-<fileHandle>${xmlEscape(fileHandle)}</fileHandle>
-</findAlarmVideo>
-</body>`;
-
-        const alarmFiles: RecordingFile[] = [];
-        let currentStart = params.start;
-        try {
-          for (let i = 0; i < maxIterations; i++) {
-            recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo iteration ${i + 1}/${maxIterations}: start=${currentStart.toISOString()}, end=${params.end.toISOString()}`);
-
-            let openResp: string;
-            try {
-              openResp = await this.sendXml({ cmdId: BC_CMD_ID_FIND_REC_VIDEO_OPEN, channel, payloadXml: findOpenXml(currentStart, params.end) });
-              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo OPEN response received`);
-            } catch (e) {
-              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo OPEN failed: ${e instanceof Error ? e.message : String(e)}`);
-              break;
-            }
-
-            const fileHandle = getXmlText(openResp, "fileHandle")?.trim();
-            if (!fileHandle) {
-              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: no fileHandle in response, breaking`);
-              break;
-            }
-
-            const getXml = findGetXml(fileHandle);
-            try {
-              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: fetching with handle=${fileHandle}`);
-
-              let getResp: string;
-              try {
-                getResp = await this.sendXml({ cmdId: BC_CMD_ID_FIND_REC_VIDEO_GET, channel, payloadXml: getXml });
-                recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo GET response received`);
-              } catch (e) {
-                recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo GET failed: ${e instanceof Error ? e.message : String(e)}`);
-                throw e;
-              }
-
-              const pageFiles = parseRecordingFilesFromXml(getResp);
-              alarmFiles.push(...pageFiles);
-              recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo page ${i + 1}: found ${pageFiles.length} files (total: ${alarmFiles.length})`);
-
-              const bFinishedText = getXmlText(getResp, "bFinished")?.trim();
-              const finished = bFinishedText === "1";
-              if (finished) {
-                recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: finished=true, breaking`);
-                break;
-              }
-
-              // If not finished, advance start to the last returned event startTime if possible.
-              const lastWithStart = [...pageFiles].reverse().find((f) => f.startTime != null);
-              if (!lastWithStart?.startTime) {
-                recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: no startTime in files, breaking`);
-                break;
-              }
-              currentStart = lastWithStart.startTime;
-            } finally {
-              // Best-effort close.
-              try {
-                recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: closing handle=${fileHandle}`);
-                await this.sendXml({ cmdId: BC_CMD_ID_FIND_REC_VIDEO_CLOSE, channel, payloadXml: getXml });
-                recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo: closed successfully`);
-              } catch (e) {
-                recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo CLOSE failed (ignored): ${e instanceof Error ? e.message : String(e)}`);
-                // ignore
-              }
-            }
-          }
-        } catch (e) {
-          recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo loop failed: ${e instanceof Error ? e.message : String(e)}, stack: ${e instanceof Error ? e.stack : 'no stack'}`);
-          throw e;
-        }
-
-        const seenAlarm = new Set<string>();
-        const result = alarmFiles.filter((f) => {
-          if (seenAlarm.has(f.fileName)) return false;
-          seenAlarm.add(f.fileName);
-          return true;
-        });
-        recordingsTraceLog(dbg, logger, "listRecordings", `findAlarmVideo complete: returning ${result.length} unique files`);
-        return result;
+        return await runFindAlarmVideo();
       } catch (e) {
         recordingsTraceLog(dbg, logger, "listRecordings", `ERROR: ${e instanceof Error ? e.message : String(e)}, stack: ${e instanceof Error ? e.stack : 'no stack'}`);
         throw e;
@@ -3207,11 +3258,61 @@ ${xmlDateTimePayload("endTime", end)}
 
     recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `Checking UID: explicitUid=${explicitUid}, this.uid=${this.uid}`);
 
+    const isUidLike = (value: string): boolean => {
+      const s = value.trim();
+      // Typical Reolink UID: uppercase alnum, ~16 chars (e.g. 9527000HZ56U1ORU)
+      return /^[0-9A-Z]{12,24}$/.test(s) && /[A-Z]/.test(s);
+    };
+
     if (explicitUid && explicitUid.trim()) {
       recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `Using explicit UID: ${explicitUid.trim()}`);
       return explicitUid.trim();
     }
 
+    // If we already saw a per-channel UID via pushes, prefer it.
+    const fromPush = this.getUidFromPushCacheForChannel(channel);
+    if (fromPush) {
+      recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `Using per-channel UID from push cache: ${fromPush}`);
+      return fromPush;
+    }
+
+    // 1) Prefer per-channel UID from CGI GetChannelstatus (NVRs often have different UIDs per channel)
+    // This avoids using a global NVR UID for per-channel operations like recordings/alarm searches.
+    try {
+      recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `Attempting per-channel UID discovery via HTTP CGI GetChannelstatus (channel=${channel})`);
+      await this.cgiApi.login();
+      const chStatus = await this.cgiApi.GetChannelstatus();
+      const entry = chStatus
+        .flatMap((r) => r.value?.status ?? [])
+        .find((s) => typeof s?.channel === "number" && s.channel === channel);
+
+      const uidCandidate = (entry?.uid ?? "").trim();
+      recordingsTraceLog(
+        dbg,
+        logger,
+        "ensureUidForRecordings",
+        `[HTTP CGI] GetChannelstatus channel=${channel} uid=${uidCandidate || "(missing)"}`,
+      );
+
+      if (uidCandidate && isUidLike(uidCandidate)) {
+        const existing = this.channelPushData.get(channel);
+        this.channelPushData.set(channel, {
+          ...(existing ?? { channel }),
+          uid: uidCandidate,
+        } as any);
+        recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `Using per-channel UID from GetChannelstatus: ${uidCandidate}`);
+        return uidCandidate;
+      }
+    } catch (e) {
+      recordingsTraceLog(
+        dbg,
+        logger,
+        "ensureUidForRecordings",
+        `[HTTP CGI] GetChannelstatus failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+
+    // 2) Fall back to configured UID (typical for standalone cameras)
     if (this.uid && this.uid.trim()) {
       recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `Using configured UID: ${this.uid.trim()}`);
       return this.uid;
@@ -3226,8 +3327,7 @@ ${xmlDateTimePayload("endTime", end)}
         if (v == null) return undefined;
         if (typeof v === "string") {
           const s = v.trim();
-          // Typical Reolink UID: uppercase alnum, ~16 chars (e.g. 9527000HZ56U1ORU)
-          if (/^[0-9A-Z]{12,24}$/.test(s) && /[A-Z]/.test(s)) return s;
+          if (isUidLike(s)) return s;
           return undefined;
         }
         if (typeof v !== "object") return undefined;
@@ -3253,13 +3353,13 @@ ${xmlDateTimePayload("endTime", end)}
 
     let discoveredUid: string | undefined;
 
-    // 1) Try getInfo() -> serialNumber
+    // 3) Try getInfo() -> serialNumber (device-level)
     try {
       recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `Attempting auto-discovery via getInfo()`);
       const info = await this.getInfo(channel);
       const serial = (info.serialNumber ?? "").trim();
       recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `getInfo().serialNumber: ${serial || "(missing)"}`);
-      if (serial && /^[0-9A-Z]{12,24}$/.test(serial) && /[A-Z]/.test(serial)) {
+      if (serial && isUidLike(serial)) {
         discoveredUid = serial;
         recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `Found UID from serialNumber: ${discoveredUid}`);
       }
@@ -3267,7 +3367,7 @@ ${xmlDateTimePayload("endTime", end)}
       recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `getInfo() failed: ${e instanceof Error ? e.message : String(e)}`);
     }
 
-    // 2) Try HTTP CGI GetP2p / GetDevInfo / GetChannelstatus
+    // 3) Try HTTP CGI GetP2p / GetDevInfo (device-level)
     if (!discoveredUid) {
       try {
         recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `Attempting auto-discovery via HTTP CGI API`);
@@ -3293,16 +3393,7 @@ ${xmlDateTimePayload("endTime", end)}
           }
         }
 
-        if (!discoveredUid) {
-          try {
-            const ch = await this.cgiApi.GetChannelstatus();
-            const fromChannelStatus = extractUidLike(ch);
-            recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `[HTTP CGI] GetChannelstatus UID candidate: ${fromChannelStatus || "(none)"}`);
-            discoveredUid = discoveredUid ?? fromChannelStatus ?? undefined;
-          } catch (e) {
-            recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `[HTTP CGI] GetChannelstatus failed: ${e instanceof Error ? e.message : String(e)}`);
-          }
-        }
+        // NOTE: GetChannelstatus is handled above to support per-channel UIDs.
       } catch (e) {
         recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `[HTTP CGI] Login or requests failed: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -3326,9 +3417,9 @@ ${xmlDateTimePayload("endTime", end)}
     }
 
     if (discoveredUid) {
-      // Cache the discovered UID for future use
+      // Cache device-level UID for future use
       this.uid = discoveredUid;
-      recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `Auto-discovered and cached UID: ${discoveredUid}`);
+      recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `Auto-discovered and cached device UID: ${discoveredUid}`);
       return discoveredUid;
     }
 
@@ -6802,13 +6893,360 @@ ${xmlDateTimePayload("endTime", end)}
   }
 
   // ====================================================================
+  // NVR/Hub Baichuan helpers
+  // ====================================================================
+
+  private getUidFromPushCacheForChannel(channel: number): string | undefined {
+    const info = this.channelPushData.get(channel);
+    const uid = typeof info?.uid === "string" ? info.uid.trim() : "";
+    return uid ? uid : undefined;
+  }
+
+  private async listAlarmVideosViaBaichuan(params: {
+    channel: number;
+    uid: string;
+    start: Date;
+    end: Date;
+    streamType?: RecordingStreamType;
+    alarmType?: string;
+    maxIterations?: number;
+  }): Promise<RecordingFile[]> {
+    const dbg = this.client.getDebugConfig?.();
+    const logger = this.logger;
+
+    const maxIterations = params.maxIterations ?? 50;
+    const uidBase = (params.uid.split("_")[0] ?? params.uid).trim();
+    const streamTypeInt = params.streamType === "subStream" ? 1 : 0;
+    const alarmType =
+      params.alarmType ??
+      "md, pir, io, people, face, vehicle, dog_cat, visitor, other, package, cry, crossline, intrusion, loitering, legacy, loss";
+
+    // NOTE: channelId in the XML payload is 0-based (same as `params.channel`).
+    // The Baichuan transport header uses (channel + 1) internally.
+    const xmlChannelId = params.channel;
+
+    const findOpenXml = (start: Date, end: Date) => `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<findAlarmVideo version="1.1">
+  <channelId>${xmlChannelId}</channelId>
+<uid>${xmlEscape(uidBase)}</uid>
+<logicChnBitmap>255</logicChnBitmap>
+<streamType>${streamTypeInt}</streamType>
+<notSearchVideo>0</notSearchVideo>
+${xmlDateTimePayload("startTime", start)}
+${xmlDateTimePayload("endTime", end)}
+<alarmType>${xmlEscape(alarmType)}</alarmType>
+</findAlarmVideo>
+</body>`;
+
+    const findGetXml = (fileHandle: string) => `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<findAlarmVideo version="1.1">
+  <channelId>${xmlChannelId}</channelId>
+<fileHandle>${xmlEscape(fileHandle)}</fileHandle>
+</findAlarmVideo>
+</body>`;
+
+    const out: RecordingFile[] = [];
+    let currentStart = params.start;
+
+    recordingsTraceLog(
+      dbg,
+      logger,
+      "listAlarmVideosViaBaichuan",
+      `init: channel=${params.channel}, uid=${uidBase}, streamType=${streamTypeInt}, start=${params.start.toISOString()}, end=${params.end.toISOString()}, alarmType=${alarmType}`,
+    );
+
+    for (let i = 0; i < maxIterations; i++) {
+      recordingsTraceLog(
+        dbg,
+        logger,
+        "listAlarmVideosViaBaichuan",
+        `findAlarmVideo iteration ${i + 1}/${maxIterations}: channel=${params.channel}, start=${currentStart.toISOString()}, end=${params.end.toISOString()}`,
+      );
+
+      const openResp = await this.sendXml({
+        cmdId: BC_CMD_ID_FIND_REC_VIDEO_OPEN,
+        channel: params.channel,
+        payloadXml: findOpenXml(currentStart, params.end),
+        timeoutMs: 15_000,
+      });
+
+      const fileHandle = getXmlText(openResp, "fileHandle")?.trim();
+      if (!fileHandle) {
+        const rspCode = getXmlText(openResp, "rspCode")?.trim() ?? getXmlText(openResp, "code")?.trim();
+        const msg = getXmlText(openResp, "rspMsg")?.trim() ?? getXmlText(openResp, "message")?.trim();
+        const snippet = openResp.length > 800 ? `${openResp.slice(0, 800)}...` : openResp;
+        recordingsTraceLog(
+          dbg,
+          logger,
+          "listAlarmVideosViaBaichuan",
+          `findAlarmVideo OPEN: missing fileHandle (rspCode=${rspCode ?? "?"} msg=${msg ?? "?"}). resp=${snippet}`,
+        );
+        break;
+      }
+
+      const getXml = findGetXml(fileHandle);
+      try {
+        const getResp = await this.sendXml({
+          cmdId: BC_CMD_ID_FIND_REC_VIDEO_GET,
+          channel: params.channel,
+          payloadXml: getXml,
+          timeoutMs: 15_000,
+        });
+
+        const pageFiles = parseRecordingFilesFromXml(getResp);
+        if (dbg?.traceRecordings && logger) {
+          const withTimes = pageFiles.find((f) => f.startTime != null || f.endTime != null);
+          recordingsTraceLog(
+            dbg,
+            logger,
+            "listAlarmVideosViaBaichuan",
+            `findAlarmVideo GET parsed sample: ${withTimes ? `${withTimes.fileName} type=${withTimes.recordType ?? "-"} start=${withTimes.startTime?.toISOString() ?? "-"} end=${withTimes.endTime?.toISOString() ?? "-"}` : "(none)"}`,
+          );
+        }
+        out.push(...pageFiles);
+
+        const alarmBlocks = getXmlBlocks(getResp, "alarmVideo");
+        const bFinishedText = getXmlText(getResp, "bFinished")?.trim();
+        recordingsTraceLog(
+          dbg,
+          logger,
+          "listAlarmVideosViaBaichuan",
+          `findAlarmVideo GET: fileHandle=${fileHandle} parsedFiles=${pageFiles.length} alarmVideoBlocks=${alarmBlocks.length} bFinished=${bFinishedText ?? "?"}`,
+        );
+        if (dbg?.traceRecordings && logger && alarmBlocks.length > 0) {
+          const sample = alarmBlocks[0]!.replace(/\s+/g, " ").slice(0, 700);
+          const extractedAlarmType = getXmlText(alarmBlocks[0]!, "alarmType")?.trim();
+          recordingsTraceLog(
+            dbg,
+            logger,
+            "listAlarmVideosViaBaichuan",
+            `findAlarmVideo GET sample alarmVideo[0]=${sample} (extracted alarmType=${extractedAlarmType ?? "-"})`,
+          );
+        }
+        if (bFinishedText === "1") break;
+
+        // If not finished, advance start to the last returned event startTime if possible.
+        // NOTE: startTime is parsed as UTC to preserve camera-provided numeric components.
+        // For requests, we must send those same numeric components back (local time methods),
+        // so we re-create a local Date from the UTC components.
+        const lastWithStart = [...pageFiles].reverse().find((f) => f.startTime != null);
+        if (!lastWithStart?.startTime) break;
+        const s = lastWithStart.startTime;
+        currentStart = new Date(
+          s.getUTCFullYear(),
+          s.getUTCMonth(),
+          s.getUTCDate(),
+          s.getUTCHours(),
+          s.getUTCMinutes(),
+          s.getUTCSeconds(),
+        );
+      } finally {
+        // Best-effort close.
+        try {
+          await this.sendXml({
+            cmdId: BC_CMD_ID_FIND_REC_VIDEO_CLOSE,
+            channel: params.channel,
+            payloadXml: getXml,
+            timeoutMs: 5_000,
+          });
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    const seen = new Set<string>();
+    return out.filter((f) => {
+      if (seen.has(f.fileName)) return false;
+      seen.add(f.fileName);
+      return true;
+    });
+  }
+
+  /**
+   * List "alarm video" events directly from an NVR/Hub via Baichuan.
+   *
+   * This uses the Baichuan <findAlarmVideo> flow (cmdId 272/273/274), which is the closest
+   * Baichuan-side equivalent to an "events list" coming from the hub.
+   *
+   * Returned items include timestamps and an alarmType string (stored in RecordingFile.recordType).
+   */
+  async listNvrAlarmEventsViaBaichuan(params: {
+    start: Date;
+    end: Date;
+    /** Channels to query. If omitted, best-effort discovery is used. */
+    channels?: number[];
+    /** Stream type hint for the request (default: mainStream). */
+    streamType?: RecordingStreamType;
+    /** Comma-separated alarmType list (Reolink XML format). */
+    alarmType?: string;
+    /** Safety limit for pagination/iterations per channel (default 50). */
+    maxIterations?: number;
+  }): Promise<ChannelRecordingFile[]> {
+    const requestedChannels = params.channels?.length
+      ? [...params.channels]
+      : [...this.channelPushData.keys()];
+
+    let channels = requestedChannels
+      .map((c) => this.normalizeChannel(c))
+      .filter((n, i, a) => a.indexOf(n) === i)
+      .sort((a, b) => a - b);
+
+    // If we can read channelNum, use it as a hard upper bound.
+    // Some NVRs/hubs expose placeholder channels in cmd_id 145 that will reject recording queries.
+    try {
+      const support = await this.getSupportInfo().catch(() => undefined);
+      const chNum = (support as any)?.channelNum;
+      if (typeof chNum === "number" && Number.isFinite(chNum) && chNum > 0) {
+        channels = channels.filter((c) => c >= 0 && c < chNum);
+      }
+    } catch {
+      // ignore
+    }
+
+    // Best-effort fallback when we couldn't infer any channel list.
+    if (channels.length === 0) {
+      const support = await this.getSupportInfo().catch(() => undefined);
+      const chNum = (support as any)?.channelNum;
+      if (typeof chNum === "number" && Number.isFinite(chNum) && chNum > 0) {
+        for (let i = 0; i < chNum; i++) channels.push(i);
+      } else {
+        channels.push(this.normalizeChannel(undefined));
+      }
+    }
+
+    const results: ChannelRecordingFile[] = [];
+    for (const channel of channels) {
+      try {
+        const uid =
+          this.getUidFromPushCacheForChannel(channel) ??
+          (await this.ensureUidForRecordings(channel, undefined));
+
+        const files = await this.listAlarmVideosViaBaichuan({
+          channel,
+          uid,
+          start: params.start,
+          end: params.end,
+          ...(params.streamType !== undefined ? { streamType: params.streamType } : {}),
+          ...(params.alarmType !== undefined ? { alarmType: params.alarmType } : {}),
+          ...(params.maxIterations !== undefined ? { maxIterations: params.maxIterations } : {}),
+        });
+
+        for (const f of files) results.push({ channel, uid, ...f });
+      } catch (e) {
+        // Some NVRs expose placeholder channels (or reject certain commands on some channels).
+        // Don't fail the whole request if one channel fails.
+        const msg = e instanceof Error ? e.message : String(e);
+        this.logger?.log?.(`[listNvrAlarmEventsViaBaichuan] channel ${channel} failed: ${msg}`);
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Like {@link ReolinkBaichuanApi#listNvrAlarmEventsViaBaichuan | listNvrAlarmEventsViaBaichuan},
+   * but returns enriched items (detection flags, ms timestamps, etc.).
+   */
+  async listNvrAlarmEventsEnrichedViaBaichuan(params: {
+    start: Date;
+    end: Date;
+    /** Channels to query. If omitted, best-effort discovery is used. */
+    channels?: number[];
+    /** Stream type hint for the request (default: mainStream). */
+    streamType?: RecordingStreamType;
+    /** Comma-separated alarmType list (Reolink XML format). */
+    alarmType?: string;
+    /** Safety limit for pagination/iterations per channel (default 50). */
+    maxIterations?: number;
+  }): Promise<EnrichedChannelRecordingFile[]> {
+    const events = await this.listNvrAlarmEventsViaBaichuan(params);
+    return events.map((ev) => {
+      const { channel, uid, ...rec } = ev;
+      const enriched = this.enrichRecordingFile(rec);
+      return { ...enriched, channel, ...(uid ? { uid } : {}) };
+    });
+  }
+
+  /**
+   * List "alarm-like" events from an NVR/Hub via CGI VOD search.
+   *
+   * This is the pragmatic fallback when Baichuan <findAlarmVideo> returns no entries on some
+   * NVR/HomeHub firmwares.
+   *
+   * The output is filtered to items that look like events:
+   * - motion OR any AI detection OR doorbell/package
+   */
+  async listNvrAlarmEventsEnrichedViaCgi(params: {
+    start: Date;
+    end: Date;
+    channels?: number[];
+    /** Stream type hint (default: mainStream -> CGI "main"). */
+    streamType?: RecordingStreamType;
+    /** If true (default), use day-by-day status table when available for better completeness. */
+    autoSearchByDay?: boolean;
+  }): Promise<EnrichedChannelRecordingFile[]> {
+    const streamType = params.streamType === "subStream" ? "sub" : "main";
+    const autoSearchByDay = params.autoSearchByDay ?? true;
+
+    // Determine channels (prefer explicit list; else use support.channelNum)
+    let channels: number[] = [];
+    if (params.channels?.length) {
+      channels = [...new Set(params.channels.map((c) => this.normalizeChannel(c)))].sort((a, b) => a - b);
+    } else {
+      const support = await this.getSupportInfo().catch(() => undefined);
+      const chNum = (support as any)?.channelNum;
+      if (typeof chNum === "number" && Number.isFinite(chNum) && chNum > 0) {
+        channels = Array.from({ length: chNum }, (_, i) => i);
+      } else {
+        channels = [this.normalizeChannel(undefined)];
+      }
+    }
+
+    await this.cgiApi.login();
+
+    const out: EnrichedChannelRecordingFile[] = [];
+    for (const channel of channels) {
+      const recs = await this.cgiApi.listNvrRecordings({
+        channel,
+        start: params.start,
+        end: params.end,
+        streamType,
+        autoSearchByDay,
+      });
+
+      for (const r of recs) {
+        const isEvent =
+          r.hasMotion ||
+          r.hasPerson ||
+          r.hasVehicle ||
+          r.hasAnimal ||
+          r.hasFace ||
+          r.hasDoorbell ||
+          r.hasPackage ||
+          r.hasRf ||
+          r.hasOther;
+        if (!isEvent) continue;
+        out.push({ ...r, channel });
+      }
+    }
+
+    return out;
+  }
+
+  // ====================================================================
   // VOD (Video On Demand) Passthrough Methods
   // These methods delegate to the internal CGI API for NVR/Hub VOD operations
   // ====================================================================
 
   /**
    * List enriched recordings from NVR/Hub.
-   * Passthrough to ReolinkCgiApi.listNvrRecordings for NVR/Hub support.
+   * 
+   * Supports multiple sources:
+   * - source="baichuan" (default): uses Baichuan FileInfoList + fallback findAlarmVideo, then enriches.
+   * - source="cgi": passthrough to ReolinkCgiApi.listNvrRecordings.
    * 
    * This method allows you to list enriched recordings from NVR/Hub devices using the same interface
    * as the Baichuan API, but delegates to the CGI API internally.
@@ -6817,9 +7255,371 @@ ${xmlDateTimePayload("endTime", end)}
    * @param params - Search parameters
    * @returns Array of enriched recording files
    */
-  async listNvrRecordings(params: ListNvrRecordingsParams): Promise<Array<EnrichedRecordingFile>> {
-    await this.cgiApi.login();
-    return await this.cgiApi.listNvrRecordings(params);
+  async listNvrRecordings(
+    params: ListNvrRecordingsParams & { source?: "baichuan" | "cgi" },
+  ): Promise<Array<EnrichedRecordingFile>> {
+    const { source = "baichuan", ...rest } = params;
+
+    if (source === "cgi") {
+      await this.cgiApi.login();
+      return await this.cgiApi.listNvrRecordings(rest);
+    }
+
+    const channel = this.normalizeChannel(rest.channel);
+    const uid =
+      this.getUidFromPushCacheForChannel(channel) ??
+      (await this.ensureUidForRecordings(channel, undefined));
+
+    // Map CGI-ish streamType names to Baichuan stream types.
+    // CGI commonly uses: main/sub/autotrack_main/autotrack_sub/telephoto_main/telephoto_sub.
+    const streamTypeLower = (rest.streamType ?? "main").toLowerCase();
+    const streamType: RecordingStreamType = streamTypeLower.includes("sub") ? "subStream" : "mainStream";
+
+    // IMPORTANT: listNvrRecordings is expected to list *actual VOD recordings*.
+    // On some NVR/Hub firmwares, Baichuan FileInfoList (cmdId 14/15/16) is unsupported (400 empty body).
+    // The Baichuan <findAlarmVideo> flow (cmdId 272/273/274) is *alarm/event-like* and can legitimately
+    // return 0 items for a whole day if there were no events, even though VOD recordings exist.
+    // Therefore, when FileInfoList is unavailable (or for long ranges where Baichuan returns empty), we
+    // fall back to CGI Search for completeness.
+    const dbg = this.client.getDebugConfig?.();
+    const logger = this.logger;
+
+    let enriched: EnrichedRecordingFile[] = [];
+    let usedCgiFallback = false;
+    try {
+      const recs = await this.listRecordings({
+        channel,
+        uid,
+        start: rest.start,
+        end: rest.end,
+        streamType,
+        // Do NOT fall back to <findAlarmVideo> here; that would change semantics to “events only”.
+        fallbackToAlarmVideo: false,
+      });
+      enriched = recs.map((r) => this.enrichRecordingFile(r));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      recordingsTraceLog(dbg, logger, "listNvrRecordings", `Baichuan VOD listing failed (${msg}); falling back to CGI Search`);
+      await this.cgiApi.login();
+      enriched = await this.cgiApi.listNvrRecordings({ ...rest, channel });
+      usedCgiFallback = true;
+    }
+
+    // If Baichuan returned nothing for a long range, do a best-effort CGI search before returning.
+    // This prevents confusing “0 clips” results when VOD exists but Baichuan is incomplete.
+    const rangeMs = rest.end.getTime() - rest.start.getTime();
+    if (enriched.length === 0 && Number.isFinite(rangeMs) && rangeMs >= 6 * 60 * 60 * 1000) {
+      recordingsTraceLog(dbg, logger, "listNvrRecordings", `Baichuan returned 0 clips for rangeMs=${rangeMs}; trying CGI Search for completeness`);
+      await this.cgiApi.login();
+      const cgiRecs = await this.cgiApi.listNvrRecordings({ ...rest, channel });
+      if (cgiRecs.length > 0) {
+        enriched = cgiRecs;
+        usedCgiFallback = true;
+      }
+    }
+
+    // VOD has priority. When we had to use CGI for completeness (or Baichuan is incomplete), try to
+    // recover best-effort alarm/detection flags using Baichuan <findAlarmVideo>.
+    // If we cannot find any alarm for the window, mark clips as motion (simple fallback), without
+    // failing the VOD listing.
+    if (usedCgiFallback && enriched.length > 0) {
+      const withTimeout = async <T>(p: Promise<T>, ms: number, label: string): Promise<T> => {
+        if (!Number.isFinite(ms) || ms <= 0) return p;
+        return (await Promise.race([
+          p,
+          new Promise<T>((_, reject) => {
+            const t = setTimeout(() => reject(new Error(`Timeout after ${ms}ms (${label})`)), ms);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (t as any).unref?.();
+          }),
+        ])) as T;
+      };
+
+      const isEventLike = (r: Pick<EnrichedRecordingFile, "hasMotion" | "hasPerson" | "hasVehicle" | "hasAnimal" | "hasFace" | "hasDoorbell" | "hasPackage" | "hasRf" | "hasOther">): boolean =>
+        Boolean(
+          r.hasMotion ||
+            r.hasPerson ||
+            r.hasVehicle ||
+            r.hasAnimal ||
+            r.hasFace ||
+            r.hasDoorbell ||
+            r.hasPackage ||
+            r.hasRf ||
+            r.hasOther,
+        );
+
+      const mergeRecordTypes = (a?: string, b?: string): string | undefined => {
+        const toks = new Set<string>();
+        const add = (s?: string) => {
+          if (!s) return;
+          for (const t of s
+            .toLowerCase()
+            .split(/[,\s]+/)
+            .map((x) => x.trim())
+            .filter(Boolean)) {
+            toks.add(t);
+          }
+        };
+        add(a);
+        add(b);
+        return toks.size ? Array.from(toks).join(",") : undefined;
+      };
+
+      try {
+        const events = await withTimeout(
+          this.listNvrAlarmEventsEnrichedViaBaichuan({
+            start: rest.start,
+            end: rest.end,
+            channels: [channel],
+            streamType,
+          }),
+          20_000,
+          "listNvrAlarmEventsEnrichedViaBaichuan",
+        );
+
+        const byChannel = events.filter((e) => e.channel === channel);
+
+        if (byChannel.length === 0) {
+          // No alarms at all -> simple fallback requested: mark as motion.
+          // Avoid overriding schedule clips when CGI provides schedule info.
+          let marked = 0;
+          for (const clip of enriched) {
+            const rt = (clip.recordType ?? "").toLowerCase();
+            const isSchedule = Boolean(clip.hasSchedule || rt.includes("sched") || rt.includes("schedule"));
+            if (isSchedule) continue;
+
+            // If CGI flagged everything as `other` on some firmwares, normalize to `motion`.
+            if (!isEventLike(clip) || (clip.hasOther && !clip.hasMotion && !clip.hasPerson && !clip.hasVehicle && !clip.hasAnimal && !clip.hasFace && !clip.hasDoorbell && !clip.hasPackage && !clip.hasRf)) {
+              clip.hasOther = false;
+              clip.hasMotion = true;
+              marked++;
+            }
+          }
+          recordingsTraceLog(dbg, logger, "listNvrRecordings", `No Baichuan alarms found; marked ${marked}/${enriched.length} VOD clips as motion`);
+        } else {
+          // Best-effort: detect a systematic offset and overlay alarm flags onto the closest clips.
+          const offsetBucketMs = (() => {
+            const bucketSizeMs = 60_000;
+            const maxAbsMs = 24 * 60 * 60 * 1000;
+            const counts = new Map<number, number>();
+
+            for (const ev of byChannel) {
+              for (const c of enriched) {
+                const raw = (c.startTimeMs ?? 0) - (ev.startTimeMs ?? 0);
+                const bucket = Math.round(raw / bucketSizeMs) * bucketSizeMs;
+                if (!Number.isFinite(bucket) || Math.abs(bucket) > maxAbsMs) continue;
+                counts.set(bucket, (counts.get(bucket) ?? 0) + 1);
+              }
+            }
+
+            let bestBucket = 0;
+            let bestCount = 0;
+            for (const [bucket, count] of counts.entries()) {
+              if (count > bestCount) {
+                bestCount = count;
+                bestBucket = bucket;
+              }
+            }
+
+            return bestCount >= 2 ? bestBucket : 0;
+          })();
+
+          if (offsetBucketMs !== 0) {
+            recordingsTraceLog(dbg, logger, "listNvrRecordings", `Detected Baichuan-events<->VOD time offset bucket: ${offsetBucketMs}ms`);
+          }
+
+          let augmented = 0;
+          for (const clip of enriched) {
+            const cStart = clip.startTimeMs ?? 0;
+            const cEnd = clip.endTimeMs ?? 0;
+
+            let matchedAny = false;
+            for (const ev of byChannel) {
+              const eStart = (ev.startTimeMs ?? 0) + offsetBucketMs;
+              const eEnd = (ev.endTimeMs ?? 0) + offsetBucketMs;
+
+              const startMax = Math.max(cStart, eStart);
+              const endMin = Math.min(cEnd, eEnd);
+              const overlap = Math.max(0, endMin - startMax);
+              if (overlap <= 0) continue;
+
+              matchedAny = true;
+              clip.hasPerson ||= ev.hasPerson;
+              clip.hasVehicle ||= ev.hasVehicle;
+              clip.hasAnimal ||= ev.hasAnimal;
+              clip.hasFace ||= ev.hasFace;
+              clip.hasMotion ||= ev.hasMotion;
+              clip.hasDoorbell ||= ev.hasDoorbell;
+              clip.hasPackage ||= ev.hasPackage;
+              clip.hasRf ||= ev.hasRf;
+              clip.hasOther ||= ev.hasOther;
+              {
+                const merged = mergeRecordTypes(clip.recordType, ev.recordType);
+                if (merged !== undefined) clip.recordType = merged;
+              }
+            }
+
+            if (matchedAny) augmented++;
+          }
+
+          recordingsTraceLog(dbg, logger, "listNvrRecordings", `Overlayed Baichuan alarms onto ${augmented}/${enriched.length} VOD clips`);
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        recordingsTraceLog(dbg, logger, "listNvrRecordings", `Alarm overlay failed (ignored): ${msg}`);
+
+        // If alarm overlay fails entirely, still honor the request: default to motion (best-effort).
+        let marked = 0;
+        for (const clip of enriched) {
+          const rt = (clip.recordType ?? "").toLowerCase();
+          const isSchedule = Boolean(clip.hasSchedule || rt.includes("sched") || rt.includes("schedule"));
+          if (isSchedule) continue;
+          if (!isEventLike(clip)) {
+            clip.hasMotion = true;
+            marked++;
+          }
+        }
+        if (marked > 0) recordingsTraceLog(dbg, logger, "listNvrRecordings", `Alarm overlay failed; marked ${marked}/${enriched.length} VOD clips as motion`);
+      }
+    }
+
+    // IMPORTANT: Keep `id` stable and CGI-compatible.
+    // CGI VOD search returns `/mnt/...` identifiers, while Baichuan <findAlarmVideo> often returns
+    // numeric-ish ids (e.g. "012026...") that are not compatible with downstream consumers that
+    // expect CGI-style file paths.
+    //
+    // When we detect non-/mnt ids, attempt to map each Baichuan item to the closest CGI item by
+    // (start,end) timestamps and replace `id` with the CGI identifier.
+    const needsCgiIdMapping = enriched.some((r) => typeof r.id === "string" && !r.id.startsWith("/mnt/"));
+    if (needsCgiIdMapping) {
+      try {
+        await this.cgiApi.login();
+        const cgiRecs = await this.cgiApi.listNvrRecordings({ ...rest, channel });
+
+        // Fast-path mapping for numeric-ish Baichuan ids: many NVR/Hub firmwares return
+        // an identifier like "01YYYYMMDDHHMMSS". CGI VOD filenames include the same timestamp as
+        // ".../Rec..._YYYYMMDD_HHMMSS_...".
+        const cgiByStartStamp = new Map<string, EnrichedRecordingFile>();
+        {
+          const re = /Rec\w*_(\d{8})_(\d{6})_/;
+          for (const c of cgiRecs) {
+            const m = re.exec(c.id ?? "");
+            if (!m) continue;
+            const k = `${m[1]}_${m[2]}`;
+            if (!cgiByStartStamp.has(k)) cgiByStartStamp.set(k, c);
+          }
+        }
+
+        // Baichuan XML times are sometimes parsed as UTC to preserve the camera-provided numeric
+        // components, while CGI uses local time components. This can introduce a constant offset
+        // between the two timelines. Detect the best offset (bucketed to minutes) to improve
+        // matching robustness.
+        const offsetBucketMs = (() => {
+          const bucketSizeMs = 60_000;
+          const maxAbsMs = 24 * 60 * 60 * 1000;
+          const counts = new Map<number, number>();
+
+          for (const b of enriched) {
+            for (const c of cgiRecs) {
+              const raw = (c.startTimeMs ?? 0) - (b.startTimeMs ?? 0);
+              const bucket = Math.round(raw / bucketSizeMs) * bucketSizeMs;
+              if (!Number.isFinite(bucket) || Math.abs(bucket) > maxAbsMs) continue;
+              counts.set(bucket, (counts.get(bucket) ?? 0) + 1);
+            }
+          }
+
+          let bestBucket = 0;
+          let bestCount = 0;
+          for (const [bucket, count] of counts.entries()) {
+            if (count > bestCount) {
+              bestCount = count;
+              bestBucket = bucket;
+            }
+          }
+
+          // Only apply if it looks like a real systematic offset (needs some support).
+          return bestCount >= 2 ? bestBucket : 0;
+        })();
+
+        if (offsetBucketMs !== 0) {
+          recordingsTraceLog(dbg, logger, "listNvrRecordings", `Detected Baichuan<->CGI time offset bucket: ${offsetBucketMs}ms`);
+        }
+
+        const usedCgiIds = new Set<string>();
+        const isMntPath = (s: string | undefined): s is string => typeof s === "string" && s.startsWith("/mnt/");
+
+        let mapped = 0;
+        for (const b of enriched) {
+          if (isMntPath(b.id)) continue;
+
+          // 1) Deterministic mapping by timestamp embedded in Baichuan id/fileName.
+          // Example: "0120260109083717" -> "20260109_083717".
+          if (typeof b.fileName === "string" && /^\d{16}$/.test(b.fileName)) {
+            const digits = b.fileName.slice(2); // drop leading "01"
+            if (/^\d{14}$/.test(digits)) {
+              const k = `${digits.slice(0, 8)}_${digits.slice(8, 14)}`;
+              const direct = cgiByStartStamp.get(k);
+              if (direct && isMntPath(direct.id) && !usedCgiIds.has(direct.id)) {
+                b.id = direct.id;
+                b.raw.id = direct.id;
+                usedCgiIds.add(direct.id);
+                mapped++;
+                continue;
+              }
+            }
+          }
+
+          // Find best candidate by overlap / closeness.
+          let best: EnrichedRecordingFile | undefined;
+          let bestScore = Number.POSITIVE_INFINITY;
+
+          for (const c of cgiRecs) {
+            if (!isMntPath(c.id)) continue;
+            if (usedCgiIds.has(c.id)) continue;
+
+            const bStart = (b.startTimeMs ?? 0) + offsetBucketMs;
+            const bEnd = (b.endTimeMs ?? 0) + offsetBucketMs;
+
+            const ds = Math.abs((c.startTimeMs ?? 0) - bStart);
+            const de = Math.abs((c.endTimeMs ?? 0) - bEnd);
+
+            const startMax = Math.max(c.startTimeMs ?? 0, bStart);
+            const endMin = Math.min(c.endTimeMs ?? 0, bEnd);
+            const overlap = Math.max(0, endMin - startMax);
+            const union = Math.max(c.endTimeMs ?? 0, bEnd) - Math.min(c.startTimeMs ?? 0, bStart);
+            const overlapRatio = union > 0 ? overlap / union : 0;
+
+            // Quick reject when they're clearly unrelated.
+            // Allow some slack: alarm events can be slightly shorter/longer than VOD clips.
+            if (overlapRatio < 0.5 && ds > 10_000) continue;
+
+            // Lower is better; reward overlap.
+            const score = ds + de - overlapRatio * 5_000;
+            if (score < bestScore) {
+              bestScore = score;
+              best = c;
+            }
+          }
+
+          if (best && isMntPath(best.id)) {
+            b.id = best.id;
+            // Keep a copy on the raw object for callers that prefer pulling the CGI id from there.
+            b.raw.id = best.id;
+            usedCgiIds.add(best.id);
+            mapped++;
+          }
+        }
+
+        recordingsTraceLog(dbg, logger, "listNvrRecordings", `Mapped ${mapped}/${enriched.length} Baichuan ids to CGI /mnt paths`);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        recordingsTraceLog(dbg, logger, "listNvrRecordings", `CGI id mapping skipped/failed: ${msg}`);
+        // Best-effort only: keep Baichuan ids when CGI mapping is unavailable.
+      }
+    }
+
+    enriched.sort((a, b) => (a.startTimeMs ?? 0) - (b.startTimeMs ?? 0));
+    return enriched;
   }
 
   /**

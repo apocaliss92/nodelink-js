@@ -92,6 +92,8 @@
     "test:nvr:udp": "npm run test:build && node dist/test/nvr/test-nvr-udp.js",
     "test:nvr:streams": "npm run test:build && node dist/test/nvr/test-nvr-streams.js",
     "test:nvr:vod": "npm run test:build && node dist/test/nvr/test-nvr-vod.js",
+    "test:nvr:alarm-events": "npm run test:build && node dist/test/nvr/test-nvr-alarm-events-baichuan.js",
+    "test:nvr:matrix": "npm run test:build && node dist/test/nvr/test-nvr-matrix.js",
     "test:nvr:devices-info": "npm run test:build && node dist/test/nvr/test-baichuan-devices-info.js",
     "test:nvr:all": "npm run test:nvr:tcp && npm run test:nvr:udp && npm run test:nvr:streams",
     "test:all": "npm run test:tcp && npm run test:udp && npm run test:streams",
