@@ -12,6 +12,11 @@ export type AutoDetectInputs = {
   uid?: string;
   logger?: Logger;
   debugOptions?: BaichuanClientOptions["debugOptions"];
+  /**
+   * Optional override for BCUDP discovery method.
+   * If omitted, autodetect will try `local`, then `remote`, then `relay`, then `map`.
+   */
+  udpDiscoveryMethod?: BaichuanClientOptions["udpDiscoveryMethod"];
 };
 
 export type DeviceType = "camera" | "battery-cam" | "nvr" | "multifocal";
@@ -20,6 +25,8 @@ export type AutoDetectResult = {
   type: DeviceType;
   transport: BaichuanTransport;
   uid: string;
+  /** If `transport === "udp"`, the UDP discovery method that succeeded. */
+  udpDiscoveryMethod?: BaichuanClientOptions["udpDiscoveryMethod"];
   deviceInfo?: Partial<ReolinkDeviceInfo>;
   channelNum?: number;
   api: ReolinkBaichuanApi; // The API instance that was successfully used for detection
@@ -114,6 +121,7 @@ function createBaichuanApi(
     ...base,
     transport: "udp",
     uid,
+    ...(inputs.udpDiscoveryMethod ? { udpDiscoveryMethod: inputs.udpDiscoveryMethod } : {}),
     idleDisconnect: true,
   });
   attachErrorHandler(api, transport, inputs);
@@ -188,12 +196,12 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
     // Check if it's a multi-focal device using the dual lens model map or channelNum fallback
     const normalizedModel = model ? model.trim() : undefined;
     const isMultifocalByModel = normalizedModel ? DUAL_LENS_MODELS.has(normalizedModel) : false;
-    
+
     // Also check if channelNum suggests dual lens (2-3 channels)
     // Handle both number and string types for channelNum
     const channelNumValue = typeof channelNum === "string" ? Number.parseInt(channelNum, 10) : channelNum;
     const hasDualLensChannelCount = (channelNumValue === 2 || channelNumValue === 3) && Number.isFinite(channelNumValue);
-    
+
     // Consider it dual lens if model matches OR if channelNum suggests it
     const isMultifocal = isMultifocalByModel || hasDualLensChannelCount;
 
@@ -260,53 +268,79 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
     }
 
     try {
-      const udpApi = createBaichuanApi({ ...inputs, uid: normalizedUid }, "udp");
-      await udpApi.login();
+      const detectOverUdpApi = async (
+        udpApi: ReolinkBaichuanApi,
+        udpDiscoveryMethod: NonNullable<BaichuanClientOptions["udpDiscoveryMethod"]>,
+      ): Promise<AutoDetectResult> => {
+        const deviceInfo = await udpApi.getInfo();
+        const capabilities = await udpApi.getDeviceCapabilities();
+        const channelNum = capabilities?.support?.channelNum ?? 1;
+        const model = deviceInfo.type?.trim();
 
-      const deviceInfo = await udpApi.getInfo();
-      const capabilities = await udpApi.getDeviceCapabilities();
-      const channelNum = capabilities?.support?.channelNum ?? 1;
-      const model = deviceInfo.type?.trim();
+        // Check if it's a multi-focal device using the dual lens model map or channelNum fallback
+        // Multi-focal devices can also be UDP (battery multi-focal cameras)
+        const normalizedModel = model ? model.trim() : undefined;
+        const isMultifocalByModel = normalizedModel ? DUAL_LENS_MODELS.has(normalizedModel) : false;
 
-      // Check if it's a multi-focal device using the dual lens model map or channelNum fallback
-      // Multi-focal devices can also be UDP (battery multi-focal cameras)
-      const normalizedModel = model ? model.trim() : undefined;
-      const isMultifocalByModel = normalizedModel ? DUAL_LENS_MODELS.has(normalizedModel) : false;
-      
-      // Also check if channelNum suggests dual lens (2-3 channels)
-      // Handle both number and string types for channelNum
-      const channelNumValue = typeof channelNum === "string" ? Number.parseInt(channelNum, 10) : channelNum;
-      const hasDualLensChannelCount = (channelNumValue === 2 || channelNumValue === 3) && Number.isFinite(channelNumValue);
-      
-      // Consider it dual lens if model matches OR if channelNum suggests it
-      const isMultifocal = isMultifocalByModel || hasDualLensChannelCount;
+        // Also check if channelNum suggests dual lens (2-3 channels)
+        // Handle both number and string types for channelNum
+        const channelNumValue = typeof channelNum === "string" ? Number.parseInt(channelNum, 10) : channelNum;
+        const hasDualLensChannelCount = (channelNumValue === 2 || channelNumValue === 3) && Number.isFinite(channelNumValue);
 
-      if (isMultifocal) {
-        const detectionMethod = isMultifocalByModel ? "model match" : "channelNum fallback";
-        logger?.log?.(`[AutoDetect] UDP connection successful. Detected multi-focal device (${detectionMethod}: model=${normalizedModel ?? "unknown"}, channelNum=${channelNum}).`);
-        // Don't close the API, return it for continued use
+        // Consider it dual lens if model matches OR if channelNum suggests it
+        const isMultifocal = isMultifocalByModel || hasDualLensChannelCount;
+
+        if (isMultifocal) {
+          const detectionMethod = isMultifocalByModel ? "model match" : "channelNum fallback";
+          logger?.log?.(`[AutoDetect] UDP connection successful. Detected multi-focal device (${detectionMethod}: model=${normalizedModel ?? "unknown"}, channelNum=${channelNum}).`);
+          return {
+            type: "multifocal",
+            transport: "udp",
+            uid: normalizedUid,
+            udpDiscoveryMethod,
+            deviceInfo,
+            channelNum,
+            api: udpApi,
+          };
+        }
+
+        // Regular battery camera
+        logger?.log?.(`[AutoDetect] UDP connection successful. Detected battery camera.`);
         return {
-          type: "multifocal",
+          type: "battery-cam",
           transport: "udp",
           uid: normalizedUid,
+          udpDiscoveryMethod,
           deviceInfo,
-          channelNum,
+          channelNum: 1,
           api: udpApi,
         };
+      };
+
+      const methodsToTry: Array<NonNullable<BaichuanClientOptions["udpDiscoveryMethod"]>> =
+        inputs.udpDiscoveryMethod ? [inputs.udpDiscoveryMethod] : ["local", "remote", "relay", "map"];
+
+      const udpErrors: string[] = [];
+      for (const m of methodsToTry) {
+        let udpApi: ReolinkBaichuanApi | undefined;
+        try {
+          logger?.log?.(`[AutoDetect] Trying UDP discovery method: ${m}...`);
+          udpApi = createBaichuanApi({ ...inputs, uid: normalizedUid, udpDiscoveryMethod: m }, "udp");
+          await udpApi.login();
+          return await detectOverUdpApi(udpApi, m);
+        } catch (e) {
+          const msg = (e as any)?.message || (e as any)?.toString?.() || String(e);
+          udpErrors.push(`${m}: ${msg}`);
+          try {
+            await udpApi?.close();
+          } catch {
+            // ignore
+          }
+          logger?.log?.(`[AutoDetect] UDP (${m}) failed: ${msg}`);
+        }
       }
 
-      // Regular battery camera
-      logger?.log?.(`[AutoDetect] UDP connection successful. Detected battery camera.`);
-      // Don't close the API, return it for continued use
-
-      return {
-        type: "battery-cam",
-        transport: "udp",
-        uid: normalizedUid,
-        deviceInfo,
-        channelNum: 1,
-        api: udpApi,
-      };
+      throw new Error(`UDP discovery failed for all methods. ${udpErrors.join(" | ")}`);
     } catch (udpError) {
       logger?.log?.(
         `[AutoDetect] Both TCP and UDP failed. TCP error: ${tcpError}, UDP error: ${udpError}`

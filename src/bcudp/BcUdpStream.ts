@@ -1,10 +1,12 @@
 import dgram from "node:dgram";
+import dns from "node:dns/promises";
 import { EventEmitter } from "node:events";
 import { type AddressInfo } from "node:net";
+import { networkInterfaces } from "node:os";
 import { setInterval as setIntervalNode } from "node:timers";
 import { BCUDP_DATA_HEADER_SIZE, BCUDP_DEFAULT_MTU, BCUDP_DISCOVERY_PORT_LOCAL_UID, BCUDP_DISCOVERY_PORT_LOCAL_ANY } from "./constants";
 import { decodeBcUdpPacket, encodeAckPacket, encodeDataPacket, encodeDiscoveryPacket } from "./packets";
-import { buildC2dA, buildC2dC, buildC2dHb, buildC2dT, parseD2cCfm, parseD2cCr, parseD2cDisc, parseD2cHb, parseD2cT } from "./xml";
+import { buildC2dA, buildC2dC, buildC2dHb, buildC2dT, buildC2mQ, buildC2rC, buildC2rCfm, parseD2cCfm, parseD2cCr, parseD2cDisc, parseD2cHb, parseD2cT, parseM2cQr, parseR2cCr, type IpPort } from "./xml";
 
 class AckLatency {
   private currentValues: number[] = [];
@@ -48,6 +50,15 @@ export type BcUdpStreamOptions =
       /** Local discovery via UID (typical for battery cameras). */
       mode: "uid";
       uid: string;
+
+      /**
+       * Discovery method for UID-based connection.
+       * - `local`: UDP broadcast to LAN (no Reolink servers)
+       * - `remote`: use Reolink servers to learn addresses, then try direct device connection
+       * - `map`: device-initiated via public (dmap) address
+       * - `relay`: fully relayed via Reolink servers
+       */
+      discoveryMethod?: BcUdpDiscoveryMethod;
     }
   | {
       /** Direct connection with already-known parameters. */
@@ -57,6 +68,33 @@ export type BcUdpStreamOptions =
       clientId: number;
       cameraId: number;
     };
+
+export type BcUdpDiscoveryMethod = "local" | "remote" | "map" | "relay";
+
+type SockAddr = { host: string; port: number };
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+const P2P_RELAY_HOSTNAMES = [
+  "p2p.reolink.com",
+  "p2p1.reolink.com",
+  "p2p2.reolink.com",
+  "p2p3.reolink.com",
+  "p2p4.reolink.com",
+  "p2p5.reolink.com",
+  "p2p6.reolink.com",
+  "p2p7.reolink.com",
+  "p2p8.reolink.com",
+  "p2p9.reolink.com",
+  "p2p10.reolink.com",
+  "p2p11.reolink.com",
+];
+
+const P2P_LOOKUP_PORT = 9999;
+const P2P_MAX_WAIT_MS = 15_000;
+const P2P_RESEND_WAIT_MS = 500;
 
 type SendEntry = { packetId: number; buf: Buffer; ts: number };
 
@@ -164,6 +202,405 @@ export class BcUdpStream extends EventEmitter<{
 
   private async discoveryUid(sock: dgram.Socket): Promise<void> {
     if (this.opts.mode !== "uid") throw new Error("Internal: discoveryUid called for non-uid mode");
+
+    const method: BcUdpDiscoveryMethod = this.opts.discoveryMethod ?? "local";
+    if (method === "local") {
+      await this.discoveryUidLocal(sock);
+      return;
+    }
+
+    await this.discoveryUidP2p(sock, method);
+  }
+
+  private getLocalIPv4(): string {
+    const ifaces = networkInterfaces();
+    for (const name of Object.keys(ifaces)) {
+      const entries = ifaces[name];
+      if (!entries) continue;
+      for (const addr of entries) {
+        if (addr.family === "IPv4" && !addr.internal) {
+          return addr.address;
+        }
+      }
+    }
+    throw new Error("No non-loopback IPv4 address found (required for P2P discovery)");
+  }
+
+  private async discoveryUidP2p(sock: dgram.Socket, method: Exclude<BcUdpDiscoveryMethod, "local">): Promise<void> {
+    if (this.opts.mode !== "uid") throw new Error("Internal: discoveryUidP2p called for non-uid mode");
+
+    const addr = sock.address();
+    const localPort = typeof addr === "string" ? 0 : (addr as AddressInfo).port;
+    const cid = (Math.floor(Math.random() * 0x7fffffff) | 0) || 82000;
+
+    const lookup = await this.p2pUidLookup(sock, this.opts.uid);
+    const reg = await this.p2pRegister(sock, {
+      uid: this.opts.uid,
+      cid,
+      localPort,
+      relay: lookup.relay,
+      reg: lookup.reg,
+    });
+
+    const conn: "local" | "map" | "relay" = method === "remote" ? "local" : method;
+    const connected = await this.p2pConnect(sock, { ...reg, uid: this.opts.uid, cid }, method);
+
+    // Confirm to register server (best-effort like neolink: send a few times).
+    await this.p2pConfirm(sock, reg.reg, {
+      sid: reg.sid,
+      conn,
+      cid,
+      did: connected.did,
+    });
+
+    this.clientId = cid;
+    this.cameraId = connected.did;
+    this.sid = reg.sid;
+    this.discoveryTid = connected.tid;
+    this.remote = { host: connected.rhost, port: connected.rport };
+  }
+
+  private async p2pUidLookup(sock: dgram.Socket, uid: string): Promise<{ reg: IpPort; relay: IpPort }> {
+    const resolved: string[] = [];
+    for (const host of P2P_RELAY_HOSTNAMES) {
+      try {
+        const answers = await dns.lookup(host, { family: 4, all: true });
+        for (const a of answers) {
+          if (a.address && !resolved.includes(a.address)) resolved.push(a.address);
+        }
+      } catch {
+        // ignore DNS failures per-host
+      }
+    }
+    if (resolved.length === 0) {
+      throw new Error("P2P UID lookup failed: no p2p.reolink.com addresses resolved");
+    }
+
+    const start = Date.now();
+    let lastErr: Error | undefined;
+    for (const ip of resolved) {
+      const remaining = P2P_MAX_WAIT_MS - (Date.now() - start);
+      if (remaining <= 0) break;
+      try {
+        const res = await this.p2pUidLookupOne(sock, uid, { host: ip, port: P2P_LOOKUP_PORT }, Math.min(remaining, 3_000));
+        return res;
+      } catch (e) {
+        lastErr = e instanceof Error ? e : new Error(String(e));
+      }
+    }
+    throw lastErr ?? new Error("P2P UID lookup failed");
+  }
+
+  private async p2pUidLookupOne(
+    sock: dgram.Socket,
+    uid: string,
+    dest: SockAddr,
+    timeoutMs: number,
+  ): Promise<{ reg: IpPort; relay: IpPort }> {
+    const tid = (Math.floor(Math.random() * 0x7fffffff) | 0) >>> 0;
+    const xml = buildC2mQ({ uid });
+    const pkt = encodeDiscoveryPacket(tid, xml);
+
+    return await new Promise((resolve, reject) => {
+      const deadline = setTimeout(() => {
+        cleanup();
+        reject(new Error(`P2P UID lookup timeout (${dest.host}:${dest.port})`));
+      }, timeoutMs);
+
+      const onMsg = (msg: Buffer) => {
+        try {
+          const p = decodeBcUdpPacket(msg);
+          if (p.kind !== "discovery") return;
+          if ((p.tid >>> 0) !== (tid >>> 0)) return;
+          const qr = parseM2cQr(p.xml);
+          if (!qr?.reg || !qr?.relay) return;
+          cleanup();
+          resolve({ reg: qr.reg, relay: qr.relay });
+        } catch {
+          // ignore
+        }
+      };
+
+      const send = () => {
+        try {
+          sock.send(pkt, dest.port, dest.host);
+        } catch {
+          // ignore
+        }
+      };
+
+      const retryTimer = setIntervalNode(send, P2P_RESEND_WAIT_MS);
+      const cleanup = () => {
+        clearTimeout(deadline);
+        clearInterval(retryTimer);
+        sock.off("message", onMsg);
+      };
+
+      sock.on("message", onMsg);
+      send();
+    });
+  }
+
+  private async p2pRegister(
+    sock: dgram.Socket,
+    params: { uid: string; cid: number; localPort: number; reg: IpPort; relay: IpPort },
+  ): Promise<{ reg: SockAddr; dev?: SockAddr; dmap?: SockAddr; relay?: SockAddr; sid: number }> {
+    const localIp = this.getLocalIPv4();
+    const tid = (Math.floor(Math.random() * 0x7fffffff) | 0) >>> 0;
+    const xml = buildC2rC({
+      uid: params.uid,
+      cli: { ip: localIp, port: params.localPort },
+      relay: params.relay,
+      cid: params.cid,
+      family: 4,
+      revision: 3,
+    });
+    const pkt = encodeDiscoveryPacket(tid, xml);
+    const regDest: SockAddr = { host: params.reg.ip, port: params.reg.port };
+
+    const parsed = await new Promise<{ sid: number; dev?: SockAddr; dmap?: SockAddr; relay?: SockAddr }>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error(`P2P register timeout after ${P2P_MAX_WAIT_MS}ms`));
+      }, P2P_MAX_WAIT_MS);
+
+      const onMsg = (msg: Buffer, rinfo: dgram.RemoteInfo) => {
+        try {
+          const p = decodeBcUdpPacket(msg);
+          if (p.kind !== "discovery") return;
+          if ((p.tid >>> 0) !== (tid >>> 0)) return;
+
+          const r = parseR2cCr(p.xml);
+          if (!r) return;
+          if (r.rsp === -1 || r.rsp === -3) {
+            cleanup();
+            reject(new Error(`P2P register rejected (rsp=${r.rsp})`));
+            return;
+          }
+          if (r.sid == null) return;
+
+          const normalize = (ipPort?: IpPort): SockAddr | undefined => {
+            if (!ipPort?.ip) return undefined;
+            const port = ipPort.port === 0 ? rinfo.port : ipPort.port;
+            if (!port) return undefined;
+            return { host: ipPort.ip, port };
+          };
+
+          const dev = normalize(r.dev);
+          const dmap = normalize(r.dmap);
+          const relay = normalize(r.relay);
+          if (!dev && !dmap && !relay) return;
+
+          cleanup();
+          resolve({
+            sid: r.sid,
+            ...(dev ? { dev } : {}),
+            ...(dmap ? { dmap } : {}),
+            ...(relay ? { relay } : {}),
+          });
+        } catch {
+          // ignore
+        }
+      };
+
+      const send = () => {
+        try {
+          sock.send(pkt, regDest.port, regDest.host);
+        } catch {
+          // ignore
+        }
+      };
+
+      const retryTimer = setIntervalNode(send, P2P_RESEND_WAIT_MS);
+      const cleanup = () => {
+        clearTimeout(timeout);
+        clearInterval(retryTimer);
+        sock.off("message", onMsg);
+      };
+
+      sock.on("message", onMsg);
+      send();
+    });
+
+    return {
+      reg: regDest,
+      sid: parsed.sid,
+      ...(parsed.dev ? { dev: parsed.dev } : {}),
+      ...(parsed.dmap ? { dmap: parsed.dmap } : {}),
+      ...(parsed.relay ? { relay: parsed.relay } : {}),
+    };
+  }
+
+  private async p2pConnect(
+    sock: dgram.Socket,
+    reg: { reg: SockAddr; dev?: SockAddr; dmap?: SockAddr; relay?: SockAddr; sid: number; uid: string; cid: number },
+    method: Exclude<BcUdpDiscoveryMethod, "local">,
+  ): Promise<{ did: number; rhost: string; rport: number; tid: number }> {
+    if (method === "remote") {
+      const tasks: Array<Promise<{ did: number; rhost: string; rport: number; tid: number }>> = [];
+      if (reg.dev) tasks.push(this.p2pClientInitiated(sock, { sid: reg.sid, cid: reg.cid, conn: "local", dest: reg.dev }));
+      if (reg.dmap) tasks.push(this.p2pDeviceInitiated(sock, { sid: reg.sid, cid: reg.cid, conn: "local", expectFrom: reg.dmap }));
+      if (tasks.length === 0) throw new Error("P2P remote discovery: missing dev/dmap addresses");
+      return await Promise.race(tasks);
+    }
+
+    if (method === "map") {
+      if (!reg.dmap) throw new Error("P2P map discovery: missing dmap address");
+      return await this.p2pDeviceInitiated(sock, { sid: reg.sid, cid: reg.cid, conn: "map", expectFrom: reg.dmap });
+    }
+
+    // relay
+    if (!reg.relay) throw new Error("P2P relay discovery: missing relay address");
+    return await this.p2pClientInitiated(sock, { sid: reg.sid, cid: reg.cid, conn: "relay", dest: reg.relay, requireConnMatch: true });
+  }
+
+  private async p2pClientInitiated(
+    sock: dgram.Socket,
+    params: { sid: number; cid: number; conn: "local" | "relay"; dest: SockAddr; requireConnMatch?: boolean },
+  ): Promise<{ did: number; rhost: string; rport: number; tid: number }> {
+    const tid = (Math.floor(Math.random() * 0x7fffffff) | 0) >>> 0;
+    const xml = buildC2dT({ sid: params.sid, conn: params.conn, cid: params.cid, mtu: this.mtu });
+    const pkt = encodeDiscoveryPacket(tid, xml);
+
+    return await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error(`P2P client-initiated (${params.conn}) timeout after ${P2P_MAX_WAIT_MS}ms`));
+      }, P2P_MAX_WAIT_MS);
+
+      const onMsg = (msg: Buffer, rinfo: dgram.RemoteInfo) => {
+        try {
+          const p = decodeBcUdpPacket(msg);
+          if (p.kind !== "discovery") return;
+          const cfm = parseD2cCfm(p.xml);
+          if (!cfm) return;
+          if (cfm.cid !== params.cid) return;
+          if (cfm.sid !== params.sid) return;
+          if (params.requireConnMatch && (cfm.conn ?? "") !== params.conn) return;
+          if (cfm.did == null) return;
+          cleanup();
+          resolve({ did: cfm.did, rhost: rinfo.address, rport: rinfo.port, tid });
+        } catch {
+          // ignore
+        }
+      };
+
+      const send = () => {
+        try {
+          sock.send(pkt, params.dest.port, params.dest.host);
+        } catch {
+          // ignore
+        }
+      };
+
+      const retryTimer = setIntervalNode(send, P2P_RESEND_WAIT_MS);
+      const cleanup = () => {
+        clearTimeout(timeout);
+        clearInterval(retryTimer);
+        sock.off("message", onMsg);
+      };
+
+      sock.on("message", onMsg);
+      send();
+    });
+  }
+
+  private async p2pDeviceInitiated(
+    sock: dgram.Socket,
+    params: { sid: number; cid: number; conn: "local" | "map"; expectFrom: SockAddr },
+  ): Promise<{ did: number; rhost: string; rport: number; tid: number }> {
+    return await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error(`P2P device-initiated (${params.conn}) timeout after ${P2P_MAX_WAIT_MS}ms`));
+      }, P2P_MAX_WAIT_MS);
+
+      let state: "wait_t" | "wait_cfm" = "wait_t";
+      let did: number | undefined;
+      let tid: number | undefined;
+      let rhost: string | undefined;
+      let rport: number | undefined;
+      let resendA: NodeJS.Timeout | undefined;
+
+      const sendA = () => {
+        if (state !== "wait_cfm" || did == null || tid == null || rhost == null || rport == null) return;
+        try {
+          const aXml = buildC2dA({ sid: params.sid, conn: params.conn, cid: params.cid, did, mtu: this.mtu });
+          const aPkt = encodeDiscoveryPacket(tid, aXml);
+          sock.send(aPkt, rport, rhost);
+        } catch {
+          // ignore
+        }
+      };
+
+      const onMsg = (msg: Buffer, info: dgram.RemoteInfo) => {
+        try {
+          const p = decodeBcUdpPacket(msg);
+          if (p.kind !== "discovery") return;
+
+          if (state === "wait_t") {
+            const dt = parseD2cT(p.xml);
+            if (!dt) return;
+            if (dt.cid !== params.cid) return;
+            if (dt.sid !== params.sid) return;
+            if ((dt.conn ?? "") !== params.conn) return;
+            if (info.address !== params.expectFrom.host) return;
+            if (params.expectFrom.port && info.port !== params.expectFrom.port) {
+              // Some environments can re-map ports; be permissive if we know only host.
+            }
+
+            did = dt.did;
+            tid = p.tid;
+            rhost = info.address;
+            rport = info.port;
+            state = "wait_cfm";
+
+            sendA();
+            resendA = setIntervalNode(sendA, P2P_RESEND_WAIT_MS);
+            return;
+          }
+
+          const cfm = parseD2cCfm(p.xml);
+          if (!cfm) return;
+          if (cfm.cid !== params.cid) return;
+          if (cfm.sid !== params.sid) return;
+          if (cfm.did == null || did == null) return;
+          if (cfm.did !== did) return;
+          if ((cfm.conn ?? "") !== params.conn) return;
+
+          cleanup();
+          resolve({ did, rhost: info.address, rport: info.port, tid: tid ?? 0 });
+        } catch {
+          // ignore
+        }
+      };
+
+      const cleanup = () => {
+        clearTimeout(timeout);
+        if (resendA) clearInterval(resendA);
+        sock.off("message", onMsg);
+      };
+
+      sock.on("message", onMsg);
+    });
+  }
+
+  private async p2pConfirm(sock: dgram.Socket, reg: SockAddr, params: { sid: number; conn: string; cid: number; did: number }): Promise<void> {
+    const xml = buildC2rCfm({ sid: params.sid, conn: params.conn, rsp: 0, cid: params.cid, did: params.did });
+    for (let i = 0; i < 5; i++) {
+      const tid = (Math.floor(Math.random() * 0x7fffffff) | 0) >>> 0;
+      const pkt = encodeDiscoveryPacket(tid, xml);
+      try {
+        sock.send(pkt, reg.port, reg.host);
+      } catch {
+        // ignore
+      }
+      await sleep(P2P_RESEND_WAIT_MS);
+    }
+  }
+
+  private async discoveryUidLocal(sock: dgram.Socket): Promise<void> {
+    if (this.opts.mode !== "uid") throw new Error("Internal: discoveryUidLocal called for non-uid mode");
     // Internal defaults (do not expose knobs):
     // - Battery cameras may be sleeping -> keep a longer timeout.
     // - Send to both discovery ports 2015/2018.

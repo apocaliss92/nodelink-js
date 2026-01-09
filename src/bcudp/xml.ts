@@ -12,6 +12,146 @@ export function buildC2dS(params: { clientPort: number }): string {
   return buildP2pXml(`<C2D_S><to><port>${params.clientPort}</port></to></C2D_S>`);
 }
 
+export type IpPort = { ip: string; port: number };
+
+/**
+ * Build C2M_Q message (client -> Reolink middle-man server) for UID lookup.
+ * Sent to p2p*.reolink.com:9999.
+ */
+export function buildC2mQ(params: { uid: string; os?: string }): string {
+  const os = params.os ?? "MAC";
+  return buildP2pXml(
+    `<C2M_Q>` +
+      `<uid>${xmlEscape(params.uid)}</uid>` +
+      `<p>${xmlEscape(os)}</p>` +
+    `</C2M_Q>`,
+  );
+}
+
+export type M2cQrParsed = {
+  reg?: IpPort;
+  relay?: IpPort;
+  log?: IpPort;
+  t?: IpPort;
+};
+
+function parseIpPortBlock(tag: "reg" | "relay" | "log" | "t", body: string): IpPort | undefined {
+  const m = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "i").exec(body);
+  if (!m) return undefined;
+  const block = m[1] ?? "";
+  const ip = /<ip>([^<]+)<\/ip>/i.exec(block)?.[1];
+  const port = /<port>(-?\d+)<\/port>/i.exec(block)?.[1];
+  if (!ip || port == null) return undefined;
+  const portNum = Number(port);
+  if (!Number.isFinite(portNum) || portNum <= 0 || portNum > 65535) return undefined;
+  return { ip: ip.trim(), port: portNum };
+}
+
+export function parseM2cQr(xml: string): M2cQrParsed | undefined {
+  const m = /<M2C_Q_R>([\s\S]*?)<\/M2C_Q_R>/i.exec(xml);
+  if (!m) return undefined;
+  const body = m[1] ?? "";
+  const reg = parseIpPortBlock("reg", body);
+  const relay = parseIpPortBlock("relay", body);
+  const log = parseIpPortBlock("log", body);
+  const t = parseIpPortBlock("t", body);
+  if (!reg && !relay && !log && !t) return undefined;
+  return { ...(reg ? { reg } : {}), ...(relay ? { relay } : {}), ...(log ? { log } : {}), ...(t ? { t } : {}) };
+}
+
+/**
+ * Build C2R_C message (client -> register server) to register local address.
+ */
+export function buildC2rC(params: {
+  uid: string;
+  cli: IpPort;
+  relay: IpPort;
+  cid: number;
+  family: 4 | 6;
+  os?: string;
+  revision?: number;
+  debug?: boolean;
+}): string {
+  const os = params.os ?? "MAC";
+  const debug = params.debug ?? false;
+  const rev = params.revision != null ? `<r>${params.revision}</r>` : "";
+  return buildP2pXml(
+    `<C2R_C>` +
+      `<uid>${xmlEscape(params.uid)}</uid>` +
+      `<cli><ip>${xmlEscape(params.cli.ip)}</ip><port>${params.cli.port}</port></cli>` +
+      `<relay><ip>${xmlEscape(params.relay.ip)}</ip><port>${params.relay.port}</port></relay>` +
+      `<cid>${params.cid}</cid>` +
+      `<debug>${debug ? "true" : "false"}</debug>` +
+      `<family>${params.family}</family>` +
+      `<p>${xmlEscape(os)}</p>` +
+      rev +
+    `</C2R_C>`,
+  );
+}
+
+export type R2cCrParsed = {
+  rsp: number;
+  sid?: number;
+  dev?: IpPort;
+  dmap?: IpPort;
+  relay?: IpPort;
+  relayt?: IpPort;
+};
+
+export function parseR2cCr(xml: string): R2cCrParsed | undefined {
+  const m = /<R2C_C_R>([\s\S]*?)<\/R2C_C_R>/i.exec(xml);
+  if (!m) return undefined;
+  const body = m[1] ?? "";
+  const rspStr = /<rsp>(-?\d+)<\/rsp>/i.exec(body)?.[1];
+  if (rspStr == null) return undefined;
+  const rsp = Number(rspStr);
+  if (!Number.isFinite(rsp)) return undefined;
+  const sidStr = /<sid>(-?\d+)<\/sid>/i.exec(body)?.[1];
+  const sid = sidStr != null ? Number(sidStr) : undefined;
+
+  const parseCustom = (tag: "dev" | "dmap" | "relay" | "relayt") => {
+    const mm = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "i").exec(body);
+    if (!mm) return undefined;
+    const block = mm[1] ?? "";
+    const ip = /<ip>([^<]+)<\/ip>/i.exec(block)?.[1];
+    const port = /<port>(-?\d+)<\/port>/i.exec(block)?.[1];
+    if (!ip || port == null) return undefined;
+    const portNum = Number(port);
+    if (!Number.isFinite(portNum) || portNum <= 0 || portNum > 65535) return undefined;
+    return { ip: ip.trim(), port: portNum } satisfies IpPort;
+  };
+
+  const devIpPort = parseCustom("dev");
+  const dmapIpPort = parseCustom("dmap");
+  const relayIpPort = parseCustom("relay");
+  const relaytIpPort = parseCustom("relayt");
+
+  return {
+    rsp,
+    ...(sid != null && Number.isFinite(sid) ? { sid } : {}),
+    ...(devIpPort ? { dev: devIpPort } : {}),
+    ...(dmapIpPort ? { dmap: dmapIpPort } : {}),
+    ...(relayIpPort ? { relay: relayIpPort } : {}),
+    ...(relaytIpPort ? { relayt: relaytIpPort } : {}),
+  };
+}
+
+/**
+ * Build C2R_CFM (client -> register server) confirm message.
+ */
+export function buildC2rCfm(params: { sid: number; conn: string; rsp?: number; cid: number; did: number }): string {
+  const rsp = params.rsp ?? 0;
+  return buildP2pXml(
+    `<C2R_CFM>` +
+      `<sid>${params.sid}</sid>` +
+      `<conn>${xmlEscape(params.conn)}</conn>` +
+      `<rsp>${rsp}</rsp>` +
+      `<cid>${params.cid}</cid>` +
+      `<did>${params.did}</did>` +
+    `</C2R_CFM>`,
+  );
+}
+
 export function buildC2dC(params: { uid: string; clientPort: number; cid: number; mtu: number; os?: string }): string {
   // Default OS is "MAC" for discovery
   const os = params.os ?? "MAC";

@@ -50,6 +50,11 @@ export type BaichuanClientOptions = {
   /** UID used for BCUDP discovery (typical for battery cameras). Required for `transport: "udp"` and UDP fallback in `auto`. */
   uid?: string;
   /**
+   * UDP discovery method to use when connecting via `uid`.
+   * Default: `local` (LAN broadcast). Use `remote`/`map`/`relay` for P2P discovery via Reolink servers.
+   */
+  udpDiscoveryMethod?: "local" | "remote" | "map" | "relay";
+  /**
    * For NVR: logical channel index (0-based).
    * For standalone cameras: usually 0.
    */
@@ -803,7 +808,11 @@ export class BaichuanClient extends EventEmitter<{
     if (!this.opts.uid) {
       throw new Error("Baichuan UDP requested but `options.uid` is not set (required for BCUDP discovery).");
     }
-    const sock = new BcUdpStream({ mode: "uid", uid: this.opts.uid });
+    const sock = new BcUdpStream({
+      mode: "uid",
+      uid: this.opts.uid,
+      ...(this.opts.udpDiscoveryMethod ? { discoveryMethod: this.opts.udpDiscoveryMethod } : {}),
+    });
     this.udpSocket = sock;
     this.transport = "udp";
     this.socketClosed = false;
