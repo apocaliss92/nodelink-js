@@ -160,6 +160,7 @@ export class CompositeStream extends EventEmitter<{
   private async primeForFfmpeg(
     gen: AsyncGenerator<any, void, unknown>,
     timeoutMs: number,
+    requireKeyframe: boolean,
   ): Promise<{ data: Buffer; videoType?: "H264" | "H265"; isKeyframe?: boolean } | undefined> {
     const start = Date.now();
     let first: { data: Buffer; videoType?: "H264" | "H265"; isKeyframe?: boolean } | undefined;
@@ -177,7 +178,7 @@ export class CompositeStream extends EventEmitter<{
       if (v.isKeyframe) return { data: v.data, videoType: v.videoType, isKeyframe: v.isKeyframe };
     }
 
-    return first;
+    return requireKeyframe ? undefined : first;
   }
 
   /**
@@ -238,8 +239,19 @@ export class CompositeStream extends EventEmitter<{
 
       // Prime both streams BEFORE starting ffmpeg. This makes codec detection resilient on NVR/Hub where
       // metadata may not reflect tele variant, and helps ffmpeg see a clean access unit early.
-      this.widerPrimeFrame = await this.primeForFfmpeg(this.widerStream, 5000);
-      this.telePrimeFrame = await this.primeForFfmpeg(this.teleStream, 5000);
+      // Prefer waiting for an IDR on both inputs (startup alignment). Fallback to any video frame if needed.
+      this.widerPrimeFrame = await this.primeForFfmpeg(this.widerStream, 5000, true);
+      this.telePrimeFrame = await this.primeForFfmpeg(this.teleStream, 5000, true);
+      if (!this.widerPrimeFrame) {
+        this.widerPrimeFrame = await this.primeForFfmpeg(this.widerStream, 2000, false);
+      }
+      if (!this.telePrimeFrame) {
+        this.telePrimeFrame = await this.primeForFfmpeg(this.teleStream, 2000, false);
+      }
+
+      this.logger.log?.(
+        `[CompositeStream] Prime: wider=${this.widerPrimeFrame?.isKeyframe ? 'keyframe' : (this.widerPrimeFrame ? 'frame' : 'none')}, tele=${this.telePrimeFrame?.isKeyframe ? 'keyframe' : (this.telePrimeFrame ? 'frame' : 'none')}`
+      );
 
       const widerCodecFromFrames = this.widerPrimeFrame?.videoType === 'H265' ? 'hevc' : (this.widerPrimeFrame?.videoType === 'H264' ? 'h264' : undefined);
       const teleCodecFromFrames = this.telePrimeFrame?.videoType === 'H265' ? 'hevc' : (this.telePrimeFrame?.videoType === 'H264' ? 'h264' : undefined);
