@@ -6773,6 +6773,13 @@ ${xmlDateTimePayload("endTime", end)}
       probeSiren?: boolean;
       /** Enable/disable floodlight probing (cmd 289). Defaults to true. */
       probeFloodlight?: boolean;
+      /**
+       * When the camera is a dual-lens model exposed on a single channel (common behind NVR/Hub),
+       * merge lens capabilities so a flag is true if at least one lens supports it.
+       *
+       * Defaults to true.
+       */
+      mergeDualLensOnSameChannel?: boolean;
     },
   ): Promise<DeviceCapabilitiesResult> {
     const channelProvided = channel !== undefined && channel !== null;
@@ -6958,6 +6965,34 @@ ${xmlDateTimePayload("endTime", end)}
       }
     }
 
+    // Dual-lens capability merge (simple): if the device is multifocal, OR capabilities across all lenses/channels.
+    // This is especially important behind NVR/Hub where wide+tele can be exposed on the same channel.
+    const mergeDualLens = options?.mergeDualLensOnSameChannel ?? true;
+    if (mergeDualLens && channelProvided) {
+      try {
+        // Best-effort NVR/Hub hint: on NVR channels are typically >= 2.
+        const dual = await this.getDualLensChannelInfo(ch, { onNvr: ch >= 2 });
+        if (dual.isDualLens && Array.isArray(dual.channels) && dual.channels.length > 0) {
+          const anyPan = dual.channels.some((c) => c.hasPan);
+          const anyTilt = dual.channels.some((c) => c.hasTilt);
+          const anyZoom = dual.channels.some((c) => c.hasZoom);
+          const anyPresets = dual.channels.some((c) => c.hasPresets);
+          const anyIntercom = dual.channels.some((c) => c.hasIntercom);
+
+          capabilities.hasPan = capabilities.hasPan || anyPan;
+          capabilities.hasTilt = capabilities.hasTilt || anyTilt;
+          capabilities.hasZoom = capabilities.hasZoom || anyZoom;
+          capabilities.hasPresets = capabilities.hasPresets || anyPresets;
+          capabilities.hasIntercom = capabilities.hasIntercom || anyIntercom;
+
+          // Keep hasPtz coherent with merged PTZ sub-capabilities.
+          capabilities.hasPtz = capabilities.hasPtz || capabilities.hasPan || capabilities.hasTilt || capabilities.hasZoom || capabilities.hasPresets;
+        }
+      } catch {
+        // ignore
+      }
+    }
+
     const debug: import("./types").DeviceCapabilitiesDebugInfo = {
       channel: ch,
       channelId1Based: ch + 1,
@@ -7035,7 +7070,7 @@ ${xmlDateTimePayload("endTime", end)}
     }
 
     try {
-      const capabilities = await this.getDeviceCapabilities(channel);
+      const capabilities = await this.getDeviceCapabilities(channel, { mergeDualLensOnSameChannel: false });
       channelNum = capabilities.support?.channelNum;
       supportInfo = capabilities.support;
     } catch {
@@ -7169,7 +7204,7 @@ ${xmlDateTimePayload("endTime", end)}
     for (const ch of streamChannels) {
       try {
         // Get capabilities for this channel
-        const chCapabilities = await this.getDeviceCapabilities(ch);
+        const chCapabilities = await this.getDeviceCapabilities(ch, { mergeDualLensOnSameChannel: false });
         const caps = chCapabilities.capabilities;
         const chSupport = chCapabilities.support;
         const chFeatures = chCapabilities.features;

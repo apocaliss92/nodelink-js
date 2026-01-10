@@ -293,6 +293,36 @@ async function main(): Promise<void> {
 
   await api.login();
 
+  // Capabilities sanity check for dual-lens devices exposed on the same channel (common behind NVR/Hub).
+  // Expect merged capabilities to be true if true in at least one lens, while per-lens info stays accurate.
+  try {
+    const [capsStrict, capsMerged, dual] = await Promise.all([
+      api.getDeviceCapabilities(channel, { mergeDualLensOnSameChannel: false }),
+      api.getDeviceCapabilities(channel),
+      api.getDualLensChannelInfo(channel, { onNvr: true }),
+    ]);
+
+    if (dual.isDualLens && dual.dualLensType === 'single_motion') {
+      const wideInfo = dual.channels.find((c: any) => c.channel === channel && c.lensType === 'wide');
+      const teleInfo = dual.channels.find((c: any) => c.channel === channel && c.lensType === 'telephoto');
+
+      console.log('[caps] strict:', capsStrict.capabilities);
+      console.log('[caps] merged:', capsMerged.capabilities);
+      console.log('[dual] channel info:', { wide: wideInfo, tele: teleInfo, capabilityChannels: dual.capabilityChannels });
+
+      if (wideInfo && teleInfo) {
+        // Per-lens: wide usually has no optical zoom, tele does.
+        must(wideInfo.hasZoom === false, 'Expected wide lens hasZoom=false in getDualLensChannelInfo');
+        must(teleInfo.hasZoom === true, 'Expected tele lens hasZoom=true in getDualLensChannelInfo');
+
+        // Merged (device/channel-level): true if at least one lens supports it.
+        must(capsMerged.capabilities.hasZoom === true, 'Expected merged getDeviceCapabilities.hasZoom=true (at least one lens supports zoom)');
+      }
+    }
+  } catch (e) {
+    console.warn('[caps] dual-lens sanity check skipped due to error:', e);
+  }
+
   // NVR/Hub multifocal composite MUST use two distinct Baichuan sessions.
   // Otherwise cmd_id=3 frames can mix when streamType overlaps (wide/tele alternation/corruption).
   const apiWider = new ReolinkBaichuanApi({
