@@ -15,8 +15,27 @@ import {
   type VideoType,
 } from './rfc4571';
 
+export interface Rfc4571ApiFactoryContext {
+  channel?: number;
+  profile: StreamProfile;
+  variant?: NativeVideoStreamVariant;
+  composite: boolean;
+}
+
 export interface Rfc4571TcpServerOptions {
-  api: ReolinkBaichuanApi;
+  /**
+   * Base Baichuan API session.
+   * Prefer using `getApi` when the caller wants lazy creation and/or to ensure distinct sessions.
+   */
+  api?: ReolinkBaichuanApi;
+
+  /**
+   * Optional API factory. If provided, `createRfc4571TcpServer` will call it once to obtain the base API.
+   * This is useful when the caller wants to defer login/session creation until stream startup.
+   */
+  getApi?: (ctx?: Rfc4571ApiFactoryContext) =>
+    | Promise<ReolinkBaichuanApi>
+    | ReolinkBaichuanApi;
   /** Channel number. If undefined, uses composite stream (multifocal cameras). */
   channel?: number;
   /** Stream profile. For composite streams, this is used for both wider and tele streams. */
@@ -61,6 +80,11 @@ export interface Rfc4571TcpServerOptions {
     widerApi: ReolinkBaichuanApi;
     teleApi: ReolinkBaichuanApi;
   };
+
+  /** Optional composite API factory (called once) to obtain dedicated wider/tele sessions. */
+  getCompositeApis?: () =>
+    | Promise<{ widerApi: ReolinkBaichuanApi; teleApi: ReolinkBaichuanApi }>
+    | { widerApi: ReolinkBaichuanApi; teleApi: ReolinkBaichuanApi };
 }
 
 export interface Rfc4571TcpServer {
@@ -83,8 +107,23 @@ export async function createRfc4571TcpServer(
 ): Promise<Rfc4571TcpServer> {
   const isComposite = options.channel === undefined;
 
+  const apiFactoryCtx: Rfc4571ApiFactoryContext = {
+    profile: options.profile,
+    composite: isComposite,
+    ...(options.channel !== undefined ? { channel: options.channel } : {}),
+    ...(options.variant !== undefined ? { variant: options.variant } : {}),
+  };
+
+  const baseApi =
+    options.api ??
+    (await options.getApi?.(apiFactoryCtx));
+  if (!baseApi) {
+    throw new Error('createRfc4571TcpServer: missing api/getApi');
+  }
+
+  const resolvedCompositeApis = options.compositeApis ?? (await options.getCompositeApis?.());
+
   const {
-    api,
     channel,
     profile,
     variant,
@@ -101,13 +140,12 @@ export async function createRfc4571TcpServer(
     password,
     requireAuth = false,
     compositeOptions,
-    compositeApis,
   } = options;
 
   const apisToClose = new Set<ReolinkBaichuanApi>();
-  apisToClose.add(api);
-  if (compositeApis?.widerApi) apisToClose.add(compositeApis.widerApi);
-  if (compositeApis?.teleApi) apisToClose.add(compositeApis.teleApi);
+  apisToClose.add(baseApi);
+  if (resolvedCompositeApis?.widerApi) apisToClose.add(resolvedCompositeApis.widerApi);
+  if (resolvedCompositeApis?.teleApi) apisToClose.add(resolvedCompositeApis.teleApi);
 
   // For composite (ffmpeg) streams, avoid over-aggressive restarts: a short burst of
   // backpressure or a long GOP on join can look like "no activity" even though the pipeline is alive.
@@ -145,11 +183,11 @@ export async function createRfc4571TcpServer(
 
     log(`creating composite stream: wider(ch=${widerChannel}, profile=${widerProfile}), tele(ch=${teleChannel}, profile=${teleProfile})`);
 
-    const widerApi = compositeApis?.widerApi ?? api;
-    const teleApi = compositeApis?.teleApi ?? api;
+    const widerApi = resolvedCompositeApis?.widerApi ?? baseApi;
+    const teleApi = resolvedCompositeApis?.teleApi ?? baseApi;
 
     videoStream = new CompositeStream({
-      api,
+      api: baseApi,
       widerApi,
       teleApi,
       widerChannel,
@@ -170,8 +208,8 @@ export async function createRfc4571TcpServer(
     // Use regular BaichuanVideoStream
     const ch = channel!;
     videoStream = new BaichuanVideoStream({
-      client: api.client,
-      api,
+      client: baseApi.client,
+      api: baseApi,
       channel: ch,
       profile,
       variant,
@@ -284,7 +322,8 @@ export async function createRfc4571TcpServer(
     if (isComposite) {
       // For composite stream, get framerate from wider stream
       const widerChannel = compositeOptions?.widerChannel ?? 0;
-      const metadata: any = await api.getStreamMetadata(widerChannel);
+      const widerApi = resolvedCompositeApis?.widerApi ?? baseApi;
+      const metadata: any = await widerApi.getStreamMetadata(widerChannel);
       const streams: any[] = Array.isArray(metadata)
         ? metadata
         : Array.isArray(metadata?.streams)
@@ -294,7 +333,7 @@ export async function createRfc4571TcpServer(
       const fr = Number(stream?.frameRate);
       if (Number.isFinite(fr) && fr > 0) fps = fr;
     } else {
-      const metadata: any = await api.getStreamMetadata(channel!);
+      const metadata: any = await baseApi.getStreamMetadata(channel!);
       const streams: any[] = Array.isArray(metadata)
         ? metadata
         : Array.isArray(metadata?.streams)

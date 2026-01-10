@@ -344,6 +344,7 @@ export async function* createNativeStream(
   sampleRate: number | null;
   microseconds: number | null;
   videoType?: "H264" | "H265";
+  isKeyframe?: boolean;
 }, void, unknown> {
   const videoStream = new BaichuanVideoStream({
     client: api.client,
@@ -417,11 +418,19 @@ export async function* createNativeStream(
       sampleRate: number | null;
       microseconds: number | null;
       videoType?: "H264" | "H265";
+      isKeyframe?: boolean;
     }> = [];
 
     // Prevent unbounded growth if the consumer pauses or is slower than the camera.
     // Live video streaming can safely drop older frames under backpressure.
     const MAX_FRAME_QUEUE = 200;
+
+    // When we fall behind on inter-frame codecs (H.264/H.265), dropping arbitrary frames
+    // can break decoder reference chains (missing refs / duplicate POC). Instead, when
+    // we detect sustained backpressure, we resync by discarding queued frames and then
+    // dropping non-keyframes until the next keyframe/IDR arrives.
+    let needKeyframeResync = false;
+    let lastResyncLogAt = 0;
 
     let frameResolve: (() => void) | null = null;
 
@@ -434,6 +443,14 @@ export async function* createNativeStream(
     }) => {
       if (closed) return;
 
+      if (needKeyframeResync && !unit.isKeyframe) {
+        return;
+      }
+
+      if (needKeyframeResync && unit.isKeyframe) {
+        needKeyframeResync = false;
+      }
+
       frameQueue.push({
         audio: false,
         data: unit.data,
@@ -441,10 +458,20 @@ export async function* createNativeStream(
         sampleRate: null,
         microseconds: unit.microseconds,
         videoType: unit.videoType,
+        isKeyframe: unit.isKeyframe,
       });
 
       if (frameQueue.length > MAX_FRAME_QUEUE) {
-        frameQueue.splice(0, frameQueue.length - MAX_FRAME_QUEUE);
+        frameQueue.length = 0;
+        needKeyframeResync = true;
+
+        const now = Date.now();
+        if (now - lastResyncLogAt > 5000) {
+          lastResyncLogAt = now;
+          api.logger?.warn?.(
+            `[createNativeStream] backpressure overflow (channel=${channel} profile=${profile}); resyncing on next keyframe`,
+          );
+        }
       }
 
       if (frameResolve) {
