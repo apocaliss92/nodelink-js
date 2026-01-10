@@ -186,6 +186,11 @@ export async function createRfc4571TcpServer(
     const widerApi = resolvedCompositeApis?.widerApi ?? baseApi;
     const teleApi = resolvedCompositeApis?.teleApi ?? baseApi;
 
+    // Default behavior: keep `main` untouched (may be H.265), but force H.264 inputs on `sub`.
+    // Callers can still override explicitly via compositeOptions.forceH264.
+    const forceH264 = compositeOptions?.forceH264;
+    const defaultForceH264 = profile === 'sub';
+
     videoStream = new CompositeStream({
       api: baseApi,
       widerApi,
@@ -198,6 +203,7 @@ export async function createRfc4571TcpServer(
       pipSize: compositeOptions?.pipSize ?? 0.25,
       pipMargin: compositeOptions?.pipMargin ?? 10,
       ...(compositeOptions?.onNvr !== undefined ? { onNvr: compositeOptions.onNvr } : {}),
+      ...(forceH264 !== undefined ? { forceH264 } : (defaultForceH264 ? { forceH264: true } : {})),
       logger,
     });
 

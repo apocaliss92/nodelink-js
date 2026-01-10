@@ -38,6 +38,11 @@ export interface CompositeStreamPipOptions {
   pipMargin?: number;
   /** True when behind NVR/Hub (tele is selected via stream variant on the same channel). */
   onNvr?: boolean;
+  /**
+   * Force using an H.264 input profile when available (e.g. auto-fallback to `sub` if `main` is H.265).
+   * Output is always H.264 regardless.
+   */
+  forceH264?: boolean;
 }
 
 export type CompositeStreamOptions = {
@@ -62,6 +67,11 @@ export type CompositeStreamOptions = {
   pipMargin?: number;
   /** True when behind NVR/Hub (tele is selected via stream variant on the same channel). */
   onNvr?: boolean;
+  /**
+   * Force using an H.264 input profile when available (e.g. auto-fallback to `sub` if `main` is H.265).
+   * Output is always H.264 regardless.
+   */
+  forceH264?: boolean;
   /** Optional logger */
   logger?: Logger;
 };
@@ -135,6 +145,30 @@ export class CompositeStream extends EventEmitter<{
   private ffmpegStderrLastLogAtMs = 0;
   private ffmpegStderrLogBurst = 0;
 
+  private effectiveWiderProfile: StreamProfile | undefined;
+  private effectiveTeleProfile: StreamProfile | undefined;
+
+  private pickH264Profile(metadata: any, preferred: StreamProfile): StreamProfile {
+    try {
+      const isH264 = (enc?: string) => (enc ?? '').toLowerCase().includes('264');
+      const streams: any[] = Array.isArray(metadata?.streams) ? metadata.streams : [];
+      const byProfile = new Map<string, any>();
+      for (const s of streams) byProfile.set(s.profile, s);
+
+      if (isH264(byProfile.get(preferred)?.videoEncType)) return preferred;
+
+      const preferredOrder: StreamProfile[] = ['sub', 'main', 'ext'];
+      for (const p of preferredOrder) {
+        const si = byProfile.get(p);
+        if (si && isH264(si.videoEncType)) return p;
+      }
+    } catch {
+      // ignore
+    }
+
+    return preferred;
+  }
+
   private closeGenerator(gen: AsyncGenerator<any, void, unknown> | null): Promise<void> {
     if (!gen) return Promise.resolve();
     const r = (gen as any).return;
@@ -200,8 +234,19 @@ export class CompositeStream extends EventEmitter<{
       const widerMetadata = await widerApi.getStreamMetadata(this.options.widerChannel);
       const teleMetadata = await teleApi.getStreamMetadata(this.options.teleChannel);
 
-      const widerStreamInfo = widerMetadata.streams.find((s) => s.profile === this.options.widerProfile);
-      const teleStreamInfo = teleMetadata.streams.find((s) => s.profile === this.options.teleProfile);
+      const forceH264 = this.options.forceH264 === true;
+      const widerProfile = forceH264
+        ? this.pickH264Profile(widerMetadata, this.options.widerProfile)
+        : this.options.widerProfile;
+      const teleProfile = forceH264
+        ? this.pickH264Profile(teleMetadata, this.options.teleProfile)
+        : this.options.teleProfile;
+
+      this.effectiveWiderProfile = widerProfile;
+      this.effectiveTeleProfile = teleProfile;
+
+      const widerStreamInfo = widerMetadata.streams.find((s) => s.profile === widerProfile);
+      const teleStreamInfo = teleMetadata.streams.find((s) => s.profile === teleProfile);
 
       if (!widerStreamInfo || !teleStreamInfo) {
         throw new Error("Stream metadata not found");
@@ -232,10 +277,10 @@ export class CompositeStream extends EventEmitter<{
         !!this.options.onNvr || this.options.teleChannel === this.options.widerChannel;
 
       // Wider stream.
-      this.widerStream = createNativeStream(widerApi, this.options.widerChannel, this.options.widerProfile);
+      this.widerStream = createNativeStream(widerApi, this.options.widerChannel, widerProfile);
       this.teleStream = teleIsVariantOnSameChannel
-        ? createNativeStream(teleApi, this.options.teleChannel, this.options.teleProfile, { variant: 'telephoto' })
-        : createNativeStream(teleApi, this.options.teleChannel, this.options.teleProfile);
+        ? createNativeStream(teleApi, this.options.teleChannel, teleProfile, { variant: 'telephoto' })
+        : createNativeStream(teleApi, this.options.teleChannel, teleProfile);
 
       // Prime both streams BEFORE starting ffmpeg. This makes codec detection resilient on NVR/Hub where
       // metadata may not reflect tele variant, and helps ffmpeg see a clean access unit early.
@@ -286,8 +331,10 @@ export class CompositeStream extends EventEmitter<{
     // If metadata is not available or inaccurate, ffmpeg will auto-detect from stream data
     const widerMetadata = await widerApi.getStreamMetadata(this.options.widerChannel);
     const teleMetadata = await teleApi.getStreamMetadata(this.options.teleChannel);
-    const widerStreamInfo = widerMetadata.streams.find((s) => s.profile === this.options.widerProfile);
-    const teleStreamInfo = teleMetadata.streams.find((s) => s.profile === this.options.teleProfile);
+    const widerProfile = this.effectiveWiderProfile ?? this.options.widerProfile;
+    const teleProfile = this.effectiveTeleProfile ?? this.options.teleProfile;
+    const widerStreamInfo = widerMetadata.streams.find((s) => s.profile === widerProfile);
+    const teleStreamInfo = teleMetadata.streams.find((s) => s.profile === teleProfile);
     
     // Determine codec for each input stream.
     // Prefer real frame-derived codec, because on NVR/Hub tele variant can differ from metadata.
