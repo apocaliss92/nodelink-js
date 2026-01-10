@@ -124,6 +124,14 @@ export class CompositeStream extends EventEmitter<{
   // We need to reassemble access units (frames) for RFC4571 packetization and keyframe priming.
   private ffmpegOutBuf: Buffer = Buffer.alloc(0);
 
+  // Prime frames read before ffmpeg starts (used to infer codec + seed decoder).
+  private widerPrimeFrame:
+    | { data: Buffer; videoType?: "H264" | "H265"; isKeyframe?: boolean }
+    | undefined;
+  private telePrimeFrame:
+    | { data: Buffer; videoType?: "H264" | "H265"; isKeyframe?: boolean }
+    | undefined;
+
   private ffmpegStderrLastLogAtMs = 0;
   private ffmpegStderrLogBurst = 0;
 
@@ -147,6 +155,29 @@ export class CompositeStream extends EventEmitter<{
       ...options,
     };
     this.logger = options.logger ?? console;
+  }
+
+  private async primeForFfmpeg(
+    gen: AsyncGenerator<any, void, unknown>,
+    timeoutMs: number,
+  ): Promise<{ data: Buffer; videoType?: "H264" | "H265"; isKeyframe?: boolean } | undefined> {
+    const start = Date.now();
+    let first: { data: Buffer; videoType?: "H264" | "H265"; isKeyframe?: boolean } | undefined;
+
+    while (Date.now() - start < timeoutMs) {
+      const r = await Promise.race([
+        gen.next(),
+        new Promise<IteratorResult<any>>((resolve) => setTimeout(() => resolve({ value: undefined, done: false } as any), 250)),
+      ]);
+
+      if (!r || (r as any).done) return first;
+      const v = (r as any).value;
+      if (!v || v.audio) continue;
+      if (!first) first = { data: v.data, videoType: v.videoType, isKeyframe: v.isKeyframe };
+      if (v.isKeyframe) return { data: v.data, videoType: v.videoType, isKeyframe: v.isKeyframe };
+    }
+
+    return first;
   }
 
   /**
@@ -205,8 +236,16 @@ export class CompositeStream extends EventEmitter<{
         ? createNativeStream(teleApi, this.options.teleChannel, this.options.teleProfile, { variant: 'telephoto' })
         : createNativeStream(teleApi, this.options.teleChannel, this.options.teleProfile);
 
+      // Prime both streams BEFORE starting ffmpeg. This makes codec detection resilient on NVR/Hub where
+      // metadata may not reflect tele variant, and helps ffmpeg see a clean access unit early.
+      this.widerPrimeFrame = await this.primeForFfmpeg(this.widerStream, 5000);
+      this.telePrimeFrame = await this.primeForFfmpeg(this.teleStream, 5000);
+
+      const widerCodecFromFrames = this.widerPrimeFrame?.videoType === 'H265' ? 'hevc' : (this.widerPrimeFrame?.videoType === 'H264' ? 'h264' : undefined);
+      const teleCodecFromFrames = this.telePrimeFrame?.videoType === 'H265' ? 'hevc' : (this.telePrimeFrame?.videoType === 'H264' ? 'h264' : undefined);
+
       // Start ffmpeg for composition
-      await this.startFfmpegComposition(mainWidth, mainHeight, pipWidth, pipHeight, position);
+      await this.startFfmpegComposition(mainWidth, mainHeight, pipWidth, pipHeight, position, widerCodecFromFrames, teleCodecFromFrames);
 
       this.logger.log?.("[CompositeStream] Composite stream started");
     } catch (error) {
@@ -224,7 +263,9 @@ export class CompositeStream extends EventEmitter<{
     mainHeight: number,
     pipWidth: number,
     pipHeight: number,
-    position: { x: number; y: number }
+    position: { x: number; y: number },
+    widerCodecOverride?: "h264" | "hevc",
+    teleCodecOverride?: "h264" | "hevc",
   ): Promise<void> {
     const widerApi = this.options.widerApi ?? this.options.api;
     const teleApi = this.options.teleApi ?? this.options.api;
@@ -236,9 +277,10 @@ export class CompositeStream extends EventEmitter<{
     const widerStreamInfo = widerMetadata.streams.find((s) => s.profile === this.options.widerProfile);
     const teleStreamInfo = teleMetadata.streams.find((s) => s.profile === this.options.teleProfile);
     
-    // Determine codec for each input stream
-    const widerCodec = widerStreamInfo?.videoEncType?.toLowerCase().includes("265") ? "hevc" : "h264";
-    const teleCodec = teleStreamInfo?.videoEncType?.toLowerCase().includes("265") ? "hevc" : "h264";
+    // Determine codec for each input stream.
+    // Prefer real frame-derived codec, because on NVR/Hub tele variant can differ from metadata.
+    const widerCodec = widerCodecOverride ?? (widerStreamInfo?.videoEncType?.toLowerCase().includes("265") ? "hevc" : "h264");
+    const teleCodec = teleCodecOverride ?? (teleStreamInfo?.videoEncType?.toLowerCase().includes("265") ? "hevc" : "h264");
     
     // Log codec detection for debugging
     this.logger.log?.(
@@ -265,7 +307,7 @@ export class CompositeStream extends EventEmitter<{
       "-i", "pipe:3",
       // Filter to scale and position PIP
       "-filter_complex",
-      `[1:v]scale=${pipWidth}:${pipHeight}[pip];[0:v][pip]overlay=${position.x}:${position.y}[out]`,
+      `[0:v]scale=${mainWidth}:${mainHeight}[main];[1:v]scale=${pipWidth}:${pipHeight}[pip];[main][pip]overlay=${position.x}:${position.y}[out]`,
       "-map", "[out]",
       "-c:v", "libx264", // Re-encode for compatibility
       // Make the stream easy to join mid-flight: frequent IDRs + in-band headers + AUD.
@@ -426,6 +468,19 @@ export class CompositeStream extends EventEmitter<{
     // Feed wider stream (input 0)
     const feedWider = async () => {
       try {
+        if (this.widerPrimeFrame?.data) {
+          try {
+            const written = widerStdin.write(this.toAnnexB(this.widerPrimeFrame.data));
+            this.widerPrimeFrame = undefined;
+            if (!written) {
+              await new Promise<void>((resolve) => {
+                widerStdin.once("drain", () => resolve());
+              });
+            }
+          } catch {
+            // ignore
+          }
+        }
         for await (const frame of this.widerStream!) {
           if (!this.active) break;
           if (frame.audio) continue; // Skip audio frames
@@ -460,6 +515,19 @@ export class CompositeStream extends EventEmitter<{
     // Feed tele stream (input 1)
     const feedTele = async () => {
       try {
+        if (this.telePrimeFrame?.data) {
+          try {
+            const written = teleStdin.write(this.toAnnexB(this.telePrimeFrame.data));
+            this.telePrimeFrame = undefined;
+            if (!written) {
+              await new Promise<void>((resolve) => {
+                teleStdin.once("drain", () => resolve());
+              });
+            }
+          } catch {
+            // ignore
+          }
+        }
         for await (const frame of this.teleStream!) {
           if (!this.active) break;
           if (frame.audio) continue; // Skip audio frames
