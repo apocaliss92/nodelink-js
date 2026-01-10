@@ -5,7 +5,6 @@ import { BaichuanRtspServer, type BaichuanRtspServerOptions } from "../../baichu
 import { BaichuanClient, type BaichuanClientOptions } from "../../client/BaichuanClient";
 import { recordingsTraceLog, type Logger } from "../../debug/DebugConfig";
 import { collectNvrDiagnostics, runAllDiagnosticsConsecutively, RunAllDiagnosticsConsecutivelyParams } from "../../debug/DiagnosticsTools";
-import type { CompositeStreamPipOptions } from "../../multifocal/compositeStream";
 import {
   BC_CLASS_FILE_DOWNLOAD,
   BC_CLASS_MODERN_24,
@@ -45,7 +44,7 @@ import {
   BC_CMD_ID_VIDEO,
   BC_CMD_ID_VIDEO_STOP,
 } from "../../protocol/constants";
-import { buildAbilityInfoExtensionXml, buildBinaryExtensionXml, buildChannelExtensionXml, buildFloodlightManualXml, buildPreviewStopXml, buildPreviewXml, buildPtzControlXml, buildPtzPresetXml, buildPtzPresetXmlV2, buildSirenManualXml, buildSirenTimesXml, buildStartZoomFocusXml, getXmlText, xmlEscape } from "../../protocol/xml";
+import { buildAbilityInfoExtensionXml, buildBinaryExtensionXml, buildChannelExtensionXml, buildFloodlightManualXml, buildPreviewStopXml, buildPreviewStopXmlV11, buildPreviewXml, buildPreviewXmlV11, buildPtzControlXml, buildPtzPresetXml, buildPtzPresetXmlV2, buildSirenManualXml, buildSirenTimesXml, buildStartZoomFocusXml, getXmlText, xmlEscape } from "../../protocol/xml";
 import type {
   AIEvent,
   AIState,
@@ -86,6 +85,7 @@ import type {
 import { parseRecordingFileName } from "./recordingFileName";
 
 import sharp from "sharp";
+import type { CompositeStreamPipOptions } from "../../multifocal/compositeStream";
 import {
   ReolinkCgiApi,
   VodFile,
@@ -225,6 +225,79 @@ function getXmlTexts(xml: string, tags: string[]): Record<string, string> {
 
 function sleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function clamp01(v: number): number {
+  if (!Number.isFinite(v)) return 0;
+  if (v < 0) return 0;
+  if (v > 1) return 1;
+  return v;
+}
+
+function calculatePipOverlayPosition(params: {
+  position: import("../../multifocal/compositeStream").PipPosition;
+  mainWidth: number;
+  mainHeight: number;
+  pipWidth: number;
+  pipHeight: number;
+  margin: number;
+}): { left: number; top: number } {
+  const pipW = Math.max(1, Math.floor(params.pipWidth));
+  const pipH = Math.max(1, Math.floor(params.pipHeight));
+  const m = Math.max(0, Math.floor(params.margin));
+  const mw = Math.max(1, Math.floor(params.mainWidth));
+  const mh = Math.max(1, Math.floor(params.mainHeight));
+
+  const clamp = (x: number, min: number, max: number) => Math.min(Math.max(x, min), max);
+  const maxX = Math.max(0, mw - pipW);
+  const maxY = Math.max(0, mh - pipH);
+
+  let left = m;
+  let top = m;
+
+  switch (params.position) {
+    case "top-left":
+      left = m;
+      top = m;
+      break;
+    case "top-right":
+      left = mw - pipW - m;
+      top = m;
+      break;
+    case "bottom-left":
+      left = m;
+      top = mh - pipH - m;
+      break;
+    case "bottom-right":
+      left = mw - pipW - m;
+      top = mh - pipH - m;
+      break;
+    case "center":
+      left = Math.floor((mw - pipW) / 2);
+      top = Math.floor((mh - pipH) / 2);
+      break;
+    case "top-center":
+      left = Math.floor((mw - pipW) / 2);
+      top = m;
+      break;
+    case "bottom-center":
+      left = Math.floor((mw - pipW) / 2);
+      top = mh - pipH - m;
+      break;
+    case "left-center":
+      left = m;
+      top = Math.floor((mh - pipH) / 2);
+      break;
+    case "right-center":
+      left = mw - pipW - m;
+      top = Math.floor((mh - pipH) / 2);
+      break;
+  }
+
+  return {
+    left: clamp(left, 0, maxX),
+    top: clamp(top, 0, maxY),
+  };
 }
 
 function getXmlBlocks(xml: string, tagName: string): string[] {
@@ -2836,96 +2909,93 @@ export class ReolinkBaichuanApi {
    */
   async getSnapshot(
     channel?: number,
-    options?:
-      | CompositeStreamPipOptions
-      | {
-        /** Native variant for dual-lens models (default=wide; autotrack/telephoto=tele lens). */
-        variant?: NativeVideoStreamVariant;
-        /** True when behind NVR/Hub (tele lens is exposed via logic channel). */
-        onNvr?: boolean;
-        /** Snapshot stream type (quality). Default: "main". */
-        streamType?: "main" | "sub";
-        timeoutMs?: number;
-      },
+    options?: {
+      /** Native variant for dual-lens models (default=wide; autotrack/telephoto=tele lens). */
+      variant?: NativeVideoStreamVariant;
+      /** True when behind NVR/Hub (tele lens is exposed via logic-channel/variant). */
+      onNvr?: boolean;
+      /** Composite snapshot options for multifocal cameras (PiP). Used when channel is undefined. */
+      compositeOptions?: CompositeStreamPipOptions;
+      /** Snapshot stream type (quality). Default: "main". */
+      streamType?: "main" | "sub";
+      timeoutMs?: number;
+    },
   ): Promise<Buffer> {
     const cmdId = 109;
 
-    // If composite options are provided, combine wider and tele snapshots with PIP
-    const compositeOptions =
-      options && ("widerChannel" in options || "teleChannel" in options || "pipPosition" in options) ? options : undefined;
-    const snapshotOptions = compositeOptions ? undefined : (options as Exclude<typeof options, CompositeStreamPipOptions> | undefined);
+    // Composite snapshot for multifocal devices: channel=undefined indicates "composite".
+    // The plugin passes PiP config via compositeOptions.
+    if (channel === undefined) {
+      const composite = options?.compositeOptions;
+      const widerChannel = composite?.widerChannel ?? 0;
+      const teleChannel = composite?.teleChannel ?? 1;
+      const pipPosition = composite?.pipPosition ?? "bottom-right";
+      const pipSize = clamp01(composite?.pipSize ?? 0.25);
+      const pipMargin = composite?.pipMargin ?? 10;
+      const onNvr = (options?.onNvr === true) || (composite?.onNvr === true);
+      const streamType: "main" | "sub" = options?.streamType ?? "main";
+      const timeoutMs = options?.timeoutMs ?? 15_000;
 
-    if (compositeOptions) {
-      const widerChannel = compositeOptions.widerChannel ?? 0;
-      const teleChannel = compositeOptions.teleChannel ?? 1;
-      const pipPosition = compositeOptions.pipPosition ?? "bottom-right";
-      const pipSize = compositeOptions.pipSize ?? 0.25;
-      const pipMargin = compositeOptions.pipMargin ?? 10;
+      // Wide snapshot (always default lens).
+      const wide = await this.getSnapshot(widerChannel, {
+        onNvr,
+        variant: "default",
+        streamType,
+        timeoutMs,
+      });
 
-      // Get snapshots from both channels in parallel
-      const [widerSnapshot, teleSnapshot] = await Promise.all([
-        this.getSnapshot(widerChannel),
-        this.getSnapshot(teleChannel),
-      ]);
+      // Tele snapshot: either separate channel (device direct) or same channel + variant (NVR/Hub TrackMix).
+      const tele = await this.getSnapshot(teleChannel, {
+        onNvr,
+        variant: onNvr && teleChannel === widerChannel ? "telephoto" : "default",
+        streamType,
+        timeoutMs,
+      });
 
-      // Combine snapshots using sharp
-      try {
-        // Load both images
-        const widerImage = sharp(widerSnapshot);
-        const teleImage = sharp(teleSnapshot);
+      const wideMeta = await sharp(wide, { failOn: "none" }).metadata();
+      const teleMeta = await sharp(tele, { failOn: "none" }).metadata();
 
-        // Get dimensions
-        const widerMetadata = await widerImage.metadata();
-        const teleMetadata = await teleImage.metadata();
-
-        const mainWidth = widerMetadata.width ?? 1920;
-        const mainHeight = widerMetadata.height ?? 1080;
-        const teleWidth = teleMetadata.width ?? 1920;
-        const teleHeight = teleMetadata.height ?? 1080;
-
-        // Calculate PIP dimensions and position
-        const pipWidth = Math.floor(mainWidth * pipSize);
-        const pipHeight = Math.floor((teleHeight / teleWidth) * pipWidth); // Maintain aspect ratio
-
-        // Calculate overlay position using the same logic as CompositeStream
-        const { x, y } = this.calculateSnapshotOverlayPosition(
-          pipPosition,
-          mainWidth,
-          mainHeight,
-          pipWidth,
-          pipHeight,
-          pipMargin
-        );
-
-        // Resize tele image to PIP size and composite onto wider image
-        const compositeBuffer = await widerImage
-          .composite([
-            {
-              input: await teleImage.resize(pipWidth, pipHeight).toBuffer(),
-              left: x,
-              top: y,
-            },
-          ])
-          .jpeg()
-          .toBuffer();
-
-        return compositeBuffer;
-      } catch (error) {
-        if (error instanceof Error && error.message.includes("Cannot find module 'sharp'")) {
-          throw new Error("sharp library is required for composite snapshots. Install it with: npm install sharp");
-        }
-        throw error;
+      const mainW = wideMeta.width ?? 0;
+      const mainH = wideMeta.height ?? 0;
+      if (mainW <= 0 || mainH <= 0) {
+        // If we can't determine dimensions, return wide snapshot.
+        return wide;
       }
+
+      const teleW = teleMeta.width ?? 0;
+      const teleH = teleMeta.height ?? 0;
+      const teleAspect = teleW > 0 && teleH > 0 ? teleH / teleW : 9 / 16;
+
+      const pipW = Math.max(1, Math.floor(mainW * pipSize));
+      const pipH = Math.max(1, Math.floor(pipW * teleAspect));
+
+      const { left, top } = calculatePipOverlayPosition({
+        position: pipPosition,
+        mainWidth: mainW,
+        mainHeight: mainH,
+        pipWidth: pipW,
+        pipHeight: pipH,
+        margin: pipMargin,
+      });
+
+      const pip = await sharp(tele, { failOn: "none" })
+        .resize({ width: pipW, height: pipH, fit: "fill" })
+        .toBuffer();
+
+      return await sharp(wide, { failOn: "none" })
+        .composite([{ input: pip, left, top }])
+        .jpeg({ quality: 80, mozjpeg: true })
+        .toBuffer();
     }
 
     // Regular snapshot for single channel
     const ch = channel !== undefined ? this.normalizeChannel(channel) : 0;
-    const variant: NativeVideoStreamVariant = snapshotOptions?.variant ?? "default";
-    const onNvr = snapshotOptions?.onNvr === true;
-    const streamType: "main" | "sub" = snapshotOptions?.streamType ?? "main";
-    const timeoutMs = snapshotOptions?.timeoutMs ?? 15_000;
+    const variant: NativeVideoStreamVariant = options?.variant ?? "default";
+    const onNvr = options?.onNvr === true;
+    const streamType: "main" | "sub" = options?.streamType ?? "main";
+    const timeoutMs = options?.timeoutMs ?? 15_000;
 
-    // On NVR/Hub dual-lens models, the tele lens is usually exposed via logicChannel=1.
+    // On NVR/Hub dual-lens models (TrackMix), the tele lens is usually exposed via logicChannel=1.
     const logicChannel = onNvr && variant !== "default" ? 1 : ch;
 
     // 1. Send Snap request (XML)
@@ -2946,45 +3016,6 @@ export class ReolinkBaichuanApi {
       extensionXml: buildChannelExtensionXml(ch),
       timeoutMs,
     });
-  }
-
-  /**
-   * Calculate overlay position for composite snapshot (same logic as CompositeStream)
-   */
-  private calculateSnapshotOverlayPosition(
-    position: import("../../multifocal/compositeStream").PipPosition,
-    mainWidth: number,
-    mainHeight: number,
-    pipWidth: number,
-    pipHeight: number,
-    margin: number
-  ): { x: number; y: number } {
-    const pipW = Math.floor(pipWidth);
-    const pipH = Math.floor(pipHeight);
-    const m = margin;
-
-    switch (position) {
-      case "top-left":
-        return { x: m, y: m };
-      case "top-right":
-        return { x: mainWidth - pipW - m, y: m };
-      case "bottom-left":
-        return { x: m, y: mainHeight - pipH - m };
-      case "bottom-right":
-        return { x: mainWidth - pipW - m, y: mainHeight - pipH - m };
-      case "center":
-        return { x: Math.floor((mainWidth - pipW) / 2), y: Math.floor((mainHeight - pipH) / 2) };
-      case "top-center":
-        return { x: Math.floor((mainWidth - pipW) / 2), y: m };
-      case "bottom-center":
-        return { x: Math.floor((mainWidth - pipW) / 2), y: mainHeight - pipH - m };
-      case "left-center":
-        return { x: m, y: Math.floor((mainHeight - pipH) / 2) };
-      case "right-center":
-        return { x: mainWidth - pipW - m, y: Math.floor((mainHeight - pipH) / 2) };
-      default:
-        return { x: m, y: m };
-    }
   }
 
   /**
@@ -4895,72 +4926,6 @@ ${xmlDateTimePayload("endTime", end)}
   }
 
   /**
-   * Start two-way audio session via Baichuan.
-   * cmd_id: 10 (two-way audio)
-   * Uses cmd_id 10 with audioStreamMode = "mixAudioStream"
-   * 
-   * Note: After starting, audio frames are received via push events with streamType indicating audio.
-   * Audio is typically G.711 (alaw/ulaw) at 8kHz sample rate.
-   */
-  async startTwoWayAudio(channel?: number): Promise<void> {
-    const cmdId = 10; // Two-way audio
-    // Start two-way audio with mixAudioStream mode
-    // cmd_id 10 enables two-way audio
-    await this.sendXml({ cmdId, ...(channel !== undefined ? { channel } : {}) });
-  }
-
-  /**
-   * Send audio data via Baichuan protocol.
-   * Audio is sent via cmd_id 10 with binary audio data.
-   * 
-   * Audio Format Requirements:
-   * - Format: G.711 A-law (pcm_alaw)
-   * - Sample Rate: 8000 Hz
-   * - Channels: 1 (mono)
-   * - Bitrate: 64k (typical)
-   * 
-   * Note: Audio data should already be in G.711 A-law format (from ffmpeg).
-   *       No encoding is performed - data is sent directly to the camera.
-   * 
-   * @param audioData - G.711 A-law encoded audio data (from ffmpeg)
-   * @param channel - Channel number (optional)
-   */
-  async sendAudioData(audioData: Buffer, channel?: number): Promise<void> {
-    const cmdId = 10; // Two-way audio command
-    // Audio data is sent as binary payload with cmd_id 10
-    // streamType in header may indicate audio stream (typically 1 for audio)
-    // Note: Actual implementation may need to use sendBinary or a specialized method
-    // For now, this is a placeholder - needs testing with real device
-    // 
-    // Note: sendBinary expects XML payload, but audio is binary
-    // This may need a specialized method or modification to sendBinary
-    // For now, we'll use sendBinary with empty XML and note that audio data
-    // should be sent via a different mechanism (possibly raw socket write)
-    const params: Parameters<typeof this.client.sendBinary>[0] = {
-      cmdId,
-      payloadXml: "", // Audio data is binary, not XML
-    };
-    if (channel !== undefined) {
-      params.channel = channel;
-    }
-    // Note: This is a placeholder - actual audio sending may require
-    // direct socket writes or a specialized audio streaming method
-    await this.client.sendBinary(params);
-  }
-
-  /**
-   * Stop two-way audio session.
-   * Stopping typically involves closing the audio stream or sending stop command.
-   */
-  async stopTwoWayAudio(channel?: number): Promise<void> {
-    // Note: May need specific cmd_id or parameters to stop
-    // Stopping may involve:
-    // - Closing the audio stream connection
-    // - Sending a stop command (if supported)
-    // For now, this is a placeholder - needs testing with real device
-  }
-
-  /**
    * Start video stream via Baichuan protocol.
    * Video stream subscription implementation.
    * 
@@ -5032,6 +4997,20 @@ ${xmlDateTimePayload("endTime", end)}
     }
     const payloadXml = buildPreviewXml(config.handle, streamName, channelId);
 
+    // PCAP-observed Hub/NVR Preview request for "tele" view uses Preview v1.1 and keeps header streamType=0.
+    // We observed two distinct patterns:
+    // - Sub tele:  <channelId>CH</channelId> <handle>512+CH</handle>  <streamType>mobileStream</streamType>
+    // - Main tele: <channelId>CH</channelId> <handle>1024+CH</handle> <streamType>externStream</streamType>
+    // Also, some firmwares appear to use 0-based CH, others 1-based.
+    const telePreviewStreamType =
+      variant === "telephoto" && profile === "main" ? "externStream" : variant === "telephoto" && profile === "sub" ? "mobileStream" : undefined;
+    const teleHandleBase =
+      variant === "telephoto" && profile === "main" ? 1024 : variant === "telephoto" && profile === "sub" ? 512 : undefined;
+    const teleChannelIdCandidates =
+      variant === "telephoto" && telePreviewStreamType && teleHandleBase !== undefined
+        ? Array.from(new Set([channelId, channelId + 1].filter((n) => Number.isFinite(n) && n >= 0)))
+        : [];
+
     // Log stream request details for debugging
     if (this.logger?.log) {
       try {
@@ -5055,7 +5034,7 @@ ${xmlDateTimePayload("endTime", end)}
       this.client.subscribeVideoStream(BC_CMD_ID_VIDEO, msgNum);
 
       try {
-        const frameParams: Parameters<typeof this.client.sendFrame>[0] = {
+        const baseParams: Parameters<typeof this.client.sendFrame>[0] = {
           cmdId: BC_CMD_ID_VIDEO,
           channel: ch,
           channelIdOverride: channelId,
@@ -5063,8 +5042,35 @@ ${xmlDateTimePayload("endTime", end)}
           payloadXml,
           messageClass: BC_CLASS_MODERN_24,
           streamType: config.streamType,
+          // Some NVR firmwares are slow or flaky replying to the VIDEO start command.
+          // The stream may still start, but waiting a bit longer reduces false timeouts.
+          timeoutMs: 20_000,
         };
-        const frame = await this.client.sendFrame(frameParams);
+
+        // Try the PCAP-observed tele Preview v1.1 request first (and try both 0-based and 1-based channelId tags),
+        // then fall back to the legacy request.
+        let frame: Awaited<ReturnType<typeof this.client.sendFrame>> | undefined;
+        if (teleChannelIdCandidates.length > 0 && telePreviewStreamType && teleHandleBase !== undefined) {
+          for (const teleChannelIdTag of teleChannelIdCandidates) {
+            try {
+              frame = await this.client.sendFrame({
+                ...baseParams,
+                // Client traffic shows no Extension XML on VIDEO start.
+                extensionXml: "",
+                payloadXml: buildPreviewXmlV11({
+                  channelId: teleChannelIdTag,
+                  handle: teleHandleBase + teleChannelIdTag,
+                  streamType: telePreviewStreamType,
+                }),
+                streamType: 0,
+              });
+              break;
+            } catch {
+              // continue
+            }
+          }
+        }
+        if (!frame) frame = await this.client.sendFrame(baseParams);
 
         if (this.logger?.log) {
           try {
@@ -5149,7 +5155,6 @@ ${xmlDateTimePayload("endTime", end)}
     }
   ): Promise<void> {
     const ch = this.normalizeChannel(channel);
-    // Use the same 0-based channel_id everywhere (header, Extension, payload).
     const channelId = ch;
 
     const variant: NativeVideoStreamVariant = options?.variant ?? "default";
@@ -5167,9 +5172,12 @@ ${xmlDateTimePayload("endTime", end)}
 
     const config = profileConfig[profile];
 
-    // Build Preview XML payload for stop (without stream_type)
-    // channelId is NOT in Preview XML - it's handled via channelId in header
-    const payloadXml = buildPreviewStopXml(config.handle, channelId);
+    const teleHandleBase =
+      variant === "telephoto" && profile === "main" ? 1024 : variant === "telephoto" && profile === "sub" ? 512 : undefined;
+    const teleChannelIdCandidates =
+      variant === "telephoto" && teleHandleBase !== undefined
+        ? Array.from(new Set([channelId, channelId + 1].filter((n) => Number.isFinite(n) && n >= 0)))
+        : [];
 
     const key = `${ch}:${profile}:${variant}`;
     const msgNum = this.activeVideoMsgNums.get(key);
@@ -5178,17 +5186,60 @@ ${xmlDateTimePayload("endTime", end)}
     // Send VIDEO_STOP with the same msg_num as VIDEO.
     // Some cameras don't reliably reply; treat this as best-effort with a short timeout.
     try {
-      await this.client.sendFrame({
-        cmdId: BC_CMD_ID_VIDEO_STOP,
-        channel: ch,
-        channelIdOverride: channelId,
+      const attempts: Array<{ extensionXml: string; payloadXml: string; streamType: number }> = [];
+
+      // Hub/NVR multifocal tele streams are started with Preview v1.1 + streamType=0 and a handle derived from channelId.
+      if (teleChannelIdCandidates.length > 0 && teleHandleBase !== undefined) {
+        for (const teleChannelIdTag of teleChannelIdCandidates) {
+          const handle = teleHandleBase + teleChannelIdTag;
+          attempts.push({
+            extensionXml: "",
+            payloadXml: buildPreviewStopXmlV11({ channelId: teleChannelIdTag, handle }),
+            streamType: 0,
+          });
+          // Some firmwares accept v1.0 stop with channelId present.
+          attempts.push({
+            extensionXml: "",
+            payloadXml: buildPreviewStopXml(handle, teleChannelIdTag),
+            streamType: 0,
+          });
+        }
+      }
+
+      // Legacy stop.
+      attempts.push({
         extensionXml: buildChannelExtensionXml(channelId),
-        payloadXml,
-        messageClass: BC_CLASS_MODERN_24,
+        payloadXml: buildPreviewStopXml(config.handle, channelId),
         streamType: config.streamType,
-        ...(msgNum !== undefined ? { msgNumOverride: msgNum } : {}),
-        timeoutMs: 2000,
       });
+
+      // If we started tele via the hub path, streamType was 0; try that too.
+      if (variant === "telephoto" && profile !== "ext") {
+        attempts.push({
+          extensionXml: buildChannelExtensionXml(channelId),
+          payloadXml: buildPreviewStopXml(config.handle, channelId),
+          streamType: 0,
+        });
+      }
+
+      for (const a of attempts) {
+        try {
+          await this.client.sendFrame({
+            cmdId: BC_CMD_ID_VIDEO_STOP,
+            channel: ch,
+            channelIdOverride: channelId,
+            extensionXml: a.extensionXml,
+            payloadXml: a.payloadXml,
+            messageClass: BC_CLASS_MODERN_24,
+            streamType: a.streamType,
+            ...(msgNum !== undefined ? { msgNumOverride: msgNum } : {}),
+            timeoutMs: 2000,
+          });
+          break;
+        } catch {
+          // continue
+        }
+      }
     } catch {
       // ignore
     } finally {
@@ -7117,8 +7168,9 @@ ${xmlDateTimePayload("endTime", end)}
 
         const makeLensVariant = (lensType: "wide" | "telephoto"): NativeVideoStreamVariant => {
           if (lensType === "wide") return "default";
-          // For TrackMix behind NVR/Hub the tele lens is typically exposed as autotrack/logic-channel stream.
-          return onNvr && dualLensType === "single_motion" ? "autotrack" : "telephoto";
+          // For Hub/NVR multifocal (TrackMix), the tele lens is requested via the telephoto variant.
+          // Autotrack is a separate mode and should not be used to select the tele stream.
+          return "telephoto";
         };
 
         // For TrackMix (single_motion) models, channel 1 (telephoto) has optical zoom
@@ -7326,9 +7378,9 @@ ${xmlDateTimePayload("endTime", end)}
     const channel = options?.channel;
     const compositeOnly = options?.compositeOnly === true;
 
-    const lensVariant = options?.lens;
-    const wantWide = !lensVariant || lensVariant === "default";
-    const wantTele = !lensVariant || lensVariant !== "default";
+    const lensVariant: NativeVideoStreamVariant = options?.lens ?? "default";
+    const wantWide = lensVariant === "default";
+    const wantTele = lensVariant !== "default";
 
     const rtspStreams: ReolinkSupportedStream[] = [];
     const rtmpStreams: ReolinkSupportedStream[] = [];
@@ -7340,10 +7392,12 @@ ${xmlDateTimePayload("endTime", end)}
     // TrackMix can expose the tele stream as RTSP `...Preview_<ch>_autotrack` (especially on NVR/Hub).
     let isMultiFocal = false;
     let model: string | undefined;
+    let isTrackMix = false;
     try {
       const info = await this.getInfo(ch, { tags: ["type"] });
       model = typeof (info as any)?.type === "string" ? String((info as any).type).toLowerCase() : "";
       isMultiFocal = isDualLenseModel(model);
+      isTrackMix = model.includes("trackmix");
     } catch {
       // ignore
     }
@@ -7527,6 +7581,7 @@ ${xmlDateTimePayload("endTime", end)}
       nativeUrlWithAuth.password = this.password;
 
       nativeStreams.push({
+        // Keep names stable: when requesting a specific lens, callers expect a single native main/sub.
         name: `Native ${params.profile}`,
         id: params.id,
         container: "rtp",
@@ -7601,14 +7656,20 @@ ${xmlDateTimePayload("endTime", end)}
         includeRtsp: rtspEnabled,
         includeRtmp: rtmpEnabled,
         includeNative: true,
-        nativeIdPrefix: "native_tele",
+        // Lens-scoped: keep native IDs stable.
+        nativeIdPrefix: "native",
       });
     }
 
     // Add TrackMix tele stream variant for NVR/Hub.
     // On many NVR/Hub firmwares the tele lens is exposed as RTSP `.../Preview_<NN>_autotrack`.
     if (wantTele && isMultiFocal && onNvr && rtspEnabled) {
-      const rtspVariant: Exclude<NativeVideoStreamVariant, "default"> = lensVariant === "telephoto" ? "telephoto" : "autotrack";
+      // IMPORTANT: TrackMix behind NVR/Hub often exposes the tele lens as the `autotrack` stream name.
+      // Even if the caller conceptually wants "telephoto", the actual RTSP path is typically `_autotrack`.
+      const rtspVariant: Exclude<NativeVideoStreamVariant, "default"> =
+        // TrackMix behind NVR/Hub often uses RTSP streamName=autotrack for the tele lens.
+        // Keep behavior consistent: requesting telephoto maps to autotrack at the RTSP path level.
+        isTrackMix ? "autotrack" : lensVariant === "telephoto" ? "telephoto" : "autotrack";
       const mainMeta = streams.find((s) => s.profile === "main") ?? streams[0];
       const subMeta = streams.find((s) => s.profile === "sub") ?? streams[0];
 
@@ -7674,30 +7735,34 @@ ${xmlDateTimePayload("endTime", end)}
     // Add TrackMix native tele stream variant for NVR/Hub.
     // Many firmwares expose the tele lens via a different Baichuan streamType (2/3).
     if (wantTele && isMultiFocal && onNvr) {
-      const nativeVariant: Exclude<NativeVideoStreamVariant, "default"> = lensVariant === "telephoto" ? "telephoto" : "autotrack";
-
       const mainMeta = streams.find((s) => s.profile === "main") ?? streams[0];
       const subMeta = streams.find((s) => s.profile === "sub") ?? streams[0];
 
-      pushNative({
-        channel: ch,
-        profile: "main",
-        ...(mainMeta ? { metadata: mainMeta } : {}),
-        lens: "telephoto",
-        id: `native_${nativeVariant}_main`,
-        streamName: nativeVariant,
-        nativeVariant,
-      });
+      const variantsToExpose: Array<Exclude<NativeVideoStreamVariant, "default">> = [
+        lensVariant === "telephoto" ? "telephoto" : "autotrack",
+      ];
 
-      pushNative({
-        channel: ch,
-        profile: "sub",
-        ...(subMeta ? { metadata: subMeta } : {}),
-        lens: "telephoto",
-        id: `native_${nativeVariant}_sub`,
-        streamName: nativeVariant,
-        nativeVariant,
-      });
+      for (const nativeVariant of variantsToExpose) {
+        pushNative({
+          channel: ch,
+          profile: "main",
+          ...(mainMeta ? { metadata: mainMeta } : {}),
+          lens: "telephoto",
+          id: `native_main`,
+          streamName: nativeVariant,
+          nativeVariant,
+        });
+
+        pushNative({
+          channel: ch,
+          profile: "sub",
+          ...(subMeta ? { metadata: subMeta } : {}),
+          lens: "telephoto",
+          id: `native_sub`,
+          streamName: nativeVariant,
+          nativeVariant,
+        });
+      }
     }
 
     return {

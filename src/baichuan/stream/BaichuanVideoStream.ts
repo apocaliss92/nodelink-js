@@ -186,7 +186,7 @@ export class BaichuanVideoStream extends EventEmitter<{
   private logger: Logger | undefined;
   private active = false;
   private videoFrameHandler: ((frame: BaichuanFrame) => void) | undefined;
-  private readonly expectedStreamType: number;
+  private readonly expectedStreamTypes: Set<number>;
   private activeMsgNum: number | undefined;
   private bcMediaCodec: BcMediaCodec;
   private debugH264LogsLeft: number;
@@ -265,13 +265,18 @@ export class BaichuanVideoStream extends EventEmitter<{
     this.profile = options.profile;
     this.variant = options.variant ?? "default";
     this.logger = options.logger;
-    // Stream type:
-    // - default: 0 for main/ext, 1 for sub
-    // - autotrack/telephoto: 2 for main, 3 for sub
-    this.expectedStreamType =
-      this.variant === "default" ? (this.profile === "sub" ? 1 : 0) : this.profile === "sub" ? 3 : 2;
+    // Stream type varies across firmwares:
+    // - some use 0/1 for main/sub (even for tele on Hub/NVR)
+    // - others use 2/3 for autotrack/telephoto variants
+    // Accept both and rely on msgNum filtering when available.
+    this.expectedStreamTypes = this.profile === "sub" ? new Set([1, 3]) : new Set([0, 2]);
+    // Hub/NVR tele selection uses Preview v1.1 while keeping header streamType=0.
+    // Without this, native_sub telephoto would discard all frames and timeout.
+    if (this.variant === "telephoto") this.expectedStreamTypes.add(0);
     this.logger?.log(
-      `[BaichuanVideoStream] constructor: channel=${this.channel}, profile=${this.profile}, variant=${this.variant}, expectedStreamType=${this.expectedStreamType}`
+      `[BaichuanVideoStream] constructor: channel=${this.channel}, profile=${this.profile}, variant=${this.variant}, expectedStreamTypes=[${[
+        ...this.expectedStreamTypes,
+      ].join(",")}]`
     );
     this.bcMediaCodec = new BcMediaCodec(false, this.logger); // non-strict mode for error recovery
     // Debug is configured on the client; the library must not read env vars.
@@ -353,7 +358,9 @@ export class BaichuanVideoStream extends EventEmitter<{
       const transport = this.client.getTransport?.() ?? "unknown";
       const msgNum = this.activeMsgNum ?? "unknown";
       this.logger?.warn(
-        `[BaichuanVideoStream] Watchdog restarting native stream (channel=${this.channel} profile=${this.profile} streamType=${this.expectedStreamType} msgNum=${msgNum} transport=${transport} reason=${params.reason})`,
+        `[BaichuanVideoStream] Watchdog restarting native stream (channel=${this.channel} profile=${this.profile} expectedStreamTypes=[${[
+          ...this.expectedStreamTypes,
+        ].join(",")}] msgNum=${msgNum} transport=${transport} reason=${params.reason})`,
       );
 
       // Reset parsers to avoid carrying corrupt state across a restart.
@@ -405,87 +412,14 @@ export class BaichuanVideoStream extends EventEmitter<{
     this.depacketizer.reset();
     this.depacketizerH265.reset();
 
-    // Request the video stream if the API is available
-    if (this.api) {
-      try {
-        // Best-effort stop: stop any existing stream (with any variant) on this channel/profile
-        // This ensures we start fresh, especially important when switching between variants (e.g., default to autotrack)
-        // For TrackMix on NVR, we need to stop the default (wide) stream before starting autotrack (telephoto)
-        if (this.variant !== "default") {
-          this.logger?.log(
-            `[BaichuanVideoStream] Stopping default (wide) stream before starting variant stream: channel=${this.channel}, profile=${this.profile}, variant=${this.variant}`
-          );
-          try {
-            await this.api.stopVideoStream(this.channel, this.profile, { variant: "default" });
-            this.logger?.log(`[BaichuanVideoStream] Successfully stopped default stream`);
-          } catch (e) {
-            this.logger?.log(`[BaichuanVideoStream] Error stopping default stream (may not exist): ${e instanceof Error ? e.message : String(e)}`);
-            // ignore errors when stopping default variant (may not exist)
-          }
-        }
-        
-        // Also stop the variant stream if it's already running (to ensure clean restart)
-        try {
-          await this.api.stopVideoStream(this.channel, this.profile, { variant: this.variant });
-          if (this.variant !== "default") {
-            this.logger?.log(`[BaichuanVideoStream] Successfully stopped existing variant stream`);
-          }
-        } catch (e) {
-          if (this.variant !== "default") {
-            this.logger?.log(`[BaichuanVideoStream] Error stopping variant stream (may not exist): ${e instanceof Error ? e.message : String(e)}`);
-          }
-          // ignore errors when stopping current variant (may not exist)
-        }
-        
-        // Small delay to ensure the device has processed the stop commands
-        await new Promise(resolve => setTimeout(resolve, 100));
-
-        this.logger?.log(
-          `[BaichuanVideoStream] start() calling startVideoStream: channel=${this.channel}, profile=${this.profile}, variant=${this.variant}`
-        );
-        await this.api.startVideoStream(this.channel, this.profile, { variant: this.variant });
-
-        // When multiple streams are active on the same Baichuan client, frames for
-        // different streams can interleave. Filter by msgNum (if available) and
-        // streamType to prevent cross-stream corruption.
-        try {
-          const getMsgNum = (this.api as any).getActiveVideoMsgNumWithVariant as
-            | ((ch: number, p: StreamProfile, v?: NativeVideoStreamVariant) => number | undefined)
-            | undefined;
-          this.activeMsgNum = typeof getMsgNum === "function" ? getMsgNum(this.channel, this.profile, this.variant) : undefined;
-        } catch {
-          this.activeMsgNum = undefined;
-        }
-      } catch (error) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        // On UDP/battery cams the stream typically will NOT start automatically.
-        // Failing fast avoids returning a "live" generator that never produces frames.
-        if (this.client.getTransport?.() === "udp") {
-          throw err;
-        }
-        this.emit("error", err);
-      }
-    }
-
     // Listen to push events carrying BcMedia packets (cmd_id=3).
+    // IMPORTANT: register this handler BEFORE awaiting the VIDEO start response.
+    // Some NVR/Hub firmwares are slow to reply, but begin streaming earlier.
     let totalFramesReceived = 0;
     let totalMediaPackets = 0;
     this.videoFrameHandler = (frame: BaichuanFrame) => {
       // Only cmd_id=3 frames carry the media stream.
       if (frame.header.cmdId !== 3) return;
-
-      // Filter by expected stream type (main/ext=0, sub=1). This is critical when
-      // main and sub are active concurrently on the same client connection.
-      // Log streamType mismatch for debugging (only first few times to avoid spam)
-      if (frame.header.streamType !== this.expectedStreamType) {
-        const frameCount = (this as any)._streamTypeMismatchCount = ((this as any)._streamTypeMismatchCount || 0) + 1;
-        if (frameCount <= 5) {
-          this.logger?.log(
-            `[BaichuanVideoStream] Frame streamType mismatch: received=${frame.header.streamType}, expected=${this.expectedStreamType}, channel=${this.channel}, profile=${this.profile}, variant=${this.variant} (frame discarded)`
-          );
-        }
-        return;
-      }
 
       // Filter by msgNum if we were able to capture it from the API.
       // Some firmwares reuse streamType but keep msgNum distinct per stream.
@@ -499,6 +433,19 @@ export class BaichuanVideoStream extends EventEmitter<{
         return;
       }
 
+      // Filter by expected streamType(s). Some devices use 0/1, others 2/3 for variants.
+      if (!this.expectedStreamTypes.has(frame.header.streamType)) {
+        const frameCount = (this as any)._streamTypeMismatchCount = ((this as any)._streamTypeMismatchCount || 0) + 1;
+        if (frameCount <= 5) {
+          this.logger?.log(
+            `[BaichuanVideoStream] Frame streamType mismatch: received=${frame.header.streamType}, expectedAny=[${[
+              ...this.expectedStreamTypes,
+            ].join(",")}], channel=${this.channel}, profile=${this.profile}, variant=${this.variant} (frame discarded)`
+          );
+        }
+        return;
+      }
+
       totalFramesReceived++;
 
       const dbg = this.client.getDebugConfig();
@@ -506,7 +453,9 @@ export class BaichuanVideoStream extends EventEmitter<{
       if (totalFramesReceived === 1) {
         // Always log first frame info for debugging variant issues
         this.logger?.log(
-          `[BaichuanVideoStream] First frame accepted: streamType=${frame.header.streamType}, expected=${this.expectedStreamType}, msgNum=${frame.header.msgNum}, activeMsgNum=${this.activeMsgNum}, channelId=${frame.header.channelId}, bodyLen=${frame.body.length}, variant=${this.variant}`
+          `[BaichuanVideoStream] First frame accepted: streamType=${frame.header.streamType}, expectedAny=[${[
+            ...this.expectedStreamTypes,
+          ].join(",")}], msgNum=${frame.header.msgNum}, activeMsgNum=${this.activeMsgNum}, channelId=${frame.header.channelId}, bodyLen=${frame.body.length}, variant=${this.variant}`
         );
         if (rtspDebug) {
           this.logger?.log(
@@ -546,7 +495,9 @@ export class BaichuanVideoStream extends EventEmitter<{
         raw: dataToParse,
         enc,
         channelId: frame.header.channelId,
-        allowResync: frame.payload.length === 0,
+        // Some NVR/Hub streams appear to include non-media bytes even when payloadOffset is present.
+        // Allow a one-time resync at startup to avoid delaying the first keyframe.
+        allowResync: frame.payload.length === 0 || (totalFramesReceived <= 10 && totalMediaPackets === 0),
       });
       if (totalFramesReceived === 1) {
         if (rtspDebug) {
@@ -829,6 +780,7 @@ export class BaichuanVideoStream extends EventEmitter<{
           maybeCacheParamSets(annexBData, "Iframe", media.videoType);
           const outAnnex = prependParamSetsIfNeeded(annexBData, media.videoType);
           if (outAnnex.length === 0) continue;
+
           dumpNalSummary(outAnnex, "Iframe", media.microseconds);
 
           // Guard rail: do not emit invalid keyframes (prevents cascading parameter set issues)
@@ -985,8 +937,96 @@ export class BaichuanVideoStream extends EventEmitter<{
 
     this.client.on("push", this.videoFrameHandler);
     this.active = true;
-    this.lastMediaAtMs = Date.now();
     this.startWatchdog();
+
+    // Seed liveness so the watchdog doesn't immediately restart while we are still negotiating.
+    this.lastMediaAtMs = Date.now();
+
+    // Request the video stream if the API is available.
+    if (this.api) {
+      try {
+        // Best-effort stop: stop any existing stream on this channel/profile.
+        // This ensures we start fresh when switching between variants.
+        if (this.variant !== "default") {
+          this.logger?.log(
+            `[BaichuanVideoStream] Stopping default (wide) stream before starting variant stream: channel=${this.channel}, profile=${this.profile}, variant=${this.variant}`
+          );
+          try {
+            await this.api.stopVideoStream(this.channel, this.profile, { variant: "default" });
+            this.logger?.log(`[BaichuanVideoStream] Successfully stopped default stream`);
+          } catch (e) {
+            this.logger?.log(`[BaichuanVideoStream] Error stopping default stream (may not exist): ${e instanceof Error ? e.message : String(e)}`);
+          }
+
+          // Stop both non-default variants to avoid interleaving across variant streams.
+          for (const v of ["autotrack", "telephoto"] as const) {
+            try {
+              await this.api.stopVideoStream(this.channel, this.profile, { variant: v });
+              this.logger?.log(`[BaichuanVideoStream] Successfully stopped existing variant stream: ${v}`);
+            } catch (e) {
+              this.logger?.log(`[BaichuanVideoStream] Error stopping variant stream ${v} (may not exist): ${e instanceof Error ? e.message : String(e)}`);
+            }
+          }
+        } else {
+          // Default stream: just best-effort stop default before starting.
+          try {
+            await this.api.stopVideoStream(this.channel, this.profile, { variant: "default" });
+          } catch {
+            // ignore
+          }
+        }
+
+        // Small delay to ensure the device has processed the stop commands
+        await new Promise((resolve) => setTimeout(resolve, 100));
+
+        this.logger?.log(
+          `[BaichuanVideoStream] start() calling startVideoStream: channel=${this.channel}, profile=${this.profile}, variant=${this.variant}`
+        );
+
+        const startPromise = this.api.startVideoStream(this.channel, this.profile, { variant: this.variant });
+
+        // On UDP/battery cams the stream typically will NOT start automatically; wait for the response.
+        // On TCP/NVR/Hub the response can be very slow; do not block stream processing on it.
+        if (this.client.getTransport?.() === "udp") {
+          await startPromise;
+        } else {
+          // Give it a brief window to fail fast (bad credentials, disconnected).
+          await Promise.race([
+            startPromise,
+            new Promise<void>((resolve) => setTimeout(resolve, 400)),
+          ]);
+        }
+
+        const updateActiveMsgNum = () => {
+          try {
+            const getMsgNum = (this.api as any).getActiveVideoMsgNumWithVariant as
+              | ((ch: number, p: StreamProfile, v?: NativeVideoStreamVariant) => number | undefined)
+              | undefined;
+            this.activeMsgNum = typeof getMsgNum === "function" ? getMsgNum(this.channel, this.profile, this.variant) : undefined;
+          } catch {
+            this.activeMsgNum = undefined;
+          }
+        };
+
+        updateActiveMsgNum();
+        void startPromise
+          .then(() => updateActiveMsgNum())
+          .catch((e) => {
+            const err = e instanceof Error ? e : new Error(String(e));
+            this.emit("error", err);
+          });
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        if (this.client.getTransport?.() === "udp") {
+          this.stopWatchdog();
+          this.active = false;
+          if (this.videoFrameHandler) this.client.off("push", this.videoFrameHandler);
+          this.videoFrameHandler = undefined;
+          throw err;
+        }
+        this.emit("error", err);
+      }
+    }
   }
 
   // isVideoFrame, isAudioFrame, and extractVideoData are no longer needed

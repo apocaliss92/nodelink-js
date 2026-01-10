@@ -53,16 +53,20 @@ export class BcMediaCodec {
         // No complete packet yet.
         // If the buffer does NOT start with a known magic,
         // in non-strict mode we drop the whole buffer (prevents desync and "fake" packets).
-        const magic = this.buffer.readUInt32LE(0);
-        const isInfoV1 = magic === 0x31303031;
-        const isInfoV2 = magic === 0x32303031;
-        const isIFrame = magic >= 0x63643030 && magic <= 0x63643039;
-        const isPFrame = magic >= 0x63643130 && magic <= 0x63643139;
-        const isAac = magic === 0x62773530;
-        const isAdpcm = magic === 0x62773130;
-        const isKnownMagic = isInfoV1 || isInfoV2 || isIFrame || isPFrame || isAac || isAdpcm;
+        const isKnownMagic = (magic: number): boolean => {
+          const isInfoV1 = magic === 0x31303031;
+          const isInfoV2 = magic === 0x32303031;
+          const isIFrame = magic >= 0x63643030 && magic <= 0x63643039;
+          const isPFrame = magic >= 0x63643130 && magic <= 0x63643139;
+          const isAac = magic === 0x62773530;
+          const isAdpcm = magic === 0x62773130;
+          return isInfoV1 || isInfoV2 || isIFrame || isPFrame || isAac || isAdpcm;
+        };
 
-        if (isKnownMagic) {
+        const magic = this.buffer.readUInt32LE(0);
+        const startsWithKnownMagic = isKnownMagic(magic);
+
+        if (startsWithKnownMagic) {
           // Likely incomplete: wait for more data.
           break;
         }
@@ -75,8 +79,29 @@ export class BcMediaCodec {
         if (this.amountSkipped === 0) {
           this.logger?.warn(`[BcMediaCodec] Error in stream, attempting to recover...`);
         }
-        this.amountSkipped += this.buffer.length;
-        this.buffer = Buffer.alloc(0);
+
+        // Non-strict recovery: scan for the next known magic instead of dropping everything.
+        // This helps when the stream begins with padding/garbage or when chunks split across packet boundaries.
+        let next = -1;
+        for (let i = 1; i <= this.buffer.length - 4; i++) {
+          if (isKnownMagic(this.buffer.readUInt32LE(i))) {
+            next = i;
+            break;
+          }
+        }
+
+        if (next > 0) {
+          this.amountSkipped += next;
+          this.buffer = this.buffer.subarray(next);
+          continue;
+        }
+
+        // No magic found: keep a short tail so that a 4-byte magic split across chunks can be reconstructed.
+        if (this.buffer.length > 3) {
+          const keep = 3;
+          this.amountSkipped += this.buffer.length - keep;
+          this.buffer = this.buffer.subarray(this.buffer.length - keep);
+        }
         break;
       }
     }

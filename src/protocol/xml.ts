@@ -72,6 +72,32 @@ ${channelIdXml}<handle>${handle}</handle>
 }
 
 /**
+ * Build Preview XML for video stream request (v1.1).
+ *
+ * This format is observed in Reolink client traffic to NVR/Hub where the Preview element uses
+ * version="1.1" and always includes channelId + handle + streamType.
+ */
+export function buildPreviewXmlV11(params: { channelId: number; handle: number; streamType: string }): string {
+  if (!Number.isFinite(params.channelId)) {
+    throw new Error(`buildPreviewXmlV11: channelId must be finite, got: ${params.channelId}`);
+  }
+  if (!Number.isFinite(params.handle)) {
+    throw new Error(`buildPreviewXmlV11: handle must be finite, got: ${params.handle}`);
+  }
+  if (!params.streamType || typeof params.streamType !== "string") {
+    throw new Error(`buildPreviewXmlV11: streamType is required (string) but got: ${typeof params.streamType} = ${params.streamType}`);
+  }
+  return `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<Preview version="1.1">
+<channelId>${params.channelId}</channelId>
+<handle>${params.handle}</handle>
+<streamType>${xmlEscape(params.streamType)}</streamType>
+</Preview>
+</body>`;
+}
+
+/**
  * Build Preview XML for video stream stop request.
  * Uses Preview element without stream_type.
  * 
@@ -85,6 +111,28 @@ export function buildPreviewStopXml(handle: number, channelId?: number): string 
 <body>
 <Preview version="1.0">
 ${channelIdXml}<handle>${handle}</handle>
+</Preview>
+</body>`;
+}
+
+/**
+ * Build Preview XML for video stream stop request (v1.1).
+ *
+ * This format is observed/needed on some Hub/NVR firmwares where the VIDEO start
+ * request uses Preview version="1.1" with explicit channelId and handle.
+ */
+export function buildPreviewStopXmlV11(params: { channelId: number; handle: number }): string {
+  if (!Number.isFinite(params.channelId)) {
+    throw new Error(`buildPreviewStopXmlV11: channelId must be finite, got: ${params.channelId}`);
+  }
+  if (!Number.isFinite(params.handle)) {
+    throw new Error(`buildPreviewStopXmlV11: handle must be finite, got: ${params.handle}`);
+  }
+  return `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<Preview version="1.1">
+<channelId>${params.channelId}</channelId>
+<handle>${params.handle}</handle>
 </Preview>
 </body>`;
 }

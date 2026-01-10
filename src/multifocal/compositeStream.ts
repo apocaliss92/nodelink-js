@@ -36,6 +36,8 @@ export interface CompositeStreamPipOptions {
   pipSize?: number;
   /** PIP margin in pixels (default: 10) */
   pipMargin?: number;
+  /** True when behind NVR/Hub (affects variant selection for snapshots) */
+  onNvr?: boolean;
 }
 
 export type CompositeStreamOptions = {
@@ -215,7 +217,7 @@ export class CompositeStream extends EventEmitter<{
       "-i", "pipe:0",
       // Input 1: tele stream (PIP)
       "-f", videoCodec === "hevc" ? "hevc" : "h264",
-      "-i", "pipe:1",
+      "-i", "pipe:3",
       // Filter to scale and position PIP
       "-filter_complex",
       `[1:v]scale=${pipWidth}:${pipHeight}[pip];[0:v][pip]overlay=${position.x}:${position.y}[out]`,
@@ -225,15 +227,17 @@ export class CompositeStream extends EventEmitter<{
       "-tune", "zerolatency",
       "-crf", "23",
       "-f", "h264",
-      "pipe:2", // Output
+      "pipe:1", // Output (stdout)
     ];
 
     this.logger.log?.(
       `[CompositeStream] Starting ffmpeg: ${ffmpegArgs.join(" ")}`
     );
 
+    // We need two writable inputs: stdin (fd 0) for wider, and an extra fd (fd 3) for tele.
+    // stdout (fd 1) is used for the composed H.264 output.
     this.ffmpegProcess = spawn("ffmpeg", ffmpegArgs, {
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe", "pipe"],
     });
 
     // Handle ffmpeg errors
@@ -276,7 +280,7 @@ export class CompositeStream extends EventEmitter<{
     }
 
     const widerStdin = this.ffmpegProcess.stdio[0] as NodeJS.WritableStream | null;
-    const teleStdin = this.ffmpegProcess.stdio[1] as NodeJS.WritableStream | null;
+    const teleStdin = this.ffmpegProcess.stdio[3] as NodeJS.WritableStream | null;
 
     if (!widerStdin || !teleStdin) {
       this.logger.error?.("[CompositeStream] FFmpeg stdin not available");
