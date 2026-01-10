@@ -199,24 +199,39 @@ export class CompositeStream extends EventEmitter<{
     pipHeight: number,
     position: { x: number; y: number }
   ): Promise<void> {
-    // Determine video codec (assume H.264 for simplicity, could be H.265)
+    // Determine video codec from both streams
+    // If metadata is not available or inaccurate, ffmpeg will auto-detect from stream data
     const widerMetadata = await this.options.api.getStreamMetadata(this.options.widerChannel);
+    const teleMetadata = await this.options.api.getStreamMetadata(this.options.teleChannel);
     const widerStreamInfo = widerMetadata.streams.find((s) => s.profile === this.options.widerProfile);
-    const videoCodec = widerStreamInfo?.videoEncType?.toLowerCase().includes("265") ? "hevc" : "h264";
+    const teleStreamInfo = teleMetadata.streams.find((s) => s.profile === this.options.teleProfile);
+    
+    // Determine codec for each input stream
+    const widerCodec = widerStreamInfo?.videoEncType?.toLowerCase().includes("265") ? "hevc" : "h264";
+    const teleCodec = teleStreamInfo?.videoEncType?.toLowerCase().includes("265") ? "hevc" : "h264";
+    
+    // Log codec detection for debugging
+    this.logger.log?.(
+      `[CompositeStream] Codec detection: wider=${widerCodec} (from metadata: ${widerStreamInfo?.videoEncType || "unknown"}), tele=${teleCodec} (from metadata: ${teleStreamInfo?.videoEncType || "unknown"})`
+    );
 
     // ffmpeg args for composition
     // Input 0: wider stream (main)
     // Input 1: tele stream (PIP)
     // Output: composite stream with overlay
+    // Note: For raw H264/H265 streams from pipes, we need to specify the format
+    // but we add flags to help ffmpeg detect the codec more reliably
     const ffmpegArgs = [
       "-hide_banner",
       "-loglevel", "error",
       "-fflags", "+genpts",
+      "-probesize", "32", // Small probe size for faster detection
+      "-analyzeduration", "500000", // 0.5 seconds to analyze stream
       // Input 0: wider stream (main)
-      "-f", videoCodec === "hevc" ? "hevc" : "h264",
+      "-f", widerCodec,
       "-i", "pipe:0",
-      // Input 1: tele stream (PIP)
-      "-f", videoCodec === "hevc" ? "hevc" : "h264",
+      // Input 1: tele stream (PIP)  
+      "-f", teleCodec,
       "-i", "pipe:3",
       // Filter to scale and position PIP
       "-filter_complex",

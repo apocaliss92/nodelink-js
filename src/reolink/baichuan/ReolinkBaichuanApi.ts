@@ -2944,10 +2944,13 @@ export class ReolinkBaichuanApi {
         timeoutMs,
       });
 
-      // Tele snapshot: either separate channel (device direct) or same channel + variant (NVR/Hub TrackMix).
-      const tele = await this.getSnapshot(teleChannel, {
+      // Tele snapshot:
+      // - direct device: tele is often exposed as a separate channel
+      // - NVR/Hub TrackMix: tele is NOT a separate channel; it is selected via variant/logicChannel
+      const teleChannelEffective = onNvr ? widerChannel : teleChannel;
+      const tele = await this.getSnapshot(teleChannelEffective, {
         onNvr,
-        variant: onNvr && teleChannel === widerChannel ? "telephoto" : "default",
+        variant: onNvr ? "telephoto" : "default",
         streamType,
         timeoutMs,
       });
@@ -2995,24 +2998,61 @@ export class ReolinkBaichuanApi {
     const streamType: "main" | "sub" = options?.streamType ?? "main";
     const timeoutMs = options?.timeoutMs ?? 15_000;
 
-    // On NVR/Hub dual-lens models (TrackMix), the tele lens is usually exposed via logicChannel=1.
-    const logicChannel = onNvr && variant !== "default" ? 1 : ch;
-
-    // 1. Send Snap request (XML)
-    // Snap XML: <Snap version="1.1"><channelId>...</channelId><logicChannel>...</logicChannel><time>0</time><fullFrame>0</fullFrame><streamType>main</streamType></Snap>
-    // Must be wrapped in <body>
-    const xml = `<body><Snap version="1.1"><channelId>${ch}</channelId><logicChannel>${logicChannel}</logicChannel><time>0</time><fullFrame>0</fullFrame><streamType>${streamType}</streamType></Snap></body>`;
+    // On NVR/Hub firmwares, cmd_id=109 is annoyingly inconsistent:
+    // - some accept header channelId as the NVR channel (0-based, PCAP-observed)
+    // - others only accept a fixed "master" channelId (often 0), and use the XML <channelId> to select the camera
+    // - logicChannel meaning varies (sometimes lens index, sometimes the NVR channel itself)
+    //
+    // To keep snapshots working for channel>1, we try a small prioritized set of combinations on NVR.
+    const buildSnapXml = (params: { channelIdTag: number; logicChannel: number }) =>
+      `<body><Snap version="1.1"><channelId>${params.channelIdTag}</channelId><logicChannel>${params.logicChannel}</logicChannel><time>0</time><fullFrame>0</fullFrame><streamType>${streamType}</streamType></Snap></body>`;
 
     await this.client.login();
 
     // IMPORTANT: the Snap request Extension must NOT include <binaryData>1</binaryData>.
     // The binary chunks in response will have <binaryData>1</binaryData> in their Extension.
-    // Delegate to the client binary handler. cmdId=109 (snapshot) is special and is delivered via push frames
-    // on many firmwares; BaichuanClient.sendBinary handles that.
+    // Delegate to the client binary handler. cmdId=109 (snapshot) is special and is delivered via push frames.
+    //
+    // NVR/Hub firmware differences:
+    // - some expect channelId tags/header channelId to be 0-based (PCAP-observed)
+    // - others expect 1-based. Try both when onNvr.
+    if (onNvr) {
+      const channelIdTagCandidates = [ch, ch + 1];
+      const logicChannelCandidates =
+        variant === "default"
+          ? [ch, 0] // wide: some firmwares want logicChannel == camera channel
+          : [1]; // tele/autotrack: generally logicChannel=1
+
+      // Try header overrides in priority order. Many NVRs accept only header channelId=0 for snapshots.
+      const headerChannelIdOverrideCandidates: Array<number | undefined> = [0, ch, undefined];
+
+      let lastErr: unknown;
+      for (const headerChannelIdOverride of headerChannelIdOverrideCandidates) {
+        for (const channelIdTag of channelIdTagCandidates) {
+          for (const lc of logicChannelCandidates) {
+            try {
+              return await this.client.sendBinary({
+                cmdId,
+                channel: ch,
+                ...(headerChannelIdOverride !== undefined ? { channelIdOverride: headerChannelIdOverride } : {}),
+                payloadXml: buildSnapXml({ channelIdTag, logicChannel: lc }),
+                extensionXml: buildChannelExtensionXml(channelIdTag),
+                timeoutMs,
+              });
+            } catch (e) {
+              lastErr = e;
+            }
+          }
+        }
+      }
+
+      throw lastErr instanceof Error ? lastErr : new Error(String(lastErr ?? "getSnapshot failed"));
+    }
+
     return await this.client.sendBinary({
       cmdId,
       channel: ch,
-      payloadXml: xml,
+      payloadXml: buildSnapXml({ channelIdTag: ch, logicChannel: ch }),
       extensionXml: buildChannelExtensionXml(ch),
       timeoutMs,
     });

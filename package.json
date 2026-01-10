@@ -100,6 +100,7 @@
     "test:nvr:devices-info": "npm run test:build && node dist/test/nvr/test-baichuan-devices-info.js",
     "test:nvr:telephoto-native": "npm run test:build && node dist/test/nvr/test-nvr-telephoto-native-stream.js",
     "test:nvr:telephoto-startup-trace": "npm run test:build && node dist/test/nvr/test-nvr-telephoto-startup-trace.js",
+    "test:nvr:composite-snapshot": "npm run test:build && node dist/test/nvr/test-nvr-composite-snapshot.js",
     "test:nvr:all": "npm run test:nvr:tcp && npm run test:nvr:udp && npm run test:nvr:streams",
     "test:all": "npm run test:tcp && npm run test:udp && npm run test:streams",
     "test:native": "npm run test:tcp:native",
