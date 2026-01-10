@@ -5033,11 +5033,16 @@ ${xmlDateTimePayload("endTime", end)}
       const msgNum = this.client.peekNextMsgNum();
       this.client.subscribeVideoStream(BC_CMD_ID_VIDEO, msgNum);
 
+      // Optimistically publish msgNum immediately so stream consumers can start filtering
+      // even if the NVR/Hub takes a long time to reply to the start request.
+      this.activeVideoMsgNums.set(`${ch}:${profile}:${variant}`, msgNum);
+
       try {
         const baseParams: Parameters<typeof this.client.sendFrame>[0] = {
           cmdId: BC_CMD_ID_VIDEO,
           channel: ch,
           channelIdOverride: channelId,
+          msgNumOverride: msgNum,
           extensionXml: buildChannelExtensionXml(channelId),
           payloadXml,
           messageClass: BC_CLASS_MODERN_24,
@@ -5100,6 +5105,10 @@ ${xmlDateTimePayload("endTime", end)}
         } catch {
           // ignore
         }
+
+        // If the request failed, clear the optimistic mapping.
+        this.activeVideoMsgNums.delete(`${ch}:${profile}:${variant}`);
+
         if (attempt < maxAttempts) {
           await new Promise((resolve) => setTimeout(resolve, 250));
           continue;

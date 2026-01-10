@@ -499,6 +499,16 @@ export class BaichuanVideoStream extends EventEmitter<{
         // Allow a one-time resync at startup to avoid delaying the first keyframe.
         allowResync: frame.payload.length === 0 || (totalFramesReceived <= 10 && totalMediaPackets === 0),
       });
+
+      // If we are currently aligned (no pending buffered bytes) and we receive a tiny chunk that
+      // contains no recognizable BcMedia magic anywhere, it's very likely out-of-band data.
+      // Dropping it avoids repeated recover/resync loops (commonly 528/1056-byte patterns on some NVRs).
+      if (this.bcMediaCodec.getRemainingBuffer().length === 0 && dataAfterXml.length <= 600) {
+        const s = BaichuanVideoStream.scoreBcMediaLike(dataAfterXml);
+        if (s.first < 0) {
+          return;
+        }
+      }
       if (totalFramesReceived === 1) {
         if (rtspDebug) {
           this.logger?.log(
@@ -947,32 +957,25 @@ export class BaichuanVideoStream extends EventEmitter<{
       try {
         // Best-effort stop: stop any existing stream on this channel/profile.
         // This ensures we start fresh when switching between variants.
-        if (this.variant !== "default") {
-          this.logger?.log(
-            `[BaichuanVideoStream] Stopping default (wide) stream before starting variant stream: channel=${this.channel}, profile=${this.profile}, variant=${this.variant}`
-          );
-          try {
-            await this.api.stopVideoStream(this.channel, this.profile, { variant: "default" });
-            this.logger?.log(`[BaichuanVideoStream] Successfully stopped default stream`);
-          } catch (e) {
-            this.logger?.log(`[BaichuanVideoStream] Error stopping default stream (may not exist): ${e instanceof Error ? e.message : String(e)}`);
-          }
-
-          // Stop both non-default variants to avoid interleaving across variant streams.
-          for (const v of ["autotrack", "telephoto"] as const) {
-            try {
-              await this.api.stopVideoStream(this.channel, this.profile, { variant: v });
-              this.logger?.log(`[BaichuanVideoStream] Successfully stopped existing variant stream: ${v}`);
-            } catch (e) {
-              this.logger?.log(`[BaichuanVideoStream] Error stopping variant stream ${v} (may not exist): ${e instanceof Error ? e.message : String(e)}`);
-            }
-          }
-        } else {
-          // Default stream: just best-effort stop default before starting.
+        if (this.variant === "default") {
+          // Default stream: best-effort stop default before starting.
           try {
             await this.api.stopVideoStream(this.channel, this.profile, { variant: "default" });
           } catch {
             // ignore
+          }
+        } else {
+          // Variant stream: stop ONLY the same variant. Do not forcibly stop the default stream.
+          // Rationale:
+          // - BaichuanClient subscriptions are per msgNum, so different streams can coexist without mixing.
+          // - Stopping default streams on some NVRs can add several seconds of renegotiation delay.
+          try {
+            await this.api.stopVideoStream(this.channel, this.profile, { variant: this.variant });
+            this.logger?.log(`[BaichuanVideoStream] Successfully stopped existing variant stream: ${this.variant}`);
+          } catch (e) {
+            this.logger?.log(
+              `[BaichuanVideoStream] Error stopping variant stream ${this.variant} (may not exist): ${e instanceof Error ? e.message : String(e)}`
+            );
           }
         }
 

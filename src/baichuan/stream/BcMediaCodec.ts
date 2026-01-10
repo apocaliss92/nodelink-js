@@ -80,13 +80,24 @@ export class BcMediaCodec {
           this.logger?.warn(`[BcMediaCodec] Error in stream, attempting to recover...`);
         }
 
-        // Non-strict recovery: scan for the next known magic instead of dropping everything.
-        // This helps when the stream begins with padding/garbage or when chunks split across packet boundaries.
+        // Non-strict recovery: find the next known magic.
+        // On some Hub/NVR tele streams we observe repeated fixed-size padding blocks
+        // (commonly 528 bytes, sometimes 1056). A fast-path avoids O(n) scans for every packet.
         let next = -1;
-        for (let i = 1; i <= this.buffer.length - 4; i++) {
-          if (isKnownMagic(this.buffer.readUInt32LE(i))) {
-            next = i;
+        for (const off of [528, 1056, 1584]) {
+          if (this.buffer.length >= off + 4 && isKnownMagic(this.buffer.readUInt32LE(off))) {
+            next = off;
             break;
+          }
+        }
+
+        // Fallback: linear scan for the next magic.
+        if (next < 0) {
+          for (let i = 1; i <= this.buffer.length - 4; i++) {
+            if (isKnownMagic(this.buffer.readUInt32LE(i))) {
+              next = i;
+              break;
+            }
           }
         }
 
