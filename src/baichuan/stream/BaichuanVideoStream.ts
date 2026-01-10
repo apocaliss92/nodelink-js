@@ -208,6 +208,22 @@ export class BaichuanVideoStream extends EventEmitter<{
   private lastSpsH265: Buffer | null = null; // H.265 SPS
   private lastPpsH265: Buffer | null = null; // H.265 PPS
   private lastPrependedParamSetsH265 = false; // Track if we've prepended H.265 param sets
+
+  private emitSafeError(err: Error): void {
+    // If we're no longer active, this is almost always a late/rejected in-flight request.
+    // Emitting 'error' with no listeners will crash the process, so guard both cases.
+    if (!this.active) {
+      this.logger?.warn?.(`[BaichuanVideoStream] Suppressed error after stop: ${err.message}`);
+      return;
+    }
+
+    if (this.listenerCount("error") === 0) {
+      this.logger?.warn?.(`[BaichuanVideoStream] Unhandled stream error: ${err.message}`);
+      return;
+    }
+
+    this.emit("error", err);
+  }
   private lastMediaAtMs = 0;
   private watchdogTimer: NodeJS.Timeout | undefined;
   private restarting = false;
@@ -384,16 +400,17 @@ export class BaichuanVideoStream extends EventEmitter<{
         const getMsgNum = (this.api as any).getActiveVideoMsgNumWithVariant as
           | ((ch: number, p: StreamProfile, v?: NativeVideoStreamVariant) => number | undefined)
           | undefined;
-        this.activeMsgNum = typeof getMsgNum === "function" ? getMsgNum(this.channel, this.profile, this.variant) : undefined;
+        const v = typeof getMsgNum === "function" ? getMsgNum(this.channel, this.profile, this.variant) : undefined;
+        if (v !== undefined) this.activeMsgNum = v;
       } catch {
-        this.activeMsgNum = undefined;
+        // keep current activeMsgNum (may have been learned from frames)
       }
 
       // Avoid immediate re-trigger if the camera takes a moment.
       this.lastMediaAtMs = Date.now();
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
-      this.emit("error", err);
+      this.emitSafeError(err);
     } finally {
       this.restarting = false;
     }
@@ -1005,9 +1022,10 @@ export class BaichuanVideoStream extends EventEmitter<{
             const getMsgNum = (this.api as any).getActiveVideoMsgNumWithVariant as
               | ((ch: number, p: StreamProfile, v?: NativeVideoStreamVariant) => number | undefined)
               | undefined;
-            this.activeMsgNum = typeof getMsgNum === "function" ? getMsgNum(this.channel, this.profile, this.variant) : undefined;
+            const v = typeof getMsgNum === "function" ? getMsgNum(this.channel, this.profile, this.variant) : undefined;
+            if (v !== undefined) this.activeMsgNum = v;
           } catch {
-            this.activeMsgNum = undefined;
+            // keep current activeMsgNum (may have been learned from frames)
           }
         };
 
@@ -1016,7 +1034,7 @@ export class BaichuanVideoStream extends EventEmitter<{
           .then(() => updateActiveMsgNum())
           .catch((e) => {
             const err = e instanceof Error ? e : new Error(String(e));
-            this.emit("error", err);
+            this.emitSafeError(err);
           });
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
@@ -1027,7 +1045,7 @@ export class BaichuanVideoStream extends EventEmitter<{
           this.videoFrameHandler = undefined;
           throw err;
         }
-        this.emit("error", err);
+        this.emitSafeError(err);
       }
     }
   }
@@ -1065,7 +1083,7 @@ export class BaichuanVideoStream extends EventEmitter<{
         await this.api.stopVideoStream(this.channel, this.profile, { variant: this.variant });
       } catch (error) {
         // Log error but continue
-        this.emit("error", error instanceof Error ? error : new Error(String(error)));
+        this.emitSafeError(error instanceof Error ? error : new Error(String(error)));
       }
     }
 

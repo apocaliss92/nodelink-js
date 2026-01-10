@@ -36,12 +36,16 @@ export interface CompositeStreamPipOptions {
   pipSize?: number;
   /** PIP margin in pixels (default: 10) */
   pipMargin?: number;
-  /** True when behind NVR/Hub (affects variant selection for snapshots) */
+  /** True when behind NVR/Hub (tele is selected via stream variant on the same channel). */
   onNvr?: boolean;
 }
 
 export type CompositeStreamOptions = {
   api: ReolinkBaichuanApi;
+  /** Optional: dedicated API for wider stream (recommended on NVR/Hub). */
+  widerApi?: ReolinkBaichuanApi;
+  /** Optional: dedicated API for tele stream (recommended on NVR/Hub). */
+  teleApi?: ReolinkBaichuanApi;
   /** Channel for wider stream (typically 0) */
   widerChannel: number;
   /** Channel for tele stream (typically 1) */
@@ -56,6 +60,8 @@ export type CompositeStreamOptions = {
   pipSize?: number;
   /** Margin from edge in pixels */
   pipMargin?: number;
+  /** True when behind NVR/Hub (tele is selected via stream variant on the same channel). */
+  onNvr?: boolean;
   /** Optional logger */
   logger?: Logger;
 };
@@ -114,6 +120,24 @@ export class CompositeStream extends EventEmitter<{
   private active = false;
   private logger: Logger;
 
+  // ffmpeg stdout is an H.264 Annex-B byte stream; chunk boundaries are arbitrary.
+  // We need to reassemble access units (frames) for RFC4571 packetization and keyframe priming.
+  private ffmpegOutBuf: Buffer = Buffer.alloc(0);
+
+  private ffmpegStderrLastLogAtMs = 0;
+  private ffmpegStderrLogBurst = 0;
+
+  private closeGenerator(gen: AsyncGenerator<any, void, unknown> | null): Promise<void> {
+    if (!gen) return Promise.resolve();
+    const r = (gen as any).return;
+    if (typeof r !== 'function') return Promise.resolve();
+    try {
+      return Promise.resolve(r.call(gen)).then(() => undefined).catch(() => undefined);
+    } catch {
+      return Promise.resolve();
+    }
+  }
+
   constructor(options: CompositeStreamOptions) {
     super();
     this.options = {
@@ -137,9 +161,12 @@ export class CompositeStream extends EventEmitter<{
     this.logger.log?.("[CompositeStream] Starting composite stream...");
 
     try {
+      const widerApi = this.options.widerApi ?? this.options.api;
+      const teleApi = this.options.teleApi ?? this.options.api;
+
       // Get metadata to determine resolutions
-      const widerMetadata = await this.options.api.getStreamMetadata(this.options.widerChannel);
-      const teleMetadata = await this.options.api.getStreamMetadata(this.options.teleChannel);
+      const widerMetadata = await widerApi.getStreamMetadata(this.options.widerChannel);
+      const teleMetadata = await teleApi.getStreamMetadata(this.options.teleChannel);
 
       const widerStreamInfo = widerMetadata.streams.find((s) => s.profile === this.options.widerProfile);
       const teleStreamInfo = teleMetadata.streams.find((s) => s.profile === this.options.teleProfile);
@@ -167,16 +194,16 @@ export class CompositeStream extends EventEmitter<{
       );
 
       // Start native streams
-      this.widerStream = createNativeStream(
-        this.options.api,
-        this.options.widerChannel,
-        this.options.widerProfile
-      );
-      this.teleStream = createNativeStream(
-        this.options.api,
-        this.options.teleChannel,
-        this.options.teleProfile
-      );
+      // On NVR/Hub, wider+tele are typically the same logical channel, and lens selection
+      // happens via native stream variant (telephoto) rather than a separate channel.
+      const teleIsVariantOnSameChannel =
+        !!this.options.onNvr || this.options.teleChannel === this.options.widerChannel;
+
+      // Wider stream.
+      this.widerStream = createNativeStream(widerApi, this.options.widerChannel, this.options.widerProfile);
+      this.teleStream = teleIsVariantOnSameChannel
+        ? createNativeStream(teleApi, this.options.teleChannel, this.options.teleProfile, { variant: 'telephoto' })
+        : createNativeStream(teleApi, this.options.teleChannel, this.options.teleProfile);
 
       // Start ffmpeg for composition
       await this.startFfmpegComposition(mainWidth, mainHeight, pipWidth, pipHeight, position);
@@ -199,10 +226,13 @@ export class CompositeStream extends EventEmitter<{
     pipHeight: number,
     position: { x: number; y: number }
   ): Promise<void> {
+    const widerApi = this.options.widerApi ?? this.options.api;
+    const teleApi = this.options.teleApi ?? this.options.api;
+
     // Determine video codec from both streams
     // If metadata is not available or inaccurate, ffmpeg will auto-detect from stream data
-    const widerMetadata = await this.options.api.getStreamMetadata(this.options.widerChannel);
-    const teleMetadata = await this.options.api.getStreamMetadata(this.options.teleChannel);
+    const widerMetadata = await widerApi.getStreamMetadata(this.options.widerChannel);
+    const teleMetadata = await teleApi.getStreamMetadata(this.options.teleChannel);
     const widerStreamInfo = widerMetadata.streams.find((s) => s.profile === this.options.widerProfile);
     const teleStreamInfo = teleMetadata.streams.find((s) => s.profile === this.options.teleProfile);
     
@@ -238,6 +268,12 @@ export class CompositeStream extends EventEmitter<{
       `[1:v]scale=${pipWidth}:${pipHeight}[pip];[0:v][pip]overlay=${position.x}:${position.y}[out]`,
       "-map", "[out]",
       "-c:v", "libx264", // Re-encode for compatibility
+      // Make the stream easy to join mid-flight: frequent IDRs + in-band headers + AUD.
+      // Without this, a new client may wait many seconds for the next keyframe.
+      "-g", "30",
+      "-keyint_min", "30",
+      "-sc_threshold", "0",
+      "-x264-params", "aud=1:repeat-headers=1:keyint=30:min-keyint=30:scenecut=0",
       "-preset", "ultrafast",
       "-tune", "zerolatency",
       "-crf", "23",
@@ -268,21 +304,106 @@ export class CompositeStream extends EventEmitter<{
       this.emit("close");
     });
 
-    // Read composite video output
+    // Read composite video output.
+    // IMPORTANT: stdout chunking is arbitrary; split by AUD (NAL type 9) into access units.
     this.ffmpegProcess.stdout?.on("data", (data: Buffer) => {
-      this.emit("videoFrame", data);
+      this.onFfmpegStdoutData(data);
     });
 
     // Read stderr for debug
     this.ffmpegProcess.stderr?.on("data", (data: Buffer) => {
       const output = data.toString();
       if (output.includes("error") || output.includes("Error")) {
-        this.logger.error?.("[CompositeStream] FFmpeg stderr:", output);
+        // Rate-limit: ffmpeg can spam decoder errors during corruption/resync.
+        const now = Date.now();
+        if (now - this.ffmpegStderrLastLogAtMs > 2000) {
+          this.ffmpegStderrLastLogAtMs = now;
+          this.ffmpegStderrLogBurst = 0;
+        }
+        if (this.ffmpegStderrLogBurst++ < 3) {
+          this.logger.error?.("[CompositeStream] FFmpeg stderr:", output);
+        }
       }
     });
 
     // Feed frames to ffmpeg inputs
     this.feedFramesToFfmpeg();
+  }
+
+  private onFfmpegStdoutData(data: Buffer) {
+    if (!data?.length) return;
+
+    // Append new bytes.
+    this.ffmpegOutBuf = this.ffmpegOutBuf.length
+      ? Buffer.concat([this.ffmpegOutBuf, data], this.ffmpegOutBuf.length + data.length)
+      : data;
+
+    // Prevent runaway buffering if AUDs are missing for any reason.
+    const MAX_BUF = 8 * 1024 * 1024;
+    if (this.ffmpegOutBuf.length > MAX_BUF) {
+      // Try to resync: keep only the last 1MB.
+      this.logger.warn?.(`[CompositeStream] ffmpeg stdout buffer grew too large (${this.ffmpegOutBuf.length} bytes); resyncing`);
+      this.ffmpegOutBuf = this.ffmpegOutBuf.subarray(this.ffmpegOutBuf.length - 1024 * 1024);
+    }
+
+    const audPositions = this.findAudStartPositions(this.ffmpegOutBuf);
+    if (!audPositions.length) return;
+
+    // Discard anything before the first AUD for clean framing.
+    if (audPositions[0]! > 0) {
+      this.ffmpegOutBuf = this.ffmpegOutBuf.subarray(audPositions[0]!);
+    }
+
+    // Re-scan after trimming (positions change).
+    const audPositions2 = this.findAudStartPositions(this.ffmpegOutBuf);
+    if (audPositions2.length < 2) return;
+
+    // Emit complete access units: [AUD_i .. AUD_{i+1}). Keep tail starting at last AUD.
+    for (let i = 0; i < audPositions2.length - 1; i++) {
+      const start = audPositions2[i]!;
+      const end = audPositions2[i + 1]!;
+      if (end > start) {
+        const au = this.ffmpegOutBuf.subarray(start, end);
+        this.emit("videoFrame", au);
+      }
+    }
+    this.ffmpegOutBuf = this.ffmpegOutBuf.subarray(audPositions2[audPositions2.length - 1]!);
+  }
+
+  private findAudStartPositions(buf: Buffer): number[] {
+    const positions: number[] = [];
+    const len = buf.length;
+    // Need at least start code + 1 byte header.
+    if (len < 5) return positions;
+
+    let i = 0;
+    while (i < len - 4) {
+      // Find Annex-B start code.
+      let startCodeLen = 0;
+      if (buf[i] === 0x00 && buf[i + 1] === 0x00) {
+        if (buf[i + 2] === 0x01) startCodeLen = 3;
+        else if (buf[i + 2] === 0x00 && buf[i + 3] === 0x01) startCodeLen = 4;
+      }
+
+      if (!startCodeLen) {
+        i++;
+        continue;
+      }
+
+      const nalStart = i + startCodeLen;
+      if (nalStart >= len) break;
+      const nalHeader = buf[nalStart];
+      if (nalHeader === undefined) break;
+      const nalType = nalHeader & 0x1f;
+      if (nalType === 9) {
+        positions.push(i);
+      }
+
+      // Jump ahead to continue scan; still safe even if we land mid-NAL.
+      i = nalStart;
+    }
+
+    return positions;
   }
 
   /**
@@ -310,7 +431,7 @@ export class CompositeStream extends EventEmitter<{
           if (frame.audio) continue; // Skip audio frames
 
           try {
-            const written = widerStdin.write(frame.data);
+            const written = widerStdin.write(this.toAnnexB(frame.data));
             if (!written) {
               await new Promise<void>((resolve) => {
                 widerStdin.once("drain", () => resolve());
@@ -344,7 +465,7 @@ export class CompositeStream extends EventEmitter<{
           if (frame.audio) continue; // Skip audio frames
 
           try {
-            const written = teleStdin.write(frame.data);
+            const written = teleStdin.write(this.toAnnexB(frame.data));
             if (!written) {
               await new Promise<void>((resolve) => {
                 teleStdin.once("drain", () => resolve());
@@ -379,6 +500,37 @@ export class CompositeStream extends EventEmitter<{
     });
   }
 
+  private toAnnexB(accessUnit: Buffer): Buffer {
+    if (!accessUnit?.length) return accessUnit;
+
+    // Already Annex-B if it starts with a start code.
+    if (accessUnit.length >= 3 && accessUnit[0] === 0x00 && accessUnit[1] === 0x00) {
+      if (accessUnit[2] === 0x01) return accessUnit;
+      if (accessUnit.length >= 4 && accessUnit[2] === 0x00 && accessUnit[3] === 0x01) return accessUnit;
+    }
+
+    // Best-effort conversion of length-prefixed NAL units (AVCC/HVCC style) to Annex-B.
+    // Many sources use 4-byte big-endian lengths per NAL.
+    try {
+      let off = 0;
+      const parts: Buffer[] = [];
+      while (off + 4 <= accessUnit.length) {
+        const n = accessUnit.readUInt32BE(off);
+        off += 4;
+        if (!n || off + n > accessUnit.length) {
+          return accessUnit;
+        }
+        parts.push(Buffer.from([0x00, 0x00, 0x00, 0x01]));
+        parts.push(accessUnit.subarray(off, off + n));
+        off += n;
+      }
+      if (!parts.length) return accessUnit;
+      return Buffer.concat(parts);
+    } catch {
+      return accessUnit;
+    }
+  }
+
   /**
    * Stop the composite stream
    */
@@ -404,7 +556,12 @@ export class CompositeStream extends EventEmitter<{
       this.ffmpegProcess = null;
     }
 
-    // Native streams will be closed automatically when generators terminate
+    // Ensure native generators are terminated so their finally{} runs (stops BaichuanVideoStream + watchdog).
+    // Setting fields to null is NOT enough: any running for-await loops will keep the generator alive.
+    await Promise.all([
+      this.closeGenerator(this.widerStream),
+      this.closeGenerator(this.teleStream),
+    ]);
     this.widerStream = null;
     this.teleStream = null;
 

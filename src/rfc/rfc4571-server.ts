@@ -55,6 +55,12 @@ export interface Rfc4571TcpServerOptions {
 
   /** Composite stream options (only used when channel is undefined) */
   compositeOptions?: CompositeStreamPipOptions;
+
+  /** Optional: dedicated APIs for composite wider/tele streams (recommended on NVR/Hub to avoid stream mixing). */
+  compositeApis?: {
+    widerApi: ReolinkBaichuanApi;
+    teleApi: ReolinkBaichuanApi;
+  };
 }
 
 export interface Rfc4571TcpServer {
@@ -75,6 +81,8 @@ export interface Rfc4571TcpServer {
 export async function createRfc4571TcpServer(
   options: Rfc4571TcpServerOptions,
 ): Promise<Rfc4571TcpServer> {
+  const isComposite = options.channel === undefined;
+
   const {
     api,
     channel,
@@ -86,16 +94,24 @@ export async function createRfc4571TcpServer(
     videoPayloadType = 96,
     audioPayloadType = 97,
     keyframeTimeoutMs = 5000,
-    uptimeRestartMs = 10_000,
+    uptimeRestartMs: uptimeRestartMsOpt,
     idleTeardownMs = 2500,
     closeApiOnTeardown = true,
     username,
     password,
     requireAuth = false,
     compositeOptions,
+    compositeApis,
   } = options;
 
-  const isComposite = channel === undefined;
+  const apisToClose = new Set<ReolinkBaichuanApi>();
+  apisToClose.add(api);
+  if (compositeApis?.widerApi) apisToClose.add(compositeApis.widerApi);
+  if (compositeApis?.teleApi) apisToClose.add(compositeApis.teleApi);
+
+  // For composite (ffmpeg) streams, avoid over-aggressive restarts: a short burst of
+  // backpressure or a long GOP on join can look like "no activity" even though the pipeline is alive.
+  const uptimeRestartMs = uptimeRestartMsOpt ?? (isComposite ? 60_000 : 10_000);
   const variantSuffix = variant && variant !== 'default' ? ` variant=${variant}` : '';
   const logPrefix = isComposite 
     ? `[native-rfc4571 composite profile=${profile}${variantSuffix}]`
@@ -129,8 +145,13 @@ export async function createRfc4571TcpServer(
 
     log(`creating composite stream: wider(ch=${widerChannel}, profile=${widerProfile}), tele(ch=${teleChannel}, profile=${teleProfile})`);
 
+    const widerApi = compositeApis?.widerApi ?? api;
+    const teleApi = compositeApis?.teleApi ?? api;
+
     videoStream = new CompositeStream({
       api,
+      widerApi,
+      teleApi,
       widerChannel,
       teleChannel,
       widerProfile,
@@ -138,6 +159,7 @@ export async function createRfc4571TcpServer(
       pipPosition: compositeOptions?.pipPosition ?? "bottom-right",
       pipSize: compositeOptions?.pipSize ?? 0.25,
       pipMargin: compositeOptions?.pipMargin ?? 10,
+      ...(compositeOptions?.onNvr !== undefined ? { onNvr: compositeOptions.onNvr } : {}),
       logger,
     });
 
@@ -146,10 +168,11 @@ export async function createRfc4571TcpServer(
     log('composite stream started; waiting for keyframe to extract parameter sets');
   } else {
     // Use regular BaichuanVideoStream
+    const ch = channel!;
     videoStream = new BaichuanVideoStream({
       client: api.client,
       api,
-      channel,
+      channel: ch,
       profile,
       variant,
       logger,
@@ -506,11 +529,15 @@ export async function createRfc4571TcpServer(
     }
 
     if (closeApiOnTeardown) {
-      try {
-        await api.close();
-      } catch {
-        // ignore
-      }
+      await Promise.allSettled(
+        Array.from(apisToClose).map(async (a) => {
+          try {
+            await a.close();
+          } catch {
+            // ignore
+          }
+        }),
+      );
     }
 
     try {

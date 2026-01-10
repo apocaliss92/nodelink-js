@@ -371,12 +371,12 @@ export async function* createNativeStream(
   };
 
   try {
-    // Start the video stream
-    await videoStream.start();
-
-    // Handle errors
+    // Handle errors early (start() can fail/timeout asynchronously).
     videoStream.on("error", onError);
     videoStream.on("close", onClose);
+
+    // Start the video stream
+    await videoStream.start();
 
     // Collect video codec info (SPS/PPS for H.264) from first keyframe
     // Similar to Wyze implementation that writes SPS/PPS to ffmpeg
