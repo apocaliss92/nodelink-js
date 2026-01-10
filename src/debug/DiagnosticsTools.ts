@@ -172,7 +172,7 @@ export async function createDiagnosticsBundle(params: {
   native?: { api: ReolinkBaichuanApi; channel?: number };
   cgi?: { cgi: ReolinkCgiApi; channel?: number };
   extra?: Record<string, unknown>;
-}): Promise<{ outDir: string; diagnosticsPath: string }>{
+}): Promise<{ outDir: string; diagnosticsPath: string }> {
   const outDir = params.outDir;
   mkdirp(outDir);
 
@@ -898,7 +898,7 @@ export async function collectNvrDiagnostics(params: {
       const device = devicesInfo.value.devicesData[channel];
       const battery = batteryInfo.value.batteryInfoData[channel];
       const abilities = device?.abilities;
-      
+
       channelsMap.set(channel, {
         hasBattery: battery?.batteryLevel !== undefined && battery.batteryLevel > 0,
         hasPirEvents: !!(abilities as any)?.pirAlarm,
@@ -933,62 +933,62 @@ export async function collectNvrDiagnostics(params: {
   // 8. Additional per-channel details
   log("\n[8/8] Collecting additional per-channel details...");
   const perChannelDetails: Record<number, Record<string, unknown>> = {};
-  
+
   for (const channel of channels) {
     const channelDetails: Record<string, unknown> = {};
-    
+
     // OSD
     const osd = await tryCall(() => cgi.GetOsd(channel));
     if (osd.ok) channelDetails.osd = osd.value;
-    
+
     // Local Link / WiFi
     const localLink = await tryCall(() => cgi.getLocalLink(channel));
     if (localLink.ok) channelDetails.localLink = localLink.value;
-    
+
     // PIR State
     const pirState = await tryCall(() => cgi.getPirState(channel));
     if (pirState.ok) channelDetails.pirState = pirState.value;
-    
+
     // Siren/Audio Alarm
     const siren = await tryCall(() => cgi.getSiren(channel));
     if (siren.ok) channelDetails.siren = siren.value;
-    
+
     // PTZ Presets
     const ptzPresets = await tryCall(() => cgi.GetPtzPreset(channel));
     if (ptzPresets.ok) channelDetails.ptzPresets = ptzPresets.value;
-    
+
     // White LED / Floodlight
     const whiteLed = await tryCall(() => cgi.GetWhiteLed(channel));
     if (whiteLed.ok) channelDetails.whiteLed = whiteLed.value;
-    
+
     // Encoding Configuration
     const enc = await tryCall(() => cgi.GetEnc(channel));
     if (enc.ok) channelDetails.encoding = enc.value;
-    
+
     // AI State
     const aiState = await tryCall(() => cgi.GetAiState(channel));
     if (aiState.ok) channelDetails.aiState = aiState.value;
-    
+
     // Motion Detection State
     const mdState = await tryCall(() => cgi.GetMdState(channel));
     if (mdState.ok) channelDetails.motionDetection = mdState.value;
-    
+
     // Battery Info
     const battery = await tryCall(() => cgi.GetBatteryInfo(channel));
     if (battery.ok) channelDetails.battery = battery.value;
-    
+
     // Channel Type Info
     const chnType = await tryCall(() => cgi.GetChnTypeInfo(channel));
     if (chnType.ok) channelDetails.channelType = chnType.value;
-    
+
     // WiFi Signal
     const wifiSignal = await tryCall(() => cgi.GetWifiSignal(channel));
     if (wifiSignal.ok) channelDetails.wifiSignal = wifiSignal.value;
-    
+
     perChannelDetails[channel] = channelDetails;
     log(`  Channel ${channel}: collected ${Object.keys(channelDetails).length} detail(s)`);
   }
-  
+
   result.perChannelDetails = perChannelDetails;
   log(`✓ Additional details collected for ${Object.keys(perChannelDetails).length} channel(s)`);
 
@@ -1053,7 +1053,7 @@ export function printNvrDiagnostics(diagnostics: Record<string, unknown>, logger
       if (!device) continue;
 
       log(`\n  ┌─ Channel ${channel} ────────────────────────────────────────────────────`);
-      
+
       const status = device.channelStatus;
       if (status) {
         log(`  │ Status:`);
@@ -1206,7 +1206,7 @@ export async function testChannelStreams(params: {
 
   // Get all available stream options
   log(`\n[1/3] Getting available stream options for channel ${channel}...`);
-  
+
   // Get raw XML from GetEnc to inspect what streams are actually available
   const encXmlResult = await tryCall(() => api.getEncXml(channel));
   if (encXmlResult.ok) {
@@ -1221,11 +1221,11 @@ export async function testChannelStreams(params: {
       extraStream: /<extraStream\b/.test(xml),
     };
     log(`  Raw GetEnc XML stream tags present: ${JSON.stringify(tagsPresent)}`);
-    
+
     // Log a preview of the XML (first 2000 chars)
     const xmlPreview = xml.length > 2000 ? xml.substring(0, 2000) + `\n... (truncated, total length: ${xml.length})` : xml;
     log(`  GetEnc XML preview:\n${xmlPreview}`);
-    
+
     // Also get parsed metadata to see what streams were detected
     const metadataResult = await tryCall(() => api.getStreamMetadata(channel));
     if (metadataResult.ok) {
@@ -1236,8 +1236,8 @@ export async function testChannelStreams(params: {
       result.parsedStreamProfiles = detectedProfiles;
     }
   }
-  
-  const streamOptionsResult = await tryCall(() => api.buildVideoStreamOptions(channel));
+
+  const streamOptionsResult = await tryCall(() => api.buildVideoStreamOptions({ channel }));
   if (!streamOptionsResult.ok) {
     log(`✗ Failed to get stream options: ${streamOptionsResult.error}`);
     result.error = streamOptionsResult.error;
@@ -1246,7 +1246,7 @@ export async function testChannelStreams(params: {
 
   const { nativeStreams, rtspStreams, rtmpStreams } = streamOptionsResult.value;
   log(`✓ Found ${nativeStreams.length} native, ${rtspStreams.length} RTSP, ${rtmpStreams.length} RTMP stream(s)`);
-  
+
   // Log detailed breakdown of profiles found
   const nativeProfiles = nativeStreams.map((s) => s.profile).join(", ");
   const rtspProfiles = rtspStreams.map((s) => s.profile).join(", ");
@@ -1263,7 +1263,7 @@ export async function testChannelStreams(params: {
   for (const stream of rtspStreams) {
     const key = `rtsp_${stream.profile}`;
     log(`  Testing RTSP ${stream.profile}...`);
-    
+
     const testResult: Record<string, unknown> = {
       available: false,
       profile: stream.profile,
@@ -1309,7 +1309,7 @@ export async function testChannelStreams(params: {
   for (const stream of rtmpStreams) {
     const key = `rtmp_${stream.profile}`;
     log(`  Testing RTMP ${stream.profile}...`);
-    
+
     const testResult: Record<string, unknown> = {
       available: false,
       profile: stream.profile,
@@ -1353,9 +1353,10 @@ export async function testChannelStreams(params: {
   // Test native Baichuan streams with short session
   log(`\n[4/4] Testing native Baichuan streams...`);
   for (const stream of nativeStreams) {
-    const key = `native_${stream.profile}`;
-    log(`  Testing native ${stream.profile}...`);
-    
+    const variant = (stream.nativeVariant ?? "default") as any;
+    const key = variant === "default" ? `native_${stream.profile}` : `native_${stream.profile}_${variant}`;
+    log(`  Testing native ${stream.profile}${variant === "default" ? "" : ` (${variant})`}...`);
+
     const testResult: Record<string, unknown> = {
       available: false,
       profile: stream.profile,
@@ -1365,8 +1366,8 @@ export async function testChannelStreams(params: {
 
     // Test with short session - subscribe and wait for at least one frame
     try {
-      await api.startVideoStream(channel, stream.profile);
-      
+      await api.startVideoStream(channel, stream.profile, variant === "default" ? undefined : { variant });
+
       // Wait for at least one video frame (max 5 seconds)
       const framePromise = new Promise<boolean>((resolve) => {
         let frameReceived = false;
@@ -1389,11 +1390,11 @@ export async function testChannelStreams(params: {
       });
 
       const frameReceived = await framePromise;
-      
+
       if (frameReceived) {
         testResult.available = true;
         testResult.frameReceived = true;
-        
+
         if (stream.metadata) {
           testResult.codec = stream.metadata.videoEncType;
           testResult.width = stream.metadata.width;
@@ -1412,7 +1413,7 @@ export async function testChannelStreams(params: {
       }
 
       // Stop the stream
-      await api.stopVideoStream(channel, stream.profile);
+      await api.stopVideoStream(channel, stream.profile, variant === "default" ? undefined : { variant });
     } catch (error) {
       testResult.available = false;
       testResult.error = safeStringifyError(error);

@@ -66,6 +66,13 @@ export type BaichuanClientOptions = {
   logger?: Logger;
 
   /**
+   * Enable periodic polling used by higher-level APIs (e.g. simple motion/AI events).
+   *
+   * Default: false (push events only).
+   */
+  enableStatePolling?: boolean;
+
+  /**
    * Idle disconnect.
    *
    * When enabled, the client will close its socket after a period of *user inactivity*
@@ -118,6 +125,10 @@ export class BaichuanClient extends EventEmitter<{
   private readonly logger: Logger;
 
   private tcpSocket: net.Socket | undefined;
+
+  isStatePollingEnabled(): boolean {
+    return this.opts.enableStatePolling ?? false;
+  }
   private udpSocket: BcUdpStream | undefined;
   private transport: "tcp" | "udp" = "tcp";
   private readonly parser = new BaichuanFrameParser();

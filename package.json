@@ -40,6 +40,7 @@
     "node": ">=18"
   },
   "scripts": {
+      "test:nvr:native-frame-trace": "npm run test:build && node dist/test/nvr/test-nvr-native-secondary-frame-trace.js",
     "build:js": "npx tsup",
     "build:types": "rm -rf .tmp/types && npx tsc -p tsconfig.json --emitDeclarationOnly --declaration --declarationMap false --outDir .tmp/types && npx api-extractor run --local && rm -rf .tmp/types",
     "build": "npm run build:js && npm run build:types",
@@ -95,6 +96,7 @@
     "test:nvr:alarm-events": "npm run test:build && node dist/test/nvr/test-nvr-alarm-events-baichuan.js",
     "test:nvr:matrix": "npm run test:build && node dist/test/nvr/test-nvr-matrix.js",
     "test:nvr:devices-info": "npm run test:build && node dist/test/nvr/test-baichuan-devices-info.js",
+    "test:nvr:telephoto-native": "npm run test:build && node dist/test/nvr/test-nvr-telephoto-native-stream.js",
     "test:nvr:all": "npm run test:nvr:tcp && npm run test:nvr:udp && npm run test:nvr:streams",
     "test:all": "npm run test:tcp && npm run test:udp && npm run test:streams",
     "test:native": "npm run test:tcp:native",

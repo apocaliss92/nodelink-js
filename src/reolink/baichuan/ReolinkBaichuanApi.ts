@@ -69,6 +69,8 @@ import type {
   RecordingFile,
   RecordingStreamType,
   ReolinkBaichuanDeviceSummary,
+  ReolinkBaichuanNetworkInfo,
+  ReolinkNvrDeviceGroupSummary,
   ReolinkEvent,
   ReolinkSimpleEvent,
   ReolinkSimpleEventType,
@@ -165,6 +167,8 @@ type TalkSessionInfo = import("./types").TalkSessionInfo;
 
 export type ReolinkBaichuanPorts = Record<string, Record<string, number>>;
 
+export type NativeVideoStreamVariant = "default" | "autotrack" | "telephoto";
+
 /**
  * Complete media stream options with all available metadata.
  * Includes RTSP, RTMP, and native Baichuan stream information.
@@ -176,6 +180,16 @@ export interface ReolinkSupportedStream {
   container: "rtsp" | "rtmp" | "rtp";
   channel?: number; // undefined for composite streams (multifocal devices)
   profile: StreamProfile;
+  /**
+   * Underlying device stream name used by the transport.
+   * For RTSP this maps to `/...Preview_<ch>_<streamName>` (e.g. main/sub/autotrack).
+   * For RTMP this maps to `/bcs/channel<ch>_<streamName>.bcs`.
+   */
+  streamName?: string;
+  /** Optional lens hint for multifocal devices (TrackMix/Duo). */
+  lens?: "wide" | "telephoto" | "composite";
+  /** Native-only: request a non-default logical stream (e.g. TrackMix tele on NVR). */
+  nativeVariant?: NativeVideoStreamVariant;
   url: string; // URL without authentication credentials
   urlWithAuth: string; // URL with authentication credentials
   streamType?: number; // Stream type: 0 for main/ext, 1 for sub (RTMP)
@@ -222,6 +236,49 @@ function getXmlBlocks(xml: string, tagName: string): string[] {
     out.push(m[1] ?? "");
   }
   return out;
+}
+
+function formatErrorForLog(e: unknown): string {
+  if (e instanceof Error) {
+    const anyErr = e as any;
+    const code = typeof anyErr.code === "string" || typeof anyErr.code === "number" ? ` code=${String(anyErr.code)}` : "";
+    return `${e.name}: ${e.message}${code}`;
+  }
+  if (typeof e === "string") return e;
+  if (e && typeof e === "object") {
+    try {
+      const keys = Object.keys(e);
+      const json = JSON.stringify(e);
+      return keys.length ? `object keys=[${keys.join(",")}]: ${json}` : `object: ${json}`;
+    } catch {
+      return "[unserializable object]";
+    }
+  }
+  return String(e);
+}
+
+function formatClientIoForLog(api: { client?: BaichuanClient } | { client: BaichuanClient }): string {
+  try {
+    const c = (api as any).client as BaichuanClient | undefined;
+    if (!c) return "";
+    const transport = c.getTransport?.() ?? "unknown";
+    const connected = c.isSocketConnected?.() ?? false;
+    const loggedIn = (c as any).loggedIn === true;
+    const lastTx = c.getLastTxInfo?.();
+    const lastRx = c.getLastRxInfo?.();
+    const parts: string[] = [
+      `transport=${transport}`,
+      `connected=${connected}`,
+      `loggedIn=${loggedIn}`,
+      lastTx?.cmdId != null ? `lastTxCmdId=${lastTx.cmdId}` : "",
+      lastTx?.responseCode != null ? `lastTxCode=${lastTx.responseCode}` : "",
+      lastRx?.cmdId != null ? `lastRxCmdId=${lastRx.cmdId}` : "",
+      lastRx?.responseCode != null ? `lastRxCode=${lastRx.responseCode}` : "",
+    ].filter(Boolean);
+    return parts.length ? ` (${parts.join(" ")})` : "";
+  } catch {
+    return "";
+  }
 }
 
 /**
@@ -490,6 +547,10 @@ export const DUAL_LENS_MODELS = new Set<string>([
   ...DUAL_LENS_SINGLE_MOTION_MODELS,
 ]);
 
+export const isDualLenseModel = (model: string): boolean => {
+  return DUAL_LENS_MODELS.has(model) || model.toLowerCase().includes('trackmix');
+}
+
 function mapToSimpleEvent(event: ReolinkEvent): ReolinkSimpleEvent | null {
   const timestamp = event.timestamp ?? Date.now();
 
@@ -601,6 +662,10 @@ export class ReolinkBaichuanApi {
   private aiStatePollingDisabledLogged = false;
   private rtspServers = new Set<BaichuanRtspServer>(); // Track all RTSP servers for cleanup
   private readonly activeVideoMsgNums = new Map<string, number>();
+  private readonly nvrChannelsSummaryCache = new Map<string, {
+    channels: number[];
+    devices: ReolinkBaichuanDeviceSummary[];
+  }>();
 
   /**
    * Cached per-channel data from cmd_id 145 push (NVR sends this automatically on connection).
@@ -611,6 +676,18 @@ export class ReolinkBaichuanApi {
     name: string;
     uid: string;
     state: string;
+    /** Channel index (often 1-based camera slot index on hubs/NVRs). */
+    index?: number;
+    /** Device stream support list, as reported by the hub (e.g. mainStream,subStream,externStream). */
+    streamSupport?: string[];
+    /** Raw wifi state string when present. */
+    wifiState?: string;
+    /** Raw network segment string when present (e.g. WAN/LAN). */
+    networkSegment?: string;
+    /** True when hub reports the channel has changed (0/1). */
+    changed?: boolean;
+    /** True when hub reports channel abilities changed (0/1). */
+    abilityChanged?: boolean;
     /** Lowercased state for convenience (e.g. "connect", "none"). */
     stateLower?: string;
     /** Best-effort online flag derived from state. */
@@ -739,8 +816,8 @@ export class ReolinkBaichuanApi {
     this.client.on("channelInfo", (xml: string) => {
       try {
         this.parseAndStoreChannelInfo(xml);
-      } catch (e) {
-        this.logger.warn?.("[ReolinkBaichuanApi] Error parsing channel info from push", e);
+      } catch (e: any) {
+        this.logger.warn?.("[ReolinkBaichuanApi] Error parsing channel info from push", e?.message);
       }
     });
 
@@ -755,6 +832,16 @@ export class ReolinkBaichuanApi {
         }
       });
     }
+  }
+
+  /**
+   * CGI forward: fetch RTSP URL for a channel via `GetRtspUrl`.
+   * Request body:
+   * `[{"cmd":"GetRtspUrl","action":0,"param":{"channel":<channel>}}]`.
+   */
+  async getRtspUrl(channel: number): Promise<string> {
+    const ch = this.normalizeChannel(channel);
+    return await this.cgiApi.getRtspUrl(ch);
   }
 
   // --------------------
@@ -941,7 +1028,7 @@ export class ReolinkBaichuanApi {
     } else {
       // If there are still listeners, keep polling running (TCP only)
       const isUdp = this.client.getTransport?.() === "udp";
-      if (!isUdp) {
+      if (!isUdp && this.client.isStatePollingEnabled?.()) {
         this.startStatePolling();
       }
     }
@@ -1000,7 +1087,7 @@ export class ReolinkBaichuanApi {
       // Only check current state and start polling for TCP connections (not UDP/battery cameras)
       // UDP/battery cameras should rely on event pushes only, not polling
       const isUdp = this.client.getTransport?.() === "udp";
-      if (!isUdp) {
+      if (!isUdp && this.client.isStatePollingEnabled?.()) {
         const channel = this.client.getConfiguredChannel?.() ?? 0;
         // Check current state and dispatch events immediately (TCP only)
         await this.checkAndDispatchCurrentState(channel);
@@ -1447,7 +1534,9 @@ export class ReolinkBaichuanApi {
 
     // Combine both types of blocks
     const allBlocks = [...channelBlocks, ...iotBlocks];
-    // this.logger.log(allBlocks);
+
+    // Verbose payload; keep it under debug only.
+    this.logger.debug?.(`[ReolinkBaichuanApi] cmd_id 145 ChannelInfo push: blocks=${allBlocks.length}`);
 
     // this.logger.debug?.(`[ReolinkBaichuanApi] parseAndStoreChannelInfo: found ${channelBlocks.length} ChannelInfo blocks, ${iotBlocks.length} IOTInfo blocks`);
 
@@ -1471,6 +1560,29 @@ export class ReolinkBaichuanApi {
       const uid = (getXmlText(block, "uid") ?? "").trim();
       const state = (getXmlText(block, "state") ?? "").trim();
 
+      const index = (() => {
+        const v = (getXmlText(block, "index") ?? "").trim();
+        if (!v) return undefined;
+        const n = Number.parseInt(v, 10);
+        return Number.isFinite(n) ? n : undefined;
+      })();
+      const wifiState = (getXmlText(block, "wifiState") ?? "").trim();
+      const networkSegment = (getXmlText(block, "networkSegment") ?? "").trim();
+      const changed = (() => {
+        const v = (getXmlText(block, "changed") ?? "").trim();
+        if (v === "") return undefined;
+        const n = Number(v);
+        if (Number.isFinite(n)) return n > 0;
+        return v !== "0";
+      })();
+      const abilityChanged = (() => {
+        const v = (getXmlText(block, "abilityChanged") ?? "").trim();
+        if (v === "") return undefined;
+        const n = Number(v);
+        if (Number.isFinite(n)) return n > 0;
+        return v !== "0";
+      })();
+
       const nowMs = Date.now();
       const existing = this.channelPushData.get(channel);
       const stateLower = state.trim().toLowerCase();
@@ -1479,14 +1591,20 @@ export class ReolinkBaichuanApi {
       // <state>none</state> + empty devName/uid + streamSupport=none + index=0.
       // Do NOT let that wipe previously known "connect" entries.
       const loginState = (getXmlText(block, "loginState") ?? "").trim().toLowerCase();
-      const streamSupport = (getXmlText(block, "streamSupport") ?? "").trim().toLowerCase();
+      const streamSupportText = (getXmlText(block, "streamSupport") ?? "").trim().toLowerCase();
+      const streamSupport = streamSupportText
+        ? streamSupportText
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+        : undefined;
       const indexText = (getXmlText(block, "index") ?? "").trim();
       const isNonePlaceholder =
         stateLower === "none" &&
         !name &&
         !uid &&
         !loginState &&
-        (streamSupport === "none" || streamSupport === "") &&
+        (streamSupportText === "none" || streamSupportText === "") &&
         (indexText === "0" || indexText === "");
 
       if (isNonePlaceholder) {
@@ -1500,9 +1618,9 @@ export class ReolinkBaichuanApi {
       }
 
       // Online/offline transition (best-effort).
-      // Some hubs report connect/none; treat connect => online, none => offline.
+      // Some hubs report connect/none/disconnect; treat connect => online, none/disconnect => offline.
       const inferredOnline: boolean | undefined =
-        stateLower === "connect" ? true : stateLower === "none" ? false : undefined;
+        stateLower === "connect" ? true : stateLower === "none" || stateLower === "disconnect" ? false : undefined;
       if (inferredOnline !== undefined && existing?.online !== inferredOnline) {
         const evt: ReolinkSimpleEvent = {
           type: inferredOnline ? "online" : "offline",
@@ -1533,7 +1651,7 @@ export class ReolinkBaichuanApi {
           ? loginState === "standby"
           : stateLower === "connect"
             ? false
-            : stateLower === "none"
+            : stateLower === "none" || stateLower === "disconnect"
               ? true
               : undefined;
 
@@ -1561,6 +1679,12 @@ export class ReolinkBaichuanApi {
         name: name || existing?.name || "",
         uid: uid || existing?.uid || "",
         state: state || existing?.state || "",
+        ...(typeof index === "number" ? { index } : existing?.index !== undefined ? { index: existing.index } : {}),
+        ...(streamSupport?.length ? { streamSupport } : existing?.streamSupport?.length ? { streamSupport: existing.streamSupport } : {}),
+        ...(wifiState ? { wifiState } : existing?.wifiState ? { wifiState: existing.wifiState } : {}),
+        ...(networkSegment ? { networkSegment } : existing?.networkSegment ? { networkSegment: existing.networkSegment } : {}),
+        ...(typeof changed === "boolean" ? { changed } : existing?.changed !== undefined ? { changed: existing.changed } : {}),
+        ...(typeof abilityChanged === "boolean" ? { abilityChanged } : existing?.abilityChanged !== undefined ? { abilityChanged: existing.abilityChanged } : {}),
         ...(stateLower ? { stateLower } : existing?.stateLower ? { stateLower: existing.stateLower } : {}),
         ...(inferredOnline !== undefined ? { online: inferredOnline } : existing?.online !== undefined ? { online: existing.online } : {}),
         ...(inferredSleep !== undefined ? { sleeping: inferredSleep } : existing?.sleeping !== undefined ? { sleeping: existing.sleeping } : {}),
@@ -1780,12 +1904,50 @@ export class ReolinkBaichuanApi {
     name: string;
     uid: string;
     state: string;
+    index?: number;
+    streamSupport?: string[];
+    wifiState?: string;
+    networkSegment?: string;
+    changed?: boolean;
+    abilityChanged?: boolean;
+    online?: boolean;
+    sleeping?: boolean;
+    loginState?: string;
+    updatedAtMs?: number;
   }> {
-    const out = new Map<number, { name: string; uid: string; state: string }>();
+    const out = new Map<number, {
+      name: string;
+      uid: string;
+      state: string;
+      index?: number;
+      streamSupport?: string[];
+      wifiState?: string;
+      networkSegment?: string;
+      changed?: boolean;
+      abilityChanged?: boolean;
+      online?: boolean;
+      sleeping?: boolean;
+      loginState?: string;
+      updatedAtMs?: number;
+    }>();
     for (const [channel, info] of this.channelPushData.entries()) {
       const stateLower = (info.stateLower ?? info.state).toLowerCase();
       if (stateLower === "none") continue;
-      out.set(channel, { name: info.name, uid: info.uid, state: info.state });
+      out.set(channel, {
+        name: info.name,
+        uid: info.uid,
+        state: info.state,
+        ...(typeof info.index === "number" ? { index: info.index } : {}),
+        ...(info.streamSupport?.length ? { streamSupport: info.streamSupport } : {}),
+        ...(info.wifiState ? { wifiState: info.wifiState } : {}),
+        ...(info.networkSegment ? { networkSegment: info.networkSegment } : {}),
+        ...(typeof info.changed === "boolean" ? { changed: info.changed } : {}),
+        ...(typeof info.abilityChanged === "boolean" ? { abilityChanged: info.abilityChanged } : {}),
+        ...(typeof info.online === "boolean" ? { online: info.online } : {}),
+        ...(typeof info.sleeping === "boolean" ? { sleeping: info.sleeping } : {}),
+        ...(info.loginState ? { loginState: info.loginState } : {}),
+        ...(typeof info.updatedAtMs === "number" ? { updatedAtMs: info.updatedAtMs } : {}),
+      });
     }
     return out;
   }
@@ -1808,14 +1970,15 @@ export class ReolinkBaichuanApi {
    *
    * Intended to be fast: avoids AI/abilities and returns only the common identity + battery hints.
    */
-  async getDevicesInfo(options?: {
+  async getNvrChannelsSummary(options?: {
     channels?: number[];
     timeoutMs?: number;
+    source?: "baichuan" | "cgi";
   }): Promise<{
     channels: number[];
     devices: ReolinkBaichuanDeviceSummary[];
   }> {
-    const timeoutMs = options?.timeoutMs;
+    const source = options?.source ?? "baichuan";
 
     const pushInfo = this.getChannelInfoFromPushCache();
     const channels = (options?.channels?.length ? options.channels : Array.from(pushInfo.keys()))
@@ -1823,7 +1986,9 @@ export class ReolinkBaichuanApi {
       .filter((n) => Number.isFinite(n))
       .sort((a, b) => a - b);
 
-    const support = await this.getSupportInfo().catch(() => undefined);
+    const support = await this.getSupportInfo().catch(() => {
+      this.logger.error?.("[ReolinkBaichuanApi] getNvrChannelsSummary: failed to get support info");
+    });
 
     const truthyNumberLike = (v: unknown): boolean => {
       if (typeof v === "number") return v > 0;
@@ -1841,7 +2006,6 @@ export class ReolinkBaichuanApi {
       for (const ch of channels) {
         const caps = computeDeviceCapabilities({ channel: ch, support });
         isBatteryByChannel.set(ch, Boolean(caps.hasBattery));
-        // Prefer explicit support flag when present.
         const anySupportDoorbellLight = (support.items ?? []).some(
           (i) => i.chnID === ch && truthyNumberLike((i as any).supportDoorbellLight),
         );
@@ -1849,58 +2013,267 @@ export class ReolinkBaichuanApi {
       }
     }
 
-    // Fetch minimal per-channel info in parallel.
-    const infoPromises = channels.map((channel) =>
-      this.getInfo(channel, {
-        ...(timeoutMs != null ? { timeoutMs } : {}),
-        tags: ["type", "name"],
-      }).catch(() => undefined),
-    );
+    // if (source === "cgi") {
+    //   // const channels = (options?.channels?.length
+    //   //   ? options.channels
+    //   //   : (await this.cgiApi.getChannels({ useChannelNumFallback: true })).channels
+    //   // )
+    //   //   .map((c) => Number(c))
+    //   //   .filter((n) => Number.isFinite(n))
+    //   //   .sort((a, b) => a - b);
 
-    // Battery info can be slow/time out for sleeping cams; keep it best-effort with a short timeout.
-    const batteryTimeoutMs = Math.min(1500, Math.max(300, Math.floor((timeoutMs ?? 1500) / 10)));
-    const batteryPromises = channels.map(async (channel) => {
-      if (!isBatteryByChannel.get(channel)) return undefined;
+    //   const cacheKey = `cgi:${channels.join(",")}`;
+    //   const cached = this.nvrChannelsSummaryCache.get(cacheKey);
+    //   if (cached) {
+    //     return {
+    //       channels: [...cached.channels],
+    //       devices: cached.devices.map((d) => ({ ...d })),
+    //     };
+    //   }
+
+    //   const channelsResponse = await this.cgiApi.GetChannelstatus().catch(() => []);
+    //   const statusList = (channelsResponse?.[0] as any)?.value?.status as Array<any> | undefined;
+    //   const statusByChannel = new Map<number, any>();
+    //   for (const s of statusList ?? []) {
+    //     const ch = Number(s?.channel);
+    //     if (Number.isFinite(ch)) statusByChannel.set(ch, s);
+    //   }
+
+    //   const devices: ReolinkBaichuanDeviceSummary[] = [];
+    //   for (const channel of channels) {
+    //     const st = statusByChannel.get(channel);
+
+    //     let model: string | undefined = typeof st?.typeInfo === "string" && st.typeInfo.trim() ? st.typeInfo.trim() : undefined;
+    //     if (!model) {
+    //       try {
+    //         const rsp = await this.cgiApi.GetChnTypeInfo(channel);
+    //         const value = (rsp?.[0] as any)?.value as { typeInfo?: string } | undefined;
+    //         if (typeof value?.typeInfo === "string" && value.typeInfo.trim()) model = value.typeInfo.trim();
+    //       } catch {
+    //         // ignore
+    //       }
+    //     }
+
+    //     const normalizedModel = model ? model.trim() : undefined;
+    //     const isMultifocal = normalizedModel ? isDualLenseModel(normalizedModel) : false;
+    //     const isDoorbell = normalizedModel ? normalizedModel.toLowerCase().includes("doorbell") : false;
+    //     const isBattery = normalizedModel
+    //       ? /\bargus\b/i.test(normalizedModel) || normalizedModel.toLowerCase().includes("battery")
+    //       : false;
+
+    //     const online = st?.online === 1 ? true : st?.online === 0 ? false : undefined;
+    //     const sleeping = st?.sleep === 1 ? true : st?.sleep === 0 ? false : undefined;
+    //     const state = online === true ? "connect" : online === false ? "none" : undefined;
+
+    //     devices.push({
+    //       channel,
+    //       isBattery,
+    //       isDoorbell,
+    //       isMultifocal,
+    //       ...(typeof st?.name === "string" && st.name.trim() ? { name: st.name.trim() } : {}),
+    //       ...(typeof st?.uid === "string" && st.uid.trim() ? { uid: st.uid.trim() } : {}),
+    //       ...(state ? { state } : {}),
+    //       ...(typeof online === "boolean" ? { online } : {}),
+    //       ...(typeof sleeping === "boolean" ? { sleeping } : {}),
+    //       ...(model ? { model } : {}),
+    //     });
+    //   }
+
+    //   const result = { channels, devices };
+    //   this.nvrChannelsSummaryCache.set(cacheKey, {
+    //     channels: [...channels],
+    //     devices: devices.map((d) => ({ ...d })),
+    //   });
+    //   return result;
+    // }
+
+    const cacheKey = `baichuan:${channels.join(",")}`;
+    const cached = this.nvrChannelsSummaryCache.get(cacheKey);
+    if (cached) {
+      return {
+        channels: [...cached.channels],
+        devices: cached.devices.map((d) => ({ ...d })),
+      };
+    }
+
+    const timeoutMs = options?.timeoutMs;
+    const infoPerChannel = new Map<number, ReolinkDeviceInfo>();
+    const networkInfoPerChannel = new Map<number, ReolinkBaichuanNetworkInfo | undefined>();
+    for (const channel of channels) {
       try {
-        const xml = await this.sendXml({ cmdId: BC_CMD_ID_GET_BATTERY_INFO, channel, timeoutMs: batteryTimeoutMs });
-        const parsed = this.parseBatteryInfoXml(xml, channel);
-        return typeof parsed.batteryPercent === "number" ? parsed.batteryPercent : undefined;
+        const info = await this.getInfo(channel, {
+          ...(timeoutMs != null ? { timeoutMs } : {}),
+          tags: ["type", "name", "serialNumber"],
+        });
+        infoPerChannel.set(channel, info);
+
+        // const net = await this.getNetworkInfo(channel, {
+        //   ...(timeoutMs != null ? { timeoutMs } : {}),
+        // });
+        // networkInfoPerChannel.set(channel, net);
       } catch {
-        return undefined;
       }
-    });
+    }
 
-    const [infoResults, batteryResults] = await Promise.all([
-      Promise.all(infoPromises),
-      Promise.all(batteryPromises),
-    ]);
-
-    const devices = channels.map((channel, idx) => {
+    const devices = channels.map((channel) => {
       const cached = pushInfo.get(channel);
-      const info = infoResults[idx] as any;
+      const info = infoPerChannel.get(channel);
+      const networkInfo = networkInfoPerChannel.get(channel);
+      const isBattery = isBatteryByChannel.get(channel) ?? false;
+      const isDoorbell = isDoorbellByChannel.get(channel) ?? false;
+      const model = info?.type ?? '';
 
-      const name = (
-        (typeof cached?.name === "string" && cached.name.trim() ? cached.name.trim() : undefined) ??
-        (typeof info?.name === "string" && info.name.trim() ? info.name.trim() : undefined)
-      );
-      const uid = typeof cached?.uid === "string" && cached.uid.trim() ? cached.uid.trim() : undefined;
-      const model = typeof info?.type === "string" && info.type.trim() ? info.type.trim() : undefined;
-      const isBattery = isBatteryByChannel.get(channel);
-      const isDoorbell = isDoorbellByChannel.get(channel);
-      const battery = batteryResults[idx];
+      const normalizedModel = model ? model.trim() : undefined;
+      const isMultifocal = normalizedModel ? isDualLenseModel(normalizedModel) : false;
 
       return {
         channel,
-        ...(name ? { name } : {}),
-        ...(uid ? { uid } : {}),
-        ...(model ? { model } : {}),
-        ...(typeof isBattery === "boolean" ? { isBattery } : {}),
-        ...(typeof isDoorbell === "boolean" ? { isDoorbell } : {}),
-        ...(typeof battery === "number" ? { battery } : {}),
+        isBattery,
+        isDoorbell,
+        isMultifocal,
+        model,
+        ...(networkInfo?.ip ? { ip: networkInfo.ip } : {}),
+        ...(networkInfo?.mac ? { mac: networkInfo.mac } : {}),
+        ...(networkInfo?.activeLink ? { activeLink: networkInfo.activeLink } : {}),
+        ...(cached?.name ? { name: cached.name } : {}),
+        ...(cached?.uid ? { uid: cached.uid } : {}),
+        ...(cached?.state ? { state: cached.state } : {}),
+        ...(typeof cached?.index === "number" ? { index: cached.index } : {}),
+        ...(cached?.streamSupport?.length ? { streamSupport: cached.streamSupport } : {}),
+        ...(cached?.wifiState ? { wifiState: cached.wifiState } : {}),
+        ...(cached?.networkSegment ? { networkSegment: cached.networkSegment } : {}),
+        ...(typeof cached?.changed === "boolean" ? { changed: cached.changed } : {}),
+        ...(typeof cached?.abilityChanged === "boolean" ? { abilityChanged: cached.abilityChanged } : {}),
+        ...(typeof cached?.online === "boolean" ? { online: cached.online } : {}),
+        ...(typeof cached?.sleeping === "boolean" ? { sleeping: cached.sleeping } : {}),
+        ...(cached?.loginState ? { loginState: cached.loginState } : {}),
+        ...(typeof cached?.updatedAtMs === "number" ? { updatedAtMs: cached.updatedAtMs } : {}),
       };
     });
 
-    return { channels, devices };
+    const result = { channels, devices };
+    this.nvrChannelsSummaryCache.set(cacheKey, {
+      channels: [...channels],
+      devices: devices.map((d) => ({ ...d })),
+    });
+    return result;
+  }
+
+  /**
+   * Group NVR/HUB channels by physical device (best-effort).
+   *
+   * Heuristics:
+   * - Primary key: channel UID from cmd_id 145 push cache.
+   * - Secondary key: per-channel serialNumber from getInfo(channel).
+   * - Multifocal: group has 2+ channels OR model name matches known dual-lens patterns.
+   */
+  async getNvrDeviceGroups(options?: {
+    channels?: number[];
+    timeoutMs?: number;
+  }): Promise<{
+    channels: number[];
+    groups: ReolinkNvrDeviceGroupSummary[];
+    /** Map channel -> group key. */
+    channelToGroup: Record<number, string>;
+  }> {
+    const { channels, devices } = await this.getNvrChannelsSummary(options);
+
+    const looksLikeDualLensModel = (model?: string): boolean => {
+      const m = (model ?? "").trim();
+      if (!m) return false;
+      if (DUAL_LENS_MODELS.has(m)) return true;
+      const lower = m.toLowerCase();
+      // Keyword heuristics (covers variations and suffixes)
+      if (lower.includes("trackmix")) return true;
+      if (lower.includes("duo")) return true;
+      // Some firmwares report generic types; keep this conservative.
+      return false;
+    };
+
+    type MutableGroup = Omit<ReolinkNvrDeviceGroupSummary, "channels" | "isMultifocal" | "reason"> & {
+      channels: number[];
+      modelSet: Set<string>;
+      nameSet: Set<string>;
+    };
+
+    const groupsByKey = new Map<string, MutableGroup>();
+    const serialToKey = new Map<string, string>();
+    const channelToGroup: Record<number, string> = {};
+
+    const getOrCreate = (key: string): MutableGroup => {
+      let g = groupsByKey.get(key);
+      if (!g) {
+        g = { key, channels: [], modelSet: new Set(), nameSet: new Set() };
+        groupsByKey.set(key, g);
+      }
+      return g;
+    };
+
+    for (const d of devices) {
+      const uid = (d.uid ?? "").trim() || undefined;
+      const serial = (d.serialNumber ?? "").trim() || undefined;
+      const model = (d.model ?? "").trim() || undefined;
+      const name = (d.name ?? "").trim() || undefined;
+
+      // Prefer grouping by UID, but allow serial to merge channels when UID is missing.
+      let key = uid ? `uid:${uid}` : serial ? `sn:${serial}` : `ch:${d.channel}`;
+      if (!uid && serial) {
+        const existing = serialToKey.get(serial);
+        if (existing) key = existing;
+      }
+
+      const g = getOrCreate(key);
+      if (!g.channels.includes(d.channel)) g.channels.push(d.channel);
+      if (!g.uid && uid) g.uid = uid;
+      if (!g.serialNumber && serial) g.serialNumber = serial;
+      if (model) g.modelSet.add(model);
+      if (name) g.nameSet.add(name);
+
+      // If we have a serial and this group is a UID-group, remember it for later merges.
+      if (serial) serialToKey.set(serial, key);
+      channelToGroup[d.channel] = key;
+    }
+
+    const finalizeModel = (g: MutableGroup): string | undefined => {
+      if (g.modelSet.size === 1) return Array.from(g.modelSet)[0];
+      // Prefer any model that looks like dual lens.
+      for (const m of g.modelSet) {
+        if (looksLikeDualLensModel(m)) return m;
+      }
+      return g.modelSet.size ? Array.from(g.modelSet)[0] : undefined;
+    };
+
+    const finalizeName = (g: MutableGroup): string | undefined => {
+      if (g.nameSet.size === 1) return Array.from(g.nameSet)[0];
+      return g.nameSet.size ? Array.from(g.nameSet)[0] : undefined;
+    };
+
+    const groups: ReolinkNvrDeviceGroupSummary[] = Array.from(groupsByKey.values())
+      .map((g) => {
+        g.channels.sort((a, b) => a - b);
+        const name = finalizeName(g);
+        const model = finalizeModel(g);
+        const isMultifocal = g.channels.length > 1 || looksLikeDualLensModel(model);
+        const reason =
+          g.channels.length > 1
+            ? `shared ${g.uid ? "uid" : g.serialNumber ? "serial" : "identity"} across ${g.channels.length} channels`
+            : looksLikeDualLensModel(model)
+              ? "model match (dual-lens keyword)"
+              : "single-channel device";
+        return {
+          key: g.key,
+          ...(g.uid ? { uid: g.uid } : {}),
+          ...(g.serialNumber ? { serialNumber: g.serialNumber } : {}),
+          ...(name ? { name } : {}),
+          ...(model ? { model } : {}),
+          channels: g.channels,
+          isMultifocal,
+          reason,
+        };
+      })
+      .sort((a, b) => (a.channels[0] ?? 0) - (b.channels[0] ?? 0));
+
+    return { channels, groups, channelToGroup };
   }
 
   /** GetEnc via Baichuan: cmd_id 56 (returns raw XML). */
@@ -2183,6 +2556,101 @@ export class ReolinkBaichuanApi {
     await this.sendXml({ cmdId: 93 });
   }
 
+  /**
+   * Best-effort network info via Baichuan.
+   *
+   * Behavior aligned with common Reolink firmwares:
+   * - cmd_id 76 often returns <ip>/<mac> (especially on NVR/Hub)
+   * - when querying host (no channel), some firmwares only populate link details after a cmd_id 93 ping
+   * - fallback to cmd_id 104 (GetGeneralXml) when 76 is unsupported/empty
+   */
+  async getNetworkInfo(
+    channel?: number,
+    options?: {
+      timeoutMs?: number;
+    },
+  ): Promise<ReolinkBaichuanNetworkInfo | undefined> {
+    const timeoutMs = options?.timeoutMs ?? 1200;
+
+    const trim = (v: unknown): string | undefined => {
+      if (typeof v !== "string") return undefined;
+      const t = v.trim();
+      return t ? t : undefined;
+    };
+
+    const parse = (xml?: string): ReolinkBaichuanNetworkInfo | undefined => {
+      if (!xml) return undefined;
+      const ip =
+        trim(getXmlText(xml, "ip")) ||
+        trim(getXmlText(xml, "IP")) ||
+        trim(getXmlText(xml, "ipv4")) ||
+        trim(getXmlText(xml, "IPv4")) ||
+        undefined;
+      const mac = trim(getXmlText(xml, "mac")) || trim(getXmlText(xml, "MAC")) || undefined;
+      const activeLink =
+        trim(getXmlText(xml, "activeLink")) ||
+        trim(getXmlText(xml, "type")) ||
+        trim(getXmlText(xml, "linkType")) ||
+        undefined;
+      return ip || mac || activeLink
+        ? { ...(ip ? { ip } : {}), ...(mac ? { mac } : {}), ...(activeLink ? { activeLink } : {}) }
+        : undefined;
+    };
+
+    const merge = (a?: ReolinkBaichuanNetworkInfo, b?: ReolinkBaichuanNetworkInfo): ReolinkBaichuanNetworkInfo | undefined => {
+      if (!a && !b) return undefined;
+      return {
+        ...(a?.ip ? { ip: a.ip } : b?.ip ? { ip: b.ip } : {}),
+        ...(a?.mac ? { mac: a.mac } : b?.mac ? { mac: b.mac } : {}),
+        ...(a?.activeLink ? { activeLink: a.activeLink } : b?.activeLink ? { activeLink: b.activeLink } : {}),
+      };
+    };
+
+    if (channel === undefined) {
+      // Host-level: cmd 76 then cmd 93 ping (some firmwares only fill link details after ping).
+      let xml76: string | undefined;
+      let xml93: string | undefined;
+
+      try {
+        xml76 = await this.sendXml({ cmdId: 76, timeoutMs });
+      } catch {
+        // ignore
+      }
+
+      try {
+        xml93 = await this.sendXml({ cmdId: 93, timeoutMs });
+      } catch {
+        // ignore
+      }
+
+      const merged = merge(parse(xml76), parse(xml93));
+      if (merged) return merged;
+
+      try {
+        const xml = await this.getGeneralXml();
+        return parse(xml);
+      } catch {
+        return undefined;
+      }
+    }
+
+    const ch = this.normalizeChannel(channel);
+    try {
+      const xml = await this.sendXml({ cmdId: 76, channel: ch, timeoutMs });
+      const parsed = parse(xml);
+      if (parsed) return parsed;
+    } catch {
+      // ignore
+    }
+
+    try {
+      const xml = await this.getGeneralXml(ch);
+      return parse(xml);
+    } catch {
+      return undefined;
+    }
+  }
+
   /** GetLocalLink via Baichuan: cmd_id 104 (general info) - on many models includes MAC/network info. */
   async getGeneralXml(channel?: number): Promise<string> {
     const req: { cmdId: number; channel?: number } = { cmdId: 104 };
@@ -2292,6 +2760,20 @@ export class ReolinkBaichuanApi {
     const candidateTypes = ["people", "vehicle", "dog_cat", "face", "package"]; // best-effort
     let lastErr: unknown;
 
+    const looksLikeConnectionDrop = (e: unknown): boolean => {
+      const msg =
+        e && typeof e === "object" && "message" in e
+          ? String((e as any).message)
+          : String(e ?? "");
+      return (
+        msg.includes("ECONNRESET") ||
+        msg.includes("EPIPE") ||
+        msg.includes("socket hang up") ||
+        msg.includes("Baichuan socket closed") ||
+        msg.includes("timeout")
+      );
+    };
+
     const tryOnce = async (type: string, channelIdOverride?: number): Promise<string> => {
       const payloadXml = `<?xml version="1.0" encoding="UTF-8" ?>` +
         `<body>` +
@@ -2321,6 +2803,7 @@ export class ReolinkBaichuanApi {
           };
         }
       } catch (e) {
+        if (looksLikeConnectionDrop(e)) throw e;
         lastErr = e;
       }
     }
@@ -2337,6 +2820,7 @@ export class ReolinkBaichuanApi {
           };
         }
       } catch (e) {
+        if (looksLikeConnectionDrop(e)) throw e;
         lastErr = e;
       }
     }
@@ -2350,10 +2834,27 @@ export class ReolinkBaichuanApi {
    * Returns JPEG image as Buffer.
    * Note: Snapshot uses a special message ID system for binary responses
    */
-  async getSnapshot(channel?: number, compositeOptions?: CompositeStreamPipOptions): Promise<Buffer> {
+  async getSnapshot(
+    channel?: number,
+    options?:
+      | CompositeStreamPipOptions
+      | {
+        /** Native variant for dual-lens models (default=wide; autotrack/telephoto=tele lens). */
+        variant?: NativeVideoStreamVariant;
+        /** True when behind NVR/Hub (tele lens is exposed via logic channel). */
+        onNvr?: boolean;
+        /** Snapshot stream type (quality). Default: "main". */
+        streamType?: "main" | "sub";
+        timeoutMs?: number;
+      },
+  ): Promise<Buffer> {
     const cmdId = 109;
 
     // If composite options are provided, combine wider and tele snapshots with PIP
+    const compositeOptions =
+      options && ("widerChannel" in options || "teleChannel" in options || "pipPosition" in options) ? options : undefined;
+    const snapshotOptions = compositeOptions ? undefined : (options as Exclude<typeof options, CompositeStreamPipOptions> | undefined);
+
     if (compositeOptions) {
       const widerChannel = compositeOptions.widerChannel ?? 0;
       const teleChannel = compositeOptions.teleChannel ?? 1;
@@ -2419,11 +2920,18 @@ export class ReolinkBaichuanApi {
 
     // Regular snapshot for single channel
     const ch = channel !== undefined ? this.normalizeChannel(channel) : 0;
+    const variant: NativeVideoStreamVariant = snapshotOptions?.variant ?? "default";
+    const onNvr = snapshotOptions?.onNvr === true;
+    const streamType: "main" | "sub" = snapshotOptions?.streamType ?? "main";
+    const timeoutMs = snapshotOptions?.timeoutMs ?? 15_000;
+
+    // On NVR/Hub dual-lens models, the tele lens is usually exposed via logicChannel=1.
+    const logicChannel = onNvr && variant !== "default" ? 1 : ch;
 
     // 1. Send Snap request (XML)
     // Snap XML: <Snap version="1.1"><channelId>...</channelId><logicChannel>...</logicChannel><time>0</time><fullFrame>0</fullFrame><streamType>main</streamType></Snap>
     // Must be wrapped in <body>
-    const xml = `<body><Snap version="1.1"><channelId>${ch}</channelId><logicChannel>${ch}</logicChannel><time>0</time><fullFrame>0</fullFrame><streamType>main</streamType></Snap></body>`;
+    const xml = `<body><Snap version="1.1"><channelId>${ch}</channelId><logicChannel>${logicChannel}</logicChannel><time>0</time><fullFrame>0</fullFrame><streamType>${streamType}</streamType></Snap></body>`;
 
     await this.client.login();
 
@@ -2436,7 +2944,7 @@ export class ReolinkBaichuanApi {
       channel: ch,
       payloadXml: xml,
       extensionXml: buildChannelExtensionXml(ch),
-      timeoutMs: 15_000,
+      timeoutMs,
     });
   }
 
@@ -4122,7 +4630,19 @@ ${xmlDateTimePayload("endTime", end)}
   private async checkAndDispatchCurrentState(channel: number = 0): Promise<void> {
     try {
       // Check motion state
-      const motionState = await this.getMotionState(channel);
+      let motionState: boolean;
+      try {
+        motionState = await this.getMotionState(channel);
+      } catch (error) {
+        // NOTE: Scrypted logger often JSON-stringifies Error -> "{}".
+        // Log an explicit message so we can identify failing endpoints (cmdId=46).
+        const msg = formatErrorForLog(error);
+        (this.logger.warn ?? this.logger.error)?.call(
+          this.logger,
+          `[ReolinkBaichuanApi] getMotionState failed (cmdId=46 ch=${channel})${formatClientIoForLog(this)}: ${msg}`,
+        );
+        return;
+      }
       if (motionState !== this.lastMotionState) {
         this.lastMotionState = motionState;
         if (motionState) {
@@ -4188,7 +4708,11 @@ ${xmlDateTimePayload("endTime", end)}
       }
     } catch (e) {
       // Log but don't throw - state checking should be best-effort
-      (this.logger.warn ?? this.logger.error)?.call(this.logger, "[ReolinkBaichuanApi] Error checking current state", e);
+      const msg = formatErrorForLog(e);
+      (this.logger.warn ?? this.logger.error)?.call(
+        this.logger,
+        `[ReolinkBaichuanApi] Error checking current state (ch=${channel})${formatClientIoForLog(this)}: ${msg}`,
+      );
     }
   }
 
@@ -4216,8 +4740,22 @@ ${xmlDateTimePayload("endTime", end)}
    * Polling is disabled for UDP/battery cameras to avoid waking them unnecessarily.
    */
   private startStatePolling(): void {
+    // Polling is opt-in: default is push-only.
+    // Keep this guard here even if callsites already check it.
+    const pollingEnabled = this.client.isStatePollingEnabled?.() ?? false;
+    if (!pollingEnabled) {
+      this.stopStatePolling();
+      return;
+    }
+
     // Only poll if there are listeners
     if (this.simpleEventListeners.size === 0) {
+      return;
+    }
+
+    // Multi-channel hosts (NVR/Home Hub) should rely on push events. Polling tends to be noisy
+    // (and can trigger reconnect loops) especially when some channels are sleeping/offline.
+    if (this.channelPushData.size > 1) {
       return;
     }
 
@@ -4245,7 +4783,8 @@ ${xmlDateTimePayload("endTime", end)}
         await this.checkAndDispatchCurrentState(channel);
       } catch (e) {
         // Never allow polling errors to crash callers.
-        this.logger.debug?.("[ReolinkBaichuanApi] state polling tick failed", e);
+        const msg = formatErrorForLog(e);
+        this.logger.debug?.(`[ReolinkBaichuanApi] state polling tick failed${formatClientIoForLog(this)}: ${msg}`);
       }
     }, 5000);
   }
@@ -4434,19 +4973,45 @@ ${xmlDateTimePayload("endTime", end)}
    * @param profile - Stream profile ("main" | "sub" | "ext")
    * @returns Promise that resolves when stream request is sent
    */
-  async startVideoStream(channel?: number, profile: StreamProfile = "sub"): Promise<void> {
+  async startVideoStream(
+    channel?: number,
+    profile: StreamProfile = "sub",
+    options?: {
+      /** Native-only: request TrackMix tele/autotrack variants (usually on NVR/Hub). */
+      variant?: NativeVideoStreamVariant;
+    }
+  ): Promise<void> {
     const ch = this.normalizeChannel(channel);
     // Use the same 0-based channel_id everywhere (header, Extension, payload).
     const channelId = ch;
 
-    // Map profile to handle and stream_type values
+    const variant: NativeVideoStreamVariant = options?.variant ?? "default";
+
+    // Map profile to handle and stream_type values.
     // handle: 0 for main, 256 for sub, 1024 for extern
-    // stream_type in header: 0 for main, 1 for sub, 0 for extern
+    // streamType in header:
+    // - 0 main/ext (default)
+    // - 1 sub (default)
+    // - 2 main (autotrack/telephoto)
+    // - 3 sub (autotrack/telephoto)
     const profileConfig: Record<StreamProfile, { handle: number; streamType: number; streamName: string }> = {
-      main: { handle: 0, streamType: 0, streamName: "mainStream" },
-      sub: { handle: 256, streamType: 1, streamName: "subStream" },
+      main: {
+        handle: 0,
+        streamType: variant === "default" ? 0 : 2,
+        // For preview XML, keep the canonical stream name; the variant is selected via header streamType.
+        streamName: "mainStream",
+      },
+      sub: {
+        handle: 256,
+        streamType: variant === "default" ? 1 : 3,
+        streamName: "subStream",
+      },
       ext: { handle: 1024, streamType: 0, streamName: "externStream" },
     };
+
+    if (variant !== "default" && profile === "ext") {
+      throw new Error(`Invalid native stream variant for profile: ${profile} (variant=${variant})`);
+    }
 
     const config = profileConfig[profile];
     if (!config) {
@@ -4466,6 +5031,17 @@ ${xmlDateTimePayload("endTime", end)}
       throw new Error(`streamName is not a string: ${typeof streamName}, value: ${streamName}, config: ${JSON.stringify(config)}`);
     }
     const payloadXml = buildPreviewXml(config.handle, streamName, channelId);
+
+    // Log stream request details for debugging
+    if (this.logger?.log) {
+      try {
+        this.logger.log(
+          `[ReolinkBaichuanApi] startVideoStream REQUEST: channel=${ch}, profile=${profile}, variant=${variant}, streamType=${config.streamType}, handle=${config.handle}, streamName=${streamName}`
+        );
+      } catch {
+        // Ignore logging errors
+      }
+    }
 
     // Subscribe (MSG_ID_VIDEO, msg_num) BEFORE sending the command.
     // On some BCUDP/battery models, the start-stream request can sporadically timeout;
@@ -4490,6 +5066,16 @@ ${xmlDateTimePayload("endTime", end)}
         };
         const frame = await this.client.sendFrame(frameParams);
 
+        if (this.logger?.log) {
+          try {
+            this.logger.log(
+              `[ReolinkBaichuanApi] startVideoStream response: channel=${ch}, profile=${profile}, variant=${variant}, streamType=${config.streamType}, responseCode=${frame.header.responseCode}, msgNum=${frame.header.msgNum}`
+            );
+          } catch {
+            // Ignore logging errors
+          }
+        }
+
         if (frame.header.responseCode !== 200) {
           throw new Error(
             `Video stream request rejected (response_code ${frame.header.responseCode}). Expected response_code 200, camera returned ${frame.header.responseCode}`
@@ -4497,7 +5083,7 @@ ${xmlDateTimePayload("endTime", end)}
         }
 
         // Remember msgNum so we can stop the stream with the same msgNum.
-        this.activeVideoMsgNums.set(`${ch}:${profile}`, frame.header.msgNum);
+        this.activeVideoMsgNums.set(`${ch}:${profile}:${variant}`, frame.header.msgNum);
 
         // Success.
         return;
@@ -4533,7 +5119,16 @@ ${xmlDateTimePayload("endTime", end)}
    */
   getActiveVideoMsgNum(channel?: number, profile: StreamProfile = "sub"): number | undefined {
     const ch = this.normalizeChannel(channel);
-    return this.activeVideoMsgNums.get(`${ch}:${profile}`);
+    return this.activeVideoMsgNums.get(`${ch}:${profile}:default`);
+  }
+
+  getActiveVideoMsgNumWithVariant(
+    channel: number,
+    profile: StreamProfile,
+    variant: NativeVideoStreamVariant = "default",
+  ): number | undefined {
+    const ch = this.normalizeChannel(channel);
+    return this.activeVideoMsgNums.get(`${ch}:${profile}:${variant}`);
   }
 
   /**
@@ -4545,17 +5140,30 @@ ${xmlDateTimePayload("endTime", end)}
    * @param channel - Channel number (0-based)
    * @param profile - Stream profile ("main" | "sub" | "ext")
    */
-  async stopVideoStream(channel?: number, profile: StreamProfile = "sub"): Promise<void> {
+  async stopVideoStream(
+    channel?: number,
+    profile: StreamProfile = "sub",
+    options?: {
+      /** Native-only: stop TrackMix tele/autotrack variants (must match the started variant). */
+      variant?: NativeVideoStreamVariant;
+    }
+  ): Promise<void> {
     const ch = this.normalizeChannel(channel);
     // Use the same 0-based channel_id everywhere (header, Extension, payload).
     const channelId = ch;
 
+    const variant: NativeVideoStreamVariant = options?.variant ?? "default";
+
     // Map profile to handle value
     const profileConfig: Record<StreamProfile, { handle: number; streamType: number }> = {
-      main: { handle: 0, streamType: 0 },
-      sub: { handle: 256, streamType: 1 },
+      main: { handle: 0, streamType: variant === "default" ? 0 : 2 },
+      sub: { handle: 256, streamType: variant === "default" ? 1 : 3 },
       ext: { handle: 1024, streamType: 0 },
     };
+
+    if (variant !== "default" && profile === "ext") {
+      throw new Error(`Invalid native stream variant for profile: ${profile} (variant=${variant})`);
+    }
 
     const config = profileConfig[profile];
 
@@ -4563,7 +5171,7 @@ ${xmlDateTimePayload("endTime", end)}
     // channelId is NOT in Preview XML - it's handled via channelId in header
     const payloadXml = buildPreviewStopXml(config.handle, channelId);
 
-    const key = `${ch}:${profile}`;
+    const key = `${ch}:${profile}:${variant}`;
     const msgNum = this.activeVideoMsgNums.get(key);
     this.activeVideoMsgNums.delete(key);
 
@@ -6303,7 +6911,16 @@ ${xmlDateTimePayload("endTime", end)}
    * }
    * ```
    */
-  async getDualLensChannelInfo(): Promise<DualLensChannelAnalysis> {
+  async getDualLensChannelInfo(
+    channel: number,
+    options?: {
+      /** True when the camera is behind an NVR/Hub (tele lens is usually exposed as an autotrack/logic-channel variant). */
+      onNvr?: boolean;
+    },
+  ): Promise<DualLensChannelAnalysis> {
+
+    const onNvr = options?.onNvr === true;
+    const baseChannel = this.normalizeChannel(channel);
 
     // 1. Get device information
     let model: string | undefined;
@@ -6311,14 +6928,14 @@ ${xmlDateTimePayload("endTime", end)}
     let supportInfo: SupportInfo | undefined;
 
     try {
-      const deviceInfo = await this.getInfo(0, { tags: ["type"] });
+      const deviceInfo = await this.getInfo(channel, { tags: ["type"] });
       model = deviceInfo.type?.trim();
     } catch {
       // ignore
     }
 
     try {
-      const capabilities = await this.getDeviceCapabilities(0);
+      const capabilities = await this.getDeviceCapabilities(channel);
       channelNum = capabilities.support?.channelNum;
       supportInfo = capabilities.support;
     } catch {
@@ -6339,9 +6956,6 @@ ${xmlDateTimePayload("endTime", end)}
         }
       }
     }
-
-    // Check against known dual lens models (case-insensitive and partial match)
-    const modelLower = normalizedModel?.toLowerCase().trim() ?? "";
 
     // More flexible matching: check exact match first, then partial match
     const checkModelMatch = (knownModels: Set<string>, modelToCheck: string): boolean => {
@@ -6367,7 +6981,7 @@ ${xmlDateTimePayload("endTime", end)}
     // Also check if channelNum suggests dual lens (2-3 channels)
     // Handle both number and string types for channelNum
     const channelNumValue = typeof channelNum === "string" ? Number.parseInt(channelNum, 10) : channelNum;
-    const hasDualLensChannelCount = (channelNumValue === 2 || channelNumValue === 3) && Number.isFinite(channelNumValue);
+    const hasDualLensChannelCount = (channelNumValue === 2) && Number.isFinite(channelNumValue);
 
     // Consider it dual lens if model matches OR if channelNum suggests it
     const isDualLens = isDualMotionModel || isSingleMotionModel || hasDualLensChannelCount;
@@ -6419,8 +7033,13 @@ ${xmlDateTimePayload("endTime", end)}
 
     if (dualLensType === "single_motion") {
       // TrackMix: stream channels 0 and 1, but only channel 0 has motion/controls
-      streamChannels.push(0, 1);
-      logicalChannels.push(0);
+      if (onNvr) {
+        // NVR/Hub often exposes the tele lens as a variant on the same channel.
+        streamChannels.push(baseChannel);
+      } else {
+        streamChannels.push(0, 1);
+      }
+      logicalChannels.push(onNvr ? baseChannel : 0);
     } else if (dualLensType === "dual_motion") {
       // Duo: both channels have motion detection
       if (channelNumValue === 2) {
@@ -6460,7 +7079,7 @@ ${xmlDateTimePayload("endTime", end)}
         // For DUAL_MOTION: both channels have motion
         let hasMotion = false;
         if (dualLensType === "single_motion") {
-          hasMotion = ch === 0; // Only channel 0 for TrackMix
+          hasMotion = ch === (onNvr ? baseChannel : 0); // Only main channel for TrackMix
         } else if (dualLensType === "dual_motion") {
           hasMotion = logicalChannels.includes(ch); // All logical channels for Duo
         } else {
@@ -6496,33 +7115,58 @@ ${xmlDateTimePayload("endTime", end)}
           availableStreams.rtmp = true;
         }
 
-        // Determine lens type
-        let lensType: "wide" | "telephoto" | undefined;
-        if (ch === 0) {
-          lensType = "wide";
-        } else if (ch === 1) {
-          lensType = "telephoto";
-        }
+        const makeLensVariant = (lensType: "wide" | "telephoto"): NativeVideoStreamVariant => {
+          if (lensType === "wide") return "default";
+          // For TrackMix behind NVR/Hub the tele lens is typically exposed as autotrack/logic-channel stream.
+          return onNvr && dualLensType === "single_motion" ? "autotrack" : "telephoto";
+        };
 
         // For TrackMix (single_motion) models, channel 1 (telephoto) has optical zoom
         // even if capabilities don't explicitly report it
         let hasZoom = caps.hasZoom ?? false;
-        if (dualLensType === "single_motion" && ch === 1 && lensType === "telephoto") {
+        if (!onNvr && dualLensType === "single_motion" && ch === 1) {
           // Telephoto lens on TrackMix has zoom capability
           hasZoom = true;
         }
 
-        channelInfos.push({
-          channel: ch,
-          hasPan: caps.hasPan ?? false,
-          hasTilt: caps.hasTilt ?? false,
-          hasZoom,
-          hasMotion,
-          hasIntercom: caps.hasIntercom ?? false,
-          hasPresets: caps.hasPresets ?? false,
-          lensType,
-          availableStreams,
-        });
+        const pushInfo = (lensType?: "wide" | "telephoto"): void => {
+          channelInfos.push({
+            channel: ch,
+            hasPan: caps.hasPan ?? false,
+            hasTilt: caps.hasTilt ?? false,
+            hasZoom,
+            hasMotion,
+            hasIntercom: caps.hasIntercom ?? false,
+            hasPresets: caps.hasPresets ?? false,
+            ...(lensType ? { lensType } : {}),
+            ...(lensType ? { variantType: makeLensVariant(lensType) } : {}),
+            availableStreams,
+          });
+        };
+
+        // On NVR/Hub TrackMix (single_motion) the two lenses share the same channel: return both lenses with different variantType.
+        if (onNvr && dualLensType === "single_motion" && ch === baseChannel) {
+          pushInfo("wide");
+          // Tele lens entry: ensure zoom=true (TrackMix tele lens has zoom)
+          channelInfos.push({
+            channel: ch,
+            hasPan: caps.hasPan ?? false,
+            hasTilt: caps.hasTilt ?? false,
+            hasZoom: true,
+            hasMotion,
+            hasIntercom: caps.hasIntercom ?? false,
+            hasPresets: caps.hasPresets ?? false,
+            lensType: "telephoto",
+            variantType: makeLensVariant("telephoto"),
+            availableStreams,
+          });
+        } else if (ch === 0) {
+          pushInfo("wide");
+        } else if (ch === 1) {
+          pushInfo("telephoto");
+        } else {
+          pushInfo(undefined);
+        }
       } catch (err) {
         // If it fails for a channel, continue with the others
         (this.logger.warn ?? this.logger.log).call(
@@ -6533,13 +7177,14 @@ ${xmlDateTimePayload("endTime", end)}
     }
 
     // Build capability channel maps: for each capability, list all channels that support it
+    const uniq = (xs: number[]): number[] => Array.from(new Set(xs));
     const capabilityChannels = {
-      pan: channelInfos.filter((ch) => ch.hasPan).map((ch) => ch.channel),
-      tilt: channelInfos.filter((ch) => ch.hasTilt).map((ch) => ch.channel),
-      zoom: channelInfos.filter((ch) => ch.hasZoom).map((ch) => ch.channel),
-      motion: channelInfos.filter((ch) => ch.hasMotion).map((ch) => ch.channel),
-      intercom: channelInfos.filter((ch) => ch.hasIntercom).map((ch) => ch.channel),
-      presets: channelInfos.filter((ch) => ch.hasPresets).map((ch) => ch.channel),
+      pan: uniq(channelInfos.filter((ch) => ch.hasPan).map((ch) => ch.channel)),
+      tilt: uniq(channelInfos.filter((ch) => ch.hasTilt).map((ch) => ch.channel)),
+      zoom: uniq(channelInfos.filter((ch) => ch.hasZoom).map((ch) => ch.channel)),
+      motion: uniq(channelInfos.filter((ch) => ch.hasMotion).map((ch) => ch.channel)),
+      intercom: uniq(channelInfos.filter((ch) => ch.hasIntercom).map((ch) => ch.channel)),
+      presets: uniq(channelInfos.filter((ch) => ch.hasPresets).map((ch) => ch.channel)),
     };
 
     return {
@@ -6576,6 +7221,8 @@ ${xmlDateTimePayload("endTime", end)}
       listenHost?: string; // Host to listen on (default: "127.0.0.1")
       listenPort?: number; // Port to listen on (default: 8554)
       path?: string; // RTSP path (e.g. "/main" or "/sub")
+      /** Native-only: TrackMix tele/autotrack variants (usually on NVR/Hub). */
+      variant?: NativeVideoStreamVariant;
     }
   ): Promise<BaichuanRtspServer>;
   async createRtspStream(
@@ -6585,6 +7232,8 @@ ${xmlDateTimePayload("endTime", end)}
       listenHost?: string; // Host to listen on (default: "127.0.0.1")
       listenPort?: number; // Port to listen on (default: 8554)
       path?: string; // RTSP path (e.g. "/main" or "/sub")
+      /** Native-only: TrackMix tele/autotrack variants (usually on NVR/Hub). */
+      variant?: NativeVideoStreamVariant;
     }
   ): Promise<BaichuanRtspServer>;
   async createRtspStream(
@@ -6595,11 +7244,13 @@ ${xmlDateTimePayload("endTime", end)}
         listenHost?: string;
         listenPort?: number;
         path?: string;
+        variant?: NativeVideoStreamVariant;
       },
     optionsMaybe?: {
       listenHost?: string;
       listenPort?: number;
       path?: string;
+      variant?: NativeVideoStreamVariant;
     }
   ): Promise<BaichuanRtspServer> {
     const ch = typeof channelOrProfile === "number" ? this.normalizeChannel(channelOrProfile) : 0;
@@ -6632,6 +7283,7 @@ ${xmlDateTimePayload("endTime", end)}
       api: this,
       channel: ch,
       profile,
+      ...(options?.variant !== undefined ? { variant: options.variant } : {}),
       ...(options?.listenHost !== undefined ? { listenHost: options.listenHost } : {}),
       ...(options?.listenPort !== undefined ? { listenPort: options.listenPort } : {}),
       ...(options?.path !== undefined ? { path: options.path } : {}),
@@ -6656,32 +7308,60 @@ ${xmlDateTimePayload("endTime", end)}
    * Build all available video stream options for a channel.
    * Returns RTSP, RTMP, and native Baichuan stream options.
    * 
-   * @param channel - Channel number (0-based)
    * @returns Array of stream options
    */
   async buildVideoStreamOptions(
-    channel?: number,
     options?: {
-      /** If true, the `url` field will contain the URL with authentication credentials embedded.
-       * If false or undefined, `url` will not include credentials (use `urlWithAuth` for authenticated URLs).
-       * Default: false
-       */
-      includeAuth?: boolean;
+      channel?: number;
+      compositeOnly?: boolean;
+      onNvr?: boolean;
+      lens?: NativeVideoStreamVariant;
     },
   ): Promise<{
     nativeStreams: ReolinkSupportedStream[];
     rtspStreams: ReolinkSupportedStream[];
     rtmpStreams: ReolinkSupportedStream[];
   }> {
-    const includeAuth = options?.includeAuth;
-    const isComposite = channel === undefined;
+    const onNvr = options?.onNvr === true;
+    const channel = options?.channel;
+    const compositeOnly = options?.compositeOnly === true;
+
+    const lensVariant = options?.lens;
+    const wantWide = !lensVariant || lensVariant === "default";
+    const wantTele = !lensVariant || lensVariant !== "default";
 
     const rtspStreams: ReolinkSupportedStream[] = [];
     const rtmpStreams: ReolinkSupportedStream[] = [];
     const nativeStreams: ReolinkSupportedStream[] = [];
 
-    // For composite streams (multifocal devices), return composite stream options
-    if (isComposite) {
+    const ch = this.normalizeChannel(channel);
+
+    // Best-effort: detect TrackMix model for stream variants.
+    // TrackMix can expose the tele stream as RTSP `...Preview_<ch>_autotrack` (especially on NVR/Hub).
+    let isMultiFocal = false;
+    let model: string | undefined;
+    try {
+      const info = await this.getInfo(ch, { tags: ["type"] });
+      model = typeof (info as any)?.type === "string" ? String((info as any).type).toLowerCase() : "";
+      isMultiFocal = isDualLenseModel(model);
+    } catch {
+      // ignore
+    }
+
+    const rtmpEnabledForMultifocal = false;
+
+    // For composite streams (multifocal devices), return composite stream options.
+    // IMPORTANT: this branch is only for "composite" (channel-less) streams.
+    // Multifocal devices still expose per-channel RTSP/RTMP streams on the NVR.
+    if (compositeOnly && !isMultiFocal) {
+      return {
+        nativeStreams,
+        rtmpStreams,
+        rtspStreams,
+      };
+    }
+
+    if (isMultiFocal && (compositeOnly || channel === undefined)) {
       // Get stream metadata from wider channel (channel 0) for composite stream metadata
       const widerMetadata = await this.getStreamMetadata(0);
       const widerStreams = widerMetadata?.streams || [];
@@ -6697,10 +7377,11 @@ ${xmlDateTimePayload("endTime", end)}
         compositeUrlWithAuth.password = this.password;
 
         nativeStreams.push({
-          name: `Composite ${profile}`,
+          name: `Native ${profile}`,
           id: `composite_${profile}`,
           container: "rtp", // Composite streams use RFC4571 (rtp container)
           profile,
+          lens: "composite",
           url: compositeUrl.toString(),
           urlWithAuth: compositeUrlWithAuth.toString(),
           metadata,
@@ -6718,13 +7399,95 @@ ${xmlDateTimePayload("endTime", end)}
       };
     }
 
-    // Regular stream building for specific channel
-    const ch = this.normalizeChannel(channel);
+    const guessRtspEncodingPrefix = (m?: StreamMetadata): "h264" | "h265" => {
+      const enc = typeof m?.videoEncType === "string" ? m.videoEncType.toLowerCase() : "";
+      if (enc.includes("265")) return "h265";
+      if (enc.includes("264")) return "h264";
+      return "h264";
+    };
+
+    const pushRtsp = (params: {
+      channel: number;
+      profile: StreamProfile;
+      streamName: string;
+      metadata?: StreamMetadata;
+      lens?: ReolinkSupportedStream["lens"];
+      /** Force unprefixed `/Preview_` path (used by autotrack). */
+      forceNoEncodingPrefix?: boolean;
+    }): void => {
+      // RTSP format (Reolink):
+      // - /<encoding>Preview_<NN>_<stream>
+      // - some firmwares use /Preview_<NN>_<stream> (no encoding prefix)
+      const channelStr = String(params.channel + 1).padStart(2, "0");
+      const encoding = params.forceNoEncodingPrefix ? "" : guessRtspEncodingPrefix(params.metadata);
+      const prefix = encoding ? `${encoding}` : "";
+      const rtspId = `${prefix}Preview_${channelStr}_${params.streamName}`;
+      const rtspPath = `/${rtspId}`;
+
+      const rtspUrl = new URL(`rtsp://${this.host}:${rtspPort}${rtspPath}`);
+      const rtspUrlWithAuth = new URL(`rtsp://${this.host}:${rtspPort}${rtspPath}`);
+      rtspUrlWithAuth.username = this.username;
+      rtspUrlWithAuth.password = this.password;
+
+      rtspStreams.push({
+        name: `RTSP ${params.profile}`,
+        id: rtspId,
+        container: "rtsp",
+        channel: params.channel,
+        profile: params.profile,
+        streamName: params.streamName,
+        ...(params.lens ? { lens: params.lens } : {}),
+        url: rtspUrl.toString(),
+        urlWithAuth: rtspUrlWithAuth.toString(),
+        path: rtspPath,
+        port: rtspPort,
+        ...(params.metadata ? { metadata: params.metadata } : {}),
+      });
+    };
+
+    const pushRtmp = (params: {
+      channel: number;
+      profile: StreamProfile;
+      streamName: string;
+      metadata?: StreamMetadata;
+      lens?: ReolinkSupportedStream["lens"];
+    }): void => {
+      // RTMP format (Reolink): /bcs/channel<ch>_<stream>.bcs?channel=<ch>&stream=<0|1>&user=...&password=...
+      const streamType = params.profile === "sub" ? 1 : 0;
+      const rtmpId = `${params.streamName}.bcs`;
+      const rtmpPath = `/bcs/channel${params.channel}_${params.streamName}.bcs`;
+
+      const rtmpUrl = new URL(`rtmp://${this.host}:${rtmpPort}${rtmpPath}`);
+      rtmpUrl.searchParams.set("channel", params.channel.toString());
+      rtmpUrl.searchParams.set("stream", streamType.toString());
+
+      const rtmpUrlWithAuth = new URL(`rtmp://${this.host}:${rtmpPort}${rtmpPath}`);
+      rtmpUrlWithAuth.searchParams.set("channel", params.channel.toString());
+      rtmpUrlWithAuth.searchParams.set("stream", streamType.toString());
+      rtmpUrlWithAuth.searchParams.set("user", this.username);
+      rtmpUrlWithAuth.searchParams.set("password", this.password);
+
+      rtmpStreams.push({
+        name: `RTMP ${params.profile}`,
+        id: rtmpId,
+        container: "rtmp",
+        channel: params.channel,
+        profile: params.profile,
+        streamName: params.streamName,
+        ...(params.lens ? { lens: params.lens } : {}),
+        url: rtmpUrl.toString(),
+        urlWithAuth: rtmpUrlWithAuth.toString(),
+        path: rtmpPath,
+        port: rtmpPort,
+        streamType,
+        ...(params.metadata ? { metadata: params.metadata } : {}),
+      });
+    };
 
     // Get network ports (RTSP/RTMP configuration)
     const netPort = await this.getNetPort();
     const rtspEnabled = netPort.rtsp?.enable === 1;
-    const rtmpEnabled = netPort.rtmp?.enable === 1;
+    const rtmpEnabled = (rtmpEnabledForMultifocal ? true : !isMultiFocal) && netPort.rtmp?.enable === 1;
     const rtspPort = netPort.rtsp?.port ?? 554;
     const rtmpPort = netPort.rtmp?.port ?? 1935;
 
@@ -6732,96 +7495,208 @@ ${xmlDateTimePayload("endTime", end)}
     const streamMetadata = await this.getStreamMetadata(ch);
     const streams = streamMetadata?.streams || [];
 
-    for (const metadata of streams) {
-      const profile = metadata.profile as StreamProfile;
-
-      // Build RTSP URL if enabled (RTSP doesn't support ext stream, only main and sub)
-      if (rtspEnabled && profile !== "ext") {
-        // RTSP format: rtsp://ip:port/h264Preview_XX_profile
-        // XX is 1-based channel with 2-digit padding
-        const channelStr = String(ch + 1).padStart(2, "0");
-        const profileStr = profile === "main" ? "main" : "sub";
-        const rtspPath = `/h264Preview_${channelStr}_${profileStr}`;
-        const rtspId = `h264Preview_${channelStr}_${profileStr}`;
-
-        const rtspUrl = new URL(`rtsp://${this.host}:${rtspPort}${rtspPath}`);
-        const rtspUrlWithAuth = new URL(`rtsp://${this.host}:${rtspPort}${rtspPath}`);
-        rtspUrlWithAuth.username = this.username;
-        rtspUrlWithAuth.password = this.password;
-
-        rtspStreams.push({
-          name: `RTSP ${rtspId}`,
-          id: rtspId,
-          container: "rtsp",
-          channel: ch,
-          profile,
-          url: rtspUrl.toString(),
-          urlWithAuth: rtspUrlWithAuth.toString(),
-          path: rtspPath,
-          port: rtspPort,
-          metadata,
-        });
+    // TrackMix without NVR usually exposes the tele stream as channel 1.
+    // For UX, keep a single call useful by adding tele streams when available.
+    // On NVR/Hub, channel 1 often doesn't exist; we add the RTSP `autotrack` variant instead.
+    let teleStreams: StreamMetadata[] = [];
+    if (isMultiFocal && !onNvr && ch === 0) {
+      try {
+        const teleMetadata = await this.getStreamMetadata(1);
+        teleStreams = teleMetadata?.streams || [];
+      } catch {
+        teleStreams = [];
       }
+    }
 
-      // Build RTMP URL if enabled (RTMP supports main, sub, and ext streams)
-      if (rtmpEnabled) {
-        // RTMP format: /bcs/channelX_stream.bcs?channel=X&stream=stream_type&user=username&password=password
-        // Based on reolink_aio api.py:
-        // - stream in path is "main", "sub", or "ext" (not "main.bcs")
-        // - stream_type in query: 0 for main/ext, 1 for sub
-        // - credentials: user and password as query parameters
-        const streamName = profile === "main" ? "main" : profile === "sub" ? "sub" : "ext";
-        const streamType = profile === "sub" ? 1 : 0; // 0 for main/ext, 1 for sub
-        const rtmpId = `${streamName}.bcs`; // ID (main.bcs, sub.bcs, ext.bcs)
-
-        // Use channel directly (0-based) in path, matching reolink_aio behavior
-        const rtmpPath = `/bcs/channel${ch}_${streamName}.bcs`;
-
-        // URL without authentication
-        const rtmpUrl = new URL(`rtmp://${this.host}:${rtmpPort}${rtmpPath}`);
-        const params = rtmpUrl.searchParams;
-        params.set("channel", ch.toString());
-        params.set("stream", streamType.toString());
-
-        // URL with authentication
-        const rtmpUrlWithAuth = new URL(`rtmp://${this.host}:${rtmpPort}${rtmpPath}`);
-        const paramsWithAuth = rtmpUrlWithAuth.searchParams;
-        paramsWithAuth.set("channel", ch.toString());
-        paramsWithAuth.set("stream", streamType.toString());
-        paramsWithAuth.set("user", this.username);
-        paramsWithAuth.set("password", this.password);
-
-        rtmpStreams.push({
-          name: `RTMP ${rtmpId}`,
-          id: rtmpId,
-          container: "rtmp",
-          channel: ch,
-          profile,
-          url: includeAuth ? rtmpUrlWithAuth.toString() : rtmpUrl.toString(),
-          urlWithAuth: rtmpUrlWithAuth.toString(),
-          path: rtmpPath,
-          port: rtmpPort,
-          streamType,
-          metadata,
-        });
+    const pushNative = (params: {
+      channel: number;
+      profile: StreamProfile;
+      metadata?: StreamMetadata;
+      lens: "wide" | "telephoto";
+      id: string;
+      streamName: string;
+      nativeVariant?: Exclude<NativeVideoStreamVariant, "default">;
+    }): void => {
+      const nativeUrl = new URL(`baichuan://${this.host}/channel/${params.channel}/profile/${params.profile}`);
+      const nativeUrlWithAuth = new URL(`baichuan://${this.host}/channel/${params.channel}/profile/${params.profile}`);
+      if (params.nativeVariant) {
+        nativeUrl.searchParams.set("variant", params.nativeVariant);
+        nativeUrlWithAuth.searchParams.set("variant", params.nativeVariant);
       }
-
-      // Build native Baichuan stream option
-      // Native streams use BaichuanVideoStream and are identified by profile
-      const nativeUrl = new URL(`baichuan://${this.host}/channel/${ch}/profile/${profile}`);
-      const nativeUrlWithAuth = new URL(`baichuan://${this.host}/channel/${ch}/profile/${profile}`);
       nativeUrlWithAuth.username = this.username;
       nativeUrlWithAuth.password = this.password;
 
       nativeStreams.push({
-        name: `Native ${profile}`,
-        id: `native_${profile}`,
-        container: "rtp", // Special container type for native Baichuan streams
-        channel: ch,
-        profile,
+        name: `Native ${params.profile}`,
+        id: params.id,
+        container: "rtp",
+        channel: params.channel,
+        profile: params.profile,
+        streamName: params.streamName,
+        lens: params.lens,
+        ...(params.nativeVariant ? { nativeVariant: params.nativeVariant } : {}),
         url: nativeUrl.toString(),
         urlWithAuth: nativeUrlWithAuth.toString(),
-        metadata,
+        ...(params.metadata ? { metadata: params.metadata } : {}),
+      });
+    };
+
+    const buildStandardStreams = (params: {
+      lens: "wide" | "telephoto";
+      channel: number;
+      metadatas: StreamMetadata[];
+      includeRtsp: boolean;
+      includeRtmp: boolean;
+      includeNative: boolean;
+      nativeIdPrefix: string;
+    }): void => {
+      for (const metadata of params.metadatas) {
+        const profile = metadata.profile as StreamProfile;
+
+        // Preserve existing behavior: multifocal skips ext (and generally exposes only main/sub).
+        if (isMultiFocal && profile === "ext") continue;
+
+        if (params.includeRtsp && profile !== "ext") {
+          const streamName = profile === "main" ? "main" : "sub";
+          pushRtsp({ channel: params.channel, profile, streamName, metadata, lens: params.lens });
+        }
+
+        if (params.includeRtmp) {
+          const streamName = profile === "main" ? "main" : profile === "sub" ? "sub" : "ext";
+          pushRtmp({ channel: params.channel, profile, streamName, metadata, lens: params.lens });
+        }
+
+        if (params.includeNative) {
+          if (isMultiFocal && profile !== "main" && profile !== "sub") continue;
+          pushNative({
+            channel: params.channel,
+            profile,
+            metadata,
+            lens: params.lens,
+            id: `${params.nativeIdPrefix}_${profile}`,
+            streamName: profile,
+          });
+        }
+      }
+    };
+
+    if (wantWide) {
+      buildStandardStreams({
+        lens: "wide",
+        channel: ch,
+        metadatas: streams,
+        includeRtsp: rtspEnabled,
+        includeRtmp: rtmpEnabled,
+        includeNative: true,
+        nativeIdPrefix: "native",
+      });
+    }
+
+    // Add TrackMix tele streams when available (direct camera, channel 1).
+    if (wantTele && isMultiFocal && teleStreams.length > 0) {
+      buildStandardStreams({
+        lens: "telephoto",
+        channel: 1,
+        metadatas: teleStreams,
+        includeRtsp: rtspEnabled,
+        includeRtmp: rtmpEnabled,
+        includeNative: true,
+        nativeIdPrefix: "native_tele",
+      });
+    }
+
+    // Add TrackMix tele stream variant for NVR/Hub.
+    // On many NVR/Hub firmwares the tele lens is exposed as RTSP `.../Preview_<NN>_autotrack`.
+    if (wantTele && isMultiFocal && onNvr && rtspEnabled) {
+      const rtspVariant: Exclude<NativeVideoStreamVariant, "default"> = lensVariant === "telephoto" ? "telephoto" : "autotrack";
+      const mainMeta = streams.find((s) => s.profile === "main") ?? streams[0];
+      const subMeta = streams.find((s) => s.profile === "sub") ?? streams[0];
+
+      if (mainMeta) {
+        pushRtsp({
+          channel: ch,
+          profile: "main",
+          streamName: rtspVariant,
+          metadata: mainMeta,
+          lens: "telephoto",
+          forceNoEncodingPrefix: true,
+        });
+      } else {
+        pushRtsp({
+          channel: ch,
+          profile: "main",
+          streamName: rtspVariant,
+          lens: "telephoto",
+          forceNoEncodingPrefix: true,
+        });
+      }
+
+      // Best-effort: some firmwares also expose a sub variant (e.g. Preview_<NN>_autotrack_sub).
+      if (streams.some((s) => s.profile === "sub")) {
+        if (subMeta) {
+          pushRtsp({
+            channel: ch,
+            profile: "sub",
+            streamName: `${rtspVariant}_sub`,
+            metadata: subMeta,
+            lens: "telephoto",
+            forceNoEncodingPrefix: true,
+          });
+        } else {
+          pushRtsp({
+            channel: ch,
+            profile: "sub",
+            streamName: `${rtspVariant}_sub`,
+            lens: "telephoto",
+            forceNoEncodingPrefix: true,
+          });
+        }
+      }
+    }
+
+    if (wantTele && isMultiFocal && onNvr && rtmpEnabled) {
+      const mainMeta = streams.find((s) => s.profile === "main") ?? streams[0];
+      // Best-effort: some firmwares expose RTMP BCS autotrack as channel<ch>_autotrack.bcs
+      if (mainMeta) {
+        pushRtmp({ channel: ch, profile: "main", streamName: "autotrack", metadata: mainMeta, lens: "telephoto" });
+      } else {
+        pushRtmp({ channel: ch, profile: "main", streamName: "autotrack", lens: "telephoto" });
+      }
+      const subMeta = streams.find((s) => s.profile === "sub") ?? streams[0];
+      // And/or a lower quality variant.
+      if (subMeta) {
+        pushRtmp({ channel: ch, profile: "sub", streamName: "autotrack", metadata: subMeta, lens: "telephoto" });
+      } else {
+        pushRtmp({ channel: ch, profile: "sub", streamName: "autotrack", lens: "telephoto" });
+      }
+    }
+
+    // Add TrackMix native tele stream variant for NVR/Hub.
+    // Many firmwares expose the tele lens via a different Baichuan streamType (2/3).
+    if (wantTele && isMultiFocal && onNvr) {
+      const nativeVariant: Exclude<NativeVideoStreamVariant, "default"> = lensVariant === "telephoto" ? "telephoto" : "autotrack";
+
+      const mainMeta = streams.find((s) => s.profile === "main") ?? streams[0];
+      const subMeta = streams.find((s) => s.profile === "sub") ?? streams[0];
+
+      pushNative({
+        channel: ch,
+        profile: "main",
+        ...(mainMeta ? { metadata: mainMeta } : {}),
+        lens: "telephoto",
+        id: `native_${nativeVariant}_main`,
+        streamName: nativeVariant,
+        nativeVariant,
+      });
+
+      pushNative({
+        channel: ch,
+        profile: "sub",
+        ...(subMeta ? { metadata: subMeta } : {}),
+        lens: "telephoto",
+        id: `native_${nativeVariant}_sub`,
+        streamName: nativeVariant,
+        nativeVariant,
       });
     }
 
@@ -7338,14 +8213,14 @@ ${xmlDateTimePayload("endTime", end)}
       const isEventLike = (r: Pick<EnrichedRecordingFile, "hasMotion" | "hasPerson" | "hasVehicle" | "hasAnimal" | "hasFace" | "hasDoorbell" | "hasPackage" | "hasRf" | "hasOther">): boolean =>
         Boolean(
           r.hasMotion ||
-            r.hasPerson ||
-            r.hasVehicle ||
-            r.hasAnimal ||
-            r.hasFace ||
-            r.hasDoorbell ||
-            r.hasPackage ||
-            r.hasRf ||
-            r.hasOther,
+          r.hasPerson ||
+          r.hasVehicle ||
+          r.hasAnimal ||
+          r.hasFace ||
+          r.hasDoorbell ||
+          r.hasPackage ||
+          r.hasRf ||
+          r.hasOther,
         );
 
       const mergeRecordTypes = (a?: string, b?: string): string | undefined => {

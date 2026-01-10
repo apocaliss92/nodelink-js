@@ -5,6 +5,8 @@ import type { BaichuanClientOptions } from "../../client/BaichuanClient";
 import type { StreamProfile } from "./types";
 import { ReolinkBaichuanApi } from "./ReolinkBaichuanApi";
 
+type NativeVariantParam = "default" | "autotrack" | "telephoto";
+
 export type BaichuanEndpointsServerOptions = {
   /** Port to listen on. */
   listenPort: number;
@@ -28,6 +30,14 @@ function parseProfile(v: string | null): StreamProfile {
   const p = (v ?? "sub").trim();
   if (p === "main" || p === "sub" || p === "ext") return p;
   throw new Error("Invalid profile (must be main, sub, or ext)");
+}
+
+function parseNativeVariant(v: string | null): NativeVariantParam {
+  const s = (v ?? "default").trim().toLowerCase();
+  if (s === "" || s === "default") return "default";
+  if (s === "autotrack") return "autotrack";
+  if (s === "telephoto") return "telephoto";
+  throw new Error("Invalid variant (must be default, autotrack, or telephoto)");
 }
 
 /**
@@ -66,13 +76,14 @@ export function createBaichuanEndpointsServer(opts: BaichuanEndpointsServerOptio
       if (u.pathname === "/stream") {
         const channel = parseIntParam(u.searchParams.get("channel"), 0);
         const profile = parseProfile(u.searchParams.get("profile"));
+        const variant = parseNativeVariant(u.searchParams.get("variant"));
         if (!Number.isFinite(channel) || channel < 0) {
           res.statusCode = 400;
           res.end("Invalid channel");
           return;
         }
 
-        const key = `${channel}:${profile}`;
+        const key = `${channel}:${profile}:${variant}`;
         const cached = rtspServers.get(key);
         if (cached) {
           res.setHeader("Content-Type", "application/json");
@@ -83,7 +94,8 @@ export function createBaichuanEndpointsServer(opts: BaichuanEndpointsServerOptio
         const rtsp = await api.createRtspStream(channel, profile, {
           listenHost: rtspListenHost,
           listenPort: 0,
-          path: `/stream/${channel}/${profile}`,
+          path: `/stream/${channel}/${profile}${variant === "default" ? "" : `/${variant}`}`,
+          ...(variant === "default" ? {} : { variant }),
         });
 
         const rtspUrl = rtsp.getRtspUrl();

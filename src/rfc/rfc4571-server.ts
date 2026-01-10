@@ -1,6 +1,6 @@
 import type net from 'node:net';
 import netImpl from 'node:net';
-import type { ReolinkBaichuanApi } from '../reolink/baichuan/ReolinkBaichuanApi';
+import type { ReolinkBaichuanApi, NativeVideoStreamVariant } from '../reolink/baichuan/ReolinkBaichuanApi';
 import type { StreamProfile } from '../reolink/baichuan/types';
 import { BaichuanVideoStream } from '../baichuan/stream/BaichuanVideoStream';
 import { CompositeStream, type CompositeStreamPipOptions } from '../multifocal/compositeStream';
@@ -21,6 +21,8 @@ export interface Rfc4571TcpServerOptions {
   channel?: number;
   /** Stream profile. For composite streams, this is used for both wider and tele streams. */
   profile: StreamProfile;
+  /** Native-only: TrackMix tele/autotrack variants (usually on NVR/Hub). */
+  variant?: NativeVideoStreamVariant;
   logger: Console;
 
   host?: string;
@@ -77,6 +79,7 @@ export async function createRfc4571TcpServer(
     api,
     channel,
     profile,
+    variant,
     logger,
     expectedVideoType,
     host = '127.0.0.1',
@@ -93,10 +96,21 @@ export async function createRfc4571TcpServer(
   } = options;
 
   const isComposite = channel === undefined;
+  const variantSuffix = variant && variant !== 'default' ? ` variant=${variant}` : '';
   const logPrefix = isComposite 
-    ? `[native-rfc4571 composite profile=${profile}]`
-    : `[native-rfc4571 ch=${channel} profile=${profile}]`;
-  const log = (message: string) => logger.warn(`${logPrefix} ${message}`);
+    ? `[native-rfc4571 composite profile=${profile}${variantSuffix}]`
+    : `[native-rfc4571 ch=${channel} profile=${profile}${variantSuffix}]`;
+  const log = (message: string) => {
+    try {
+      if (logger?.warn) {
+        logger.warn(`${logPrefix} ${message}`);
+      } else if (logger?.log) {
+        logger.log(`${logPrefix} ${message}`);
+      }
+    } catch {
+      // Ignore logging errors if logger is not properly initialized
+    }
+  };
 
   log(
     `starting (host=${host} videoPT=${videoPayloadType} audioPT=${audioPayloadType} expectedVideoType=${expectedVideoType ?? 'n/a'} keyframeTimeoutMs=${keyframeTimeoutMs} uptimeRestartMs=${uptimeRestartMs} idleTeardownMs=${idleTeardownMs} composite=${isComposite})`,
@@ -137,6 +151,7 @@ export async function createRfc4571TcpServer(
       api,
       channel,
       profile,
+      variant,
       logger,
     });
 

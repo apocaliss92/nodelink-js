@@ -155,6 +155,14 @@ async function main(): Promise<void> {
     console.log(`Completed in ${dt}ms: ${JSON.stringify(minimal, null, 2)}`);
   }
 
+  console.log("\n" + "-".repeat(80));
+  console.log("NVR device groups (multifocal detection)");
+  console.log("-".repeat(80));
+  {
+    const grouped = await api.getNvrDeviceGroups({ channels, timeoutMs: 5_000 });
+    console.log(JSON.stringify(grouped, null, 2));
+  }
+
   console.log("\n" + "=".repeat(80));
   console.log("Testing different strategies to get device info");
   console.log("=".repeat(80) + "\n");

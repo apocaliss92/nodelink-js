@@ -88,6 +88,17 @@ export type CgiGetEncResponse = ReolinkCmdResponseExt<CgiEncValue> & {
   range?: JsonValue;
 };
 
+export type CgiGetRtspUrlValue = {
+  rtspUrl?: string;
+  url?: string;
+  RtspUrl?: string;
+  rtsp?: string;
+} & Record<string, JsonValue>;
+
+export type CgiGetRtspUrlResponse = ReolinkCmdResponseExt<CgiGetRtspUrlValue> & {
+  cmd: "GetRtspUrl";
+};
+
 export type CgiAbilityLeaf = {
   permit: number;
   ver: number;
@@ -597,6 +608,34 @@ export class ReolinkCgiApi {
     return await this.client.callMany<TValue>(cmds);
   }
 
+  private static findFirstRtspUrl(v: unknown, depth = 0): string | undefined {
+    if (depth > 6) return undefined;
+    if (typeof v === "string") {
+      const s = v.trim();
+      return s.startsWith("rtsp://") ? s : undefined;
+    }
+    if (!v || typeof v !== "object") return undefined;
+    if (Array.isArray(v)) {
+      for (const item of v) {
+        const found = ReolinkCgiApi.findFirstRtspUrl(item, depth + 1);
+        if (found) return found;
+      }
+      return undefined;
+    }
+
+    const obj = v as Record<string, unknown>;
+    const directKeys = ["rtspUrl", "RtspUrl", "rtsp", "url"];
+    for (const k of directKeys) {
+      const found = ReolinkCgiApi.findFirstRtspUrl(obj[k], depth + 1);
+      if (found) return found;
+    }
+    for (const k of Object.keys(obj)) {
+      const found = ReolinkCgiApi.findFirstRtspUrl(obj[k], depth + 1);
+      if (found) return found;
+    }
+    return undefined;
+  }
+
   // Common wrappers
   async GetDevInfo(channel?: number): Promise<Array<ReolinkCmdResponseExt<CgiGetDevInfoValue>>> {
     const param = channel == null ? {} : { channel };
@@ -677,6 +716,27 @@ export class ReolinkCgiApi {
   async GetEnc(channel?: number): Promise<Array<ReolinkCmdResponseExt<CgiEncValue>>> {
     const param = channel == null ? {} : { channel };
     return await this.call("GetEnc", param, 1);
+  }
+
+  /**
+   * Return an RTSP URL for the given channel (NVR-side).
+   * Uses the exact request body shape:
+   * `[{"cmd":"GetRtspUrl","action":0,"param":{"channel":<channel>}}]`.
+   */
+  async GetRtspUrl(channel: number): Promise<Array<CgiGetRtspUrlResponse>> {
+    const body: ReolinkCmdRequest[] = [{ cmd: "GetRtspUrl", action: 0, param: { channel } }];
+    return (await this.callMany(body)) as Array<CgiGetRtspUrlResponse>;
+  }
+
+  /** Convenience helper: extracts the first `rtsp://...` from GetRtspUrl response. */
+  async getRtspUrl(channel: number): Promise<string> {
+    const rsp = await this.GetRtspUrl(channel);
+    const value = rsp?.[0]?.value;
+    const url = ReolinkCgiApi.findFirstRtspUrl(value);
+    if (!url) {
+      throw new Error(`GetRtspUrl: RTSP URL not found in response (channel=${channel})`);
+    }
+    return url;
   }
 
   async GetAiState(channel?: number): Promise<Array<ReolinkCmdResponseExt<CgiAiStateValue>>> {
@@ -1042,8 +1102,19 @@ export class ReolinkCgiApi {
   }
 
   /** CGI snapshot via `cmd=Snap` (binary JPEG). */
-  async jpegSnapshot(channel: number, timeoutMs = 10_000): Promise<Buffer> {
-    return await this.client.snap(channel, { timeoutMs });
+  async jpegSnapshot(
+    channel: number,
+    opts?: {
+      timeoutMs?: number;
+      snapType?: "main" | "sub";
+      iLogicChannel?: number;
+    },
+  ): Promise<Buffer> {
+    return await this.client.snap(channel, {
+      ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+      ...(opts?.snapType !== undefined ? { snapType: opts.snapType } : {}),
+      ...(opts?.iLogicChannel !== undefined ? { iLogicChannel: opts.iLogicChannel } : {}),
+    });
   }
 
   async getSiren(channel: number): Promise<{ enabled: boolean }> {

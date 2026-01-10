@@ -1,7 +1,8 @@
-import { ReolinkBaichuanApi, DUAL_LENS_MODELS } from "./baichuan/ReolinkBaichuanApi";
 import type { BaichuanClientOptions } from "../client/BaichuanClient";
-import type { ReolinkDeviceInfo } from "./types";
 import type { Logger } from "../debug/DebugConfig";
+import { DUAL_LENS_MODELS, isDualLenseModel, ReolinkBaichuanApi } from "./baichuan/ReolinkBaichuanApi";
+import { discoverViaUdpBroadcast } from "./discovery";
+import type { ReolinkDeviceInfo } from "./types";
 
 export type BaichuanTransport = "tcp" | "udp";
 
@@ -28,6 +29,16 @@ export type AutoDetectResult = {
   /** If `transport === "udp"`, the UDP discovery method that succeeded. */
   udpDiscoveryMethod?: BaichuanClientOptions["udpDiscoveryMethod"];
   deviceInfo?: Partial<ReolinkDeviceInfo>;
+  /**
+   * Best-effort host network info (from Baichuan).
+   * Typically includes ip/mac and sometimes link type.
+   */
+  hostNetworkInfo?: {
+    ip?: string;
+    mac?: string;
+    /** Active link / link type when available (varies by firmware). */
+    activeLink?: string;
+  };
   channelNum?: number;
   api: ReolinkBaichuanApi; // The API instance that was successfully used for detection
 };
@@ -47,6 +58,40 @@ export function maskUid(uid: string): string {
   const v = uid.trim();
   if (v.length <= 8) return v;
   return `${v.slice(0, 4)}…${v.slice(-4)}`;
+}
+
+async function resolveHostToIp(host: string): Promise<string | undefined> {
+  try {
+    // Avoid pulling in dns for plain IPv4/IPv6 literals.
+    // Quick heuristic: if it contains letters, it's likely a hostname.
+    if (!/[a-z]/i.test(host)) return host;
+    const { lookup } = await import("node:dns/promises");
+    const res = await lookup(host);
+    return res?.address ?? host;
+  } catch {
+    return host;
+  }
+}
+
+async function discoverUidForHost(host: string, logger?: Logger): Promise<string | undefined> {
+  try {
+    const ip = await resolveHostToIp(host);
+    const options = {
+      enableUdpDiscovery: true,
+      udpBroadcastTimeoutMs: 1500,
+      ...(logger ? { logger } : {}),
+    };
+    const devices = await discoverViaUdpBroadcast(options);
+    const match = devices.find((d) => d.host === ip || d.host === host);
+    const uid = normalizeUid(match?.uid);
+    if (uid) {
+      logger?.log?.(`[AutoDetect] UID discovered via UDP broadcast: ${maskUid(uid)}`);
+      return uid;
+    }
+  } catch {
+    // ignore
+  }
+  return undefined;
 }
 
 /**
@@ -169,6 +214,12 @@ function attachErrorHandler(api: ReolinkBaichuanApi, transport: BaichuanTranspor
 export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<AutoDetectResult> {
   const { host, uid, logger } = inputs;
 
+  // Best-effort: discover UID if not provided (useful for BCUDP/battery cams).
+  // This is cheap and non-invasive (UDP broadcast).
+  // const discoveredUid = uid ? undefined : await discoverUidForHost(host, logger);
+  // const effectiveUid = normalizeUid(uid) ?? discoveredUid;
+  const effectiveUid = normalizeUid(uid);
+
   // Ping the host first to verify it's reachable
   logger?.log?.(`[AutoDetect] Pinging ${host}...`);
   const isReachable = await pingHost(host);
@@ -188,6 +239,7 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
     // Get device info to check device type
     const deviceInfo = await tcpApi.getInfo();
     const capabilities = await tcpApi.getDeviceCapabilities();
+    // const hostNetworkInfo = await tcpApi.getNetworkInfo(undefined, { timeoutMs: 1200 }).catch(() => undefined);
     const channelNum = capabilities?.support?.channelNum ?? 1;
     const model = deviceInfo.type?.trim();
 
@@ -195,7 +247,7 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
 
     // Check if it's a multi-focal device using the dual lens model map or channelNum fallback
     const normalizedModel = model ? model.trim() : undefined;
-    const isMultifocalByModel = normalizedModel ? DUAL_LENS_MODELS.has(normalizedModel) : false;
+    const isMultifocalByModel = normalizedModel ? isDualLenseModel(normalizedModel) : false;
 
     // Also check if channelNum suggests dual lens (2-3 channels)
     // Handle both number and string types for channelNum
@@ -212,8 +264,9 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
       return {
         type: "multifocal",
         transport: "tcp",
-        uid: uid || "",
+        uid: effectiveUid || uid || "",
         deviceInfo,
+        // ...(hostNetworkInfo ? { hostNetworkInfo } : {}),
         channelNum,
         api: tcpApi,
       };
@@ -226,8 +279,9 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
       return {
         type: "nvr",
         transport: "tcp",
-        uid: uid || "",
+        uid: effectiveUid || uid || "",
         deviceInfo,
+        // ...(hostNetworkInfo ? { hostNetworkInfo } : {}),
         channelNum,
         api: tcpApi,
       };
@@ -239,8 +293,9 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
     return {
       type: "camera",
       transport: "tcp",
-      uid: uid || "",
+      uid: effectiveUid || uid || "",
       deviceInfo,
+      // ...(hostNetworkInfo ? { hostNetworkInfo } : {}),
       channelNum: 1,
       api: tcpApi,
     };
@@ -260,11 +315,23 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
     }
 
     logger?.log?.(`[AutoDetect] TCP failed, trying UDP (battery camera)...`);
-    const normalizedUid = normalizeUid(uid);
+    let normalizedUid = effectiveUid;
     if (!normalizedUid) {
-      throw new Error(
-        `TCP connection failed and device likely requires UDP/BCUDP. UID is required for battery cameras (ip=${host}).`
-      );
+      logger?.log?.(`[AutoDetect] UID not provided; attempting UDP broadcast discovery for UID...`);
+      const discovered = await discoverUidForHost(host, logger);
+      if (!discovered) {
+        throw new Error(
+          `TCP connection failed and device likely requires UDP/BCUDP. UID is required for battery cameras (ip=${host}).`
+        );
+      }
+      // Continue with discovered UID.
+      const normalizedDiscovered = normalizeUid(discovered);
+      if (!normalizedDiscovered) {
+        throw new Error(
+          `TCP connection failed and device likely requires UDP/BCUDP, but UID discovery returned an empty UID (ip=${host}).`
+        );
+      }
+      normalizedUid = normalizedDiscovered;
     }
 
     try {
@@ -274,13 +341,14 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
       ): Promise<AutoDetectResult> => {
         const deviceInfo = await udpApi.getInfo();
         const capabilities = await udpApi.getDeviceCapabilities();
+        const hostNetworkInfo = await udpApi.getNetworkInfo(undefined, { timeoutMs: 1200 }).catch(() => undefined);
         const channelNum = capabilities?.support?.channelNum ?? 1;
         const model = deviceInfo.type?.trim();
 
         // Check if it's a multi-focal device using the dual lens model map or channelNum fallback
         // Multi-focal devices can also be UDP (battery multi-focal cameras)
         const normalizedModel = model ? model.trim() : undefined;
-        const isMultifocalByModel = normalizedModel ? DUAL_LENS_MODELS.has(normalizedModel) : false;
+        const isMultifocalByModel = normalizedModel ? isDualLenseModel(normalizedModel) : false;
 
         // Also check if channelNum suggests dual lens (2-3 channels)
         // Handle both number and string types for channelNum
@@ -301,6 +369,7 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
             uid: normalizedUid,
             udpDiscoveryMethod,
             deviceInfo,
+            ...(hostNetworkInfo ? { hostNetworkInfo } : {}),
             channelNum,
             api: udpApi,
           };
@@ -314,6 +383,7 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
           uid: normalizedUid,
           udpDiscoveryMethod,
           deviceInfo,
+          ...(hostNetworkInfo ? { hostNetworkInfo } : {}),
           channelNum: 1,
           api: udpApi,
         };

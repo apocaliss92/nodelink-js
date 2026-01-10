@@ -240,7 +240,17 @@ export class ReolinkHttpClient {
    *
    * This is a binary endpoint (not JSON). Requires a valid token.
    */
-  async snap(channel: number, opts?: { timeoutMs?: number; rs?: string }): Promise<Buffer> {
+  async snap(
+    channel: number,
+    opts?: {
+      timeoutMs?: number;
+      rs?: string;
+      /** Optional snapshot quality selector used by some firmwares ("main" | "sub"). */
+      snapType?: "main" | "sub";
+      /** Optional logic channel for dual-lens models behind NVR/Hub (e.g. TrackMix tele lens). */
+      iLogicChannel?: number;
+    },
+  ): Promise<Buffer> {
     await this.login();
     if (!this.token) throw new Error("Missing token after login");
 
@@ -249,6 +259,8 @@ export class ReolinkHttpClient {
       cmd: "Snap",
       channel,
       rs,
+      snapType: opts?.snapType,
+      iLogicChannel: opts?.iLogicChannel,
       token: this.token,
     });
 

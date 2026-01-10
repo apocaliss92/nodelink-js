@@ -10,7 +10,7 @@ import { EventEmitter } from "node:events";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { StreamProfile } from "../../reolink/baichuan/types";
-import type { ReolinkBaichuanApi } from "../../reolink/baichuan/ReolinkBaichuanApi";
+import type { NativeVideoStreamVariant, ReolinkBaichuanApi } from "../../reolink/baichuan/ReolinkBaichuanApi";
 import type { EncryptionProtocol } from "../../protocol/crypto";
 import { ensureDumpDir, type Logger } from "../../debug/DebugConfig";
 import { BcMediaCodec } from "./BcMediaCodec";
@@ -146,6 +146,8 @@ export interface BaichuanVideoStreamOptions {
   api?: ReolinkBaichuanApi; // Optional API for requesting stream
   channel: number;
   profile: StreamProfile; // "main" | "sub" | "ext"
+  /** Native-only: TrackMix tele/autotrack variants (usually on NVR/Hub). */
+  variant?: NativeVideoStreamVariant | undefined;
   logger?: Logger;
 }
 
@@ -180,6 +182,7 @@ export class BaichuanVideoStream extends EventEmitter<{
   private api: ReolinkBaichuanApi | undefined;
   private channel: number;
   private profile: StreamProfile;
+  private variant: NativeVideoStreamVariant;
   private logger: Logger | undefined;
   private active = false;
   private videoFrameHandler: ((frame: BaichuanFrame) => void) | undefined;
@@ -260,9 +263,16 @@ export class BaichuanVideoStream extends EventEmitter<{
     this.api = options.api;
     this.channel = options.channel;
     this.profile = options.profile;
+    this.variant = options.variant ?? "default";
     this.logger = options.logger;
-    // Stream type: 0 for main/ext, 1 for sub
-    this.expectedStreamType = this.profile === "sub" ? 1 : 0;
+    // Stream type:
+    // - default: 0 for main/ext, 1 for sub
+    // - autotrack/telephoto: 2 for main, 3 for sub
+    this.expectedStreamType =
+      this.variant === "default" ? (this.profile === "sub" ? 1 : 0) : this.profile === "sub" ? 3 : 2;
+    this.logger?.log(
+      `[BaichuanVideoStream] constructor: channel=${this.channel}, profile=${this.profile}, variant=${this.variant}, expectedStreamType=${this.expectedStreamType}`
+    );
     this.bcMediaCodec = new BcMediaCodec(false, this.logger); // non-strict mode for error recovery
     // Debug is configured on the client; the library must not read env vars.
     const dbg = this.client.getDebugConfig();
@@ -356,16 +366,18 @@ export class BaichuanVideoStream extends EventEmitter<{
 
       // Best-effort stop/start: some firmwares behave better with a full reset.
       try {
-        await this.api.stopVideoStream(this.channel, this.profile);
+        await this.api.stopVideoStream(this.channel, this.profile, { variant: this.variant });
       } catch {
         // ignore
       }
 
-      await this.api.startVideoStream(this.channel, this.profile);
+      await this.api.startVideoStream(this.channel, this.profile, { variant: this.variant });
 
       try {
-        const getMsgNum = (this.api as any).getActiveVideoMsgNum as ((ch: number, p: StreamProfile) => number | undefined) | undefined;
-        this.activeMsgNum = typeof getMsgNum === "function" ? getMsgNum(this.channel, this.profile) : undefined;
+        const getMsgNum = (this.api as any).getActiveVideoMsgNumWithVariant as
+          | ((ch: number, p: StreamProfile, v?: NativeVideoStreamVariant) => number | undefined)
+          | undefined;
+        this.activeMsgNum = typeof getMsgNum === "function" ? getMsgNum(this.channel, this.profile, this.variant) : undefined;
       } catch {
         this.activeMsgNum = undefined;
       }
@@ -396,14 +408,51 @@ export class BaichuanVideoStream extends EventEmitter<{
     // Request the video stream if the API is available
     if (this.api) {
       try {
-        await this.api.startVideoStream(this.channel, this.profile);
+        // Best-effort stop: stop any existing stream (with any variant) on this channel/profile
+        // This ensures we start fresh, especially important when switching between variants (e.g., default to autotrack)
+        // For TrackMix on NVR, we need to stop the default (wide) stream before starting autotrack (telephoto)
+        if (this.variant !== "default") {
+          this.logger?.log(
+            `[BaichuanVideoStream] Stopping default (wide) stream before starting variant stream: channel=${this.channel}, profile=${this.profile}, variant=${this.variant}`
+          );
+          try {
+            await this.api.stopVideoStream(this.channel, this.profile, { variant: "default" });
+            this.logger?.log(`[BaichuanVideoStream] Successfully stopped default stream`);
+          } catch (e) {
+            this.logger?.log(`[BaichuanVideoStream] Error stopping default stream (may not exist): ${e instanceof Error ? e.message : String(e)}`);
+            // ignore errors when stopping default variant (may not exist)
+          }
+        }
+        
+        // Also stop the variant stream if it's already running (to ensure clean restart)
+        try {
+          await this.api.stopVideoStream(this.channel, this.profile, { variant: this.variant });
+          if (this.variant !== "default") {
+            this.logger?.log(`[BaichuanVideoStream] Successfully stopped existing variant stream`);
+          }
+        } catch (e) {
+          if (this.variant !== "default") {
+            this.logger?.log(`[BaichuanVideoStream] Error stopping variant stream (may not exist): ${e instanceof Error ? e.message : String(e)}`);
+          }
+          // ignore errors when stopping current variant (may not exist)
+        }
+        
+        // Small delay to ensure the device has processed the stop commands
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        this.logger?.log(
+          `[BaichuanVideoStream] start() calling startVideoStream: channel=${this.channel}, profile=${this.profile}, variant=${this.variant}`
+        );
+        await this.api.startVideoStream(this.channel, this.profile, { variant: this.variant });
 
         // When multiple streams are active on the same Baichuan client, frames for
         // different streams can interleave. Filter by msgNum (if available) and
         // streamType to prevent cross-stream corruption.
         try {
-          const getMsgNum = (this.api as any).getActiveVideoMsgNum as ((ch: number, p: StreamProfile) => number | undefined) | undefined;
-          this.activeMsgNum = typeof getMsgNum === "function" ? getMsgNum(this.channel, this.profile) : undefined;
+          const getMsgNum = (this.api as any).getActiveVideoMsgNumWithVariant as
+            | ((ch: number, p: StreamProfile, v?: NativeVideoStreamVariant) => number | undefined)
+            | undefined;
+          this.activeMsgNum = typeof getMsgNum === "function" ? getMsgNum(this.channel, this.profile, this.variant) : undefined;
         } catch {
           this.activeMsgNum = undefined;
         }
@@ -427,17 +476,38 @@ export class BaichuanVideoStream extends EventEmitter<{
 
       // Filter by expected stream type (main/ext=0, sub=1). This is critical when
       // main and sub are active concurrently on the same client connection.
-      if (frame.header.streamType !== this.expectedStreamType) return;
+      // Log streamType mismatch for debugging (only first few times to avoid spam)
+      if (frame.header.streamType !== this.expectedStreamType) {
+        const frameCount = (this as any)._streamTypeMismatchCount = ((this as any)._streamTypeMismatchCount || 0) + 1;
+        if (frameCount <= 5) {
+          this.logger?.log(
+            `[BaichuanVideoStream] Frame streamType mismatch: received=${frame.header.streamType}, expected=${this.expectedStreamType}, channel=${this.channel}, profile=${this.profile}, variant=${this.variant} (frame discarded)`
+          );
+        }
+        return;
+      }
 
       // Filter by msgNum if we were able to capture it from the API.
       // Some firmwares reuse streamType but keep msgNum distinct per stream.
-      if (this.activeMsgNum !== undefined && frame.header.msgNum !== this.activeMsgNum) return;
-      
+      if (this.activeMsgNum !== undefined && frame.header.msgNum !== this.activeMsgNum) {
+        const frameCount = (this as any)._msgNumMismatchCount = ((this as any)._msgNumMismatchCount || 0) + 1;
+        if (frameCount <= 5) {
+          this.logger?.log(
+            `[BaichuanVideoStream] Frame msgNum mismatch: received=${frame.header.msgNum}, expected=${this.activeMsgNum}, channel=${this.channel}, profile=${this.profile}, variant=${this.variant} (frame discarded)`
+          );
+        }
+        return;
+      }
+
       totalFramesReceived++;
 
       const dbg = this.client.getDebugConfig();
       const rtspDebug = dbg.debugRtsp;
       if (totalFramesReceived === 1) {
+        // Always log first frame info for debugging variant issues
+        this.logger?.log(
+          `[BaichuanVideoStream] First frame accepted: streamType=${frame.header.streamType}, expected=${this.expectedStreamType}, msgNum=${frame.header.msgNum}, activeMsgNum=${this.activeMsgNum}, channelId=${frame.header.channelId}, bodyLen=${frame.body.length}, variant=${this.variant}`
+        );
         if (rtspDebug) {
           this.logger?.log(
             `[BaichuanVideoStream] First cmd_id=3 frame received (bodyLen: ${frame.body.length}, channelId: ${frame.header.channelId})`
@@ -500,15 +570,15 @@ export class BaichuanVideoStream extends EventEmitter<{
         const infoJson =
           writeInfo
             ? JSON.stringify(
-                {
-                  note: "Chunks fed into the BcMedia decoder (after XML stripping/alignment).",
-                  profile: this.profile,
-                  channel: this.channel,
-                  encKind: this.client.enc.kind,
-                },
-                null,
-                2
-              )
+              {
+                note: "Chunks fed into the BcMedia decoder (after XML stripping/alignment).",
+                profile: this.profile,
+                channel: this.channel,
+                encKind: this.client.enc.kind,
+              },
+              null,
+              2
+            )
             : "";
 
         // Non-blocking: sync FS calls can starve BCUDP ACK/keepalive and abort the stream.
@@ -520,16 +590,16 @@ export class BaichuanVideoStream extends EventEmitter<{
         });
         this.dumpChunkIdx++;
       }
-      
+
       const mediaPackets = this.bcMediaCodec.decode(dataAfterXml);
       totalMediaPackets += mediaPackets.length;
-      
+
       // Count packet types
       const packetTypes = new Map<string, number>();
       for (const pkt of mediaPackets) {
         packetTypes.set(pkt.type, (packetTypes.get(pkt.type) || 0) + 1);
       }
-      
+
       // Log detailed info for first few frames and periodically
       if (totalFramesReceived <= 10 || totalFramesReceived % 20 === 0) {
         const remainingBuffer = this.bcMediaCodec.getRemainingBuffer();
@@ -540,13 +610,13 @@ export class BaichuanVideoStream extends EventEmitter<{
           );
         }
       }
-      
+
       // Process complete BcMedia packets.
       // Each BcMedia::Iframe/Pframe already contains a complete frame (access unit).
       // BcMediaCodec only handles transport fragmentation, not "half frames".
       let videoFramesEmitted = 0;
       let audioFramesEmitted = 0;
-      
+
       for (const media of mediaPackets) {
         const maybeCacheParamSets = (annexB: Buffer, source: "Iframe" | "Pframe", videoType: "H264" | "H265") => {
           // Some models send parameter sets outside of I-frames (e.g. parameter set updates),
@@ -657,21 +727,21 @@ export class BaichuanVideoStream extends EventEmitter<{
             // For H.265, prepend VPS, SPS, PPS if not already present
             const nals = splitH265AnnexBToNalPayloads(annexB);
             if (nals.length === 0) return annexB;
-            
+
             const types = nals.map((n) => getH265NalType(n)).filter((t): t is number => t !== null);
             // If it already includes VPS/SPS/PPS, do not prepend
             if (types.includes(32) && types.includes(33) && types.includes(34)) return annexB;
-            
+
             // If there is no VCL (IRAP or non-IRAP picture), there's nothing to prepend to.
             const hasVcl = types.some((t) => (t >= 0 && t <= 9) || (t >= 16 && t <= 23));
             if (!hasVcl) return annexB;
-            
+
             // Only prepend once to avoid duplication
             if (this.lastPrependedParamSetsH265) return annexB;
-            
+
             // Prepend VPS, SPS, PPS if we have them
             if (!this.lastVps || !this.lastSpsH265 || !this.lastPpsH265) return annexB;
-            
+
             this.lastPrependedParamSetsH265 = true;
             if (dbg.debugParamSets) {
               this.logger?.warn(`[BaichuanVideoStream] Prepending H.265 VPS/SPS/PPS to frame`);
@@ -751,7 +821,7 @@ export class BaichuanVideoStream extends EventEmitter<{
         };
         if (media.type === "Iframe") {
           // Convert to Annex-B format (different converters for H.264 and H.265)
-          const annexBData = media.videoType === "H265" 
+          const annexBData = media.videoType === "H265"
             ? convertH265ToAnnexB(media.data)
             : convertToAnnexB(media.data);
           const isKeyframe = true;
@@ -808,7 +878,7 @@ export class BaichuanVideoStream extends EventEmitter<{
             const headAnnex = annexBData.subarray(0, Math.min(24, annexBData.length)).toString("hex");
             this.logger?.warn(
               `[BaichuanVideoStream] WARNING: non-AnnexB frame after conversion (${media.type} ${media.videoType}) ` +
-                `len=${b.length} head=${head} convertedLen=${annexBData.length} convertedHead=${headAnnex}`
+              `len=${b.length} head=${head} convertedLen=${annexBData.length} convertedHead=${headAnnex}`
             );
           }
 
@@ -820,7 +890,7 @@ export class BaichuanVideoStream extends EventEmitter<{
             microseconds: media.microseconds,
             ...(media.type === "Iframe" && "time" in media ? (media.time !== undefined ? { time: media.time } : {}) : {}),
           });
-                    videoFramesEmitted++;
+          videoFramesEmitted++;
 
           if (totalFramesReceived <= 5 || videoFramesEmitted <= 5) {
             const sc = hasStartCodes(annexBData) ? "yes" : "no";
@@ -838,15 +908,15 @@ export class BaichuanVideoStream extends EventEmitter<{
           // First try AVCC/HVCC -> AnnexB (some models send P-frames length-prefixed).
           // If we still don't get start codes, try RFC6184 depacketizer (FU-A/STAP) for H.264.
           // Note: H.265 RTP depacketization is similar but uses different NAL unit types.
-          const annexBOrRaw = hasStartCodes(chunk) 
-            ? chunk 
+          const annexBOrRaw = hasStartCodes(chunk)
+            ? chunk
             : (media.videoType === "H265" ? convertH265ToAnnexB(chunk) : convertToAnnexB(chunk));
-          
+
           // For H.264, use the depacketizer. For H.265, we might need a similar depacketizer in the future.
           const parts = hasStartCodes(annexBOrRaw)
             ? [annexBOrRaw]
             : (media.videoType === "H265" ? this.depacketizerH265.push(chunk) : this.depacketizer.push(chunk));
-          
+
           if (parts.length === 0) {
             // incomplete fragment (FU-A mid) or unrecognized payload: wait for more packets
             continue;
@@ -879,7 +949,7 @@ export class BaichuanVideoStream extends EventEmitter<{
             videoFramesEmitted++;
           }
         }
-        
+
         // Emit audio frames
         if (media.type === "Aac" || media.type === "Adpcm") {
           audioFramesEmitted++;
@@ -891,7 +961,7 @@ export class BaichuanVideoStream extends EventEmitter<{
           // Could emit metadata event if needed
         }
       }
-      
+
       // Log frame emission stats
       if (totalFramesReceived <= 10 || (totalFramesReceived % 20 === 0 && (videoFramesEmitted > 0 || audioFramesEmitted > 0))) {
         if (rtspDebug) {
@@ -905,7 +975,7 @@ export class BaichuanVideoStream extends EventEmitter<{
       if (videoFramesEmitted > 0 || audioFramesEmitted > 0) {
         this.noteMediaActivity();
       }
-      
+
       // Track total video frames emitted
       if (videoFramesEmitted > 0 && (totalFramesReceived <= 10 || totalFramesReceived % 50 === 0)) {
         let totalVideoFrames = 0;
@@ -938,9 +1008,9 @@ export class BaichuanVideoStream extends EventEmitter<{
       this.client.removeListener("push", this.videoFrameHandler);
     }
     this.videoFrameHandler = undefined;
-    
+
     // Note: stream-level decipher is not used here; we pick decrypted/raw before BcMedia decoding.
-    
+
     // Clear codec buffer
     this.bcMediaCodec.clear();
 
@@ -949,7 +1019,7 @@ export class BaichuanVideoStream extends EventEmitter<{
     // Stop the video stream if the API is available
     if (this.api) {
       try {
-        await this.api.stopVideoStream(this.channel, this.profile);
+        await this.api.stopVideoStream(this.channel, this.profile, { variant: this.variant });
       } catch (error) {
         // Log error but continue
         this.emit("error", error instanceof Error ? error : new Error(String(error)));

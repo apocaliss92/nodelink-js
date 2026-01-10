@@ -333,7 +333,10 @@ export class BaichuanEventEmitter {
 export async function* createNativeStream(
   api: ReolinkBaichuanApi,
   channel: number,
-  profile: StreamProfile
+  profile: StreamProfile,
+  options?: {
+    variant?: import("../reolink/baichuan/ReolinkBaichuanApi").NativeVideoStreamVariant;
+  }
 ): AsyncGenerator<{
   audio: boolean;
   data: Buffer;
@@ -347,6 +350,7 @@ export async function* createNativeStream(
     api,
     channel,
     profile,
+    ...(options?.variant !== undefined ? { variant: options.variant } : {}),
     logger: api.logger,
   });
 

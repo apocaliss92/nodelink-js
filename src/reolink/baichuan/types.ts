@@ -78,14 +78,64 @@ export interface ReolinkBaichuanDeviceSummary {
   channel: number;
   name?: string;
   uid?: string;
+  /** Camera IP (best-effort via Baichuan GetNetworkInfo/GetGeneral). */
+  ip?: string;
+  /** Camera MAC address (best-effort via Baichuan GetNetworkInfo/GetGeneral). */
+  mac?: string;
+  /** Active link / link type when available (varies by firmware). */
+  activeLink?: string;
+  /** Channel state from cmd_id 145 push (e.g. connect/disconnect/none). */
+  state?: string;
+  /** Channel index from cmd_id 145 push (often 1-based device slot). */
+  index?: number;
+  /** Supported streams as reported by cmd_id 145 push (e.g. mainStream,subStream,externStream). */
+  streamSupport?: string[];
+  wifiState?: string;
+  networkSegment?: string;
+  changed?: boolean;
+  abilityChanged?: boolean;
+  online?: boolean;
+  sleeping?: boolean;
+  loginState?: string;
+  updatedAtMs?: number;
   /** Model string (Baichuan <type>). */
   model?: string;
+  /** True when the channel likely belongs to a multifocal/dual-lens device (best-effort by model). */
+  isMultifocal?: boolean;
+  /** Device serial number when available. */
+  serialNumber?: string;
   /** Battery percentage (0-100) when available. */
   battery?: number;
   /** True when the channel is a battery camera (best-effort via SupportInfo). */
   isBattery?: boolean;
   /** True when the channel is a doorbell (best-effort via SupportInfo). */
   isDoorbell?: boolean;
+}
+
+/** Best-effort network identity for a host or a channel. */
+export interface ReolinkBaichuanNetworkInfo {
+  ip?: string;
+  mac?: string;
+  activeLink?: string;
+}
+
+/**
+ * NVR/HUB grouping of channels that belong to the same physical device.
+ *
+ * Multifocal cameras typically appear as 2+ channels that share the same UID and/or serial number.
+ */
+export interface ReolinkNvrDeviceGroupSummary {
+  /** Stable group key (usually uid:* or sn:*). */
+  key: string;
+  uid?: string;
+  serialNumber?: string;
+  name?: string;
+  model?: string;
+  channels: number[];
+  /** True when the group likely represents a multi-channel (multifocal) device. */
+  isMultifocal: boolean;
+  /** Human-readable heuristic used for isMultifocal. */
+  reason: string;
 }
 
 export type SleepState = "awake" | "sleeping" | "unknown";
@@ -584,6 +634,8 @@ export interface DualLensChannelInfo {
   hasPresets: boolean;
   /** Channel type: "wide" for wide-angle lens, "telephoto" for telephoto lens */
   lensType?: "wide" | "telephoto" | undefined;
+  /** Which Native variant maps to this lens (default=wide; autotrack/telephoto=tele lens depending on context). */
+  variantType?: import("./ReolinkBaichuanApi").NativeVideoStreamVariant;
   /** Available streams for this channel */
   availableStreams: {
     /** RTSP stream available */

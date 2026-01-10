@@ -14,7 +14,7 @@ import { spawn } from "node:child_process";
 import * as net from "node:net";
 import * as dgram from "node:dgram";
 import type { StreamProfile } from "../../reolink/baichuan/types";
-import type { ReolinkBaichuanApi } from "../../reolink/baichuan/ReolinkBaichuanApi";
+import type { NativeVideoStreamVariant, ReolinkBaichuanApi } from "../../reolink/baichuan/ReolinkBaichuanApi";
 import type { Logger } from "../../debug/DebugConfig";
 import { createNativeStream } from "../../rfc/helpers";
 import { createRtspFlow, type RtspFlow, type RtspVideoType } from "./rtspFlow";
@@ -167,6 +167,8 @@ export interface BaichuanRtspServerOptions {
   channel: number;
   /** Stream profile (required) */
   profile: StreamProfile;
+  /** Native-only: TrackMix tele/autotrack variants (usually on NVR/Hub). */
+  variant?: NativeVideoStreamVariant;
   listenHost?: string; // Host to listen on (default: "127.0.0.1")
   listenPort?: number; // Port to listen on (default: 8554)
   path?: string; // RTSP path (e.g. "/main" or "/sub")
@@ -200,6 +202,7 @@ export class BaichuanRtspServer extends EventEmitter<{
   private api: ReolinkBaichuanApi;
   private channel: number;
   private profile: StreamProfile;
+  private variant: NativeVideoStreamVariant;
   private listenHost: string;
   private listenPort: number;
   private path: string;
@@ -382,6 +385,7 @@ export class BaichuanRtspServer extends EventEmitter<{
     this.api = options.api;
     this.channel = options.channel;
     this.profile = options.profile;
+    this.variant = options.variant ?? "default";
     this.listenHost = options.listenHost ?? "127.0.0.1";
     this.listenPort = options.listenPort ?? 8554;
     this.path = options.path ?? `/stream/${this.profile}`;
@@ -1342,7 +1346,7 @@ export class BaichuanRtspServer extends EventEmitter<{
     this.rtspDebugLog(`Creating native stream iterator for client ${clientId}`);
     const clientGenerator = this.nativeFanout
       ? this.nativeFanout.subscribe(clientId)
-      : createNativeStream(this.api, this.channel, this.profile);
+      : createNativeStream(this.api, this.channel, this.profile, { variant: this.variant });
     // Legacy: disable old priming generator reuse path.
     this.tempStreamGenerator = null;
     
@@ -1665,7 +1669,7 @@ export class BaichuanRtspServer extends EventEmitter<{
     // This avoids starting/stopping multiple camera streams (especially fragile on BCUDP/battery).
     this.nativeFanout = new NativeStreamFanout({
       maxQueueItems: 200,
-      createSource: () => createNativeStream(this.api, this.channel, this.profile),
+      createSource: () => createNativeStream(this.api, this.channel, this.profile, { variant: this.variant }),
       onFrame: (frame) => {
         if (frame.audio) {
           // TCP-only audio detection: only advertise audio if we see ADTS AAC.

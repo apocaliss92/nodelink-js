@@ -11,6 +11,7 @@
  *   --password <pass>     Password (required)
  *   --channel <num>       Channel number (default: 0)
  *   --profile <profile>   Stream profile: main, sub, ext (default: main)
+ *   --variant <variant>   Native variant: default, autotrack, telephoto (default: default)
  *   --port <port>         RTSP server port (default: 8554)
  *   --path <path>         RTSP path (default: /stream/<profile>)
  *   --uid <uid>           UID for battery cameras (optional)
@@ -28,6 +29,7 @@ interface CliOptions {
   password: string;
   channel?: number;
   profile?: StreamProfile;
+  variant?: "default" | "autotrack" | "telephoto";
   port?: number;
   path?: string;
   uid?: string;
@@ -87,6 +89,15 @@ function parseArgs(): CliOptions {
           if (!args[i]!.includes("=")) i++;
         }
         break;
+      case "--variant":
+        if (next) {
+          const v = next.trim().toLowerCase();
+          if (v === "default" || v === "autotrack" || v === "telephoto") {
+            options.variant = v as any;
+          }
+          if (!args[i]!.includes("=")) i++;
+        }
+        break;
       case "--port":
         if (next) {
           options.port = parseInt(next, 10);
@@ -139,6 +150,7 @@ Required options:
 Optional options:
   --channel <num>       Channel number (default: 0)
   --profile <profile>   Stream profile: main, sub, ext (default: main)
+  --variant <variant>   Native variant: default, autotrack, telephoto (default: default)
   --port <port>         RTSP server port (default: 8554)
   --path <path>         RTSP path (default: /stream/<profile>)
   --uid <uid>           UID for battery cameras
@@ -151,6 +163,9 @@ Examples:
 
   # Specific channel with sub profile
   node dist/cli/rtsp-server.cjs --host 192.168.1.100 --username admin --password pass --channel 1 --profile sub
+
+  # TrackMix (NVR) tele/autotrack variant
+  node dist/cli/rtsp-server.cjs --host 192.168.1.161 --username admin --password pass --channel 2 --profile sub --variant autotrack --port 8554 --path /tele_sub
 
   # Custom port
   node dist/cli/rtsp-server.cjs --host 192.168.1.100 --username admin --password pass --port 8555
@@ -175,12 +190,13 @@ async function main(): Promise<void> {
 
   const channel = options.channel ?? 0;
   const profile = options.profile ?? "main";
+  const variant = options.variant ?? "default";
   const port = options.port ?? 8554;
   const path = options.path ?? `/stream/${profile}`;
   const transport = options.transport ?? "auto";
 
   console.log(`[RTSP Server] Connecting to ${options.host}...`);
-  console.log(`[RTSP Server] Channel: ${channel}, Profile: ${profile}`);
+  console.log(`[RTSP Server] Channel: ${channel}, Profile: ${profile}, Variant: ${variant}`);
 
   try {
     // Auto-detect device type if needed
@@ -219,6 +235,7 @@ async function main(): Promise<void> {
       api,
       channel,
       profile,
+      ...(variant !== "default" ? { variant } : {}),
       listenPort: port,
       path,
       logger: console,
