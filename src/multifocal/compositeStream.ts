@@ -647,64 +647,155 @@ export class CompositeStream extends EventEmitter<{
       this.ffmpegOutBuf = this.ffmpegOutBuf.subarray(this.ffmpegOutBuf.length - 1024 * 1024);
     }
 
-    const audPositions = this.findAudStartPositions(this.ffmpegOutBuf);
-    if (!audPositions.length) return;
-
-    // Discard anything before the first AUD for clean framing.
-    if (audPositions[0]! > 0) {
-      this.ffmpegOutBuf = this.ffmpegOutBuf.subarray(audPositions[0]!);
+    // Split into access units.
+    // Prefer AUD (NAL type 9) when present, but some encoders/paths omit AUD.
+    // Fallback: split by first-slice-of-picture for H264 (nal_type 1/5 with first_mb_in_slice==0).
+    const emittedUpTo = this.emitH264AccessUnitsFromBuffer();
+    if (emittedUpTo > 0) {
+      this.ffmpegOutBuf = this.ffmpegOutBuf.subarray(emittedUpTo);
     }
-
-    // Re-scan after trimming (positions change).
-    const audPositions2 = this.findAudStartPositions(this.ffmpegOutBuf);
-    if (audPositions2.length < 2) return;
-
-    // Emit complete access units: [AUD_i .. AUD_{i+1}). Keep tail starting at last AUD.
-    for (let i = 0; i < audPositions2.length - 1; i++) {
-      const start = audPositions2[i]!;
-      const end = audPositions2[i + 1]!;
-      if (end > start) {
-        const au = this.ffmpegOutBuf.subarray(start, end);
-        this.emit("videoFrame", au);
-      }
-    }
-    this.ffmpegOutBuf = this.ffmpegOutBuf.subarray(audPositions2[audPositions2.length - 1]!);
   }
 
-  private findAudStartPositions(buf: Buffer): number[] {
-    const positions: number[] = [];
+  private emitH264AccessUnitsFromBuffer(): number {
+    const buf = this.ffmpegOutBuf;
+    if (!buf?.length) return 0;
+
     const len = buf.length;
-    // Need at least start code + 1 byte header.
-    if (len < 5) return positions;
+    if (len < 5) return 0;
 
-    let i = 0;
-    while (i < len - 4) {
-      // Find Annex-B start code.
-      let startCodeLen = 0;
-      if (buf[i] === 0x00 && buf[i + 1] === 0x00) {
-        if (buf[i + 2] === 0x01) startCodeLen = 3;
-        else if (buf[i + 2] === 0x00 && buf[i + 3] === 0x01) startCodeLen = 4;
+    const startCodeLenAt = (i: number): number => {
+      if (i + 3 <= len && buf[i] === 0x00 && buf[i + 1] === 0x00) {
+        if (buf[i + 2] === 0x01) return 3;
+        if (i + 4 <= len && buf[i + 2] === 0x00 && buf[i + 3] === 0x01) return 4;
       }
+      return 0;
+    };
 
-      if (!startCodeLen) {
-        i++;
+    // Align to first start code.
+    let firstSc = -1;
+    for (let i = 0; i < Math.min(len - 3, 64); i++) {
+      if (startCodeLenAt(i)) {
+        firstSc = i;
+        break;
+      }
+    }
+    if (firstSc < 0) return 0;
+    if (firstSc > 0) {
+      // Drop junk before first start code.
+      this.ffmpegOutBuf = buf.subarray(firstSc);
+      return 0;
+    }
+
+    // Find all start code positions we can see.
+    const startCodes: number[] = [];
+    for (let i = 0; i < len - 3; i++) {
+      if (startCodeLenAt(i)) startCodes.push(i);
+    }
+    if (startCodes.length < 2) return 0; // need at least one complete NAL to parse
+
+    const removeEmulationPrevention = (rbsp: Buffer): Buffer => {
+      // Remove 0x03 after 0x00 0x00.
+      const out: number[] = [];
+      for (let i = 0; i < rbsp.length; i++) {
+        const b = rbsp[i]!;
+        if (i >= 2 && rbsp[i - 1] === 0x00 && rbsp[i - 2] === 0x00 && b === 0x03) {
+          continue;
+        }
+        out.push(b);
+      }
+      return Buffer.from(out);
+    };
+
+    const readUE = (rbsp: Buffer, bitOffset: number): { value: number; next: number } | undefined => {
+      const totalBits = rbsp.length * 8;
+      let i = bitOffset;
+      // Count leading zeros.
+      let zeros = 0;
+      while (i < totalBits) {
+        const byte = rbsp[i >> 3]!;
+        const bit = (byte >> (7 - (i & 7))) & 1;
+        if (bit === 0) {
+          zeros++;
+          i++;
+          continue;
+        }
+        break;
+      }
+      if (i >= totalBits) return;
+      // Skip the 1.
+      i++;
+      if (zeros === 0) return { value: 0, next: i };
+      if (i + zeros > totalBits) return;
+      let info = 0;
+      for (let k = 0; k < zeros; k++, i++) {
+        const byte = rbsp[i >> 3]!;
+        const bit = (byte >> (7 - (i & 7))) & 1;
+        info = (info << 1) | bit;
+      }
+      const value = (1 << zeros) - 1 + info;
+      return { value, next: i };
+    };
+
+    const isFirstSliceOfPicture = (nal: Buffer): boolean => {
+      if (nal.length < 2) return false;
+      const nalType = nal[0]! & 0x1f;
+      if (nalType !== 1 && nalType !== 5) return false;
+      // RBSP starts after NAL header.
+      const rbsp = removeEmulationPrevention(nal.subarray(1));
+      const ue = readUE(rbsp, 0);
+      if (!ue) return false;
+      return ue.value === 0;
+    };
+
+    let currentAuStart = 0;
+    let sawVcl = false;
+    let emittedThrough = 0;
+
+    // Iterate complete NALs (exclude last, may be incomplete).
+    for (let idx = 0; idx < startCodes.length - 1; idx++) {
+      const scPos = startCodes[idx]!;
+      const scLen = startCodeLenAt(scPos);
+      if (!scLen) continue;
+      const nalStart = scPos + scLen;
+      const nalEnd = startCodes[idx + 1]!;
+      if (nalStart >= nalEnd || nalStart >= len) continue;
+      const nal = buf.subarray(nalStart, nalEnd);
+      if (!nal.length) continue;
+
+      const nalType = nal[0]! & 0x1f;
+      const isAud = nalType === 9;
+      const isVcl = nalType === 1 || nalType === 5;
+
+      if (isAud) {
+        // AUD always starts a new AU.
+        if (sawVcl && scPos > currentAuStart) {
+          const au = buf.subarray(currentAuStart, scPos);
+          if (au.length) this.emit('videoFrame', au);
+          emittedThrough = scPos;
+        }
+        currentAuStart = scPos;
+        sawVcl = false;
         continue;
       }
 
-      const nalStart = i + startCodeLen;
-      if (nalStart >= len) break;
-      const nalHeader = buf[nalStart];
-      if (nalHeader === undefined) break;
-      const nalType = nalHeader & 0x1f;
-      if (nalType === 9) {
-        positions.push(i);
+      if (isVcl) {
+        const firstSlice = isFirstSliceOfPicture(nal);
+        if (firstSlice) {
+          if (sawVcl && scPos > currentAuStart) {
+            const au = buf.subarray(currentAuStart, scPos);
+            if (au.length) this.emit('videoFrame', au);
+            emittedThrough = scPos;
+            currentAuStart = scPos;
+          }
+          sawVcl = true;
+        } else {
+          sawVcl = true;
+        }
       }
-
-      // Jump ahead to continue scan; still safe even if we land mid-NAL.
-      i = nalStart;
     }
 
-    return positions;
+    // Only drop bytes we've safely emitted.
+    return Math.max(0, emittedThrough);
   }
 
   /**

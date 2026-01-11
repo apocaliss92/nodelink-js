@@ -159,6 +159,11 @@ export class BaichuanClient extends EventEmitter<{
 
   private keepAliveTimer: NodeJS.Timeout | undefined;
   private keepAlivePingInFlight = false;
+  // Battery/BCUDP cameras may actively terminate sessions (D2C_DISC) when overwhelmed
+  // or sleeping. Without a cooldown, callers can end up in tight reconnect loops.
+  private udpReconnectCooldownUntilMs = 0;
+  private udpReconnectBackoffMs = 0;
+  private udpReconnectLastD2cDiscAtMs = 0;
 
   private idleDisconnectTimer: NodeJS.Timeout | undefined;
   private lastUserActivityAtMs: number | undefined;
@@ -735,6 +740,7 @@ export class BaichuanClient extends EventEmitter<{
       return;
     }
     if (desired === "udp") {
+      await this.waitForUdpReconnectCooldown();
       await this.connectUdp();
       return;
     }
@@ -755,8 +761,25 @@ export class BaichuanClient extends EventEmitter<{
       if (!this.opts.uid) {
         throw new Error("TCP connection failed and UDP fallback requires `options.uid` (BCUDP discovery UID).");
       }
+      await this.waitForUdpReconnectCooldown();
       await this.connectUdp();
     }
+  }
+
+  private async waitForUdpReconnectCooldown(): Promise<void> {
+    const now = Date.now();
+    const waitMs = this.udpReconnectCooldownUntilMs - now;
+    if (waitMs <= 0) return;
+    const sid = this.socketSessionId;
+    const shortUid = this.opts.uid ? this.opts.uid.substring(0, 5) : undefined;
+    this.logFixed("udp_reconnect_cooldown", {
+      transport: "udp",
+      host: this.opts.host,
+      sid,
+      uid: shortUid,
+      waitMs,
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
   }
 
   private async connectTcp(): Promise<void> {
@@ -960,6 +983,7 @@ export class BaichuanClient extends EventEmitter<{
       // If the camera terminates the BCUDP session (D2C_DISC), the stream will close.
       // Make sure we don't keep a stale handle around.
       if (err?.message?.includes("D2C_DISC")) {
+        const now = Date.now();
         const sid = this.socketSessionId;
         const shortUid = this.opts.uid ? this.opts.uid.substring(0, 5) : undefined;
         this.logFixed("d2c_disc", {
@@ -969,6 +993,27 @@ export class BaichuanClient extends EventEmitter<{
           uid: shortUid,
           message: err.message,
         });
+
+        // Apply exponential backoff to avoid reconnect storms.
+        // If D2C_DISC repeats frequently, ramp up cooldown to give the camera time.
+        const withinWindow = now - this.udpReconnectLastD2cDiscAtMs < 60_000;
+        const baseMs = 2_000;
+        const maxMs = 30_000;
+        const nextBackoffMs = withinWindow
+          ? Math.min(maxMs, Math.max(baseMs, this.udpReconnectBackoffMs > 0 ? this.udpReconnectBackoffMs * 2 : baseMs))
+          : baseMs;
+        this.udpReconnectLastD2cDiscAtMs = now;
+        this.udpReconnectBackoffMs = nextBackoffMs;
+        this.udpReconnectCooldownUntilMs = Math.max(this.udpReconnectCooldownUntilMs, now + nextBackoffMs);
+        this.logFixed("d2c_disc_backoff", {
+          transport: "udp",
+          host: this.opts.host,
+          sid,
+          uid: shortUid,
+          backoffMs: nextBackoffMs,
+          cooldownUntilMs: this.udpReconnectCooldownUntilMs,
+        });
+
         this.stopKeepAlive();
         this.loggedIn = false;
         this.subscribed = false;

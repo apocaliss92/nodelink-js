@@ -317,7 +317,7 @@ export class BaichuanVideoStream extends EventEmitter<{
     // NOTE: UDP (battery/BCUDP) can legitimately take longer to wake and begin streaming.
     // Keep this relatively high to avoid causing reconnect storms.
     const transport = this.client.getTransport?.();
-    this.idleRestartMs = transport === "udp" ? 20_000 : 15_000;
+    this.idleRestartMs = transport === "udp" ? 60_000 : 15_000;
   }
 
   private noteMediaActivity(): void {
