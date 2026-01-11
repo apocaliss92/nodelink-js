@@ -4974,7 +4974,9 @@ ${xmlDateTimePayload("endTime", end)}
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const msgNum = this.client.peekNextMsgNum();
+      // NOTE: must be atomic. Two parallel startVideoStream() calls (e.g. composite wider+tele)
+      // can otherwise pick the same msgNum and cause stream packet mixups.
+      const msgNum = this.client.reserveNextMsgNum();
       this.client.subscribeVideoStream(BC_CMD_ID_VIDEO, msgNum);
 
       // Optimistically publish msgNum immediately so stream consumers can start filtering

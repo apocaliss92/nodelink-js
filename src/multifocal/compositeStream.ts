@@ -74,6 +74,17 @@ export type CompositeStreamOptions = {
   forceH264?: boolean;
   /** Optional logger */
   logger?: Logger;
+  /**
+   * How long to wait for each input stream to produce frames before starting ffmpeg.
+   * Battery cameras can take several seconds to wake and begin streaming.
+   * Default: 20000ms.
+   */
+  inputStartupTimeoutMs?: number;
+  /**
+   * If true, require a keyframe during priming (preferred for fast/clean join).
+   * Default: true.
+   */
+  requireKeyframeOnStartup?: boolean;
 };
 
 /**
@@ -120,6 +131,7 @@ function calculateOverlayPosition(
  */
 export class CompositeStream extends EventEmitter<{
   videoFrame: [Buffer];
+  audioFrame: [Buffer];
   error: [Error];
   close: [];
 }> {
@@ -144,6 +156,8 @@ export class CompositeStream extends EventEmitter<{
 
   private ffmpegStderrLastLogAtMs = 0;
   private ffmpegStderrLogBurst = 0;
+
+  private audioSource: 'wider' | 'tele' | undefined;
 
   private effectiveWiderProfile: StreamProfile | undefined;
   private effectiveTeleProfile: StreamProfile | undefined;
@@ -224,6 +238,7 @@ export class CompositeStream extends EventEmitter<{
     }
 
     this.active = true;
+    this.audioSource = undefined;
     this.logger.log?.("[CompositeStream] Starting composite stream...");
 
     try {
@@ -285,18 +300,36 @@ export class CompositeStream extends EventEmitter<{
       // Prime both streams BEFORE starting ffmpeg. This makes codec detection resilient on NVR/Hub where
       // metadata may not reflect tele variant, and helps ffmpeg see a clean access unit early.
       // Prefer waiting for an IDR on both inputs (startup alignment). Fallback to any video frame if needed.
-      this.widerPrimeFrame = await this.primeForFfmpeg(this.widerStream, 5000, true);
-      this.telePrimeFrame = await this.primeForFfmpeg(this.teleStream, 5000, true);
-      if (!this.widerPrimeFrame) {
-        this.widerPrimeFrame = await this.primeForFfmpeg(this.widerStream, 2000, false);
-      }
-      if (!this.telePrimeFrame) {
-        this.telePrimeFrame = await this.primeForFfmpeg(this.teleStream, 2000, false);
-      }
+      const inputStartupTimeoutMs = Math.max(1000, this.options.inputStartupTimeoutMs ?? 20_000);
+      const requireKeyframeOnStartup = this.options.requireKeyframeOnStartup ?? true;
+
+      const primeKeyframeMs = inputStartupTimeoutMs;
+      const primeAnyFrameMs = Math.min(5_000, Math.max(1_000, Math.floor(inputStartupTimeoutMs / 3)));
+
+      const [widerPrime, telePrime] = await Promise.all([
+        this.primeForFfmpeg(this.widerStream, primeKeyframeMs, requireKeyframeOnStartup),
+        this.primeForFfmpeg(this.teleStream, primeKeyframeMs, requireKeyframeOnStartup),
+      ]);
+
+      this.widerPrimeFrame = widerPrime ?? (await this.primeForFfmpeg(this.widerStream, primeAnyFrameMs, false));
+      this.telePrimeFrame = telePrime ?? (await this.primeForFfmpeg(this.teleStream, primeAnyFrameMs, false));
 
       this.logger.log?.(
         `[CompositeStream] Prime: wider=${this.widerPrimeFrame?.isKeyframe ? 'keyframe' : (this.widerPrimeFrame ? 'frame' : 'none')}, tele=${this.telePrimeFrame?.isKeyframe ? 'keyframe' : (this.telePrimeFrame ? 'frame' : 'none')}`
       );
+
+      // Do not start ffmpeg until BOTH inputs have produced at least one video frame.
+      // Otherwise ffmpeg sees EOF/0 packets on one input and exits immediately.
+      if (!this.widerPrimeFrame || !this.telePrimeFrame) {
+        const missing = [
+          !this.widerPrimeFrame ? 'wider' : null,
+          !this.telePrimeFrame ? 'tele' : null,
+        ].filter(Boolean).join(', ');
+        throw new Error(
+          `[CompositeStream] Missing input frames (${missing}) within ${inputStartupTimeoutMs}ms. ` +
+            `Battery cameras may need extra wake-up time; consider increasing inputStartupTimeoutMs.`,
+        );
+      }
 
       const widerCodecFromFrames = this.widerPrimeFrame?.videoType === 'H265' ? 'hevc' : (this.widerPrimeFrame?.videoType === 'H264' ? 'h264' : undefined);
       const teleCodecFromFrames = this.telePrimeFrame?.videoType === 'H265' ? 'hevc' : (this.telePrimeFrame?.videoType === 'H264' ? 'h264' : undefined);
@@ -542,7 +575,12 @@ export class CompositeStream extends EventEmitter<{
         }
         for await (const frame of this.widerStream!) {
           if (!this.active) break;
-          if (frame.audio) continue; // Skip audio frames
+          if (frame.audio) {
+            // Prefer audio from wider; if we already locked to tele, ignore.
+            if (!this.audioSource) this.audioSource = 'wider';
+            if (this.audioSource === 'wider') this.emit('audioFrame', frame.data);
+            continue;
+          }
 
           try {
             const written = widerStdin.write(this.toAnnexB(frame.data));
@@ -589,7 +627,12 @@ export class CompositeStream extends EventEmitter<{
         }
         for await (const frame of this.teleStream!) {
           if (!this.active) break;
-          if (frame.audio) continue; // Skip audio frames
+          if (frame.audio) {
+            // Fallback: if wider is silent, use tele audio.
+            if (!this.audioSource) this.audioSource = 'tele';
+            if (this.audioSource === 'tele') this.emit('audioFrame', frame.data);
+            continue;
+          }
 
           try {
             const written = teleStdin.write(this.toAnnexB(frame.data));

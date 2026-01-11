@@ -188,6 +188,7 @@ export class BaichuanVideoStream extends EventEmitter<{
   private videoFrameHandler: ((frame: BaichuanFrame) => void) | undefined;
   private readonly expectedStreamTypes: Set<number>;
   private activeMsgNum: number | undefined;
+  private lockedChannelId: number | undefined;
   private bcMediaCodec: BcMediaCodec;
   private debugH264LogsLeft: number;
   private debugSavedSamples: boolean;
@@ -313,8 +314,10 @@ export class BaichuanVideoStream extends EventEmitter<{
 
     // Internal defaults (no external knobs): if the stream goes idle for too long,
     // best-effort restart the native stream request.
+    // NOTE: UDP (battery/BCUDP) can legitimately take longer to wake and begin streaming.
+    // Keep this relatively high to avoid causing reconnect storms.
     const transport = this.client.getTransport?.();
-    this.idleRestartMs = transport === "udp" ? 6_000 : 15_000;
+    this.idleRestartMs = transport === "udp" ? 20_000 : 15_000;
   }
 
   private noteMediaActivity(): void {
@@ -353,12 +356,14 @@ export class BaichuanVideoStream extends EventEmitter<{
       this.restartWindowStartMs = now;
       this.restartCountInWindow = 0;
     }
-    // if (this.restartCountInWindow >= WATCHDOG_MAX_RESTARTS_PER_MINUTE) {
-    //   this.logger?.warn(
-    //     `[BaichuanVideoStream] Watchdog: idle for ${idleMs}ms, but restart budget exceeded; leaving stream as-is`,
-    //   );
-    //   return;
-    // }
+    if (this.restartCountInWindow >= WATCHDOG_MAX_RESTARTS_PER_MINUTE) {
+      this.logger?.warn(
+        `[BaichuanVideoStream] Watchdog: idle for ${idleMs}ms, but restart budget exceeded (${WATCHDOG_MAX_RESTARTS_PER_MINUTE}/min); leaving stream as-is`,
+      );
+      // Avoid spamming: reset lastMediaAt to delay the next restart attempt.
+      this.lastMediaAtMs = now;
+      return;
+    }
     this.restartCountInWindow++;
 
     void this.restartNativeStream({ reason: `idle ${idleMs}ms` });
@@ -384,6 +389,7 @@ export class BaichuanVideoStream extends EventEmitter<{
       this.depacketizerH265.reset();
       this.bcMediaCodec.clear();
       this.activeMsgNum = undefined;
+      this.lockedChannelId = undefined;
       this.lastPrependedPpsId = null;
       this.lastPrependedParamSetsH265 = false;
 
@@ -458,6 +464,22 @@ export class BaichuanVideoStream extends EventEmitter<{
             `[BaichuanVideoStream] Frame streamType mismatch: received=${frame.header.streamType}, expectedAny=[${[
               ...this.expectedStreamTypes,
             ].join(",")}], channel=${this.channel}, profile=${this.profile}, variant=${this.variant} (frame discarded)`
+          );
+        }
+        return;
+      }
+
+      // Additional safety net for multi-stream scenarios:
+      // If multiple streams share the same BaichuanClient/socket and msgNum filtering is unavailable,
+      // frames from different channelIds can interleave and manifest as stutter/picture loss.
+      // Lock to the first observed channelId and discard mismatches.
+      if (this.lockedChannelId === undefined) {
+        this.lockedChannelId = frame.header.channelId;
+      } else if (frame.header.channelId !== this.lockedChannelId) {
+        const frameCount = (this as any)._channelIdMismatchCount = ((this as any)._channelIdMismatchCount || 0) + 1;
+        if (frameCount <= 5) {
+          this.logger?.warn(
+            `[BaichuanVideoStream] Frame channelId mismatch: received=${frame.header.channelId}, locked=${this.lockedChannelId}, streamType=${frame.header.streamType}, msgNum=${frame.header.msgNum}, activeMsgNum=${this.activeMsgNum ?? "unknown"}, channel=${this.channel}, profile=${this.profile}, variant=${this.variant} (frame discarded)`
           );
         }
         return;

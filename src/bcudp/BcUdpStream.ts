@@ -1136,7 +1136,10 @@ export class BcUdpStream extends EventEmitter<{
       if (disc && this.clientId != null && this.cameraId != null && disc.cid === this.clientId && disc.did === this.cameraId) {
         this.emit("debug", "discovery_disc_rx_connected", { ...disc, rhost, rport });
         // Camera terminated the session.
-        this.emit("error", new Error("BCUDP disconnected by camera (D2C_DISC)"));
+        this.emit(
+          "error",
+          new Error(`BCUDP disconnected by camera (D2C_DISC${this.sid != null ? ` sid=${this.sid}` : ""})`),
+        );
         void this.close();
         return;
       }

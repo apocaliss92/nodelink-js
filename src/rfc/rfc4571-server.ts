@@ -344,6 +344,18 @@ export async function createRfc4571TcpServer(
           }
         }),
       );
+    } else {
+      // For shared connections (common on battery/BCUDP), we cannot force-close the API here.
+      // Instead, ask the underlying client to drop the UDP session soon *if* it is truly idle.
+      // This reduces the chance of keeping the camera awake while remaining safe.
+      const graceMs = isComposite ? 5_000 : 0;
+      for (const a of Array.from(apisToClose)) {
+        try {
+          (a as any)?.client?.requestIdleDisconnectSoon?.("rfc4571_teardown", graceMs);
+        } catch {
+          // ignore
+        }
+      }
     }
 
     throw e;
@@ -388,25 +400,20 @@ export async function createRfc4571TcpServer(
   log(`video framerate hint: ${fps} fps`);
 
   // Prime audio: detect ADTS and extract AudioSpecificConfig.
-  // Note: CompositeStream doesn't emit audio frames (ffmpeg handles audio internally if needed)
+  // Note: CompositeStream may forward native audio frames (typically from wider input).
   let audio: { sampleRate: number; channels: number; configHex: string } | undefined;
   const tryPrimeAudio = async (): Promise<typeof audio> => {
-    if (isCompositeStream) {
-      // Composite stream doesn't emit audio frames separately
-      // Audio would need to be extracted from the wider stream if needed
-      return undefined;
-    }
-
     return await new Promise((resolve) => {
       let sawAnyAudio = false;
       let debugLogsLeft = 3;
+      const audioPrimeTimeoutMs = isCompositeStream ? Math.min(10_000, keyframeTimeoutMs) : 5000;
       const timeout = setTimeout(() => {
         cleanup();
         if (sawAnyAudio) {
           logger.warn('Native audio frames seen but not ADTS AAC; cannot advertise audio track.');
         }
         resolve(undefined);
-      }, 5000);
+      }, audioPrimeTimeoutMs);
 
       const onAudio = (frame: Buffer) => {
         sawAnyAudio = true;
@@ -424,10 +431,10 @@ export async function createRfc4571TcpServer(
 
       const cleanup = () => {
         clearTimeout(timeout);
-        (videoStream as BaichuanVideoStream).removeListener('audioFrame' as any, onAudio as any);
+        (videoStream as any)?.removeListener?.('audioFrame' as any, onAudio as any);
       };
 
-      (videoStream as BaichuanVideoStream).on('audioFrame' as any, onAudio as any);
+      (videoStream as any)?.on?.('audioFrame' as any, onAudio as any);
     });
   };
 

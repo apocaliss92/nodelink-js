@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
 import net from "node:net";
 import { BcUdpStream } from "../bcudp/BcUdpStream";
 import {
@@ -125,6 +126,7 @@ export class BaichuanClient extends EventEmitter<{
   private readonly logger: Logger;
 
   private tcpSocket: net.Socket | undefined;
+  private socketSessionId: string | undefined;
 
   isStatePollingEnabled(): boolean {
     return this.opts.enableStatePolling ?? false;
@@ -253,6 +255,12 @@ export class BaichuanClient extends EventEmitter<{
     // this.logger.log("BaichuanClient constructor", { options, dgfg: this.debugCfg });
   }
 
+  private newSocketSessionId(transport: "tcp" | "udp"): string {
+    // Short, log-friendly id; uniqueness is best-effort.
+    const short = randomUUID().split("-")[0] ?? randomUUID().slice(0, 8);
+    return `${transport}-${short}`;
+  }
+
   private logFixed(event: string, data?: unknown): void {
     const prefix = "[BaichuanClient]";
     const msg = `${prefix} ${event}`;
@@ -321,14 +329,43 @@ export class BaichuanClient extends EventEmitter<{
           this.kickIdleDisconnectTimer();
           return;
         }
-        this.logDebug("idle_disconnect", { elapsedMs: elapsed2, timeoutMs, transport: this.transport });
-        this.logFixed("idle_disconnect", { elapsedMs: elapsed2, timeoutMs, transport: this.transport, host: this.opts.host });
+        const sid = this.socketSessionId;
+        const shortUid = this.opts.uid ? this.opts.uid.substring(0, 5) : undefined;
+        this.logDebug("idle_disconnect", { elapsedMs: elapsed2, timeoutMs, transport: this.transport, host: this.opts.host, sid, uid: shortUid });
+        this.logFixed("idle_disconnect", { elapsedMs: elapsed2, timeoutMs, transport: this.transport, host: this.opts.host, sid, uid: shortUid });
         void this.close({ reason: "idle_disconnect" });
       } catch (e) {
         this.logDebug("idle_disconnect_error", e);
       }
     }, delayMs);
     this.idleDisconnectTimer.unref?.();
+  }
+
+  /**
+   * Best-effort request to drop an idle BCUDP connection soon.
+   *
+   * This is primarily for battery cameras: after a stream teardown, we want to
+   * close the UDP session quickly (when truly idle) without force-closing shared
+   * connections that may still be in use.
+   */
+  requestIdleDisconnectSoon(reason = "requested", graceMs = 0): void {
+    try {
+      if (!this.isIdleDisconnectEnabled()) return;
+      if (this.transport !== "udp") return;
+
+      const timeoutMs = this.getIdleDisconnectTimeoutMs();
+      const g = Math.max(0, Math.floor(graceMs));
+
+      // Make the idle timer eligible as soon as possible. The eligibility check
+      // still ensures no pending requests / video subscriptions / permits.
+      this.lastUserActivityAtMs = Date.now() - timeoutMs + g;
+      const sid = this.socketSessionId;
+      const shortUid = this.opts.uid ? this.opts.uid.substring(0, 5) : undefined;
+      this.logDebug("idle_disconnect_requested", { reason, graceMs: g, timeoutMs, host: this.opts.host, sid, uid: shortUid });
+      this.kickIdleDisconnectTimer();
+    } catch {
+      // ignore
+    }
   }
 
   /**
@@ -732,6 +769,7 @@ export class BaichuanClient extends EventEmitter<{
     this.tcpSocket = sock;
     this.transport = "tcp";
     this.socketClosed = false;
+    this.socketSessionId = this.newSocketSessionId("tcp");
 
     // TCP keep-alive at OS level (helps prevent idle disconnects from NAT/camera).
     try {
@@ -745,6 +783,7 @@ export class BaichuanClient extends EventEmitter<{
       for (const f of frames) this.handleFrame(f);
     });
     sock.on("close", () => {
+      const sid = this.socketSessionId;
       // Ensure socket is completely destroyed and listeners are removed
       if (sock === this.tcpSocket) {
         this.tcpSocket = undefined;
@@ -774,11 +813,15 @@ export class BaichuanClient extends EventEmitter<{
         `transport=tcp`,
         `host=${this.opts.host}`,
       ];
+      if (sid) tcpDisconnectParts.push(`sid=${sid}`);
       const tcpPort = this.opts.port ?? BC_TCP_DEFAULT_PORT;
       if (tcpPort != null) tcpDisconnectParts.push(`port=${tcpPort}`);
       if (this.lastRxInfo?.cmdId != null) tcpDisconnectParts.push(`lastRxCmdId=${this.lastRxInfo.cmdId}`);
       if (this.lastTxInfo?.cmdId != null) tcpDisconnectParts.push(`lastTxCmdId=${this.lastTxInfo.cmdId}`);
       this.logFixed("disconnected", tcpDisconnectParts.join(" "));
+
+      // End socket session.
+      this.socketSessionId = undefined;
 
       // Reset state flags
       this.loggedIn = false;
@@ -808,7 +851,8 @@ export class BaichuanClient extends EventEmitter<{
       sock.once("error", (e) => reject(e));
     });
 
-    this.logFixed("connected", `transport=tcp host=${this.opts.host} port=${port}`);
+    const sid = this.socketSessionId;
+    this.logFixed("connected", `transport=tcp host=${this.opts.host} port=${port}${sid ? ` sid=${sid}` : ""}`);
 
     this.startKeepAlive();
     this.kickIdleDisconnectTimer();
@@ -842,12 +886,14 @@ export class BaichuanClient extends EventEmitter<{
     this.udpSocket = sock;
     this.transport = "udp";
     this.socketClosed = false;
+    this.socketSessionId = this.newSocketSessionId("udp");
 
     sock.on("data", (chunk) => {
       const frames = this.parser.push(chunk);
       for (const f of frames) this.handleFrame(f);
     });
     sock.on("close", () => {
+      const sid = this.socketSessionId;
       // Ensure socket is completely cleaned up
       if (sock === this.udpSocket) {
         this.udpSocket = undefined;
@@ -874,6 +920,7 @@ export class BaichuanClient extends EventEmitter<{
         `transport=udp`,
         `host=${this.opts.host}`,
       ];
+      if (sid) udpDisconnectParts.push(`sid=${sid}`);
       if (this.opts.uid) {
         const shortUid = this.opts.uid.substring(0, 5);
         udpDisconnectParts.push(`uid=${shortUid}`);
@@ -881,6 +928,9 @@ export class BaichuanClient extends EventEmitter<{
       if (this.lastRxInfo?.cmdId != null) udpDisconnectParts.push(`lastRxCmdId=${this.lastRxInfo.cmdId}`);
       if (this.lastTxInfo?.cmdId != null) udpDisconnectParts.push(`lastTxCmdId=${this.lastTxInfo.cmdId}`);
       this.logFixed("disconnected", udpDisconnectParts.join(" "));
+
+      // End socket session.
+      this.socketSessionId = undefined;
       // Mark session state as invalid; a new connect/login is required.
       this.loggedIn = false;
       this.subscribed = false;
@@ -910,6 +960,15 @@ export class BaichuanClient extends EventEmitter<{
       // If the camera terminates the BCUDP session (D2C_DISC), the stream will close.
       // Make sure we don't keep a stale handle around.
       if (err?.message?.includes("D2C_DISC")) {
+        const sid = this.socketSessionId;
+        const shortUid = this.opts.uid ? this.opts.uid.substring(0, 5) : undefined;
+        this.logFixed("d2c_disc", {
+          transport: "udp",
+          host: this.opts.host,
+          sid,
+          uid: shortUid,
+          message: err.message,
+        });
         this.stopKeepAlive();
         this.loggedIn = false;
         this.subscribed = false;
@@ -931,9 +990,10 @@ export class BaichuanClient extends EventEmitter<{
 
     const shortUid = this.opts.uid ? this.opts.uid.substring(0, 5) : "";
     const udpDiscoveryMethod = this.opts.udpDiscoveryMethod as string | undefined ?? 'local-direct';
+    const sid = this.socketSessionId;
     this.logFixed(
       "connected",
-      `transport=udp host=${this.opts.host} uid=${shortUid} udpDiscoveryMethod=${udpDiscoveryMethod}`,
+      `transport=udp host=${this.opts.host}${sid ? ` sid=${sid}` : ""} uid=${shortUid} udpDiscoveryMethod=${udpDiscoveryMethod}`,
     );
     this.startKeepAlive();
     this.kickIdleDisconnectTimer();
@@ -1549,6 +1609,17 @@ export class BaichuanClient extends EventEmitter<{
   private nextMsgNum(): number {
     this.msgNum = (this.msgNum + 1) & 0xffff;
     return this.msgNum;
+  }
+
+  /**
+   * Atomically allocate the next msgNum.
+   *
+   * IMPORTANT: `peekNextMsgNum()` is not safe under concurrency: two parallel callers can observe
+   * the same value and end up starting two streams with the same msgNum, which causes media packet
+   * mixups when sharing a single socket.
+   */
+  public reserveNextMsgNum(): number {
+    return this.nextMsgNum();
   }
 
   /**
