@@ -22,11 +22,115 @@ export interface DiscoveredDevice {
   /** Firmware version (if available) */
   firmwareVersion?: string;
   /** Discovery method used to find this device */
-  discoveryMethod: "http_probe" | "udp_broadcast";
+  discoveryMethod: "http_probe" | "udp_broadcast" | "udp_direct";
   /** Whether HTTPS is supported */
   supportsHttps?: boolean;
   /** Whether the device is accessible via HTTP */
   httpAccessible?: boolean;
+}
+
+/**
+ * Discover a single device via UDP unicast (useful when broadcast is blocked).
+ * This does NOT establish a BCUDP session; it only extracts UID/model/name if present.
+ */
+export async function discoverViaUdpDirect(host: string, options: DiscoveryOptions): Promise<DiscoveredDevice[]> {
+  if (!options.enableUdpDiscovery) return [];
+
+  const logger = options.logger;
+  const timeoutMs = options.udpBroadcastTimeoutMs ?? 1500;
+  const discovered: DiscoveredDevice[] = [];
+
+  const targetHost = host?.trim();
+  if (!targetHost) return [];
+
+  logger?.log?.(`[Discovery] Starting UDP direct discovery to ${targetHost} on ports ${BCUDP_DISCOVERY_PORT_LOCAL_ANY} and ${BCUDP_DISCOVERY_PORT_LOCAL_UID}...`);
+
+  return new Promise((resolve) => {
+    const socket = dgram.createSocket("udp4");
+    let timeout: NodeJS.Timeout | undefined;
+
+    socket.on("message", (msg, rinfo) => {
+      try {
+        if (rinfo.address !== targetHost) return;
+        const packet = decodeBcUdpPacket(msg);
+        if (packet.kind !== "discovery") return;
+
+        const cr = parseD2cCr(packet.xml);
+        const disc = cr ? undefined : parseD2cDisc(packet.xml);
+        if (!cr && !disc) return;
+
+        const uidMatch = /<uid>([^<]+)<\/uid>/i.exec(packet.xml);
+        const modelMatch = /<model>([^<]+)<\/model>/i.exec(packet.xml);
+        const nameMatch = /<name>([^<]+)<\/name>/i.exec(packet.xml);
+        const deviceIdMatch = /<deviceId>([^<]+)<\/deviceId>/i.exec(packet.xml);
+
+        const uid = (uidMatch?.[1] ?? deviceIdMatch?.[1])?.trim();
+        const model = modelMatch?.[1]?.trim();
+        const name = nameMatch?.[1]?.trim();
+
+        const result: DiscoveredDevice = {
+          host: rinfo.address,
+          discoveryMethod: "udp_direct",
+          ...(uid ? { uid } : {}),
+          ...(model ? { model } : {}),
+          ...(name ? { name } : {}),
+        };
+
+        discovered.push(result);
+
+        // We got what we need; close early.
+        try {
+          socket.close();
+        } catch {
+          // ignore
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    socket.on("error", (err) => {
+      logger?.warn?.(`[Discovery] UDP direct socket error: ${err.message}`);
+    });
+
+    socket.bind(() => {
+      const localPort = socket.address().port;
+      const discoveryPorts = [BCUDP_DISCOVERY_PORT_LOCAL_ANY, BCUDP_DISCOVERY_PORT_LOCAL_UID];
+
+      for (const port of discoveryPorts) {
+        try {
+          const tid = Math.floor(Math.random() * 0xff) || 1;
+          const xml = buildC2dS({ clientPort: localPort });
+          const packet = encodeDiscoveryPacket(tid, xml);
+          socket.send(packet, port, targetHost, (err) => {
+            if (err) {
+              logger?.debug?.(`[Discovery] Failed to send UDP direct to ${targetHost}:${port}: ${err.message}`);
+            }
+          });
+        } catch {
+          // ignore
+        }
+      }
+
+      timeout = setTimeout(() => {
+        try {
+          socket.close();
+        } catch {
+          // ignore
+        }
+      }, timeoutMs);
+    });
+
+    socket.on("close", () => {
+      if (timeout) clearTimeout(timeout);
+      if (discovered.length === 0) {
+        logger?.log?.(`[Discovery] UDP direct complete. No response from ${targetHost}.`);
+      } else {
+        logger?.log?.(`[Discovery] UDP direct complete. Found ${discovered.length} device(s).`);
+      }
+      resolve(discovered);
+    });
+  });
 }
 
 export type DiscoveryOptions = {

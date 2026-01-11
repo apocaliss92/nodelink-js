@@ -1,7 +1,7 @@
 import type { BaichuanClientOptions } from "../client/BaichuanClient";
 import type { Logger } from "../debug/DebugConfig";
 import { DUAL_LENS_MODELS, isDualLenseModel, ReolinkBaichuanApi } from "./baichuan/ReolinkBaichuanApi";
-import { discoverViaUdpBroadcast } from "./discovery";
+import { discoverViaUdpBroadcast, discoverViaUdpDirect } from "./discovery";
 import type { ReolinkDeviceInfo } from "./types";
 
 export type BaichuanTransport = "tcp" | "udp";
@@ -76,6 +76,26 @@ async function resolveHostToIp(host: string): Promise<string | undefined> {
 async function discoverUidForHost(host: string, logger?: Logger): Promise<string | undefined> {
   try {
     const ip = await resolveHostToIp(host);
+    const directTarget = ip ?? host;
+
+    // 1) Try UDP unicast (local-direct style). This can work even when broadcast is filtered.
+    try {
+      const directDevices = await discoverViaUdpDirect(directTarget, {
+        enableUdpDiscovery: true,
+        udpBroadcastTimeoutMs: 1200,
+        ...(logger ? { logger } : {}),
+      });
+      const directMatch = directDevices.find((d) => d.host === directTarget);
+      const directUid = normalizeUid(directMatch?.uid);
+      if (directUid) {
+        logger?.log?.(`[AutoDetect] UID discovered via UDP direct: ${maskUid(directUid)}`);
+        return directUid;
+      }
+    } catch {
+      // ignore
+    }
+
+    // 2) Fallback to UDP broadcast.
     const options = {
       enableUdpDiscovery: true,
       udpBroadcastTimeoutMs: 1500,

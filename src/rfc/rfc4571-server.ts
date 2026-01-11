@@ -262,14 +262,21 @@ export async function createRfc4571TcpServer(
           }
         };
 
+        const onClose = () => {
+          cleanup();
+          reject(new Error(`Composite stream closed before keyframe (profile=${profile})`));
+        };
+
         const cleanup = () => {
           clearTimeout(timeout);
           (videoStream as CompositeStream).removeListener('error' as any, onError as any);
           (videoStream as CompositeStream).removeListener('videoFrame' as any, onFrame as any);
+          (videoStream as CompositeStream).removeListener('close' as any, onClose as any);
         };
 
         (videoStream as CompositeStream).on('error' as any, onError as any);
         (videoStream as CompositeStream).on('videoFrame' as any, onFrame as any);
+        (videoStream as CompositeStream).on('close' as any, onClose as any);
       });
     } else {
       // For regular BaichuanVideoStream
@@ -315,7 +322,32 @@ export async function createRfc4571TcpServer(
     }
   };
 
-  const keyframe = await waitForKeyframe();
+  let keyframe: Awaited<ReturnType<typeof waitForKeyframe>>;
+  try {
+    keyframe = await waitForKeyframe();
+  } catch (e) {
+    // IMPORTANT: if we fail before returning a server handle, no teardown will run.
+    // Stop the native/composite stream pipeline here to avoid leaving watchdogs running.
+    try {
+      await videoStream.stop();
+    } catch {
+      // ignore
+    }
+
+    if (closeApiOnTeardown) {
+      await Promise.allSettled(
+        Array.from(apisToClose).map(async (a) => {
+          try {
+            await a.close();
+          } catch {
+            // ignore
+          }
+        }),
+      );
+    }
+
+    throw e;
+  }
   if (expectedVideoType && keyframe.videoType !== expectedVideoType) {
     log(`expectedVideoType mismatch (expected=${expectedVideoType} actual=${keyframe.videoType})`);
   }

@@ -7366,6 +7366,17 @@ ${xmlDateTimePayload("endTime", end)}
     const channel = options?.channel;
     const compositeOnly = options?.compositeOnly === true;
 
+    const logDebug = (msg: string, data?: unknown): void => {
+      const l: any = this.logger as any;
+      if (typeof l?.debug === "function") {
+        l.debug(msg, data);
+        return;
+      }
+      if (typeof l?.log === "function") {
+        l.log(msg, data);
+      }
+    };
+
     const lensVariant: NativeVideoStreamVariant = options?.lens ?? "default";
     const wantWide = lensVariant === "default";
     const wantTele = lensVariant !== "default";
@@ -7382,13 +7393,33 @@ ${xmlDateTimePayload("endTime", end)}
     let model: string | undefined;
     let isTrackMix = false;
     try {
-      const info = await this.getInfo(ch, { tags: ["type"] });
+      // NOTE: cmd_id 318 (per-channel GetDevInfo) is primarily for NVR channels and may fail on
+      // standalone cameras. Prefer host-level cmd_id 80 when not on NVR.
+      const info = await this.getInfo(onNvr ? ch : undefined, { tags: ["type"] });
       model = typeof (info as any)?.type === "string" ? String((info as any).type).toLowerCase() : "";
       isMultiFocal = isDualLenseModel(model);
       isTrackMix = model.includes("trackmix");
-    } catch {
-      // ignore
+    } catch (e) {
+      logDebug("[ReolinkBaichuanApi] buildVideoStreamOptions: getInfo(type) failed", {
+        host: this.host,
+        onNvr,
+        channel,
+        normalizedChannel: ch,
+        err: e instanceof Error ? e.message : String(e),
+      });
     }
+
+    logDebug("[ReolinkBaichuanApi] buildVideoStreamOptions: inputs", {
+      host: this.host,
+      onNvr,
+      channel,
+      normalizedChannel: ch,
+      compositeOnly,
+      lens: options?.lens ?? "default",
+      wantWide,
+      wantTele,
+      detected: { isMultiFocal, isTrackMix, model },
+    });
 
     const rtmpEnabledForMultifocal = false;
 
@@ -7396,6 +7427,13 @@ ${xmlDateTimePayload("endTime", end)}
     // IMPORTANT: this branch is only for "composite" (channel-less) streams.
     // Multifocal devices still expose per-channel RTSP/RTMP streams on the NVR.
     if (compositeOnly && !isMultiFocal) {
+      logDebug("[ReolinkBaichuanApi] buildVideoStreamOptions: compositeOnly requested but device not detected multifocal; returning empty", {
+        host: this.host,
+        channel,
+        normalizedChannel: ch,
+        model,
+        isMultiFocal,
+      });
       return {
         nativeStreams,
         rtmpStreams,
@@ -7404,9 +7442,22 @@ ${xmlDateTimePayload("endTime", end)}
     }
 
     if (isMultiFocal && (compositeOnly || channel === undefined)) {
-      // Get stream metadata from wider channel (channel 0) for composite stream metadata
-      const widerMetadata = await this.getStreamMetadata(0);
+      let widerMetadata: ChannelStreamMetadata | undefined;
+      try {
+        widerMetadata = await this.getStreamMetadata(0);
+      } catch (e) {
+        logDebug("[ReolinkBaichuanApi] buildVideoStreamOptions: getStreamMetadata(0) failed", {
+          host: this.host,
+          err: e instanceof Error ? e.message : String(e),
+        });
+      }
+
       const widerStreams = widerMetadata?.streams || [];
+      logDebug("[ReolinkBaichuanApi] buildVideoStreamOptions: composite branch metadata", {
+        host: this.host,
+        widerStreamsCount: widerStreams.length,
+        profiles: widerStreams.map((s) => s.profile),
+      });
 
       for (const metadata of widerStreams) {
         const profile = metadata.profile as StreamProfile;
@@ -7433,6 +7484,11 @@ ${xmlDateTimePayload("endTime", end)}
       // Note: RTSP and RTMP composite streams are not yet supported
       // They would require combining two RTSP/RTMP streams which is more complex
       // For now, only native composite streams are supported
+
+      logDebug("[ReolinkBaichuanApi] buildVideoStreamOptions: composite branch result", {
+        host: this.host,
+        nativeStreams: nativeStreams.map((s) => s.id),
+      });
 
       return {
         nativeStreams,
@@ -7537,6 +7593,11 @@ ${xmlDateTimePayload("endTime", end)}
     const streamMetadata = await this.getStreamMetadata(ch);
     const streams = streamMetadata?.streams || [];
 
+    // Standalone TrackMix tele lens calls typically come in as channel=1 + lens=telephoto.
+    // In that case, `streams` already corresponds to the tele channel, so build directly from it.
+    // (Previous logic only fetched tele metadata when ch===0, which made tele-only calls return empty.)
+    const isStandaloneTeleRequest = wantTele && isMultiFocal && !onNvr && ch === 1;
+
     // TrackMix without NVR usually exposes the tele stream as channel 1.
     // For UX, keep a single call useful by adding tele streams when available.
     // On NVR/Hub, channel 1 often doesn't exist; we add the RTSP `autotrack` variant instead.
@@ -7635,8 +7696,22 @@ ${xmlDateTimePayload("endTime", end)}
       });
     }
 
+    // Tele-only request on standalone (channel 1): build directly from channel 1 metadata.
+    if (isStandaloneTeleRequest) {
+      buildStandardStreams({
+        lens: "telephoto",
+        channel: 1,
+        metadatas: streams,
+        includeRtsp: rtspEnabled,
+        includeRtmp: rtmpEnabled,
+        includeNative: true,
+        nativeIdPrefix: "native",
+      });
+    }
+
     // Add TrackMix tele streams when available (direct camera, channel 1).
-    if (wantTele && isMultiFocal && teleStreams.length > 0) {
+    // NOTE: skip if we already handled the tele-only request above.
+    if (!isStandaloneTeleRequest && wantTele && isMultiFocal && teleStreams.length > 0) {
       buildStandardStreams({
         lens: "telephoto",
         channel: 1,
