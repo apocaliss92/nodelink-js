@@ -233,6 +233,18 @@ export class BaichuanClient extends EventEmitter<{
   // Throttled global RX cmd tracing (useful to debug missing pushes/events).
   private rxCmdTraceStats = new Map<number, { lastLogMs: number; frames: number }>();
 
+  // AlarmEventList (cmdId=33) can be very chatty (often sent every second).
+  // Track last per-channel alarm state so we only emit on transitions.
+  private readonly alarmEventState = new Map<
+    number,
+    {
+      motionActive: boolean;
+      aiTypeToken: string; // lowercased token, or "none"
+      aiFlag: boolean;
+      aiTimeStamp: number | undefined; // numeric timeStamp from event payload (often 0/undefined when idle)
+    }
+  >();
+
   constructor(options: BaichuanClientOptions) {
     super();
     this.opts = options;
@@ -1269,6 +1281,12 @@ export class BaichuanClient extends EventEmitter<{
         // Some firmwares may attach AI type in different tag names.
         const aiTypeRaw = (getXmlText(alarmXml, "AItype") ?? getXmlText(alarmXml, "aiType") ?? getXmlText(alarmXml, "aitype") ?? "").trim();
 
+        // Some firmwares include a numeric timeStamp in AlarmEvent; when present and non-zero it can
+        // be used to disambiguate real detections from static configured AI types.
+        const timeStampRaw = (getXmlText(alarmXml, "timeStamp") ?? getXmlText(alarmXml, "timestamp") ?? "").trim();
+        const timeStampNum = timeStampRaw.length ? Number(timeStampRaw) : undefined;
+        const alarmTimeStamp = Number.isFinite(timeStampNum as number) ? (timeStampNum as number) : undefined;
+
         if (this.debugCfg.traceEvents) {
           eventTraceLog(
             this.debugCfg,
@@ -1281,12 +1299,68 @@ export class BaichuanClient extends EventEmitter<{
         // Unlike older implementations, a single AlarmEvent may encode multiple independent states
         // (e.g. motion + ai + visitor). Emit all applicable events.
 
-        // Motion inference: treat as motion start when status != "none" OR aiType != "none".
+        // Motion inference: treat as motion start when status != "none".
         // Battery cams often use status "other" for PIR-based motion.
+        // IMPORTANT: Do not infer motion solely from AItype when status is "none"; some firmwares
+        // report the configured AI type even when there is no detection.
         const statusLower = status.toLowerCase();
         const statusIndicatesMotion = statusLower.length > 0 && statusLower !== "none";
-        const aiTypeIndicatesMotion = aiTypeRaw.trim().length > 0 && aiTypeRaw.trim().toLowerCase() !== "none";
-        if (statusIndicatesMotion || aiTypeIndicatesMotion) {
+        const aiTypeTokenRaw = aiTypeRaw
+          ? aiTypeRaw
+            .split(",")
+            .map((t) => t.trim())
+            .find((t) => t.length > 0 && t.toLowerCase() !== "none")
+          : undefined;
+
+        const aiFlag = statusUpper.includes("AI");
+        const aiTypeToken = (aiTypeTokenRaw ?? (aiFlag ? "other" : "none")).toLowerCase();
+
+        const prev = this.alarmEventState.get(channel);
+        const curr = { motionActive: statusIndicatesMotion, aiTypeToken, aiFlag, aiTimeStamp: alarmTimeStamp };
+
+        // First observation: initialize state, don't emit (avoids spurious startup detections).
+        if (!prev) {
+          this.alarmEventState.set(channel, curr);
+
+          // However, some firmwares report an active AI detection immediately upon subscription without
+          // toggling state. If a non-zero timeStamp is present, treat it as a concrete detection.
+          if (curr.aiTypeToken !== "none" && curr.aiTimeStamp && curr.aiTimeStamp !== 0) {
+            const t = curr.aiTypeToken;
+            const aiTypeMap: Record<string, "people" | "vehicle" | "dog_cat" | "face" | "package" | "other"> = {
+              people: "people",
+              person: "people",
+              human: "people",
+              vehicle: "vehicle",
+              car: "vehicle",
+              dog_cat: "dog_cat",
+              dog: "dog_cat",
+              cat: "dog_cat",
+              pet: "dog_cat",
+              face: "face",
+              package: "package",
+            };
+            out.push({
+              channel,
+              type: "ai",
+              ai: {
+                channel,
+                type: aiTypeMap[t] ?? "other",
+                detected: true,
+                timestamp: now,
+              },
+              timestamp: now,
+            });
+          }
+
+          // Doorbell/visitor and day/night are discrete flags; keep emitting even on first observation.
+          if (statusUpper.includes("VIS")) out.push({ channel, type: "visitor", timestamp: now });
+          if (statusUpper.includes("DN")) out.push({ channel, type: "daynight", timestamp: now });
+
+          continue;
+        }
+
+        // Motion: emit only on rising edge.
+        if (!prev.motionActive && curr.motionActive) {
           const source =
             statusUpper.includes("MD") ? "md" : statusUpper.includes("PIR") || statusUpper.includes("OTHER") ? "pir" : "unknown";
           out.push({
@@ -1297,14 +1371,18 @@ export class BaichuanClient extends EventEmitter<{
           });
         }
 
-        const aiTypeToken = aiTypeRaw
-          ? aiTypeRaw
-            .split(",")
-            .map((t) => t.trim())
-            .find((t) => t.length > 0 && t.toLowerCase() !== "none")
-          : undefined;
-        if (aiTypeToken) {
-          const t = aiTypeToken.toLowerCase();
+        // AI: many firmwares (notably hubs) toggle AItype between "none" and a token while status stays "none".
+        // Emit on AI type transition to a non-none value.
+        // Additionally, if a non-zero timeStamp is present, emit when it changes (some firmwares keep AItype
+        // constant like "other" while timeStamp increments per detection).
+        const aiTypeChanged = prev.aiTypeToken !== curr.aiTypeToken;
+        const aiTimeStampChanged =
+          curr.aiTimeStamp !== undefined &&
+          curr.aiTimeStamp !== 0 &&
+          curr.aiTimeStamp !== prev.aiTimeStamp;
+
+        if ((aiTypeChanged && curr.aiTypeToken !== "none") || (aiTimeStampChanged && curr.aiTypeToken !== "none")) {
+          const t = curr.aiTypeToken;
           const aiTypeMap: Record<string, "people" | "vehicle" | "dog_cat" | "face" | "package" | "other"> = {
             people: "people",
             person: "people",
@@ -1329,15 +1407,13 @@ export class BaichuanClient extends EventEmitter<{
             },
             timestamp: now,
           });
-        } else if (statusUpper.includes("AI")) {
-          // Some firmwares signal AI without an explicit AItype.
-          out.push({
-            channel,
-            type: "ai",
-            ai: { channel, type: "other", detected: true, timestamp: now },
-            timestamp: now,
-          });
         }
+
+        // Update state after processing.
+        this.alarmEventState.set(channel, curr);
+
+        // Doorbell/visitor notification.
+        // These can be noisy; keep legacy behavior (emit whenever flag is present).
 
         // Doorbell/visitor notification.
         if (statusUpper.includes("VIS")) {
@@ -1360,12 +1436,65 @@ export class BaichuanClient extends EventEmitter<{
     const statusUpper = status.toUpperCase();
     const aiTypeRaw = (getXmlText(eventXml, "AItype") ?? getXmlText(eventXml, "aiType") ?? getXmlText(eventXml, "aitype") ?? "").trim();
 
+  const timeStampRaw = (getXmlText(eventXml, "timeStamp") ?? getXmlText(eventXml, "timestamp") ?? "").trim();
+  const timeStampNum = timeStampRaw.length ? Number(timeStampRaw) : undefined;
+  const alarmTimeStamp = Number.isFinite(timeStampNum as number) ? (timeStampNum as number) : undefined;
+
     const out: ReolinkEvent[] = [];
 
     const statusLower = status.toLowerCase();
     const statusIndicatesMotion = statusLower.length > 0 && statusLower !== "none";
-    const aiTypeIndicatesMotion = aiTypeRaw.trim().length > 0 && aiTypeRaw.trim().toLowerCase() !== "none";
-    if (statusIndicatesMotion || aiTypeIndicatesMotion) {
+
+    const aiTypeTokenRaw = aiTypeRaw
+      ? aiTypeRaw
+        .split(",")
+        .map((t) => t.trim())
+        .find((t) => t.length > 0 && t.toLowerCase() !== "none")
+      : undefined;
+    const aiFlag = statusUpper.includes("AI");
+    const aiTypeToken = (aiTypeTokenRaw ?? (aiFlag ? "other" : "none")).toLowerCase();
+
+    const prev = this.alarmEventState.get(fallbackChannel);
+    const curr = { motionActive: statusIndicatesMotion, aiTypeToken, aiFlag, aiTimeStamp: alarmTimeStamp };
+
+    if (!prev) {
+      this.alarmEventState.set(fallbackChannel, curr);
+
+      if (curr.aiTypeToken !== "none" && curr.aiTimeStamp && curr.aiTimeStamp !== 0) {
+        const t = curr.aiTypeToken;
+        const aiTypeMap: Record<string, "people" | "vehicle" | "dog_cat" | "face" | "package" | "other"> = {
+          people: "people",
+          person: "people",
+          human: "people",
+          vehicle: "vehicle",
+          car: "vehicle",
+          dog_cat: "dog_cat",
+          dog: "dog_cat",
+          cat: "dog_cat",
+          pet: "dog_cat",
+          face: "face",
+          package: "package",
+        };
+        out.push({
+          channel: fallbackChannel,
+          type: "ai",
+          ai: {
+            channel: fallbackChannel,
+            type: aiTypeMap[t] ?? "other",
+            detected: true,
+            timestamp: now,
+          },
+          timestamp: now,
+        });
+      }
+
+      if (statusUpper.includes("VIS")) out.push({ channel: fallbackChannel, type: "visitor", timestamp: now });
+      if (statusUpper.includes("DN")) out.push({ channel: fallbackChannel, type: "daynight", timestamp: now });
+
+      return out;
+    }
+
+    if (!prev.motionActive && curr.motionActive) {
       const source = statusUpper.includes("MD") ? "md" : statusUpper.includes("PIR") || statusUpper.includes("OTHER") ? "pir" : "unknown";
       out.push({
         channel: fallbackChannel,
@@ -1375,14 +1504,14 @@ export class BaichuanClient extends EventEmitter<{
       });
     }
 
-    const aiTypeToken = aiTypeRaw
-      ? aiTypeRaw
-        .split(",")
-        .map((t) => t.trim())
-        .find((t) => t.length > 0 && t.toLowerCase() !== "none")
-      : undefined;
-    if (aiTypeToken) {
-      const t = aiTypeToken.toLowerCase();
+    const aiTypeChanged = prev.aiTypeToken !== curr.aiTypeToken;
+    const aiTimeStampChanged =
+      curr.aiTimeStamp !== undefined &&
+      curr.aiTimeStamp !== 0 &&
+      curr.aiTimeStamp !== prev.aiTimeStamp;
+
+    if ((aiTypeChanged && curr.aiTypeToken !== "none") || (aiTimeStampChanged && curr.aiTypeToken !== "none")) {
+      const t = curr.aiTypeToken;
       const aiTypeMap: Record<string, "people" | "vehicle" | "dog_cat" | "face" | "package" | "other"> = {
         people: "people",
         person: "people",
@@ -1407,22 +1536,12 @@ export class BaichuanClient extends EventEmitter<{
         },
         timestamp: now,
       });
-    } else if (statusUpper.includes("AI")) {
-      out.push({
-        channel: fallbackChannel,
-        type: "ai",
-        ai: { channel: fallbackChannel, type: "other", detected: true, timestamp: now },
-        timestamp: now,
-      });
     }
 
-    if (statusUpper.includes("VIS")) {
-      out.push({ channel: fallbackChannel, type: "visitor", timestamp: now });
-    }
+    this.alarmEventState.set(fallbackChannel, curr);
 
-    if (statusUpper.includes("DN")) {
-      out.push({ channel: fallbackChannel, type: "daynight", timestamp: now });
-    }
+    if (statusUpper.includes("VIS")) out.push({ channel: fallbackChannel, type: "visitor", timestamp: now });
+    if (statusUpper.includes("DN")) out.push({ channel: fallbackChannel, type: "daynight", timestamp: now });
 
     return out;
   }

@@ -289,11 +289,11 @@ export class BaichuanVideoStream extends EventEmitter<{
     // Hub/NVR tele selection uses Preview v1.1 while keeping header streamType=0.
     // Without this, native_sub telephoto would discard all frames and timeout.
     if (this.variant === "telephoto") this.expectedStreamTypes.add(0);
-    this.logger?.log(
-      `[BaichuanVideoStream] constructor: channel=${this.channel}, profile=${this.profile}, variant=${this.variant}, expectedStreamTypes=[${[
-        ...this.expectedStreamTypes,
-      ].join(",")}]`
-    );
+    // this.logger?.log(
+    //   `[BaichuanVideoStream] constructor: channel=${this.channel}, profile=${this.profile}, variant=${this.variant}, expectedStreamTypes=[${[
+    //     ...this.expectedStreamTypes,
+    //   ].join(",")}]`
+    // );
     this.bcMediaCodec = new BcMediaCodec(false, this.logger); // non-strict mode for error recovery
     // Debug is configured on the client; the library must not read env vars.
     const dbg = this.client.getDebugConfig();
@@ -469,11 +469,11 @@ export class BaichuanVideoStream extends EventEmitter<{
       const rtspDebug = dbg.debugRtsp;
       if (totalFramesReceived === 1) {
         // Always log first frame info for debugging variant issues
-        this.logger?.log(
-          `[BaichuanVideoStream] First frame accepted: streamType=${frame.header.streamType}, expectedAny=[${[
-            ...this.expectedStreamTypes,
-          ].join(",")}], msgNum=${frame.header.msgNum}, activeMsgNum=${this.activeMsgNum}, channelId=${frame.header.channelId}, bodyLen=${frame.body.length}, variant=${this.variant}`
-        );
+        // this.logger?.log(
+        //   `[BaichuanVideoStream] First frame accepted: streamType=${frame.header.streamType}, expectedAny=[${[
+        //     ...this.expectedStreamTypes,
+        //   ].join(",")}], msgNum=${frame.header.msgNum}, activeMsgNum=${this.activeMsgNum}, channelId=${frame.header.channelId}, bodyLen=${frame.body.length}, variant=${this.variant}`
+        // );
         if (rtspDebug) {
           this.logger?.log(
             `[BaichuanVideoStream] First cmd_id=3 frame received (bodyLen: ${frame.body.length}, channelId: ${frame.header.channelId})`
@@ -999,9 +999,9 @@ export class BaichuanVideoStream extends EventEmitter<{
         // Small delay to ensure the device has processed the stop commands
         await new Promise((resolve) => setTimeout(resolve, 100));
 
-        this.logger?.log(
-          `[BaichuanVideoStream] start() calling startVideoStream: channel=${this.channel}, profile=${this.profile}, variant=${this.variant}`
-        );
+        // this.logger?.log(
+        //   `[BaichuanVideoStream] start() calling startVideoStream: channel=${this.channel}, profile=${this.profile}, variant=${this.variant}`
+        // );
 
         const startPromise = this.api.startVideoStream(this.channel, this.profile, { variant: this.variant });
 

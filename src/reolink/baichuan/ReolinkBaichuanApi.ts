@@ -721,7 +721,7 @@ export class ReolinkBaichuanApi {
   private readonly disconnectStormVoluntaryAtMs: number[] = [];
   private disconnectStormRebootInFlight: Promise<void> | undefined;
   private disconnectStormLastRebootAtMs: number | undefined;
-  private readonly simpleEventListeners = new Set<(event: ReolinkSimpleEvent) => void>();
+  private readonly simpleEventListeners = new Set<(event: ReolinkSimpleEvent) => void | Promise<void>>();
   private simpleEventSubscribed = false;
   private simpleEventSubscribeInFlight: Promise<void> | undefined;
   private simpleEventUnsubscribeInFlight: Promise<void> | undefined;
@@ -840,6 +840,24 @@ export class ReolinkBaichuanApi {
 
   private recordingsCacheTtlMs = 20 * 60 * 1000;
 
+  private dispatchSimpleEvent(evt: ReolinkSimpleEvent): void {
+    for (const cb of this.simpleEventListeners) {
+      try {
+        const r = cb(evt) as unknown;
+        // Support async handlers (common in Scrypted plugins) without unhandled rejections.
+        if (typeof (r as any)?.catch === 'function') {
+          (r as any).catch((e: unknown) => {
+            (this.logger.warn ?? this.logger.error).call(this.logger, "[ReolinkBaichuanApi] onSimpleEvent handler error", e);
+          });
+        }
+      }
+      catch (e) {
+        // Never allow user handlers to break the Baichuan client's event loop.
+        (this.logger.warn ?? this.logger.error).call(this.logger, "[ReolinkBaichuanApi] onSimpleEvent handler error", e);
+      }
+    }
+  }
+
   constructor(opts: BaichuanClientOptions & {
     /**
      * Reboot the device if there are too many *voluntary* disconnects within 60 seconds.
@@ -874,15 +892,7 @@ export class ReolinkBaichuanApi {
       const mapped = mapToSimpleEvent(event);
       if (!mapped) return;
 
-      for (const cb of this.simpleEventListeners) {
-        try {
-          cb(mapped);
-        }
-        catch (e) {
-          // Never allow user handlers to break the Baichuan client's event loop.
-          (this.logger.warn ?? this.logger.error).call(this.logger, "[ReolinkBaichuanApi] onSimpleEvent handler error", e);
-        }
-      }
+      this.dispatchSimpleEvent(mapped);
     });
 
     // Handle channel info push from NVR (cmd_id 145)
@@ -1077,7 +1087,7 @@ export class ReolinkBaichuanApi {
    * Subscribe to minimal high-level events.
    * The API manages Baichuan subscribe/unsubscribe automatically.
    */
-  async onSimpleEvent(callback: (event: ReolinkSimpleEvent) => void): Promise<void> {
+  async onSimpleEvent(callback: (event: ReolinkSimpleEvent) => void | Promise<void>): Promise<void> {
     this.simpleEventListeners.add(callback);
     await this.ensureSimpleEventSubscribed();
     this.startSimpleEventResubscribeTimer();
@@ -1087,7 +1097,7 @@ export class ReolinkBaichuanApi {
    * Remove one callback, or all callbacks if omitted.
    * When the last listener is removed, the API unsubscribes from Baichuan events.
    */
-  async offSimpleEvent(callback?: (event: ReolinkSimpleEvent) => void): Promise<void> {
+  async offSimpleEvent(callback?: (event: ReolinkSimpleEvent) => void | Promise<void>): Promise<void> {
     if (callback) {
       this.simpleEventListeners.delete(callback);
     }
@@ -1609,9 +1619,7 @@ export class ReolinkBaichuanApi {
     const allBlocks = [...channelBlocks, ...iotBlocks];
 
     // Verbose payload; keep it under debug only.
-    this.logger.debug?.(`[ReolinkBaichuanApi] cmd_id 145 ChannelInfo push: blocks=${allBlocks.length}`);
-
-    // this.logger.debug?.(`[ReolinkBaichuanApi] parseAndStoreChannelInfo: found ${channelBlocks.length} ChannelInfo blocks, ${iotBlocks.length} IOTInfo blocks`);
+    this.logger.debug?.(`[ReolinkBaichuanApi] cmd_id 145 ChannelInfo push: blocks=${JSON.stringify(allBlocks)}`);
 
     for (const block of allBlocks) {
       // Extract channel number - cmd_id 145 uses <channelId> not <channel>
@@ -1700,13 +1708,7 @@ export class ReolinkBaichuanApi {
           channel,
           timestamp: nowMs,
         };
-        for (const cb of this.simpleEventListeners) {
-          try {
-            cb(evt);
-          } catch (e) {
-            (this.logger.warn ?? this.logger.error).call(this.logger, "[ReolinkBaichuanApi] onSimpleEvent handler error", e);
-          }
-        }
+        this.dispatchSimpleEvent(evt);
       }
 
       // Best-effort sleep state.
@@ -1737,13 +1739,7 @@ export class ReolinkBaichuanApi {
             channel,
             timestamp: nowMs,
           };
-          for (const cb of this.simpleEventListeners) {
-            try {
-              cb(evt);
-            } catch (e) {
-              (this.logger.warn ?? this.logger.error).call(this.logger, "[ReolinkBaichuanApi] onSimpleEvent handler error", e);
-            }
-          }
+          this.dispatchSimpleEvent(evt);
         }
       }
 
@@ -4714,24 +4710,6 @@ ${xmlDateTimePayload("endTime", end)}
   }
 
   /**
-   * Dispatch a simple event to all listeners.
-   */
-  private dispatchSimpleEvent(event: ReolinkSimpleEvent): void {
-    for (const cb of this.simpleEventListeners) {
-      try {
-        cb(event);
-      } catch (e) {
-        // Never allow user handlers to break the event loop
-        (this.logger.warn ?? this.logger.error)?.call(
-          this.logger,
-          "[ReolinkBaichuanApi] onSimpleEvent handler error",
-          e,
-        );
-      }
-    }
-  }
-
-  /**
    * Start periodic polling of motion and AI state (every 5 seconds).
    * Only starts if there are listeners and polling is not already running.
    * Polling is disabled for UDP/battery cameras to avoid waking them unnecessarily.
@@ -4978,15 +4956,15 @@ ${xmlDateTimePayload("endTime", end)}
         : [];
 
     // Log stream request details for debugging
-    if (this.logger?.log) {
-      try {
-        this.logger.log(
-          `[ReolinkBaichuanApi] startVideoStream REQUEST: channel=${ch}, profile=${profile}, variant=${variant}, streamType=${config.streamType}, handle=${config.handle}, streamName=${streamName}`
-        );
-      } catch {
-        // Ignore logging errors
-      }
-    }
+    // if (this.logger?.log) {
+    //   try {
+    //     this.logger.log(
+    //       `[ReolinkBaichuanApi] startVideoStream REQUEST: channel=${ch}, profile=${profile}, variant=${variant}, streamType=${config.streamType}, handle=${config.handle}, streamName=${streamName}`
+    //     );
+    //   } catch {
+    //     // Ignore logging errors
+    //   }
+    // }
 
     // Subscribe (MSG_ID_VIDEO, msg_num) BEFORE sending the command.
     // On some BCUDP/battery models, the start-stream request can sporadically timeout;
@@ -5043,15 +5021,15 @@ ${xmlDateTimePayload("endTime", end)}
         }
         if (!frame) frame = await this.client.sendFrame(baseParams);
 
-        if (this.logger?.log) {
-          try {
-            this.logger.log(
-              `[ReolinkBaichuanApi] startVideoStream response: channel=${ch}, profile=${profile}, variant=${variant}, streamType=${config.streamType}, responseCode=${frame.header.responseCode}, msgNum=${frame.header.msgNum}`
-            );
-          } catch {
-            // Ignore logging errors
-          }
-        }
+        // if (this.logger?.log) {
+        //   try {
+        //     this.logger.log(
+        //       `[ReolinkBaichuanApi] startVideoStream response: channel=${ch}, profile=${profile}, variant=${variant}, streamType=${config.streamType}, responseCode=${frame.header.responseCode}, msgNum=${frame.header.msgNum}`
+        //     );
+        //   } catch {
+        //     // Ignore logging errors
+        //   }
+        // }
 
         if (frame.header.responseCode !== 200) {
           throw new Error(
