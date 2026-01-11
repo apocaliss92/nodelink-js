@@ -35,7 +35,11 @@ export interface CompositeStreamPipOptions {
   pipPosition?: PipPosition;
   /** PIP size (default: 0.25) */
   pipSize?: number;
-  /** PIP margin in pixels (default: 10) */
+  /**
+   * PIP margin from edge.
+   * - Preferred: fraction of output size (e.g. 0.01 = 1%).
+   * - Legacy: values > 1 are treated as pixels.
+   */
   pipMargin?: number;
   /** True when behind NVR/Hub (tele is selected via stream variant on the same channel). */
   onNvr?: boolean;
@@ -44,6 +48,11 @@ export interface CompositeStreamPipOptions {
    * Output is always H.264 regardless.
    */
   forceH264?: boolean;
+
+  /** Assume both wider+tele inputs are already H.264 and skip codec detection. */
+  assumeH264Inputs?: boolean;
+  /** Best-effort knob; overlay requires re-encode in ffmpeg, so this cannot fully disable encoding. */
+  disableTranscode?: boolean;
 }
 
 export type CompositeStreamOptions = {
@@ -73,6 +82,11 @@ export type CompositeStreamOptions = {
    * Output is always H.264 regardless.
    */
   forceH264?: boolean;
+
+  /** Assume both wider+tele inputs are already H.264 and skip codec detection. */
+  assumeH264Inputs?: boolean;
+  /** Best-effort knob; overlay requires re-encode in ffmpeg, so this cannot fully disable encoding. */
+  disableTranscode?: boolean;
   /** Optional logger */
   logger?: Logger;
   /**
@@ -149,11 +163,13 @@ export class CompositeStream extends EventEmitter<{
 
   // Prime frames read before ffmpeg starts (used to infer codec + seed decoder).
   private widerPrimeFrame:
-    | { data: Buffer; videoType?: "H264" | "H265"; isKeyframe?: boolean }
+    | { data: Buffer; videoType?: "H264" | "H265"; isKeyframe?: boolean; microseconds?: number | null }
     | undefined;
   private telePrimeFrame:
-    | { data: Buffer; videoType?: "H264" | "H265"; isKeyframe?: boolean }
+    | { data: Buffer; videoType?: "H264" | "H265"; isKeyframe?: boolean; microseconds?: number | null }
     | undefined;
+
+  private ffmpegInputOffsetSec: { wider?: number; tele?: number } | undefined;
 
   private ffmpegStderrLastLogAtMs = 0;
   private ffmpegStderrLogBurst = 0;
@@ -206,6 +222,18 @@ export class CompositeStream extends EventEmitter<{
     this.logger = options.logger ?? console;
   }
 
+  private resolvePipMarginPx(mainWidth: number, mainHeight: number): number {
+    const raw = this.options.pipMargin;
+    if (raw === undefined || raw === null) return 10;
+    const v = Number(raw);
+    if (!Number.isFinite(v) || v < 0) return 10;
+    // Legacy: treat values > 1 as pixels.
+    if (v > 1) return Math.floor(v);
+    // New: treat as fraction (0..1) of output size.
+    const base = Math.min(mainWidth, mainHeight);
+    return Math.max(0, Math.floor(base * v));
+  }
+
   private describeApiClient(api: ReolinkBaichuanApi | undefined): { transport?: string; host?: string; sid?: number; uid?: string } {
     const c: any = api ? (api as any).client : undefined;
     if (!c) return {};
@@ -232,9 +260,9 @@ export class CompositeStream extends EventEmitter<{
     gen: AsyncGenerator<any, void, unknown>,
     timeoutMs: number,
     requireKeyframe: boolean,
-  ): Promise<{ data: Buffer; videoType?: "H264" | "H265"; isKeyframe?: boolean } | undefined> {
+  ): Promise<{ data: Buffer; videoType?: "H264" | "H265"; isKeyframe?: boolean; microseconds?: number | null } | undefined> {
     const start = Date.now();
-    let first: { data: Buffer; videoType?: "H264" | "H265"; isKeyframe?: boolean } | undefined;
+    let first: { data: Buffer; videoType?: "H264" | "H265"; isKeyframe?: boolean; microseconds?: number | null } | undefined;
 
     while (Date.now() - start < timeoutMs) {
       const r = await Promise.race([
@@ -245,8 +273,8 @@ export class CompositeStream extends EventEmitter<{
       if (!r || (r as any).done) return first;
       const v = (r as any).value;
       if (!v || v.audio) continue;
-      if (!first) first = { data: v.data, videoType: v.videoType, isKeyframe: v.isKeyframe };
-      if (v.isKeyframe) return { data: v.data, videoType: v.videoType, isKeyframe: v.isKeyframe };
+      if (!first) first = { data: v.data, videoType: v.videoType, isKeyframe: v.isKeyframe, microseconds: v.microseconds };
+      if (v.isKeyframe) return { data: v.data, videoType: v.videoType, isKeyframe: v.isKeyframe, microseconds: v.microseconds };
     }
 
     return requireKeyframe ? undefined : first;
@@ -262,6 +290,7 @@ export class CompositeStream extends EventEmitter<{
 
     this.active = true;
     this.audioSource = undefined;
+    this.ffmpegInputOffsetSec = undefined;
     this.logger.log?.("[CompositeStream] Starting composite stream...");
 
     try {
@@ -330,7 +359,7 @@ export class CompositeStream extends EventEmitter<{
         mainHeight,
         pipWidth,
         pipHeight,
-        this.options.pipMargin ?? 10
+        this.resolvePipMarginPx(mainWidth, mainHeight)
       );
 
       this.logger.log?.(
@@ -355,18 +384,29 @@ export class CompositeStream extends EventEmitter<{
       // metadata may not reflect tele variant, and helps ffmpeg see a clean access unit early.
       // Prefer waiting for an IDR on both inputs (startup alignment). Fallback to any video frame if needed.
       const inputStartupTimeoutMs = Math.max(1000, this.options.inputStartupTimeoutMs ?? 20_000);
-      const requireKeyframeOnStartup = this.options.requireKeyframeOnStartup ?? true;
+      // If we assume H.264 inputs, avoid sync/gating mechanisms to minimize startup latency.
+      const requireKeyframeOnStartup = this.options.assumeH264Inputs ? false : (this.options.requireKeyframeOnStartup ?? true);
 
+      // Prime both streams BEFORE starting ffmpeg.
+      // When requireKeyframeOnStartup=true, we ONLY accept a keyframe.
       const primeKeyframeMs = inputStartupTimeoutMs;
       const primeAnyFrameMs = Math.min(5_000, Math.max(1_000, Math.floor(inputStartupTimeoutMs / 3)));
 
-      const [widerPrime, telePrime] = await Promise.all([
-        this.primeForFfmpeg(this.widerStream, primeKeyframeMs, requireKeyframeOnStartup),
-        this.primeForFfmpeg(this.teleStream, primeKeyframeMs, requireKeyframeOnStartup),
-      ]);
-
-      this.widerPrimeFrame = widerPrime ?? (await this.primeForFfmpeg(this.widerStream, primeAnyFrameMs, false));
-      this.telePrimeFrame = telePrime ?? (await this.primeForFfmpeg(this.teleStream, primeAnyFrameMs, false));
+      if (requireKeyframeOnStartup) {
+        const [widerPrime, telePrime] = await Promise.all([
+          this.primeForFfmpeg(this.widerStream, primeKeyframeMs, true),
+          this.primeForFfmpeg(this.teleStream, primeKeyframeMs, true),
+        ]);
+        this.widerPrimeFrame = widerPrime;
+        this.telePrimeFrame = telePrime;
+      } else {
+        const [widerPrime, telePrime] = await Promise.all([
+          this.primeForFfmpeg(this.widerStream, primeAnyFrameMs, false),
+          this.primeForFfmpeg(this.teleStream, primeAnyFrameMs, false),
+        ]);
+        this.widerPrimeFrame = widerPrime;
+        this.telePrimeFrame = telePrime;
+      }
 
       const widerFp = this.fingerprintFrame(this.widerPrimeFrame?.data);
       const teleFp = this.fingerprintFrame(this.telePrimeFrame?.data);
@@ -387,8 +427,8 @@ export class CompositeStream extends EventEmitter<{
         `[CompositeStream] Prime: wider=${this.widerPrimeFrame?.isKeyframe ? 'keyframe' : (this.widerPrimeFrame ? 'frame' : 'none')}, tele=${this.telePrimeFrame?.isKeyframe ? 'keyframe' : (this.telePrimeFrame ? 'frame' : 'none')}`
       );
 
-      // Do not start ffmpeg until BOTH inputs have produced at least one video frame.
-      // Otherwise ffmpeg sees EOF/0 packets on one input and exits immediately.
+      // Do not start ffmpeg until BOTH inputs have produced a usable frame.
+      // When requireKeyframeOnStartup=true, this means BOTH must have a keyframe.
       if (!this.widerPrimeFrame || !this.telePrimeFrame) {
         const missing = [
           !this.widerPrimeFrame ? 'wider' : null,
@@ -396,15 +436,47 @@ export class CompositeStream extends EventEmitter<{
         ].filter(Boolean).join(', ');
         throw new Error(
           `[CompositeStream] Missing input frames (${missing}) within ${inputStartupTimeoutMs}ms. ` +
-            `Battery cameras may need extra wake-up time; consider increasing inputStartupTimeoutMs.`,
+            `If your camera has a very long GOP/keyframe interval, startup will be slow. ` +
+            `Consider increasing inputStartupTimeoutMs or enabling forceH264 (often shorter GOP on substream).`,
         );
+      }
+
+      // Timestamp-based sync (ffmpeg -itsoffset) adds latency and is best-effort.
+      // If we assume H.264 inputs (sub+sub fast GOP), skip all sync mechanisms to minimize startup latency.
+      if (!this.options.assumeH264Inputs) {
+        try {
+          const wUs = this.widerPrimeFrame.microseconds;
+          const tUs = this.telePrimeFrame.microseconds;
+          if (typeof wUs === 'number' && typeof tUs === 'number' && Number.isFinite(wUs) && Number.isFinite(tUs)) {
+            const deltaSec = (tUs - wUs) / 1_000_000;
+            const abs = Math.abs(deltaSec);
+            // Ignore tiny jitter; cap absurd offsets.
+            if (abs >= 0.2 && abs <= 60) {
+              if (deltaSec > 0) {
+                // Tele timestamp is later -> delay wider.
+                this.ffmpegInputOffsetSec = { wider: abs };
+              } else {
+                // Wider timestamp is later -> delay tele.
+                this.ffmpegInputOffsetSec = { tele: abs };
+              }
+              this.logger.log?.(
+                `[CompositeStream] Input timestamp delta: widerUs=${wUs} teleUs=${tUs} deltaSec=${deltaSec.toFixed(3)} ` +
+                  `applying itoffset=${abs.toFixed(3)}s to ${deltaSec > 0 ? 'wider' : 'tele'}`,
+              );
+            }
+          }
+        } catch {
+          // ignore
+        }
+      } else {
+        this.ffmpegInputOffsetSec = undefined;
       }
 
       const widerCodecFromFrames = this.widerPrimeFrame?.videoType === 'H265' ? 'hevc' : (this.widerPrimeFrame?.videoType === 'H264' ? 'h264' : undefined);
       const teleCodecFromFrames = this.telePrimeFrame?.videoType === 'H265' ? 'hevc' : (this.telePrimeFrame?.videoType === 'H264' ? 'h264' : undefined);
 
       // Start ffmpeg for composition
-      await this.startFfmpegComposition(mainWidth, mainHeight, pipWidth, pipHeight, position, widerCodecFromFrames, teleCodecFromFrames);
+      await this.startFfmpegComposition(mainWidth, mainHeight, pipWidth, pipHeight, position, widerCodecFromFrames, teleCodecFromFrames, this.ffmpegInputOffsetSec);
 
       this.logger.log?.("[CompositeStream] Composite stream started");
     } catch (error) {
@@ -425,6 +497,7 @@ export class CompositeStream extends EventEmitter<{
     position: { x: number; y: number },
     widerCodecOverride?: "h264" | "hevc",
     teleCodecOverride?: "h264" | "hevc",
+    inputOffsetSec?: { wider?: number; tele?: number },
   ): Promise<void> {
     const widerApi = this.options.widerApi ?? this.options.api;
     const teleApi = this.options.teleApi ?? this.options.api;
@@ -440,13 +513,25 @@ export class CompositeStream extends EventEmitter<{
     
     // Determine codec for each input stream.
     // Prefer real frame-derived codec, because on NVR/Hub tele variant can differ from metadata.
-    const widerCodec = widerCodecOverride ?? (widerStreamInfo?.videoEncType?.toLowerCase().includes("265") ? "hevc" : "h264");
-    const teleCodec = teleCodecOverride ?? (teleStreamInfo?.videoEncType?.toLowerCase().includes("265") ? "hevc" : "h264");
+    const assumeH264Inputs = this.options.assumeH264Inputs === true;
+    const widerCodec = assumeH264Inputs
+      ? "h264"
+      : (widerCodecOverride ?? (widerStreamInfo?.videoEncType?.toLowerCase().includes("265") ? "hevc" : "h264"));
+    const teleCodec = assumeH264Inputs
+      ? "h264"
+      : (teleCodecOverride ?? (teleStreamInfo?.videoEncType?.toLowerCase().includes("265") ? "hevc" : "h264"));
     
     // Log codec detection for debugging
     this.logger.log?.(
       `[CompositeStream] Codec detection: wider=${widerCodec} (from metadata: ${widerStreamInfo?.videoEncType || "unknown"}), tele=${teleCodec} (from metadata: ${teleStreamInfo?.videoEncType || "unknown"})`
     );
+
+    if (this.options.disableTranscode) {
+      // Overlay requires decode+encode; we cannot truly `-c:v copy`.
+      this.logger.warn?.(
+        `[CompositeStream] disableTranscode requested, but overlay requires re-encode in ffmpeg; proceeding with libx264 output.`,
+      );
+    }
 
     // ffmpeg args for composition
     // Input 0: wider stream (main)
@@ -454,6 +539,21 @@ export class CompositeStream extends EventEmitter<{
     // Output: composite stream with overlay
     // Note: For raw H264/H265 streams from pipes, we need to specify the format
     // but we add flags to help ffmpeg detect the codec more reliably
+    const widerInputArgs: string[] = [
+      ...(inputOffsetSec?.wider ? ["-itsoffset", String(inputOffsetSec.wider)] : []),
+      "-f",
+      widerCodec,
+      "-i",
+      "pipe:0",
+    ];
+    const teleInputArgs: string[] = [
+      ...(inputOffsetSec?.tele ? ["-itsoffset", String(inputOffsetSec.tele)] : []),
+      "-f",
+      teleCodec,
+      "-i",
+      "pipe:3",
+    ];
+
     const ffmpegArgs = [
       "-hide_banner",
       "-loglevel", "error",
@@ -461,11 +561,9 @@ export class CompositeStream extends EventEmitter<{
       "-probesize", "32", // Small probe size for faster detection
       "-analyzeduration", "500000", // 0.5 seconds to analyze stream
       // Input 0: wider stream (main)
-      "-f", widerCodec,
-      "-i", "pipe:0",
-      // Input 1: tele stream (PIP)  
-      "-f", teleCodec,
-      "-i", "pipe:3",
+      ...widerInputArgs,
+      // Input 1: tele stream (PIP)
+      ...teleInputArgs,
       // Filter to scale and position PIP
       "-filter_complex",
       `[0:v]scale=${mainWidth}:${mainHeight}[main];[1:v]scale=${pipWidth}:${pipHeight}[pip];[main][pip]overlay=${position.x}:${position.y}[out]`,
@@ -618,7 +716,7 @@ export class CompositeStream extends EventEmitter<{
       return;
     }
 
-    const requireKeyframeOnStartup = this.options.requireKeyframeOnStartup ?? true;
+    const requireKeyframeOnStartup = this.options.assumeH264Inputs ? false : (this.options.requireKeyframeOnStartup ?? true);
 
     const widerStdin = this.ffmpegProcess.stdio[0] as NodeJS.WritableStream | null;
     const teleStdin = this.ffmpegProcess.stdio[3] as NodeJS.WritableStream | null;

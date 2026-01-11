@@ -209,9 +209,12 @@ export async function createRfc4571TcpServer(
       teleProfile,
       pipPosition: compositeOptions?.pipPosition ?? "bottom-right",
       pipSize: compositeOptions?.pipSize ?? 0.25,
-      pipMargin: compositeOptions?.pipMargin ?? 10,
+      // New default is percent-friendly (1%). Values > 1 are still treated as pixels.
+      pipMargin: compositeOptions?.pipMargin ?? 0.01,
       ...(compositeOptions?.onNvr !== undefined ? { onNvr: compositeOptions.onNvr } : {}),
       ...(forceH264 !== undefined ? { forceH264 } : (defaultForceH264 ? { forceH264: true } : {})),
+      ...(compositeOptions?.assumeH264Inputs !== undefined ? { assumeH264Inputs: compositeOptions.assumeH264Inputs } : {}),
+      ...(compositeOptions?.disableTranscode !== undefined ? { disableTranscode: compositeOptions.disableTranscode } : {}),
       logger,
     });
 

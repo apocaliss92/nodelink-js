@@ -234,6 +234,17 @@ function clamp01(v: number): number {
   return v;
 }
 
+function resolvePipMarginPx(mainWidth: number, mainHeight: number, rawMargin: unknown, defaultPx = 10): number {
+  const v = Number(rawMargin);
+  if (rawMargin === undefined || rawMargin === null) return defaultPx;
+  if (!Number.isFinite(v) || v < 0) return defaultPx;
+  // Legacy: values > 1 are treated as pixels.
+  if (v > 1) return Math.floor(v);
+  // New: treat as fraction (0..1) of output size.
+  const base = Math.min(Math.max(1, Math.floor(mainWidth)), Math.max(1, Math.floor(mainHeight)));
+  return Math.max(0, Math.floor(base * v));
+}
+
 function calculatePipOverlayPosition(params: {
   position: import("../../multifocal/compositeStream").PipPosition;
   mainWidth: number;
@@ -2852,8 +2863,8 @@ export class ReolinkBaichuanApi {
       const widerChannel = composite?.widerChannel ?? 0;
       const teleChannel = composite?.teleChannel ?? 1;
       const pipPosition = composite?.pipPosition ?? "bottom-right";
-      const pipSize = clamp01(composite?.pipSize ?? 0.25);
-      const pipMargin = composite?.pipMargin ?? 10;
+      const pipSizeRaw = Number(composite?.pipSize ?? 0.25);
+      const pipSize = Math.min(0.9, Math.max(0.05, Number.isFinite(pipSizeRaw) ? pipSizeRaw : 0.25));
       const onNvr = (options?.onNvr === true) || (composite?.onNvr === true);
       const streamType: "main" | "sub" = options?.streamType ?? "main";
       const timeoutMs = options?.timeoutMs ?? 15_000;
@@ -2887,12 +2898,26 @@ export class ReolinkBaichuanApi {
         return wide;
       }
 
+      const pipMarginPx = resolvePipMarginPx(mainW, mainH, composite?.pipMargin, 10);
+
       const teleW = teleMeta.width ?? 0;
       const teleH = teleMeta.height ?? 0;
-      const teleAspect = teleW > 0 && teleH > 0 ? teleH / teleW : 9 / 16;
+      const teleAspect = teleW > 0 && teleH > 0 ? teleW / teleH : 16 / 9;
 
-      const pipW = Math.max(1, Math.floor(mainW * pipSize));
-      const pipH = Math.max(1, Math.floor(pipW * teleAspect));
+      // PIP size is defined as a fraction of the OUTPUT (wide) snapshot.
+      let pipW = Math.max(1, Math.floor(mainW * pipSize));
+      let pipH = Math.max(1, Math.floor(pipW / teleAspect));
+
+      // Constrain by height too (keeps consistent visual size).
+      const maxPipHeight = Math.max(1, Math.floor(mainH * pipSize));
+      if (pipH > maxPipHeight) {
+        pipH = maxPipHeight;
+        pipW = Math.max(1, Math.floor(pipH * teleAspect));
+      }
+
+      // Clamp to image bounds.
+      pipW = Math.min(pipW, mainW);
+      pipH = Math.min(pipH, mainH);
 
       const { left, top } = calculatePipOverlayPosition({
         position: pipPosition,
@@ -2900,7 +2925,7 @@ export class ReolinkBaichuanApi {
         mainHeight: mainH,
         pipWidth: pipW,
         pipHeight: pipH,
-        margin: pipMargin,
+        margin: pipMarginPx,
       });
 
       const pip = await sharp(tele, { failOn: "none" })
@@ -7461,27 +7486,26 @@ ${xmlDateTimePayload("endTime", end)}
         profiles: widerStreams.map((s) => s.profile),
       });
 
-      for (const metadata of widerStreams) {
-        const profile = metadata.profile as StreamProfile;
+      // Expose a single composite stream option (sub+sub) for multifocal.
+      // This avoids long-GOP main streams (often ~30s) and reduces drift between lenses.
+      const selectedProfile: StreamProfile = widerStreams.some((s) => s.profile === 'sub') ? 'sub' : (widerStreams[0]?.profile as StreamProfile ?? 'sub');
+      const selectedMetadata = widerStreams.find((s) => s.profile === selectedProfile) ?? widerStreams[0];
 
-        // Build composite native stream option
-        // Composite streams combine wider (channel 0) and tele (channel 1) with PIP
-        const compositeUrl = new URL(`baichuan://${this.host}/composite/profile/${profile}`);
-        const compositeUrlWithAuth = new URL(`baichuan://${this.host}/composite/profile/${profile}`);
-        compositeUrlWithAuth.username = this.username;
-        compositeUrlWithAuth.password = this.password;
+      const compositeUrl = new URL(`baichuan://${this.host}/composite/profile/${selectedProfile}`);
+      const compositeUrlWithAuth = new URL(`baichuan://${this.host}/composite/profile/${selectedProfile}`);
+      compositeUrlWithAuth.username = this.username;
+      compositeUrlWithAuth.password = this.password;
 
-        nativeStreams.push({
-          name: `Native ${profile}`,
-          id: `composite_${profile}`,
-          container: "rtp", // Composite streams use RFC4571 (rtp container)
-          profile,
-          lens: "composite",
-          url: compositeUrl.toString(),
-          urlWithAuth: compositeUrlWithAuth.toString(),
-          metadata,
-        });
-      }
+      nativeStreams.push({
+        name: `Native composite`,
+        id: `composite_${selectedProfile}`,
+        container: "rtp", // Composite streams use RFC4571 (rtp container)
+        profile: selectedProfile,
+        lens: "composite",
+        url: compositeUrl.toString(),
+        urlWithAuth: compositeUrlWithAuth.toString(),
+        ...(selectedMetadata ? { metadata: selectedMetadata } : {}),
+      });
 
       // Note: RTSP and RTMP composite streams are not yet supported
       // They would require combining two RTSP/RTMP streams which is more complex
