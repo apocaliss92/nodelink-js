@@ -315,6 +315,19 @@ const aacSampleRates = [
     16000, 12000, 11025, 8000, 7350,
 ];
 
+export function buildAacAudioSpecificConfigHex(params: { sampleRate: number; channels: number; audioObjectType?: number }): string | undefined {
+    const { sampleRate, channels } = params;
+    const audioObjectType = params.audioObjectType ?? 2; // AAC-LC
+    const samplingFreqIndex = aacSampleRates.indexOf(sampleRate);
+    if (samplingFreqIndex < 0) return;
+    if (!Number.isFinite(channels) || channels <= 0 || channels > 15) return;
+    if (!Number.isFinite(audioObjectType) || audioObjectType <= 0 || audioObjectType > 31) return;
+
+    // AudioSpecificConfig (2 bytes, left-aligned)
+    const asc = ((audioObjectType & 0x1f) << 11) | ((samplingFreqIndex & 0x0f) << 7) | ((channels & 0x0f) << 3);
+    return asc.toString(16).padStart(4, '0');
+}
+
 export function parseAdtsHeader(adtsFrame: Buffer): { headerLength: number; sampleRate: number; channels: number; configHex: string } | null {
     if (adtsFrame.length < 7) return null;
     if (adtsFrame[0]! !== 0xff || (adtsFrame[1]! & 0xf0) !== 0xf0) return null;
@@ -459,6 +472,22 @@ export function packetizeAacAdtsFrame(adts: Buffer, rtp: RtpWriter): { packets: 
     return {
         packets: [rtp.writePacket(payload, true)],
         config: { sampleRate: parsed.sampleRate, channels: parsed.channels, configHex: parsed.configHex },
+    };
+}
+
+export function packetizeAacRawFrame(raw: Buffer, rtp: RtpWriter): { packets: Buffer[] } {
+    if (!raw?.length) return { packets: [] };
+
+    // RFC 3640: AU-headers-length (16 bits) + AU-header (16 bits)
+    const auHeadersLength = Buffer.from([0x00, 0x10]);
+    const auSize = raw.length & 0x1fff;
+    const auHeader = Buffer.alloc(2);
+    auHeader[0] = (auSize >> 5) & 0xff;
+    auHeader[1] = (auSize & 0x1f) << 3;
+
+    const payload = Buffer.concat([auHeadersLength, auHeader, raw]);
+    return {
+        packets: [rtp.writePacket(payload, true)],
     };
 }
 
@@ -833,6 +862,18 @@ export class Rfc4571Muxer {
         if (packets.length) this.audioRtp.advanceTimestamp(1024);
 
         return config ? { parsed: config } : {};
+    }
+
+    sendAudioAacRawFrame(raw: Buffer): void {
+        if (this.closed) return;
+        if (!this.audioRtp) return;
+
+        const { packets } = packetizeAacRawFrame(raw, this.audioRtp);
+        // keep audio aligned with video gating: only send once video has started.
+        for (const pkt of packets) this.writeRtpPacketToClients(pkt, c => !c.needsKeyframe);
+
+        // advance by 1024 samples per AAC-LC frame
+        if (packets.length) this.audioRtp.advanceTimestamp(1024);
     }
 
     sendAudioRtpPacket(rtpPacket: Buffer): void {

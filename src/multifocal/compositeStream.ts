@@ -8,6 +8,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type { ReolinkBaichuanApi } from "../reolink/baichuan/ReolinkBaichuanApi";
 import type { StreamProfile } from "../reolink/baichuan/types";
@@ -205,6 +206,28 @@ export class CompositeStream extends EventEmitter<{
     this.logger = options.logger ?? console;
   }
 
+  private describeApiClient(api: ReolinkBaichuanApi | undefined): { transport?: string; host?: string; sid?: number; uid?: string } {
+    const c: any = api ? (api as any).client : undefined;
+    if (!c) return {};
+    try {
+      const transport = typeof c.getTransport === 'function' ? c.getTransport() : undefined;
+      const host = typeof c.getHost === 'function' ? c.getHost() : undefined;
+      const sid = typeof c.getSocketSessionId === 'function' ? c.getSocketSessionId() : undefined;
+      const uid = typeof c.getUidShort === 'function' ? c.getUidShort() : undefined;
+      return { transport, host, sid, uid };
+    } catch {
+      return {};
+    }
+  }
+
+  private fingerprintFrame(buf: Buffer | undefined): { len: number; headHex: string; sha1_256: string } | undefined {
+    if (!buf?.length) return;
+    const head = buf.subarray(0, Math.min(12, buf.length)).toString('hex');
+    const slice = buf.subarray(0, Math.min(256, buf.length));
+    const sha1 = createHash('sha1').update(slice).digest('hex');
+    return { len: buf.length, headHex: head, sha1_256: sha1 };
+  }
+
   private async primeForFfmpeg(
     gen: AsyncGenerator<any, void, unknown>,
     timeoutMs: number,
@@ -245,6 +268,16 @@ export class CompositeStream extends EventEmitter<{
       const widerApi = this.options.widerApi ?? this.options.api;
       const teleApi = this.options.teleApi ?? this.options.api;
 
+      const widerClientInfo = this.describeApiClient(widerApi);
+      const teleClientInfo = this.describeApiClient(teleApi);
+      const sameClient = (widerApi as any)?.client && (teleApi as any)?.client ? (widerApi as any).client === (teleApi as any).client : false;
+      this.logger.log?.(
+        `[CompositeStream] Inputs: wider(ch=${this.options.widerChannel}, profile=${this.options.widerProfile}) tele(ch=${this.options.teleChannel}, profile=${this.options.teleProfile}) ` +
+          `onNvr=${Boolean(this.options.onNvr)} forceH264=${Boolean(this.options.forceH264)} ` +
+          `sameClient=${sameClient} ` +
+          `widerClient=${JSON.stringify(widerClientInfo)} teleClient=${JSON.stringify(teleClientInfo)}`,
+      );
+
       // Get metadata to determine resolutions
       const widerMetadata = await widerApi.getStreamMetadata(this.options.widerChannel);
       const teleMetadata = await teleApi.getStreamMetadata(this.options.teleChannel);
@@ -269,8 +302,27 @@ export class CompositeStream extends EventEmitter<{
 
       const mainWidth = widerStreamInfo.width;
       const mainHeight = widerStreamInfo.height;
-      const pipWidth = Math.floor(teleStreamInfo.width * (this.options.pipSize ?? 0.25));
-      const pipHeight = Math.floor(teleStreamInfo.height * (this.options.pipSize ?? 0.25));
+      // PIP size is defined as a fraction of the OUTPUT (main) dimensions.
+      // This keeps the PIP consistent even when tele input resolution differs.
+      const requestedPipSizeRaw = this.options.pipSize ?? 0.25;
+      const pipSize = Math.min(0.9, Math.max(0.05, Number(requestedPipSizeRaw)));
+      const teleAspect = teleStreamInfo.width > 0 && teleStreamInfo.height > 0
+        ? teleStreamInfo.width / teleStreamInfo.height
+        : 16 / 9;
+
+      let pipWidth = Math.floor(mainWidth * pipSize);
+      let pipHeight = Math.floor(pipWidth / teleAspect);
+
+      // If height would exceed the target fraction of main height, constrain by height.
+      const maxPipHeight = Math.floor(mainHeight * pipSize);
+      if (pipHeight > maxPipHeight) {
+        pipHeight = maxPipHeight;
+        pipWidth = Math.floor(pipHeight * teleAspect);
+      }
+
+      // Keep dimensions even (friendlier for encoders/filters).
+      pipWidth = Math.max(2, pipWidth - (pipWidth % 2));
+      pipHeight = Math.max(2, pipHeight - (pipHeight % 2));
 
       const position = calculateOverlayPosition(
         this.options.pipPosition ?? "bottom-right",
@@ -282,7 +334,9 @@ export class CompositeStream extends EventEmitter<{
       );
 
       this.logger.log?.(
-        `[CompositeStream] Main: ${mainWidth}x${mainHeight}, PIP: ${pipWidth}x${pipHeight} at (${position.x}, ${position.y})`
+        `[CompositeStream] Main: ${mainWidth}x${mainHeight}, PIP: ${pipWidth}x${pipHeight} ` +
+          `(pipSize=${pipSize}, position=${this.options.pipPosition ?? 'bottom-right'}, margin=${this.options.pipMargin ?? 10}) ` +
+          `at (${position.x}, ${position.y})`
       );
 
       // Start native streams
@@ -313,6 +367,21 @@ export class CompositeStream extends EventEmitter<{
 
       this.widerPrimeFrame = widerPrime ?? (await this.primeForFfmpeg(this.widerStream, primeAnyFrameMs, false));
       this.telePrimeFrame = telePrime ?? (await this.primeForFfmpeg(this.teleStream, primeAnyFrameMs, false));
+
+      const widerFp = this.fingerprintFrame(this.widerPrimeFrame?.data);
+      const teleFp = this.fingerprintFrame(this.telePrimeFrame?.data);
+      if (widerFp && teleFp) {
+        const same = widerFp.sha1_256 === teleFp.sha1_256;
+        this.logger.log?.(
+          `[CompositeStream] Prime fingerprints: wider=${JSON.stringify(widerFp)} tele=${JSON.stringify(teleFp)} same=${same}`,
+        );
+        if (same) {
+          this.logger.warn?.(
+            `[CompositeStream] WARNING: wider+tele prime frames look identical. ` +
+              `This usually means the same underlying stream is feeding both inputs (shared socket mixup, wrong channels, or device mapping).`,
+          );
+        }
+      }
 
       this.logger.log?.(
         `[CompositeStream] Prime: wider=${this.widerPrimeFrame?.isKeyframe ? 'keyframe' : (this.widerPrimeFrame ? 'frame' : 'none')}, tele=${this.telePrimeFrame?.isKeyframe ? 'keyframe' : (this.telePrimeFrame ? 'frame' : 'none')}`
@@ -549,6 +618,8 @@ export class CompositeStream extends EventEmitter<{
       return;
     }
 
+    const requireKeyframeOnStartup = this.options.requireKeyframeOnStartup ?? true;
+
     const widerStdin = this.ffmpegProcess.stdio[0] as NodeJS.WritableStream | null;
     const teleStdin = this.ffmpegProcess.stdio[3] as NodeJS.WritableStream | null;
 
@@ -560,15 +631,19 @@ export class CompositeStream extends EventEmitter<{
     // Feed wider stream (input 0)
     const feedWider = async () => {
       try {
+        let widerSynced = !requireKeyframeOnStartup;
         if (this.widerPrimeFrame?.data) {
           try {
-            const written = widerStdin.write(this.toAnnexB(this.widerPrimeFrame.data));
-            this.widerPrimeFrame = undefined;
-            if (!written) {
-              await new Promise<void>((resolve) => {
-                widerStdin.once("drain", () => resolve());
-              });
+            if (!requireKeyframeOnStartup || this.widerPrimeFrame.isKeyframe) {
+              const written = widerStdin.write(this.toAnnexB(this.widerPrimeFrame.data));
+              widerSynced = widerSynced || Boolean(this.widerPrimeFrame.isKeyframe);
+              if (!written) {
+                await new Promise<void>((resolve) => {
+                  widerStdin.once("drain", () => resolve());
+                });
+              }
             }
+            this.widerPrimeFrame = undefined;
           } catch {
             // ignore
           }
@@ -580,6 +655,11 @@ export class CompositeStream extends EventEmitter<{
             if (!this.audioSource) this.audioSource = 'wider';
             if (this.audioSource === 'wider') this.emit('audioFrame', frame.data);
             continue;
+          }
+
+          if (!widerSynced) {
+            if (!frame.isKeyframe) continue;
+            widerSynced = true;
           }
 
           try {
@@ -612,15 +692,19 @@ export class CompositeStream extends EventEmitter<{
     // Feed tele stream (input 1)
     const feedTele = async () => {
       try {
+        let teleSynced = !requireKeyframeOnStartup;
         if (this.telePrimeFrame?.data) {
           try {
-            const written = teleStdin.write(this.toAnnexB(this.telePrimeFrame.data));
-            this.telePrimeFrame = undefined;
-            if (!written) {
-              await new Promise<void>((resolve) => {
-                teleStdin.once("drain", () => resolve());
-              });
+            if (!requireKeyframeOnStartup || this.telePrimeFrame.isKeyframe) {
+              const written = teleStdin.write(this.toAnnexB(this.telePrimeFrame.data));
+              teleSynced = teleSynced || Boolean(this.telePrimeFrame.isKeyframe);
+              if (!written) {
+                await new Promise<void>((resolve) => {
+                  teleStdin.once("drain", () => resolve());
+                });
+              }
             }
+            this.telePrimeFrame = undefined;
           } catch {
             // ignore
           }
@@ -632,6 +716,11 @@ export class CompositeStream extends EventEmitter<{
             if (!this.audioSource) this.audioSource = 'tele';
             if (this.audioSource === 'tele') this.emit('audioFrame', frame.data);
             continue;
+          }
+
+          if (!teleSynced) {
+            if (!frame.isKeyframe) continue;
+            teleSynced = true;
           }
 
           try {

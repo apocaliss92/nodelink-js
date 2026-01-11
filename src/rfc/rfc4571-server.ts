@@ -6,6 +6,7 @@ import { BaichuanVideoStream } from '../baichuan/stream/BaichuanVideoStream';
 import { CompositeStream, type CompositeStreamPipOptions } from '../multifocal/compositeStream';
 import {
   buildRfc4571Sdp,
+  buildAacAudioSpecificConfigHex,
   extractH264ParamSetsFromAccessUnit,
   extractH265ParamSetsFromAccessUnit,
   parseAdtsHeader,
@@ -75,6 +76,12 @@ export interface Rfc4571TcpServerOptions {
   /** Composite stream options (only used when channel is undefined) */
   compositeOptions?: CompositeStreamPipOptions;
 
+  /**
+   * Optional AAC hint for when the camera sends raw AAC (no ADTS headers).
+   * Many Reolink devices use AAC-LC mono at 8000Hz.
+   */
+  aacAudioHint?: { sampleRate: number; channels: number };
+
   /** Optional: dedicated APIs for composite wider/tele streams (recommended on NVR/Hub to avoid stream mixing). */
   compositeApis?: {
     widerApi: ReolinkBaichuanApi;
@@ -140,6 +147,7 @@ export async function createRfc4571TcpServer(
     password,
     requireAuth = false,
     compositeOptions,
+    aacAudioHint,
   } = options;
 
   const apisToClose = new Set<ReolinkBaichuanApi>();
@@ -399,9 +407,9 @@ export async function createRfc4571TcpServer(
 
   log(`video framerate hint: ${fps} fps`);
 
-  // Prime audio: detect ADTS and extract AudioSpecificConfig.
+  // Prime audio: prefer ADTS (self-describing), but support raw AAC by using a hint/default config.
   // Note: CompositeStream may forward native audio frames (typically from wider input).
-  let audio: { sampleRate: number; channels: number; configHex: string } | undefined;
+  let audio: { sampleRate: number; channels: number; configHex: string; mode: 'adts' | 'raw' } | undefined;
   const tryPrimeAudio = async (): Promise<typeof audio> => {
     return await new Promise((resolve) => {
       let sawAnyAudio = false;
@@ -409,10 +417,21 @@ export async function createRfc4571TcpServer(
       const audioPrimeTimeoutMs = isCompositeStream ? Math.min(10_000, keyframeTimeoutMs) : 5000;
       const timeout = setTimeout(() => {
         cleanup();
-        if (sawAnyAudio) {
-          logger.warn('Native audio frames seen but not ADTS AAC; cannot advertise audio track.');
+        if (!sawAnyAudio) {
+          resolve(undefined);
+          return;
         }
-        resolve(undefined);
+
+        const hint = aacAudioHint ?? { sampleRate: 8000, channels: 1 };
+        const configHex = buildAacAudioSpecificConfigHex({ sampleRate: hint.sampleRate, channels: hint.channels });
+        if (!configHex) {
+          logger.warn(`Native audio frames seen but could not derive AAC config (hint sampleRate=${hint.sampleRate} channels=${hint.channels}); cannot advertise audio track.`);
+          resolve(undefined);
+          return;
+        }
+
+        logger.warn(`Native audio frames appear to be raw AAC (no ADTS); advertising AAC using hint sampleRate=${hint.sampleRate} channels=${hint.channels}.`);
+        resolve({ sampleRate: hint.sampleRate, channels: hint.channels, configHex, mode: 'raw' });
       }, audioPrimeTimeoutMs);
 
       const onAudio = (frame: Buffer) => {
@@ -426,7 +445,7 @@ export async function createRfc4571TcpServer(
           return;
         }
         cleanup();
-        resolve({ sampleRate: parsed.sampleRate, channels: parsed.channels, configHex: parsed.configHex });
+        resolve({ sampleRate: parsed.sampleRate, channels: parsed.channels, configHex: parsed.configHex, mode: 'adts' });
       };
 
       const cleanup = () => {
@@ -441,9 +460,9 @@ export async function createRfc4571TcpServer(
   audio = await tryPrimeAudio();
 
   if (audio) {
-    log(`audio detected: codec=aac sampleRate=${audio.sampleRate} channels=${audio.channels}`);
+    log(`audio detected: codec=aac sampleRate=${audio.sampleRate} channels=${audio.channels} mode=${audio.mode}`);
   } else {
-    log('audio not detected/advertised (no ADTS AAC config within timeout)');
+    log('audio not detected/advertised (no AAC config within timeout)');
   }
 
   const video: VideoParamSets = {
@@ -771,6 +790,21 @@ export async function createRfc4571TcpServer(
         close(e).catch(() => {});
       }
     });
+
+    if (aacAudio) {
+      (videoStream as CompositeStream).on('audioFrame' as any, (frame: Buffer) => {
+        touchActivity();
+        try {
+          if (audio?.mode === 'adts') {
+            muxer.sendAudioAdtsFrame(frame);
+          } else {
+            muxer.sendAudioAacRawFrame(frame);
+          }
+        } catch (e) {
+          close(e).catch(() => {});
+        }
+      });
+    }
   } else {
     // BaichuanVideoStream emits videoAccessUnit with metadata
     (videoStream as BaichuanVideoStream).on('videoAccessUnit' as any, (au: any) => {
@@ -786,7 +820,11 @@ export async function createRfc4571TcpServer(
       (videoStream as BaichuanVideoStream).on('audioFrame' as any, (frame: Buffer) => {
         touchActivity();
         try {
-          muxer.sendAudioAdtsFrame(frame);
+          if (audio?.mode === 'adts') {
+            muxer.sendAudioAdtsFrame(frame);
+          } else {
+            muxer.sendAudioAacRawFrame(frame);
+          }
         } catch (e) {
           close(e).catch(() => {});
         }
