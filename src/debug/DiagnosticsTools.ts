@@ -14,8 +14,9 @@ import { buildRtspUrl } from "../rtsp/urls";
 import { splitAnnexBToNalPayloads } from "../baichuan/stream/H264Converter";
 import { getH265NalType, splitAnnexBToNalPayloads as splitH265AnnexBToNalPayloads } from "../baichuan/stream/H265Converter";
 import type { Logger } from "./DebugConfig";
-import { BC_CMD_ID_VIDEO } from "../protocol/constants";
+import { BC_CLASS_MODERN_24, BC_CLASS_MODERN_24_ALT, BC_CMD_ID_VIDEO } from "../protocol/constants";
 import type { BaichuanFrame } from "../protocol/framing";
+import { buildChannelExtensionXml, buildPreviewStopXml, buildPreviewStopXmlV11, buildPreviewXml, buildPreviewXmlV11 } from "../protocol/xml";
 
 export type DiagnosticsStreamKind = "native" | "rtsp" | "rtmp";
 
@@ -1689,10 +1690,12 @@ export async function runMultifocalDiagnosticsConsecutively(
     else console.log(msg);
   };
 
-  const runDirName = new Date().toISOString().replace(/[:.]/g, "-");
-  const runDir = join(params.outDir, runDirName);
+  // NOTE: user requested diagnostics to be written directly in the provided root folder.
+  // We still keep `streams/` and `logs/` subfolders inside that root.
+  const runDir = params.outDir;
   const streamsDir = join(runDir, "streams");
   const logsDir = join(runDir, "logs");
+  mkdirp(runDir);
   mkdirp(streamsDir);
   mkdirp(logsDir);
 
@@ -1882,142 +1885,507 @@ export async function runMultifocalDiagnosticsConsecutively(
     log("log", `[MultifocalDiagnostics] OK ${okLine(entry)}`);
   }
 
-  log("log", "[MultifocalDiagnostics] probing native streams", { channel: params.channel });
-  const nativeOpts = await tryCall(() => params.api.buildVideoStreamOptions({ channel: params.channel, onNvr: params.onNvr !== false }));
-  results.nativeStreamOptions = nativeOpts;
+  // Native probing: do NOT rely solely on buildVideoStreamOptions.
+  // Probe a matrix of (mode nvr/standalone, channel, profile, variant) and save rich artifacts.
+  log("log", "[MultifocalDiagnostics] probing native streams", {
+    channel: params.channel,
+    onNvr: params.onNvr !== false,
+    probeFull: params.probeFull === true,
+  });
 
-  if (nativeOpts.ok) {
-    for (const s of nativeOpts.value.nativeStreams ?? []) {
-      const nativeVariant = (s as any).nativeVariant as NativeVideoStreamVariant | undefined;
-      const profile = (s as any).profile as StreamProfile | undefined;
-      const lens = (s as any).lens as any;
-      const streamId = String((s as any).id ?? "native");
-      if (!profile) continue;
+  // Keep buildVideoStreamOptions output for reference (debugging what the API thinks).
+  results.nativeStreamOptions = await tryCall(() =>
+    params.api.buildVideoStreamOptions({ channel: params.channel, onNvr: params.onNvr !== false }),
+  );
 
-      const id = `native:${streamId}`;
-      const baseName = `${nowIsoCompact()}_${id}`.replace(/[^a-zA-Z0-9._-]+/g, "_");
-      const annexPath = join(streamsDir, `${baseName}.annexb`);
-      const infoPath = join(streamsDir, `${baseName}.json`);
-      const muxLog = join(logsDir, `${baseName}.ffmpeg_mux.log`);
+  const nativeModes: Array<"nvr" | "standalone"> =
+    params.onNvr === false && !params.probeFull
+      ? ["standalone"]
+      : ["nvr", "standalone"];
 
-      try {
-        const videoStream = new BaichuanVideoStream({
-          client: params.api.client as any,
-          api: params.api as any,
-          channel: params.channel,
-          profile,
-          ...(nativeVariant && nativeVariant !== "default" ? { variant: nativeVariant } : {}),
-          ...(logger ? { logger } : {}),
-        } as any);
+  const uniqNums = (arr: number[]) => [...new Set(arr)].filter((n) => Number.isFinite(n) && n >= 0);
+  const channelsForMode = (mode: "nvr" | "standalone"): number[] => {
+    if (mode === "nvr") return [params.channel];
+    // Standalone TrackMix usually uses channels 0 (wide) and 1 (tele). Keep current channel if it matches.
+    return uniqNums([0, 1, params.channel].filter((n) => n === 0 || n === 1));
+  };
 
-        const out = fs.createWriteStream(annexPath, { flags: "w" });
-        let firstVideoType: "H264" | "H265" | undefined;
-        let videoAUs = 0;
-        let startedAtMs: number | null = null;
-        let firstKeyframeAtMs: number | null = null;
+  const nativeProfiles: StreamProfile[] = params.probeFull ? ["main", "sub", "ext"] : ["main", "sub"];
+  const nativeVariants: NativeVideoStreamVariant[] = params.probeFull ? ["default", "autotrack", "telephoto"] : ["default"];
 
-        const onAU = (u: any) => {
-          if (!u || !Buffer.isBuffer(u.data)) return;
-          if (!firstVideoType) firstVideoType = u.videoType;
-          videoAUs++;
+  const expectedStreamTypesFor = (profile: StreamProfile, variant: NativeVideoStreamVariant): Set<number> => {
+    if (profile === "sub") {
+      return new Set([variant === "default" ? 1 : 3]);
+    }
+    if (profile === "main") {
+      return new Set([variant === "default" ? 0 : 2]);
+    }
+    // ext
+    return new Set([0]);
+  };
+
+  for (const mode of nativeModes) {
+    for (const chNative of channelsForMode(mode)) {
+      for (const profile of nativeProfiles) {
+        for (const variant of nativeVariants) {
+          if (profile === "ext" && variant !== "default") {
+            results.failed.push({ kind: "native", id: `native:${mode}:ch${chNative}:${profile}:${variant}`, error: "invalid (ext does not support variant)" });
+            continue;
+          }
+
+          const id = `native:${mode}:ch${chNative}:${profile}:${variant}`;
+          const baseName = `${nowIsoCompact()}_${id}`.replace(/[^a-zA-Z0-9._-]+/g, "_");
+          const baseDir = join(streamsDir, "native", mode, `ch${chNative}`, profile, variant);
+          const rawDir = join(baseDir, "raw_frames");
+          const snapsDir = join(baseDir, "snapshots");
+          const logsBase = join(logsDir, baseName);
+          mkdirp(rawDir);
+          mkdirp(snapsDir);
+
+          const eventsPath = join(baseDir, "events.ndjson");
+          appendNdjson(eventsPath, { t: Date.now(), type: "native_begin", id, mode, channel: chNative, profile, variant });
+          log("log", "[MultifocalDiagnostics] native begin", { id });
+
+          const expectedStreamTypes = expectedStreamTypesFor(profile, variant);
+          const maxRawFrames = 400;
+          const maxRawBytes = 50 * 1024 * 1024;
+          let rawFrames = 0;
+          let rawBytes = 0;
+          let lockedChannelId: number | undefined;
+          let lockedMsgNum: number | undefined;
+
+          const onPush = (frame: BaichuanFrame) => {
+            if (!frame?.header) return;
+            if (frame.header.cmdId !== 3) return;
+            if (!expectedStreamTypes.has(frame.header.streamType)) return;
+
+            // Lock to first observed channelId/msgNum for this combination.
+            if (lockedChannelId === undefined) lockedChannelId = frame.header.channelId;
+            if (lockedMsgNum === undefined) lockedMsgNum = frame.header.msgNum;
+            if (frame.header.channelId !== lockedChannelId) return;
+            if (frame.header.msgNum !== lockedMsgNum) return;
+
+            if (rawFrames >= maxRawFrames) return;
+            const payload: Buffer = Buffer.isBuffer(frame.payload) && frame.payload.length ? frame.payload : frame.body;
+            if (!Buffer.isBuffer(payload) || payload.length === 0) return;
+            if (rawBytes + payload.length > maxRawBytes) return;
+
+            rawFrames++;
+            rawBytes += payload.length;
+            const idx = String(rawFrames).padStart(6, "0");
+            const binPath = join(rawDir, `frame_${idx}.bin`);
+            try {
+              fs.writeFileSync(binPath, payload);
+            } catch {
+              // ignore
+            }
+
+            if (rawFrames === 1) {
+              try {
+                writeJson(join(baseDir, "first_frame_header.json"), frame.header);
+              } catch {
+                // ignore
+              }
+            }
+
+            appendNdjson(eventsPath, {
+              t: Date.now(),
+              type: "native_raw_frame",
+              id,
+              bytes: payload.length,
+              header: frame.header,
+              bodyLen: frame.body?.length ?? 0,
+              payloadLen: frame.payload?.length ?? 0,
+            });
+          };
+
+          const clipBase = join(baseDir, `clip_${nowIsoCompact()}`);
+          const clipAnnexBPath = clipBase + ".annexb";
+          const clipAudioPath = clipBase + ".audio.bin";
+          const clipInfoPath = clipBase + ".json";
+          const ffmpegMuxLog = logsBase + ".ffmpeg_mux.log";
+
+          const videoOut = fs.createWriteStream(clipAnnexBPath, { flags: "w" });
+          const audioOut = fs.createWriteStream(clipAudioPath, { flags: "w" });
+
+          let firstVideoType: "H264" | "H265" | undefined;
+          let firstKeyframeAtMs: number | null = null;
+          let startedAtMs: number | null = null;
+          let videoAUs = 0;
+          let audioFrames = 0;
+          let lastSnapshotAtMs = 0;
+
+          const client: any = params.api.client as any;
+
+          const videoStream = new BaichuanVideoStream({
+            client,
+            // Intentionally omit `api`: we will manually issue start/stop VIDEO requests
+            // to probe different streamType + Preview XML combinations.
+            channel: chNative,
+            profile,
+            ...(variant !== "default" ? { variant } : {}),
+            ...(logger ? { logger } : {}),
+          } as any);
+
+          const onAU = (u: any) => {
+            if (!u || !Buffer.isBuffer(u.data)) return;
+            if (!firstVideoType) firstVideoType = u.videoType;
+            videoAUs++;
+            try {
+              videoOut.write(u.data);
+            } catch {
+              // ignore
+            }
+
+            if (u.isKeyframe && firstKeyframeAtMs == null) firstKeyframeAtMs = Date.now();
+
+            const nalTypes = nalTypesSummary(u.videoType, u.data);
+            appendNdjson(eventsPath, {
+              t: Date.now(),
+              type: "native_access_unit",
+              id,
+              isKeyframe: !!u.isKeyframe,
+              videoType: u.videoType,
+              microseconds: u.microseconds,
+              bytes: u.data.length,
+              nalTypes,
+            });
+
+            const now = Date.now();
+            if (u.isKeyframe && now - lastSnapshotAtMs >= 2_000) {
+              lastSnapshotAtMs = now;
+              const snapId = nowIsoCompact();
+              const snapAnnex = join(snapsDir, `snap_${snapId}.${u.videoType === "H265" ? "h265" : "h264"}`);
+              try {
+                fs.writeFileSync(snapAnnex, u.data);
+                appendNdjson(eventsPath, { t: Date.now(), type: "native_snapshot_saved", id, path: snapAnnex });
+                const snapJpeg = join(snapsDir, `snap_${snapId}.jpg`);
+                void tryJpegFromAnnexB({
+                  videoType: u.videoType,
+                  snapshotAnnexBPath: snapAnnex,
+                  outputJpegPath: snapJpeg,
+                  logPath: join(baseDir, "ffmpeg_snapshot.log"),
+                });
+              } catch {
+                // ignore
+              }
+            }
+          };
+
+          const onAudio = (buf: Buffer) => {
+            if (!Buffer.isBuffer(buf) || buf.length === 0) return;
+            audioFrames++;
+            try {
+              audioOut.write(buf);
+            } catch {
+              // ignore
+            }
+            appendNdjson(eventsPath, { t: Date.now(), type: "native_audio", id, bytes: buf.length });
+          };
+
+          videoStream.on("videoAccessUnit" as any, onAU as any);
+          videoStream.on("audioFrame" as any, onAudio as any);
+          videoStream.on("error", (e: any) => {
+            appendNdjson(eventsPath, { t: Date.now(), type: "native_error", id, error: safeStringifyError(e) });
+            log("warn", "[MultifocalDiagnostics] native stream error", { id, error: safeStringifyError(e) });
+          });
+
+          const uniq = <T>(arr: T[]) => [...new Set(arr)];
+
+          const baseStreamName = profile === "main" ? "mainStream" : profile === "sub" ? "subStream" : "externStream";
+          const headerStreamTypeCandidates =
+            profile === "sub" ? [1, 3] : profile === "main" ? [0, 2] : [0];
+
+          // Candidate channelId tags (some firmwares use 0-based, others 1-based).
+          const channelIdTagCandidates = uniq([chNative, chNative + 1].filter((n) => Number.isFinite(n) && n >= 0));
+
+          const messageClassCandidates = params.probeFull ? [BC_CLASS_MODERN_24, BC_CLASS_MODERN_24_ALT] : [BC_CLASS_MODERN_24];
+          const extensionXmlCandidates = params.probeFull ? ["", buildChannelExtensionXml(chNative)] : [buildChannelExtensionXml(chNative)];
+
+          type NativeStartAttempt = {
+            attemptId: string;
+            messageClass: number;
+            streamTypeHeader: number;
+            payloadXml: string;
+            payloadVersion: "v10" | "v11";
+            channelIdTag: number | undefined;
+            handle: number;
+            previewStreamType: string;
+            extensionXml: string;
+          };
+
+          const attempts: NativeStartAttempt[] = [];
+
+          for (const messageClass of messageClassCandidates) {
+            for (const streamTypeHeader of headerStreamTypeCandidates) {
+              for (const extensionXml of extensionXmlCandidates) {
+                // Preview v1.0: try both with and without channelId.
+                const v10ChannelIdTags = params.probeFull ? [undefined, ...channelIdTagCandidates] : [undefined, chNative];
+                for (const channelIdTag of uniq(v10ChannelIdTags)) {
+                  const handle = profile === "main" ? 0 : profile === "sub" ? 256 : 1024;
+                  attempts.push({
+                    attemptId: `v10:${baseStreamName}:h${handle}:cid${channelIdTag ?? "none"}:st${streamTypeHeader}:ext${extensionXml ? "1" : "0"}:mc${messageClass}`,
+                    messageClass,
+                    streamTypeHeader,
+                    payloadXml: buildPreviewXml(handle, baseStreamName, channelIdTag),
+                    payloadVersion: "v10",
+                    channelIdTag,
+                    handle,
+                    previewStreamType: baseStreamName,
+                    extensionXml,
+                  });
+                }
+
+                // Preview v1.1: always includes channelId; also try tele PCAP variants.
+                for (const channelIdTag of channelIdTagCandidates) {
+                  const handle = profile === "main" ? 0 : profile === "sub" ? 256 : 1024;
+                  attempts.push({
+                    attemptId: `v11:${baseStreamName}:h${handle}:cid${channelIdTag}:st${streamTypeHeader}:ext${extensionXml ? "1" : "0"}:mc${messageClass}`,
+                    messageClass,
+                    streamTypeHeader,
+                    payloadXml: buildPreviewXmlV11({ channelId: channelIdTag, handle, streamType: baseStreamName }),
+                    payloadVersion: "v11",
+                    channelIdTag,
+                    handle,
+                    previewStreamType: baseStreamName,
+                    extensionXml,
+                  });
+
+                  if (variant === "telephoto") {
+                    const telePreviewStreamType =
+                      profile === "main" ? "externStream" : profile === "sub" ? "mobileStream" : undefined;
+                    const teleHandleBase = profile === "main" ? 1024 : profile === "sub" ? 512 : undefined;
+                    if (telePreviewStreamType && teleHandleBase !== undefined) {
+                      const teleHandle = teleHandleBase + channelIdTag;
+                      // Empirically: Hub tele often requires header streamType=0.
+                      attempts.push({
+                        attemptId: `v11tele:${telePreviewStreamType}:h${teleHandle}:cid${channelIdTag}:st0:ext${extensionXml ? "1" : "0"}:mc${messageClass}`,
+                        messageClass,
+                        streamTypeHeader: 0,
+                        payloadXml: buildPreviewXmlV11({ channelId: channelIdTag, handle: teleHandle, streamType: telePreviewStreamType }),
+                        payloadVersion: "v11",
+                        channelIdTag,
+                        handle: teleHandle,
+                        previewStreamType: telePreviewStreamType,
+                        extensionXml,
+                      });
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // Capture raw frames (cmd_id=3) concurrently.
+          client.on("push", onPush);
+
+          let lastAttemptOk: NativeStartAttempt | undefined;
+          let lastStartMsgNum: number | undefined;
+
           try {
-            out.write(u.data);
-          } catch {
-            // ignore
-          }
-          if (u.isKeyframe && firstKeyframeAtMs == null) firstKeyframeAtMs = Date.now();
-        };
+            for (const attempt of attempts) {
+              appendNdjson(eventsPath, { t: Date.now(), type: "native_attempt_begin", id, attemptId: attempt.attemptId });
+              videoAUs = 0;
+              audioFrames = 0;
+              firstVideoType = undefined;
+              firstKeyframeAtMs = null;
+              startedAtMs = null;
+              lockedChannelId = undefined;
+              lockedMsgNum = undefined;
+              rawFrames = 0;
+              rawBytes = 0;
 
-        videoStream.on("videoAccessUnit" as any, onAU as any);
-        videoStream.on("error", (e: any) => {
-          log("warn", "[MultifocalDiagnostics] native stream error", { id, error: safeStringifyError(e) });
-        });
+              const msgNum = client.reserveNextMsgNum();
+              lastStartMsgNum = msgNum;
+              try {
+                client.subscribeVideoStream(BC_CMD_ID_VIDEO, msgNum);
+              } catch {
+                // ignore
+              }
 
-        try {
-          await videoStream.start();
-          startedAtMs = Date.now();
-          while (Date.now() - startedAtMs < Math.max(250, Math.round(params.durationSeconds * 1000))) {
-            await sleepMs(200);
+              // Force msgNum filtering in BaichuanVideoStream.
+              try {
+                (videoStream as any).activeMsgNum = msgNum;
+              } catch {
+                // ignore
+              }
+
+              try {
+                await videoStream.start();
+                const resp = await client.sendFrame({
+                  cmdId: BC_CMD_ID_VIDEO,
+                  channel: chNative,
+                  channelIdOverride: chNative,
+                  msgNumOverride: msgNum,
+                  extensionXml: attempt.extensionXml,
+                  payloadXml: attempt.payloadXml,
+                  messageClass: attempt.messageClass,
+                  streamType: attempt.streamTypeHeader,
+                  timeoutMs: 20_000,
+                });
+
+                if (resp?.header?.responseCode !== 200) {
+                  throw new Error(`response_code ${resp?.header?.responseCode}`);
+                }
+
+                startedAtMs = Date.now();
+                while (Date.now() - startedAtMs < Math.max(250, Math.round(params.durationSeconds * 1000))) {
+                  await sleepMs(200);
+                }
+
+                // Consider it OK only if we got at least some media.
+                if (videoAUs > 0) {
+                  lastAttemptOk = attempt;
+                  appendNdjson(eventsPath, { t: Date.now(), type: "native_attempt_ok", id, attemptId: attempt.attemptId, msgNum });
+                  break;
+                }
+                appendNdjson(eventsPath, { t: Date.now(), type: "native_attempt_no_media", id, attemptId: attempt.attemptId, msgNum });
+              } catch (e) {
+                appendNdjson(eventsPath, { t: Date.now(), type: "native_attempt_failed", id, attemptId: attempt.attemptId, error: safeStringifyError(e) });
+              } finally {
+                try {
+                  // Best-effort stop: some firmwares keep streaming unless a stop is sent.
+                  const stopXml =
+                    attempt.payloadVersion === "v11" && attempt.channelIdTag !== undefined
+                      ? buildPreviewStopXmlV11({ channelId: attempt.channelIdTag, handle: attempt.handle })
+                      : buildPreviewStopXml(attempt.handle, attempt.channelIdTag);
+                  await client.sendFrame({
+                    cmdId: BC_CMD_ID_VIDEO,
+                    channel: chNative,
+                    channelIdOverride: chNative,
+                    msgNumOverride: msgNum,
+                    extensionXml: attempt.extensionXml,
+                    payloadXml: stopXml,
+                    messageClass: attempt.messageClass,
+                    streamType: attempt.streamTypeHeader,
+                    timeoutMs: 5_000,
+                  });
+                } catch {
+                  // ignore
+                }
+                try {
+                  client.unsubscribeVideoStream(BC_CMD_ID_VIDEO, msgNum);
+                } catch {
+                  // ignore
+                }
+                try {
+                  await videoStream.stop();
+                } catch {
+                  // ignore
+                }
+              }
+            }
+
+            if (!lastAttemptOk) {
+              throw new Error("no working native start attempt produced media");
+            }
+          } catch (e) {
+            results.failed.push({ kind: "native", id, error: safeStringifyError(e) });
+            appendNdjson(eventsPath, { t: Date.now(), type: "native_failed", id, error: safeStringifyError(e) });
+            continue;
+          } finally {
+            client.removeListener("push", onPush);
+            try {
+              videoOut.end();
+            } catch {
+              // ignore
+            }
+            try {
+              audioOut.end();
+            } catch {
+              // ignore
+            }
           }
-        } finally {
-          try {
-            await videoStream.stop();
-          } catch {
-            // ignore
+
+          const mkvPath = clipBase + ".mkv";
+          if (firstVideoType) {
+            const fmt = firstVideoType === "H265" ? "hevc" : "h264";
+            const muxArgs = [
+              "-hide_banner",
+              "-loglevel",
+              "warning",
+              "-stats",
+              "-f",
+              fmt,
+              "-i",
+              clipAnnexBPath,
+              "-c",
+              "copy",
+              "-y",
+              mkvPath,
+            ];
+            const muxRes = await spawnFfmpeg(muxArgs, ffmpegMuxLog);
+            appendNdjson(eventsPath, { t: Date.now(), type: "native_mux", id, ok: muxRes.ok });
           }
-          try {
-            out.end();
-          } catch {
-            // ignore
+
+          const info: any = {
+            kind: "native",
+            id,
+            mode,
+            channel: chNative,
+            profile,
+            variant,
+            durationSeconds: params.durationSeconds,
+            nativeAttempt: lastAttemptOk,
+            nativeMsgNum: lastStartMsgNum,
+            videoAccessUnits: videoAUs,
+            audioFrames,
+            videoType: firstVideoType,
+            firstKeyframeLatencyMs:
+              firstKeyframeAtMs == null || startedAtMs == null ? null : Math.max(0, firstKeyframeAtMs - startedAtMs),
+            rawFrames,
+            rawBytes,
+            lockedChannelId,
+            lockedMsgNum,
+            annexbPath: clipAnnexBPath,
+            audioPath: clipAudioPath,
+            mkvPath: fs.existsSync(mkvPath) ? mkvPath : undefined,
+          };
+
+          // Derive resolution/codec from the saved MKV if available.
+          if (info.mkvPath) {
+            const p = await spawnFfprobeJson(
+              ["-v", "error", "-print_format", "json", "-show_streams", "-select_streams", "v:0", info.mkvPath],
+              logsBase + ".ffprobe_file.log",
+            );
+            if (p.ok) {
+              const streams = Array.isArray(p.json?.streams) ? p.json.streams : [];
+              const s0 = streams[0] ?? undefined;
+              info.width = typeof s0?.width === "number" ? s0.width : undefined;
+              info.height = typeof s0?.height === "number" ? s0.height : undefined;
+              info.codecName = typeof s0?.codec_name === "string" ? s0.codec_name : undefined;
+            }
           }
+
+          writeJson(clipInfoPath, info);
+          appendNdjson(eventsPath, { t: Date.now(), type: "native_done", ...info });
+
+          const entry = {
+            kind: "native",
+            id,
+            clipPath: info.mkvPath ?? clipAnnexBPath,
+            width: info.width,
+            height: info.height,
+            codec: info.codecName ?? (firstVideoType === "H265" ? "hevc" : firstVideoType === "H264" ? "h264" : undefined),
+            profile,
+            nativeVariant: variant,
+            mode,
+            channel: chNative,
+          };
+          results.ok.push(entry);
+          log("log", "[MultifocalDiagnostics] clip saved", {
+            kind: "native",
+            id,
+            clipPath: entry.clipPath,
+            width: entry.width,
+            height: entry.height,
+            codec: entry.codec,
+            rawFrames,
+            rawBytes,
+            videoAccessUnits: videoAUs,
+          });
+          log("log", `[MultifocalDiagnostics] OK ${okLine(entry)}`);
         }
-
-        const nativeInfo: any = {
-          kind: "native",
-          id,
-          streamId,
-          profile,
-          lens,
-          nativeVariant,
-          durationSeconds: params.durationSeconds,
-          videoAccessUnits: videoAUs,
-          videoType: firstVideoType,
-          firstKeyframeLatencyMs:
-            firstKeyframeAtMs == null || startedAtMs == null ? null : Math.max(0, firstKeyframeAtMs - startedAtMs),
-          metadata: (s as any).metadata,
-          annexbPath: annexPath,
-        };
-        writeJson(infoPath, nativeInfo);
-
-        const mkvPath = join(streamsDir, `${baseName}.mkv`);
-        if (firstVideoType) {
-          const fmt = firstVideoType === "H265" ? "hevc" : "h264";
-          const muxArgs = [
-            "-hide_banner",
-            "-loglevel",
-            "warning",
-            "-stats",
-            "-f",
-            fmt,
-            "-i",
-            annexPath,
-            "-c",
-            "copy",
-            "-y",
-            mkvPath,
-          ];
-          const muxRes = await spawnFfmpeg(muxArgs, muxLog);
-          if (muxRes.ok) nativeInfo.clipPath = mkvPath;
-        }
-
-        const width = (s as any)?.metadata?.width;
-        const height = (s as any)?.metadata?.height;
-        const codec = (s as any)?.metadata?.videoEncType;
-        const entry = {
-          kind: "native",
-          id,
-          clipPath: nativeInfo.clipPath ?? annexPath,
-          width,
-          height,
-          codec,
-          profile,
-          lens,
-          nativeVariant,
-        };
-        results.ok.push(entry);
-        log("log", "[MultifocalDiagnostics] clip saved", {
-          kind: "native",
-          id,
-          clipPath: entry.clipPath,
-          width,
-          height,
-          codec,
-          videoType: firstVideoType,
-          videoAccessUnits: videoAUs,
-        });
-        log("log", `[MultifocalDiagnostics] OK ${okLine(entry)}`);
-      } catch (e) {
-        results.failed.push({ kind: "native", id, error: safeStringifyError(e) });
       }
     }
   }
