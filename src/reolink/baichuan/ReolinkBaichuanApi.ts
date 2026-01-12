@@ -7486,26 +7486,33 @@ ${xmlDateTimePayload("endTime", end)}
         profiles: widerStreams.map((s) => s.profile),
       });
 
-      // Expose a single composite stream option (sub+sub) for multifocal.
-      // This avoids long-GOP main streams (often ~30s) and reduces drift between lenses.
-      const selectedProfile: StreamProfile = widerStreams.some((s) => s.profile === 'sub') ? 'sub' : (widerStreams[0]?.profile as StreamProfile ?? 'sub');
-      const selectedMetadata = widerStreams.find((s) => s.profile === selectedProfile) ?? widerStreams[0];
+      // Expose two composite stream options (main/sub).
+      // IMPORTANT:
+      // - Wider lens always uses the *sub* stream to reduce drift and avoid long-GOP main streams.
+      // - Tele lens can use either main or sub (both H.264 on known Hub/NVR TrackMix setups).
+      const widerProfile: StreamProfile = widerStreams.some((s) => s.profile === "sub")
+        ? "sub"
+        : (widerStreams[0]?.profile as StreamProfile ?? "sub");
+      const widerSelectedMetadata = widerStreams.find((s) => s.profile === widerProfile) ?? widerStreams[0];
 
-      const compositeUrl = new URL(`baichuan://${this.host}/composite/profile/${selectedProfile}`);
-      const compositeUrlWithAuth = new URL(`baichuan://${this.host}/composite/profile/${selectedProfile}`);
-      compositeUrlWithAuth.username = this.username;
-      compositeUrlWithAuth.password = this.password;
+      const compositeProfiles: StreamProfile[] = ["main", "sub"];
+      for (const teleProfile of compositeProfiles) {
+        const compositeUrl = new URL(`baichuan://${this.host}/composite/profile/${teleProfile}`);
+        const compositeUrlWithAuth = new URL(`baichuan://${this.host}/composite/profile/${teleProfile}`);
+        compositeUrlWithAuth.username = this.username;
+        compositeUrlWithAuth.password = this.password;
 
-      nativeStreams.push({
-        name: `Native composite`,
-        id: `composite_${selectedProfile}`,
-        container: "rtp", // Composite streams use RFC4571 (rtp container)
-        profile: selectedProfile,
-        lens: "composite",
-        url: compositeUrl.toString(),
-        urlWithAuth: compositeUrlWithAuth.toString(),
-        ...(selectedMetadata ? { metadata: selectedMetadata } : {}),
-      });
+        nativeStreams.push({
+          name: `Native composite ${teleProfile}`,
+          id: `composite_${teleProfile}`,
+          container: "rtp", // Composite streams use RFC4571 (rtp container)
+          profile: teleProfile,
+          lens: "composite",
+          url: compositeUrl.toString(),
+          urlWithAuth: compositeUrlWithAuth.toString(),
+          ...(widerSelectedMetadata ? { metadata: widerSelectedMetadata } : {}),
+        });
+      }
 
       // Note: RTSP and RTMP composite streams are not yet supported
       // They would require combining two RTSP/RTMP streams which is more complex

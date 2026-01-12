@@ -39,7 +39,7 @@ export interface Rfc4571TcpServerOptions {
     | ReolinkBaichuanApi;
   /** Channel number. If undefined, uses composite stream (multifocal cameras). */
   channel?: number;
-  /** Stream profile. For composite streams, this is used for both wider and tele streams. */
+  /** Stream profile. For composite streams, this selects the tele profile; wider is forced to `sub` (unless `ext`). */
   profile: StreamProfile;
   /** Native-only: TrackMix tele/autotrack variants (usually on NVR/Hub). */
   variant?: NativeVideoStreamVariant;
@@ -185,9 +185,11 @@ export async function createRfc4571TcpServer(
     // Use composite stream for multifocal cameras
     const widerChannel = compositeOptions?.widerChannel ?? 0;
     const teleChannel = compositeOptions?.teleChannel ?? 1;
-    // Profile is used for both wider and tele streams
-    const widerProfile = profile;
-    const teleProfile = profile;
+    // Composite profile behavior:
+    // - Wider is always `sub` to reduce drift and avoid long-GOP `main`.
+    // - Tele follows the requested profile (main/sub). Keep `ext` unchanged.
+    const widerProfile: StreamProfile = profile === 'ext' ? 'ext' : 'sub';
+    const teleProfile: StreamProfile = profile;
 
     log(`creating composite stream: wider(ch=${widerChannel}, profile=${widerProfile}), tele(ch=${teleChannel}, profile=${teleProfile})`);
 
