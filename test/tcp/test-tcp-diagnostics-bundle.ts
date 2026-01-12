@@ -56,9 +56,11 @@ async function run(): Promise<void> {
   const dumpEnabled = envBool(process.env.BAICHUAN_DUMP, false);
   const debugOptions = {
     enabled: debugEnabled,
-    traceStream: envBool(process.env.BAICHUAN_TRACE_STREAM, false),
-    debugH264: envBool(process.env.BAICHUAN_DEBUG_H264, debugEnabled),
-    debugParamSets: envBool(process.env.BAICHUAN_DEBUG_PARAMSETS, false),
+    traceNativeStream:
+      envBool(process.env.BAICHUAN_TRACE_NATIVE_STREAM, false) ||
+      envBool(process.env.BAICHUAN_TRACE_STREAM, false) ||
+      envBool(process.env.BAICHUAN_DEBUG_H264, debugEnabled) ||
+      envBool(process.env.BAICHUAN_DEBUG_PARAMSETS, false),
     dump: {
       enabled: dumpEnabled,
       dir: (process.env.BAICHUAN_DUMP_DIR && process.env.BAICHUAN_DUMP_DIR.trim()) || undefined,

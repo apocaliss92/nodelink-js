@@ -639,6 +639,21 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
   const parser = new BaichuanFrameParser();
   const frames: BaichuanFrame[] = parser.push(stream) as BaichuanFrame[];
 
+  const dumpCmdIds = new Set<number>(
+    String(process.env.PCAP_DUMP_CMDIDS ?? "")
+      .split(/[,\s]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((s) => Number.parseInt(s, 10))
+      .filter((n) => Number.isFinite(n)),
+  );
+  const dumpCmdLimit = Number.parseInt(String(process.env.PCAP_DUMP_CMD_LIMIT ?? "30"), 10);
+  if (String(process.env.PCAP_DUMP_DEBUG ?? "").trim() === "1") {
+    console.log(
+      `[PCAP_DUMP_DEBUG] PCAP_DUMP_CMDIDS=${JSON.stringify(process.env.PCAP_DUMP_CMDIDS ?? "")} parsed=[${[...dumpCmdIds].join(",")}] limit=${dumpCmdLimit}`,
+    );
+  }
+
   const md5HexUpper = (input: string): string => createHash("md5").update(input, "utf8").digest("hex").toUpperCase();
   const md5StrModern = (input: string): string => md5HexUpper(input).slice(0, 31);
   const deriveAesKey = (nonce: string, password: string): Buffer => {
@@ -750,6 +765,45 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
   for (const [k, count] of topCmdStream) {
     const [cmdId, streamType] = k.split("/");
     console.log(`  cmdId=${cmdId} streamType=${streamType} count=${count}`);
+  }
+
+  if (dumpCmdIds.size > 0) {
+    const rootTag = (xml: string): string | undefined => {
+      const m = /<\s*([A-Za-z0-9_:-]+)(?:\s|>)/.exec(xml);
+      return m?.[1];
+    };
+
+    const tagCounts = new Map<string, number>();
+    const countsByCmd = new Map<number, number>();
+
+    for (const f of frames) {
+      if (!dumpCmdIds.has(f.header.cmdId)) continue;
+      const seen = countsByCmd.get(f.header.cmdId) ?? 0;
+      if (dumpCmdLimit > 0 && seen >= dumpCmdLimit) continue;
+      countsByCmd.set(f.header.cmdId, seen + 1);
+
+      const xml =
+        (f.payload.length > 0 ? tryDecodeXml(Buffer.from(f.payload), f.header.channelId) : undefined) ??
+        (f.body.length > 0 ? tryDecodeXml(Buffer.from(f.body), f.header.channelId) : undefined) ??
+        (f.extension.length > 0 ? tryDecodeXml(Buffer.from(f.extension), f.header.channelId) : undefined);
+
+      const tag = xml ? rootTag(xml) ?? "<unknown>" : "<no-xml>";
+      tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
+
+      const previewMax = 700;
+      const xmlPreview = xml ? (xml.length <= previewMax ? xml : xml.slice(0, previewMax) + `\n...truncated (+${xml.length - previewMax} chars)`) : undefined;
+
+      console.log(
+        `\n[PCAP_DUMP_CMDIDS] cmdId=${f.header.cmdId} msgNum=${f.header.msgNum} rc=${f.header.responseCode} ch=${f.header.channelId} streamType=${f.header.streamType} class=${f.header.messageClass} bodyLen=${f.body.length} payloadLen=${f.payload.length} payloadOffset=${f.header.payloadOffset ?? 0} xmlRoot=${tag}`,
+      );
+      if (xmlPreview) console.log(xmlPreview);
+    }
+
+    const topTags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
+    if (topTags.length > 0) {
+      console.log(`\n[PCAP_DUMP_CMDIDS] XML root tags (top):`);
+      for (const [tag, count] of topTags) console.log(`  ${tag} x${count}`);
+    }
   }
 
   const interesting = frames
@@ -1235,6 +1289,137 @@ function analyzeBaichuanSegments(label: string, segments: TcpSegment[]): void {
   for (const [k, count] of topCmdStream) {
     const [cmdId, streamType] = k.split("/");
     console.log(`  cmdId=${cmdId} streamType=${streamType} count=${count}`);
+  }
+
+  const dumpCmdIds = new Set<number>(
+    String(process.env.PCAP_DUMP_CMDIDS ?? "")
+      .split(/[,\s]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((s) => Number.parseInt(s, 10))
+      .filter((n) => Number.isFinite(n)),
+  );
+  const dumpCmdLimit = Number.parseInt(String(process.env.PCAP_DUMP_CMD_LIMIT ?? "30"), 10);
+  if (String(process.env.PCAP_DUMP_DEBUG ?? "").trim() === "1") {
+    console.log(
+      `[PCAP_DUMP_DEBUG] (segments) PCAP_DUMP_CMDIDS=${JSON.stringify(process.env.PCAP_DUMP_CMDIDS ?? "")} parsed=[${[...dumpCmdIds].join(",")}] limit=${dumpCmdLimit}`,
+    );
+  }
+
+  if (dumpCmdIds.size > 0 && framesWithTime.length > 0) {
+    const session = parseEnvSessionOverride() ?? globalSession ?? detectSessionFromFrames(frames);
+    globalSession ??= session;
+
+    const bcXor = (buf: Buffer, offset: number): Buffer => {
+      const key = [0x1f, 0x2d, 0x3c, 0x4b, 0x5a, 0x69, 0x78, 0xff];
+      const off = offset & 0xff;
+      const out = Buffer.allocUnsafe(buf.length);
+      for (let i = 0; i < buf.length; i++) {
+        out[i] = buf[i]! ^ key[(off + i) % key.length]! ^ off;
+      }
+      return out;
+    };
+
+    const aesDecrypt = (buf: Buffer, key: Buffer): Buffer => {
+      if (buf.length === 0) return Buffer.alloc(0);
+      const iv = Buffer.from("0123456789abcdef", "utf8");
+      const decipher = createDecipheriv("aes-128-cfb", key, iv);
+      decipher.setAutoPadding(false);
+      return Buffer.concat([decipher.update(buf), decipher.final()]);
+    };
+
+    const tryDecodeXml = (buf: Buffer, channelId: number): string | undefined => {
+      const asUtf8 = (b: Buffer) => b.toString("utf8");
+      const candidates: Buffer[] = [buf, bcXor(buf, channelId)];
+      if (session.enc.kind === "aes") candidates.unshift(aesDecrypt(buf, session.enc.key));
+      for (const c of candidates) {
+        const s = asUtf8(c);
+        if (
+          s.startsWith("<?xml") ||
+          s.startsWith("<body") ||
+          s.includes("<body>") ||
+          s.includes("<Encryption") ||
+          s.includes("AlarmEvent") ||
+          s.includes("Event") ||
+          s.includes("Attachment")
+        ) {
+          return s;
+        }
+      }
+      return undefined;
+    };
+
+    const rootTag = (xml: string): string | undefined => {
+      const m = /<\s*([A-Za-z0-9_:-]+)(?:\s|>)/.exec(xml);
+      return m?.[1];
+    };
+
+    const tagCounts = new Map<string, number>();
+    const countsByCmd = new Map<number, number>();
+
+    for (const { tsMs, frame: f } of framesWithTime) {
+      if (!dumpCmdIds.has(f.header.cmdId)) continue;
+      const seen = countsByCmd.get(f.header.cmdId) ?? 0;
+      if (dumpCmdLimit > 0 && seen >= dumpCmdLimit) continue;
+      countsByCmd.set(f.header.cmdId, seen + 1);
+
+      const xml =
+        (f.payload.length > 0 ? tryDecodeXml(Buffer.from(f.payload), f.header.channelId) : undefined) ??
+        (f.body.length > 0 ? tryDecodeXml(Buffer.from(f.body), f.header.channelId) : undefined) ??
+        (f.extension.length > 0 ? tryDecodeXml(Buffer.from(f.extension), f.header.channelId) : undefined);
+
+      const tag = xml ? rootTag(xml) ?? "<unknown>" : "<no-xml>";
+      tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
+
+      const previewMax = 700;
+      const xmlPreview = xml
+        ? xml.length <= previewMax
+          ? xml
+          : xml.slice(0, previewMax) + `\n...truncated (+${xml.length - previewMax} chars)`
+        : undefined;
+
+      console.log(
+        `\n[PCAP_DUMP_CMDIDS] tsMs=${tsMs.toFixed(1)} cmdId=${f.header.cmdId} msgNum=${f.header.msgNum} rc=${f.header.responseCode} ch=${f.header.channelId} streamType=${f.header.streamType} class=${f.header.messageClass} bodyLen=${f.body.length} payloadLen=${f.payload.length} payloadOffset=${f.header.payloadOffset ?? 0} xmlRoot=${tag}`,
+      );
+      if (xmlPreview) {
+        console.log(xmlPreview);
+      } else {
+        const previewBuf = f.payload.length > 0 ? Buffer.from(f.payload) : Buffer.from(f.body);
+        const hex = previewBuf.subarray(0, 64).toString("hex");
+        const utf8 = previewBuf
+          .subarray(0, 200)
+          .toString("utf8")
+          .replace(/[^\x09\x0a\x0d\x20-\x7e]/g, ".");
+        console.log(`[PCAP_DUMP_CMDIDS] no-xml previewHex=${hex}`);
+        console.log(`[PCAP_DUMP_CMDIDS] no-xml previewUtf8=${utf8}`);
+
+        if ((process.env.PCAP_DUMP_BRUTE_BC ?? "").trim() === "1" && previewBuf.length > 0 && previewBuf.length <= 2048) {
+          let found: { offset: number; xml: string } | undefined;
+          for (let off = 0; off <= 0xff; off++) {
+            const s = bcXor(previewBuf, off).toString("utf8");
+            if (s.startsWith("<?xml") || s.startsWith("<body") || s.includes("<body>") || s.includes("<Encryption")) {
+              found = { offset: off, xml: s };
+              break;
+            }
+          }
+          if (found) {
+            const previewMax = 700;
+            const xmlPreview =
+              found.xml.length <= previewMax
+                ? found.xml
+                : found.xml.slice(0, previewMax) + `\n...truncated (+${found.xml.length - previewMax} chars)`;
+            console.log(`[PCAP_DUMP_CMDIDS] bruteBcOffset=${found.offset}`);
+            console.log(xmlPreview);
+          }
+        }
+      }
+    }
+
+    const topTags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
+    if (topTags.length > 0) {
+      console.log(`\n[PCAP_DUMP_CMDIDS] XML root tags (top):`);
+      for (const [tag, count] of topTags) console.log(`  ${tag} x${count}`);
+    }
   }
 
   if (frames.length === 0 && (process.env.PCAP_DUMP_TCP_UNKNOWN ?? "").trim() === "1") {

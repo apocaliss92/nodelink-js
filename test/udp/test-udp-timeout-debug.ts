@@ -22,7 +22,7 @@ async function main() {
     transport: "udp",
     debugOptions: {
         general: true,
-        traceStream: true,
+      traceNativeStream: true,
     }
   });
 

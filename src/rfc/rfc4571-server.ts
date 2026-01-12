@@ -77,6 +77,12 @@ export interface Rfc4571TcpServerOptions {
   compositeOptions?: CompositeStreamPipOptions;
 
   /**
+   * Optional identifier for the requested stream. Used to infer composite profile pairing
+   * (e.g. "composite-main-main", "composite_default_sub", "composite_default_main_sub").
+   */
+  requestedId?: string;
+
+  /**
    * Optional AAC hint for when the camera sends raw AAC (no ADTS headers).
    * Many Reolink devices use AAC-LC mono at 8000Hz.
    */
@@ -114,6 +120,75 @@ export async function createRfc4571TcpServer(
 ): Promise<Rfc4571TcpServer> {
   const isComposite = options.channel === undefined;
 
+  const parseCompositeProfilesFromRequestedId = (
+    requestedId: string | undefined,
+  ): { widerProfile?: StreamProfile; teleProfile?: StreamProfile } | undefined => {
+    if (!requestedId) return;
+    const id = String(requestedId);
+
+    // Supported forms:
+    // - composite-main-main
+    // - composite_main
+    // - composite_sub
+    // - composite_default_main
+    // - composite_default_main_sub
+    // - composite_main_sub
+    if (id.startsWith('composite-')) {
+      const parts = id.split('-').filter(Boolean);
+      if (parts.length >= 3) {
+        const wider = parts[1];
+        const tele = parts[2];
+        const widerProfile = (wider === 'main' || wider === 'sub' || wider === 'ext') ? (wider as StreamProfile) : undefined;
+        const teleProfile = (tele === 'main' || tele === 'sub' || tele === 'ext') ? (tele as StreamProfile) : undefined;
+        return {
+          ...(widerProfile ? { widerProfile } : {}),
+          ...(teleProfile ? { teleProfile } : {}),
+        };
+      }
+      return;
+    }
+
+    if (id.startsWith('composite_')) {
+      const parts = id.split('_').filter(Boolean);
+      // parts[0] === 'composite'
+      // composite_<tele>
+      if (parts.length === 2) {
+        const tele = parts[1];
+        const teleProfile = (tele === 'main' || tele === 'sub' || tele === 'ext') ? (tele as StreamProfile) : undefined;
+        return teleProfile ? { teleProfile } : {};
+      }
+      // composite_<variant>_<tele>
+      if (parts.length === 3) {
+        const second = parts[1];
+        const third = parts[2];
+
+        const thirdProfile = (third === 'main' || third === 'sub' || third === 'ext') ? (third as StreamProfile) : undefined;
+        if (!thirdProfile) return;
+
+        // If the second token is a profile, interpret as composite_<wider>_<tele>
+        if (second === 'main' || second === 'sub' || second === 'ext') {
+          return { widerProfile: second as StreamProfile, teleProfile: thirdProfile };
+        }
+
+        // Otherwise interpret as composite_<variant>_<tele>
+        return { teleProfile: thirdProfile };
+      }
+      // composite_<variant>_<wider>_<tele>
+      if (parts.length >= 4) {
+        const wider = parts[2];
+        const tele = parts[3];
+        const widerProfile = (wider === 'main' || wider === 'sub' || wider === 'ext') ? (wider as StreamProfile) : undefined;
+        const teleProfile = (tele === 'main' || tele === 'sub' || tele === 'ext') ? (tele as StreamProfile) : undefined;
+        return {
+          ...(widerProfile ? { widerProfile } : {}),
+          ...(teleProfile ? { teleProfile } : {}),
+        };
+      }
+    }
+
+    return;
+  };
+
   const apiFactoryCtx: Rfc4571ApiFactoryContext = {
     profile: options.profile,
     composite: isComposite,
@@ -147,6 +222,7 @@ export async function createRfc4571TcpServer(
     password,
     requireAuth = false,
     compositeOptions,
+    requestedId,
     aacAudioHint,
   } = options;
 
@@ -160,7 +236,7 @@ export async function createRfc4571TcpServer(
   const uptimeRestartMs = uptimeRestartMsOpt ?? (isComposite ? 60_000 : 10_000);
   const variantSuffix = variant && variant !== 'default' ? ` variant=${variant}` : '';
   const logPrefix = isComposite 
-    ? `[native-rfc4571 composite profile=${profile}${variantSuffix}]`
+    ? `[native-rfc4571 composite profile=${profile}${variantSuffix}${requestedId ? ` id=${requestedId}` : ''}]`
     : `[native-rfc4571 ch=${channel} profile=${profile}${variantSuffix}]`;
   const log = (message: string) => {
     try {
@@ -185,13 +261,41 @@ export async function createRfc4571TcpServer(
     // Use composite stream for multifocal cameras
     const widerChannel = compositeOptions?.widerChannel ?? 0;
     const teleChannel = compositeOptions?.teleChannel ?? 1;
-    // Composite profile behavior:
-    // - Wider is always `sub` to reduce drift and avoid long-GOP `main`.
-    // - Tele follows the requested profile (main/sub). Keep `ext` unchanged.
-    const widerProfile: StreamProfile = profile === 'ext' ? 'ext' : 'sub';
-    const teleProfile: StreamProfile = profile;
+    const requested = parseCompositeProfilesFromRequestedId(requestedId);
+    const teleProfile: StreamProfile = requested?.teleProfile ?? profile;
 
-    log(`creating composite stream: wider(ch=${widerChannel}, profile=${widerProfile}), tele(ch=${teleChannel}, profile=${teleProfile})`);
+    // Default wider selection:
+    // - If explicitly requested via id: obey.
+    // - Otherwise: for tele=main, prefer wider=main only when it's H.264.
+    // - Otherwise: wider=sub (keep ext unchanged).
+    let widerMainIsH264 = false;
+    try {
+      const widerApiForProbe = resolvedCompositeApis?.widerApi ?? baseApi;
+      const metadata: any = await widerApiForProbe.getStreamMetadata(widerChannel);
+      const streams: any[] = Array.isArray(metadata)
+        ? metadata
+        : Array.isArray(metadata?.streams)
+          ? metadata.streams
+          : [];
+      const main = streams.find((s: any) => s?.profile === 'main');
+      const enc = typeof main?.videoEncType === 'string' ? main.videoEncType.toLowerCase() : '';
+      widerMainIsH264 = enc.includes('264');
+    } catch {
+      // ignore
+    }
+
+    const widerProfile: StreamProfile =
+      requested?.widerProfile ??
+      (teleProfile === 'ext'
+        ? 'ext'
+        : (teleProfile === 'main' && widerMainIsH264)
+          ? 'main'
+          : 'sub');
+
+    if (requested?.teleProfile && requested.teleProfile !== profile) {
+      log(`requestedId overrides tele profile (requested=${requested.teleProfile} options.profile=${profile})`);
+    }
+    log(`creating composite stream: wider(ch=${widerChannel}, profile=${widerProfile}), tele(ch=${teleChannel}, profile=${teleProfile}) widerMainIsH264=${widerMainIsH264}`);
 
     const widerApi = resolvedCompositeApis?.widerApi ?? baseApi;
     const teleApi = resolvedCompositeApis?.teleApi ?? baseApi;
@@ -199,7 +303,7 @@ export async function createRfc4571TcpServer(
     // Default behavior: keep `main` untouched (may be H.265), but force H.264 inputs on `sub`.
     // Callers can still override explicitly via compositeOptions.forceH264.
     const forceH264 = compositeOptions?.forceH264;
-    const defaultForceH264 = profile === 'sub';
+    const defaultForceH264 = teleProfile === 'sub';
 
     videoStream = new CompositeStream({
       api: baseApi,
@@ -392,7 +496,25 @@ export async function createRfc4571TcpServer(
         : Array.isArray(metadata?.streams)
           ? metadata.streams
           : [];
-      const stream = streams.find((s: any) => s?.profile === profile);
+      // Note: composite FPS should be keyed off the wider input profile, not the tele profile.
+      const requested = parseCompositeProfilesFromRequestedId(requestedId);
+      const effectiveTeleProfile: StreamProfile = requested?.teleProfile ?? profile;
+      let widerMainIsH264 = false;
+      try {
+        const main = streams.find((s: any) => s?.profile === 'main');
+        const enc = typeof main?.videoEncType === 'string' ? main.videoEncType.toLowerCase() : '';
+        widerMainIsH264 = enc.includes('264');
+      } catch {
+        // ignore
+      }
+      const widerProfile: StreamProfile =
+        requested?.widerProfile ??
+        (effectiveTeleProfile === 'ext'
+          ? 'ext'
+          : (effectiveTeleProfile === 'main' && widerMainIsH264)
+            ? 'main'
+            : 'sub');
+      const stream = streams.find((s: any) => s?.profile === widerProfile);
       const fr = Number(stream?.frameRate);
       if (Number.isFinite(fr) && fr > 0) fps = fr;
     } else {

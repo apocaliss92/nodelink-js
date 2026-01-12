@@ -78,7 +78,7 @@ async function main(): Promise<void> {
     debugOptions: {
       // Keep logs manageable; you can toggle these if needed.
       debugRtsp: false,
-      traceStream: false,
+      traceNativeStream: false,
       general: false,
     },
   });

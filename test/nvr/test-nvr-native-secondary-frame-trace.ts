@@ -359,7 +359,7 @@ async function main(): Promise<void> {
     transport: "tcp",
     debugOptions: {
       general: true,
-      traceStream: true,
+      traceNativeStream: true,
     },
     logger: console,
   });

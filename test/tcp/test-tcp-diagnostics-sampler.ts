@@ -69,7 +69,7 @@ async function run(): Promise<void> {
     debug: false,
     debugOptions: {
       enabled: false,
-      debugParamSets: true,
+      traceNativeStream: true,
       dump: { enabled: false },
     } as any,
   });

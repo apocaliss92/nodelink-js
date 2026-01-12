@@ -4,8 +4,39 @@
 
 import { config as dotenvConfig } from "dotenv";
 
+function envBool(v: string | undefined): boolean {
+  return /^(1|true|yes)$/i.test((v ?? "").trim());
+}
+
 // Load environment variables from .env
-dotenvConfig();
+// Some dotenv versions emit informational logs; allow silencing for scripts that must output pure JSON.
+const dotenvQuiet =
+  envBool(process.env.DOTENV_QUIET) ||
+  envBool(process.env.EVENTS_QUIET) ||
+  envBool(process.env.EVENTS_STDOUT_JSON);
+
+if (dotenvQuiet) {
+  const orig = {
+    log: console.log,
+    info: console.info,
+    warn: console.warn,
+    error: console.error,
+  };
+  try {
+    console.log = () => undefined;
+    console.info = () => undefined;
+    console.warn = () => undefined;
+    console.error = () => undefined;
+    dotenvConfig();
+  } finally {
+    console.log = orig.log;
+    console.info = orig.info;
+    console.warn = orig.warn;
+    console.error = orig.error;
+  }
+} else {
+  dotenvConfig();
+}
 
 export interface TestConfig {
   tcp: {

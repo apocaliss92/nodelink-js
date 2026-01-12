@@ -14,8 +14,15 @@ export type DebugOptions = {
   general?: boolean;
   /** Enables extra RTSP proxy/server debug logs (quiet by default). */
   debugRtsp?: boolean;
-  /** Enables stream command tracing (tx/rx cmd_id 3/4 + rx stream frames). */
-  traceStream?: boolean;
+  /**
+   * Enables native stream tracing and related low-level logs.
+   *
+   * Includes:
+   * - stream command tracing (tx/rx cmd_id 3/4 + rx stream frames)
+   * - H.264/H.265 debug logs/samples
+   * - SPS/PPS/VPS parameter sets debug logs
+   */
+  traceNativeStream?: boolean;
   /**
    * Enables detailed tracing for recording-related commands (FileInfoList, findAlarmVideo, download).
    * Useful to understand what is happening on the wire for recordings only.
@@ -25,10 +32,6 @@ export type DebugOptions = {
   traceTalk?: boolean;
   /** Enables per-event tracing for cmd_id 33 (AlarmEventList push). */
   traceEvents?: boolean;
-  /** Enables H.264-centric debug logs/samples. */
-  debugH264?: boolean;
-  /** Enables SPS/PPS cache/prepend debug logs. */
-  debugParamSets?: boolean;
   dump?: {
     enabled?: boolean;
     dir?: string;
@@ -40,12 +43,10 @@ export type DebugOptions = {
 export type DebugConfig = {
   general: boolean;
   debugRtsp: boolean;
-  traceStream: boolean;
+  traceNativeStream: boolean;
   traceRecordings: boolean;
   traceTalk: boolean;
   traceEvents: boolean;
-  debugH264: boolean;
-  debugParamSets: boolean;
   dumpEnabled: boolean;
   dumpDir: string;
   dumpBcMedia: boolean;
@@ -55,12 +56,10 @@ export type DebugConfig = {
 export function normalizeDebugOptions(opts?: DebugOptions): DebugConfig {
   const general = opts?.general === true;
   const debugRtsp = opts?.debugRtsp === true;
-  const traceStream = opts?.traceStream === true;
+  const traceNativeStream = opts?.traceNativeStream === true;
   const traceRecordings = opts?.traceRecordings === true;
   const traceTalk = opts?.traceTalk === true;
   const traceEvents = opts?.traceEvents === true;
-  const debugH264 = opts?.debugH264 === true;
-  const debugParamSets = opts?.debugParamSets === true;
 
   const dumpEnabled = opts?.dump?.enabled === true;
   const dumpDir = (opts?.dump?.dir && opts.dump.dir.trim()) || path.join(process.cwd(), "test", "frames-debug");
@@ -70,12 +69,10 @@ export function normalizeDebugOptions(opts?: DebugOptions): DebugConfig {
   return {
       general,
       debugRtsp,
-      traceStream,
+      traceNativeStream,
       traceRecordings,
       traceTalk,
       traceEvents,
-      debugH264,
-      debugParamSets,
       dumpEnabled,
       dumpDir,
       dumpBcMedia,
@@ -104,7 +101,7 @@ export function debugWarn(cfg: DebugConfig, logger: Logger, tag: string, message
 }
 
 export function traceLog(cfg: DebugConfig, logger: Logger, tag: string, message: string): void {
-  if (!cfg.traceStream) return;
+  if (!cfg.traceNativeStream) return;
   logger.debug(`[${tag}] ${message}`);
 }
 

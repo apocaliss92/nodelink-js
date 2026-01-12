@@ -98,9 +98,11 @@ async function main(): Promise<void> {
     debugOptions: {
       enabled: debugEnabled,
       traceTalk: envBool(process.env.BAICHUAN_TRACE_TALK, false),
-      traceStream: envBool(process.env.BAICHUAN_TRACE_STREAM, false),
-      debugH264: envBool(process.env.BAICHUAN_DEBUG_H264, debugEnabled),
-      debugParamSets: envBool(process.env.BAICHUAN_DEBUG_PARAMSETS, false),
+      traceNativeStream:
+        envBool(process.env.BAICHUAN_TRACE_NATIVE_STREAM, false) ||
+        envBool(process.env.BAICHUAN_TRACE_STREAM, false) ||
+        envBool(process.env.BAICHUAN_DEBUG_H264, debugEnabled) ||
+        envBool(process.env.BAICHUAN_DEBUG_PARAMSETS, false),
     },
   });
 

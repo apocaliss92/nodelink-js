@@ -142,12 +142,10 @@ async function main(): Promise<void> {
     debugConfig: {
       general: false,
       debugRtsp: false,
-      traceStream: false,
+      traceNativeStream: false,
       traceRecordings: true, // Enable recording trace to see NvrDownload requests
       traceEvents: false,
       traceTalk: false,
-      debugH264: false,
-      debugParamSets: false,
       dumpEnabled: false,
       dumpDir: "",
       dumpBcMedia: false,

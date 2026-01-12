@@ -1214,7 +1214,7 @@ export class BaichuanClient extends EventEmitter<{
       // If there are active subscriptions for this cmdId (typically MSG_ID_VIDEO=3),
       // emit only frames that match msgNum. This prevents mixing old/parallel streams.
       if (subscribedMsgNums.has(frame.header.msgNum)) {
-        if (this.debugCfg.traceStream && frame.header.cmdId === 3) {
+        if (this.debugCfg.traceNativeStream && frame.header.cmdId === 3) {
           const now = Date.now();
           const key = frame.header.msgNum;
           const s = this.streamTraceStats.get(key) ?? { lastLogMs: now, frames: 0 };
@@ -1890,7 +1890,7 @@ export class BaichuanClient extends EventEmitter<{
     });
 
     this.logDebug("tx", { cmdId, msgNum, channelId, messageClass, bodyLen });
-    if (this.debugCfg.traceStream && (cmdId === 3 || cmdId === 4)) {
+    if (this.debugCfg.traceNativeStream && (cmdId === 3 || cmdId === 4)) {
       traceLog(this.debugCfg, this.logger, "BaichuanTrace", `tx cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=${params.streamType ?? 0} class=0x${messageClass.toString(16)} bodyLen=${bodyLen} payloadOffset=${payloadOffset}`);
     }
     if (this.debugCfg.traceTalk && isTalkCmd(cmdId)) {
@@ -1905,7 +1905,7 @@ export class BaichuanClient extends EventEmitter<{
 
     const frame = await framePromise;
     this.logDebug("rx", { cmdId: frame.header.cmdId, responseCode: frame.header.responseCode, msgNum: frame.header.msgNum });
-    if (this.debugCfg.traceStream && (cmdId === 3 || cmdId === 4)) {
+    if (this.debugCfg.traceNativeStream && (cmdId === 3 || cmdId === 4)) {
       traceLog(this.debugCfg, this.logger, "BaichuanTrace", `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`);
     }
     if (this.debugCfg.traceTalk && isTalkCmd(cmdId)) {
@@ -2033,7 +2033,7 @@ export class BaichuanClient extends EventEmitter<{
         `tx recording cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=${params.streamType ?? 0} bodyLen=${bodyLen}`,
       );
     }
-    if (this.debugCfg.traceStream && (cmdId === 3 || cmdId === 4)) {
+    if (this.debugCfg.traceNativeStream && (cmdId === 3 || cmdId === 4)) {
       traceLog(this.debugCfg, this.logger, "BaichuanTrace", `tx cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=${params.streamType ?? 0} class=0x${messageClass.toString(16)} bodyLen=${bodyLen} payloadOffset=${payloadOffset}`);
     }
     if (this.debugCfg.traceTalk && isTalkCmd(cmdId)) {
@@ -2056,7 +2056,7 @@ export class BaichuanClient extends EventEmitter<{
         `rx recording cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`,
       );
     }
-    if (this.debugCfg.traceStream && (cmdId === 3 || cmdId === 4)) {
+    if (this.debugCfg.traceNativeStream && (cmdId === 3 || cmdId === 4)) {
       traceLog(this.debugCfg, this.logger, "BaichuanTrace", `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`);
     }
     if (this.debugCfg.traceTalk && isTalkCmd(cmdId)) {

@@ -253,9 +253,7 @@ async function testUdpVideoStreamRecording() {
     transport: "udp",
     debugOptions: {
       general: true,
-      traceStream: true, // Enable stream command tracing (tx/rx cmd_id 3/4 + rx stream frames)
-      debugH264: true, // Enable H.264-centric debug logs
-      debugParamSets: true, // Enable SPS/PPS cache/prepend debug logs
+      traceNativeStream: true,
       dump: {
         enabled: true,
         dir: path.join(process.cwd(), "test", "frames-debug"),

@@ -2338,7 +2338,7 @@ export class ReolinkBaichuanApi {
     let audioEnabled = true;
 
     const dbg = this.client.getDebugConfig?.();
-    const debugParamSets = dbg?.debugParamSets === true;
+    const traceNativeStream = dbg?.traceNativeStream === true;
 
     // Some firmwares include placeholder stream sections (not actually supported)
     // with 0x0 resolution and/or 0 FPS/bitrate. Treat those as unavailable.
@@ -2347,10 +2347,10 @@ export class ReolinkBaichuanApi {
     };
 
     const logDebugStreamBlock = (tag: string, blockXml: string | undefined) => {
-      if (!debugParamSets) return;
+      if (!traceNativeStream) return;
 
       if (!blockXml) {
-        (this.logger.warn ?? this.logger.log).call(this.logger, `[ReolinkBaichuanApi] getStreamMetadata(debugParamSets): channel=${ch} tag=<${tag}> missing`);
+        (this.logger.warn ?? this.logger.log).call(this.logger, `[ReolinkBaichuanApi] getStreamMetadata(traceNativeStream): channel=${ch} tag=<${tag}> missing`);
         return;
       }
 
@@ -2375,7 +2375,7 @@ export class ReolinkBaichuanApi {
       const xmlPreview = raw.length <= previewMax ? raw : raw.slice(0, previewMax) + `\n...truncated (+${raw.length - previewMax} chars)`;
 
       (this.logger.warn ?? this.logger.log).call(this.logger,
-        `[ReolinkBaichuanApi] getStreamMetadata(debugParamSets): channel=${ch} tag=<${tag}> ` +
+        `[ReolinkBaichuanApi] getStreamMetadata(traceNativeStream): channel=${ch} tag=<${tag}> ` +
         `enabled=${isEnabled} plausible=${plausible} ` +
         `width=${width} height=${height} frame=${frameRate} bitRate=${bitRate} audio=${audio} videoEncType=${videoEncTypeText ?? "?"} ` +
         `rawFields=${JSON.stringify({ widthText, heightText, frameText, bitRateText, videoEncTypeText, audioText, enableText })} ` +
@@ -2383,7 +2383,7 @@ export class ReolinkBaichuanApi {
       );
     };
 
-    if (debugParamSets) {
+    if (traceNativeStream) {
       const headMax = 1600;
       const xmlHead = xml.length <= headMax ? xml : xml.slice(0, headMax) + `\n...truncated (+${xml.length - headMax} chars)`;
       const tagsPresent = {
@@ -2395,7 +2395,7 @@ export class ReolinkBaichuanApi {
         extraStream: /<extraStream\b/.test(xml),
       };
       (this.logger.warn ?? this.logger.log).call(this.logger,
-        `[ReolinkBaichuanApi] getStreamMetadata(debugParamSets): channel=${ch} xmlLen=${xml.length} tagsPresent=${JSON.stringify(tagsPresent)} xmlHead=${JSON.stringify(xmlHead)}`
+        `[ReolinkBaichuanApi] getStreamMetadata(traceNativeStream): channel=${ch} xmlLen=${xml.length} tagsPresent=${JSON.stringify(tagsPresent)} xmlHead=${JSON.stringify(xmlHead)}`
       );
     }
 
@@ -7509,23 +7509,35 @@ ${xmlDateTimePayload("endTime", end)}
       }
 
       const widerStreams = widerMetadata?.streams || [];
+      const widerMain = widerStreams.find((s) => s.profile === "main");
+      const widerMainIsH264 = typeof widerMain?.videoEncType === "string"
+        ? widerMain.videoEncType.toLowerCase().includes("264")
+        : false;
       logDebug("[ReolinkBaichuanApi] buildVideoStreamOptions: composite branch metadata", {
         host: this.host,
         widerStreamsCount: widerStreams.length,
         profiles: widerStreams.map((s) => s.profile),
+        widerMainIsH264,
       });
 
       // Expose two composite stream options (main/sub).
       // IMPORTANT:
-      // - Wider lens always uses the *sub* stream to reduce drift and avoid long-GOP main streams.
-      // - Tele lens can use either main or sub (both H.264 on known Hub/NVR TrackMix setups).
-      const widerProfile: StreamProfile = widerStreams.some((s) => s.profile === "sub")
+      // - Default wider lens uses `sub` to reduce drift.
+      // - If wider `main` is H.264, allow preferring it for the composite `main` option.
+      const widerSubProfile: StreamProfile = widerStreams.some((s) => s.profile === "sub")
         ? "sub"
         : (widerStreams[0]?.profile as StreamProfile ?? "sub");
-      const widerSelectedMetadata = widerStreams.find((s) => s.profile === widerProfile) ?? widerStreams[0];
+      const widerMainProfileIfOk: StreamProfile | undefined = widerMainIsH264 && widerStreams.some((s) => s.profile === "main")
+        ? "main"
+        : undefined;
 
       const compositeProfiles: StreamProfile[] = ["main", "sub"];
       for (const teleProfile of compositeProfiles) {
+        const effectiveWiderProfile: StreamProfile = teleProfile === "main" && widerMainProfileIfOk
+          ? widerMainProfileIfOk
+          : widerSubProfile;
+        const widerSelectedMetadata = widerStreams.find((s) => s.profile === effectiveWiderProfile) ?? widerStreams[0];
+
         const compositeUrl = new URL(`baichuan://${this.host}/composite/profile/${teleProfile}`);
         const compositeUrlWithAuth = new URL(`baichuan://${this.host}/composite/profile/${teleProfile}`);
         compositeUrlWithAuth.username = this.username;
@@ -7533,7 +7545,8 @@ ${xmlDateTimePayload("endTime", end)}
 
         nativeStreams.push({
           name: `Native composite ${teleProfile}`,
-          id: `composite_${teleProfile}`,
+          // streamKey for RFC4571 server: composite_<variant>_<wider>_<tele>
+          id: `composite_${lensVariant}_${effectiveWiderProfile}_${teleProfile}`,
           container: "rtp", // Composite streams use RFC4571 (rtp container)
           profile: teleProfile,
           lens: "composite",
@@ -7739,7 +7752,8 @@ ${xmlDateTimePayload("endTime", end)}
             profile,
             metadata,
             lens: params.lens,
-            id: `${params.nativeIdPrefix}_${profile}`,
+            // streamKey for RFC4571 server: channel_<ch>_<profile>
+            id: `channel_${params.channel}_${profile}`,
             streamName: profile,
           });
         }
@@ -7874,7 +7888,8 @@ ${xmlDateTimePayload("endTime", end)}
           profile: "main",
           ...(mainMeta ? { metadata: mainMeta } : {}),
           lens: "telephoto",
-          id: `native_main`,
+          // streamKey for RFC4571 server: channel_<ch>_<variant>_<profile>
+          id: `channel_${ch}_${nativeVariant}_main`,
           streamName: nativeVariant,
           nativeVariant,
         });
@@ -7884,7 +7899,8 @@ ${xmlDateTimePayload("endTime", end)}
           profile: "sub",
           ...(subMeta ? { metadata: subMeta } : {}),
           lens: "telephoto",
-          id: `native_sub`,
+          // streamKey for RFC4571 server: channel_<ch>_<variant>_<profile>
+          id: `channel_${ch}_${nativeVariant}_sub`,
           streamName: nativeVariant,
           nativeVariant,
         });

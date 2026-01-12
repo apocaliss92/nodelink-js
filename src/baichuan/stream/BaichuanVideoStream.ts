@@ -298,7 +298,7 @@ export class BaichuanVideoStream extends EventEmitter<{
     this.bcMediaCodec = new BcMediaCodec(false, this.logger); // non-strict mode for error recovery
     // Debug is configured on the client; the library must not read env vars.
     const dbg = this.client.getDebugConfig();
-    this.debugH264LogsLeft = dbg.debugH264 ? 200 : 0;
+    this.debugH264LogsLeft = dbg.traceNativeStream ? 200 : 0;
     this.debugSavedSamples = false;
     this.dumpChunkIdx = 0;
     this.spsById = new Map();
@@ -631,7 +631,7 @@ export class BaichuanVideoStream extends EventEmitter<{
                 if (id != null) {
                   if (!isPlausibleH264Sps(nal)) continue;
                   this.spsById.set(id, nal);
-                  if (dbg.debugParamSets) {
+                  if (dbg.traceNativeStream) {
                     this.logger?.warn(`[BaichuanVideoStream] Cached H.264 SPS id=${id} len=${nal.length}`);
                   }
                 }
@@ -644,7 +644,7 @@ export class BaichuanVideoStream extends EventEmitter<{
                   const sps = this.spsById.get(ids.spsId);
                   if (sps && !isPlausibleH264Sps(sps)) continue;
                   this.ppsById.set(ids.ppsId, { nal, spsId: ids.spsId });
-                  if (dbg.debugParamSets) {
+                  if (dbg.traceNativeStream) {
                     this.logger?.warn(`[BaichuanVideoStream] Cached H.264 PPS id=${ids.ppsId} (spsId=${ids.spsId}) len=${nal.length}`);
                   }
                 }
@@ -656,21 +656,21 @@ export class BaichuanVideoStream extends EventEmitter<{
             const vps = extractVpsFromAnnexB(annexB);
             if (vps) {
               this.lastVps = vps;
-              if (dbg.debugParamSets) {
+              if (dbg.traceNativeStream) {
                 this.logger?.warn(`[BaichuanVideoStream] Cached H.265 VPS len=${vps.length}`);
               }
             }
             const sps = extractSpsFromAnnexB(annexB);
             if (sps) {
               this.lastSpsH265 = sps;
-              if (dbg.debugParamSets) {
+              if (dbg.traceNativeStream) {
                 this.logger?.warn(`[BaichuanVideoStream] Cached H.265 SPS len=${sps.length}`);
               }
             }
             const pps = extractPpsFromAnnexB(annexB);
             if (pps) {
               this.lastPpsH265 = pps;
-              if (dbg.debugParamSets) {
+              if (dbg.traceNativeStream) {
                 this.logger?.warn(`[BaichuanVideoStream] Cached H.265 PPS len=${pps.length}`);
               }
             }
@@ -697,7 +697,7 @@ export class BaichuanVideoStream extends EventEmitter<{
                 break;
               }
             }
-            if (dbg.debugParamSets) {
+            if (dbg.traceNativeStream) {
               this.logger?.warn(`[BaichuanVideoStream] Slice references ppsId=${ppsId ?? "?"} lastPrepended=${this.lastPrependedPpsId ?? "?"}`);
             }
 
@@ -743,7 +743,7 @@ export class BaichuanVideoStream extends EventEmitter<{
             if (!this.lastVps || !this.lastSpsH265 || !this.lastPpsH265) return annexB;
 
             this.lastPrependedParamSetsH265 = true;
-            if (dbg.debugParamSets) {
+            if (dbg.traceNativeStream) {
               this.logger?.warn(`[BaichuanVideoStream] Prepending H.265 VPS/SPS/PPS to frame`);
             }
             return Buffer.concat([
@@ -835,7 +835,7 @@ export class BaichuanVideoStream extends EventEmitter<{
           // Guard rail: do not emit invalid keyframes (prevents cascading parameter set issues)
           if (media.videoType === "H264") {
             if (!isValidH264AnnexBAccessUnit(outAnnex) || !isH264KeyframeAnnexB(outAnnex)) {
-              if (dbg.debugH264) {
+              if (dbg.traceNativeStream) {
                 this.logger?.warn(`[BaichuanVideoStream] Dropping invalid H.264 Iframe (Annex-B) len=${outAnnex.length}`);
               }
               continue;
@@ -843,14 +843,14 @@ export class BaichuanVideoStream extends EventEmitter<{
           } else if (media.videoType === "H265") {
             // For H.265, validate access unit and check for keyframe (IRAP with VPS/SPS/PPS)
             if (!isValidH265AnnexBAccessUnit(outAnnex)) {
-              if (dbg.debugH264) {
+              if (dbg.traceNativeStream) {
                 this.logger?.warn(`[BaichuanVideoStream] Dropping invalid H.265 Iframe (Annex-B) len=${outAnnex.length}`);
               }
               continue;
             }
             // Check if it's a proper keyframe (should have VPS/SPS/PPS and IRAP)
             if (!isH265KeyframeAnnexB(outAnnex)) {
-              if (dbg.debugH264) {
+              if (dbg.traceNativeStream) {
                 this.logger?.warn(`[BaichuanVideoStream] H.265 Iframe missing VPS/SPS/PPS or IRAP, but continuing len=${outAnnex.length}`);
               }
               // Continue anyway - the parameter sets might be prepended
@@ -858,7 +858,7 @@ export class BaichuanVideoStream extends EventEmitter<{
           }
 
           // Save a one-off sample for offline analysis
-          if (dbg.debugH264 && !this.debugSavedSamples) {
+          if (dbg.traceNativeStream && !this.debugSavedSamples) {
             try {
               const outDir = dbg.dumpDir;
               fs.mkdirSync(outDir, { recursive: true });
@@ -933,7 +933,7 @@ export class BaichuanVideoStream extends EventEmitter<{
             const isValid =
               media.videoType === "H265" ? isValidH265AnnexBAccessUnit(outP) : isValidH264AnnexBAccessUnit(outP);
             if (!isValid) {
-              if (dbg.debugH264 && this.debugH264LogsLeft > 0) {
+              if (dbg.traceNativeStream && this.debugH264LogsLeft > 0) {
                 this.debugH264LogsLeft--;
                 const head = outP.subarray(0, Math.min(24, outP.length)).toString("hex");
                 this.logger?.warn(`[BaichuanVideoStream] Dropping invalid Pframe (${media.videoType}): len=${outP.length} head=${head}`);

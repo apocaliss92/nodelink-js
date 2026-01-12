@@ -68,7 +68,7 @@ async function main(): Promise<void> {
     transport: "tcp",
     debugOptions: {
       debugRtsp: false,
-      traceStream: false,
+      traceNativeStream: false,
       general: false,
     },
   });

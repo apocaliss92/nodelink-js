@@ -362,6 +362,9 @@ class RtpWriter {
 
     constructor(private payloadType: number) {
         this.seq = crypto.randomBytes(2).readUInt16BE(0);
+        // Random initial timestamp improves interoperability with RTP receivers
+        // (including WebRTC bridging) and matches common RTP best practices.
+        this.timestamp = crypto.randomBytes(4).readUInt32BE(0);
     }
 
     setTimestamp(ts: number) {

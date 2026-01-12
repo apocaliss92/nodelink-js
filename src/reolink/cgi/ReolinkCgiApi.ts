@@ -482,12 +482,10 @@ export class ReolinkCgiApi {
   private debugConfig: DebugConfig = {
     general: false,
     debugRtsp: false,
-    traceStream: false,
+    traceNativeStream: false,
     traceRecordings: false,
     traceEvents: false,
     traceTalk: false,
-    debugH264: false,
-    debugParamSets: false,
     dumpEnabled: false,
     dumpDir: "",
     dumpBcMedia: false,

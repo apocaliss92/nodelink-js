@@ -100,6 +100,10 @@ function parseDateEnv(v: string | undefined): Date | undefined {
   return d;
 }
 
+function envBool(v: string | undefined): boolean {
+  return /^(1|true|yes)$/i.test((v ?? "").trim());
+}
+
 async function main(): Promise<void> {
   const { host, username, password, uid } = config.nvr;
   if (!host) throw new Error("Missing NVR_HOST in .env");
@@ -111,8 +115,20 @@ async function main(): Promise<void> {
   const hours = Number(process.env.EVENTS_HOURS ?? "6");
   const maxIterations = Number(process.env.EVENTS_MAX_ITER ?? "50");
 
+  const today = envBool(process.env.EVENTS_TODAY);
+  const stdoutJson = envBool(process.env.EVENTS_STDOUT_JSON);
+  const quiet = envBool(process.env.EVENTS_QUIET) || stdoutJson;
+  const onlyDetections = envBool(process.env.EVENTS_ONLY_DETECTIONS);
+
   const now = new Date();
-  const start = parseDateEnv(startIso) ?? new Date(now.getTime() - (Number.isFinite(hours) ? hours : 6) * 60 * 60 * 1000);
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0);
+
+  const start =
+    parseDateEnv(startIso) ??
+    (today
+      ? todayStart
+      : new Date(now.getTime() - (Number.isFinite(hours) ? hours : 6) * 60 * 60 * 1000));
   const end = parseDateEnv(endIso) ?? now;
 
   const channels = parseChannelsEnv(process.env.EVENTS_CHANNELS);
@@ -126,24 +142,31 @@ async function main(): Promise<void> {
   const compareIncludeCgi = /^(1|true|yes)$/i.test(process.env.EVENTS_COMPARE_INCLUDE_CGI ?? "");
   const compareMaxChannels = Number(process.env.EVENTS_COMPARE_MAX_CHANNELS ?? "0");
 
-  console.log("\n" + "=".repeat(80));
-  console.log("TEST: NVR/HUB alarm events via Baichuan (findAlarmVideo 272/273/274)");
-  console.log("=".repeat(80));
-  console.log(`Host: ${host}`);
-  console.log(`User: ${username}`);
-  console.log(
-    `Window: start=${start.toISOString()} end=${end.toISOString()} (hours=${Number.isFinite(hours) ? hours : "invalid"})`,
-  );
-  if (channels?.length) console.log(`Channels: ${channels.join(", ")}`);
-  if (streamType) console.log(`StreamType: ${streamType}`);
-  if (alarmType) console.log(`AlarmType override: ${alarmType}`);
-  console.log(`Source: ${source} (auto|baichuan|cgi)`);
-  if (compareMode) console.log(`Compare: enabled (includeCgi=${compareIncludeCgi ? "yes" : "no"})`);
-  if (printAll) console.log("PrintAll: enabled");
-  if (jsonOut) console.log(`JsonOut: ${jsonOut}`);
-  const traceRecordings = /^(1|true|yes)$/i.test(process.env.TRACE_RECORDINGS ?? "");
-  if (traceRecordings) console.log("TraceRecordings: enabled");
-  console.log("");
+  if (!quiet) {
+    console.log("\n" + "=".repeat(80));
+    console.log("TEST: NVR/HUB alarm events via Baichuan (findAlarmVideo 272/273/274)");
+    console.log("=".repeat(80));
+    console.log(`Host: ${host}`);
+    console.log(`User: ${username}`);
+    console.log(
+      `Window: start=${start.toISOString()} end=${end.toISOString()} (hours=${Number.isFinite(hours) ? hours : "invalid"})`,
+    );
+    if (today) console.log("Mode: EVENTS_TODAY=1");
+    if (channels?.length) console.log(`Channels: ${channels.join(", ")}`);
+    if (streamType) console.log(`StreamType: ${streamType}`);
+    if (alarmType) console.log(`AlarmType override: ${alarmType}`);
+    console.log(`Source: ${source} (auto|baichuan|cgi)`);
+    if (compareMode) console.log(`Compare: enabled (includeCgi=${compareIncludeCgi ? "yes" : "no"})`);
+    if (printAll) console.log("PrintAll: enabled");
+    if (jsonOut) console.log(`JsonOut: ${jsonOut}`);
+    if (onlyDetections) console.log("Filter: EVENTS_ONLY_DETECTIONS=1");
+    if (stdoutJson) console.log("Output: EVENTS_STDOUT_JSON=1");
+    const traceRecordings = envBool(process.env.TRACE_RECORDINGS);
+    if (traceRecordings) console.log("TraceRecordings: enabled");
+    console.log("");
+  }
+
+  const traceRecordings = envBool(process.env.TRACE_RECORDINGS);
 
   const api = new ReolinkBaichuanApi({
     host,
@@ -151,6 +174,7 @@ async function main(): Promise<void> {
     password,
     uid,
     timeoutMs: 30_000,
+    ...(quiet ? { logger: { log() {}, info() {}, warn() {}, error() {}, debug() {} } } : {}),
     ...(traceRecordings ? { debugOptions: { traceRecordings: true } } : {}),
   });
 
@@ -162,9 +186,9 @@ async function main(): Promise<void> {
   }, hardExitMs);
 
   try {
-    console.log("Logging in...");
+    if (!quiet) console.log("Logging in...");
     await withTimeout(api.login(), 45_000, "api.login");
-    console.log("Login OK\n");
+    if (!quiet) console.log("Login OK\n");
 
     const normalizeName = (s: string | undefined): string => (typeof s === "string" ? s.trim() : "");
     const isEventLike = (r: { hasMotion?: boolean; hasPerson?: boolean; hasVehicle?: boolean; hasAnimal?: boolean; hasFace?: boolean; hasDoorbell?: boolean; hasPackage?: boolean; hasRf?: boolean; hasOther?: boolean }): boolean =>
@@ -432,7 +456,11 @@ async function main(): Promise<void> {
       }
     }
 
-    console.log(`Returned ${events.length} event(s)\n`);
+    if (onlyDetections) {
+      events = events.filter((e) => isEventLike(e));
+    }
+
+    if (!quiet) console.log(`Returned ${events.length} event(s)\n`);
 
     const byChannel = new Map<number, AlarmEvent[]>();
     for (const ev of events) {
@@ -478,7 +506,13 @@ async function main(): Promise<void> {
       }),
     };
 
-    if (jsonOut || /^(1|true|yes)$/i.test(process.env.EVENTS_WRITE_JSON ?? "")) {
+    if (stdoutJson) {
+      // Print JSON only (no extra logs) for easy piping.
+      process.stdout.write(JSON.stringify(dump, null, 2) + "\n");
+      return;
+    }
+
+    if (jsonOut || envBool(process.env.EVENTS_WRITE_JSON)) {
       const defaultName = `nvr_alarm_events_${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
       const outPath = jsonOut
         ? path.resolve(process.cwd(), jsonOut)
