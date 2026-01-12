@@ -43,6 +43,8 @@
     "test:nvr:native-frame-trace": "npm run test:build && node dist/test/nvr/test-nvr-native-secondary-frame-trace.js",
     "test:nvr:native-ffprobe": "npm run test:build && node dist/test/nvr/test-nvr-native-streams-ffprobe.js",
     "test:pcap:baichuan": "npm run test:build && node dist/test/pcap/test-pcap-baichuan-analyze.js",
+    "test:pcap:6666-transcripts": "npm run test:build && node dist/test/pcap/test-6666-transcripts-analyze.js",
+    "test:pcap:6666-multi": "npm run test:build && node dist/test/pcap/test-6666-multi-session-compare.js",
     "build:js": "npx tsup",
     "build:types": "rm -rf .tmp/types && npx tsc -p tsconfig.json --emitDeclarationOnly --declaration --declarationMap false --outDir .tmp/types && npx api-extractor run --local && rm -rf .tmp/types",
     "build": "npm run build:js && npm run build:types",
@@ -88,6 +90,12 @@
     "test:udp": "npm run test:build && node dist/test/udp/test-udp.js",
     "test:udp:discovery-methods": "npm run test:build && node dist/test/udp/test-udp-discovery-methods.js",
     "test:udp:sleep-battery": "npm run test:build && node dist/test/udp/test-udp-sleep-battery.js",
+    "test:udp:sleep-probe": "npm run test:build && node dist/test/udp/test-udp-sleep-probe.js",
+    "test:udp:pir-events": "npm run test:build && PROBE_MODE=events node dist/test/udp/test-udp-sleep-probe.js",
+    "test:udp:listen-7777": "npm run test:build && PROBE_MODE=listen PROBE_LISTEN_7777=1 PROBE_LISTEN_MS=600000 node dist/test/udp/test-udp-sleep-probe.js",
+    "test:hub:emu": "npm run test:build && HUB_EMU_UDP_7777=1 node dist/test/hub/test-hub-emu.js",
+    "test:hub:emu:unpair": "npm run test:build && HUB_EMU_UDP_7777=1 HUB_EMU_REPLAY_6666_TRANSCRIPT=test/pcap/exports/unpair-6666-transcript.json HUB_EMU_REPLAY_SEND_FIRST=1 HUB_EMU_REPLAY_SEND_FIRST_REL_MS_MAX=0 node dist/test/hub/test-hub-emu.js",
+    "test:hub:kick": "npm run test:build && node dist/test/hub/test-hub-kick-bcudp.js",
     "test:udp:uptime": "npm run test:build && node dist/test/udp/test-udp-stream-uptime.js",
     "test:udp:record": "npm run test:build && node dist/test/udp/test-udp-video-stream-record.js",
     "test:streams": "npm run test:build && node dist/test/streams/test-streams.js",
@@ -105,7 +113,8 @@
     "test:nvr:all": "npm run test:nvr:tcp && npm run test:nvr:udp && npm run test:nvr:streams",
     "test:all": "npm run test:tcp && npm run test:udp && npm run test:streams",
     "test:native": "npm run test:tcp:native",
-    "rtsp-server": "npm run test:build && node dist/cli/rtsp-server.cjs"
+    "rtsp-server": "npm run test:build && node dist/cli/rtsp-server.cjs",
+    "hub-emu": "npm run test:build && node dist/cli/hub-emu.cjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",

@@ -24,6 +24,13 @@ export interface TestConfig {
     password: string;
     uid: string;
   };
+  /** Separate battery camera profile used for sleep experiments (UDP_SLEEP_* env vars). */
+  udpSleep: {
+    host: string;
+    username: string;
+    password: string;
+    uid: string;
+  };
   nvr: {
     host: string;
     username: string;
@@ -57,6 +64,12 @@ function loadEnv(): TestConfig {
       username: getEnv("UDP_USERNAME", "admin"),
       password: getEnv("UDP_PASSWORD", ""),
       uid: getEnv("UDP_UID", ""),
+    },
+    udpSleep: {
+      host: getEnv("UDP_SLEEP_HOST", ""),
+      username: getEnv("UDP_SLEEP_USERNAME", "admin"),
+      password: getEnv("UDP_SLEEP_PASSWORD", ""),
+      uid: getEnv("UDP_SLEEP_UID", ""),
     },
     nvr: {
       host: getEnv("NVR_HOST", ""),

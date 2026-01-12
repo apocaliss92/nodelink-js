@@ -30,4 +30,5 @@ test/frames-debug/*
 test/frames-save/*
 .tmp/*
 pcap/*
+firmwares/*
 

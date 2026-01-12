@@ -47,4 +47,6 @@ export * from "./reolink/autodetect";
 export * from "./reolink/discovery";
 export * from "./multifocal/compositeStream";
 export * from "./multifocal/compositeRtspServer";
+export * from "./hub/Udp7777Listener";
+export * from "./hub/HubEmulator";
 

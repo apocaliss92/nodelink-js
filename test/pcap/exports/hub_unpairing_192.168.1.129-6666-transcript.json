@@ -1,0 +1,277 @@
+{
+  "generatedAt": "2026-01-12T10:56:17.812Z",
+  "pcapPath": "/Users/gianlucaruocco/Documents/Git/reolink-baichuan-js/pcap/hub_unpairing_192.168.1.129.pcapng",
+  "hubIp": "192.168.1.161",
+  "entries": [
+    {
+      "dirKey": "192.168.1.161:6666 -> 192.168.1.152:63679",
+      "reassembledBytes": 352,
+      "gaps": 0,
+      "prefixHex": "",
+      "prefixTokens": [],
+      "records": [
+        {
+          "tsMs": 1768215151179.924,
+          "relMs": 0,
+          "streamOff": 0,
+          "type": 438,
+          "len": 176,
+          "payloadB64": "jRHtSas2+6DKcdcGxOdI/Cl4WFsj5q8vu9ABfGFd+FgQnRYWM+tP2N9m28jTJ1h9uKFWCm9/mNavhxq3rI/ZqbDQDOQScCg/0k7+GRB1T92OC2oMFRAkxaqaLrCgtIMOncuPfCEUvQhGd22wNjByvhxmg7uJeVCx0QxH7kSURLln1xqmTFTyuP9SoRx55vS4oLzHtEE5hrk8GRoVUaR8JcxfSuCztkbNBogIG9BZcV0="
+        },
+        {
+          "tsMs": 1768215152950.474,
+          "relMs": 1770.550048828125,
+          "streamOff": 188,
+          "type": 439,
+          "len": 64,
+          "payloadB64": "xwk8vsbO26FrfGvOa9KE8AYOcTATaH1U9XmV3XrpOgReKmUy48DAZQ8HFjgHLxqN8WelDuOzA3i/RwR7+L0YTg=="
+        },
+        {
+          "tsMs": 1768215153181.665,
+          "relMs": 2001.740966796875,
+          "streamOff": 264,
+          "type": 440,
+          "len": 64,
+          "payloadB64": "VL02+AAY4baz7pnReKYpkh3bAnwiRMoATAU/pe8giagmy7shIy88GHIf9WMAcOV3+gAk/1KI5LNLpndTytrFyw=="
+        }
+      ]
+    },
+    {
+      "dirKey": "192.168.1.161:6666 -> 192.168.1.81:52397",
+      "reassembledBytes": 340,
+      "gaps": 0,
+      "prefixHex": "",
+      "prefixTokens": [],
+      "records": [
+        {
+          "tsMs": 1768215150822.616,
+          "relMs": 0,
+          "streamOff": 0,
+          "type": 141,
+          "len": 176,
+          "payloadB64": "gqlmnIQbuc6dFnhwpWVm6C8RL9EaL3/KcjsmE3VihNirY4NqQ6xNTrLwYw7fAuTQT4HhUijaMUCEtEhBfapaTVg8oe3FdtHnWus1Wu66Kn7Eu2C4nTXW33MqwrbFMaoLx9hfnsqL3a8ye28UNvIYkRY2hfzKvgmamgt7d6ady6rRqDz8ace3iwRtodQS3YFmGLS3iI+5hRBtqzoESCuUBAaZY/62xPDZwh2fEEzoN0Q="
+        },
+        {
+          "tsMs": 1768215151960.8228,
+          "relMs": 1138.206787109375,
+          "streamOff": 188,
+          "type": 142,
+          "len": 64,
+          "payloadB64": "xBw0gq38cCO72MhcxNpU1d/cn0irtRdn3FmfgzI3vr6yIDkq4QkOXXizgryXpDWSgNxVY8xXKfPz5HpZJmRVFA=="
+        },
+        {
+          "tsMs": 1768215151992.2869,
+          "relMs": 1169.6708984375,
+          "streamOff": 264,
+          "type": 143,
+          "len": 64,
+          "payloadB64": "zAtZ2e1hddH6XyB9sV6SOuVTyC6ALCLg5MK4ksXEAMkRVEL3cd/JzgynkbHgBrCE8/cI3u6mvEHyNfiMsOjQlg=="
+        }
+      ]
+    },
+    {
+      "dirKey": "192.168.1.81:52397 -> 192.168.1.161:6666",
+      "reassembledBytes": 800,
+      "gaps": 0,
+      "prefixHex": "",
+      "prefixTokens": [],
+      "records": [
+        {
+          "tsMs": 1768215150843.92,
+          "relMs": 0,
+          "streamOff": 0,
+          "type": 591,
+          "len": 416,
+          "payloadB64": "SiK7s/iuZXTJ4To4VX7dR92dQTX218i1vcWmotPeSr0MMmBsgvIECFZ1SXwiND6/MmSwyCfJKUBCMAE34y6ok69siWcQqLMplntiwzJJxmFEpxzdYRvxiUFEt4pUqpbZersGSTw7Z0dJrQdfFJGqWOOzbyBRobi/jBDglmiIfSQjsASHQCCHNTcK4tiTauMdrfv8NEj1+H1eiSOoq69nEbtwA1jgDg4GHeauUXqKaAe9dIwcfx2xuDFkalW2Kk1Rp6i4ZEG5YNhWvQiJmvnVp+EFsb0qgkd5Q6EEW1pzs5yDii11oF2a49+2er/TOH9nh+ko65sV3f1x+NbgA9UDOiBpcdqJAbzRXCOrXUZcl+CzIEixFvq6f7IuOt+m/R/k1Msg15Dp66zCY41L05y3aCEWQIwYUJzYSvq+qlHKKi/BCbJVsqIh3hrEYkGWQLy0D8TgQIqYp3p+8YYrxX9KaZnoaWDU+b3ak/1rIeNjnqJKmYbXnQKYmaOvyKVJ3TuAZwZB17elWCKv+h5s6mvfiBNqZUM+T2E7GGLHMviU9pc="
+        },
+        {
+          "tsMs": 1768215150891.2617,
+          "relMs": 47.341796875,
+          "streamOff": 428,
+          "type": 592,
+          "len": 112,
+          "payloadB64": "jWcMQ6IhXw9G9FwqG1DKj7tycZPrs5TbjiOUsHwPLKTRbY/eE7U1p8Wc7Vi6GeF99ZgU7javXhHpof/jn8tIoceFOllQDZkhrpul9wNFN4CpnC277EwgBvvNToSOvlNXXzsJJQA8o5LBVNwKoaLmMA=="
+        },
+        {
+          "tsMs": 1768215151916.7368,
+          "relMs": 1072.81689453125,
+          "streamOff": 552,
+          "type": 593,
+          "len": 112,
+          "payloadB64": "DC/xU08hoqZmaGpduQVGXiVU7bW72FrJW9f9+hZNcHH9/OtkLHVOKpkhLhD0ifzXupR5IHaCiSzitIanDYcDFnu52hSvGPQxpyXw9d8y+JR3JPsDgTxbk+FLwt7oOO8dHiOQNVSvNx6yqAbCq5Xz9Q=="
+        },
+        {
+          "tsMs": 1768215151985.303,
+          "relMs": 1141.383056640625,
+          "streamOff": 676,
+          "type": 594,
+          "len": 112,
+          "payloadB64": "QVkD5NY5HMzP14oUewsZrP3JbeMm9WUmhcE7ieAnSLLYsoQP8ENgX2hgchwT1gKdR60B1XCnlvApa8oKutdoUVfCmGpfWvhX2Zu/jgr3yzddg3chX1nInSC3Om6iUy3c7hB/FVMwoRH/uvmyH9LlLQ=="
+        }
+      ]
+    },
+    {
+      "dirKey": "192.168.1.152:63679 -> 192.168.1.161:6666",
+      "reassembledBytes": 800,
+      "gaps": 0,
+      "prefixHex": "",
+      "prefixTokens": [],
+      "records": [
+        {
+          "tsMs": 1768215151454.1199,
+          "relMs": 0,
+          "streamOff": 0,
+          "type": 438,
+          "len": 112,
+          "payloadB64": "VJLsOmtEGn5lLSyLi6PguOzQdg0GRYLw7AoinTf2ceNbg8rY4k/2Ny1rLSNyTIraMe3s/TLeJXfBWj/b5qHHqZWYO+2TzB/SMOjeVvZA4lxUrvE/UVOclOV/QGG8/dRtdLpyKE/HwnB8LhrTq3adNQ=="
+        },
+        {
+          "tsMs": 1768215152836.288,
+          "relMs": 1382.168212890625,
+          "streamOff": 124,
+          "type": 439,
+          "len": 112,
+          "payloadB64": "bqYsjh2MWOG7FqFjnM5fOeM0j/c9jDPvzi2eFRzp8HxU6WKh2p4wsPQAD0jXRFBgZxCe498nzBJEWbGQf84yXdOsDhhuNEkluqx4jwNLt3V01azkw3cLCEjZrqVKujsrhRNsYpKLLMrmC+iR1rRLsA=="
+        },
+        {
+          "tsMs": 1768215152950.259,
+          "relMs": 1496.13916015625,
+          "streamOff": 248,
+          "type": 440,
+          "len": 112,
+          "payloadB64": "pvZsqwqtJWDqCPNpywQiOQL03rmIS47iiRe+57wmhMiuwvGJ7t0WF6cskzCoXZ7Qeale2tgQor3i49I3MDVL8AIlq+MFkeZcaloDCKqsr57IjRhQxQtnSHhULWaDCuX7xGr5cts2g1yiQ8WvUaduNw=="
+        },
+        {
+          "tsMs": 1768215157203.522,
+          "relMs": 5749.402099609375,
+          "streamOff": 372,
+          "type": 441,
+          "len": 416,
+          "payloadB64": "9Cj1NmwqKLAxFN9BVyDf7mD7J2FAMnRq66bcmNr/ntl9IIN4c14DVzCPaS4H0MGUrd9qUb5nOoNw+/w88Cs43iGpWIsIvTlv93gTi8eNGxT6lys5xfc4jWECr2GUkAIFhOeQ6SOkDRCDvI7KcxKBlfPPwu+WXfKx6WkbprGUTml7HeQfDzNVDm/qcKmOTq/xG5Mv8Wn9NW1lYGkHyIvQLgG3cy/dKatJc563DnRGvPkG0lXOKooMcNTHVZJw9thP4AbFcgLvRJT5dm5fu1+GMNBf1bClfC1eWe7xOJ2NaK7rMDwB8D3yPmdeLbXMs7TiBFaBlKjqjeZSBbb5ruMnTWtm4QLidJUbdgxmRGRbFd8VQRLXkTlcS/aaDGgUc1Q8agsb/qlm/uQ8UQFvmz5lB6N+2foPjTwWPw3Fo1GXUm0dYRXmRSYGf0dpRw5JBpShgy6PxXgtWBMbJgvuw/vy1fHdFvOEKgq0rqBLad2XcWz4I7SMhwt/KTLKXwErcLjECXTCGEYSZTQo9QBJVC3RutTXgUOmWEF4O/dnuwhqbIg="
+        }
+      ]
+    }
+  ],
+  "udp7777Samples": [
+    {
+      "tsMs": 1768215151852.243,
+      "dirKey": "192.168.1.81:51653 -> 192.168.1.161:7777",
+      "payloadLen": 55,
+      "parsed": {
+        "magicLE": 713543474,
+        "dataLen": 11,
+        "seq": 858,
+        "uid": "952700093ABW14UB",
+        "headerLen": 44,
+        "dataHeadHex": "1d33654547cb31555c227d",
+        "dataTailHex": "1d33654547cb31555c227d"
+      },
+      "payloadB64": "Ms+HKgsAAABaAwAAOTUyNzAwMDkzQUJXMTRVQgAAAAAAAAAAAAAAAAAAAAAdM2VFR8sxVVwifQ=="
+    },
+    {
+      "tsMs": 1768215151860.03,
+      "dirKey": "192.168.1.81:64612 -> 192.168.1.161:7777",
+      "payloadLen": 346,
+      "parsed": {
+        "magicLE": 713543474,
+        "dataLen": 302,
+        "seq": 859,
+        "uid": "952700093ABW14UB",
+        "headerLen": 44,
+        "dataHeadHex": "6b235755c12a02452a30000f86301f0a7523081293724e55",
+        "dataTailHex": "464b32765b45cd1b150f7e2308159039"
+      },
+      "payloadB64": "Ms+HKi4BAABbAwAAOTUyNzAwMDkzQUJXMTRVQgAAAAAAAAAAAAAAAAAAAABrI1dVwSoCRSowAA+GMB8KdSMIEpNyTlUhNAMWlWhUE3lsV1nLKhNFKiwBFZR0WkV0ckYOwSpUXSEtEEfXMFsIdmdBRtBmTFY8I1NHxTQCRSowHgHWIhkXdW8QGZVoVBV2clFGwGZMUyI4BhqSc0ZTIC0QUcI3EwkyOwMSiGYZAXZtW03BGxUIZW9GAZ50WkVgchAZlGhUD39yRlPTNlRdIS0QS8s3AgVjeBAZlGhUBXF1EBnfZhQEMjsCD4YmAEUqNQMXkmhUE30jCBWIZhUOYyMIEYhmFRQyOwMPhioCBDI7AA+GKBkQMjsCD4Y0FRMyOwMTlDlaRXlzUVbQZkxXPCNCRtYtBg8yOwAPhjcPFGRoX0aGfkRUKDUGFp1wRksydltFzRsVD34jCBWQOQ=="
+    },
+    {
+      "tsMs": 1768215152695.651,
+      "dirKey": "192.168.1.152:55493 -> 192.168.1.161:7777",
+      "payloadLen": 55,
+      "parsed": {
+        "magicLE": 713543474,
+        "dataLen": 11,
+        "seq": 74,
+        "uid": "9527000HXOHJ142G",
+        "headerLen": 44,
+        "dataHeadHex": "0d23755557db21454c326d",
+        "dataTailHex": "0d23755557db21454c326d"
+      },
+      "payloadB64": "Ms+HKgsAAABKAAAAOTUyNzAwMEhYT0hKMTQyRwAAAAAAAAAAAAAAAAAAAAANI3VVV9shRUwybQ=="
+    },
+    {
+      "tsMs": 1768215152696.9,
+      "dirKey": "192.168.1.152:55494 -> 192.168.1.161:7777",
+      "payloadLen": 331,
+      "parsed": {
+        "magicLE": 713543474,
+        "dataLen": 287,
+        "seq": 75,
+        "uid": "9527000HXOHJ142G",
+        "headerLen": 44,
+        "dataHeadHex": "7b334745d13a12553a20101f96200f1a6533180283625e45",
+        "dataTailHex": "0e73654b5ed1765c40382116068d671b"
+      },
+      "payloadB64": "Ms+HKh8BAABLAAAAOTUyNzAwMEhYT0hKMTQyRwAAAAAAAAAAAAAAAAAAAAB7M0dF0ToSVTogEB+WIA8aZTMYAoNiXkUxJBMGh3hEA2l8R0nbOgNVOjwRBYRkSlVkYlYe0TpETTE9AFfHIEsYZndRVsB2XEYsM0NX1SQSVTogDhHGMgkHZX8ACYV4RAVmYkFW0HZcQzIoFgqCY1ZDMD0AQdInAxkiKxECmHYJEWZ9S13RCwUYdX9WEY5kSlVwYgAJhHhEH29iVkPDJkRNMT0AW9snEhVzaAAJhHhEFWFlAAnPdgQUIisSH5Y2EFU6JRMFjHhEA20zGAKCeEQUaWIACYZ4RBRzMxgAmHYIA2MzGAOYdgoYdzMYA5h2FhR0MxgChGQbWyJ4UFDBIERNMj0AQ9EmDwdoMxgDmHYVDnNlS17RdlxAOCEWBo1nGw=="
+    },
+    {
+      "tsMs": 1768215155209.404,
+      "dirKey": "192.168.1.129:59752 -> 192.168.1.161:7777",
+      "payloadLen": 108,
+      "parsed": {
+        "magicLE": 713543474,
+        "dataLen": 64,
+        "seq": 1142,
+        "uid": "9527000K5SCGS2KX",
+        "headerLen": 44,
+        "dataHeadHex": "75ab0c2d2f53583d34bd45792e485e7e7ae0063568071829",
+        "dataTailHex": "36bf5f77684f497e7de60779700f1562"
+      },
+      "payloadB64": "Ms+HKkAAAAB2BAAAOTUyNzAwMEs1U0NHUzJLWAAAAAAAAAAAAAAAAAAAAAB1qwwtL1NYPTS9RXkuSF5+euAGNWgHGCk4sV93aElDa2/lDS44XFh2YedLYXIPGSk2v193aE9Jfn3mB3lwDxVi"
+    },
+    {
+      "tsMs": 1768215155213.785,
+      "dirKey": "192.168.1.129:59753 -> 192.168.1.161:7777",
+      "payloadLen": 405,
+      "parsed": {
+        "magicLE": 713543474,
+        "dataLen": 361,
+        "seq": 1143,
+        "uid": "9527000K5SCGS2KX",
+        "headerLen": 44,
+        "dataHeadHex": "f34a3f3d59436a2db25968671e597762ed4a607a0b1b263d",
+        "dataTailHex": "526b671e437b7bd705352f590f243ff5"
+      },
+      "payloadB64": "Ms+HKmkBAAB3BAAAOTUyNzAwMEs1U0NHUzJLWAAAAAAAAAAAAAAAAAAAAADzSj89WUNqLbJZaGceWXdi7UpgegsbJj25XWt+CQE8e+EFPzFTQ3stskVpfQwdMi3sGy5mWUM8NblEeC9PWTNg7g4pLkgPJD6kSjsvXV1qLbJZdmlOS3F/7QZ4cQ0BPH3uGzkuWA8kO7pRbnIKGi47uER4OVpee2GqUmh6EA9xae4EMyVZcn1g/QYuaQYdMi34G3hxDx4nI6oANThIXWl9qlJqZx5FcXz8CikyHhcuI6oKOz8eF2Ut6gt4cQwBPG3+SmBzDhomI6ocN2kGHCkjqgszOB4XLCOqCylpBhkyLeYcOWkGHTIt5ActaQYdMi34Cy5pBhwuP/VEeCJOTmt7qlJrZx5de33hGDJpBh0yLfsRKT9VQHstsl1ocggdKje+RHg8VUt3UOsANGkGHigjqh8zLVVyc2DsDXhxDR8uI6ofMy1Vcmx8+wF4cREZKyOqCSoUSFRuaqpSa2ceQ3t71wU1L1kPJD/1"
+    },
+    {
+      "tsMs": 1768215155216.032,
+      "dirKey": "192.168.1.129:59754 -> 192.168.1.161:7777",
+      "payloadLen": 150,
+      "parsed": {
+        "magicLE": 713543474,
+        "dataLen": 106,
+        "seq": 1144,
+        "uid": "9527000K5SCGS2KX",
+        "headerLen": 44,
+        "dataHeadHex": "1c772145477f74a55d656811577722bd57796655507c22bd",
+        "dataTailHex": "22554e786ee238362b464c6522bd5728"
+      },
+      "payloadB64": "Ms+HKmoAAAB4BAAAOTUyNzAwMEs1U0NHUzJLWAAAAAAAAAAAAAAAAAAAAAAcdyFFR390pV1laBFXdyK9V3lmVVB8Ir1FI3cdEj8wqVJldgd9IzW3UWR8AhMzLKUVMzBcVnBspV1mdAcOM2HjBiUwERggLKUFNmYJEj0i9wQhZgkTITCrRToiVU54buI4NitGTGUivVco"
+    },
+    {
+      "tsMs": 1768215155220.066,
+      "dirKey": "192.168.1.129:59755 -> 192.168.1.161:7777",
+      "payloadLen": 405,
+      "parsed": {
+        "magicLE": 713543474,
+        "dataLen": 361,
+        "seq": 1145,
+        "uid": "9527000K5SCGS2KX",
+        "headerLen": 44,
+        "dataHeadHex": "2f675755756ff2446e74000f3275ef0b316708122737be54",
+        "dataTailHex": "7f030f326fe3120b285d477523bc5629"
+      },
+      "payloadB64": "Ms+HKmkBAAB5BAAAOTUyNzAwMEs1U0NHUzJLWAAAAAAAAAAAAAAAAAAAAAAvZ1dVdW/yRG50AA8yde8LMWcIEic3vlRlcAMWJS2kEj0oV1l/b+NEbmgBFSAxqkQwNkYOdW+kXGVpEEdjdasJMiNBRmQjvFd4Z1NHcXHyRG50HgFiZ+kWMSsQGSEtpBQyNlFGdCO8UmZ8BhomNrZSZGkQUXZy4wh2fwASPCPpADIpW011XuUJIStGASoxqkQkNhAZIzK/SnYtXVBkcfEUdn8CDzJp6RUgJ0FaMju2SnYnU1cyO/1ENiYQGSAtpAQiZwgbIja+SnYxXwEqMLFKdiZbUDI7tEp2JkEBKjWqRDoxUQEqMapEOCpFASoxqkQkJkYBKjC2VilpEEpiYvMSdn8DDzJx4xQ9NVoBKjGqRCc8QVd5bONEbnAAGiQxsl9maRBUeWfvOTctXAEqMrBKdjJbRXle6wkwIBAZITO2SnYyW0V5XvQVJywQGT01s0p2JEJ8ZHj2A3Z/Aw8yb+MSCyhdR3UjvFYp"
+    }
+  ]
+}
