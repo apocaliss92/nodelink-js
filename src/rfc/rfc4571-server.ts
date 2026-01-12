@@ -15,6 +15,7 @@ import {
   type VideoParamSets,
   type VideoType,
 } from './rfc4571';
+// (no RTSP URL helpers needed here: we reuse buildVideoStreamOptions)
 
 export interface Rfc4571ApiFactoryContext {
   channel?: number;
@@ -78,7 +79,7 @@ export interface Rfc4571TcpServerOptions {
 
   /**
    * Optional identifier for the requested stream. Used to infer composite profile pairing
-   * (e.g. "composite-main-main", "composite_default_sub", "composite_default_main_sub").
+    * (e.g. "composite-native-default-sub-sub", "composite-rtsp-default-sub-sub").
    */
   requestedId?: string;
 
@@ -120,70 +121,39 @@ export async function createRfc4571TcpServer(
 ): Promise<Rfc4571TcpServer> {
   const isComposite = options.channel === undefined;
 
-  const parseCompositeProfilesFromRequestedId = (
+  const parseCompositeFromRequestedId = (
     requestedId: string | undefined,
-  ): { widerProfile?: StreamProfile; teleProfile?: StreamProfile } | undefined => {
+  ):
+    | { source: 'native' | 'rtsp'; widerProfile?: StreamProfile; teleProfile?: StreamProfile }
+    | undefined => {
     if (!requestedId) return;
     const id = String(requestedId);
 
-    // Supported forms:
-    // - composite-main-main
-    // - composite_main
-    // - composite_sub
-    // - composite_default_main
-    // - composite_default_main_sub
-    // - composite_main_sub
-    if (id.startsWith('composite-')) {
+    const asProfile = (v: string | undefined): StreamProfile | undefined =>
+      v === 'main' || v === 'sub' || v === 'ext' ? (v as StreamProfile) : undefined;
+
+    // Explicit source forms:
+    // - composite-native-<wider>-<tele>
+    // - composite-native-<variant>-<wider>-<tele>
+    // - composite-rtsp-<wider>-<tele>
+    // - composite-rtsp-<variant>-<wider>-<tele>
+    if (id.startsWith('composite-native-') || id.startsWith('composite-rtsp-')) {
+      const source: 'native' | 'rtsp' = id.startsWith('composite-rtsp-') ? 'rtsp' : 'native';
       const parts = id.split('-').filter(Boolean);
-      if (parts.length >= 3) {
-        const wider = parts[1];
-        const tele = parts[2];
-        const widerProfile = (wider === 'main' || wider === 'sub' || wider === 'ext') ? (wider as StreamProfile) : undefined;
-        const teleProfile = (tele === 'main' || tele === 'sub' || tele === 'ext') ? (tele as StreamProfile) : undefined;
-        return {
-          ...(widerProfile ? { widerProfile } : {}),
-          ...(teleProfile ? { teleProfile } : {}),
-        };
-      }
-      return;
-    }
-
-    if (id.startsWith('composite_')) {
-      const parts = id.split('_').filter(Boolean);
       // parts[0] === 'composite'
-      // composite_<tele>
-      if (parts.length === 2) {
-        const tele = parts[1];
-        const teleProfile = (tele === 'main' || tele === 'sub' || tele === 'ext') ? (tele as StreamProfile) : undefined;
-        return teleProfile ? { teleProfile } : {};
-      }
-      // composite_<variant>_<tele>
-      if (parts.length === 3) {
-        const second = parts[1];
-        const third = parts[2];
-
-        const thirdProfile = (third === 'main' || third === 'sub' || third === 'ext') ? (third as StreamProfile) : undefined;
-        if (!thirdProfile) return;
-
-        // If the second token is a profile, interpret as composite_<wider>_<tele>
-        if (second === 'main' || second === 'sub' || second === 'ext') {
-          return { widerProfile: second as StreamProfile, teleProfile: thirdProfile };
-        }
-
-        // Otherwise interpret as composite_<variant>_<tele>
-        return { teleProfile: thirdProfile };
-      }
-      // composite_<variant>_<wider>_<tele>
+      // parts[1] === 'native' | 'rtsp'
       if (parts.length >= 4) {
-        const wider = parts[2];
-        const tele = parts[3];
-        const widerProfile = (wider === 'main' || wider === 'sub' || wider === 'ext') ? (wider as StreamProfile) : undefined;
-        const teleProfile = (tele === 'main' || tele === 'sub' || tele === 'ext') ? (tele as StreamProfile) : undefined;
+        const wider = parts.length >= 5 ? parts[3] : parts[2];
+        const tele = parts.length >= 5 ? parts[4] : parts[3];
+        const widerProfile = asProfile(wider);
+        const teleProfile = asProfile(tele);
         return {
+          source,
           ...(widerProfile ? { widerProfile } : {}),
           ...(teleProfile ? { teleProfile } : {}),
         };
       }
+      return { source };
     }
 
     return;
@@ -235,7 +205,7 @@ export async function createRfc4571TcpServer(
   // backpressure or a long GOP on join can look like "no activity" even though the pipeline is alive.
   const uptimeRestartMs = uptimeRestartMsOpt ?? (isComposite ? 60_000 : 10_000);
   const variantSuffix = variant && variant !== 'default' ? ` variant=${variant}` : '';
-  const logPrefix = isComposite 
+  const logPrefix = isComposite
     ? `[native-rfc4571 composite profile=${profile}${variantSuffix}${requestedId ? ` id=${requestedId}` : ''}]`
     : `[native-rfc4571 ch=${channel} profile=${profile}${variantSuffix}]`;
   const log = (message: string) => {
@@ -261,8 +231,11 @@ export async function createRfc4571TcpServer(
     // Use composite stream for multifocal cameras
     const widerChannel = compositeOptions?.widerChannel ?? 0;
     const teleChannel = compositeOptions?.teleChannel ?? 1;
-    const requested = parseCompositeProfilesFromRequestedId(requestedId);
-    const teleProfile: StreamProfile = requested?.teleProfile ?? profile;
+    const requested = parseCompositeFromRequestedId(requestedId);
+    // `options.profile` is the *output* profile requested by the caller.
+    // `requestedId` encodes *input* selection (widerProfile + teleProfile).
+    const outputProfile: StreamProfile = profile;
+    let teleInputProfile: StreamProfile = requested?.teleProfile ?? outputProfile;
 
     // Default wider selection:
     // - If explicitly requested via id: obey.
@@ -284,18 +257,24 @@ export async function createRfc4571TcpServer(
       // ignore
     }
 
-    const widerProfile: StreamProfile =
+    let widerInputProfile: StreamProfile =
       requested?.widerProfile ??
-      (teleProfile === 'ext'
+      (outputProfile === 'ext'
         ? 'ext'
-        : (teleProfile === 'main' && widerMainIsH264)
+        : (outputProfile === 'main' && widerMainIsH264)
           ? 'main'
           : 'sub');
 
-    if (requested?.teleProfile && requested.teleProfile !== profile) {
-      log(`requestedId overrides tele profile (requested=${requested.teleProfile} options.profile=${profile})`);
+    if (requested?.teleProfile && requested.teleProfile !== outputProfile) {
+      log(
+        `requestedId overrides tele INPUT profile (requested=${requested.teleProfile} output=${outputProfile})`,
+      );
     }
-    log(`creating composite stream: wider(ch=${widerChannel}, profile=${widerProfile}), tele(ch=${teleChannel}, profile=${teleProfile}) widerMainIsH264=${widerMainIsH264}`);
+    log(
+      `creating composite stream: outputProfile=${outputProfile} ` +
+      `wider(ch=${widerChannel}, profile=${widerInputProfile}), tele(ch=${teleChannel}, profile=${teleInputProfile}) ` +
+      `source=${requested?.source ?? 'native'} widerMainIsH264=${widerMainIsH264}`,
+    );
 
     const widerApi = resolvedCompositeApis?.widerApi ?? baseApi;
     const teleApi = resolvedCompositeApis?.teleApi ?? baseApi;
@@ -303,7 +282,82 @@ export async function createRfc4571TcpServer(
     // Default behavior: keep `main` untouched (may be H.265), but force H.264 inputs on `sub`.
     // Callers can still override explicitly via compositeOptions.forceH264.
     const forceH264 = compositeOptions?.forceH264;
-    const defaultForceH264 = teleProfile === 'sub';
+    const defaultForceH264 = outputProfile === 'sub';
+
+    // Optional: RTSP pair inputs (requested via id: composite-rtsp-...)
+    let widerRtspUrl: string | undefined;
+    let teleRtspUrl: string | undefined;
+    if (requested?.source === 'rtsp') {
+      const onNvr = Boolean(compositeOptions?.onNvr);
+
+      const resolveLensRtspUrl = async (params: {
+        channel: number;
+        lens: NativeVideoStreamVariant;
+        desiredLens: 'wide' | 'telephoto';
+        profile: StreamProfile;
+      }): Promise<{ urlWithAuth: string; actualProfile: StreamProfile }> => {
+        const { rtspStreams } = await baseApi.buildVideoStreamOptions({
+          channel: params.channel,
+          onNvr,
+          compositeOnly: false,
+          lens: params.lens,
+        });
+
+        const candidates = rtspStreams.filter(
+          (s) => s.container === 'rtsp' && s.lens === params.desiredLens && Boolean(s.urlWithAuth),
+        );
+
+        const exact = candidates.find((s) => s.profile === params.profile);
+        if (exact?.urlWithAuth) {
+          return { urlWithAuth: exact.urlWithAuth, actualProfile: exact.profile };
+        }
+
+        // Some NVR/Hub firmwares expose tele RTSP only as `main` (e.g. Preview_XX_autotrack).
+        // If `sub` is requested but missing, fall back to `main`.
+        if (params.profile === 'sub') {
+          const fallbackMain = candidates.find((s) => s.profile === 'main');
+          if (fallbackMain?.urlWithAuth) {
+            return { urlWithAuth: fallbackMain.urlWithAuth, actualProfile: fallbackMain.profile };
+          }
+        }
+
+        const available = rtspStreams
+          .filter((s) => s.container === 'rtsp' && s.lens === params.desiredLens)
+          .map((s) => `${s.profile}:${s.id}`)
+          .join(', ');
+
+        throw new Error(
+          `Requested composite RTSP inputs, but no RTSP ${params.desiredLens} stream found for channel=${params.channel} profile=${params.profile} (onNvr=${onNvr}). ` +
+            `Available: [${available || 'none'}]. ` +
+            `Use composite-native-... or choose a different profile.`,
+        );
+      };
+
+      // Wider lens always uses the default lens variant.
+      const widerResolved = await resolveLensRtspUrl({
+        channel: widerChannel,
+        lens: 'default',
+        desiredLens: 'wide',
+        profile: widerInputProfile,
+      });
+
+      widerRtspUrl = widerResolved.urlWithAuth;
+      widerInputProfile = widerResolved.actualProfile;
+
+      // Tele lens can be on a distinct channel (standalone) or share the same channel (NVR/Hub).
+      const teleResolved = await resolveLensRtspUrl({
+        channel: teleChannel,
+        lens: 'telephoto',
+        desiredLens: 'telephoto',
+        profile: teleInputProfile,
+      });
+
+      teleRtspUrl = teleResolved.urlWithAuth;
+      if (teleResolved.actualProfile !== teleInputProfile) {
+        log(`tele RTSP profile fallback applied (requested=${teleInputProfile} actual=${teleResolved.actualProfile})`);
+      }
+      teleInputProfile = teleResolved.actualProfile;
+    }
 
     videoStream = new CompositeStream({
       api: baseApi,
@@ -311,8 +365,10 @@ export async function createRfc4571TcpServer(
       teleApi,
       widerChannel,
       teleChannel,
-      widerProfile,
-      teleProfile,
+      widerProfile: widerInputProfile,
+      teleProfile: teleInputProfile,
+      ...(widerRtspUrl && teleRtspUrl ? { widerRtspUrl, teleRtspUrl } : {}),
+      ...(compositeOptions?.rtspTransport ? { rtspTransport: compositeOptions.rtspTransport } : {}),
       pipPosition: compositeOptions?.pipPosition ?? "bottom-right",
       pipSize: compositeOptions?.pipSize ?? 0.25,
       // New default is percent-friendly (1%). Values > 1 are still treated as pixels.
@@ -345,7 +401,7 @@ export async function createRfc4571TcpServer(
 
   const waitForKeyframe = async (): Promise<
     { videoType: VideoType; accessUnit: Buffer } &
-      { profileLevelId?: string; h264?: { sps: Buffer; pps: Buffer }; h265?: { vps: Buffer; sps: Buffer; pps: Buffer } }
+    { profileLevelId?: string; h264?: { sps: Buffer; pps: Buffer }; h265?: { vps: Buffer; sps: Buffer; pps: Buffer } }
   > => {
     if (isCompositeStream) {
       // For composite stream, wait for first video frame and extract parameter sets
@@ -364,7 +420,7 @@ export async function createRfc4571TcpServer(
           // Composite stream outputs H.264 frames from ffmpeg
           // Extract parameter sets from the first frame
           const videoType: VideoType = 'H264'; // Composite stream always outputs H.264
-          
+
           try {
             const { sps, pps, profileLevelId } = extractH264ParamSetsFromAccessUnit(frame);
             if (!sps || !pps) {
@@ -497,7 +553,7 @@ export async function createRfc4571TcpServer(
           ? metadata.streams
           : [];
       // Note: composite FPS should be keyed off the wider input profile, not the tele profile.
-      const requested = parseCompositeProfilesFromRequestedId(requestedId);
+      const requested = parseCompositeFromRequestedId(requestedId);
       const effectiveTeleProfile: StreamProfile = requested?.teleProfile ?? profile;
       let widerMainIsH264 = false;
       try {
@@ -597,29 +653,29 @@ export async function createRfc4571TcpServer(
     payloadType: videoPayloadType,
     ...(keyframe.videoType === 'H264'
       ? {
-          h264: {
-            sps: keyframe.h264!.sps,
-            pps: keyframe.h264!.pps,
-            ...(keyframe.profileLevelId ? { profileLevelId: keyframe.profileLevelId } : {}),
-          },
-        }
+        h264: {
+          sps: keyframe.h264!.sps,
+          pps: keyframe.h264!.pps,
+          ...(keyframe.profileLevelId ? { profileLevelId: keyframe.profileLevelId } : {}),
+        },
+      }
       : {
-          h265: {
-            vps: keyframe.h265!.vps,
-            sps: keyframe.h265!.sps,
-            pps: keyframe.h265!.pps,
-          },
-        }),
+        h265: {
+          vps: keyframe.h265!.vps,
+          sps: keyframe.h265!.sps,
+          pps: keyframe.h265!.pps,
+        },
+      }),
   };
 
   const aacAudio: AudioConfig | undefined = audio
     ? {
-        codec: 'aac',
-        payloadType: audioPayloadType,
-        sampleRate: audio.sampleRate,
-        channels: audio.channels,
-        configHex: audio.configHex,
-      }
+      codec: 'aac',
+      payloadType: audioPayloadType,
+      sampleRate: audio.sampleRate,
+      channels: audio.channels,
+      configHex: audio.configHex,
+    }
     : undefined;
 
   const sdp = buildRfc4571Sdp(video, aacAudio);
@@ -662,7 +718,7 @@ export async function createRfc4571TcpServer(
       if (tearingDown || restarting) return;
       const idleFor = Date.now() - lastActivityMs;
       if (idleFor < uptimeRestartMs) return;
-      restart(new Error(`No stream activity for ${idleFor}ms (threshold=${uptimeRestartMs}ms)`)).catch(() => {});
+      restart(new Error(`No stream activity for ${idleFor}ms (threshold=${uptimeRestartMs}ms)`)).catch(() => { });
     }, tickMs);
   };
 
@@ -671,7 +727,7 @@ export async function createRfc4571TcpServer(
     if (idleTeardownTimer) return;
     idleTeardownTimer = setTimeout(() => {
       idleTeardownTimer = undefined;
-      if (rfcClients === 0) closeFn(new Error('No RFC4571 clients (idle)')).catch(() => {});
+      if (rfcClients === 0) closeFn(new Error('No RFC4571 clients (idle)')).catch(() => { });
     }, idleTeardownMs);
   };
 
@@ -719,7 +775,7 @@ export async function createRfc4571TcpServer(
     } catch (e) {
       // If restart fails, escalate to teardown so callers don't hang forever.
       restarting = false;
-      close(e).catch(() => {});
+      close(e).catch(() => { });
       return;
     }
 
@@ -823,27 +879,27 @@ export async function createRfc4571TcpServer(
 
       const onData = (data: Buffer) => {
         touchActivity();
-        
+
         if (!authenticated) {
           authBuffer = Buffer.concat([authBuffer, data]);
           const authString = authBuffer.toString('utf8');
           const authMatch = authString.match(/^([^:]+):([^\n]+)\n/);
-          
+
           if (authMatch) {
             const [, clientUsername, clientPassword] = authMatch;
             if (clientUsername === username && clientPassword === password) {
               authenticated = true;
               clearTimeout(authTimeout);
               setupClient();
-              
+
               // Remove auth data from buffer and process remaining data
               const authLineLength = authMatch[0].length;
               const remainingData = authBuffer.subarray(authLineLength);
-              
+
               // Replace data handler
               socket.removeListener('data', onData);
               socket.on('data', () => touchActivity());
-              
+
               // Process remaining data if any
               if (remainingData.length > 0) {
                 socket.emit('data', remainingData);
@@ -898,7 +954,7 @@ export async function createRfc4571TcpServer(
               } else if (frame[i + 2] === 0x00 && frame[i + 3] === 0x01) {
                 nalStart = i + 4;
               }
-              
+
               if (nalStart >= 0 && nalStart < frame.length) {
                 const nalType = (frame[nalStart] ?? 0) & 0x1f;
                 if (nalType === 5) {
@@ -914,7 +970,7 @@ export async function createRfc4571TcpServer(
         }
         muxer.sendVideoAccessUnit('H264', frame, isKeyframe, undefined);
       } catch (e) {
-        close(e).catch(() => {});
+        close(e).catch(() => { });
       }
     });
 
@@ -928,7 +984,7 @@ export async function createRfc4571TcpServer(
             muxer.sendAudioAacRawFrame(frame);
           }
         } catch (e) {
-          close(e).catch(() => {});
+          close(e).catch(() => { });
         }
       });
     }
@@ -939,7 +995,7 @@ export async function createRfc4571TcpServer(
       try {
         muxer.sendVideoAccessUnit(au.videoType, au.data, au.isKeyframe, au.microseconds);
       } catch (e) {
-        close(e).catch(() => {});
+        close(e).catch(() => { });
       }
     });
 
@@ -953,7 +1009,7 @@ export async function createRfc4571TcpServer(
             muxer.sendAudioAacRawFrame(frame);
           }
         } catch (e) {
-          close(e).catch(() => {});
+          close(e).catch(() => { });
         }
       });
     }
@@ -961,11 +1017,11 @@ export async function createRfc4571TcpServer(
 
   videoStream.on('error' as any, (e: unknown) => {
     if (restarting) return;
-    close(e).catch(() => {});
+    close(e).catch(() => { });
   });
   videoStream.on('close' as any, (e: unknown) => {
     if (restarting) return;
-    close(e).catch(() => {});
+    close(e).catch(() => { });
   });
 
   await new Promise<void>((resolve, reject) => {

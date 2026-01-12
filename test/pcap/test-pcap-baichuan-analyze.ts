@@ -726,6 +726,7 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
       const s = asUtf8(c);
       // Some payloads start directly with <body> (no XML declaration), so accept common tags too.
       if (
+        s.trimStart().startsWith("<") ||
         s.startsWith("<?xml") ||
         s.startsWith("<body") ||
         s.includes("<body>") ||

@@ -819,6 +819,17 @@ export class ReolinkBaichuanApi {
   private recordingsQueueProcessing = false;
 
   /**
+   * Cache for buildVideoStreamOptions.
+   *
+   * IMPORTANT: only the first non-empty result is cached per key.
+   * Empty results are considered transient (common on NVR/Hub) and won't overwrite a good cache.
+   */
+  private readonly videoStreamOptionsCache = new Map<
+    string,
+    { nativeStreams: ReolinkSupportedStream[]; rtspStreams: ReolinkSupportedStream[]; rtmpStreams: ReolinkSupportedStream[] }
+  >();
+
+  /**
    * Process recordings queue sequentially to prevent socket crashes from concurrent requests.
    */
   private async processRecordingsQueue(): Promise<void> {
@@ -7420,6 +7431,33 @@ ${xmlDateTimePayload("endTime", end)}
     const channel = options?.channel;
     const compositeOnly = options?.compositeOnly === true;
 
+    const lensVariant: NativeVideoStreamVariant = options?.lens ?? "default";
+    const cacheKey = JSON.stringify({
+      channel: channel ?? null,
+      onNvr,
+      compositeOnly,
+      lens: lensVariant,
+    });
+
+    const cached = this.videoStreamOptionsCache.get(cacheKey);
+
+    const isNonEmpty = (r: { nativeStreams: ReolinkSupportedStream[]; rtspStreams: ReolinkSupportedStream[]; rtmpStreams: ReolinkSupportedStream[] }) =>
+      r.nativeStreams.length > 0 || r.rtspStreams.length > 0 || r.rtmpStreams.length > 0;
+
+    const cacheOrFallback = (result: { nativeStreams: ReolinkSupportedStream[]; rtspStreams: ReolinkSupportedStream[]; rtmpStreams: ReolinkSupportedStream[] }) => {
+      // Never overwrite a good cached value with empty/transient results.
+      if (isNonEmpty(result)) {
+        this.videoStreamOptionsCache.set(cacheKey, result);
+        return result;
+      }
+
+      if (cached && isNonEmpty(cached)) {
+        return cached;
+      }
+
+      return result;
+    };
+
     const logDebug = (msg: string, data?: unknown): void => {
       const l: any = this.logger as any;
       if (typeof l?.debug === "function") {
@@ -7431,7 +7469,6 @@ ${xmlDateTimePayload("endTime", end)}
       }
     };
 
-    const lensVariant: NativeVideoStreamVariant = options?.lens ?? "default";
     const wantWide = lensVariant === "default";
     const wantTele = lensVariant !== "default";
 
@@ -7490,11 +7527,13 @@ ${xmlDateTimePayload("endTime", end)}
         model,
         isMultiFocal,
       });
-      return {
+      const result = {
         nativeStreams,
         rtmpStreams,
         rtspStreams,
       };
+
+      return cacheOrFallback(result);
     }
 
     if (isMultiFocal && (compositeOnly || channel === undefined)) {
@@ -7543,22 +7582,55 @@ ${xmlDateTimePayload("endTime", end)}
         compositeUrlWithAuth.username = this.username;
         compositeUrlWithAuth.password = this.password;
 
+        // Explicit source ids:
+        // - composite-native-<variant>-<wider>-<tele>
+        // - composite-rtsp-<variant>-<wider>-<tele>
         nativeStreams.push({
           name: `Native composite ${teleProfile}`,
-          // streamKey for RFC4571 server: composite_<variant>_<wider>_<tele>
-          id: `composite_${lensVariant}_${effectiveWiderProfile}_${teleProfile}`,
-          container: "rtp", // Composite streams use RFC4571 (rtp container)
+          id: `composite-native-${lensVariant}-${effectiveWiderProfile}-${teleProfile}`,
+          container: "rtp",
           profile: teleProfile,
           lens: "composite",
           url: compositeUrl.toString(),
           urlWithAuth: compositeUrlWithAuth.toString(),
           ...(widerSelectedMetadata ? { metadata: widerSelectedMetadata } : {}),
         });
+
+        // Only advertise RTSP-input composite when:
+        // - RTSP is enabled on the device
+        // - and the selected profiles are likely H.264
+        let rtspEnabled = false;
+        try {
+          const netPort = await this.getNetPort();
+          rtspEnabled = netPort.rtsp?.enable === 1;
+        } catch {
+          rtspEnabled = false;
+        }
+
+        // (The server will enforce H.264-only anyway; this avoids listing known-bad combos.)
+        // On NVR/Hub TrackMix, tele RTSP is often exposed only as `main` (e.g. Preview_XX_autotrack).
+        // In that case, the *output* composite profile can still be `sub`, while the tele *input* profile is `main`.
+        const teleRtspInputProfile: StreamProfile = (onNvr && isTrackMix && teleProfile === 'sub') ? 'main' : teleProfile;
+
+        const widerIsH264 = !!widerSelectedMetadata && String(widerSelectedMetadata.videoEncType ?? '').toLowerCase().includes('264');
+        // Gate only on the *selected* wide stream encoding (main may be H.265 while sub is H.264).
+        // The server will still enforce constraints; this just avoids hiding valid combos.
+        const canRtsp = widerIsH264;
+        if (rtspEnabled && canRtsp) {
+          nativeStreams.push({
+            name: `RTSP composite ${teleProfile}`,
+            id: `composite-rtsp-${lensVariant}-${effectiveWiderProfile}-${teleRtspInputProfile}`,
+            container: "rtp",
+            profile: teleProfile,
+            lens: "composite",
+            url: compositeUrl.toString(),
+            urlWithAuth: compositeUrlWithAuth.toString(),
+            ...(widerSelectedMetadata ? { metadata: widerSelectedMetadata } : {}),
+          });
+        }
       }
 
-      // Note: RTSP and RTMP composite streams are not yet supported
-      // They would require combining two RTSP/RTMP streams which is more complex
-      // For now, only native composite streams are supported
+      // Note: composite output is still "native" (baichuan://), but it can optionally use RTSP as *inputs*.
 
       logDebug("[ReolinkBaichuanApi] buildVideoStreamOptions: composite branch result", {
         host: this.host,
@@ -7907,11 +7979,13 @@ ${xmlDateTimePayload("endTime", end)}
       }
     }
 
-    return {
+    const result = {
       nativeStreams,
       rtmpStreams,
       rtspStreams,
     };
+
+    return cacheOrFallback(result);
   }
 
   /**

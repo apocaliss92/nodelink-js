@@ -53,6 +53,15 @@ export interface CompositeStreamPipOptions {
   assumeH264Inputs?: boolean;
   /** Best-effort knob; overlay requires re-encode in ffmpeg, so this cannot fully disable encoding. */
   disableTranscode?: boolean;
+
+  /**
+   * Optional: provide RTSP input URLs (H.264 only) instead of native Baichuan streams.
+   * When set, CompositeStream will read directly from RTSP via ffmpeg.
+   */
+  widerRtspUrl?: string;
+  teleRtspUrl?: string;
+  /** ffmpeg `-rtsp_transport` value (default: tcp). */
+  rtspTransport?: 'tcp' | 'udp';
 }
 
 export type CompositeStreamOptions = {
@@ -89,6 +98,15 @@ export type CompositeStreamOptions = {
   disableTranscode?: boolean;
   /** Optional logger */
   logger?: Logger;
+
+  /**
+   * Optional: provide RTSP input URLs (H.264 only) instead of native Baichuan streams.
+   * When set, CompositeStream will read directly from RTSP via ffmpeg.
+   */
+  widerRtspUrl?: string;
+  teleRtspUrl?: string;
+  /** ffmpeg `-rtsp_transport` value (default: tcp). */
+  rtspTransport?: 'tcp' | 'udp';
   /**
    * How long to wait for each input stream to produce frames before starting ffmpeg.
    * Battery cameras can take several seconds to wake and begin streaming.
@@ -156,6 +174,8 @@ export class CompositeStream extends EventEmitter<{
   private ffmpegProcess: ReturnType<typeof spawn> | null = null;
   private active = false;
   private logger: Logger;
+
+  private inputMode: 'native' | 'rtsp' = 'native';
 
   // ffmpeg stdout is an H.264 Annex-B byte stream; chunk boundaries are arbitrary.
   // We need to reassemble access units (frames) for RFC4571 packetization and keyframe priming.
@@ -368,6 +388,44 @@ export class CompositeStream extends EventEmitter<{
           `at (${position.x}, ${position.y})`
       );
 
+      const widerRtspUrl = this.options.widerRtspUrl;
+      const teleRtspUrl = this.options.teleRtspUrl;
+
+      if (widerRtspUrl && teleRtspUrl) {
+        this.inputMode = 'rtsp';
+
+        // Enforce the existing rule: only RTSP H.264 pairs.
+        // If callers already know it's H.264, they can set assumeH264Inputs=true.
+        if (!this.options.assumeH264Inputs) {
+          const isH264 = (enc?: string) => (enc ?? '').toLowerCase().includes('264');
+          const widerEnc = widerStreamInfo?.videoEncType;
+          const teleEnc = teleStreamInfo?.videoEncType;
+          if (!isH264(widerEnc) || !isH264(teleEnc)) {
+            throw new Error(
+              `[CompositeStream] RTSP pair requires H.264 inputs. ` +
+                `Detected wider=${widerEnc ?? 'unknown'} tele=${teleEnc ?? 'unknown'}. ` +
+                `Provide RTSP URLs that are H.264 (often the substream), or set assumeH264Inputs=true if you know they are H.264.`,
+            );
+          }
+        }
+
+        await this.startFfmpegCompositionFromRtspUrls(
+          mainWidth,
+          mainHeight,
+          pipWidth,
+          pipHeight,
+          position,
+          widerRtspUrl,
+          teleRtspUrl,
+          this.options.rtspTransport ?? 'tcp',
+        );
+
+        this.logger.log?.('[CompositeStream] Composite stream started (rtsp inputs)');
+        return;
+      }
+
+      this.inputMode = 'native';
+
       // Start native streams
       // On NVR/Hub, wider+tele are typically the same logical channel, and lens selection
       // happens via native stream variant (telephoto) rather than a separate channel.
@@ -484,6 +542,86 @@ export class CompositeStream extends EventEmitter<{
       this.emit("error", error as Error);
       throw error;
     }
+  }
+
+  private async startFfmpegCompositionFromRtspUrls(
+    mainWidth: number,
+    mainHeight: number,
+    pipWidth: number,
+    pipHeight: number,
+    position: { x: number; y: number },
+    widerRtspUrl: string,
+    teleRtspUrl: string,
+    rtspTransport: 'tcp' | 'udp',
+  ): Promise<void> {
+    // With RTSP inputs, ffmpeg handles ingest/demux. We still re-encode for overlay.
+    const ffmpegArgs = [
+      '-hide_banner',
+      '-loglevel', 'error',
+      '-fflags', '+genpts',
+
+      // Input 0: wider
+      '-rtsp_transport', rtspTransport,
+      '-i', widerRtspUrl,
+
+      // Input 1: tele
+      '-rtsp_transport', rtspTransport,
+      '-i', teleRtspUrl,
+
+      // Filter to scale and position PIP
+      '-filter_complex',
+      `[0:v]scale=${mainWidth}:${mainHeight}[main];[1:v]scale=${pipWidth}:${pipHeight}[pip];[main][pip]overlay=${position.x}:${position.y}[out]`,
+      '-map', '[out]',
+
+      // Output: always H.264 Annex-B
+      '-an',
+      '-c:v', 'libx264',
+      '-g', '30',
+      '-keyint_min', '30',
+      '-sc_threshold', '0',
+      '-x264-params', 'aud=1:repeat-headers=1:keyint=30:min-keyint=30:scenecut=0',
+      '-preset', 'ultrafast',
+      '-tune', 'zerolatency',
+      '-crf', '23',
+      '-f', 'h264',
+      'pipe:1',
+    ];
+
+    this.logger.log?.(`[CompositeStream] Starting ffmpeg (rtsp inputs): ${ffmpegArgs.join(' ')}`);
+
+    this.ffmpegProcess = spawn('ffmpeg', ffmpegArgs, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    this.ffmpegProcess.on('error', (error) => {
+      this.logger.error?.('[CompositeStream] FFmpeg error:', error);
+      this.emit('error', error);
+    });
+
+    this.ffmpegProcess.on('close', (code) => {
+      if (code !== 0 && code !== null) {
+        this.logger.warn?.(`[CompositeStream] FFmpeg exited with code ${code}`);
+      }
+      this.emit('close');
+    });
+
+    this.ffmpegProcess.stdout?.on('data', (data: Buffer) => {
+      this.onFfmpegStdoutData(data);
+    });
+
+    this.ffmpegProcess.stderr?.on('data', (data: Buffer) => {
+      const output = data.toString();
+      if (output.includes('error') || output.includes('Error')) {
+        const now = Date.now();
+        if (now - this.ffmpegStderrLastLogAtMs > 2000) {
+          this.ffmpegStderrLastLogAtMs = now;
+          this.ffmpegStderrLogBurst = 0;
+        }
+        if (this.ffmpegStderrLogBurst++ < 3) {
+          this.logger.error?.('[CompositeStream] FFmpeg stderr:', output);
+        }
+      }
+    });
   }
 
   /**
@@ -1004,14 +1142,19 @@ export class CompositeStream extends EventEmitter<{
       this.ffmpegProcess = null;
     }
 
-    // Ensure native generators are terminated so their finally{} runs (stops BaichuanVideoStream + watchdog).
-    // Setting fields to null is NOT enough: any running for-await loops will keep the generator alive.
-    await Promise.all([
-      this.closeGenerator(this.widerStream),
-      this.closeGenerator(this.teleStream),
-    ]);
-    this.widerStream = null;
-    this.teleStream = null;
+    if (this.inputMode === 'native') {
+      // Ensure native generators are terminated so their finally{} runs (stops BaichuanVideoStream + watchdog).
+      // Setting fields to null is NOT enough: any running for-await loops will keep the generator alive.
+      await Promise.all([
+        this.closeGenerator(this.widerStream),
+        this.closeGenerator(this.teleStream),
+      ]);
+      this.widerStream = null;
+      this.teleStream = null;
+    } else {
+      this.widerStream = null;
+      this.teleStream = null;
+    }
 
     this.logger.log?.("[CompositeStream] Composite stream stopped");
   }
