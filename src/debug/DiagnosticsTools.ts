@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
 
-import type { ReolinkBaichuanApi } from "../reolink/baichuan/ReolinkBaichuanApi";
+import type { NativeVideoStreamVariant, ReolinkBaichuanApi } from "../reolink/baichuan/ReolinkBaichuanApi";
 import type { ReolinkCgiApi, DeviceInputData } from "../reolink/cgi/ReolinkCgiApi";
 import type { ReolinkHttpClientOptions } from "../reolink/http/ReolinkHttpClient";
 import { ReolinkCgiApi as ReolinkCgiApiImpl } from "../reolink/cgi/ReolinkCgiApi";
@@ -281,6 +281,118 @@ function spawnFfmpeg(args: string[], logPath: string): Promise<FfmpegResult> {
       resolve({ ok: false, error: sanitizeFfmpegError(errorMsg) });
     });
   });
+}
+
+type FfprobeVideoInfo = {
+  codecName?: string;
+  codecLongName?: string;
+  width?: number;
+  height?: number;
+  avgFrameRate?: string;
+  rFrameRate?: string;
+  pixFmt?: string;
+};
+
+function spawnFfprobeJson(args: string[], logPath: string): Promise<{ ok: true; json: any } | { ok: false; error: string }> {
+  return new Promise((resolve) => {
+    mkdirp(path.dirname(logPath));
+    const logStream = fs.createWriteStream(logPath, { flags: "a" });
+
+    const p = spawn("ffprobe", args, { stdio: ["ignore", "pipe", "pipe"] });
+    p.on("error", (e) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      logStream.write(`ffprobe spawn error: ${msg}\n`);
+      logStream.end();
+      resolve({ ok: false, error: msg });
+    });
+
+    let stdout = "";
+    let stderr = "";
+    p.stdout.on("data", (d: Buffer) => {
+      stdout += d.toString();
+    });
+    p.stderr.on("data", (d: Buffer) => {
+      const s = d.toString();
+      stderr += s;
+      logStream.write(sanitizeFfmpegError(s));
+    });
+
+    p.on("close", (code) => {
+      logStream.end();
+      if (code === 0) {
+        try {
+          const json = JSON.parse(stdout || "{}");
+          resolve({ ok: true, json });
+        } catch (e) {
+          resolve({ ok: false, error: `ffprobe JSON parse failed: ${e instanceof Error ? e.message : String(e)}` });
+        }
+        return;
+      }
+
+      resolve({ ok: false, error: sanitizeFfmpegError(`ffprobe exited with code ${code}\n${stderr.slice(-2000)}`) });
+    });
+  });
+}
+
+async function probeVideoInfo(params: { url: string; kind: "rtsp" | "rtmp"; logPath: string }): Promise<{ ok: true; info: FfprobeVideoInfo } | { ok: false; error: string }> {
+  const args = [
+    "-v",
+    "error",
+    ...(params.kind === "rtsp" ? ["-rtsp_transport", "tcp"] : []),
+    "-print_format",
+    "json",
+    "-show_streams",
+    "-select_streams",
+    "v:0",
+    params.url,
+  ];
+
+  const res = await spawnFfprobeJson(args, params.logPath);
+  if (!res.ok) return res;
+
+  const streams = Array.isArray(res.json?.streams) ? res.json.streams : [];
+  const s0 = streams[0] ?? undefined;
+  const info: FfprobeVideoInfo = {
+    codecName: typeof s0?.codec_name === "string" ? s0.codec_name : undefined,
+    codecLongName: typeof s0?.codec_long_name === "string" ? s0.codec_long_name : undefined,
+    width: typeof s0?.width === "number" ? s0.width : undefined,
+    height: typeof s0?.height === "number" ? s0.height : undefined,
+    avgFrameRate: typeof s0?.avg_frame_rate === "string" ? s0.avg_frame_rate : undefined,
+    rFrameRate: typeof s0?.r_frame_rate === "string" ? s0.r_frame_rate : undefined,
+    pixFmt: typeof s0?.pix_fmt === "string" ? s0.pix_fmt : undefined,
+  };
+
+  return { ok: true, info };
+}
+
+async function recordRtspOrRtmpToFile(params: {
+  kind: "rtsp" | "rtmp";
+  url: string;
+  outputPath: string;
+  durationSeconds: number;
+  logPath: string;
+}): Promise<FfmpegResult> {
+  const args = [
+    "-hide_banner",
+    "-loglevel",
+    "warning",
+    "-stats",
+    ...(params.kind === "rtsp" ? ["-rtsp_transport", "tcp"] : []),
+    "-i",
+    params.url,
+    "-t",
+    String(params.durationSeconds),
+    "-map",
+    "0:v:0",
+    "-map",
+    "0:a:0?",
+    "-c",
+    "copy",
+    "-y",
+    params.outputPath,
+  ];
+
+  return await spawnFfmpeg(args, params.logPath);
 }
 
 /**
@@ -1537,6 +1649,389 @@ export async function collectMultifocalDiagnostics(params: {
   log("=".repeat(80));
 
   return result;
+}
+
+export interface RunMultifocalDiagnosticsConsecutivelyParams {
+  api: ReolinkBaichuanApi;
+  /** Base output directory. A timestamped subfolder will be created for each run. */
+  outDir: string;
+  host: string;
+  username: string;
+  password: string;
+  /** NVR/HUB channel (0-based). */
+  channel: number;
+  /** Clip length to record per OK stream. */
+  durationSeconds: number;
+  /** Which RTMP apps to probe. Default: ["bcs","live","vod"]. */
+  rtmpApps?: Array<"bcs" | "live" | "vod">;
+  /** If true, probes a wider set of RTSP/RTMP candidates (may take longer). Default: false */
+  probeFull?: boolean;
+  /** Treat the target as NVR/Hub channel mapping (0-based). Default: true */
+  onNvr?: boolean;
+  logger?: Logger;
+}
+
+export async function runMultifocalDiagnosticsConsecutively(
+  params: RunMultifocalDiagnosticsConsecutivelyParams,
+): Promise<{ runDir: string; resultsPath: string; streamsDir: string }> {
+  const logger = params.logger;
+  const log = (level: "log" | "warn" | "error", msg: string, extra?: unknown) => {
+    const fn = (logger?.[level] ?? logger?.log) as ((...args: any[]) => void) | undefined;
+    if (fn) {
+      if (extra !== undefined) fn.call(logger, msg, extra);
+      else fn.call(logger, msg);
+      return;
+    }
+
+    // Fallback for non-logger callers.
+    // Keep output minimal but informative.
+    if (extra !== undefined) console.log(msg, extra);
+    else console.log(msg);
+  };
+
+  const runDirName = new Date().toISOString().replace(/[:.]/g, "-");
+  const runDir = join(params.outDir, runDirName);
+  const streamsDir = join(runDir, "streams");
+  const logsDir = join(runDir, "logs");
+  mkdirp(streamsDir);
+  mkdirp(logsDir);
+
+  const redact = (s: string) => s.replaceAll(encodeURIComponent(params.password), "***").replaceAll(params.password, "***");
+
+  log("log", "[MultifocalDiagnostics] starting run", {
+    outDir: params.outDir,
+    runDir,
+    host: params.host,
+    channel: params.channel,
+    durationSeconds: params.durationSeconds,
+    rtmpApps: params.rtmpApps ?? ["bcs", "live", "vod"],
+    probeFull: params.probeFull === true,
+    onNvr: params.onNvr !== false,
+  });
+
+  const results: any = {
+    kind: "multifocal_diagnostics_run",
+    collectedAt: new Date().toISOString(),
+    host: params.host,
+    channel: params.channel,
+    durationSeconds: params.durationSeconds,
+    ok: [] as any[],
+    failed: [] as any[],
+  };
+
+  const channelStr2 = String(params.channel + 1).padStart(2, "0");
+  const userEnc = encodeURIComponent(params.username);
+  const passEnc = encodeURIComponent(params.password);
+
+  const rtspCandidates = (() => {
+    const base = [
+      `/Preview_${channelStr2}_main`,
+      `/Preview_${channelStr2}_sub`,
+      `/Preview_${channelStr2}_autotrack`,
+      `/h264Preview_${channelStr2}_main`,
+      `/h264Preview_${channelStr2}_sub`,
+      `/h264Preview_${channelStr2}_autotrack`,
+      `/h265Preview_${channelStr2}_main`,
+      `/h265Preview_${channelStr2}_sub`,
+      `/h265Preview_${channelStr2}_autotrack`,
+    ];
+
+    if (params.probeFull) {
+      base.unshift(
+        `/rtsp/Preview_${channelStr2}_main`,
+        `/rtsp/Preview_${channelStr2}_sub`,
+        `/rtsp/Preview_${channelStr2}_mobile`,
+        `/rtsp/Preview_${channelStr2}_autotrack`,
+      );
+      base.push(
+        `/Preview_${channelStr2}_mobile`,
+        `/Preview_${channelStr2}_autotrack_main`,
+        `/Preview_${channelStr2}_autotrack_sub`,
+      );
+    }
+
+    return [...new Set(base)];
+  })();
+
+  const rtmpApps = params.rtmpApps ?? ["bcs", "live", "vod"];
+  const rtmpCandidates = (() => {
+    const minimalStreams = ["sub", "mobile", "autotrack_sub", "telephoto_sub"];
+    const fullStreams = [
+      "main",
+      "sub",
+      "mobile",
+      "autotrack",
+      "autotrack_main",
+      "autotrack_sub",
+      "telephoto_main",
+      "telephoto_sub",
+    ];
+    const streams = params.probeFull ? fullStreams : minimalStreams;
+    const out: Array<{ app: string; streamName: string; url: string }> = [];
+    for (const app of rtmpApps) {
+      for (const streamName of streams) {
+        const streamType = streamName.includes("sub") || streamName === "sub" || streamName === "mobile" ? 1 : 0;
+        const path = `/${app}/channel${params.channel}_${streamName}.bcs`;
+        const u = new URL(`rtmp://${params.host}:1935${path}`);
+        u.searchParams.set("channel", params.channel.toString());
+        u.searchParams.set("stream", streamType.toString());
+        u.searchParams.set("user", params.username);
+        u.searchParams.set("password", params.password);
+        out.push({ app, streamName, url: u.toString() });
+      }
+    }
+    return out;
+  })();
+
+  const okLine = (entry: any) => {
+    const wh = entry.width && entry.height ? `${entry.width}x${entry.height}` : "?";
+    const codec = entry.codec ?? entry.codecName ?? "";
+    return `${entry.kind} ${entry.id} ${wh} ${codec}`.trim();
+  };
+
+  log("log", "[MultifocalDiagnostics] probing RTSP", { candidates: rtspCandidates.length });
+  for (const pathCandidate of rtspCandidates) {
+    const urlWithAuth = `rtsp://${userEnc}:${passEnc}@${params.host}:554${pathCandidate}`;
+    const id = `rtsp:${pathCandidate}`;
+    const baseName = `${nowIsoCompact()}_${id}`.replace(/[^a-zA-Z0-9._-]+/g, "_");
+    const outPath = join(streamsDir, `${baseName}.mkv`);
+    const probeLog = join(logsDir, `${baseName}.ffprobe.log`);
+    const recLog = join(logsDir, `${baseName}.ffmpeg.log`);
+
+    const probe = await probeVideoInfo({ url: urlWithAuth, kind: "rtsp", logPath: probeLog });
+    if (!probe.ok) {
+      results.failed.push({ kind: "rtsp", id, url: redact(urlWithAuth), error: probe.error });
+      continue;
+    }
+
+    const rec = await recordRtspOrRtmpToFile({
+      kind: "rtsp",
+      url: urlWithAuth,
+      outputPath: outPath,
+      durationSeconds: params.durationSeconds,
+      logPath: recLog,
+    });
+    if (!rec.ok) {
+      results.failed.push({ kind: "rtsp", id, url: redact(urlWithAuth), error: rec.error });
+      continue;
+    }
+
+    const entry = {
+      kind: "rtsp",
+      id: pathCandidate,
+      url: redact(urlWithAuth),
+      clipPath: outPath,
+      ...probe.info,
+    };
+    results.ok.push(entry);
+    log("log", "[MultifocalDiagnostics] clip saved", {
+      kind: "rtsp",
+      id: pathCandidate,
+      clipPath: outPath,
+      width: probe.info.width,
+      height: probe.info.height,
+      codec: probe.info.codecName,
+    });
+    log("log", `[MultifocalDiagnostics] OK ${okLine(entry)}`);
+  }
+
+  log("log", "[MultifocalDiagnostics] probing RTMP", { candidates: rtmpCandidates.length });
+  for (const cand of rtmpCandidates) {
+    const id = `rtmp:${cand.app}:${cand.streamName}`;
+    const baseName = `${nowIsoCompact()}_${id}`.replace(/[^a-zA-Z0-9._-]+/g, "_");
+    const outPath = join(streamsDir, `${baseName}.mkv`);
+    const probeLog = join(logsDir, `${baseName}.ffprobe.log`);
+    const recLog = join(logsDir, `${baseName}.ffmpeg.log`);
+
+    const probe = await probeVideoInfo({ url: cand.url, kind: "rtmp", logPath: probeLog });
+    if (!probe.ok) {
+      results.failed.push({ kind: "rtmp", id, url: redact(cand.url), error: probe.error });
+      continue;
+    }
+
+    const rec = await recordRtspOrRtmpToFile({
+      kind: "rtmp",
+      url: cand.url,
+      outputPath: outPath,
+      durationSeconds: params.durationSeconds,
+      logPath: recLog,
+    });
+    if (!rec.ok) {
+      results.failed.push({ kind: "rtmp", id, url: redact(cand.url), error: rec.error });
+      continue;
+    }
+
+    const entry = {
+      kind: "rtmp",
+      id,
+      url: redact(cand.url),
+      clipPath: outPath,
+      app: cand.app,
+      streamName: cand.streamName,
+      ...probe.info,
+    };
+    results.ok.push(entry);
+    log("log", "[MultifocalDiagnostics] clip saved", {
+      kind: "rtmp",
+      id,
+      clipPath: outPath,
+      width: probe.info.width,
+      height: probe.info.height,
+      codec: probe.info.codecName,
+    });
+    log("log", `[MultifocalDiagnostics] OK ${okLine(entry)}`);
+  }
+
+  log("log", "[MultifocalDiagnostics] probing native streams", { channel: params.channel });
+  const nativeOpts = await tryCall(() => params.api.buildVideoStreamOptions({ channel: params.channel, onNvr: params.onNvr !== false }));
+  results.nativeStreamOptions = nativeOpts;
+
+  if (nativeOpts.ok) {
+    for (const s of nativeOpts.value.nativeStreams ?? []) {
+      const nativeVariant = (s as any).nativeVariant as NativeVideoStreamVariant | undefined;
+      const profile = (s as any).profile as StreamProfile | undefined;
+      const lens = (s as any).lens as any;
+      const streamId = String((s as any).id ?? "native");
+      if (!profile) continue;
+
+      const id = `native:${streamId}`;
+      const baseName = `${nowIsoCompact()}_${id}`.replace(/[^a-zA-Z0-9._-]+/g, "_");
+      const annexPath = join(streamsDir, `${baseName}.annexb`);
+      const infoPath = join(streamsDir, `${baseName}.json`);
+      const muxLog = join(logsDir, `${baseName}.ffmpeg_mux.log`);
+
+      try {
+        const videoStream = new BaichuanVideoStream({
+          client: params.api.client as any,
+          api: params.api as any,
+          channel: params.channel,
+          profile,
+          ...(nativeVariant && nativeVariant !== "default" ? { variant: nativeVariant } : {}),
+          ...(logger ? { logger } : {}),
+        } as any);
+
+        const out = fs.createWriteStream(annexPath, { flags: "w" });
+        let firstVideoType: "H264" | "H265" | undefined;
+        let videoAUs = 0;
+        let startedAtMs: number | null = null;
+        let firstKeyframeAtMs: number | null = null;
+
+        const onAU = (u: any) => {
+          if (!u || !Buffer.isBuffer(u.data)) return;
+          if (!firstVideoType) firstVideoType = u.videoType;
+          videoAUs++;
+          try {
+            out.write(u.data);
+          } catch {
+            // ignore
+          }
+          if (u.isKeyframe && firstKeyframeAtMs == null) firstKeyframeAtMs = Date.now();
+        };
+
+        videoStream.on("videoAccessUnit" as any, onAU as any);
+        videoStream.on("error", (e: any) => {
+          log("warn", "[MultifocalDiagnostics] native stream error", { id, error: safeStringifyError(e) });
+        });
+
+        try {
+          await videoStream.start();
+          startedAtMs = Date.now();
+          while (Date.now() - startedAtMs < Math.max(250, Math.round(params.durationSeconds * 1000))) {
+            await sleepMs(200);
+          }
+        } finally {
+          try {
+            await videoStream.stop();
+          } catch {
+            // ignore
+          }
+          try {
+            out.end();
+          } catch {
+            // ignore
+          }
+        }
+
+        const nativeInfo: any = {
+          kind: "native",
+          id,
+          streamId,
+          profile,
+          lens,
+          nativeVariant,
+          durationSeconds: params.durationSeconds,
+          videoAccessUnits: videoAUs,
+          videoType: firstVideoType,
+          firstKeyframeLatencyMs:
+            firstKeyframeAtMs == null || startedAtMs == null ? null : Math.max(0, firstKeyframeAtMs - startedAtMs),
+          metadata: (s as any).metadata,
+          annexbPath: annexPath,
+        };
+        writeJson(infoPath, nativeInfo);
+
+        const mkvPath = join(streamsDir, `${baseName}.mkv`);
+        if (firstVideoType) {
+          const fmt = firstVideoType === "H265" ? "hevc" : "h264";
+          const muxArgs = [
+            "-hide_banner",
+            "-loglevel",
+            "warning",
+            "-stats",
+            "-f",
+            fmt,
+            "-i",
+            annexPath,
+            "-c",
+            "copy",
+            "-y",
+            mkvPath,
+          ];
+          const muxRes = await spawnFfmpeg(muxArgs, muxLog);
+          if (muxRes.ok) nativeInfo.clipPath = mkvPath;
+        }
+
+        const width = (s as any)?.metadata?.width;
+        const height = (s as any)?.metadata?.height;
+        const codec = (s as any)?.metadata?.videoEncType;
+        const entry = {
+          kind: "native",
+          id,
+          clipPath: nativeInfo.clipPath ?? annexPath,
+          width,
+          height,
+          codec,
+          profile,
+          lens,
+          nativeVariant,
+        };
+        results.ok.push(entry);
+        log("log", "[MultifocalDiagnostics] clip saved", {
+          kind: "native",
+          id,
+          clipPath: entry.clipPath,
+          width,
+          height,
+          codec,
+          videoType: firstVideoType,
+          videoAccessUnits: videoAUs,
+        });
+        log("log", `[MultifocalDiagnostics] OK ${okLine(entry)}`);
+      } catch (e) {
+        results.failed.push({ kind: "native", id, error: safeStringifyError(e) });
+      }
+    }
+  }
+
+  const okIds = (results.ok as any[]).map((x) => ({ kind: x.kind, id: x.id, clipPath: x.clipPath, width: x.width, height: x.height }));
+  log("log", "[MultifocalDiagnostics] summary", {
+    ok: results.ok.length,
+    failed: results.failed.length,
+    streamsDir,
+    okStreams: okIds,
+  });
+  const resultsPath = join(runDir, "multifocal_diagnostics.json");
+  writeJson(resultsPath, results);
+  return { runDir, resultsPath, streamsDir };
 }
 
 /**

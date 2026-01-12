@@ -4,7 +4,13 @@ import { dirname } from "node:path";
 import { BaichuanRtspServer, type BaichuanRtspServerOptions } from "../../baichuan/stream/BaichuanRtspServer";
 import { BaichuanClient, type BaichuanClientOptions } from "../../client/BaichuanClient";
 import { recordingsTraceLog, type Logger } from "../../debug/DebugConfig";
-import { collectNvrDiagnostics, runAllDiagnosticsConsecutively, RunAllDiagnosticsConsecutivelyParams } from "../../debug/DiagnosticsTools";
+import {
+  collectNvrDiagnostics,
+  runAllDiagnosticsConsecutively,
+  RunAllDiagnosticsConsecutivelyParams,
+  runMultifocalDiagnosticsConsecutively,
+  RunMultifocalDiagnosticsConsecutivelyParams,
+} from "../../debug/DiagnosticsTools";
 import {
   BC_CLASS_FILE_DOWNLOAD,
   BC_CLASS_MODERN_24,
@@ -1020,6 +1026,27 @@ export class ReolinkBaichuanApi {
       ...params,
       api: this,
       logger: this.logger,
+      host: this.host,
+      username: this.username,
+      password: this.password,
+    });
+  }
+
+  /**
+   * Multifocal/NVR empirical stream diagnostics:
+   * probes RTSP/RTMP candidates + native streams, prints discovered resolutions,
+   * and saves one clip per working stream into a timestamped folder under outDir.
+   */
+  async runMultifocalDiagnosticsConsecutively(
+    params: Omit<RunMultifocalDiagnosticsConsecutivelyParams, "api" | "host" | "username" | "password" | "logger"> & {
+      /** Optional logger from the caller (preferred over the API logger). */
+      logger?: RunMultifocalDiagnosticsConsecutivelyParams["logger"];
+    },
+  ): Promise<{ runDir: string; resultsPath: string; streamsDir: string }> {
+    return await runMultifocalDiagnosticsConsecutively({
+      ...params,
+      api: this,
+      logger: params.logger ?? this.logger,
       host: this.host,
       username: this.username,
       password: this.password,
@@ -7448,7 +7475,9 @@ ${xmlDateTimePayload("endTime", end)}
       detected: { isMultiFocal, isTrackMix, model },
     });
 
-    const rtmpEnabledForMultifocal = false;
+    // Empirical: TrackMix behind NVR/Hub can expose RTMP (bcs/live/vod) even though
+    // standalone multifocal devices often do not. Enable RTMP for multifocal only when onNvr.
+    const rtmpEnabledForMultifocal = onNvr;
 
     // For composite streams (multifocal devices), return composite stream options.
     // IMPORTANT: this branch is only for "composite" (channel-less) streams.
@@ -7718,15 +7747,32 @@ ${xmlDateTimePayload("endTime", end)}
     };
 
     if (wantWide) {
+      // For TrackMix behind NVR/Hub, do NOT expose RTMP main by default:
+      // empirical probes show `channelX_main.bcs` often does not exist, while sub/mobile do.
+      const includeRtmpForWide = rtmpEnabled && !(isMultiFocal && onNvr && isTrackMix);
+
       buildStandardStreams({
         lens: "wide",
         channel: ch,
         metadatas: streams,
         includeRtsp: rtspEnabled,
-        includeRtmp: rtmpEnabled,
+        includeRtmp: includeRtmpForWide,
         includeNative: true,
         nativeIdPrefix: "native",
       });
+
+      // Add explicit RTMP sub/mobile for NVR/Hub TrackMix.
+      if (rtmpEnabled && isMultiFocal && onNvr && isTrackMix) {
+        const subMeta = streams.find((s) => s.profile === "sub") ?? streams[0];
+        // Wide sub stream
+        pushRtmp({
+          channel: ch,
+          profile: "sub",
+          streamName: "sub",
+          ...(subMeta ? { metadata: subMeta } : {}),
+          lens: "wide",
+        });
+      }
     }
 
     // Tele-only request on standalone (channel 1): build directly from channel 1 metadata.
@@ -7788,44 +7834,28 @@ ${xmlDateTimePayload("endTime", end)}
         });
       }
 
-      // Best-effort: some firmwares also expose a sub variant (e.g. Preview_<NN>_autotrack_sub).
-      if (streams.some((s) => s.profile === "sub")) {
-        if (subMeta) {
-          pushRtsp({
-            channel: ch,
-            profile: "sub",
-            streamName: `${rtspVariant}_sub`,
-            metadata: subMeta,
-            lens: "telephoto",
-            forceNoEncodingPrefix: true,
-          });
-        } else {
-          pushRtsp({
-            channel: ch,
-            profile: "sub",
-            streamName: `${rtspVariant}_sub`,
-            lens: "telephoto",
-            forceNoEncodingPrefix: true,
-          });
-        }
-      }
+      // Note: do NOT expose `Preview_<NN>_autotrack_sub` by default.
+      // Empirically, Hub/NVR TrackMix RTSP often exposes a single `_autotrack` only.
     }
 
-    if (wantTele && isMultiFocal && onNvr && rtmpEnabled) {
-      const mainMeta = streams.find((s) => s.profile === "main") ?? streams[0];
-      // Best-effort: some firmwares expose RTMP BCS autotrack as channel<ch>_autotrack.bcs
-      if (mainMeta) {
-        pushRtmp({ channel: ch, profile: "main", streamName: "autotrack", metadata: mainMeta, lens: "telephoto" });
-      } else {
-        pushRtmp({ channel: ch, profile: "main", streamName: "autotrack", lens: "telephoto" });
-      }
+    if (wantTele && isMultiFocal && onNvr && rtmpEnabled && isTrackMix) {
+      // Empirical: Hub/NVR TrackMix RTMP tends to expose VOD-style streams like:
+      // - channelX_autotrack_sub.bcs
+      // - channelX_telephoto_sub.bcs
+      // while `*_main` is often missing.
       const subMeta = streams.find((s) => s.profile === "sub") ?? streams[0];
-      // And/or a lower quality variant.
-      if (subMeta) {
-        pushRtmp({ channel: ch, profile: "sub", streamName: "autotrack", metadata: subMeta, lens: "telephoto" });
-      } else {
-        pushRtmp({ channel: ch, profile: "sub", streamName: "autotrack", lens: "telephoto" });
-      }
+
+      // IMPORTANT: do not return multiple RTMP aliases for the same profile.
+      // - lens=telephoto -> prefer `telephoto_sub`
+      // - lens=autotrack -> prefer `autotrack_sub`
+      const teleRtmpName = lensVariant === "telephoto" ? "telephoto_sub" : "autotrack_sub";
+      pushRtmp({
+        channel: ch,
+        profile: "sub",
+        streamName: teleRtmpName,
+        ...(subMeta ? { metadata: subMeta } : {}),
+        lens: "telephoto",
+      });
     }
 
     // Add TrackMix native tele stream variant for NVR/Hub.
