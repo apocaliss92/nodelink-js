@@ -94,3 +94,35 @@ The following `streamType` value strings exist in the firmware:
 **What is still missing to write an “exact XML template”**
 - The firmware does not include a literal, static template string like `<body><Preview ...>` for preview start/stop; it appears to be constructed programmatically (TinyXML is present).
 - Without either (a) a literal template, or (b) a captured runtime XML example, we cannot state the exact element nesting (root tag name, `version="..."` attribute presence, and whether fields are attributes vs child elements) with certainty.
+
+## 6) Empirical probe (HUB RTSP/RTMP) — channel 3 (0-based)
+
+This section records an *empirical* run against the user’s HomeHub at `NVR_HOST` with `channel0=3` (`NN=04`) using [tools/stream-probe/probe-hub-rtsp-rtmp.mjs](tools/stream-probe/probe-hub-rtsp-rtmp.mjs).
+
+**RTSP (working)**
+- `/Preview_04_main`
+- `/Preview_04_sub`
+- `/Preview_04_autotrack`
+- `/h264Preview_04_main`
+- `/h264Preview_04_sub`
+- `/h264Preview_04_autotrack`
+- `/h265Preview_04_main`
+- `/h265Preview_04_sub`
+- `/h265Preview_04_autotrack`
+
+**RTSP (not found / 404)**
+- `/rtsp/Preview_04_{main,sub,mobile,autotrack,autotrack_main,autotrack_sub}` (all 404)
+- `/Preview_04_mobile` (404)
+- `*_autotrack_main` and `*_autotrack_sub` suffix variants (404)
+
+**RTMP (working)**
+- `/bcs/channel3_sub.bcs?stream=sub`
+- `/bcs/channel3_mobile.bcs?stream=mobile`
+- `/bcs/channel3_autotrack_sub.bcs?stream=autotrack_sub`
+- `/bcs/channel3_telephoto_sub.bcs?stream=telephoto_sub`
+
+**RTMP (not found)**
+- `/bcs/channel3_main.bcs?stream=main` (no VOD stream)
+- `/bcs/channel3_autotrack.bcs?stream=autotrack` (no VOD stream)
+- `/bcs/channel3_autotrack_main.bcs?stream=autotrack_main` (no VOD stream)
+- `/bcs/channel3_telephoto_main.bcs?stream=telephoto_main` (no VOD stream)
