@@ -591,6 +591,14 @@ export class BaichuanClient extends EventEmitter<{
   }
 
   /**
+   * Stable identifier for the current underlying socket session.
+   * Useful for correlating logs and diagnosing duplicate event streams.
+   */
+  getSocketSessionId(): string | undefined {
+    return this.socketSessionId;
+  }
+
+  /**
    * Check if the socket is connected and ready for operations.
    * For TCP: checks if socket exists and is not destroyed.
    * For UDP: checks if socket exists.
@@ -1273,12 +1281,14 @@ export class BaichuanClient extends EventEmitter<{
     // Parse events (cmd_id 33 = AlarmEventList push)
     if (frame.header.cmdId === 33) {
       try {
+        const sid = this.socketSessionId;
+        const eventLogTag = sid ? `BaichuanEvent sid=${sid}` : "BaichuanEvent";
         const events = this.parseEvents(frame);
         for (const event of events) {
           eventTraceLog(
             this.debugCfg,
             this.logger,
-            "BaichuanEvent",
+            eventLogTag,
             `dispatch cmdId=33 msgNum=${frame.header.msgNum} channelId=${frame.header.channelId} type=${event.type} eventChannel=${event.channel}` +
             (event.type === "ai" ? ` aiType=${(event.ai as any)?.type ?? "unknown"} detected=${(event.ai as any)?.detected ?? ""}` : "") +
             (event.type === "motion" ? ` source=${(event.motion as any)?.source ?? ""}` : "")
@@ -1355,6 +1365,9 @@ export class BaichuanClient extends EventEmitter<{
     const body = frame.body;
     if (body.length === 0) return [];
 
+    const sid = this.socketSessionId;
+    const eventRawLogTag = sid ? `BaichuanEventRaw sid=${sid}` : "BaichuanEventRaw";
+
     const xml = this.tryDecryptXml(body, frame.header.channelId, this.enc);
     if (!xml || !xml.startsWith("<?xml")) return [];
 
@@ -1363,7 +1376,7 @@ export class BaichuanClient extends EventEmitter<{
       eventTraceLog(
         this.debugCfg,
         this.logger,
-        "BaichuanEventRaw",
+        eventRawLogTag,
         `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} xml=${JSON.stringify(snippet)}`
       );
     }
@@ -1398,7 +1411,7 @@ export class BaichuanClient extends EventEmitter<{
           eventTraceLog(
             this.debugCfg,
             this.logger,
-            "BaichuanEventRaw",
+            eventRawLogTag,
             `AlarmEvent channel=${channel} status=${JSON.stringify(status)} aiType=${JSON.stringify(aiTypeRaw)}`
           );
         }

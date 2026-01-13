@@ -3,7 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { BaichuanRtspServer, type BaichuanRtspServerOptions } from "../../baichuan/stream/BaichuanRtspServer";
 import { BaichuanClient, type BaichuanClientOptions } from "../../client/BaichuanClient";
-import { recordingsTraceLog, type Logger } from "../../debug/DebugConfig";
+import { eventTraceLog, recordingsTraceLog, type Logger } from "../../debug/DebugConfig";
 import {
   collectNvrDiagnostics,
   runAllDiagnosticsConsecutively,
@@ -869,6 +869,13 @@ export class ReolinkBaichuanApi {
   private recordingsCacheTtlMs = 20 * 60 * 1000;
 
   private dispatchSimpleEvent(evt: ReolinkSimpleEvent): void {
+    const debugCfg = this.client.getDebugConfig?.();
+    if (debugCfg) {
+      const sid = this.client.getSocketSessionId?.();
+      const tag = sid ? `ReolinkSimpleEvent sid=${sid}` : "ReolinkSimpleEvent";
+      eventTraceLog(debugCfg, this.logger, tag, `dispatch type=${evt.type} channel=${evt.channel} timestamp=${evt.timestamp}`);
+    }
+
     for (const cb of this.simpleEventListeners) {
       try {
         const r = cb(evt) as unknown;
