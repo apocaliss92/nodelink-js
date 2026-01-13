@@ -510,8 +510,6 @@ export interface ParsedRecordingFileName {
   streamHint: RecordingVodStreamHint;
   version: number;
   devType: RecordingDevType;
-  /** Optional channel parsed from numeric identifier format (e.g. "01YYYYMMDDHHMMSS"). */
-  channel?: number;
   start: Date;
   end: Date;
   durationMs: number;
@@ -574,8 +572,6 @@ export interface EnrichedRecordingFile {
   fileName: string;
   /** Unique identifier for the recording */
   id: string;
-  /** Single stable identifier usable for snapshot + streaming helpers. */
-  eventId?: string;
   /** Start time in milliseconds since epoch */
   startTimeMs: number;
   /** End time in milliseconds since epoch */

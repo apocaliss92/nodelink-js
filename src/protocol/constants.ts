@@ -76,10 +76,6 @@ export const BC_CMD_ID_GET_PTZ_POSITION = 433; // Get current PTZ position
 export const BC_CMD_ID_GET_ZOOM_FOCUS = 294; // MSG_ID_GET_ZOOM_FOCUS - Read zoom/focus min/max/current
 export const BC_CMD_ID_SET_ZOOM_FOCUS = 295; // MSG_ID_SET_ZOOM_FOCUS - Write zoom/focus position
 
-// Recording snapshot/preview (CoverPreview)
-// Observed in HomeHub/NVR flows: returns a stream header "1001" followed by a single I-frame.
-export const BC_CMD_ID_COVER_PREVIEW = 298; // <CoverPreview>
-
 // Battery Info command IDs
 // - 252: MSG_ID_BATTERY_INFO_LIST (camera-initiated status/event)
 // - 253: MSG_ID_BATTERY_INFO (client-initiated request)

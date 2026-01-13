@@ -5,7 +5,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { BaichuanRtspServer, type BaichuanRtspServerOptions } from "../../baichuan/stream/BaichuanRtspServer";
 import { BaichuanVideoStream } from "../../baichuan/stream/BaichuanVideoStream";
-import { BaichuanClient, type BaichuanClientOptions, type CoverPreviewSnapshotResult } from "../../client/BaichuanClient";
+import { BaichuanClient, type BaichuanClientOptions } from "../../client/BaichuanClient";
 import { recordingsTraceLog, type Logger } from "../../debug/DebugConfig";
 import {
   collectNvrDiagnostics,
@@ -98,8 +98,6 @@ import type {
 } from "./types";
 
 import { parseRecordingFileName } from "./recordingFileName";
-
-import { encodeReolinkEventIdV1, decodeReolinkEventIdV1, isReolinkEventIdV1 } from "./eventId";
 
 import sharp from "sharp";
 import type { CompositeStreamPipOptions } from "../../multifocal/compositeStream";
@@ -4072,237 +4070,132 @@ ${xmlDateTimePayload("endTime", end)}
     const timeoutMs = params.timeoutMs ?? 30_000;
     const time = params.time;
 
-    return await this.client.getPlaybackSnapshot({
+    // CoverPreview requires a time range - use 10 seconds from the target time
+    const endTime = new Date(time.getTime() + 10_000);
+
+    // Build CoverPreview XML (cmd_id=298)
+    const xml = `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<CoverPreview version="1.1">
+<channelId>${channel}</channelId>
+<streamType>${snapType}</streamType>
+<startTime>
+<year>${time.getFullYear()}</year>
+<month>${time.getMonth() + 1}</month>
+<day>${time.getDate()}</day>
+<hour>${time.getHours()}</hour>
+<minute>${time.getMinutes()}</minute>
+<second>${time.getSeconds()}</second>
+</startTime>
+<endTime>
+<year>${endTime.getFullYear()}</year>
+<month>${endTime.getMonth() + 1}</month>
+<day>${endTime.getDate()}</day>
+<hour>${endTime.getHours()}</hour>
+<minute>${endTime.getMinutes()}</minute>
+<second>${endTime.getSeconds()}</second>
+</endTime>
+</CoverPreview>
+</body>`;
+
+    // Send the CoverPreview command and receive binary payload
+    const payload = await this.client.sendBinaryCoverPreview({
+      cmdId: 298,
       channel,
-      time,
-      snapType,
+      payloadXml: xml,
       timeoutMs,
     });
-  }
 
-  /**
-   * Fetch a snapshot for an NVR/Hub event given its identifier.
-   *
-   * This is designed for Scrypted-style usage where you store an event id returned by
-  * {@link ReolinkBaichuanApi.listNvrAlarmEventsEnrichedViaBaichuan} (or similar) and later want the thumbnail.
-   *
-   * Resolution strategy:
-   * - `time` is derived by parsing `idOrFileName` with `parseRecordingFileName`.
-   * - `channel` is taken from `params.channel`, else from the parsed numeric-id channel ("01YYYYMMDDHHMMSS"),
-   *   otherwise you must provide `channel` or `channelId` explicitly.
-   * - `channelId` (HomeHub-style) takes precedence if provided.
-   */
-  async snapshotFromNvrEventId(params: {
-    /** Identifier from recordings/events list (usually `event.id` or `event.fileName`). */
-    idOrFileName: string;
-    /** Optional explicit channel (0-based). Use when the id does not embed the channel. */
-    channel?: number;
-    /** Optional explicit Baichuan channelId (HomeHub-style). Takes precedence over `channel`. */
-    channelId?: number;
-    /** Stream type for snapshot quality ("main" or "sub", default: "sub"). */
-    snapType?: "main" | "sub";
-    /** Timeout in milliseconds (default: 30000). */
-    timeoutMs?: number;
-  }): Promise<CoverPreviewSnapshotResult> {
-    await this.client.login();
+    // Parse stream header (first 32 bytes)
+    if (payload.length < 32) {
+      throw new Error(`CoverPreview payload too short: ${payload.length} bytes`);
+    }
 
-    const idRaw = (params.idOrFileName ?? "").trim();
-    if (!idRaw) throw new Error("snapshotFromNvrEventId: idOrFileName is required");
+    const streamHeader = payload.subarray(0, 32);
+    const magic = streamHeader.subarray(0, 4).toString("ascii");
 
-    // Prefer the new stable eventId format.
-    if (isReolinkEventIdV1(idRaw)) {
-      const decoded = decodeReolinkEventIdV1(idRaw);
-      if (decoded.kind !== "nvrAlarm") throw new Error(`snapshotFromNvrEventId: unsupported eventId kind ${decoded.kind}`);
-      const snapType = params.snapType ?? "sub";
-      const timeoutMs = params.timeoutMs ?? 30_000;
+    if (magic !== "1001") {
+      throw new Error(`CoverPreview payload did not start with stream header magic '1001' but with '${magic}'`);
+    }
 
-      // channelId (HomeHub-style) can still override.
-      if (params.channelId != null) {
-        return await this.client.getPlaybackSnapshotByChannelId({
-          channelId: params.channelId,
-          time: new Date(decoded.startTimeMs),
-          snapType,
-          timeoutMs,
-        });
+    // Parse stream header fields
+    const width = streamHeader.readUInt32LE(8);
+    const height = streamHeader.readUInt32LE(12);
+    const frameRate = streamHeader.length > 17 ? streamHeader[17] : 0;
+
+    // Search for frame magic "00dc" after stream header
+    const frameSearchArea = payload.subarray(32);
+    const frameMagic = Buffer.from("00dc", "ascii");
+    let frameMagicIndex = -1;
+
+    for (let i = 0; i <= frameSearchArea.length - 4; i++) {
+      if (
+        frameSearchArea[i] === frameMagic[0] &&
+        frameSearchArea[i + 1] === frameMagic[1] &&
+        frameSearchArea[i + 2] === frameMagic[2] &&
+        frameSearchArea[i + 3] === frameMagic[3]
+      ) {
+        frameMagicIndex = i;
+        break;
       }
-
-      return await this.client.getPlaybackSnapshot({
-        channel: this.normalizeChannel(decoded.channel),
-        time: new Date(decoded.startTimeMs),
-        snapType,
-        timeoutMs,
-      });
     }
 
-    // Try to parse timestamps from id/path/filename.
-    const parsed = parseRecordingFileName(idRaw);
-    const start = parsed?.start;
-    if (!start || !Number.isFinite(start.getTime())) {
-      throw new Error(
-        `snapshotFromNvrEventId: cannot derive event time from identifier: ${idRaw}. ` +
-          "Pass channel/channelId+time via snapshotFromPlayback/getPlaybackSnapshot if your IDs don't include time.",
-      );
+    if (frameMagicIndex === -1) {
+      throw new Error(`CoverPreview frame magic '00dc' not found. First bytes after header: ${frameSearchArea.subarray(0, 30).toString("hex")}`);
     }
 
-    const snapType = params.snapType ?? "sub";
-    const timeoutMs = params.timeoutMs ?? 30_000;
+    const idx = 32 + frameMagicIndex;
 
-    if (params.channelId != null) {
-      return await this.client.getPlaybackSnapshotByChannelId({
-        channelId: params.channelId,
-        time: start,
-        snapType,
-        timeoutMs,
-      });
+    // Parse frame header
+    // Frame header structure:
+    // - 0-4: magic "00dc"
+    // - 4-8: encoding (e.g., "H264", "H265")
+    // - 8-12: frame length
+    // - 12-16: additional header length
+    // - 16-20: frame microsecond
+    // - 24-28: frame time (Unix timestamp)
+    const frameHeaderStart = idx;
+    const additionalHeaderLen = payload.readUInt32LE(frameHeaderStart + 12);
+    const headerLen = 24 + additionalHeaderLen;
+    const frameHeader = payload.subarray(frameHeaderStart, frameHeaderStart + headerLen);
+
+    const encoding = frameHeader.subarray(4, 8).toString("ascii").replace(/\0/g, "");
+    const frameLen = frameHeader.readUInt32LE(8);
+    const frameTime = headerLen >= 28 ? frameHeader.readUInt32LE(24) : undefined;
+
+    // Extract frame data
+    const frameStart = frameHeaderStart + headerLen;
+    const frameEnd = frameStart + frameLen;
+
+    if (frameEnd > payload.length) {
+      throw new Error(`Frame data extends beyond payload: frameEnd=${frameEnd}, payloadLength=${payload.length}`);
     }
 
-    const channel =
-      params.channel != null
-        ? this.normalizeChannel(params.channel)
-        : parsed?.channel != null
-          ? this.normalizeChannel(parsed.channel)
-          : undefined;
+    const frame = payload.subarray(frameStart, frameEnd);
 
-    if (channel == null) {
-      throw new Error(
-        `snapshotFromNvrEventId: cannot derive channel from identifier: ${idRaw}. ` +
-          "Provide params.channel (0-based) or params.channelId.",
-      );
-    }
+    // Build streamInfo conditionally to satisfy exactOptionalPropertyTypes
+    const streamInfo: { width?: number; height?: number; frameRate?: number } = {};
+    if (width > 0) streamInfo.width = width;
+    if (height > 0) streamInfo.height = height;
+    const fr = frameRate ?? 0;
+    if (fr > 0) streamInfo.frameRate = fr;
 
-    return await this.client.getPlaybackSnapshot({
-      channel,
-      time: start,
-      snapType,
-      timeoutMs,
-    });
-  }
+    // Build result conditionally for frameTime
+    const result: {
+      frame: Buffer;
+      encoding: string;
+      frameLength: number;
+      frameTime?: number;
+      streamInfo: { width?: number; height?: number; frameRate?: number };
+    } = {
+      frame,
+      encoding,
+      frameLength: frameLen,
+      streamInfo,
+    };
+    if (frameTime !== undefined) result.frameTime = frameTime;
 
-  /**
-   * Build an RTMP VOD streaming URL for an eventId produced by the events list.
-   *
-   * Intended for Scrypted: you store `eventId` and later request a playable VOD URL.
-   */
-  async getVodRtmpUrlFromEventId(params: {
-    eventId: string;
-    /** Override stream type (default: mainStream). */
-    streamType?: RecordingStreamType;
-    /** Ensure RTMP is enabled on the device (default true). */
-    ensureEnabled?: boolean;
-    /** Override RTMP port if known. */
-    rtmpPort?: number;
-  }): Promise<string> {
-    const raw = (params.eventId ?? "").trim();
-    if (!raw) throw new Error("getVodRtmpUrlFromEventId: eventId is required");
-    if (!isReolinkEventIdV1(raw)) {
-      throw new Error("getVodRtmpUrlFromEventId: expected rbj:event:v1 eventId");
-    }
-
-    const decoded = decodeReolinkEventIdV1(raw);
-    if (decoded.kind !== "nvrAlarm") throw new Error(`getVodRtmpUrlFromEventId: unsupported kind ${decoded.kind}`);
-
-    return await this.getVodRtmpUrl({
-      channel: this.normalizeChannel(decoded.channel),
-      fileName: decoded.fileName,
-      ...(params.streamType != null ? { streamType: params.streamType } : { streamType: "mainStream" }),
-      ...(params.ensureEnabled != null ? { ensureEnabled: params.ensureEnabled } : {}),
-      ...(params.rtmpPort != null ? { rtmpPort: params.rtmpPort } : {}),
-    });
-  }
-
-  /**
-   * Like {@link ReolinkBaichuanApi.snapshotFromNvrEventId}, but returns a JPEG buffer.
-   *
-   * This is typically what Scrypted wants for event thumbnails.
-   * Requires ffmpeg available in PATH (or provide `ffmpegPath`).
-   */
-  async snapshotJpegFromNvrEventId(params: {
-    idOrFileName: string;
-    channel?: number;
-    channelId?: number;
-    snapType?: "main" | "sub";
-    /** Timeout for CoverPreview request (default: 30000). */
-    timeoutMs?: number;
-    /** Path to ffmpeg binary (default: "ffmpeg" from PATH). */
-    ffmpegPath?: string;
-    /** Timeout for ffmpeg conversion (default: 30000). */
-    ffmpegTimeoutMs?: number;
-  }): Promise<Buffer> {
-    const snap = await this.snapshotFromNvrEventId({
-      idOrFileName: params.idOrFileName,
-      ...(params.channel != null ? { channel: params.channel } : {}),
-      ...(params.channelId != null ? { channelId: params.channelId } : {}),
-      ...(params.snapType != null ? { snapType: params.snapType } : {}),
-      ...(params.timeoutMs != null ? { timeoutMs: params.timeoutMs } : {}),
-    });
-
-    const ffmpegPath = params.ffmpegPath ?? "ffmpeg";
-    const ffmpegTimeoutMs = params.ffmpegTimeoutMs ?? 30_000;
-
-    const inputFormat = snap.encoding === "H265" ? "hevc" : "h264";
-
-    return await new Promise<Buffer>((resolve, reject) => {
-      const chunks: Buffer[] = [];
-      let stderr = "";
-      let timedOut = false;
-
-      const ff = spawn(ffmpegPath, [
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-f",
-        inputFormat,
-        "-i",
-        "pipe:0",
-        "-frames:v",
-        "1",
-        "-f",
-        "image2",
-        "-c:v",
-        "mjpeg",
-        "-q:v",
-        "2",
-        "pipe:1",
-      ]);
-
-      const timeout = setTimeout(() => {
-        timedOut = true;
-        ff.kill("SIGKILL");
-        reject(new Error(`ffmpeg timed out after ${ffmpegTimeoutMs}ms`));
-      }, ffmpegTimeoutMs);
-
-      ff.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
-      ff.stderr.on("data", (data: Buffer) => {
-        stderr += data.toString();
-      });
-
-      ff.on("close", (code) => {
-        clearTimeout(timeout);
-        if (timedOut) return;
-        if (code !== 0) {
-          reject(new Error(`ffmpeg exited with code ${code}: ${stderr}`));
-          return;
-        }
-        const imageBuffer = Buffer.concat(chunks);
-        if (imageBuffer.length === 0) {
-          reject(new Error(`ffmpeg produced no output. stderr: ${stderr}`));
-          return;
-        }
-        resolve(imageBuffer);
-      });
-
-      ff.on("error", (err) => {
-        clearTimeout(timeout);
-        if (timedOut) return;
-        reject(new Error(`ffmpeg error: ${err.message}`));
-      });
-
-      ff.stdin.on("error", () => {
-        // ignore (process might have exited)
-      });
-
-      ff.stdin.end(snap.frame);
-    });
+    return result;
   }
 
   // --------------------
@@ -9124,17 +9017,7 @@ ${xmlDateTimePayload("endTime", end)}
     return events.map((ev) => {
       const { channel, uid, ...rec } = ev;
       const enriched = this.enrichRecordingFile(rec);
-
-      const eventId = encodeReolinkEventIdV1({
-        kind: "nvrAlarm",
-        channel,
-        fileName: enriched.fileName,
-        startTimeMs: enriched.startTimeMs,
-        endTimeMs: enriched.endTimeMs,
-        ...(uid ? { uid } : {}),
-      });
-
-      return { ...enriched, channel, eventId, ...(uid ? { uid } : {}) };
+      return { ...enriched, channel, ...(uid ? { uid } : {}) };
     });
   }
 

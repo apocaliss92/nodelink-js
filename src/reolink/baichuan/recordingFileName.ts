@@ -168,7 +168,6 @@ export function parseRecordingFileName(fileName: string): ParsedRecordingFileNam
     const dateStr = numericMatch[2];
     const timeStr = numericMatch[3];
     if (channelStr && dateStr && timeStr) {
-      const channel = Number.parseInt(channelStr, 10);
       const start = parseDateTimeLocal(dateStr, timeStr);
       if (start) {
         // For numeric format, assume 20 second duration (common for motion detection clips)
@@ -179,7 +178,6 @@ export function parseRecordingFileName(fileName: string): ParsedRecordingFileNam
           streamHint: "main",
           version: 0,
           devType: "cam",
-          ...(Number.isFinite(channel) ? { channel } : {}),
           start,
           end,
           durationMs: 20_000,

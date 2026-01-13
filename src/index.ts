@@ -13,7 +13,6 @@ export * from "./reolink/baichuan/ReolinkBaichuanApi";
 export * from "./reolink/AutodiscoveryClient";
 export * from "./reolink/baichuan/types";
 export * from "./reolink/baichuan/recordingFileName";
-export * from "./reolink/baichuan/eventId";
 export * from "./reolink/baichuan/endpoints-server";
 export * from "./reolink/baichuan/capabilities";
 // DeviceAbilities is already exported via export * above
