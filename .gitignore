@@ -30,6 +30,7 @@ test/frames-debug/*
 test/frames-save/*
 .tmp/*
 pcap/*
+test/nvr/exports*
 firmwares/*
 tools/stream-probe/*
 
