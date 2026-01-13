@@ -470,7 +470,7 @@ export interface GetVodUrlParams {
   startTimeObj?: Date;
   /** End time as JavaScript Date (for NVR preparation, will be converted to Reolink format) */
   endTimeObj?: Date;
-  /** If true, automatically prepare file for NVR/Hub when VodFile is provided (default: true for Playback) */
+  /** If true, automatically prepare file for NVR/Hub when possible (default: true for Playback/Download/NVR_DOWNLOAD) */
   prepare?: boolean;
   /** Seek position in seconds (for FLV) */
   seek?: number;
@@ -495,6 +495,10 @@ export class ReolinkCgiApi {
   // Recordings cache: key -> { data, expiresAt }
   // Unified cache for both NVR and Device recordings (always enriched)
   private recordingsCache = new Map<RecordingsCacheKey, RecordingsCacheEntry>();
+
+  // Some devices (notably some Hub firmwares) do not support the `NvrDownload` prepare command.
+  // Cache the capability to avoid repeated failing calls.
+  private nvrDownloadPrepareSupport: "unknown" | "supported" | "unsupported" = "unknown";
 
   // Default cache TTL: 5 minutes
   private recordingsCacheTtlMs = 5 * 60 * 1000;
@@ -1646,6 +1650,10 @@ export class ReolinkCgiApi {
       iLogicChannel?: number;
     }
   ): Promise<string> {
+    if (this.nvrDownloadPrepareSupport === "unsupported") {
+      throw new Error("NvrDownload is not supported on this device");
+    }
+
     const iLogicChannel = options?.iLogicChannel ?? 0;
 
     // Build param exactly like reolink_aio does
@@ -1704,8 +1712,14 @@ export class ReolinkCgiApi {
 
       const first = response[0];
       if (!first || first.code !== 0 || !first.value?.fileList) {
+        const rspCode = (first as any)?.error?.rspCode;
+        if (rspCode === -17) {
+          this.nvrDownloadPrepareSupport = "unsupported";
+        }
         throw new Error(`NvrDownload failed: ${JSON.stringify(response)}`);
       }
+
+      this.nvrDownloadPrepareSupport = "supported";
 
       // Return the filename of the largest file
       let maxFilesize = 0;
@@ -1754,7 +1768,11 @@ export class ReolinkCgiApi {
     const streamType = options?.streamType ?? options?.videoStreamType ?? "main";
     const videoStreamType = options?.videoStreamType ?? streamType;
     const seek = options?.seek ?? 0;
-    const shouldPrepare = options?.prepare ?? (requestType === "Playback");
+    // IMPORTANT: On NVR/Hub, `cmd=Download` typically requires a prior `NvrDownload` preparation
+    // to translate the Search filename into a downloadable source.
+    const shouldPrepare =
+      options?.prepare ??
+      (requestType === "Playback" || requestType === "Download" || requestType === "NVR_DOWNLOAD");
     let startTime = options?.startTime ?? "";
 
     // Extract filename from VodFile or use string directly
@@ -1762,7 +1780,11 @@ export class ReolinkCgiApi {
     const vodFile = typeof filenameOrVodFile === "string" ? undefined : filenameOrVodFile;
 
     // For NVR and Playback/Download, prepare the file first if needed
-    if (shouldPrepare && (requestType === "Playback" || requestType === "Download" || requestType === "NVR_DOWNLOAD")) {
+    if (
+      shouldPrepare &&
+      this.nvrDownloadPrepareSupport !== "unsupported" &&
+      (requestType === "Playback" || requestType === "Download" || requestType === "NVR_DOWNLOAD")
+    ) {
       // Try to prepare from startTimeObj/endTimeObj first
       if (options?.startTimeObj && options?.endTimeObj) {
         try {
@@ -1798,6 +1820,49 @@ export class ReolinkCgiApi {
           );
         } catch (error) {
           // If preparation fails, continue with original filename
+        }
+      }
+
+      // Otherwise, attempt to derive Start/End from the filename itself.
+      // This matches common NVR/Hub recording paths like:
+      //   .../RecM04_YYYYMMDD_HHMMSS_HHMMSS_...
+      else {
+        const m = filename.match(/Rec\w{3}(?:_|_DST)?(\d{8})_(\d{6})_(\d{6})_/);
+        if (m) {
+          try {
+            const ymd = m[1];
+            const startHms = m[2];
+            const endHms = m[3];
+            if (!ymd || !startHms || !endHms) {
+              throw new Error(`Failed to parse recording time from filename: ${filename}`);
+            }
+
+            const year = Number(ymd.slice(0, 4));
+            const mon = Number(ymd.slice(4, 6));
+            const day = Number(ymd.slice(6, 8));
+
+            const startTimeReolink = {
+              year,
+              mon,
+              day,
+              hour: Number(startHms.slice(0, 2)),
+              min: Number(startHms.slice(2, 4)),
+              sec: Number(startHms.slice(4, 6)),
+            };
+
+            const endTimeReolink = {
+              year,
+              mon,
+              day,
+              hour: Number(endHms.slice(0, 2)),
+              min: Number(endHms.slice(2, 4)),
+              sec: Number(endHms.slice(4, 6)),
+            };
+
+            filename = await this.prepareNvrVodDownload(channel, startTimeReolink, endTimeReolink, streamType);
+          } catch (error) {
+            // If preparation fails, continue with original filename
+          }
         }
       }
     }

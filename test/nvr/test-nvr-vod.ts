@@ -191,14 +191,30 @@ async function main(): Promise<void> {
       return;
     }
 
+    const channelOverrideRaw = (process.env.NVR_CHANNEL ?? "").trim();
+    const channelOverride = channelOverrideRaw.length ? Number.parseInt(channelOverrideRaw, 10) : undefined;
+    if (channelOverride !== undefined) {
+      if (!Number.isFinite(channelOverride) || channelOverride < 0) {
+        throw new Error(`Invalid NVR_CHANNEL: ${process.env.NVR_CHANNEL}`);
+      }
+      if (!channels.includes(channelOverride)) {
+        throw new Error(`NVR_CHANNEL=${channelOverride} not found in available channels: ${channels.join(", ")}`);
+      }
+    }
+
+    const selectedChannels = channelOverride !== undefined ? [channelOverride] : channels;
+
     console.log(`✓ Found ${channels.length} channel(s): ${channels.join(", ")}\n`);
+    if (channelOverride !== undefined) {
+      console.log(`✓ Using NVR_CHANNEL=${channelOverride}\n`);
+    }
 
     // Test with all available channels to get total count
     console.log(`Testing with all channels to get total count...\n`);
     
     let grandTotal = 0;
     
-    for (const testChannel of channels) {
+    for (const testChannel of selectedChannels) {
       console.log(`\n${"=".repeat(60)}`);
       console.log(`CHANNEL ${testChannel}`);
       console.log(`${"=".repeat(60)}\n`);
