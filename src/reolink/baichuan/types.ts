@@ -280,6 +280,27 @@ export interface ReolinkSimpleEvent {
   timestamp: number;
 }
 
+/** HomeHub/NVR event log entry (from cmd_id 517 <eventLogInfo>). */
+export interface ReolinkEventLogEntry {
+  /** Device UID that produced the event. */
+  uid: string;
+  /** Hub channel number that matches the UID (best-effort, from cmd_id 145 cache). */
+  channelId?: number;
+  /** Logical channel index inside the device when provided by the hub. */
+  logicChn?: number;
+  /** Bitmap used by replay commands (typically 1 << logicChn). */
+  logicChnBitmap?: number;
+  /** e.g. people/vehicle/dog_cat/motion/... */
+  alarmType?: string;
+  startTime: Date;
+  endTime: Date;
+  hasRecFile?: boolean;
+  encrypted?: boolean;
+  deleted?: boolean;
+}
+
+export type ReolinkEventReplayStreamType = "mobileStream" | "subStream";
+
 export interface TwoWayAudioConfig {
   channel: number;
   enabled: boolean;
