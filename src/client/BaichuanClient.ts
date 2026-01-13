@@ -17,6 +17,7 @@ import {
   BC_CLASS_LEGACY,
   BC_CLASS_FILE_DOWNLOAD,
   BC_CLASS_MODERN_24,
+  BC_CMD_ID_COVER_PREVIEW,
   BC_CMD_ID_CHANNEL_INFO_ALL,
   BC_CMD_ID_FILE_INFO_LIST_CLOSE,
   BC_CMD_ID_FILE_INFO_LIST_DOWNLOAD,
@@ -95,6 +96,25 @@ export type BaichuanClientOptions = {
    * - `auto`: try `tcp`, then fallback to `udp`
    */
   transport?: "tcp" | "udp" | "auto";
+};
+
+export type CoverPreviewSnapType = "main" | "sub";
+
+export type CoverPreviewSnapshotResult = {
+  /** Raw I-frame data (H.264 or H.265) */
+  frame: Buffer;
+  /** Encoding token extracted from the frame header (e.g. "H264", "H265"). */
+  encoding: string;
+  /** Frame length in bytes */
+  frameLength: number;
+  /** Frame timestamp (Unix seconds) if available */
+  frameTime?: number;
+  /** Stream metadata from header */
+  streamInfo: {
+    width?: number;
+    height?: number;
+    frameRate?: number;
+  };
 };
 
 export type MaxEncryption = "none" | "bc" | "aes" | "full_aes";
@@ -2141,6 +2161,24 @@ export class BaichuanClient extends EventEmitter<{
       return res;
     }
 
+    // CoverPreview (cmdId=298) is also delivered via a push stream ("1001" + frame),
+    // and needs special collection logic.
+    if (params.cmdId === BC_CMD_ID_COVER_PREVIEW) {
+      const res = await this.sendBinaryCoverPreview({
+        cmdId: params.cmdId,
+        ...(params.channel != null ? { channel: params.channel } : {}),
+        ...(params.channelIdOverride != null ? { channelIdOverride: params.channelIdOverride } : {}),
+        ...(params.payloadXml != null ? { payloadXml: params.payloadXml } : {}),
+        ...(params.extensionXml != null ? { extensionXml: params.extensionXml } : {}),
+        ...(params.messageClass != null ? { messageClass: params.messageClass } : {}),
+        ...(params.streamType != null ? { streamType: params.streamType } : {}),
+        ...(params.encryption != null ? { encryption: params.encryption } : {}),
+        ...(params.timeoutMs != null ? { timeoutMs: params.timeoutMs } : {}),
+      });
+      if (!internal) this.kickIdleDisconnectTimer();
+      return res;
+    }
+
     // File download (class=0x6482) is often delivered as a sequence of binary chunks.
     // Handle it similarly to snapshot: send without pending and collect frames until completion.
     if ((params.messageClass ?? BC_CLASS_MODERN_24) === BC_CLASS_FILE_DOWNLOAD) {
@@ -2556,6 +2594,8 @@ export class BaichuanClient extends EventEmitter<{
   async sendBinaryCoverPreview(params: {
     cmdId: number;
     channel?: number;
+    /** Override the header channelId (and encryption channelId) for this request. */
+    channelIdOverride?: number;
     payloadXml?: string;
     extensionXml?: string;
     messageClass?: number;
@@ -2566,12 +2606,18 @@ export class BaichuanClient extends EventEmitter<{
     await this.connect();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
-    const channelId = params.channel == null ? 250 : channel + 1;
+    const channelId = params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
 
     const msgNum = this.nextMsgNum();
     const cmdId = params.cmdId;
 
-    const extXml = params.extensionXml ?? (params.channel != null ? buildChannelExtensionXml(channel) : "");
+    const extXml =
+      params.extensionXml ??
+      (params.channelIdOverride != null
+        ? buildChannelExtensionXml(params.channelIdOverride)
+        : params.channel != null
+          ? buildChannelExtensionXml(channel)
+          : "");
     const payloadXml = params.payloadXml ?? "";
 
     const messageClass = params.messageClass ?? BC_CLASS_MODERN_24;
@@ -2694,6 +2740,137 @@ export class BaichuanClient extends EventEmitter<{
         fail(e);
       }
     });
+  }
+
+  static buildCoverPreviewXml(params: { channelId: number; time: Date; snapType: CoverPreviewSnapType }): string {
+    const endTime = new Date(params.time.getTime() + 10_000);
+    return `<?xml version="1.0" encoding="UTF-8" ?>\n<body>\n<CoverPreview version="1.1">\n<channelId>${params.channelId}</channelId>\n<streamType>${params.snapType}</streamType>\n<startTime>\n<year>${params.time.getFullYear()}</year>\n<month>${params.time.getMonth() + 1}</month>\n<day>${params.time.getDate()}</day>\n<hour>${params.time.getHours()}</hour>\n<minute>${params.time.getMinutes()}</minute>\n<second>${params.time.getSeconds()}</second>\n</startTime>\n<endTime>\n<year>${endTime.getFullYear()}</year>\n<month>${endTime.getMonth() + 1}</month>\n<day>${endTime.getDate()}</day>\n<hour>${endTime.getHours()}</hour>\n<minute>${endTime.getMinutes()}</minute>\n<second>${endTime.getSeconds()}</second>\n</endTime>\n</CoverPreview>\n</body>`;
+  }
+
+  static parseCoverPreviewPayload(payload: Buffer): CoverPreviewSnapshotResult {
+    if (payload.length < 32) {
+      throw new Error(`CoverPreview payload too short: ${payload.length} bytes`);
+    }
+
+    const streamHeader = payload.subarray(0, 32);
+    const magic = streamHeader.subarray(0, 4).toString("ascii");
+    if (magic !== "1001") {
+      throw new Error(`CoverPreview payload did not start with stream header magic '1001' but with '${magic}'`);
+    }
+
+    const width = streamHeader.readUInt32LE(8);
+    const height = streamHeader.readUInt32LE(12);
+    const frameRate = streamHeader.length > 17 ? streamHeader[17] : 0;
+
+    const frameSearchArea = payload.subarray(32);
+    const frameMagic = Buffer.from("00dc", "ascii");
+    const frameMagicIndex = frameSearchArea.indexOf(frameMagic);
+
+    if (frameMagicIndex === -1) {
+      throw new Error(
+        `CoverPreview frame magic '00dc' not found. First bytes after header: ${frameSearchArea.subarray(0, 30).toString("hex")}`,
+      );
+    }
+
+    const idx = 32 + frameMagicIndex;
+    const frameHeaderStart = idx;
+
+    const additionalHeaderLen = payload.readUInt32LE(frameHeaderStart + 12);
+    const headerLen = 24 + additionalHeaderLen;
+    const frameHeader = payload.subarray(frameHeaderStart, frameHeaderStart + headerLen);
+
+    const encoding = frameHeader.subarray(4, 8).toString("ascii").replace(/\0/g, "");
+    const frameLen = frameHeader.readUInt32LE(8);
+    const frameTime = headerLen >= 28 ? frameHeader.readUInt32LE(24) : undefined;
+
+    const frameStart = frameHeaderStart + headerLen;
+    const frameEnd = frameStart + frameLen;
+    if (frameEnd > payload.length) {
+      throw new Error(`Frame data extends beyond payload: frameEnd=${frameEnd}, payloadLength=${payload.length}`);
+    }
+
+    const frame = payload.subarray(frameStart, frameEnd);
+
+    const streamInfo: { width?: number; height?: number; frameRate?: number } = {};
+    if (width > 0) streamInfo.width = width;
+    if (height > 0) streamInfo.height = height;
+    const fr = frameRate ?? 0;
+    if (fr > 0) streamInfo.frameRate = fr;
+
+    const result: CoverPreviewSnapshotResult = {
+      frame,
+      encoding,
+      frameLength: frameLen,
+      streamInfo,
+    };
+    if (frameTime !== undefined) result.frameTime = frameTime;
+    return result;
+  }
+
+  /**
+   * Fetch a snapshot (raw I-frame) from a past recording using CoverPreview (cmd_id=298).
+   *
+   * This variant mirrors the common NVR-style behavior where:
+   * - header channelId is derived from `channel` (1-based),
+   * - XML <channelId> uses `channel` (0-based).
+   */
+  async getPlaybackSnapshot(params: {
+    /** Channel number (0-based) */
+    channel?: number;
+    /** Timestamp to capture */
+    time: Date;
+    /** Stream type for snapshot quality ("main" or "sub", default: "sub") */
+    snapType?: CoverPreviewSnapType;
+    /** Timeout in milliseconds (default: 30000) */
+    timeoutMs?: number;
+  }): Promise<CoverPreviewSnapshotResult> {
+    await this.login();
+
+    const channel = params.channel ?? this.opts.channel ?? 0;
+    const snapType = params.snapType ?? "sub";
+    const timeoutMs = params.timeoutMs ?? 30_000;
+
+    const xml = BaichuanClient.buildCoverPreviewXml({ channelId: channel, time: params.time, snapType });
+
+    const payload = await this.sendBinaryCoverPreview({
+      cmdId: BC_CMD_ID_COVER_PREVIEW,
+      channel,
+      payloadXml: xml,
+      timeoutMs,
+    });
+
+    return BaichuanClient.parseCoverPreviewPayload(payload);
+  }
+
+  /**
+   * Fetch a snapshot (raw I-frame) from a past recording using CoverPreview (cmd_id=298),
+   * addressing the device by a full Baichuan channelId (common on HomeHub).
+   */
+  async getPlaybackSnapshotByChannelId(params: {
+    /** Baichuan channelId to use for header + extension + XML */
+    channelId: number;
+    /** Timestamp to capture */
+    time: Date;
+    /** Stream type for snapshot quality ("main" or "sub", default: "sub") */
+    snapType?: CoverPreviewSnapType;
+    /** Timeout in milliseconds (default: 30000) */
+    timeoutMs?: number;
+  }): Promise<CoverPreviewSnapshotResult> {
+    await this.login();
+
+    const snapType = params.snapType ?? "sub";
+    const timeoutMs = params.timeoutMs ?? 30_000;
+    const xml = BaichuanClient.buildCoverPreviewXml({ channelId: params.channelId, time: params.time, snapType });
+
+    const payload = await this.sendBinaryCoverPreview({
+      cmdId: BC_CMD_ID_COVER_PREVIEW,
+      channelIdOverride: params.channelId,
+      extensionXml: buildChannelExtensionXml(params.channelId),
+      payloadXml: xml,
+      timeoutMs,
+    });
+
+    return BaichuanClient.parseCoverPreviewPayload(payload);
   }
 
   /**

@@ -41,6 +41,7 @@
   },
   "scripts": {
     "test": "npm run typecheck",
+    "test:unit:coverpreview-parser": "npm run test:build && node dist/test/unit/test-coverpreview-parser.js",
     "test:nvr:native-frame-trace": "npm run test:build && node dist/test/nvr/test-nvr-native-secondary-frame-trace.js",
     "test:nvr:native-ffprobe": "npm run test:build && node dist/test/nvr/test-nvr-native-streams-ffprobe.js",
     "test:pcap:baichuan": "npm run test:build && node dist/test/pcap/test-pcap-baichuan-analyze.js",
