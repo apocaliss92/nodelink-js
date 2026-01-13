@@ -79,17 +79,11 @@ function loadEnv(): TestConfig {
     return process.env[key] || defaultValue;
   };
 
-  // Convenience fallbacks: many setups use a single device for quick tests.
-  // If NVR_* are not provided, fall back to TCP_* (host/credentials).
-  const tcpHost = getEnv("TCP_HOST", "");
-  const tcpUsername = getEnv("TCP_USERNAME", "admin");
-  const tcpPassword = getEnv("TCP_PASSWORD", "");
-
   return {
     tcp: {
-      host: tcpHost,
-      username: tcpUsername,
-      password: tcpPassword,
+      host: getEnv("TCP_HOST", ""),
+      username: getEnv("TCP_USERNAME", "admin"),
+      password: getEnv("TCP_PASSWORD", ""),
     },
     tcp265: {
       host: getEnv("TCP265_HOST", ""),
@@ -109,9 +103,9 @@ function loadEnv(): TestConfig {
       uid: getEnv("UDP_SLEEP_UID", ""),
     },
     nvr: {
-      host: getEnv("NVR_HOST", tcpHost),
-      username: getEnv("NVR_USERNAME", tcpUsername),
-      password: getEnv("NVR_PASSWORD", tcpPassword),
+      host: getEnv("NVR_HOST", ""),
+      username: getEnv("NVR_USERNAME", "admin"),
+      password: getEnv("NVR_PASSWORD", ""),
       uid: getEnv("NVR_UID", ""),
     },
     rtsp: {

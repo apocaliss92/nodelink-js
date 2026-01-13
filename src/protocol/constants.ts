@@ -50,16 +50,6 @@ export const BC_CMD_ID_FIND_REC_VIDEO_OPEN = 272; // <findAlarmVideo> (open)
 export const BC_CMD_ID_FIND_REC_VIDEO_GET = 273; // <findAlarmVideo> (get)
 export const BC_CMD_ID_FIND_REC_VIDEO_CLOSE = 274; // <findAlarmVideo> (close)
 
-// Event log search (HomeHub/NVR event timeline)
-// Observed in HomeHub PCAP:
-// - 516: <findEventLog> (open)
-// - 517: <findEventLog> (get page) -> <eventLogInfo>
-export const BC_CMD_ID_FIND_EVENT_LOG_OPEN = 516; // <findEventLog> (open)
-export const BC_CMD_ID_FIND_EVENT_LOG_GET = 517; // <findEventLog> (get)
-
-// Playback by time (HomeHub/NVR event replay)
-export const BC_CMD_ID_REPLAY_BY_TIME_V2 = 381; // <ReplayByTimeV2>
-
 // Talk / two-way audio command IDs
 export const BC_CMD_ID_TALK_ABILITY = 10; // MSG_ID_TALKABILITY - get talk ability/config
 export const BC_CMD_ID_TALK_RESET = 11; // MSG_ID_TALKRESET - stop/reset talk session
