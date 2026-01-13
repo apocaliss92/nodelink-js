@@ -1,10 +1,7 @@
 import { spawn } from "node:child_process";
-import { once } from "node:events";
-import * as fs from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { BaichuanRtspServer, type BaichuanRtspServerOptions } from "../../baichuan/stream/BaichuanRtspServer";
-import { BaichuanVideoStream } from "../../baichuan/stream/BaichuanVideoStream";
 import { BaichuanClient, type BaichuanClientOptions } from "../../client/BaichuanClient";
 import { recordingsTraceLog, type Logger } from "../../debug/DebugConfig";
 import {
@@ -85,7 +82,6 @@ import type {
   ReolinkEvent,
   ReolinkEventLogEntry,
   ReolinkEventReplayStreamType,
-  ReolinkAnnexBAccessUnit,
   ReolinkSimpleEvent,
   ReolinkSimpleEventType,
   SleepStatus,
@@ -877,27 +873,6 @@ export class ReolinkBaichuanApi {
 
   private recordingsCacheTtlMs = 20 * 60 * 1000;
 
-  private isGeneralDebugEnabled(): boolean {
-    return this.client.getDebugConfig?.()?.general === true;
-  }
-
-  private debugGeneral(message: string, data?: unknown): void {
-    if (!this.isGeneralDebugEnabled()) return;
-    const l: any = this.logger as any;
-    if (typeof l?.debug === "function") {
-      l.debug(message, data);
-      return;
-    }
-    if (typeof l?.log === "function") {
-      l.log(message, data);
-    }
-  }
-
-  private debugGeneralLazy(messageFactory: () => string, data?: unknown): void {
-    if (!this.isGeneralDebugEnabled()) return;
-    this.debugGeneral(messageFactory(), data);
-  }
-
   private dispatchSimpleEvent(evt: ReolinkSimpleEvent): void {
     for (const cb of this.simpleEventListeners) {
       try {
@@ -1220,11 +1195,11 @@ export class ReolinkBaichuanApi {
       try {
         await this.subscribeEvents();
         this.simpleEventSubscribed = true;
-        this.debugGeneral("[ReolinkBaichuanApi] renewed simple event subscription", {
+        (this.logger.debug ?? this.logger.log).call(this.logger, "[ReolinkBaichuanApi] renewed simple event subscription", {
           intervalMs: this.simpleEventResubscribeIntervalMs,
         });
       } catch (e) {
-        this.debugGeneral("[ReolinkBaichuanApi] failed to renew event subscription", e);
+        (this.logger.debug ?? this.logger.log).call(this.logger, "[ReolinkBaichuanApi] failed to renew event subscription", e);
       }
     })().finally(() => {
       this.simpleEventResubscribeInFlight = undefined;
@@ -1698,7 +1673,7 @@ export class ReolinkBaichuanApi {
     const allBlocks = [...channelBlocks, ...iotBlocks];
 
     // Verbose payload; keep it under debug only.
-    this.debugGeneralLazy(() => `[ReolinkBaichuanApi] cmd_id 145 ChannelInfo push: blocks=${JSON.stringify(allBlocks)}`);
+    this.logger.debug?.(`[ReolinkBaichuanApi] cmd_id 145 ChannelInfo push: blocks=${JSON.stringify(allBlocks)}`);
 
     for (const block of allBlocks) {
       // Extract channel number - cmd_id 145 uses <channelId> not <channel>
@@ -1849,9 +1824,8 @@ export class ReolinkBaichuanApi {
         if ((info.stateLower ?? info.state).toLowerCase() === "none") continue;
         resultObj[channel] = { name: info.name, uid: info.uid, state: info.state };
       }
-      this.debugGeneralLazy(
-        () =>
-          `[ReolinkBaichuanApi] Channel info received by the NVR: ${JSON.stringify({ result: resultObj, storedChannels: Object.keys(resultObj) })}`,
+      this.logger.debug?.(
+        `[ReolinkBaichuanApi] Channel info received by the NVR: ${JSON.stringify({ result: resultObj, storedChannels: Object.keys(resultObj) })}`,
       );
     }
   }
@@ -4463,332 +4437,6 @@ ${xmlDateTimePayload("endTime", end)}
   }
 
   /**
-   * Minimal-overhead event playback as an async generator.
-   *
-   * - Starts a native Baichuan preview stream (cmd_id=3) to establish the media channel.
-   * - Immediately triggers ReplayByTimeV2 (cmd_id=381) to switch the stream content to the event clip.
-   * - Emits generator-friendly Annex-B access units (H.264/H.265).
-   *
-   * This is designed to plug directly into Scrypted's `HttpResponse.sendStream(asyncGenerator, ...)`.
-   *
-   * Note: raw Annex-B is not universally browser-playable. Typically you either:
-   * - wrap it with a muxer (ffmpeg -> MPEG-TS or fMP4), or
-   * - feed it into another pipeline that understands raw H.264/H.265.
-   */
-  async createEventPlaybackAnnexBStream(params: {
-    event: ReolinkEventLogEntry;
-    /** Prefer mobileStream > subStream (default). */
-    preferredStream?: ReolinkEventReplayStreamType;
-    /** Override the native stream profile used to establish the media channel. Default: "sub". */
-    profile?: StreamProfile;
-    /** Override the native variant (TrackMix/dual-lens cases). Default is derived from streamType. */
-    variant?: NativeVideoStreamVariant;
-    /** Abort signal to stop streaming early. */
-    signal?: AbortSignal;
-    /** Max buffered access units (guardrail). Defaults to 256. */
-    maxQueue?: number;
-  }): Promise<{ streamType: ReolinkEventReplayStreamType; stream: AsyncGenerator<ReolinkAnnexBAccessUnit>; stop: () => Promise<void> }> {
-    const ev = params.event;
-    const uid = (ev.uid ?? "").trim();
-    const channelId = ev.channelId;
-    if (!uid) throw new Error("createEventPlaybackAnnexBStream: event.uid is required");
-    if (channelId === undefined) {
-      throw new Error(
-        "createEventPlaybackAnnexBStream: event.channelId is missing. Ensure events were produced by listEventLogs() (which resolves uid->channelId via cmd_id 145 push cache).",
-      );
-    }
-
-    const streamType: ReolinkEventReplayStreamType = params.preferredStream ?? "mobileStream";
-    const startTime = ev.startTime;
-    const endTime = ev.endTime;
-    const logicChnBitmap = ev.logicChnBitmap ?? 1;
-
-    // Keep the same heuristic used by RTSP playback: establish preview on sub + telephoto for mobileStream.
-    const variant: NativeVideoStreamVariant | undefined =
-      params.variant ?? (streamType === "mobileStream" ? "telephoto" : "default");
-    const profile: StreamProfile = params.profile ?? "sub";
-
-    const maxQueue = Math.max(8, Math.trunc(params.maxQueue ?? 256));
-    const pending: ReolinkAnnexBAccessUnit[] = [];
-    let dropped = 0;
-    let done = false;
-    let fatal: Error | undefined;
-    let wake: (() => void) | undefined;
-
-    const notify = () => {
-      const w = wake;
-      wake = undefined;
-      w?.();
-    };
-
-    const videoStream = new BaichuanVideoStream({
-      client: this.client,
-      api: this,
-      channel: channelId,
-      profile,
-      ...(variant ? { variant } : {}),
-      logger: this.logger,
-    });
-
-    const onUnit = (u: any) => {
-      if (!u || !Buffer.isBuffer(u.data)) return;
-      pending.push(u as ReolinkAnnexBAccessUnit);
-      if (pending.length > maxQueue) {
-        pending.shift();
-        dropped++;
-        if (dropped === 1 || dropped % 100 === 0) {
-          this.logger.warn?.(
-            `[ReolinkBaichuanApi] AnnexB stream queue overflow: dropped=${dropped} (consider larger maxQueue or faster consumer)`,
-          );
-        }
-      }
-      notify();
-    };
-    const onErr = (e: any) => {
-      fatal = e instanceof Error ? e : new Error(String(e));
-      done = true;
-      notify();
-    };
-    const onClose = () => {
-      done = true;
-      notify();
-    };
-
-    let stopped = false;
-    const stop = async () => {
-      if (stopped) return;
-      stopped = true;
-      done = true;
-      notify();
-      try {
-        await videoStream.stop();
-      } catch {
-        // ignore
-      }
-    };
-
-    // Wire abort.
-    const abortHandler = () => {
-      void stop();
-    };
-    if (params.signal) {
-      if (params.signal.aborted) {
-        await stop();
-      } else {
-        params.signal.addEventListener("abort", abortHandler, { once: true });
-      }
-    }
-
-    // Start preview then trigger replay (matches observed app/PCAP behavior).
-    videoStream.on("videoAccessUnit", onUnit as any);
-    videoStream.on("error", onErr as any);
-    videoStream.on("close", onClose as any);
-    await videoStream.start();
-    try {
-      await this.startEventPlayback({
-        uid,
-        channelId,
-        startTime,
-        endTime,
-        logicChnBitmap,
-        streamType,
-      });
-    } catch (e) {
-      // If replay fails, still allow the consumer to see preview frames; surface the error if they want.
-      this.logger.warn?.("[ReolinkBaichuanApi] createEventPlaybackAnnexBStream: startEventPlayback failed", e);
-    }
-
-    const stream = (async function* (self: ReolinkBaichuanApi): AsyncGenerator<ReolinkAnnexBAccessUnit> {
-      try {
-        while (true) {
-          if (fatal) throw fatal;
-          const next = pending.shift();
-          if (next) {
-            yield next;
-            continue;
-          }
-          if (done) break;
-          await new Promise<void>((resolve) => {
-            wake = resolve;
-          });
-        }
-      } finally {
-        try {
-          if (params.signal) params.signal.removeEventListener("abort", abortHandler);
-        } catch {
-          // ignore
-        }
-        videoStream.off("videoAccessUnit", onUnit as any);
-        videoStream.off("error", onErr as any);
-        videoStream.off("close", onClose as any);
-        await stop();
-      }
-    })(this);
-
-    return { streamType, stream, stop };
-  }
-
-  /**
-   * Download a single event playback to an MP4 file.
-   *
-   * This is primarily meant to enable HTTP Range support (seek) by caching the clip
-   * to disk, then serving it with standard byte-range logic.
-   *
-   * Implementation: consumes `createEventPlaybackAnnexBStream()` and remuxes into MP4
-   * with `ffmpeg -c:v copy` (no re-encode).
-   */
-  async downloadEventPlaybackMp4(params: {
-    event: ReolinkEventLogEntry;
-    outPath: string;
-    preferredStream?: ReolinkEventReplayStreamType;
-    profile?: StreamProfile;
-    variant?: NativeVideoStreamVariant;
-    /** Input FPS hint for raw Annex-B -> MP4. Defaults to 25. */
-    inputFps?: number;
-    /** Abort/timeout handling for long clips. */
-    timeoutMs?: number;
-    /** Overwrite existing file. Default: true. */
-    overwrite?: boolean;
-  }): Promise<{ outPath: string; bytes: number; streamType: ReolinkEventReplayStreamType; videoType: "H264" | "H265" }> {
-    const outPath = (params.outPath ?? "").trim();
-    if (!outPath) throw new Error("downloadEventPlaybackMp4: outPath is required");
-    await mkdir(dirname(outPath), { recursive: true });
-
-    const overwrite = params.overwrite !== false;
-    if (!overwrite) {
-      try {
-        const st = fs.existsSync(outPath) ? fs.statSync(outPath) : undefined;
-        if (st?.isFile() && st.size > 0) {
-          return { outPath, bytes: st.size, streamType: params.preferredStream ?? "mobileStream", videoType: "H264" };
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    const inputFps = Math.max(1, Math.trunc(params.inputFps ?? 25));
-    const timeoutMs = params.timeoutMs != null ? Math.max(1_000, Math.trunc(params.timeoutMs)) : undefined;
-
-    const ac = new AbortController();
-    let timeout: NodeJS.Timeout | undefined;
-    if (timeoutMs != null) {
-      timeout = setTimeout(() => ac.abort(), timeoutMs);
-      timeout.unref?.();
-    }
-
-    const { streamType, stream, stop } = await this.createEventPlaybackAnnexBStream({
-      event: params.event,
-      ...(params.preferredStream ? { preferredStream: params.preferredStream } : {}),
-      ...(params.profile ? { profile: params.profile } : {}),
-      ...(params.variant ? { variant: params.variant } : {}),
-      signal: ac.signal,
-    });
-
-    let ffmpeg: ReturnType<typeof spawn> | undefined;
-    let stderr = "";
-
-    const killFfmpeg = () => {
-      try {
-        if (ffmpeg && !ffmpeg.killed) ffmpeg.kill("SIGKILL");
-      } catch {
-        // ignore
-      }
-    };
-
-    const abortHandler = () => {
-      killFfmpeg();
-      void stop();
-    };
-    ac.signal.addEventListener("abort", abortHandler, { once: true });
-
-    try {
-      const it = stream[Symbol.asyncIterator]();
-      const first = await it.next();
-      if (first.done || !first.value) throw new Error("downloadEventPlaybackMp4: stream ended before first access unit");
-
-      const firstUnit = first.value as ReolinkAnnexBAccessUnit;
-      const videoType = firstUnit.videoType;
-      const inputFormat = videoType === "H265" ? "hevc" : "h264";
-
-      const args: string[] = [
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        // Generate timestamps for raw Annex-B input.
-        "-r",
-        String(inputFps),
-        "-fflags",
-        "+genpts",
-        "-f",
-        inputFormat,
-        "-i",
-        "pipe:0",
-        "-an",
-        "-sn",
-        "-c:v",
-        "copy",
-        "-movflags",
-        "+faststart",
-        "-y",
-        outPath,
-      ];
-
-      ffmpeg = spawn("ffmpeg", args, { stdio: ["pipe", "ignore", "pipe"] });
-      ffmpeg.stderr?.on("data", (d: Buffer) => {
-        const s = d.toString();
-        stderr += s;
-        // keep stderr bounded
-        if (stderr.length > 64_000) stderr = stderr.slice(-64_000);
-      });
-
-      let bytesIn = 0;
-      const writeToFfmpeg = async (b: Buffer) => {
-        if (!ffmpeg?.stdin || ffmpeg.stdin.destroyed) return;
-        bytesIn += b.length;
-        if (!ffmpeg.stdin.write(b)) {
-          await once(ffmpeg.stdin, "drain");
-        }
-      };
-
-      await writeToFfmpeg(firstUnit.data);
-      for await (const u of {
-        [Symbol.asyncIterator]() {
-          return it;
-        },
-      } as AsyncIterable<ReolinkAnnexBAccessUnit>) {
-        if (ac.signal.aborted) break;
-        await writeToFfmpeg(u.data);
-      }
-
-      try {
-        ffmpeg.stdin?.end();
-      } catch {
-        // ignore
-      }
-
-      const code = await new Promise<number>((resolve, reject) => {
-        ffmpeg!.once("error", reject);
-        ffmpeg!.once("close", (c) => resolve(c ?? -1));
-      });
-
-      if (ac.signal.aborted) {
-        throw new Error("downloadEventPlaybackMp4: aborted");
-      }
-      if (code !== 0) {
-        throw new Error(`downloadEventPlaybackMp4: ffmpeg exited with code ${code}${stderr ? ` (stderr: ${stderr.trim()})` : ""}`);
-      }
-
-      const st = fs.statSync(outPath);
-      return { outPath, bytes: st.size, streamType, videoType };
-    } finally {
-      if (timeout) clearTimeout(timeout);
-      ac.signal.removeEventListener("abort", abortHandler);
-      killFfmpeg();
-      await stop();
-    }
-  }
-
-  /**
    * Create a consumer-friendly local RTSP URL that plays back a single event.
    *
    * Implementation: spins up a local BaichuanRtspServer and triggers ReplayByTimeV2
@@ -5300,7 +4948,7 @@ ${xmlDateTimePayload("endTime", end)}
         return;
       }
       // Keep trying other variants.
-      this.debugGeneral(`[ReolinkBaichuanApi] subscribeEvents rejected (${a.label}) responseCode=${frame.header.responseCode}`);
+      (this.logger.debug ?? this.logger.log).call(this.logger, `[ReolinkBaichuanApi] subscribeEvents rejected (${a.label}) responseCode=${frame.header.responseCode}`);
     }
 
     this.client.subscribed = false;
@@ -5350,7 +4998,8 @@ ${xmlDateTimePayload("endTime", end)}
       if (frame.header.responseCode === 200) {
         okCount++;
       } else {
-        this.debugGeneral(
+        (this.logger.debug ?? this.logger.log).call(
+          this.logger,
           `[ReolinkBaichuanApi] subscribeToAllEvents rejected (channel=${channel}) responseCode=${frame.header.responseCode}`,
         );
       }
@@ -5455,12 +5104,19 @@ ${xmlDateTimePayload("endTime", end)}
               : String(error);
 
           if (!msg.includes("not supported") && !msg.includes("unsupported")) {
-            this.debugGeneral("[ReolinkBaichuanApi] getAiState failed; disabling AI polling", error);
+            (this.logger.debug ?? this.logger.log)?.call(
+              this.logger,
+              "[ReolinkBaichuanApi] getAiState failed; disabling AI polling",
+              error,
+            );
           }
 
           if (!this.aiStatePollingDisabledLogged) {
             this.aiStatePollingDisabledLogged = true;
-            this.debugGeneral("[ReolinkBaichuanApi] AI polling disabled after getAiState failure", error);
+            this.logger.debug?.(
+              "[ReolinkBaichuanApi] AI polling disabled after getAiState failure",
+              error,
+            );
           }
         }
       }
@@ -5524,7 +5180,7 @@ ${xmlDateTimePayload("endTime", end)}
       } catch (e) {
         // Never allow polling errors to crash callers.
         const msg = formatErrorForLog(e);
-        this.debugGeneral(`[ReolinkBaichuanApi] state polling tick failed${formatClientIoForLog(this)}: ${msg}`);
+        this.logger.debug?.(`[ReolinkBaichuanApi] state polling tick failed${formatClientIoForLog(this)}: ${msg}`);
       }
     }, 5000);
   }
@@ -8161,7 +7817,14 @@ ${xmlDateTimePayload("endTime", end)}
     };
 
     const logDebug = (msg: string, data?: unknown): void => {
-      this.debugGeneral(msg, data);
+      const l: any = this.logger as any;
+      if (typeof l?.debug === "function") {
+        l.debug(msg, data);
+        return;
+      }
+      if (typeof l?.log === "function") {
+        l.log(msg, data);
+      }
     };
 
     const wantWide = lensVariant === "default";

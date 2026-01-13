@@ -234,10 +234,6 @@ export class BaichuanClient extends EventEmitter<{
   // Tracks whether THIS client currently contributes to the global streaming registry.
   private contributesToGlobalStreamingRegistry = false;
 
-  // Once closed, this client should not be reused.
-  // This prevents implicit reconnects from in-flight operations after shutdown.
-  private disposed = false;
-
   // Throttled per-stream frame tracing (rx cmd_id=3 stream frames can be extremely chatty).
   private streamTraceStats = new Map<number, { lastLogMs: number; frames: number }>();
 
@@ -262,40 +258,6 @@ export class BaichuanClient extends EventEmitter<{
     this.logger = options.logger ?? console;
     this.debugCfg = normalizeDebugOptions(options.debugOptions);
     // this.logger.log("BaichuanClient constructor", { options, dgfg: this.debugCfg });
-  }
-
-  private handleSocketError(err: unknown): void {
-    const e = err instanceof Error ? err : new Error(typeof err === "string" ? err : JSON.stringify(err));
-    const code = (e as any)?.code as string | undefined;
-    const msg = e?.message ?? "";
-
-    const isClosing = this.socketClosed || this.pendingCloseInfo != null;
-    const isExpectedDuringClose =
-      isClosing &&
-      (code === "ECONNRESET" || code === "EPIPE" || msg.includes("ECONNRESET") || msg.includes("EPIPE"));
-
-    if (isExpectedDuringClose) {
-      this.logDebug("socket_error_ignored", { code, message: msg });
-      return;
-    }
-
-    if (this.listenerCount("error") > 0) {
-      this.emit("error", e);
-      return;
-    }
-
-    const l: any = this.logger as any;
-    if (typeof l.error === "function") {
-      l.error("[BaichuanClient] socket error (no listeners)", e);
-      return;
-    }
-    // Fallback: do not throw.
-    try {
-      // eslint-disable-next-line no-console
-      console.error("[BaichuanClient] socket error (no listeners)", e);
-    } catch {
-      // ignore
-    }
   }
 
   private newSocketSessionId(transport: "tcp" | "udp"): string {
@@ -772,7 +734,6 @@ export class BaichuanClient extends EventEmitter<{
   }
 
   async connect(): Promise<void> {
-    if (this.disposed) throw new Error("BaichuanClient is closed");
     const desired = this.opts.transport ?? "tcp";
     if (desired === "tcp") {
       await this.connectTcp();
@@ -906,7 +867,7 @@ export class BaichuanClient extends EventEmitter<{
         });
       }
     });
-    sock.on("error", (err) => this.handleSocketError(err));
+    sock.on("error", (err) => this.emit("error", err));
 
     await new Promise<void>((resolve, reject) => {
       sock.once("connect", () => resolve());
@@ -1062,7 +1023,7 @@ export class BaichuanClient extends EventEmitter<{
           this.recomputeGlobalStreamingContribution();
         }
       }
-      this.handleSocketError(err);
+      this.emit("error", err);
     });
 
     // Forward BcUdpStream debug events
@@ -1084,9 +1045,6 @@ export class BaichuanClient extends EventEmitter<{
   }
 
   async close(options?: { reason?: string }): Promise<void> {
-    // Mark disposed early to prevent in-flight operations from reconnecting during shutdown.
-    this.disposed = true;
-
     const hasSocket = Boolean((this.tcpSocket && !this.tcpSocket.destroyed) || this.udpSocket);
     if (hasSocket) {
       this.pendingCloseInfo = {

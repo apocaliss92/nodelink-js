@@ -1,6 +1,5 @@
 import type { BaichuanClientOptions } from "../client/BaichuanClient";
-import type { DebugConfig, Logger } from "../debug/DebugConfig";
-import { normalizeDebugOptions } from "../debug/DebugConfig";
+import type { Logger } from "../debug/DebugConfig";
 import { DUAL_LENS_MODELS, isDualLenseModel, ReolinkBaichuanApi } from "./baichuan/ReolinkBaichuanApi";
 import { discoverViaUdpBroadcast, discoverViaUdpDirect } from "./discovery";
 import type { ReolinkDeviceInfo } from "./types";
@@ -74,7 +73,7 @@ async function resolveHostToIp(host: string): Promise<string | undefined> {
   }
 }
 
-async function discoverUidForHost(host: string, logger?: Logger, debugConfig?: DebugConfig): Promise<string | undefined> {
+async function discoverUidForHost(host: string, logger?: Logger): Promise<string | undefined> {
   try {
     const ip = await resolveHostToIp(host);
     const directTarget = ip ?? host;
@@ -84,7 +83,6 @@ async function discoverUidForHost(host: string, logger?: Logger, debugConfig?: D
       const directDevices = await discoverViaUdpDirect(directTarget, {
         enableUdpDiscovery: true,
         udpBroadcastTimeoutMs: 1200,
-        ...(debugConfig ? { debugConfig } : {}),
         ...(logger ? { logger } : {}),
       });
       const directMatch = directDevices.find((d) => d.host === directTarget);
@@ -101,7 +99,6 @@ async function discoverUidForHost(host: string, logger?: Logger, debugConfig?: D
     const options = {
       enableUdpDiscovery: true,
       udpBroadcastTimeoutMs: 1500,
-      ...(debugConfig ? { debugConfig } : {}),
       ...(logger ? { logger } : {}),
     };
     const devices = await discoverViaUdpBroadcast(options);
@@ -236,7 +233,6 @@ function attachErrorHandler(api: ReolinkBaichuanApi, transport: BaichuanTranspor
  */
 export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<AutoDetectResult> {
   const { host, uid, logger } = inputs;
-  const discoveryDebugConfig = inputs.debugOptions ? normalizeDebugOptions(inputs.debugOptions) : undefined;
 
   // Best-effort: discover UID if not provided (useful for BCUDP/battery cams).
   // This is cheap and non-invasive (UDP broadcast).
@@ -342,7 +338,7 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
     let normalizedUid = effectiveUid;
     if (!normalizedUid) {
       logger?.log?.(`[AutoDetect] UID not provided; attempting UDP broadcast discovery for UID...`);
-      const discovered = await discoverUidForHost(host, logger, discoveryDebugConfig);
+      const discovered = await discoverUidForHost(host, logger);
       if (!discovered) {
         throw new Error(
           `TCP connection failed and device likely requires UDP/BCUDP. UID is required for battery cameras (ip=${host}).`

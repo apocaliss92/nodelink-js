@@ -301,20 +301,6 @@ export interface ReolinkEventLogEntry {
 
 export type ReolinkEventReplayStreamType = "mobileStream" | "subStream";
 
-/**
- * Minimal, generator-friendly unit emitted by native Baichuan streams.
- *
- * `data` is an Annex-B access unit (NAL start codes included), suitable for piping
- * into muxers (ffmpeg, mpegts/fmp4) or for raw `video/h264` / `video/h265` streaming.
- */
-export interface ReolinkAnnexBAccessUnit {
-  data: Buffer;
-  videoType: "H264" | "H265";
-  isKeyframe: boolean;
-  microseconds: number;
-  time?: number;
-}
-
 export interface TwoWayAudioConfig {
   channel: number;
   enabled: boolean;

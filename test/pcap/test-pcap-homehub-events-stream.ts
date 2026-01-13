@@ -48,47 +48,6 @@ type XmlCall = {
   xml: string;
 };
 
-type TrafficWindow = {
-  windowMs: number;
-  bytes: number;
-  packets: number;
-  firstTsMs: number | null;
-  lastTsMs: number | null;
-};
-
-function buildTrafficWindow(segments: TcpSegment[], windowMs: number): TrafficWindow {
-  if (segments.length === 0) {
-    return { windowMs, bytes: 0, packets: 0, firstTsMs: null, lastTsMs: null };
-  }
-
-  const sorted = [...segments].sort((a, b) => a.tsMs - b.tsMs);
-  const lastTsMs = sorted[sorted.length - 1]!.tsMs;
-  const startTsMs = lastTsMs - windowMs;
-  let bytes = 0;
-  let packets = 0;
-
-  for (const s of sorted) {
-    if (s.tsMs < startTsMs) continue;
-    bytes += s.payload.length;
-    packets += 1;
-  }
-
-  return {
-    windowMs,
-    bytes,
-    packets,
-    firstTsMs: sorted[0]!.tsMs,
-    lastTsMs,
-  };
-}
-
-function topNFromCountMap(m: Map<number, number>, n: number): Array<{ key: number; count: number }> {
-  return [...m.entries()]
-    .map(([key, count]) => ({ key, count }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, n);
-}
-
 function readU16(buf: Buffer, off: number, endian: Endian): number {
   return endian === "le" ? buf.readUInt16LE(off) : buf.readUInt16BE(off);
 }
@@ -235,15 +194,8 @@ function main(): void {
 
   const tcpPortPairs = new Map<string, number>();
 
-  let captureFirstTsMs: number | undefined;
-  let captureLastTsMs: number | undefined;
-
   function ingestTcpPayload(srcIp: string, srcPort: number, dstIp: string, dstPort: number, seq: number, tsMs: number, payload: Buffer) {
     if (payload.length === 0) return;
-
-    captureFirstTsMs = captureFirstTsMs === undefined ? tsMs : Math.min(captureFirstTsMs, tsMs);
-    captureLastTsMs = captureLastTsMs === undefined ? tsMs : Math.max(captureLastTsMs, tsMs);
-
     const dirKey = `${srcIp}:${srcPort} > ${dstIp}:${dstPort}`;
     if (!segmentsByDir.has(dirKey)) segmentsByDir.set(dirKey, []);
     segmentsByDir.get(dirKey)!.push({ seq, tsMs, payload });
@@ -357,45 +309,6 @@ function main(): void {
     if (frames.length > 0) baichuanDirs.push({ dirKey, frames, gaps });
     else nonBaichuanDirs.push({ dirKey, data });
   }
-
-  // Summarize Baichuan cmdIds (includes frames with no XML, e.g. ping keepalive).
-  const baichuanCmdStats = baichuanDirs.map((d) => {
-    const cmdCounts = new Map<number, number>();
-    const msgIdCounts = new Map<number, number>();
-    let ping93 = 0;
-    for (const f of d.frames) {
-      const cmdId = Number(f.header?.cmdId ?? -1);
-      const msgId = Number(f.header?.msgId ?? -1);
-      if (!Number.isFinite(cmdId) || cmdId < 0) continue;
-      cmdCounts.set(cmdId, (cmdCounts.get(cmdId) ?? 0) + 1);
-      if (cmdId === 93) ping93 += 1;
-      if (Number.isFinite(msgId) && msgId >= 0) msgIdCounts.set(msgId, (msgIdCounts.get(msgId) ?? 0) + 1);
-    }
-
-    return {
-      dirKey: d.dirKey,
-      totalFrames: d.frames.length,
-      ping93,
-      topCmdIds: topNFromCountMap(cmdCounts, 20),
-      topMsgIds: topNFromCountMap(msgIdCounts, 20),
-    };
-  });
-
-  // Traffic windows: helps spot if the client keeps sending packets towards the end.
-  const trafficWindows = dirsSorted.slice(0, 20).map((d) => {
-    const segs = segmentsByDir.get(d.dirKey) ?? [];
-    return {
-      dirKey: d.dirKey,
-      payloadBytes: d.payloadBytes,
-      packets: d.packets,
-      last1s: buildTrafficWindow(segs, 1_000),
-      last2s: buildTrafficWindow(segs, 2_000),
-      last5s: buildTrafficWindow(segs, 5_000),
-      last10s: buildTrafficWindow(segs, 10_000),
-      last30s: buildTrafficWindow(segs, 30_000),
-      last60s: buildTrafficWindow(segs, 60_000),
-    };
-  });
 
   // Guess PC/HUB by looking at a Baichuan stream: server side usually uses port 9000.
   let hubIp: string | undefined;
@@ -522,17 +435,10 @@ function main(): void {
     pcapPath,
     guessed: { hubIp, pcIp, baichuanPort },
     passwordAvailable: Boolean(password),
-    capture: {
-      firstTsMs: captureFirstTsMs ?? null,
-      lastTsMs: captureLastTsMs ?? null,
-      durationMs: captureFirstTsMs !== undefined && captureLastTsMs !== undefined ? Math.max(0, captureLastTsMs - captureFirstTsMs) : null,
-    },
     nonceDetected: nonce ?? null,
     decryption: sessionEnc.kind === "aes" ? "aes" : "bc/plaintext-only",
     directionsTop: dirsSorted.slice(0, 20),
     baichuanStreams: baichuanDirs.map((d) => ({ dirKey: d.dirKey, frames: d.frames.length, gaps: d.gaps, bytes: bytesByDir.get(d.dirKey) ?? 0 })),
-    baichuanCmdStats,
-    trafficWindows,
     xmlCalls: dedup.map((c) => ({ ...c, xml: c.xml.length > 20000 ? `${c.xml.slice(0, 20000)}...` : c.xml })),
     urls: {
       fromXml: [...urlsFromXml],
@@ -550,14 +456,8 @@ function main(): void {
   console.log(JSON.stringify({
     pcapPath,
     guessed: { hubIp, pcIp, baichuanPort },
-    capture: report.capture,
     nonceDetected: nonce ?? null,
     decryption: report.decryption,
-    baichuan: {
-      streams: report.baichuanStreams,
-      ping93ByDir: report.baichuanCmdStats.map((s) => ({ dirKey: s.dirKey, ping93: s.ping93, totalFrames: s.totalFrames })),
-      topCmdIdsByDir: report.baichuanCmdStats.map((s) => ({ dirKey: s.dirKey, topCmdIds: s.topCmdIds.slice(0, 10) })),
-    },
     xmlCalls: { total: dedup.length, uniqueCmdIds, uniqueRootTags: uniqueRoots.slice(0, 50) },
     urls: {
       fromXml: [...urlsFromXml].slice(0, 50),

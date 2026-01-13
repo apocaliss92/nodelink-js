@@ -27,7 +27,6 @@ import { config } from "../env.js";
 
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
 
 function envBool(v: string | undefined): boolean {
   return /^(1|true|yes)$/i.test((v ?? "").trim());
@@ -41,61 +40,6 @@ function parseIsoDateOrUndefined(v: string | undefined): Date | undefined {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function sanitizeFilenamePart(v: string): string {
-  return v.replaceAll(/[^a-zA-Z0-9._-]+/g, "-").replaceAll(/-+/g, "-").replaceAll(/^-|-$/g, "");
-}
-
-function resolveSavePath(baseDir: string, requested: string | undefined, filename: string): string | undefined {
-  const v = (requested ?? "").trim();
-  if (!v) return undefined;
-  const abs = path.isAbsolute(v) ? v : path.resolve(baseDir, v);
-
-  try {
-    const st = fs.existsSync(abs) ? fs.statSync(abs) : undefined;
-    if (st?.isDirectory()) return path.resolve(abs, filename);
-  } catch {
-    // ignore
-  }
-
-  // If it ends with a path separator, treat as directory.
-  if (abs.endsWith(path.sep)) return path.resolve(abs, filename);
-  return abs;
-}
-
-async function saveRtspToFile(props: { url: string; outPath: string; seconds: number; logger: Console }): Promise<void> {
-  const { url, outPath, seconds, logger } = props;
-
-  fs.mkdirSync(path.dirname(outPath), { recursive: true });
-
-  const args = [
-    "-hide_banner",
-    "-loglevel",
-    "error",
-    "-rtsp_transport",
-    "tcp",
-    "-i",
-    url,
-    "-t",
-    String(Math.max(1, Math.floor(seconds))),
-    "-c",
-    "copy",
-    "-y",
-    outPath,
-  ];
-
-  logger.log(`[Save] ffmpeg ${args.map((a) => JSON.stringify(a)).join(" ")}`);
-
-  await new Promise<void>((resolve, reject) => {
-    const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
-    proc.stderr.on("data", (d) => process.stderr.write(d));
-    proc.on("error", reject);
-    proc.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`ffmpeg exited with code ${code}`));
-    });
-  });
 }
 
 function normalizeDetectionType(alarmType: string | null | undefined): string | null {
@@ -150,11 +94,6 @@ async function main(): Promise<void> {
 
   const keepAliveSec = Math.max(1, Number.parseInt((process.env.EVENTLOG_KEEPALIVE_SEC ?? "60").trim(), 10) || 60);
 
-  const saveRaw = (process.env.EVENTLOG_SAVE_PATH ?? "").trim();
-  const saveSecondsRaw = (process.env.EVENTLOG_SAVE_SECONDS ?? "").trim();
-  const saveSeconds = saveSecondsRaw ? Math.max(1, Number.parseInt(saveSecondsRaw, 10) || 0) : undefined;
-  const saveFormat = ((process.env.EVENTLOG_SAVE_FORMAT ?? "mkv").trim() || "mkv").toLowerCase();
-
   const channelIdRaw = (process.env.EVENTLOG_CHANNEL_ID ?? "").trim();
   const channelIdFilter = channelIdRaw ? Number.parseInt(channelIdRaw, 10) : undefined;
   const requireHasRecFileRaw = (process.env.EVENTLOG_REQUIRE_RECFILE ?? "").trim().toLowerCase();
@@ -172,8 +111,7 @@ async function main(): Promise<void> {
     uid,
     logger: {
       log: console.log,
-      info: console.info,
-      debug: console.debug,
+      debug: undefined,
       warn: console.warn,
       error: console.error,
     },
@@ -266,30 +204,10 @@ async function main(): Promise<void> {
 
     console.log(`\nRTSP URL (${streamType}): ${url}`);
     console.log(`Try: vlc "${url}"`);
-
-    const chosenDurSec = Math.max(1, Math.round((chosen.endTime.getTime() - chosen.startTime.getTime()) / 1000));
-    const finalSaveSeconds = saveSeconds ?? chosenDurSec;
-
-    const outDir2 = path.resolve(process.cwd(), "test/nvr/exports");
-    const stamp = `${sanitizeFilenamePart(chosen.uid)}_ch${String(chosen.channelId ?? "x")}_${sanitizeFilenamePart(
-      chosen.startTime.toISOString(),
-    )}`;
-    const defaultFilename = `eventlog-${stamp}.${saveFormat === "mp4" ? "mp4" : "mkv"}`;
-    const resolvedSavePath = resolveSavePath(process.cwd(), saveRaw || undefined, defaultFilename);
-
-    if (resolvedSavePath) {
-      console.log(`\n=== SAVING EVENT TO FILE ===`);
-      console.log(`path: ${resolvedSavePath}`);
-      console.log(`seconds: ${finalSaveSeconds}`);
-      await saveRtspToFile({ url, outPath: resolvedSavePath, seconds: finalSaveSeconds, logger: console });
-      console.log(`[Save] done: ${resolvedSavePath}`);
-      await stop();
-      console.log("Stopped RTSP server.");
-      return;
-    }
-
     console.log(`Keeping server alive for ${keepAliveSec}s...`);
+
     await sleep(keepAliveSec * 1000);
+
     await stop();
     console.log("Stopped RTSP server.");
   } finally {

@@ -108,7 +108,6 @@
     "test:nvr:alarm-events": "npm run test:build && node dist/test/nvr/test-nvr-alarm-events-baichuan.js",
     "test:nvr:hub-events-list": "npm run test:build && node dist/test/nvr/test-nvr-hub-events-list-flow.js",
     "test:nvr:eventlog-playback": "npm run test:build && node dist/test/nvr/test-nvr-eventlog-playback-rtsp.js",
-    "test:nvr:eventlog-http-range": "npm run test:build && node dist/test/nvr/test-nvr-eventlog-playback-http-range.js",
     "test:nvr:matrix": "npm run test:build && node dist/test/nvr/test-nvr-matrix.js",
     "test:nvr:devices-info": "npm run test:build && node dist/test/nvr/test-baichuan-devices-info.js",
     "test:nvr:telephoto-native": "npm run test:build && node dist/test/nvr/test-nvr-telephoto-native-stream.js",

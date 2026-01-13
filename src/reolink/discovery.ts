@@ -1,7 +1,7 @@
 import dgram from "node:dgram";
 import { networkInterfaces } from "node:os";
 import { ReolinkCgiApi } from "./cgi/ReolinkCgiApi";
-import type { DebugConfig, Logger } from "../debug/DebugConfig";
+import type { Logger } from "../debug/DebugConfig";
 import { BCUDP_DISCOVERY_PORT_LOCAL_ANY, BCUDP_DISCOVERY_PORT_LOCAL_UID } from "../bcudp/constants";
 import { decodeBcUdpPacket, encodeDiscoveryPacket } from "../bcudp/packets";
 import { buildC2dS, parseD2cCr, parseD2cDisc } from "../bcudp/xml";
@@ -37,7 +37,6 @@ export async function discoverViaUdpDirect(host: string, options: DiscoveryOptio
   if (!options.enableUdpDiscovery) return [];
 
   const logger = options.logger;
-  const debugEnabled = options.debugConfig?.general === true;
   const timeoutMs = options.udpBroadcastTimeoutMs ?? 1500;
   const discovered: DiscoveredDevice[] = [];
 
@@ -105,9 +104,7 @@ export async function discoverViaUdpDirect(host: string, options: DiscoveryOptio
           const packet = encodeDiscoveryPacket(tid, xml);
           socket.send(packet, port, targetHost, (err) => {
             if (err) {
-              if (debugEnabled) {
-                logger?.debug?.(`[Discovery] Failed to send UDP direct to ${targetHost}:${port}: ${err.message}`);
-              }
+              logger?.debug?.(`[Discovery] Failed to send UDP direct to ${targetHost}:${port}: ${err.message}`);
             }
           });
         } catch {
@@ -151,8 +148,6 @@ export type DiscoveryOptions = {
   maxConcurrentProbes?: number;
   /** Logger instance for debug output */
   logger?: Logger;
-  /** Normalized debug configuration used to gate debug logs (e.g., `general`). */
-  debugConfig?: DebugConfig;
   /** Whether to enable UDP broadcast discovery (default: true) */
   enableUdpDiscovery?: boolean;
   /** Whether to enable HTTP port scanning (default: true) */
@@ -433,7 +428,6 @@ export async function discoverViaUdpBroadcast(options: DiscoveryOptions): Promis
   if (!options.enableUdpDiscovery) return [];
 
   const logger = options.logger;
-  const debugEnabled = options.debugConfig?.general === true;
   const timeoutMs = options.udpBroadcastTimeoutMs ?? 5000;
   const discovered: DiscoveredDevice[] = [];
 
@@ -503,11 +497,9 @@ export async function discoverViaUdpBroadcast(options: DiscoveryOptions): Promis
             }
           } catch (err) {
             // Ignore parse errors
-            if (debugEnabled) {
-              logger?.debug?.(
-                `[Discovery] Failed to parse UDP discovery response from ${rinfo.address}:${rinfo.port}: ${err instanceof Error ? err.message : String(err)}`,
-              );
-            }
+            logger?.debug?.(
+              `[Discovery] Failed to parse UDP discovery response from ${rinfo.address}:${rinfo.port}: ${err instanceof Error ? err.message : String(err)}`,
+            );
           }
         }
       } catch (err) {
