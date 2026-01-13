@@ -250,6 +250,8 @@ export class BaichuanClient extends EventEmitter<{
     number,
     {
       motionActive: boolean;
+      visitorActive: boolean;
+      dayNightActive: boolean;
       aiTypeToken: string; // lowercased token, or "none"
       aiFlag: boolean;
       aiTimeStamp: number | undefined; // numeric timeStamp from event payload (often 0/undefined when idle)
@@ -1451,7 +1453,18 @@ export class BaichuanClient extends EventEmitter<{
         // IMPORTANT: Do not infer motion solely from AItype when status is "none"; some firmwares
         // report the configured AI type even when there is no detection.
         const statusLower = status.toLowerCase();
-        const statusIndicatesMotion = statusLower.length > 0 && statusLower !== "none";
+        const statusTokens = statusLower
+          .split(",")
+          .map((t) => t.trim())
+          .filter((t) => t.length > 0);
+
+        const visitorActive = statusTokens.includes("visitor");
+        const dayNightActive = statusTokens.includes("dn") || statusTokens.includes("daynight");
+
+        // Default motion heuristic: status != none, excluding known non-motion flags.
+        const statusIndicatesMotion = statusTokens.some(
+          (t) => t !== "none" && t !== "visitor" && t !== "dn" && t !== "daynight"
+        );
         const aiTypeTokenRaw = aiTypeRaw
           ? aiTypeRaw
             .split(",")
@@ -1463,7 +1476,14 @@ export class BaichuanClient extends EventEmitter<{
         const aiTypeToken = (aiTypeTokenRaw ?? (aiFlag ? "other" : "none")).toLowerCase();
 
         const prev = this.alarmEventState.get(channel);
-        const curr = { motionActive: statusIndicatesMotion, aiTypeToken, aiFlag, aiTimeStamp: alarmTimeStamp };
+        const curr = {
+          motionActive: statusIndicatesMotion,
+          visitorActive,
+          dayNightActive,
+          aiTypeToken,
+          aiFlag,
+          aiTimeStamp: alarmTimeStamp,
+        };
 
         // First observation: initialize state, don't emit (avoids spurious startup detections).
         if (!prev) {
@@ -1499,9 +1519,9 @@ export class BaichuanClient extends EventEmitter<{
             });
           }
 
-          // Doorbell/visitor and day/night are discrete flags; keep emitting even on first observation.
-          if (statusUpper.includes("VIS")) out.push({ channel, type: "visitor", timestamp: now });
-          if (statusUpper.includes("DN")) out.push({ channel, type: "daynight", timestamp: now });
+          // Doorbell/visitor and day/night are discrete flags.
+          if (curr.visitorActive) out.push({ channel, type: "visitor", timestamp: now });
+          if (curr.dayNightActive) out.push({ channel, type: "daynight", timestamp: now });
 
           continue;
         }
@@ -1556,20 +1576,17 @@ export class BaichuanClient extends EventEmitter<{
           });
         }
 
-        // Update state after processing.
-        this.alarmEventState.set(channel, curr);
-
-        // Doorbell/visitor notification.
-        // These can be noisy; keep legacy behavior (emit whenever flag is present).
-
-        // Doorbell/visitor notification.
-        if (statusUpper.includes("VIS")) {
+        // Doorbell/visitor and day/night: emit only on rising edge.
+        if (!prev.visitorActive && curr.visitorActive) {
           out.push({ channel, type: "visitor", timestamp: now });
         }
 
-        if (statusUpper.includes("DN")) {
+        if (!prev.dayNightActive && curr.dayNightActive) {
           out.push({ channel, type: "daynight", timestamp: now });
         }
+
+        // Update state after processing.
+        this.alarmEventState.set(channel, curr);
       }
       return out;
     }
@@ -1590,7 +1607,16 @@ export class BaichuanClient extends EventEmitter<{
     const out: ReolinkEvent[] = [];
 
     const statusLower = status.toLowerCase();
-    const statusIndicatesMotion = statusLower.length > 0 && statusLower !== "none";
+    const statusTokens = statusLower
+      .split(",")
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+
+    const visitorActive = statusTokens.includes("visitor");
+    const dayNightActive = statusTokens.includes("dn") || statusTokens.includes("daynight");
+    const statusIndicatesMotion = statusTokens.some(
+      (t) => t !== "none" && t !== "visitor" && t !== "dn" && t !== "daynight"
+    );
 
     const aiTypeTokenRaw = aiTypeRaw
       ? aiTypeRaw
@@ -1602,7 +1628,14 @@ export class BaichuanClient extends EventEmitter<{
     const aiTypeToken = (aiTypeTokenRaw ?? (aiFlag ? "other" : "none")).toLowerCase();
 
     const prev = this.alarmEventState.get(fallbackChannel);
-    const curr = { motionActive: statusIndicatesMotion, aiTypeToken, aiFlag, aiTimeStamp: alarmTimeStamp };
+    const curr = {
+      motionActive: statusIndicatesMotion,
+      visitorActive,
+      dayNightActive,
+      aiTypeToken,
+      aiFlag,
+      aiTimeStamp: alarmTimeStamp,
+    };
 
     if (!prev) {
       this.alarmEventState.set(fallbackChannel, curr);
@@ -1635,8 +1668,8 @@ export class BaichuanClient extends EventEmitter<{
         });
       }
 
-      if (statusUpper.includes("VIS")) out.push({ channel: fallbackChannel, type: "visitor", timestamp: now });
-      if (statusUpper.includes("DN")) out.push({ channel: fallbackChannel, type: "daynight", timestamp: now });
+      if (curr.visitorActive) out.push({ channel: fallbackChannel, type: "visitor", timestamp: now });
+      if (curr.dayNightActive) out.push({ channel: fallbackChannel, type: "daynight", timestamp: now });
 
       return out;
     }
@@ -1685,10 +1718,10 @@ export class BaichuanClient extends EventEmitter<{
       });
     }
 
-    this.alarmEventState.set(fallbackChannel, curr);
+    if (!prev.visitorActive && curr.visitorActive) out.push({ channel: fallbackChannel, type: "visitor", timestamp: now });
+    if (!prev.dayNightActive && curr.dayNightActive) out.push({ channel: fallbackChannel, type: "daynight", timestamp: now });
 
-    if (statusUpper.includes("VIS")) out.push({ channel: fallbackChannel, type: "visitor", timestamp: now });
-    if (statusUpper.includes("DN")) out.push({ channel: fallbackChannel, type: "daynight", timestamp: now });
+    this.alarmEventState.set(fallbackChannel, curr);
 
     return out;
   }
