@@ -2,6 +2,14 @@ export type NvrAlarmEventIdV1 = {
   kind: "nvrAlarm";
   /** Channel number (0-based). */
   channel: number;
+  /**
+  * Optional legacy field.
+  *
+  * IMPORTANT: Do not assume this is a stable CoverPreview (cmd_id=298) header channelId.
+  * On NVR/HomeHub firmwares observed via PCAP, the CoverPreview header channelId is session-scoped
+  * and changes per request; persisting it in an event id can cause request rejections.
+   */
+  channelId?: number;
   /** Recording identifier as returned by the device (often a path/filename). */
   fileName: string;
   /** Event start time in milliseconds since epoch (derived from filename or response). */
@@ -35,6 +43,7 @@ export function encodeReolinkEventIdV1(obj: ReolinkEventIdV1): string {
   if (!obj || typeof obj !== "object") throw new Error("encodeReolinkEventIdV1: obj is required");
   if (obj.kind !== "nvrAlarm") throw new Error(`encodeReolinkEventIdV1: unsupported kind ${(obj as any)?.kind}`);
   if (!Number.isFinite(obj.channel)) throw new Error("encodeReolinkEventIdV1: channel must be a number");
+  if (obj.channelId != null && !Number.isFinite(obj.channelId)) throw new Error("encodeReolinkEventIdV1: channelId must be a number");
   if (!obj.fileName || typeof obj.fileName !== "string") throw new Error("encodeReolinkEventIdV1: fileName must be a string");
   if (!Number.isFinite(obj.startTimeMs)) throw new Error("encodeReolinkEventIdV1: startTimeMs must be a number");
   if (!Number.isFinite(obj.endTimeMs)) throw new Error("encodeReolinkEventIdV1: endTimeMs must be a number");
@@ -47,6 +56,7 @@ export function encodeReolinkEventIdV1(obj: ReolinkEventIdV1): string {
     st: obj.startTimeMs,
     et: obj.endTimeMs,
   };
+  if (obj.channelId != null) payload.cid = obj.channelId;
   if (obj.uid) payload.uid = obj.uid;
 
   const json = JSON.stringify(payload);
@@ -68,12 +78,15 @@ export function decodeReolinkEventIdV1(eventId: string): ReolinkEventIdV1 {
 
   if (payload?.k !== "nvrAlarm") throw new Error(`decodeReolinkEventIdV1: unsupported kind ${payload?.k}`);
   const channel = Number(payload?.ch);
+  const channelIdRaw = payload?.cid;
+  const channelId = channelIdRaw == null ? undefined : Number(channelIdRaw);
   const fileName = typeof payload?.fn === "string" ? payload.fn : "";
   const startTimeMs = Number(payload?.st);
   const endTimeMs = Number(payload?.et);
   const uid = typeof payload?.uid === "string" ? payload.uid : undefined;
 
   if (!Number.isFinite(channel)) throw new Error("decodeReolinkEventIdV1: invalid channel");
+  if (channelId !== undefined && !Number.isFinite(channelId)) throw new Error("decodeReolinkEventIdV1: invalid channelId");
   if (!fileName) throw new Error("decodeReolinkEventIdV1: invalid fileName");
   if (!Number.isFinite(startTimeMs)) throw new Error("decodeReolinkEventIdV1: invalid startTimeMs");
   if (!Number.isFinite(endTimeMs)) throw new Error("decodeReolinkEventIdV1: invalid endTimeMs");
@@ -81,6 +94,7 @@ export function decodeReolinkEventIdV1(eventId: string): ReolinkEventIdV1 {
   return {
     kind: "nvrAlarm",
     channel,
+    ...(channelId !== undefined ? { channelId } : {}),
     fileName,
     startTimeMs,
     endTimeMs,

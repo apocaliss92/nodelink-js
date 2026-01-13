@@ -174,6 +174,15 @@ export class BaichuanClient extends EventEmitter<{
     | undefined;
 
   private msgNum = 0;
+  // PCAP-observed: CoverPreview (cmd_id=298) requests use a session-scoped, monotonically increasing
+  // header channelId (distinct from the logical slot channelId in the XML).
+  // PCAP seed (hub_events_list.pcapng): first observed request used channelId=171.
+  // We store the previous value so `nextCoverPreviewHeaderChannelId()` returns 171 on first use.
+  private coverPreviewHeaderChannelId = 170;
+
+  // CoverPreview uses msgNum=0 (PCAP) which makes concurrent cmdId=298 requests hard to demux.
+  // Serialize requests to avoid device-side rejections and client-side frame cross-talk.
+  private coverPreviewLock: Promise<void> = Promise.resolve();
   loggedIn = false; // Public to allow ReolinkBaichuanApi to check login status
   subscribed = false; // Public to allow ReolinkBaichuanApi to check subscription status
 
@@ -1718,6 +1727,26 @@ export class BaichuanClient extends EventEmitter<{
     return this.msgNum;
   }
 
+  private nextCoverPreviewHeaderChannelId(): number {
+    this.coverPreviewHeaderChannelId = (this.coverPreviewHeaderChannelId + 1) & 0xffff;
+    // Avoid 0 which is commonly used in push frames.
+    if (this.coverPreviewHeaderChannelId === 0) this.coverPreviewHeaderChannelId = 1;
+    return this.coverPreviewHeaderChannelId;
+  }
+
+  private async acquireCoverPreviewLock(): Promise<() => void> {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const prev = this.coverPreviewLock;
+    // Ensure the chain continues even if a previous holder failed.
+    this.coverPreviewLock = prev.catch(() => undefined).then(() => gate);
+    await prev;
+    return release;
+  }
+
   /**
    * Atomically allocate the next msgNum.
    *
@@ -2596,6 +2625,8 @@ export class BaichuanClient extends EventEmitter<{
     channel?: number;
     /** Override the header channelId (and encryption channelId) for this request. */
     channelIdOverride?: number;
+    /** Override the header msgNum (PCAP shows msgNum=0 for cmd_id=298). */
+    msgNumOverride?: number;
     payloadXml?: string;
     extensionXml?: string;
     messageClass?: number;
@@ -2608,16 +2639,13 @@ export class BaichuanClient extends EventEmitter<{
     const channel = params.channel ?? this.opts.channel ?? 0;
     const channelId = params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
 
-    const msgNum = this.nextMsgNum();
     const cmdId = params.cmdId;
+    const msgNum = params.msgNumOverride ?? this.nextMsgNum();
 
-    const extXml =
-      params.extensionXml ??
-      (params.channelIdOverride != null
-        ? buildChannelExtensionXml(params.channelIdOverride)
-        : params.channel != null
-          ? buildChannelExtensionXml(channel)
-          : "");
+    const isCoverPreview = cmdId === BC_CMD_ID_COVER_PREVIEW;
+    // PCAP-observed: cmd_id=298 requests use an empty Extension (payloadOffset=0).
+    // Keep the ability to explicitly override it if needed for other firmwares.
+    const extXml = params.extensionXml ?? (isCoverPreview ? "" : params.channel == null ? "" : buildChannelExtensionXml(channel));
     const payloadXml = params.payloadXml ?? "";
 
     const messageClass = params.messageClass ?? BC_CLASS_MODERN_24;
@@ -2643,7 +2671,10 @@ export class BaichuanClient extends EventEmitter<{
     const chunks: Buffer[] = [];
     let seenStreamHeader = false;
 
-    return await new Promise<Buffer>((resolve, reject) => {
+    const release = isCoverPreview ? await this.acquireCoverPreviewLock() : undefined;
+
+    try {
+      return await new Promise<Buffer>((resolve, reject) => {
       let timeout: NodeJS.Timeout | undefined;
       let done = false;
 
@@ -2668,10 +2699,16 @@ export class BaichuanClient extends EventEmitter<{
 
       const onFrame = (frame: BaichuanFrame) => {
         if (frame.header.cmdId !== cmdId) return;
+        // Demux by header channelId (PCAP: request/response share the same channelId).
+        if (frame.header.channelId !== channelId) return;
 
         // If the request itself was rejected, fail fast
         if (frame.header.msgNum === msgNum && frame.header.responseCode >= 400) {
-          fail(new Error(`Baichuan CoverPreview request rejected (cmdId=${cmdId} msgNum=${msgNum} responseCode=${frame.header.responseCode})`));
+          fail(
+            new Error(
+              `Baichuan CoverPreview request rejected (cmdId=${cmdId} msgNum=${msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId})`,
+            ),
+          );
           return;
         }
 
@@ -2687,30 +2724,57 @@ export class BaichuanClient extends EventEmitter<{
             }
           }
 
-          const decrypted = this.tryDecryptBinary(frame.payload, frame.header.channelId, enc);
+          const payloadRaw = frame.payload;
+          if (payloadRaw.length === 0) return;
+
+          // PCAP-observed (HomeHub/NVR): the first chunk starts with plaintext stream header "1001".
+          // Subsequent chunks appear encrypted and decrypt to "00dc" frame headers.
+          if (!seenStreamHeader) {
+            const rawMagic = payloadRaw.subarray(0, Math.min(4, payloadRaw.length)).toString("ascii");
+            if (rawMagic === "1001") {
+              seenStreamHeader = true;
+              chunks.push(payloadRaw);
+              return;
+            }
+          }
+
+          const decrypted = this.tryDecryptBinary(payloadRaw, frame.header.channelId, enc);
           if (decrypted.length === 0) return;
 
-          // Skip XML responses
+          // Skip XML responses (reply 1). For binary chunks, payload should not be XML.
           const head = decrypted.subarray(0, Math.min(16, decrypted.length)).toString("utf8");
           const looksLikeXml = head.startsWith("<?xml") || head.trimStart().startsWith("<");
           if (!isBinaryChunk && looksLikeXml) return;
 
-          // For CoverPreview, look for stream header magic "1001"
+          const frameMagic = Buffer.from("00dc", "ascii");
+
+          // For CoverPreview, we want the stream header + the first frame chunk.
+          // If we haven't seen the header yet, only start accumulating once we see
+          // either the header (1001) or an actual frame marker (00dc) in the decrypted data.
           if (!seenStreamHeader) {
-            const streamMagic = decrypted.subarray(0, 4).toString("ascii");
-            if (streamMagic === "1001") {
+            const decMagic = decrypted.subarray(0, Math.min(4, decrypted.length)).toString("ascii");
+            if (decMagic === "1001") {
               seenStreamHeader = true;
               chunks.push(decrypted);
-            } else if (isBinaryChunk) {
-              // Binary chunk but no stream header yet - might be continuation
-              chunks.push(decrypted);
+            } else {
+              const idx00dc = decrypted.indexOf(frameMagic);
+              if (idx00dc !== -1 && idx00dc < 64) {
+                chunks.push(decrypted.subarray(idx00dc));
+              } else {
+                // Still no recognizable data; ignore.
+                return;
+              }
             }
           } else {
-            chunks.push(decrypted);
+            // Once in-stream, append decrypted chunks.
+            const idx00dc = decrypted.indexOf(frameMagic);
+            if (idx00dc !== -1 && idx00dc < 64) chunks.push(decrypted.subarray(idx00dc));
+            else chunks.push(decrypted);
           }
 
-          // CoverPreview ends when responseCode is 201 (end of stream)
-          if (frame.header.responseCode === 201) {
+          // CoverPreview ends when responseCode signals end-of-stream.
+          // Observed values: 201 (some firmwares), 300 (HomeHub/NVR).
+          if (frame.header.responseCode === 201 || frame.header.responseCode === 300) {
             const combined = Buffer.concat(chunks);
             finish(combined);
           }
@@ -2739,12 +2803,69 @@ export class BaichuanClient extends EventEmitter<{
       } catch (e) {
         fail(e);
       }
-    });
+      });
+    } finally {
+      release?.();
+    }
   }
 
   static buildCoverPreviewXml(params: { channelId: number; time: Date; snapType: CoverPreviewSnapType }): string {
-    const endTime = new Date(params.time.getTime() + 10_000);
-    return `<?xml version="1.0" encoding="UTF-8" ?>\n<body>\n<CoverPreview version="1.1">\n<channelId>${params.channelId}</channelId>\n<streamType>${params.snapType}</streamType>\n<startTime>\n<year>${params.time.getFullYear()}</year>\n<month>${params.time.getMonth() + 1}</month>\n<day>${params.time.getDate()}</day>\n<hour>${params.time.getHours()}</hour>\n<minute>${params.time.getMinutes()}</minute>\n<second>${params.time.getSeconds()}</second>\n</startTime>\n<endTime>\n<year>${endTime.getFullYear()}</year>\n<month>${endTime.getMonth() + 1}</month>\n<day>${endTime.getDate()}</day>\n<hour>${endTime.getHours()}</hour>\n<minute>${endTime.getMinutes()}</minute>\n<second>${endTime.getSeconds()}</second>\n</endTime>\n</CoverPreview>\n</body>`;
+    // Back-compat wrapper used by older tests/tools.
+    return BaichuanClient.buildCoverPreviewXmlPcap({
+      channelId: params.channelId,
+      startTime: params.time,
+      snapType: params.snapType,
+    });
+  }
+
+  static buildCoverPreviewXmlPcap(params: {
+    /** Logical channel slot (PCAP shows this differs from header channelId). */
+    channelId: number;
+    startTime: Date;
+    /** If omitted, defaults to startTime + 10s. */
+    endTime?: Date;
+    snapType: CoverPreviewSnapType;
+    /** PCAP shows this present for NVR/HomeHub event snapshots. */
+    uid?: string;
+    /** PCAP shows 1 for single-channel requests. */
+    logicChnBitmap?: number;
+    /** PCAP shows 1. */
+    desc?: number;
+    /** PCAP shows [1, 2, 3]. */
+    frameNos?: number[];
+  }): string {
+    const startTime = params.startTime;
+    const endTime = params.endTime ?? new Date(startTime.getTime() + 10_000);
+
+    // PCAP-observed values: mainStream/subStream (NOT main/sub).
+    const streamType = params.snapType === "main" ? "mainStream" : "subStream";
+
+    const uid = (params.uid ?? "").trim();
+    const uidTag = uid ? `<uid>${uid}</uid>\n` : "";
+
+    const logicChnBitmapTag = Number.isFinite(params.logicChnBitmap as number)
+      ? `<logicChnBitmap>${Number(params.logicChnBitmap)}</logicChnBitmap>\n`
+      : "";
+
+    const descTag = Number.isFinite(params.desc as number) ? `<desc>${Number(params.desc)}</desc>\n` : "";
+
+    const frameListTag =
+      Array.isArray(params.frameNos) && params.frameNos.length
+        ? `<frameList>\n${params.frameNos.map((n) => `<frameNo>${Number(n)}</frameNo>\n`).join("")}</frameList>\n`
+        : "";
+
+    return (
+      `<?xml version="1.0" encoding="UTF-8" ?>\n<body>\n<CoverPreview version="1.1">\n` +
+      `<channelId>${params.channelId}</channelId>\n` +
+      uidTag +
+      logicChnBitmapTag +
+      descTag +
+      `<streamType>${streamType}</streamType>\n` +
+      `<startTime>\n<year>${startTime.getFullYear()}</year>\n<month>${startTime.getMonth() + 1}</month>\n<day>${startTime.getDate()}</day>\n<hour>${startTime.getHours()}</hour>\n<minute>${startTime.getMinutes()}</minute>\n<second>${startTime.getSeconds()}</second>\n</startTime>\n` +
+      `<endTime>\n<year>${endTime.getFullYear()}</year>\n<month>${endTime.getMonth() + 1}</month>\n<day>${endTime.getDate()}</day>\n<hour>${endTime.getHours()}</hour>\n<minute>${endTime.getMinutes()}</minute>\n<second>${endTime.getSeconds()}</second>\n</endTime>\n` +
+      frameListTag +
+      `</CoverPreview>\n</body>\n`
+    );
   }
 
   static parseCoverPreviewPayload(payload: Buffer): CoverPreviewSnapshotResult {
@@ -2752,17 +2873,42 @@ export class BaichuanClient extends EventEmitter<{
       throw new Error(`CoverPreview payload too short: ${payload.length} bytes`);
     }
 
-    const streamHeader = payload.subarray(0, 32);
-    const magic = streamHeader.subarray(0, 4).toString("ascii");
-    if (magic !== "1001") {
-      throw new Error(`CoverPreview payload did not start with stream header magic '1001' but with '${magic}'`);
+    const streamMagic = Buffer.from("1001", "ascii");
+
+    // Some devices prepend a small non-stream prefix before the actual stream header.
+    // We still expect a valid 32-byte stream header somewhere in the payload.
+    let streamHeaderStart = payload.indexOf(streamMagic);
+    while (streamHeaderStart !== -1 && payload.length - streamHeaderStart >= 32) {
+      const widthCandidate = payload.readUInt32LE(streamHeaderStart + 8);
+      const heightCandidate = payload.readUInt32LE(streamHeaderStart + 12);
+      if (widthCandidate > 0 && widthCandidate < 10000 && heightCandidate > 0 && heightCandidate < 10000) {
+        break;
+      }
+      streamHeaderStart = payload.indexOf(streamMagic, streamHeaderStart + 1);
     }
 
+    if (streamHeaderStart === -1 || payload.length - streamHeaderStart < 32) {
+      const prefixLen = Math.min(64, payload.length);
+      const prefix = payload.subarray(0, prefixLen);
+      const prefixAscii = prefix
+        .toString("ascii")
+        .replace(/[^\x20-\x7E]/g, ".")
+        .slice(0, 64);
+      const idx00dc = payload.indexOf(Buffer.from("00dc", "ascii"));
+      const idxRIFF = payload.indexOf(Buffer.from("RIFF", "ascii"));
+      const idxAVI = payload.indexOf(Buffer.from("AVI ", "ascii"));
+      const idxJFIF = payload.indexOf(Buffer.from("JFIF", "ascii"));
+      throw new Error(
+        `CoverPreview stream header magic '1001' not found (payloadLength=${payload.length}, prefixHex=${prefix.toString("hex")}, prefixAscii='${prefixAscii}', idx00dc=${idx00dc}, idxRIFF=${idxRIFF}, idxAVI=${idxAVI}, idxJFIF=${idxJFIF})`,
+      );
+    }
+
+    const streamHeader = payload.subarray(streamHeaderStart, streamHeaderStart + 32);
     const width = streamHeader.readUInt32LE(8);
     const height = streamHeader.readUInt32LE(12);
     const frameRate = streamHeader.length > 17 ? streamHeader[17] : 0;
 
-    const frameSearchArea = payload.subarray(32);
+    const frameSearchArea = payload.subarray(streamHeaderStart + 32);
     const frameMagic = Buffer.from("00dc", "ascii");
     const frameMagicIndex = frameSearchArea.indexOf(frameMagic);
 
@@ -2772,7 +2918,7 @@ export class BaichuanClient extends EventEmitter<{
       );
     }
 
-    const idx = 32 + frameMagicIndex;
+    const idx = streamHeaderStart + 32 + frameMagicIndex;
     const frameHeaderStart = idx;
 
     const additionalHeaderLen = payload.readUInt32LE(frameHeaderStart + 12);
@@ -2810,9 +2956,17 @@ export class BaichuanClient extends EventEmitter<{
   /**
    * Fetch a snapshot (raw I-frame) from a past recording using CoverPreview (cmd_id=298).
    *
-   * This variant mirrors the common NVR-style behavior where:
-   * - header channelId is derived from `channel` (1-based),
-   * - XML <channelId> uses `channel` (0-based).
+    * This variant targets NVR-style behavior where the protocol is unfortunately inconsistent
+    * across firmwares.
+    *
+    * Primary attempt:
+    * - header channelId is derived from `channel` (1-based)
+    * - extension XML uses `channel` (0-based)
+    * - payload XML <channelId> uses `channel` (0-based)
+    *
+    * Fallback (some NVR firmwares):
+    * - keep header channelId 1-based
+    * - use 1-based channelId in extension + payload XML
    */
   async getPlaybackSnapshot(params: {
     /** Channel number (0-based) */
@@ -2830,15 +2984,16 @@ export class BaichuanClient extends EventEmitter<{
     const snapType = params.snapType ?? "sub";
     const timeoutMs = params.timeoutMs ?? 30_000;
 
-    const xml = BaichuanClient.buildCoverPreviewXml({ channelId: channel, time: params.time, snapType });
-
+    // Single deterministic request (no retries/fallbacks). For PCAP-exact HomeHub/NVR behavior
+    // prefer getPlaybackSnapshotByChannelId (full Baichuan channelId) upstream.
+    const xml = BaichuanClient.buildCoverPreviewXmlPcap({ channelId: channel, startTime: params.time, snapType });
     const payload = await this.sendBinaryCoverPreview({
       cmdId: BC_CMD_ID_COVER_PREVIEW,
       channel,
       payloadXml: xml,
+      msgNumOverride: 0,
       timeoutMs,
     });
-
     return BaichuanClient.parseCoverPreviewPayload(payload);
   }
 
@@ -2860,13 +3015,76 @@ export class BaichuanClient extends EventEmitter<{
 
     const snapType = params.snapType ?? "sub";
     const timeoutMs = params.timeoutMs ?? 30_000;
-    const xml = BaichuanClient.buildCoverPreviewXml({ channelId: params.channelId, time: params.time, snapType });
+    const xml = BaichuanClient.buildCoverPreviewXmlPcap({ channelId: params.channelId, startTime: params.time, snapType });
 
     const payload = await this.sendBinaryCoverPreview({
       cmdId: BC_CMD_ID_COVER_PREVIEW,
       channelIdOverride: params.channelId,
-      extensionXml: buildChannelExtensionXml(params.channelId),
       payloadXml: xml,
+      msgNumOverride: 0,
+      timeoutMs,
+    });
+
+    return BaichuanClient.parseCoverPreviewPayload(payload);
+  }
+
+  /**
+   * Fetch a snapshot (raw I-frame) from a past recording using CoverPreview (cmd_id=298),
+   * using a PCAP-observed Baichuan header channelId while keeping the XML/extension channel as the
+   * logical slot channel (0-based).
+   */
+  async getPlaybackSnapshotPcapExact(params: {
+    channel: number;
+    headerChannelId?: number;
+    startTime: Date;
+    endTime?: Date;
+    uid?: string;
+    snapType?: CoverPreviewSnapType;
+    timeoutMs?: number;
+  }): Promise<CoverPreviewSnapshotResult> {
+    await this.login();
+
+    const snapType = params.snapType ?? "sub";
+    const timeoutMs = params.timeoutMs ?? 30_000;
+    const channel = params.channel;
+    const headerChannelIdRaw = params.headerChannelId;
+    const headerChannelId =
+      headerChannelIdRaw != null && Number.isFinite(Number(headerChannelIdRaw)) && Number(headerChannelIdRaw) > 0
+        ? Number(headerChannelIdRaw)
+        : this.nextCoverPreviewHeaderChannelId();
+
+    const uid = (params.uid ?? "").trim();
+
+    recordingsTraceLog(
+      this.debugCfg,
+      this.logger,
+      "BaichuanCoverPreview",
+      `tx coverPreview(pcap) headerChannelId=${headerChannelId} logicalChannel=${channel} uid=${uid || "<missing>"} ` +
+        `start=${params.startTime.toISOString()}(${params.startTime.getTime()}) ` +
+        `end=${(params.endTime ?? new Date(params.startTime.getTime() + 10_000)).toISOString()}(${(params.endTime ?? new Date(params.startTime.getTime() + 10_000)).getTime()}) ` +
+        `snapType=${snapType} msgNum=0`,
+    );
+
+    const xml = BaichuanClient.buildCoverPreviewXmlPcap({
+      channelId: channel,
+      startTime: params.startTime,
+      ...(params.endTime ? { endTime: params.endTime } : {}),
+      ...(uid
+        ? {
+            uid,
+            logicChnBitmap: 1,
+            desc: 1,
+            frameNos: [1, 2, 3],
+          }
+        : {}),
+      snapType,
+    });
+    const payload = await this.sendBinaryCoverPreview({
+      cmdId: BC_CMD_ID_COVER_PREVIEW,
+      channel,
+      channelIdOverride: headerChannelId,
+      payloadXml: xml,
+      msgNumOverride: 0,
       timeoutMs,
     });
 
@@ -3053,6 +3271,9 @@ export class BaichuanClient extends EventEmitter<{
           throw new Error(`Baichuan login: unexpected non-XML reply (length: ${replyXml.length}, preview: ${preview})`);
         }
 
+        // Reset CoverPreview header channelId sequence on each successful login.
+        // This matches PCAP-observed session behavior and avoids devices rejecting out-of-range ids.
+        this.coverPreviewHeaderChannelId = 22;
         this.loggedIn = true;
         return;
       } catch (e) {

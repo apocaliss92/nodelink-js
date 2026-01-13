@@ -48,6 +48,17 @@ type XmlCall = {
   xml: string;
 };
 
+type BinaryCall = {
+  dir: "tx" | "rx";
+  tsHintMs?: number;
+  cmdId: number;
+  msgNum: number;
+  channelId: number;
+  responseCode: number;
+  part: "payload_raw" | "payload_dec";
+  bytes: Buffer;
+};
+
 type TrafficWindow = {
   windowMs: number;
   bytes: number;
@@ -167,6 +178,44 @@ function aesDecrypt(buf: Buffer, key: Buffer): Buffer {
   const decipher = createDecipheriv("aes-128-cfb", key, iv);
   decipher.setAutoPadding(false);
   return Buffer.concat([decipher.update(buf), decipher.final()]);
+}
+
+function decryptBody(buf: Buffer, channelId: number, sessionEnc: SessionEnc): Buffer {
+  if (buf.length === 0) return Buffer.alloc(0);
+  if (sessionEnc.kind === "none") return buf;
+  if (sessionEnc.kind === "bc") return bcDecrypt(buf, channelId);
+  if (sessionEnc.kind === "aes") return aesDecrypt(buf, sessionEnc.key);
+  return buf;
+}
+
+function bufToHexPreview(buf: Buffer, maxBytes: number): string {
+  const b = buf.subarray(0, Math.min(buf.length, maxBytes));
+  return [...b].map((x) => x.toString(16).padStart(2, "0")).join(" ");
+}
+
+function bufToAsciiPreview(buf: Buffer, maxBytes: number): string {
+  const b = buf.subarray(0, Math.min(buf.length, maxBytes));
+  return b
+    .toString("utf8")
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, ".")
+    .slice(0, maxBytes);
+}
+
+function findAllJpegRanges(buf: Buffer, maxHits: number): Array<{ start: number; end: number }> {
+  const out: Array<{ start: number; end: number }> = [];
+  const soi = Buffer.from([0xff, 0xd8, 0xff]);
+  const eoi = Buffer.from([0xff, 0xd9]);
+
+  let off = 0;
+  while (out.length < maxHits) {
+    const s = buf.indexOf(soi, off);
+    if (s < 0) break;
+    const e = buf.indexOf(eoi, s + soi.length);
+    if (e < 0) break;
+    out.push({ start: s, end: e + eoi.length });
+    off = e + eoi.length;
+  }
+  return out;
 }
 
 function tryDecryptXmlBody(buf: Buffer, channelId: number, sessionEnc: SessionEnc): string | undefined {
@@ -424,6 +473,7 @@ function main(): void {
 
   // Pass 1: try to extract XML without AES (BC/plaintext). Also try to find nonce.
   const calls: XmlCall[] = [];
+  const binCalls: BinaryCall[] = [];
   let nonce: string | undefined;
 
   for (const d of baichuanDirs) {
@@ -457,23 +507,66 @@ function main(): void {
     sessionEnc = { kind: "aes", key };
 
     const callsAes: XmlCall[] = [];
+    const binCallsAes: BinaryCall[] = [];
     for (const d of baichuanDirs) {
       const dir = hubIp && d.dirKey.startsWith(`${pcIp}:`) ? "tx" : "rx";
       for (const f of d.frames) {
-        const xmlBuf: Buffer = Buffer.from((f.extension && f.extension.length ? f.extension : f.body) ?? []);
-        const xml = tryDecryptXmlBody(xmlBuf, Number(f.header?.channelId ?? 0), sessionEnc);
-        if (!xml) continue;
+        const channelId = Number(f.header?.channelId ?? 0);
+        const cmdId = Number(f.header?.cmdId ?? -1);
+        const msgNum = Number(f.header?.msgNum ?? -1);
+        const responseCode = Number(f.header?.responseCode ?? -1);
 
-        const rootTag = extractRootTag(xml);
-        callsAes.push({
-          dir,
-          cmdId: Number(f.header?.cmdId ?? -1),
-          msgNum: Number(f.header?.msgNum ?? -1),
-          channelId: Number(f.header?.channelId ?? -1),
-          responseCode: Number(f.header?.responseCode ?? -1),
-          ...(rootTag ? { rootTag } : {}),
-          xml,
-        });
+        const extBuf: Buffer = Buffer.from(f.extension ?? []);
+        const bodyBuf: Buffer = Buffer.from(f.body ?? []);
+
+        // XML calls (from extension if present, else body)
+        const xmlBuf: Buffer = Buffer.from((extBuf.length ? extBuf : bodyBuf) ?? []);
+        const xml = tryDecryptXmlBody(xmlBuf, channelId, sessionEnc);
+        if (xml) {
+          const rootTag = extractRootTag(xml);
+          callsAes.push({
+            dir,
+            cmdId,
+            msgNum,
+            channelId,
+            responseCode,
+            ...(rootTag ? { rootTag } : {}),
+            xml,
+          });
+        }
+
+        // Binary CoverPreview responses (cmdId 298)
+        if (dir === "rx" && cmdId === 298) {
+          if (bodyBuf.length > 0) {
+            // NOTE: bodyBuf is extension+payload; decrypting it as a single AES stream is NOT valid
+            // when extension and payload are encrypted separately (as our implementation does).
+            // We intentionally avoid exporting decrypted body here.
+          }
+
+          if (f.payload && Buffer.from(f.payload).length > 0) {
+            const payloadRaw = Buffer.from(f.payload);
+            const payloadDec = decryptBody(payloadRaw, channelId, sessionEnc);
+
+            binCallsAes.push({
+              dir,
+              cmdId,
+              msgNum,
+              channelId,
+              responseCode,
+              part: "payload_raw",
+              bytes: payloadRaw,
+            });
+            binCallsAes.push({
+              dir,
+              cmdId,
+              msgNum,
+              channelId,
+              responseCode,
+              part: "payload_dec",
+              bytes: payloadDec,
+            });
+          }
+        }
       }
     }
 
@@ -481,6 +574,11 @@ function main(): void {
     if (callsAes.length >= calls.length) {
       calls.length = 0;
       calls.push(...callsAes);
+    }
+
+    if (binCallsAes.length > 0) {
+      binCalls.length = 0;
+      binCalls.push(...binCallsAes);
     }
   }
 
@@ -517,6 +615,39 @@ function main(): void {
     }
   }
 
+  // Export CoverPreview binary rx payload samples (if any)
+  const exportDir = path.resolve(process.cwd(), "test/pcap/exports");
+  const coverDir = path.resolve(exportDir, "coverpreview_rx");
+  fs.mkdirSync(coverDir, { recursive: true });
+
+  if (binCalls.length > 0) {
+    const limit = 20;
+    const picked = binCalls.slice(0, limit);
+    for (let i = 0; i < picked.length; i++) {
+      const c = picked[i]!;
+      const base = `rx_cmd${c.cmdId}_${c.part}_ch${c.channelId}_msg${c.msgNum}_rc${c.responseCode}_${i}`;
+      fs.writeFileSync(path.resolve(coverDir, `${base}.bin`), c.bytes);
+
+      const hex = bufToHexPreview(c.bytes, 64);
+      const ascii = bufToAsciiPreview(c.bytes, 64);
+      const idx1001 = c.bytes.indexOf(Buffer.from("1001", "ascii"));
+      const idxRIFF = c.bytes.indexOf(Buffer.from("RIFF", "ascii"));
+      const idxAVI = c.bytes.indexOf(Buffer.from("AVI ", "ascii"));
+      const idxJFIF = c.bytes.indexOf(Buffer.from("JFIF", "ascii"));
+      const idxExif = c.bytes.indexOf(Buffer.from("Exif", "ascii"));
+      const jpegs = findAllJpegRanges(c.bytes, 10);
+
+      // eslint-disable-next-line no-console
+      console.log(
+        `[pcap] CoverPreview rx sample ${i + 1}/${picked.length}: part=${c.part} len=${c.bytes.length} ch=${c.channelId} msg=${c.msgNum} rc=${c.responseCode}` +
+        `\n  prefixHex=${hex}` +
+        `\n  prefixAscii=${JSON.stringify(ascii)}` +
+        `\n  markers: 1001@${idx1001} RIFF@${idxRIFF} AVI@${idxAVI} JFIF@${idxJFIF} Exif@${idxExif} jpegCount=${jpegs.length}` +
+        (jpegs.length ? ` jpeg0=${jpegs[0]!.start}-${jpegs[0]!.end}` : ""),
+      );
+    }
+  }
+
   // Keep a compact report on disk.
   const report = {
     pcapPath,
@@ -537,6 +668,10 @@ function main(): void {
     urls: {
       fromXml: [...urlsFromXml],
       rtspRequests,
+    },
+    coverPreviewRx: {
+      samples: binCalls.length,
+      exportDir: path.relative(process.cwd(), coverDir),
     },
   };
 

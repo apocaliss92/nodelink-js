@@ -161,6 +161,7 @@ function extractStatusArrayFromGetChannelstatus(rsp: ReolinkCmdResponse[]): any[
       status = v;
     } else {
       status = v?.channels ?? v?.Channels ?? v?.channel ?? v?.Channel;
+
       if (!Array.isArray(status)) {
         const channelKeys = Object.keys(v).filter((k) => /^channel\d+$/i.test(k) || /^ch\d+$/i.test(k));
         if (channelKeys.length > 0) {
@@ -779,6 +780,11 @@ export class ReolinkBaichuanApi {
     state: string;
     /** Channel index (often 1-based camera slot index on hubs/NVRs). */
     index?: number;
+    /**
+     * Full Baichuan channelId used in binary header addressing (PCAP-observed for cmd_id=298 CoverPreview).
+     * On some firmwares this is exposed as <chnID> in the cmd_id 145 push.
+     */
+    baichuanChannelId?: number;
     /** Device stream support list, as reported by the hub (e.g. mainStream,subStream,externStream). */
     streamSupport?: string[];
     /** Raw wifi state string when present. */
@@ -3751,8 +3757,10 @@ ${xmlDateTimePayload("endTime", end)}
     const parsed = rec.parsedFileName ?? (rec.fileName ? parseRecordingFileName(rec.fileName) : undefined);
 
     // Get times from various sources
-    const startTime = rec.startTime ?? parsed?.start;
-    const endTime = rec.endTime ?? parsed?.end;
+    // Prefer filename-derived timestamps when available: for many firmwares these are the only
+    // values that reliably match the device-local time expected by playback/snapshot requests.
+    const startTime = parsed?.start ?? rec.startTime;
+    const endTime = parsed?.end ?? rec.endTime;
 
     const startTimeMs = startTime?.getTime() ?? 0;
     const endTimeMs = endTime?.getTime() ?? startTimeMs;
@@ -3871,6 +3879,22 @@ ${xmlDateTimePayload("endTime", end)}
     if (fromPush) {
       recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `Using per-channel UID from push cache: ${fromPush}`);
       return fromPush;
+    }
+
+    // Race guard: immediately after login/connect, the NVR often delivers cmd_id 145 push asynchronously.
+    // If the caller asks for recordings before that arrives, we may fail UID resolution and return 0 events.
+    // Wait a short, bounded amount of time for the push cache to populate before falling back to CGI.
+    if ((!explicitUid || !explicitUid.trim()) && (!this.uid || !this.uid.trim())) {
+      const waitMs = 1500;
+      const deadline = Date.now() + waitMs;
+      while (Date.now() < deadline) {
+        const u = this.getUidFromPushCacheForChannel(channel);
+        if (u) {
+          recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `UID appeared in push cache after wait (${waitMs}ms): ${u}`);
+          return u;
+        }
+        await new Promise((r) => setTimeout(r, 50));
+      }
     }
 
     // 1) Prefer per-channel UID from CGI GetChannelstatus (NVRs often have different UIDs per channel)
@@ -4097,8 +4121,10 @@ ${xmlDateTimePayload("endTime", end)}
     idOrFileName: string;
     /** Optional explicit channel (0-based). Use when the id does not embed the channel. */
     channel?: number;
-    /** Optional explicit Baichuan channelId (HomeHub-style). Takes precedence over `channel`. */
+    /** Optional explicit NVR channelId (0-based). Alias for `channel` for integrations that use `channelId`. */
     channelId?: number;
+    /** Optional explicit header channelId override for PCAP-exact CoverPreview (cmd_id=298). */
+    headerChannelId?: number;
     /** Stream type for snapshot quality ("main" or "sub", default: "sub"). */
     snapType?: "main" | "sub";
     /** Timeout in milliseconds (default: 30000). */
@@ -4116,19 +4142,39 @@ ${xmlDateTimePayload("endTime", end)}
       const snapType = params.snapType ?? "sub";
       const timeoutMs = params.timeoutMs ?? 30_000;
 
-      // channelId (HomeHub-style) can still override.
-      if (params.channelId != null) {
-        return await this.client.getPlaybackSnapshotByChannelId({
-          channelId: params.channelId,
-          time: new Date(decoded.startTimeMs),
-          snapType,
-          timeoutMs,
-        });
+      // Some firmwares expose event timestamps in a form that looks like epoch ms but is actually
+      // based on device-local time. The most reliable, device-consistent timestamp is the one
+      // encoded in the recording filename (when available).
+      const parsedFromFileName = decoded.fileName ? parseRecordingFileName(decoded.fileName) : undefined;
+      const startTime = parsedFromFileName?.start ?? new Date(decoded.startTimeMs);
+      const endTime = (parsedFromFileName as any)?.end instanceof Date ? (parsedFromFileName as any).end : new Date(decoded.endTimeMs);
+
+      const uid = (decoded.uid ?? "").trim();
+      if (!uid) {
+        throw new Error(
+          "snapshotFromNvrEventId: missing uid for PCAP-exact CoverPreview. " +
+            "Regenerate eventIds with uid included, or pass a newer eventId produced by listNvrAlarmEventsEnrichedViaBaichuan.",
+        );
       }
 
-      return await this.client.getPlaybackSnapshot({
-        channel: this.normalizeChannel(decoded.channel),
-        time: new Date(decoded.startTimeMs),
+      // PCAP shows the CoverPreview (cmd_id=298) header channelId is session-scoped and changes per request.
+      // If a headerChannelId is provided, use it; otherwise let the client allocate a suitable one.
+      // IMPORTANT: Do NOT default this from eventId data.
+      // The header channelId is session-scoped (PCAP-observed) and is not stable across sessions.
+      // Using a persisted value here can cause NVRs to reject the request (400).
+      const headerChannelIdRaw = params.headerChannelId;
+      const headerChannelId =
+        headerChannelIdRaw != null && Number.isFinite(Number(headerChannelIdRaw)) && Number(headerChannelIdRaw) > 0
+          ? Number(headerChannelIdRaw)
+          : undefined;
+
+      const channel = this.normalizeChannel(params.channel ?? params.channelId ?? decoded.channel);
+      return await this.client.getPlaybackSnapshotPcapExact({
+        channel,
+        ...(headerChannelId != null ? { headerChannelId } : {}),
+        startTime,
+        endTime,
+        uid,
         snapType,
         timeoutMs,
       });
@@ -4147,10 +4193,29 @@ ${xmlDateTimePayload("endTime", end)}
     const snapType = params.snapType ?? "sub";
     const timeoutMs = params.timeoutMs ?? 30_000;
 
-    if (params.channelId != null) {
-      return await this.client.getPlaybackSnapshotByChannelId({
-        channelId: params.channelId,
-        time: start,
+    // PCAP-exact: params.headerChannelId is interpreted as headerChannelId.
+    if (params.headerChannelId != null) {
+      const channel =
+        params.channel != null
+          ? this.normalizeChannel(params.channel)
+          : params.channelId != null
+            ? this.normalizeChannel(params.channelId)
+          : parsed?.channel != null
+            ? this.normalizeChannel(parsed.channel)
+            : undefined;
+
+      if (channel == null) {
+        throw new Error(
+          `snapshotFromNvrEventId: cannot derive channel from identifier: ${idRaw}. ` +
+            "Provide params.channel (0-based) when using params.headerChannelId.",
+        );
+      }
+
+      return await this.client.getPlaybackSnapshotPcapExact({
+        channel,
+        headerChannelId: params.headerChannelId,
+        startTime: start,
+        endTime: new Date(start.getTime() + 10_000),
         snapType,
         timeoutMs,
       });
@@ -4159,6 +4224,8 @@ ${xmlDateTimePayload("endTime", end)}
     const channel =
       params.channel != null
         ? this.normalizeChannel(params.channel)
+        : params.channelId != null
+          ? this.normalizeChannel(params.channelId)
         : parsed?.channel != null
           ? this.normalizeChannel(parsed.channel)
           : undefined;
@@ -4166,7 +4233,7 @@ ${xmlDateTimePayload("endTime", end)}
     if (channel == null) {
       throw new Error(
         `snapshotFromNvrEventId: cannot derive channel from identifier: ${idRaw}. ` +
-          "Provide params.channel (0-based) or params.channelId.",
+          "Provide params.channel (0-based) or params.channelId (0-based).",
       );
     }
 
@@ -4220,6 +4287,7 @@ ${xmlDateTimePayload("endTime", end)}
     idOrFileName: string;
     channel?: number;
     channelId?: number;
+    headerChannelId?: number;
     snapType?: "main" | "sub";
     /** Timeout for CoverPreview request (default: 30000). */
     timeoutMs?: number;
@@ -4232,6 +4300,7 @@ ${xmlDateTimePayload("endTime", end)}
       idOrFileName: params.idOrFileName,
       ...(params.channel != null ? { channel: params.channel } : {}),
       ...(params.channelId != null ? { channelId: params.channelId } : {}),
+      ...(params.headerChannelId != null ? { headerChannelId: params.headerChannelId } : {}),
       ...(params.snapType != null ? { snapType: params.snapType } : {}),
       ...(params.timeoutMs != null ? { timeoutMs: params.timeoutMs } : {}),
     });
@@ -8873,7 +8942,9 @@ ${xmlDateTimePayload("endTime", end)}
     const logger = this.logger;
 
     const maxIterations = params.maxIterations ?? 50;
-    const uidBase = (params.uid.split("_")[0] ?? params.uid).trim();
+    const uidTrim = (params.uid ?? "").trim();
+    const uidBase = ((uidTrim.split("_")[0] ?? uidTrim) || "").trim();
+    const uidCandidates = Array.from(new Set([uidBase, uidTrim].filter(Boolean)));
     const streamTypeInt = params.streamType === "subStream" ? 1 : 0;
     const alarmType =
       params.alarmType ??
@@ -8883,11 +8954,11 @@ ${xmlDateTimePayload("endTime", end)}
     // The Baichuan transport header uses (channel + 1) internally.
     const xmlChannelId = params.channel;
 
-    const findOpenXml = (start: Date, end: Date) => `<?xml version="1.0" encoding="UTF-8" ?>
+    const findOpenXml = (uid: string, start: Date, end: Date) => `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <findAlarmVideo version="1.1">
   <channelId>${xmlChannelId}</channelId>
-<uid>${xmlEscape(uidBase)}</uid>
+<uid>${xmlEscape(uid)}</uid>
 <logicChnBitmap>255</logicChnBitmap>
 <streamType>${streamTypeInt}</streamType>
 <notSearchVideo>0</notSearchVideo>
@@ -8912,7 +8983,7 @@ ${xmlDateTimePayload("endTime", end)}
       dbg,
       logger,
       "listAlarmVideosViaBaichuan",
-      `init: channel=${params.channel}, uid=${uidBase}, streamType=${streamTypeInt}, start=${params.start.toISOString()}, end=${params.end.toISOString()}, alarmType=${alarmType}`,
+      `init: channel=${params.channel}, uidCandidates=${JSON.stringify(uidCandidates)}, streamType=${streamTypeInt}, start=${params.start.toISOString()}, end=${params.end.toISOString()}, alarmType=${alarmType}`,
     );
 
     for (let i = 0; i < maxIterations; i++) {
@@ -8923,25 +8994,49 @@ ${xmlDateTimePayload("endTime", end)}
         `findAlarmVideo iteration ${i + 1}/${maxIterations}: channel=${params.channel}, start=${currentStart.toISOString()}, end=${params.end.toISOString()}`,
       );
 
-      const openResp = await this.sendXml({
-        cmdId: BC_CMD_ID_FIND_REC_VIDEO_OPEN,
-        channel: params.channel,
-        payloadXml: findOpenXml(currentStart, params.end),
-        timeoutMs: 15_000,
-      });
-
-      const fileHandle = getXmlText(openResp, "fileHandle")?.trim();
-      if (!fileHandle) {
+      let openResp: string | undefined;
+      let fileHandle: string | undefined;
+      let chosenUid: string | undefined;
+      for (const uid of uidCandidates) {
+        openResp = await this.sendXml({
+          cmdId: BC_CMD_ID_FIND_REC_VIDEO_OPEN,
+          channel: params.channel,
+          payloadXml: findOpenXml(uid, currentStart, params.end),
+          timeoutMs: 15_000,
+        });
+        fileHandle = getXmlText(openResp, "fileHandle")?.trim();
+        if (fileHandle) {
+          chosenUid = uid;
+          break;
+        }
         const rspCode = getXmlText(openResp, "rspCode")?.trim() ?? getXmlText(openResp, "code")?.trim();
         const msg = getXmlText(openResp, "rspMsg")?.trim() ?? getXmlText(openResp, "message")?.trim();
-        const snippet = openResp.length > 800 ? `${openResp.slice(0, 800)}...` : openResp;
         recordingsTraceLog(
           dbg,
           logger,
           "listAlarmVideosViaBaichuan",
-          `findAlarmVideo OPEN: missing fileHandle (rspCode=${rspCode ?? "?"} msg=${msg ?? "?"}). resp=${snippet}`,
+          `findAlarmVideo OPEN: missing fileHandle (uid=${uid} rspCode=${rspCode ?? "?"} msg=${msg ?? "?"})`,
+        );
+      }
+
+      if (!fileHandle) {
+        const snippet = openResp && openResp.length > 800 ? `${openResp.slice(0, 800)}...` : openResp;
+        recordingsTraceLog(
+          dbg,
+          logger,
+          "listAlarmVideosViaBaichuan",
+          `findAlarmVideo OPEN: giving up (no fileHandle). lastResp=${snippet ?? "(none)"}`,
         );
         break;
+      }
+
+      if (chosenUid && chosenUid !== uidCandidates[0]) {
+        recordingsTraceLog(
+          dbg,
+          logger,
+          "listAlarmVideosViaBaichuan",
+          `findAlarmVideo OPEN: succeeded using uid=${chosenUid}`,
+        );
       }
 
       const getXml = findGetXml(fileHandle);
@@ -9043,6 +9138,8 @@ ${xmlDateTimePayload("endTime", end)}
     /** Safety limit for pagination/iterations per channel (default 50). */
     maxIterations?: number;
   }): Promise<ChannelRecordingFile[]> {
+    const dbg = this.client.getDebugConfig?.();
+    const logger = this.logger;
     const requestedChannels = params.channels?.length
       ? [...params.channels]
       : [...this.channelPushData.keys()];
@@ -9078,9 +9175,8 @@ ${xmlDateTimePayload("endTime", end)}
     const results: ChannelRecordingFile[] = [];
     for (const channel of channels) {
       try {
-        const uid =
-          this.getUidFromPushCacheForChannel(channel) ??
-          (await this.ensureUidForRecordings(channel, undefined));
+        const uid = await this.ensureUidForRecordings(channel, undefined);
+        recordingsTraceLog(dbg, logger, "listNvrAlarmEventsViaBaichuan", `channel=${channel} using uid=${uid}`);
 
         const files = await this.listAlarmVideosViaBaichuan({
           channel,
@@ -9121,7 +9217,7 @@ ${xmlDateTimePayload("endTime", end)}
     maxIterations?: number;
   }): Promise<EnrichedChannelRecordingFile[]> {
     const events = await this.listNvrAlarmEventsViaBaichuan(params);
-    return events.map((ev) => {
+    return events.flatMap((ev) => {
       const { channel, uid, ...rec } = ev;
       const enriched = this.enrichRecordingFile(rec);
 
@@ -9134,7 +9230,7 @@ ${xmlDateTimePayload("endTime", end)}
         ...(uid ? { uid } : {}),
       });
 
-      return { ...enriched, channel, eventId, ...(uid ? { uid } : {}) };
+      return [{ ...enriched, channel, eventId, ...(uid ? { uid } : {}) }];
     });
   }
 
