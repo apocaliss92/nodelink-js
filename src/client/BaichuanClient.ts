@@ -2288,15 +2288,6 @@ export class BaichuanClient extends EventEmitter<{
     return await new Promise<Buffer>((resolve, reject) => {
       let timeout: NodeJS.Timeout | undefined;
       let done = false;
-      let encryptLen: number | undefined;
-
-      const isHttpLikeError = (rc: number): boolean => rc >= 400 && rc < 600;
-      const parseEncryptLen = (xml: string): number | undefined => {
-        const m = /<EncryptLen>(\d+)<\/EncryptLen>/i.exec(xml);
-        if (!m) return undefined;
-        const n = Number.parseInt(m[1] ?? "", 10);
-        return Number.isFinite(n) && n > 0 ? n : undefined;
-      };
 
       const cleanup = () => {
         this.off("frame", onFrame);
@@ -2329,7 +2320,7 @@ export class BaichuanClient extends EventEmitter<{
         if (frame.header.cmdId !== cmdId) return;
 
         // Fail fast if the request was rejected.
-        if (frame.header.msgNum === msgNum && isHttpLikeError(frame.header.responseCode)) {
+        if (frame.header.msgNum === msgNum && frame.header.responseCode >= 400) {
           fail(new Error(`Baichuan file download request rejected (cmdId=${cmdId} msgNum=${msgNum} responseCode=${frame.header.responseCode})`));
           return;
         }
@@ -2342,13 +2333,12 @@ export class BaichuanClient extends EventEmitter<{
             try {
               const extDec = this.tryDecryptXml(frame.extension, frame.header.channelId, enc);
               if (extDec.includes("<binaryData>1</binaryData>")) markedBinary = true;
-              encryptLen = parseEncryptLen(extDec) ?? encryptLen;
             } catch {
               // ignore
             }
           }
 
-          const decrypted = this.tryDecryptBinary(frame.payload, frame.header.channelId, enc, encryptLen == null ? undefined : { encryptLen });
+          const decrypted = this.tryDecryptBinary(frame.payload, frame.header.channelId, enc);
           if (decrypted.length === 0) return;
 
           if (!markedBinary) {
@@ -2390,182 +2380,6 @@ export class BaichuanClient extends EventEmitter<{
         fail(e);
       }
     });
-  }
-
-  /**
-   * Stream a Baichuan "file download" (class=0x6482) as an async generator.
-   *
-   * This is the chunked/streaming counterpart of {@link sendBinary} with
-   * `messageClass=BC_CLASS_FILE_DOWNLOAD`, which buffers the entire file.
-   *
-   * Yields decrypted binary chunks as they arrive and completes when the device
-   * signals end-of-transfer (commonly responseCode=201).
-   */
-  async *sendBinaryFileDownloadStream(params: {
-    cmdId: number;
-    channel?: number;
-    /** Override the header channelId (and encryption channelId) for this request. */
-    channelIdOverride?: number;
-    payloadXml?: string;
-    extensionXml?: string;
-    messageClass?: number;
-    streamType?: number;
-    encryption?: EncryptionProtocol;
-    /** Total idle timeout while waiting for chunks (default: 120s). */
-    timeoutMs?: number;
-  }): AsyncGenerator<Buffer, void, void> {
-    await this.connect();
-
-    const channel = params.channel ?? this.opts.channel ?? 0;
-    const channelId = params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
-
-    const msgNum = this.nextMsgNum();
-    const cmdId = params.cmdId;
-
-    const extXml = params.extensionXml ?? buildBinaryExtensionXml(channel);
-    const payloadXml = params.payloadXml ?? "";
-
-    const messageClass = params.messageClass ?? BC_CLASS_FILE_DOWNLOAD;
-    const payloadOffset = Buffer.byteLength(extXml, "utf8");
-    const bodyLen = payloadOffset + Buffer.byteLength(payloadXml, "utf8");
-
-    const header = encodeHeader({
-      cmdId,
-      bodyLen,
-      channelId,
-      streamType: params.streamType ?? 0,
-      msgNum,
-      responseCode: 0,
-      messageClass,
-      payloadOffset,
-    });
-
-    const enc = params.encryption ?? this.enc;
-    const bodyBytes = this.encodeBodyXml(extXml, payloadXml, channelId, enc);
-    const wire = Buffer.concat([header, bodyBytes]);
-
-    const timeoutMs = params.timeoutMs ?? 120_000;
-
-    let encryptLen: number | undefined;
-    const isHttpLikeError = (rc: number): boolean => rc >= 400 && rc < 600;
-    const parseEncryptLen = (xml: string): number | undefined => {
-      const m = /<EncryptLen>(\d+)<\/EncryptLen>/i.exec(xml);
-      if (!m) return undefined;
-      const n = Number.parseInt(m[1] ?? "", 10);
-      return Number.isFinite(n) && n > 0 ? n : undefined;
-    };
-
-    type QItem = { kind: "chunk"; buf: Buffer } | { kind: "end" } | { kind: "err"; err: Error };
-    const queue: QItem[] = [];
-    let notify: (() => void) | undefined;
-
-    let done = false;
-    let timeout: NodeJS.Timeout | undefined;
-
-    const cleanup = () => {
-      this.off("frame", onFrame);
-      if (timeout) clearTimeout(timeout);
-      timeout = undefined;
-    };
-
-    const push = (it: QItem) => {
-      queue.push(it);
-      notify?.();
-    };
-
-    const resetTimeout = () => {
-      if (timeout) clearTimeout(timeout);
-      timeout = setTimeout(() => {
-        push({ kind: "err", err: new Error(`Baichuan timeout waiting file download chunks cmdId=${cmdId} msgNum=${msgNum}`) });
-      }, timeoutMs);
-    };
-
-    const looksLikeXml = (buf: Buffer): boolean => {
-      let i = 0;
-      while (i < buf.length && (buf[i] === 0x00 || buf[i] === 0x09 || buf[i] === 0x0a || buf[i] === 0x0d || buf[i] === 0x20)) i++;
-      if (i >= buf.length) return false;
-      return buf[i] === 0x3c; // '<'
-    };
-
-    const onFrame = (frame: BaichuanFrame) => {
-      if (frame.header.cmdId !== cmdId) return;
-
-      // If the request was rejected, fail fast.
-      if (frame.header.msgNum === msgNum && isHttpLikeError(frame.header.responseCode)) {
-        push({
-          kind: "err",
-          err: new Error(`Baichuan file download request rejected (cmdId=${cmdId} msgNum=${msgNum} responseCode=${frame.header.responseCode})`),
-        });
-        return;
-      }
-
-      try {
-        let markedBinary = false;
-        if (frame.extension.length > 0) {
-          try {
-            const extDec = this.tryDecryptXml(frame.extension, frame.header.channelId, enc);
-            if (extDec.includes("<binaryData>1</binaryData>")) markedBinary = true;
-            encryptLen = parseEncryptLen(extDec) ?? encryptLen;
-          } catch {
-            // ignore
-          }
-        }
-
-        const decrypted = this.tryDecryptBinary(frame.payload, frame.header.channelId, enc, encryptLen == null ? undefined : { encryptLen });
-        if (decrypted.length === 0) return;
-
-        if (!markedBinary) {
-          if (looksLikeXml(decrypted)) return;
-        }
-
-        push({ kind: "chunk", buf: decrypted });
-        resetTimeout();
-
-        if (frame.header.responseCode === 201) {
-          push({ kind: "end" });
-        }
-      } catch (e) {
-        push({ kind: "err", err: e instanceof Error ? e : new Error(String(e)) });
-      }
-    };
-
-    // Attach listener BEFORE sending to avoid missing the first chunk.
-    this.on("frame", onFrame);
-    resetTimeout();
-
-    try {
-      this.logDebug("tx", { cmdId, msgNum, channelId, messageClass, bodyLen, binary: true, fileDownload: true, stream: true });
-      this.recordTx({ cmdId, responseCode: 0, msgNum, channelId, streamType: params.streamType ?? 0 });
-      this.writeWire(wire);
-
-      while (!done) {
-        if (queue.length === 0) {
-          await new Promise<void>((resolve) => {
-            notify = resolve;
-          });
-          notify = undefined;
-        }
-
-        while (queue.length > 0) {
-          const it = queue.shift()!;
-          if (it.kind === "chunk") {
-            yield it.buf;
-            continue;
-          }
-          if (it.kind === "end") {
-            done = true;
-            break;
-          }
-          if (it.kind === "err") {
-            done = true;
-            throw it.err;
-          }
-        }
-      }
-    } finally {
-      done = true;
-      cleanup();
-    }
   }
 
   private async sendBinarySnapshot109(params: {
@@ -2615,15 +2429,6 @@ export class BaichuanClient extends EventEmitter<{
     const timeoutMs = params.timeoutMs ?? 15_000;
     const chunks: Buffer[] = [];
     let seenJpegStart = false;
-    let encryptLen: number | undefined;
-
-    const isHttpLikeError = (rc: number): boolean => rc >= 400 && rc < 600;
-    const parseEncryptLen = (xml: string): number | undefined => {
-      const m = /<EncryptLen>(\d+)<\/EncryptLen>/i.exec(xml);
-      if (!m) return undefined;
-      const n = Number.parseInt(m[1] ?? "", 10);
-      return Number.isFinite(n) && n > 0 ? n : undefined;
-    };
 
     const indexOfJpegSoi = (buf: Buffer): number => {
       // JPEG SOI: FF D8
@@ -2669,7 +2474,7 @@ export class BaichuanClient extends EventEmitter<{
 
         // If the request itself was rejected, fail fast instead of timing out.
         // Some firmwares respond with an empty-body error for snapshot.
-        if (frame.header.msgNum === msgNum && isHttpLikeError(frame.header.responseCode)) {
+        if (frame.header.msgNum === msgNum && frame.header.responseCode >= 400) {
           fail(new Error(`Baichuan snapshot request rejected (cmdId=${cmdId} msgNum=${msgNum} responseCode=${frame.header.responseCode})`));
           return;
         }
@@ -2684,11 +2489,10 @@ export class BaichuanClient extends EventEmitter<{
             if (extDec.includes("<binaryData>1</binaryData>")) {
               isBinaryChunk = true;
             }
-            encryptLen = parseEncryptLen(extDec) ?? encryptLen;
           }
 
           // If extension isn't present/parseable, fallback to heuristic: payload contains JPEG SOI.
-          const decrypted = this.tryDecryptBinary(frame.payload, frame.header.channelId, enc, encryptLen == null ? undefined : { encryptLen });
+          const decrypted = this.tryDecryptBinary(frame.payload, frame.header.channelId, enc);
           if (decrypted.length === 0) return;
 
           const head = decrypted.subarray(0, Math.min(16, decrypted.length)).toString("utf8");
@@ -2756,14 +2560,6 @@ export class BaichuanClient extends EventEmitter<{
   async sendBinaryCoverPreview(params: {
     cmdId: number;
     channel?: number;
-    /**
-     * Baichuan header channelId override.
-     * On some NVR/HomeHub firmwares, CoverPreview routing depends on a high (session-like) header channelId
-     * that is NOT the camera logical channel. PCAPs commonly show values like 142, 144, ...
-     */
-    headerChannelId?: number;
-    /** Override msgNum (PCAPs often show msgNum=0 for CoverPreview). */
-    msgNum?: number;
     payloadXml?: string;
     extensionXml?: string;
     messageClass?: number;
@@ -2774,13 +2570,12 @@ export class BaichuanClient extends EventEmitter<{
     await this.connect();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
-    const channelId = params.headerChannelId ?? (params.channel == null ? 250 : channel + 1);
+    const channelId = params.channel == null ? 250 : channel + 1;
 
-    const msgNum = params.msgNum ?? this.nextMsgNum();
+    const msgNum = this.nextMsgNum();
     const cmdId = params.cmdId;
 
-    // CoverPreview is a binary flow; many firmwares expect <binaryData>1</binaryData> in Extension.
-    const extXml = params.extensionXml ?? (params.channel != null ? buildBinaryExtensionXml(channel) : buildBinaryExtensionXml(null));
+    const extXml = params.extensionXml ?? (params.channel != null ? buildChannelExtensionXml(channel) : "");
     const payloadXml = params.payloadXml ?? "";
 
     const messageClass = params.messageClass ?? BC_CLASS_MODERN_24;
@@ -2805,15 +2600,6 @@ export class BaichuanClient extends EventEmitter<{
     const timeoutMs = params.timeoutMs ?? 30_000;
     const chunks: Buffer[] = [];
     let seenStreamHeader = false;
-    let encryptLen: number | undefined;
-
-    const isHttpLikeError = (rc: number): boolean => rc >= 400 && rc < 600;
-    const parseEncryptLen = (xml: string): number | undefined => {
-      const m = /<EncryptLen>(\d+)<\/EncryptLen>/i.exec(xml);
-      if (!m) return undefined;
-      const n = Number.parseInt(m[1] ?? "", 10);
-      return Number.isFinite(n) && n > 0 ? n : undefined;
-    };
 
     return await new Promise<Buffer>((resolve, reject) => {
       let timeout: NodeJS.Timeout | undefined;
@@ -2842,22 +2628,8 @@ export class BaichuanClient extends EventEmitter<{
         if (frame.header.cmdId !== cmdId) return;
 
         // If the request itself was rejected, fail fast
-        if (frame.header.msgNum === msgNum && isHttpLikeError(frame.header.responseCode)) {
-          let rspPreview = "";
-          try {
-            const dec = this.tryDecryptXml(frame.body, frame.header.channelId, enc);
-            const trimmed = dec.trim();
-            if (trimmed) {
-              rspPreview = trimmed.length > 400 ? `${trimmed.slice(0, 400)}...` : trimmed;
-            }
-          } catch {
-            // ignore
-          }
-          fail(
-            new Error(
-              `Baichuan CoverPreview request rejected (cmdId=${cmdId} msgNum=${msgNum} responseCode=${frame.header.responseCode}${rspPreview ? ` rspXml=${JSON.stringify(rspPreview)}` : ""})`,
-            ),
-          );
+        if (frame.header.msgNum === msgNum && frame.header.responseCode >= 400) {
+          fail(new Error(`Baichuan CoverPreview request rejected (cmdId=${cmdId} msgNum=${msgNum} responseCode=${frame.header.responseCode})`));
           return;
         }
 
@@ -2871,10 +2643,9 @@ export class BaichuanClient extends EventEmitter<{
             if (extDec.includes("<binaryData>1</binaryData>")) {
               isBinaryChunk = true;
             }
-            encryptLen = parseEncryptLen(extDec) ?? encryptLen;
           }
 
-          const decrypted = this.tryDecryptBinary(frame.payload, frame.header.channelId, enc, encryptLen == null ? undefined : { encryptLen });
+          const decrypted = this.tryDecryptBinary(frame.payload, frame.header.channelId, enc);
           if (decrypted.length === 0) return;
 
           // Skip XML responses
@@ -2933,18 +2704,8 @@ export class BaichuanClient extends EventEmitter<{
    * Decrypts binary data (similar to tryDecryptXml but for binary responses).
    * Public method to allow ReolinkBaichuanApi to decrypt audio frames.
    */
-  tryDecryptBinary(buf: Buffer, channelId: number, preferred: EncryptionProtocol, opts?: { encryptLen?: number }): Buffer {
+  tryDecryptBinary(buf: Buffer, channelId: number, preferred: EncryptionProtocol): Buffer {
     if (buf.length === 0) return buf;
-
-    const aesDecryptChunked = (src: Buffer, key: Buffer, chunkLen: number): Buffer => {
-      if (src.length === 0) return Buffer.alloc(0);
-      const len = Number.isFinite(chunkLen) && chunkLen > 0 ? chunkLen : 1024;
-      const parts: Buffer[] = [];
-      for (let off = 0; off < src.length; off += len) {
-        parts.push(aesDecrypt(src.subarray(off, Math.min(off + len, src.length)), key));
-      }
-      return parts.length === 1 ? parts[0]! : Buffer.concat(parts);
-    };
 
     const tryAs = (enc: EncryptionProtocol): Buffer | null => {
       try {
@@ -2952,13 +2713,8 @@ export class BaichuanClient extends EventEmitter<{
         if (enc.kind === "bc") {
           return bcDecrypt(buf, channelId);
         }
-        if (enc.kind === "aes") {
+        if (enc.kind === "aes" || enc.kind === "full_aes") {
           return aesDecrypt(buf, enc.key);
-        }
-        if (enc.kind === "full_aes") {
-          // In full_aes, many firmwares reset the cipher stream every EncryptLen bytes (often 1024).
-          // If caller doesn't provide EncryptLen, default to 1024 to maximize compatibility.
-          return aesDecryptChunked(buf, enc.key, opts?.encryptLen ?? 1024);
         }
         return null;
       } catch {
@@ -2972,7 +2728,7 @@ export class BaichuanClient extends EventEmitter<{
       (preferred.kind !== "bc" && this.enc.kind !== "none" && (this.enc.kind === "aes" || this.enc.kind === "full_aes") ? tryAs(this.enc) : null) ??
       (preferred.kind !== "bc" ? tryAs({ kind: "bc" }) : null) ??
       tryAs({ kind: "none" }) ??
-      buf
+      buf // Return as-is if decryption fails
     );
   }
 

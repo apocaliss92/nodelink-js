@@ -411,7 +411,7 @@ export interface DeviceCapabilities {
   hasSiren: boolean;
   hasFloodlight: boolean;
   hasPir: boolean;
-  /** True when the channel is a doorbell (best-effort via SupportInfo and/or model name). */
+  /** True when device reports doorbell support via support.items[].doorbellVersion. */
   isDoorbell: boolean;
 }
 

@@ -3,7 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { BaichuanRtspServer, type BaichuanRtspServerOptions } from "../../baichuan/stream/BaichuanRtspServer";
 import { BaichuanClient, type BaichuanClientOptions } from "../../client/BaichuanClient";
-import { debugLog, eventTraceLog, recordingsTraceLog, type Logger } from "../../debug/DebugConfig";
+import { eventTraceLog, recordingsTraceLog, type Logger } from "../../debug/DebugConfig";
 import {
   collectNvrDiagnostics,
   runAllDiagnosticsConsecutively,
@@ -1197,15 +1197,11 @@ export class ReolinkBaichuanApi {
       try {
         await this.subscribeEvents();
         this.simpleEventSubscribed = true;
-        const dbg = this.client.getDebugConfig?.();
-        if (dbg) {
-          eventTraceLog(dbg, this.logger, "ReolinkBaichuanApi", `renewed simple event subscription intervalMs=${this.simpleEventResubscribeIntervalMs}`);
-        }
+        (this.logger.debug ?? this.logger.log).call(this.logger, "[ReolinkBaichuanApi] renewed simple event subscription", {
+          intervalMs: this.simpleEventResubscribeIntervalMs,
+        });
       } catch (e) {
-        const dbg = this.client.getDebugConfig?.();
-        if (dbg) {
-          eventTraceLog(dbg, this.logger, "ReolinkBaichuanApi", `failed to renew event subscription: ${e instanceof Error ? e.message : String(e)}`);
-        }
+        (this.logger.debug ?? this.logger.log).call(this.logger, "[ReolinkBaichuanApi] failed to renew event subscription", e);
       }
     })().finally(() => {
       this.simpleEventResubscribeInFlight = undefined;
@@ -1669,7 +1665,6 @@ export class ReolinkBaichuanApi {
    * - <IOTInfoList> with <IOTInfo> blocks (for IoT devices)
    */
   private parseAndStoreChannelInfo(xml: string): void {
-    const dbg = this.client.getDebugConfig?.();
     // Parse ChannelInfoList (main camera channels) and IOTInfoList (IoT devices)
     // The XML structure uses <ChannelInfoList><ChannelInfo>...</ChannelInfo></ChannelInfoList>
     // or <IOTInfoList><IOTInfo>...</IOTInfo></IOTInfoList>
@@ -1680,9 +1675,7 @@ export class ReolinkBaichuanApi {
     const allBlocks = [...channelBlocks, ...iotBlocks];
 
     // Verbose payload; keep it under debug only.
-    if (dbg) {
-      debugLog(dbg, this.logger, "ReolinkBaichuanApi", `cmd_id 145 ChannelInfo push: blocks=${JSON.stringify(allBlocks)}`);
-    }
+    this.logger.debug?.(`[ReolinkBaichuanApi] cmd_id 145 ChannelInfo push: blocks=${JSON.stringify(allBlocks)}`);
 
     for (const block of allBlocks) {
       // Extract channel number - cmd_id 145 uses <channelId> not <channel>
@@ -1833,14 +1826,9 @@ export class ReolinkBaichuanApi {
         if ((info.stateLower ?? info.state).toLowerCase() === "none") continue;
         resultObj[channel] = { name: info.name, uid: info.uid, state: info.state };
       }
-      if (dbg) {
-        debugLog(
-          dbg,
-          this.logger,
-          "ReolinkBaichuanApi",
-          `Channel info received by the NVR: ${JSON.stringify({ result: resultObj, storedChannels: Object.keys(resultObj) })}`,
-        );
-      }
+      this.logger.debug?.(
+        `[ReolinkBaichuanApi] Channel info received by the NVR: ${JSON.stringify({ result: resultObj, storedChannels: Object.keys(resultObj) })}`,
+      );
     }
   }
 
@@ -2183,9 +2171,8 @@ export class ReolinkBaichuanApi {
       const info = infoPerChannel.get(channel);
       const networkInfo = networkInfoPerChannel.get(channel);
       const isBattery = isBatteryByChannel.get(channel) ?? false;
+      const isDoorbell = isDoorbellByChannel.get(channel) ?? false;
       const model = info?.type ?? '';
-      const isDoorbellFromModel = typeof model === "string" ? model.toLowerCase().includes("doorbell") : false;
-      const isDoorbell = (isDoorbellByChannel.get(channel) ?? false) || isDoorbellFromModel;
 
       const normalizedModel = model ? model.trim() : undefined;
       const isMultifocal = normalizedModel ? isDualLenseModel(normalizedModel) : false;
@@ -3866,8 +3853,9 @@ ${xmlDateTimePayload("endTime", end)}
       recordingsTraceLog(dbg, logger, "ensureUidForRecordings", `Attempting per-channel UID discovery via HTTP CGI GetChannelstatus (channel=${channel})`);
       await this.cgiApi.login();
       const chStatus = await this.cgiApi.GetChannelstatus();
-      const statusEntries = extractStatusArrayFromGetChannelstatus(chStatus as any);
-      const entry = statusEntries.find((s) => typeof (s as any)?.channel === "number" && Number((s as any).channel) === channel);
+      const entry = chStatus
+        .flatMap((r) => r.value?.status ?? [])
+        .find((s) => typeof s?.channel === "number" && s.channel === channel);
 
       const uidCandidate = (entry?.uid ?? "").trim();
       recordingsTraceLog(
@@ -4029,12 +4017,6 @@ ${xmlDateTimePayload("endTime", end)}
   async snapshotFromPlayback(params: {
     /** Channel number (0-based) */
     channel?: number;
-    /** UID (optional). If omitted, best-effort UID discovery is used. */
-    uid?: string;
-    /** logicChnBitmap (optional, default 1 as observed in PCAP). */
-    logicChnBitmap?: number;
-    /** Frame numbers to request in CoverPreview (default: [1,2,3]). */
-    frameNos?: number[];
     /** Timestamp to capture */
     time: Date;
     /** Stream type for snapshot quality ("main" or "sub", default: "sub") */
@@ -4059,37 +4041,20 @@ ${xmlDateTimePayload("endTime", end)}
   }> {
     await this.client.login();
 
-    const dbg = this.client.getDebugConfig?.();
-    const logger = this.logger;
-
     const channel = this.normalizeChannel(params.channel);
     const snapType = params.snapType ?? "sub";
     const timeoutMs = params.timeoutMs ?? 30_000;
     const time = params.time;
 
-    const uid = await this.ensureUidForRecordings(channel, params.uid);
-    const uidBase = uid.split("_")[0] ?? uid;
-    const logicChnBitmap = params.logicChnBitmap ?? 1;
-    const streamType = snapType === "sub" ? "subStream" : "mainStream";
-    const frameNos = (params.frameNos?.length ? params.frameNos : [1, 2, 3]).filter((n) => Number.isFinite(n) && n > 0);
+    // CoverPreview requires a time range - use 10 seconds from the target time
+    const endTime = new Date(time.getTime() + 10_000);
 
-    const nvrChannelId = this.resolveNvrChannelId({ channel, uid: uidBase });
-
-    // CoverPreview requires a time range. PCAP commonly shows ~2 minutes windows.
-    const endTime = new Date(time.getTime() + 120_000);
-
-    const buildCoverPreviewXml = (opts: { channelId: number; logicChnBitmap: number; desc: number; frameNos?: number[] }) => {
-      const frames = opts.frameNos?.length
-        ? `<frameList>\n${opts.frameNos.map((n) => `<frameNo>${n}</frameNo>`).join("\n")}\n</frameList>\n`
-        : "";
-      return `<?xml version="1.0" encoding="UTF-8" ?>
+    // Build CoverPreview XML (cmd_id=298)
+    const xml = `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <CoverPreview version="1.1">
-<channelId>${opts.channelId}</channelId>
-<uid>${xmlEscape(uidBase)}</uid>
-<logicChnBitmap>${opts.logicChnBitmap}</logicChnBitmap>
-<desc>${opts.desc}</desc>
-<streamType>${xmlEscape(streamType)}</streamType>
+<channelId>${channel}</channelId>
+<streamType>${snapType}</streamType>
 <startTime>
 <year>${time.getFullYear()}</year>
 <month>${time.getMonth() + 1}</month>
@@ -4106,130 +4071,16 @@ ${xmlDateTimePayload("endTime", end)}
 <minute>${endTime.getMinutes()}</minute>
 <second>${endTime.getSeconds()}</second>
 </endTime>
-${frames}</CoverPreview>
+</CoverPreview>
 </body>`;
-    };
 
-    const uniq = <T,>(xs: T[]) => Array.from(new Set(xs));
-    // NOTE: On NVR/HomeHub, CoverPreview's payload <channelId> often refers to the *camera* logic channel (commonly 0),
-    // while routing still depends on header/Extension channel selection.
-    const xmlChannelIdCandidates = uniq(
-      [0, nvrChannelId, channel, channel + 1, nvrChannelId + 1].filter((n) => Number.isFinite(n) && n >= 0),
-    );
-    const logicChnBitmapCandidates = uniq([logicChnBitmap, 1, 255].filter((n) => Number.isFinite(n) && n > 0));
-    const descCandidates = [1, 0];
-    const frameListCandidates: Array<number[] | undefined> = [frameNos, [1], undefined];
-    const headerModes: Array<"channel" | "host250"> = ["channel", "host250"];
-
-    let payload: Buffer | undefined;
-    let lastErr: unknown;
-    let attempt = 0;
-
-    // PCAP alignment: on HomeHub/NVR, CoverPreview requests are often sent with:
-    // - NO Extension (payloadOffset=0)
-    // - a high header channelId (e.g. 142, 144, ...) that is NOT the camera channel
-    // The hub replies with cmdId=298 chunks using the same header channelId.
-    const pcapXmlChannelIdCandidates = uniq([nvrChannelId, channel, 0].filter((n) => Number.isFinite(n) && n >= 0));
-    const pcapHeaderChannelIdCandidates = uniq(
-      [142, 144, 146, 148, 150, 152, 154, 156, 160, 165, 170, 180, 190, 199, 200, 210, 216, 220, 230, 240].filter(
-        (n) => Number.isFinite(n) && n >= 0 && n <= 255,
-      ),
-    );
-
-    for (const xmlChannelId of pcapXmlChannelIdCandidates) {
-      const xml = buildCoverPreviewXml({ channelId: xmlChannelId, logicChnBitmap: 1, desc: 1, frameNos });
-      for (const headerChannelId of pcapHeaderChannelIdCandidates) {
-        try {
-          attempt++;
-          if (dbg?.traceRecordings && attempt <= 60) {
-            recordingsTraceLog(
-              dbg,
-              logger,
-              "snapshotFromPlayback",
-              `CoverPreview(PCAP) try#${attempt} headerChannelId=${headerChannelId} xmlChannelId=${xmlChannelId} uid=${uidBase} streamType=${streamType}`,
-            );
-          }
-
-          payload = await this.client.sendBinaryCoverPreview({
-            cmdId: 298,
-            headerChannelId,
-            msgNum: 0,
-            // Match PCAP: no Extension in the request.
-            extensionXml: "",
-            payloadXml: xml,
-            timeoutMs,
-          });
-          break;
-        } catch (e) {
-          lastErr = e;
-        }
-      }
-      if (payload) break;
-    }
-
-    for (const xmlChannelId of xmlChannelIdCandidates) {
-      for (const lc of logicChnBitmapCandidates) {
-        for (const desc of descCandidates) {
-          for (const frames of frameListCandidates) {
-            const xml = buildCoverPreviewXml({ channelId: xmlChannelId, logicChnBitmap: lc, desc, ...(frames ? { frameNos: frames } : {}) });
-            for (const mode of headerModes) {
-              const extCandidates: Array<number | undefined> =
-                mode === "channel"
-                  ? // When using a per-channel header, try both default Extension (channel) and explicit Extension ids.
-                    [undefined, xmlChannelId, channel, channel + 1]
-                  : // When using host header=250, Extension must be explicit.
-                    [xmlChannelId, channel, channel + 1];
-
-              const uniqueExtCandidates = uniq(extCandidates).filter(
-                (v): v is number | undefined => v === undefined || (typeof v === "number" && Number.isFinite(v) && v >= 0),
-              );
-
-              for (const extId of uniqueExtCandidates) {
-                try {
-                  attempt++;
-                  if (dbg?.traceRecordings && attempt <= 60) {
-                    recordingsTraceLog(
-                      dbg,
-                      logger,
-                      "snapshotFromPlayback",
-                      `CoverPreview try#${attempt} mode=${mode} headerChannel=${mode === "channel" ? channel : "(host250)"} extId=${extId === undefined ? "(auto)" : extId} xmlChannelId=${xmlChannelId} logicChnBitmap=${lc} desc=${desc} frames=${frames ? frames.join(",") : "(none)"} uid=${uidBase} streamType=${streamType}`,
-                    );
-                  }
-                  payload =
-                    mode === "channel"
-                      ? await this.client.sendBinaryCoverPreview({
-                          cmdId: 298,
-                          // Keep the wire header tied to the logical channel.
-                          channel,
-                          ...(extId === undefined ? {} : { extensionXml: buildBinaryExtensionXml(extId) }),
-                          payloadXml: xml,
-                          timeoutMs,
-                        })
-                      : await this.client.sendBinaryCoverPreview({
-                          cmdId: 298,
-                          extensionXml: buildBinaryExtensionXml(extId ?? xmlChannelId),
-                          payloadXml: xml,
-                          timeoutMs,
-                        });
-                  break;
-                } catch (e) {
-                  lastErr = e;
-                }
-              }
-              if (payload) break;
-            }
-            if (payload) break;
-          }
-          if (payload) break;
-        }
-        if (payload) break;
-      }
-      if (payload) break;
-    }
-
-    if (!payload) {
-      throw lastErr instanceof Error ? lastErr : new Error(String(lastErr ?? "CoverPreview failed"));
-    }
+    // Send the CoverPreview command and receive binary payload
+    const payload = await this.client.sendBinaryCoverPreview({
+      cmdId: 298,
+      channel,
+      payloadXml: xml,
+      timeoutMs,
+    });
 
     // Parse stream header (first 32 bytes)
     if (payload.length < 32) {
@@ -4701,305 +4552,6 @@ ${frames}</CoverPreview>
   }
 
   /**
-   * Fetch HomeHub/NVR "alarm events" (event/clip list) for a specific channel and time range.
-   *
-   * This is a focused convenience wrapper around the existing NVR/Hub Baichuan flow
-   * (<findAlarmVideo> cmdId 272/273/274).
-   */
-  async fetchHubAlarmEvents(params: {
-    /** Channel number (0-based). */
-    channel: number;
-    start: Date;
-    end: Date;
-    /** Stream type hint for the request (default: mainStream). */
-    streamType?: RecordingStreamType;
-    /** Comma-separated alarmType list (Reolink XML format). */
-    alarmType?: string;
-    /** Safety limit for pagination/iterations (default 50). */
-    maxIterations?: number;
-  }): Promise<EnrichedChannelRecordingFile[]> {
-    const channel = this.normalizeChannel(params.channel);
-    return await this.listNvrAlarmEventsEnrichedViaBaichuan({
-      start: params.start,
-      end: params.end,
-      channels: [channel],
-      ...(params.streamType !== undefined ? { streamType: params.streamType } : {}),
-      ...(params.alarmType !== undefined ? { alarmType: params.alarmType } : {}),
-      ...(params.maxIterations !== undefined ? { maxIterations: params.maxIterations } : {}),
-    });
-  }
-
-  private async convertCoverPreviewFrameToJpeg(params: {
-    frame: Buffer;
-    encoding: string;
-    /** Override ffmpeg binary path (default: "ffmpeg" from PATH). */
-    ffmpegPath?: string;
-  }): Promise<Buffer> {
-    const ffmpegPath = params.ffmpegPath ?? "ffmpeg";
-    const enc = (params.encoding ?? "").toUpperCase();
-    const demux = enc.includes("265") || enc.includes("H265") || enc.includes("HEVC") ? "hevc" : "h264";
-
-    return await new Promise<Buffer>((resolve, reject) => {
-      const ff = spawn(ffmpegPath, [
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-f",
-        demux,
-        "-i",
-        "pipe:0",
-        "-frames:v",
-        "1",
-        "-f",
-        "image2",
-        "-vcodec",
-        "mjpeg",
-        "pipe:1",
-      ]);
-
-      const chunks: Buffer[] = [];
-      let stderr = "";
-
-      ff.stdout.on("data", (d) => chunks.push(Buffer.from(d)));
-      ff.stderr.on("data", (d) => {
-        stderr += String(d);
-      });
-
-      ff.on("error", reject);
-      ff.on("close", (code) => {
-        if (code === 0) return resolve(Buffer.concat(chunks));
-        reject(new Error(`ffmpeg frame->jpeg exited with code ${code}\n${stderr}`));
-      });
-
-      ff.stdin.on("error", reject);
-      ff.stdin.end(params.frame);
-    });
-  }
-
-  /**
-   * Fetch a thumbnail for an event using Baichuan CoverPreview (cmdId=298).
-   *
-   * PCAP-observed behavior: the mobile app requests many CoverPreview frames (typically "sub")
-   * aligned to the event's timestamp.
-   */
-  async fetchEventThumbnail(params: {
-    /** Channel number (0-based). */
-    channel: number;
-    /** UID (optional). If omitted, best-effort UID discovery is used. */
-    uid?: string;
-    /** Event timestamp (typically the event start time). */
-    time: Date;
-    /** Stream type for snapshot quality ("main" or "sub", default: "sub"). */
-    snapType?: "main" | "sub";
-    /** Output format (default: "jpeg"). */
-    format?: "jpeg" | "raw";
-    /** Timeout in milliseconds (default: 30000). */
-    timeoutMs?: number;
-    /** Override ffmpeg binary path for jpeg conversion. */
-    ffmpegPath?: string;
-  }): Promise<{ mime: string; data: Buffer }>
-  {
-    const format = params.format ?? "jpeg";
-
-    // Primary path: reuse snapshotFromPlayback.
-    // On some NVR/Hub firmwares, CoverPreview rejects when the *header* channelId is not 250.
-    // The mobile app commonly uses header channelId=250 and specifies the channel via Extension/XML.
-    const snapType = params.snapType ?? "sub";
-    const timeoutMs = params.timeoutMs ?? 30_000;
-    let snap:
-      | Awaited<ReturnType<ReolinkBaichuanApi["snapshotFromPlayback"]>>
-      | undefined;
-
-    try {
-      snap = await this.snapshotFromPlayback({
-        channel: params.channel,
-        ...(params.uid !== undefined ? { uid: params.uid } : {}),
-        time: params.time,
-        ...(params.snapType !== undefined ? { snapType: params.snapType } : {}),
-        ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
-      });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      // Only retry on obvious CoverPreview rejection.
-      if (!msg.includes("CoverPreview") || !msg.includes("rejected") || !msg.includes("responseCode=400")) {
-        throw e;
-      }
-
-      await this.client.login();
-      const channel = this.normalizeChannel(params.channel);
-      const uid = await this.ensureUidForRecordings(channel, params.uid);
-      const uidBase = uid.split("_")[0] ?? uid;
-      const nvrChannelId = this.resolveNvrChannelId({ channel, uid: uidBase });
-      const logicChnBitmap = 1;
-      const time = params.time;
-      const endTime = new Date(time.getTime() + 120_000);
-      const streamType = snapType === "sub" ? "subStream" : "mainStream";
-      const frameNos = [1, 2, 3];
-
-      const xml = `<?xml version="1.0" encoding="UTF-8" ?>
-<body>
-<CoverPreview version="1.1">
-<channelId>${nvrChannelId}</channelId>
-    <uid>${xmlEscape(uidBase)}</uid>
-    <logicChnBitmap>${logicChnBitmap}</logicChnBitmap>
-    <desc>1</desc>
-    <streamType>${xmlEscape(streamType)}</streamType>
-<startTime>
-<year>${time.getFullYear()}</year>
-<month>${time.getMonth() + 1}</month>
-<day>${time.getDate()}</day>
-<hour>${time.getHours()}</hour>
-<minute>${time.getMinutes()}</minute>
-<second>${time.getSeconds()}</second>
-</startTime>
-<endTime>
-<year>${endTime.getFullYear()}</year>
-<month>${endTime.getMonth() + 1}</month>
-<day>${endTime.getDate()}</day>
-<hour>${endTime.getHours()}</hour>
-<minute>${endTime.getMinutes()}</minute>
-<second>${endTime.getSeconds()}</second>
-</endTime>
-    <frameList>
-    ${frameNos.map((n) => `<frameNo>${n}</frameNo>`).join("\n")}
-    </frameList>
-</CoverPreview>
-</body>`;
-
-      const payload = await this.client.sendBinaryCoverPreview({
-        cmdId: 298,
-        // Omit channel so header channelId becomes 250; keep actual channel in Extension/XML.
-        extensionXml: buildChannelExtensionXml(nvrChannelId),
-        payloadXml: xml,
-        timeoutMs,
-      });
-
-      // Parse payload similarly to snapshotFromPlayback.
-      if (payload.length < 32) throw new Error(`CoverPreview payload too short: ${payload.length} bytes`);
-      const magic = payload.subarray(0, 4).toString("ascii");
-      if (magic !== "1001") {
-        throw new Error(`CoverPreview payload did not start with stream header magic '1001' but with '${magic}'`);
-      }
-      const streamHeader = payload.subarray(0, 32);
-      const width = streamHeader.readUInt32LE(8);
-      const height = streamHeader.readUInt32LE(12);
-      const frameRate = streamHeader.length > 17 ? streamHeader[17] : 0;
-
-      const frameSearchArea = payload.subarray(32);
-      const frameMagic = Buffer.from("00dc", "ascii");
-      let frameMagicIndex = -1;
-      for (let i = 0; i <= frameSearchArea.length - 4; i++) {
-        if (
-          frameSearchArea[i] === frameMagic[0] &&
-          frameSearchArea[i + 1] === frameMagic[1] &&
-          frameSearchArea[i + 2] === frameMagic[2] &&
-          frameSearchArea[i + 3] === frameMagic[3]
-        ) {
-          frameMagicIndex = i;
-          break;
-        }
-      }
-      if (frameMagicIndex === -1) {
-        throw new Error(
-          `CoverPreview frame magic '00dc' not found. First bytes after header: ${frameSearchArea.subarray(0, 30).toString("hex")}`,
-        );
-      }
-
-      const idx = 32 + frameMagicIndex;
-      const additionalHeaderLen = payload.readUInt32LE(idx + 12);
-      const headerLen = 24 + additionalHeaderLen;
-      const encoding = payload
-        .subarray(idx + 4, idx + 8)
-        .toString("ascii")
-        .replace(/\0/g, "");
-      const frameLen = payload.readUInt32LE(idx + 8);
-      const frameTime = headerLen >= 28 ? payload.readUInt32LE(idx + 24) : undefined;
-      const frameStart = idx + headerLen;
-      const frameEnd = frameStart + frameLen;
-      if (frameEnd > payload.length) {
-        throw new Error(`CoverPreview frame truncated: wanted ${frameLen} bytes, have ${payload.length - frameStart}`);
-      }
-
-      snap = {
-        frame: payload.subarray(frameStart, frameEnd),
-        encoding,
-        frameLength: frameLen,
-        ...(frameTime !== undefined ? { frameTime } : {}),
-        streamInfo: {
-          ...(width ? { width } : {}),
-          ...(height ? { height } : {}),
-          ...(frameRate ? { frameRate } : {}),
-        },
-      };
-    }
-
-    if (!snap) throw new Error("fetchEventThumbnail internal error: missing snapshot");
-
-    if (format === "raw") {
-      const enc = (snap.encoding ?? "").toUpperCase();
-      const mime = enc.includes("265") || enc.includes("H265") || enc.includes("HEVC") ? "video/h265" : "video/h264";
-      return { mime, data: snap.frame };
-    }
-
-    const jpeg = await this.convertCoverPreviewFrameToJpeg({
-      frame: snap.frame,
-      encoding: snap.encoding,
-      ...(params.ffmpegPath !== undefined ? { ffmpegPath: params.ffmpegPath } : {}),
-    });
-    return { mime: "image/jpeg", data: jpeg };
-  }
-
-  /**
-   * Stream a recording/event clip via Baichuan FileInfoList download (cmdId=13, class=0x6482)
-   * as an async generator of chunks.
-   *
-   * Intended for piping into an HTTP response to a browser.
-   */
-  async *streamEventClip(params: {
-    channel: number;
-    /** UID (optional). If omitted, best-effort UID discovery is used. */
-    uid?: string;
-    /** Full fileName/Id returned by recordings list methods. */
-    fileName: string;
-    /** Idle timeout while waiting for the next chunk (default: 120s). */
-    timeoutMs?: number;
-  }): AsyncGenerator<Uint8Array, void, void> {
-    await this.client.login();
-
-    const channel = this.normalizeChannel(params.channel);
-    const uid = await this.ensureUidForRecordings(channel, params.uid);
-    const fileName = params.fileName;
-
-    const name = fileName.includes("/") ? fileName.split("/").filter(Boolean).at(-1) ?? fileName : fileName;
-
-    const payloadXml = `<?xml version="1.0" encoding="UTF-8" ?>
-<body>
-<FileInfoList version="1.1">
-<FileInfo>
-<channelId>${channel}</channelId>
-<uid>${xmlEscape(uid)}</uid>
-<fileName>${xmlEscape(fileName)}</fileName>
-<name>${xmlEscape(name)}</name>
-<Id>${xmlEscape(fileName)}</Id>
-</FileInfo>
-</FileInfoList>
-</body>`;
-
-    for await (const chunk of this.client.sendBinaryFileDownloadStream({
-      cmdId: BC_CMD_ID_FILE_INFO_LIST_DOWNLOAD,
-      channel,
-      // NVR/Hub downloads commonly expect header channelId=250 (with channel specified in Extension/XML).
-      channelIdOverride: 250,
-      messageClass: BC_CLASS_FILE_DOWNLOAD,
-      extensionXml: buildBinaryExtensionXml(channel),
-      payloadXml,
-      timeoutMs: params.timeoutMs ?? 120_000,
-    })) {
-      yield chunk;
-    }
-  }
-
-  /**
    * Subscribe to events (motion/AI/visitor) via Baichuan.
    * cmd_id: 31 (subscribe_events)
    * After subscribing, events will be emitted via client.on("event", ...)
@@ -5045,10 +4597,7 @@ ${frames}</CoverPreview>
         return;
       }
       // Keep trying other variants.
-      const dbg = this.client.getDebugConfig?.();
-      if (dbg) {
-        eventTraceLog(dbg, this.logger, "ReolinkBaichuanApi", `subscribeEvents rejected (${a.label}) responseCode=${frame.header.responseCode}`);
-      }
+      (this.logger.debug ?? this.logger.log).call(this.logger, `[ReolinkBaichuanApi] subscribeEvents rejected (${a.label}) responseCode=${frame.header.responseCode}`);
     }
 
     this.client.subscribed = false;
@@ -5098,15 +4647,10 @@ ${frames}</CoverPreview>
       if (frame.header.responseCode === 200) {
         okCount++;
       } else {
-        const dbg = this.client.getDebugConfig?.();
-        if (dbg) {
-          eventTraceLog(
-            dbg,
-            this.logger,
-            "ReolinkBaichuanApi",
-            `subscribeToAllEvents rejected (channel=${channel}) responseCode=${frame.header.responseCode}`,
-          );
-        }
+        (this.logger.debug ?? this.logger.log).call(
+          this.logger,
+          `[ReolinkBaichuanApi] subscribeToAllEvents rejected (channel=${channel}) responseCode=${frame.header.responseCode}`,
+        );
       }
     }
 
@@ -5209,18 +4753,19 @@ ${frames}</CoverPreview>
               : String(error);
 
           if (!msg.includes("not supported") && !msg.includes("unsupported")) {
-            const dbg = this.client.getDebugConfig?.();
-            if (dbg) {
-              eventTraceLog(dbg, this.logger, "ReolinkBaichuanApi", `getAiState failed; disabling AI polling: ${msg}`);
-            }
+            (this.logger.debug ?? this.logger.log)?.call(
+              this.logger,
+              "[ReolinkBaichuanApi] getAiState failed; disabling AI polling",
+              error,
+            );
           }
 
           if (!this.aiStatePollingDisabledLogged) {
             this.aiStatePollingDisabledLogged = true;
-            const dbg = this.client.getDebugConfig?.();
-            if (dbg) {
-              eventTraceLog(dbg, this.logger, "ReolinkBaichuanApi", `AI polling disabled after getAiState failure: ${msg}`);
-            }
+            this.logger.debug?.(
+              "[ReolinkBaichuanApi] AI polling disabled after getAiState failure",
+              error,
+            );
           }
         }
       }
@@ -5284,10 +4829,7 @@ ${frames}</CoverPreview>
       } catch (e) {
         // Never allow polling errors to crash callers.
         const msg = formatErrorForLog(e);
-        const dbg = this.client.getDebugConfig?.();
-        if (dbg) {
-          eventTraceLog(dbg, this.logger, "ReolinkBaichuanApi", `state polling tick failed${formatClientIoForLog(this)}: ${msg}`);
-        }
+        this.logger.debug?.(`[ReolinkBaichuanApi] state polling tick failed${formatClientIoForLog(this)}: ${msg}`);
       }
     }, 5000);
   }
@@ -8521,47 +8063,6 @@ ${frames}</CoverPreview>
     const info = this.channelPushData.get(channel);
     const uid = typeof info?.uid === "string" ? info.uid.trim() : "";
     return uid ? uid : undefined;
-  }
-
-  /**
-   * Best-effort mapping from a logical channel (as used in some listings) to the actual
-   * channelId expected by certain NVR/HomeHub Baichuan commands (e.g. CoverPreview).
-   *
-   * Observed in PCAP: payload <channelId> may not match the channel index used elsewhere,
-   * but cmd_id 145 push includes both a stable channelId key and an <index>.
-   */
-  private resolveNvrChannelId(params: { channel: number; uid?: string }): number {
-    const normalizeUid = (u: string | undefined) => {
-      const v = (u ?? "").trim();
-      if (!v) return "";
-      return (v.split("_")[0] ?? v).trim();
-    };
-
-    const wantedUid = normalizeUid(params.uid);
-
-    // 1) Direct key match.
-    const direct = this.channelPushData.get(params.channel);
-    if (direct) {
-      const directUid = normalizeUid(direct.uid);
-      if (!wantedUid || !directUid || directUid === wantedUid) return params.channel;
-    }
-
-    // 2) Match by UID across all known channels.
-    if (wantedUid) {
-      for (const [ch, info] of this.channelPushData.entries()) {
-        const u = normalizeUid(info.uid);
-        if (u && u === wantedUid) return ch;
-      }
-    }
-
-    // 3) Match by <index> (UI ordering) when present.
-    for (const [ch, info] of this.channelPushData.entries()) {
-      if (typeof (info as any)?.index === "number" && Number((info as any).index) === params.channel) {
-        return ch;
-      }
-    }
-
-    return params.channel;
   }
 
   private async listAlarmVideosViaBaichuan(params: {

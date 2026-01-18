@@ -783,38 +783,10 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
       if (dumpCmdLimit > 0 && seen >= dumpCmdLimit) continue;
       countsByCmd.set(f.header.cmdId, seen + 1);
 
-      const pickNonEmpty = (...bufs: Buffer[]): Buffer => {
-        for (const b of bufs) if (b.length > 0) return b;
-        return Buffer.alloc(0);
-      };
-
-      const tryDecryptBinaryBestEffort = (b: Buffer, channelId: number): Buffer => {
-        if (b.length === 0) return b;
-        // Prefer AES if we have it; then raw; then legacy XOR.
-        if (session.enc.kind === "aes") {
-          try {
-            return aesDecrypt(b, session.enc.key);
-          } catch {
-            // fallthrough
-          }
-        }
-        // Raw bytes first: for many binary streams the payload isn't XML at all.
-        // If it's legacy-xor, the next line will help.
-        return b;
-      };
-
       const xml =
         (f.payload.length > 0 ? tryDecodeXml(Buffer.from(f.payload), f.header.channelId) : undefined) ??
         (f.body.length > 0 ? tryDecodeXml(Buffer.from(f.body), f.header.channelId) : undefined) ??
         (f.extension.length > 0 ? tryDecodeXml(Buffer.from(f.extension), f.header.channelId) : undefined);
-
-      const blob = pickNonEmpty(Buffer.from(f.payload), Buffer.from(f.body), Buffer.from(f.extension));
-      const blobDec = tryDecryptBinaryBestEffort(blob, f.header.channelId);
-      const headHex = blobDec.subarray(0, Math.min(24, blobDec.length)).toString("hex");
-      const headAscii = blobDec
-        .subarray(0, Math.min(12, blobDec.length))
-        .toString("ascii")
-        .replace(/[\x00-\x1F\x7F-\xFF]/g, ".");
 
       const tag = xml ? rootTag(xml) ?? "<unknown>" : "<no-xml>";
       tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
@@ -823,7 +795,7 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
       const xmlPreview = xml ? (xml.length <= previewMax ? xml : xml.slice(0, previewMax) + `\n...truncated (+${xml.length - previewMax} chars)`) : undefined;
 
       console.log(
-        `\n[PCAP_DUMP_CMDIDS] cmdId=${f.header.cmdId} msgNum=${f.header.msgNum} rc=${f.header.responseCode} ch=${f.header.channelId} streamType=${f.header.streamType} class=${f.header.messageClass} bodyLen=${f.body.length} payloadLen=${f.payload.length} payloadOffset=${f.header.payloadOffset ?? 0} xmlRoot=${tag} headHex=${headHex} headAscii=${headAscii}`,
+        `\n[PCAP_DUMP_CMDIDS] cmdId=${f.header.cmdId} msgNum=${f.header.msgNum} rc=${f.header.responseCode} ch=${f.header.channelId} streamType=${f.header.streamType} class=${f.header.messageClass} bodyLen=${f.body.length} payloadLen=${f.payload.length} payloadOffset=${f.header.payloadOffset ?? 0} xmlRoot=${tag}`,
       );
       if (xmlPreview) console.log(xmlPreview);
     }
@@ -1546,8 +1518,6 @@ function main() {
   const pcIp = process.env.PC_IP ?? "192.168.1.193";
   const baichuanTcpPort = Number.parseInt(process.env.BAICHUAN_TCP_PORT ?? "9000", 10);
   const analyzeAll9000 = (process.env.PCAP_ANALYZE_ALL_9000 ?? "").trim() === "1";
-  const targetPeerIp = (process.env.PCAP_TARGET_PEER_IP ?? "").trim();
-  const targetDirContains = (process.env.PCAP_TARGET_DIR_CONTAINS ?? "").trim();
 
   const buf = fs.readFileSync(pcapPath);
   if (buf.length < 12) throw new Error("Capture too small");
@@ -2271,11 +2241,8 @@ function main() {
     }
   }
 
-  // Focus: Baichuan over TCP/9000 between hub and pc (default), or all flows when PCAP_ANALYZE_ALL_9000=1.
-  // Optional extra narrowing (useful when there are multiple 9000 endpoints in the capture):
-  // - PCAP_TARGET_PEER_IP=192.168.1.161
-  // - PCAP_TARGET_DIR_CONTAINS=":59956" (substring match)
-  let targets = [...segmentsByDir.entries()].filter(([k]) => {
+  // Focus: Baichuan over TCP/9000 between hub and pc (default), or all flows when PCAP_ANALYZE_ALL_9000=1
+  const targets = [...segmentsByDir.entries()].filter(([k]) => {
     if (!Number.isFinite(baichuanTcpPort)) return false;
     if (!k.includes(`:${baichuanTcpPort}`)) return false;
     if (analyzeAll9000) return true;
@@ -2285,15 +2252,6 @@ function main() {
       k.includes(`-> ${hubIp}:${baichuanTcpPort}`)
     );
   });
-
-  if (targetPeerIp) {
-    targets = targets.filter(([k]) => k.includes(`${targetPeerIp}:${baichuanTcpPort}`));
-    console.log(`PCAP target filter: peerIp=${targetPeerIp} port=${baichuanTcpPort} -> flows=${targets.length}`);
-  }
-  if (targetDirContains) {
-    targets = targets.filter(([k]) => k.includes(targetDirContains));
-    console.log(`PCAP target filter: dirContains=${JSON.stringify(targetDirContains)} -> flows=${targets.length}`);
-  }
 
   // Optional manual override for captures missing the login negotiation.
   // Example: BAICHUAN_NONCE=... BAICHUAN_ENC_TYPE=0x12
