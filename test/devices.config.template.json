@@ -1,0 +1,37 @@
+{
+  "defaults": {
+    "usernameEnv": "TCP_USERNAME",
+    "passwordEnv": "TCP_PASSWORD",
+    "timeoutMs": 15000
+  },
+  "standalone": {
+    "tcp": {
+      "host": "${TCP_HOST:-192.168.1.10}",
+      "channel": 0,
+      "usernameEnv": "TCP_USERNAME",
+      "passwordEnv": "TCP_PASSWORD",
+      "suites": ["core", "events", "streams", "ptzReadOnly", "whiteLedReadOnly", "pirReadOnly", "aiReadOnly"]
+    },
+    "udp": {
+      "host": "${UDP_HOST:-192.168.1.11}",
+      "uid": "${UDP_UID:-YOUR_UID_HERE}",
+      "udpDiscoveryMethod": "map",
+      "channel": 0,
+      "usernameEnv": "UDP_USERNAME",
+      "passwordEnv": "UDP_PASSWORD",
+      "suites": ["core", "events", "battery", "pirReadOnly", "aiReadOnly"]
+    }
+  },
+  "nvr": {
+    "host": "${NVR_HOST:-192.168.1.20}",
+    "channel": 0,
+    "usernameEnv": "NVR_USERNAME",
+    "passwordEnv": "NVR_PASSWORD",
+    "suites": ["core", "nvrSummary", "events", "streams"],
+    "channels": {
+      "0": { "kind": "nonBattery" },
+      "1": { "kind": "battery" },
+      "2": { "kind": "nonBattery" }
+    }
+  }
+}

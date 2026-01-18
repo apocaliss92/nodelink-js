@@ -41,6 +41,22 @@ export interface PtzPreset {
   name: string;
 }
 
+export type PtzPosition = {
+  pan?: number;
+  tilt?: number;
+};
+
+export type ZoomFocusTriplet = {
+  minPos: number;
+  maxPos: number;
+  curPos: number;
+};
+
+export type ZoomFocusStatus = {
+  zoom?: ZoomFocusTriplet;
+  focus?: ZoomFocusTriplet;
+};
+
 export interface PtzCommand {
   action: "start" | "stop";
   command: "Left" | "Right" | "Up" | "Down" | "ZoomIn" | "ZoomOut" | "FocusNear" | "FocusFar";
@@ -119,6 +135,43 @@ export interface ReolinkBaichuanNetworkInfo {
   activeLink?: string;
 }
 
+export type ReolinkNvrChannelInfo = {
+  channel: number;
+  /** Camera model string (Baichuan: <type>, CGI: typeInfo). */
+  model?: string;
+  /** Camera name (OSD/name). */
+  name?: string;
+  /** Camera UID (when available via NVR CGI). */
+  uid?: string;
+  /** Online flag (when available via NVR CGI). */
+  online?: boolean;
+  /** Sleep flag (when available via NVR CGI, common for battery cams). */
+  sleep?: boolean;
+  /** Firmware version (Baichuan: firmwareVersion, CGI: firmVer). */
+  firmwareVersion?: string;
+  /** Board info (CGI: boardInfo). */
+  boardInfo?: string;
+  /** Where the info came from for this channel. */
+  source: "baichuan" | "cgi";
+};
+
+export type ReolinkBaichuanPorts = Record<string, Record<string, number>>;
+
+export type ReolinkBaichuanChannelInfo = {
+  typeInfo?: string;
+  firmVer?: string;
+  firmwareVersion?: string;
+  boardInfo?: string;
+  pakSuffix?: string;
+  name?: string;
+};
+
+export type ReolinkBaichuanChannelIdentity = {
+  channel: number;
+  model: string;
+  name: string;
+};
+
 /**
  * NVR/HUB grouping of channels that belong to the same physical device.
  *
@@ -138,6 +191,13 @@ export interface ReolinkNvrDeviceGroupSummary {
   reason: string;
 }
 
+export type ReolinkNvrDeviceGroupsResult = {
+  channels: number[];
+  groups: ReolinkNvrDeviceGroupSummary[];
+  /** Map channel -> group key. */
+  channelToGroup: Record<number, string>;
+};
+
 export type SleepState = "awake" | "sleeping" | "unknown";
 
 /**
@@ -153,6 +213,27 @@ export interface SleepStatus {
   idleMs?: number;
 }
 
+export type WakeUpOptions = {
+  /** Timeout per single attempt (default: 20000). */
+  timeoutMs?: number;
+  /** Number of attempts (default: 3). */
+  attempts?: number;
+  /** Delay after an attempt that "unlocks" the camera (default: 1500). */
+  waitAfterWakeMs?: number;
+  /** Delay between failed attempts (default: 1500). */
+  backoffMs?: number;
+  /**
+   * If true, closes the connection and forces a reconnect before retrying.
+   * Default: true for UDP (battery), false for TCP.
+   */
+  reconnect?: boolean;
+};
+
+export type LastSleepProbe = {
+  atMs: number;
+  status: SleepStatus;
+};
+
 export interface PirState {
   enabled: boolean;
   state?: {
@@ -162,10 +243,59 @@ export interface PirState {
   };
 }
 
+export type SirenState = {
+  enabled: boolean;
+};
+
 export interface WhiteLedState {
   enabled: boolean;
   brightness?: number;
 }
+
+/** Public snapshot entry returned by `ReolinkBaichuanApi.getChannelInfoFromPushCache()`. */
+export type ChannelPushCacheEntry = {
+  name: string;
+  uid: string;
+  state: string;
+  index?: number;
+  streamSupport?: string[];
+  wifiState?: string;
+  networkSegment?: string;
+  changed?: boolean;
+  abilityChanged?: boolean;
+  online?: boolean;
+  sleeping?: boolean;
+  loginState?: string;
+  updatedAtMs?: number;
+};
+
+/** Internal live entry used to maintain cmd_id 145 push state. */
+export type ChannelPushDataEntry = ChannelPushCacheEntry & {
+  /** Lowercased state for convenience (e.g. "connect", "none"). */
+  stateLower?: string;
+  updatedAtMs: number;
+};
+
+export type AiTypesCacheEntry = {
+  types?: string[];
+  updatedAtMs: number;
+};
+
+export type NvrChannelsSummaryCacheEntry = {
+  channels: number[];
+  devices: ReolinkBaichuanDeviceSummary[];
+};
+
+export type RecordingsCacheEntry = {
+  recordings: EnrichedRecordingFile[];
+  cachedAt: number;
+  /** TTL in milliseconds (default 5 minutes) */
+  ttlMs: number;
+};
+
+export type RecordingsQueueItem = {
+  run: () => Promise<void>;
+};
 
 export interface AudioAlarmParams {
   channel: number;
@@ -192,6 +322,8 @@ export interface Events {
 
 export type StreamProfile = "main" | "sub" | "ext";
 
+export type NativeVideoStreamVariant = "default" | "autotrack" | "telephoto";
+
 export type VideoCodec = "H.264" | "H.265" | "MJPEG" | "MPEG4" | string;
 
 export interface StreamMetadata {
@@ -205,6 +337,63 @@ export interface StreamMetadata {
   frameRate: number; // FPS
   bitRate: number; // Bitrate in kbps
 }
+
+/**
+ * Complete media stream options with all available metadata.
+ * Includes RTSP, RTMP, and native Baichuan stream information.
+ */
+export interface ReolinkSupportedStream {
+  // Basic identification
+  name: string;
+  id: string;
+  container: "rtsp" | "rtmp" | "rtp";
+  channel?: number; // undefined for composite streams (multifocal devices)
+  profile: StreamProfile;
+  /**
+   * Underlying device stream name used by the transport.
+   * For RTSP this maps to `/...Preview_<ch>_<streamName>` (e.g. main/sub/autotrack).
+   * For RTMP this maps to `/bcs/channel<ch>_<streamName>.bcs`.
+   */
+  streamName?: string;
+  /** Optional lens hint for multifocal devices (TrackMix/Duo). */
+  lens?: "wide" | "telephoto" | "composite";
+  /** Native-only: request a non-default logical stream (e.g. TrackMix tele on NVR). */
+  nativeVariant?: NativeVideoStreamVariant;
+  url: string; // URL without authentication credentials
+  urlWithAuth: string; // URL with authentication credentials
+  streamType?: number; // Stream type: 0 for main/ext, 1 for sub (RTMP)
+  path?: string; // Stream path (e.g., /h264Preview_01_main, /bcs/channel0_main.bcs)
+  port?: number; // Port number (RTSP/RTMP)
+  metadata?: StreamMetadata; // Complete original stream metadata
+}
+
+export type RtspCreateOptions = {
+  listenHost?: string;
+  listenPort?: number;
+  path?: string;
+  variant?: NativeVideoStreamVariant;
+};
+
+export type ReolinkVideoStreamOptionsResult = {
+  nativeStreams: ReolinkSupportedStream[];
+  rtspStreams: ReolinkSupportedStream[];
+  rtmpStreams: ReolinkSupportedStream[];
+};
+
+export type VideoStreamOptionsCacheEntry = ReolinkVideoStreamOptionsResult;
+
+export type RunAllDiagnosticsConsecutivelyResult = {
+  runDir: string;
+  zipPath: string;
+  diagnosticsPath: string;
+  streamsDir: string;
+};
+
+export type RunMultifocalDiagnosticsConsecutivelyResult = {
+  runDir: string;
+  resultsPath: string;
+  streamsDir: string;
+};
 
 export interface ChannelStreamMetadata {
   channel: number;
@@ -614,6 +803,30 @@ export interface DownloadRecordingParams {
   timeoutMs?: number;
 }
 
+export type RecordingPlaybackUrls = {
+  /** RTMP VOD URL for playback/export. */
+  rtmpVodUrl: string;
+};
+
+export type PlaybackSnapshotStreamInfo = {
+  width?: number;
+  height?: number;
+  frameRate?: number;
+};
+
+export type SnapshotFromPlaybackResult = {
+  /** Raw I-frame data (H.264 or H.265) */
+  frame: Buffer;
+  /** Video encoding type detected from frame header */
+  encoding: string;
+  /** Frame length in bytes */
+  frameLength: number;
+  /** Frame timestamp (Unix seconds) if available */
+  frameTime?: number;
+  /** Stream metadata from header */
+  streamInfo: PlaybackSnapshotStreamInfo;
+};
+
 /**
  * Detailed information about channel capabilities for dual lens models.
  */
@@ -635,7 +848,7 @@ export interface DualLensChannelInfo {
   /** Channel type: "wide" for wide-angle lens, "telephoto" for telephoto lens */
   lensType?: "wide" | "telephoto" | undefined;
   /** Which Native variant maps to this lens (default=wide; autotrack/telephoto=tele lens depending on context). */
-  variantType?: import("./ReolinkBaichuanApi").NativeVideoStreamVariant;
+  variantType?: NativeVideoStreamVariant;
   /** Available streams for this channel */
   availableStreams: {
     /** RTSP stream available */

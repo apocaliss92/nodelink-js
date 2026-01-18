@@ -52,6 +52,8 @@
     "typecheck": "npx tsc -p tsconfig.json --noEmit",
     "lint": "npx eslint .",
     "test:build": "npm run build && (npx tsc -p tsconfig.test.json || true)",
+    "test:build:strict": "npm run build && npx tsc -p tsconfig.test.json",
+    "test:integration": "npm run test:build:strict && node --test dist/test/integration/*.test.js",
     "test:discovery": "npm run test:build && node dist/test/discovery/test-discovery.js",
     "test:tcp": "npm run test:build && node dist/test/tcp/test-tcp.js",
     "test:tcp:native": "npm run test:build && node dist/test/tcp/test-tcp-native-apis.js",

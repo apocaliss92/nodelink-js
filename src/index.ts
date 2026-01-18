@@ -18,6 +18,16 @@ export * from "./reolink/baichuan/capabilities";
 // DeviceAbilities is already exported via export * above
 export * from "./rtsp/urls";
 export * from "./rtsp/server";
+export {
+	asLogger,
+	createDebugGateLogger,
+	createLogger,
+	createNullLogger,
+	createTaggedLogger,
+	getGlobalLogger,
+	setGlobalLogger,
+} from "./logging/logger";
+export type { LogLevel } from "./logging/logger";
 export * from "./rfc/helpers";
 export * from "./rfc/rfc4571";
 export * from "./rfc/rfc4571-server";

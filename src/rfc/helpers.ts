@@ -4,7 +4,7 @@
  */
 
 import type { ReolinkBaichuanApi } from "../reolink/baichuan/ReolinkBaichuanApi";
-import type { ReolinkEvent, StreamProfile } from "../reolink/baichuan/types";
+import type { NativeVideoStreamVariant, ReolinkEvent, StreamProfile } from "../reolink/baichuan/types";
 import { buildRtspUrl } from "../rtsp/urls";
 import { spawn } from "node:child_process";
 import { BaichuanVideoStream } from "../baichuan/stream/BaichuanVideoStream";
@@ -335,7 +335,7 @@ export async function* createNativeStream(
   channel: number,
   profile: StreamProfile,
   options?: {
-    variant?: import("../reolink/baichuan/ReolinkBaichuanApi").NativeVideoStreamVariant;
+    variant?: NativeVideoStreamVariant;
   }
 ): AsyncGenerator<{
   audio: boolean;

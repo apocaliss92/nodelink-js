@@ -5,6 +5,8 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { Udp7777Listener } from "./Udp7777Listener";
+import type { Logger } from "../debug/DebugConfig";
+import { asLogger } from "../logging/logger";
 
 const MAGIC_6666 = Buffer.from([0x0c, 0x00, 0x01, 0x00]); // u32le 0x0001000c
 
@@ -51,6 +53,9 @@ export type HubEmulatorOptions = {
   idleExitMs?: number;
 
   findAsciiNeedle?: string;
+  
+  /** Optional logger (defaults to console). */
+  logger?: Logger;
 };
 
 export type HubEmulatorEvents = {
@@ -225,6 +230,7 @@ export class HubEmulator extends EventEmitter {
     expectedHubMacHex: string | undefined;
     findAsciiNeedle: string | undefined;
   };
+  private readonly logger: Logger;
 
   private udp: Udp7777Listener | undefined;
   private server: net.Server | undefined;
@@ -235,6 +241,8 @@ export class HubEmulator extends EventEmitter {
 
   constructor(options: HubEmulatorOptions = {}) {
     super();
+    
+    this.logger = asLogger(options.logger);
 
     this.opts = {
       bindHost: options.bindHost ?? "0.0.0.0",
@@ -319,7 +327,7 @@ export class HubEmulator extends EventEmitter {
 
         if (this.opts.replayVerbose) {
           // eslint-disable-next-line no-console
-          console.log(`[hub-emu][replay] ${remote} flowPickByIp remoteIp=${remoteIp} out=${outFlow ? outFlow.dirKey : "-"}`);
+          this.logger.log(`[hub-emu][replay] ${remote} flowPickByIp remoteIp=${remoteIp} out=${outFlow ? outFlow.dirKey : "-"}`);
         }
       };
 
@@ -390,7 +398,7 @@ export class HubEmulator extends EventEmitter {
 
           if (this.opts.expectedHubMacHex && hint?.macHex && this.opts.expectedHubMacHex !== hint.macHex) {
             // eslint-disable-next-line no-console
-            console.log(`[hub-emu] WARN hubMacMismatch expected=${this.opts.expectedHubMacHex} got=${hint.macHex}`);
+            this.logger.warn(`[hub-emu] hubMacMismatch expected=${this.opts.expectedHubMacHex} got=${hint.macHex}`);
           }
 
           this.bumpActivity("tcp6666_prefix", {
@@ -412,7 +420,7 @@ export class HubEmulator extends EventEmitter {
             const ascii = prefix.toString("latin1").toLowerCase();
             if (ascii.includes(this.opts.findAsciiNeedle.toLowerCase())) {
               // eslint-disable-next-line no-console
-              console.log(`[hub-emu] ASCII_MATCH in prefix needle=${JSON.stringify(this.opts.findAsciiNeedle)}`);
+              this.logger.log(`[hub-emu] ASCII_MATCH in prefix needle=${JSON.stringify(this.opts.findAsciiNeedle)}`);
             }
           }
 
@@ -428,7 +436,7 @@ export class HubEmulator extends EventEmitter {
             const ascii = r.payload.toString("latin1").toLowerCase();
             if (ascii.includes(this.opts.findAsciiNeedle.toLowerCase())) {
               // eslint-disable-next-line no-console
-              console.log(`[hub-emu] ASCII_MATCH in payload type=${r.type} needle=${JSON.stringify(this.opts.findAsciiNeedle)}`);
+              this.logger.log(`[hub-emu] ASCII_MATCH in payload type=${r.type} needle=${JSON.stringify(this.opts.findAsciiNeedle)}`);
             }
           }
 

@@ -4,6 +4,10 @@ dist-test
 _refs
 .DS_Store
 .env
+
+# Local integration test config (IPs / credentials)
+test/devices.config.json
+fullTest/devices.config.json
 .env.*
 npm-debug.log*
 yarn-debug.log*
@@ -16,7 +20,7 @@ pnpm-debug.log*
 *.d.ts
 *.d.ts.map
 !eslint.config.js
-!test/audio-samples/generate-test-audio.js
+!fullTest/audio-samples/generate-test-audio.js
 
 # But allow JS files in specific locations if needed
 !node_modules/**/*.js
@@ -28,6 +32,16 @@ test/recordings/*
 test/diagnostics-dumps/*
 test/frames-debug/*
 test/frames-save/*
+test/artifacts/*
+
+fullTest/frames/*
+fullTest/diagnostics/*
+fullTest/recordings/*
+fullTest/diagnostics-dumps/*
+fullTest/frames-debug/*
+fullTest/frames-save/*
+fullTest/artifacts/*
+fullTest/audio-samples/*
 .tmp/*
 pcap/*
 firmwares/*

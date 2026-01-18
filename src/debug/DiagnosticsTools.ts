@@ -2,7 +2,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
 
-import type { NativeVideoStreamVariant, ReolinkBaichuanApi } from "../reolink/baichuan/ReolinkBaichuanApi";
+import type { ReolinkBaichuanApi } from "../reolink/baichuan/ReolinkBaichuanApi";
+import type { NativeVideoStreamVariant } from "../reolink/baichuan/types";
 import type { ReolinkCgiApi, DeviceInputData } from "../reolink/cgi/ReolinkCgiApi";
 import type { ReolinkHttpClientOptions } from "../reolink/http/ReolinkHttpClient";
 import { ReolinkCgiApi as ReolinkCgiApiImpl } from "../reolink/cgi/ReolinkCgiApi";

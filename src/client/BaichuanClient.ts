@@ -13,6 +13,7 @@ import {
   type DebugOptions,
   type Logger
 } from "../debug/DebugConfig";
+import { createDebugGateLogger } from "../logging/logger";
 import {
   BC_CLASS_LEGACY,
   BC_CLASS_FILE_DOWNLOAD,
@@ -257,8 +258,12 @@ export class BaichuanClient extends EventEmitter<{
   constructor(options: BaichuanClientOptions) {
     super();
     this.opts = options;
-    this.logger = options.logger ?? console;
     this.debugCfg = normalizeDebugOptions(options.debugOptions);
+    // Centralized verbosity control: treat `.debug()` as opt-in.
+    this.logger = createDebugGateLogger(
+      options.logger,
+      this.debugCfg.general || this.debugCfg.traceNativeStream || this.debugCfg.traceRecordings || this.debugCfg.traceTalk || this.debugCfg.traceEvents || this.debugCfg.debugRtsp,
+    );
     // this.logger.log("BaichuanClient constructor", { options, dgfg: this.debugCfg });
   }
 

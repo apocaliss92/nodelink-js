@@ -1,6 +1,7 @@
 import type net from 'node:net';
 import netImpl from 'node:net';
-import type { ReolinkBaichuanApi, NativeVideoStreamVariant } from '../reolink/baichuan/ReolinkBaichuanApi';
+import type { ReolinkBaichuanApi } from '../reolink/baichuan/ReolinkBaichuanApi';
+import type { NativeVideoStreamVariant } from '../reolink/baichuan/types';
 import type { StreamProfile } from '../reolink/baichuan/types';
 import { BaichuanVideoStream } from '../baichuan/stream/BaichuanVideoStream';
 import { CompositeStream, type CompositeStreamPipOptions } from '../multifocal/compositeStream';
