@@ -6733,6 +6733,55 @@ ${xmlDateTimePayload("endTime", end)}
   }
 
   /**
+   * Best-effort floodlight support probe via cmd 289 (GetWhiteLed/Floodlight).
+   *
+   * Note: this probes ONLY the provided channel (no ch+1 fallback).
+   */
+  async probeFloodlightSupportByCmd289(channel: number, options?: { timeoutMs?: number }): Promise<boolean> {
+    const ch = this.normalizeChannel(channel);
+    // cmd 289 can be slow behind NVR/Hub; avoid false negatives due to timeouts.
+    const timeoutMs = options?.timeoutMs ?? 2500;
+
+    try {
+      const xml = await this.sendXml({
+        cmdId: BC_CMD_ID_GET_WHITE_LED,
+        channel: ch,
+        timeoutMs,
+      });
+      this.logger.debug(`probeFloodlightSupportByCmd289: received XML for channel ${ch}:\n${xml}`);
+
+      return (/(<FloodlightTask\b|<FloodlightManual\b|<FloodlightStatusList\b|<WhiteLed\b)/i.test(xml));
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Returns AI object-detection types for a channel via cmd 299 (AiCfg).
+   *
+   * Uses <detectType> as the source of truth and returns a normalized string list.
+   */
+  async getAiDetectTypes(channel: number, options?: { timeoutMs?: number }): Promise<string[] | undefined> {
+    const ch = this.normalizeChannel(channel);
+    const timeoutMs = options?.timeoutMs ?? 1500;
+
+    try {
+      const xml = await this.sendXml({ cmdId: 299, channel: ch, timeoutMs });
+      const detectTypeRaw = (getXmlText(xml, "detectType") ?? "").trim();
+      if (!detectTypeRaw) return undefined;
+
+      const list = detectTypeRaw
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      return list.length > 0 ? list : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * Compute explicit device capabilities (hasZoom/hasPan/hasTilt/hasBattery/...) for a specific channel.
    *
    * This method centralizes capability parsing in the library.
@@ -6877,7 +6926,9 @@ ${xmlDateTimePayload("endTime", end)}
     // Best-effort floodlight probe.
     // Many firmwares expose only `ledState_rw` (status LED) in AbilityInfo, even when a real floodlight
     // exists and is controllable via Baichuan. The most reliable signal is whether cmd 289 works.
-    if (probeCfg.probe && probeCfg.probeFloodlight && !capabilities.hasFloodlight) {
+    // NOTE: Some firmwares/NVRs report `lightType=0` even when cmd289 returns Floodlight* payloads,
+    // so we should not treat `lightType=0` as authoritative.
+    if (probeCfg.probe && probeCfg.probeFloodlight && channelProvided) {
       const channelSupportItems = (support?.items ?? []).filter((i) => i.chnID === ch || i.chnID === ch + 1);
 
       const parseLightType = (item: any): number | undefined => {
@@ -6894,56 +6945,28 @@ ${xmlDateTimePayload("endTime", end)}
         .map((i) => parseLightType(i))
         .filter((v): v is number => Number.isFinite(v));
 
-      // If firmware explicitly says there is no white LED/floodlight, do not probe.
-      // This avoids false positives where cmd289 returns a FloodlightTask-like XML but the device
-      // only has IR illumination / status LEDs.
-      if (lightTypes.some((v) => v === 0)) {
-        // leave as false
-      } else if (lightTypes.some((v) => v > 0)) {
+      // If firmware explicitly says there is a light, trust that.
+      if (lightTypes.some((v) => v > 0)) {
         capabilities.hasFloodlight = true;
-      } else {
-        // No explicit lightType. Probe cmd 289.
-        try {
-          const xml = await this.sendXml({
-            cmdId: BC_CMD_ID_GET_WHITE_LED,
-            channel: ch,
-            timeoutMs: 1000,
-          });
-
-          // Only treat this as floodlight support if the payload clearly looks like floodlight.
-          if (/(<FloodlightTask\b|<FloodlightManual\b|<FloodlightStatusList\b|<WhiteLed\b)/i.test(xml)) {
-            capabilities.hasFloodlight = true;
-          }
-        } catch {
-          // noop
-        }
       }
+
+      // Always probe cmd 289 (even if lightType==0/unknown), as some devices/NVRs misreport it.
+      // This is additive: once true, keep it true.
+      const probed = await this.probeFloodlightSupportByCmd289(ch, { timeoutMs: 2500 });
+      capabilities.hasFloodlight = capabilities.hasFloodlight || probed;
     }
 
     // Object-detection capabilities.
     // Always read cmd 299 (AiCfg) and use <detectType> as the single source of truth.
     // This avoids inference/probing variability across firmwares.
-    let objects: string[] | undefined;
-    try {
-      const xml = await this.sendXml({ cmdId: 299, channel: ch, timeoutMs: 1500 });
-      const detectTypeRaw = (getXmlText(xml, "detectType") ?? "").trim();
-      if (detectTypeRaw) {
-        const list = detectTypeRaw
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean);
-        if (list.length > 0) objects = list;
-      }
-    } catch {
-      // noop
-    }
+    const objects = await this.getAiDetectTypes(ch, { timeoutMs: 1500 });
 
     let presets: PtzPreset[] | undefined;
     if (capabilities.hasPresets) {
-      const presetsResult = await Promise.allSettled([this.getPtzPresets(ch)]);
-      const r0 = presetsResult[0];
-      if (r0?.status === "fulfilled") {
-        presets = r0.value;
+      const presetsResult = await this.getPtzPresets(ch);
+      const r0 = presetsResult;
+      if (r0) {
+        presets = r0;
         capabilities.hasPresets = presets.length > 0;
       }
     }
@@ -8309,7 +8332,7 @@ ${xmlDateTimePayload("endTime", end)}
         // Some NVRs expose placeholder channels (or reject certain commands on some channels).
         // Don't fail the whole request if one channel fails.
         const msg = e instanceof Error ? e.message : String(e);
-        this.logger?.log?.(`[listNvrAlarmEventsViaBaichuan] channel ${channel} failed: ${msg}`);
+        // this.logger?.log?.(`[listNvrAlarmEventsViaBaichuan] channel ${channel} failed: ${msg}`);
       }
     }
 
