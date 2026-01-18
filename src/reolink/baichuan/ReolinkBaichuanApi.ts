@@ -299,12 +299,20 @@ export class ReolinkBaichuanApi {
       try {
         // Support async handlers (common in Scrypted plugins) without unhandled rejections.
         void Promise.resolve(cb(evt)).catch((e: unknown) => {
-          (this.logger.warn ?? this.logger.error).call(this.logger, "[ReolinkBaichuanApi] onSimpleEvent handler error", e);
+          (this.logger.warn ?? this.logger.error).call(
+            this.logger,
+            "[ReolinkBaichuanApi] onSimpleEvent handler error",
+            formatErrorForLog(e),
+          );
         });
       }
       catch (e) {
         // Never allow user handlers to break the Baichuan client's event loop.
-        (this.logger.warn ?? this.logger.error).call(this.logger, "[ReolinkBaichuanApi] onSimpleEvent handler error", e);
+        (this.logger.warn ?? this.logger.error).call(
+          this.logger,
+          "[ReolinkBaichuanApi] onSimpleEvent handler error",
+          formatErrorForLog(e),
+        );
       }
     }
   }

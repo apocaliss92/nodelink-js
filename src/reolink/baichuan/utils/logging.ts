@@ -8,6 +8,26 @@ export const formatErrorForLog = (e: unknown): string => {
   }
   if (typeof e === "string") return e;
   if (e && typeof e === "object") {
+    // Many runtimes/plugins serialize errors (losing prototype/stack) into plain objects.
+    // Extract the common fields explicitly before falling back to JSON.
+    try {
+      const msgValue = Reflect.get(e as object, "message");
+      const nameValue = Reflect.get(e as object, "name");
+      const codeValue = Reflect.get(e as object, "code");
+
+      const msg = typeof msgValue === "string" ? msgValue : undefined;
+      const name = typeof nameValue === "string" ? nameValue : undefined;
+      const code = typeof codeValue === "string" || typeof codeValue === "number" ? String(codeValue) : undefined;
+
+      if (msg || name || code) {
+        const head = name ? `${name}: ` : "";
+        const tail = code ? ` code=${code}` : "";
+        return `${head}${msg ?? "(no message)"}${tail}`;
+      }
+    } catch {
+      // ignore
+    }
+
     try {
       const keys = Object.keys(e);
       const json = JSON.stringify(e);

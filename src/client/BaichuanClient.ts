@@ -890,7 +890,13 @@ export class BaichuanClient extends EventEmitter<{
     });
 
     const sid = this.socketSessionId;
-    this.logFixed("connected", `transport=tcp host=${this.opts.host} port=${port}${sid ? ` sid=${sid}` : ""}`);
+    const remoteAddress = sock.remoteAddress;
+    const remoteFamily = sock.remoteFamily;
+    const remote = remoteAddress ? `${remoteAddress}${remoteFamily ? `/${remoteFamily}` : ""}` : undefined;
+    this.logFixed(
+      "connected",
+      `transport=tcp host=${this.opts.host} port=${port}${sid ? ` sid=${sid}` : ""}${remote ? ` remote=${remote}` : ""}`,
+    );
 
     this.startKeepAlive();
     this.kickIdleDisconnectTimer();
@@ -1051,9 +1057,10 @@ export class BaichuanClient extends EventEmitter<{
     const shortUid = this.opts.uid ? this.opts.uid.substring(0, 5) : "";
     const udpDiscoveryMethod = this.opts.udpDiscoveryMethod as string | undefined ?? 'local-direct';
     const sid = this.socketSessionId;
+    const udpRemoteHost: string | undefined = (sock as any)?.remote?.host;
     this.logFixed(
       "connected",
-      `transport=udp host=${this.opts.host}${sid ? ` sid=${sid}` : ""} uid=${shortUid} udpDiscoveryMethod=${udpDiscoveryMethod}`,
+      `transport=udp host=${this.opts.host}${sid ? ` sid=${sid}` : ""}${udpRemoteHost ? ` remote=${udpRemoteHost}` : ""} uid=${shortUid} udpDiscoveryMethod=${udpDiscoveryMethod}`,
     );
     this.startKeepAlive();
     this.kickIdleDisconnectTimer();
