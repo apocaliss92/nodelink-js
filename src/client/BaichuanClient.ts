@@ -1061,11 +1061,49 @@ export class BaichuanClient extends EventEmitter<{
 
   async close(options?: { reason?: string }): Promise<void> {
     const hasSocket = Boolean((this.tcpSocket && !this.tcpSocket.destroyed) || this.udpSocket);
+    const reason = (options?.reason ?? "manual_close").trim() || "manual_close";
     if (hasSocket) {
       this.pendingCloseInfo = {
         atMs: Date.now(),
-        reason: (options?.reason ?? "manual_close").trim() || "manual_close",
+        reason,
       };
+    }
+
+    // Always log close triggers (even if the socket close event is swallowed by the runtime).
+    // This helps diagnose cases where we see repeated "connected ... sid=..." without an obvious disconnect.
+    try {
+      const sid = this.socketSessionId;
+      const transport = this.transport;
+      const host = this.opts.host;
+      const port = this.opts.port ?? BC_TCP_DEFAULT_PORT;
+      const shortUid = this.opts.uid ? this.opts.uid.substring(0, 5) : undefined;
+      this.logFixed("closing", {
+        transport,
+        host,
+        ...(transport === "tcp" ? { port } : {}),
+        ...(sid ? { sid } : {}),
+        ...(shortUid ? { uid: shortUid } : {}),
+        reason,
+        hasSocket,
+        socketConnected: this.isSocketConnected(),
+        loggedIn: this.loggedIn,
+        subscribed: this.subscribed,
+        pending: this.pending.size,
+        permits: this.permits.size,
+        videoSubscriptions: this.videoSubscriptions.size,
+      });
+
+      // Optional: emit a trimmed stack trace to locate the caller.
+      // Enable via env var to avoid noisy logs in production.
+      if ((process.env.BAICHUAN_LOG_CLOSE_STACK ?? "").trim() === "1") {
+        const stack = new Error("BaichuanClient.close() stack").stack;
+        if (stack) {
+          const lines = stack.split("\n").slice(0, 10).join("\n");
+          this.logFixed("closing_stack", lines);
+        }
+      }
+    } catch {
+      // ignore
     }
 
     this.stopKeepAlive();
@@ -1082,49 +1120,47 @@ export class BaichuanClient extends EventEmitter<{
       this.recomputeGlobalStreamingContribution();
     }
 
-    // Clean up TCP socket completely
+    // IMPORTANT:
+    // Don't remove listeners here: the per-transport socket "close" handler is responsible for:
+    // - logging "disconnected"
+    // - clearing socket/session state
+    // - rejecting pending requests
+    // If we remove listeners here, we lose observability and can leave state inconsistent.
+
+    // Trigger TCP close (if any) and wait for the "close" event.
     const tcp = this.tcpSocket;
-    this.tcpSocket = undefined;
     if (tcp && !tcp.destroyed) {
-      // Remove all listeners to prevent memory leaks
-      tcp.removeAllListeners();
-      // Destroy the socket completely
-      tcp.destroy();
-      // Wait for socket to be fully destroyed
+      try {
+        // Best-effort graceful end; most firmwares just close anyway.
+        tcp.end();
+      } catch {
+        // ignore
+      }
+      try {
+        tcp.destroy();
+      } catch {
+        // ignore
+      }
+
       await new Promise<void>((resolve) => {
         if (tcp.destroyed) {
           resolve();
           return;
         }
         tcp.once("close", () => resolve());
-        // Fallback timeout in case close event doesn't fire
-        setTimeout(() => resolve(), 100);
+        setTimeout(() => resolve(), 250);
       });
     }
 
-    // Clean up UDP socket completely
+    // Trigger UDP close (if any). BcUdpStream.close() should emit "close" and run our handler.
     const udp = this.udpSocket;
-    this.udpSocket = undefined;
     if (udp) {
       try {
-        // Remove all listeners before closing
-        if (udp.removeAllListeners) {
-          udp.removeAllListeners();
-        }
         await udp.close();
       } catch (e) {
-        // Ignore errors during UDP close
         this.logDebug("udp_close_error", e);
       }
     }
-
-    // Clear pending operations
-    this.pending.clear();
-
-    // Reset state flags
-    this.loggedIn = false;
-    this.subscribed = false;
-    this.socketClosed = true;
   }
 
   private handleFrame(frame: BaichuanFrame): void {
@@ -2892,6 +2928,7 @@ export class BaichuanClient extends EventEmitter<{
         this.loggedIn = false;
 
         const msg = e && typeof e === "object" && "message" in e ? String((e as any).message) : String(e);
+        const isNetworkUnreachable = msg.includes("EHOSTUNREACH") || msg.includes("ENETUNREACH");
         const looksLikeNegotiationFailure =
           msg.includes("timeout waiting for nonce") ||
           msg.includes("expected encryption info") ||
@@ -2908,10 +2945,23 @@ export class BaichuanClient extends EventEmitter<{
           }
         }
         try {
-          await this.close();
+          await this.close({
+            reason: isNetworkUnreachable
+              ? "tcp_unreachable"
+              : looksLikeNegotiationFailure
+                ? "login_negotiation_failed"
+                : "login_failed",
+          });
         } catch {
           // ignore
         }
+
+        // If we can't route to the host, retrying encryption negotiation won't help.
+        // Fail fast so callers like autodetect can fallback to UDP/relay quickly.
+        if (isNetworkUnreachable) {
+          throw e;
+        }
+
         if (attempt < maxAttempts) {
           // Backoff: give the camera time to wake up.
           await sleep(1500);

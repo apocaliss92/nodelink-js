@@ -6,6 +6,8 @@ import type { ReolinkDeviceInfo } from "./types";
 
 export type BaichuanTransport = "tcp" | "udp";
 
+export type AutoDetectMode = "auto" | BaichuanTransport;
+
 export type AutoDetectInputs = {
   host: string;
   username: string;
@@ -13,6 +15,18 @@ export type AutoDetectInputs = {
   uid?: string;
   logger?: Logger;
   debugOptions?: BaichuanClientOptions["debugOptions"];
+  /**
+   * Force a specific transport mode.
+   * - `auto` (default): try TCP first, then fallback to UDP when the error looks like a transport failure.
+   * - `tcp`: only attempt TCP.
+   * - `udp`: only attempt UDP (will try to discover UID if missing).
+   */
+  mode?: AutoDetectMode;
+  /**
+   * Maximum number of retries for each phase (TCP login and each UDP method).
+   * NOTE: BaichuanClient.login() may still have its own internal retry/backoff.
+   */
+  maxRetries?: number;
   /**
    * Optional override for BCUDP discovery method.
    * If omitted, autodetect will try `local-direct`, then `local-broadcast`, then `remote`, then `relay`, then `map`.
@@ -234,6 +248,68 @@ function attachErrorHandler(api: ReolinkBaichuanApi, transport: BaichuanTranspor
 export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<AutoDetectResult> {
   const { host, uid, logger } = inputs;
 
+  const mode: AutoDetectMode = (inputs.mode ?? "auto") as AutoDetectMode;
+  const maxRetriesRaw = inputs.maxRetries;
+  const maxRetries = Math.max(1, Math.min(10, typeof maxRetriesRaw === "number" && Number.isFinite(maxRetriesRaw) ? Math.floor(maxRetriesRaw) : 1));
+
+  const fmtErr = (e: unknown): string => {
+    const m = (e as any)?.message || (e as any)?.toString?.() || String(e);
+    return typeof m === "string" ? m : String(m);
+  };
+
+  const sleepMs = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+  const shouldRetryTcp = (e: unknown): boolean => {
+    const msg = fmtErr(e);
+    // Retry on transport errors, negotiation hiccups, or abrupt socket termination.
+    return (
+      isTcpFailureThatShouldFallbackToUdp(e) ||
+      msg.includes("timeout waiting for nonce") ||
+      msg.includes("expected encryption info") ||
+      msg.includes("Baichuan socket closed") ||
+      msg.includes("ECONNRESET") ||
+      msg.includes("EPIPE")
+    );
+  };
+
+  const shouldRetryUdp = (e: unknown): boolean => {
+    const msg = fmtErr(e);
+    // Battery cams are often flaky/sleepy: retry on common transient signals.
+    return (
+      msg.includes("Not running") ||
+      msg.includes("Baichuan UDP stream closed") ||
+      msg.includes("Baichuan socket closed") ||
+      msg.includes("ETIMEDOUT") ||
+      msg.toLowerCase().includes("timeout")
+    );
+  };
+
+  const withRetries = async <T>(
+    label: string,
+    max: number,
+    op: (attempt: number) => Promise<T>,
+    shouldRetry: (e: unknown) => boolean,
+  ): Promise<T> => {
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= max; attempt++) {
+      try {
+        if (attempt > 1) {
+          logger?.log?.(`[AutoDetect] ${label}: retry ${attempt}/${max}...`);
+        }
+        return await op(attempt);
+      } catch (e) {
+        lastErr = e;
+        const msg = fmtErr(e);
+        const retryable = attempt < max && shouldRetry(e);
+        logger?.log?.(`[AutoDetect] ${label} attempt ${attempt}/${max} failed: ${msg}${retryable ? " (will retry)" : ""}`);
+        if (!retryable) throw e;
+        // Small backoff to avoid tight reconnect loops.
+        await sleepMs(350);
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr ?? `${label} failed`));
+  };
+
   // Best-effort: discover UID if not provided (useful for BCUDP/battery cams).
   // This is cheap and non-invasive (UDP broadcast).
   // const discoveredUid = uid ? undefined : await discoverUidForHost(host, logger);
@@ -249,16 +325,133 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
     logger?.log?.(`[AutoDetect] Host ${host} is reachable`);
   }
 
+  // Forced UDP mode: skip TCP entirely.
+  if (mode === "udp") {
+    logger?.log?.(`[AutoDetect] Forced mode=udp, skipping TCP and starting UDP discovery/login...`);
+    let normalizedUid = effectiveUid;
+    if (!normalizedUid) {
+      logger?.log?.(`[AutoDetect] UID not provided; attempting UDP discovery for UID...`);
+      const discovered = await discoverUidForHost(host, logger);
+      const normalizedDiscovered = normalizeUid(discovered);
+      if (!normalizedDiscovered) {
+        throw new Error(
+          `Forced UDP autodetect requires UID (or successful UDP UID discovery), but none was provided/discovered (ip=${host}).`,
+        );
+      }
+      normalizedUid = normalizedDiscovered;
+    }
+
+    const methodsToTry: Array<NonNullable<BaichuanClientOptions["udpDiscoveryMethod"]>> =
+      inputs.udpDiscoveryMethod
+        ? [inputs.udpDiscoveryMethod]
+        : ["local-direct", "local-broadcast", "remote", "relay", "map"];
+
+    const udpErrors: string[] = [];
+    for (const m of methodsToTry) {
+      try {
+        logger?.log?.(`[AutoDetect] Trying UDP discovery method: ${m}...`);
+        const udpApi = await withRetries(
+          `UDP(${m})`,
+          maxRetries,
+          async (attempt) => {
+            const api = createBaichuanApi({ ...inputs, uid: normalizedUid, udpDiscoveryMethod: m }, "udp");
+            try {
+              await api.login();
+              return api;
+            } catch (e) {
+              try {
+                await api.close({ reason: `autodetect:udp_failed:${m}:attempt_${attempt}` });
+              } catch {
+                // ignore
+              }
+              throw e;
+            }
+          },
+          shouldRetryUdp,
+        );
+
+        // Reuse the same detection logic used by the fallback path.
+        const deviceInfo = await udpApi.getInfo();
+        const capabilities = await udpApi.getDeviceCapabilities();
+        const hostNetworkInfo = await udpApi.getNetworkInfo(undefined, { timeoutMs: 1200 }).catch(() => undefined);
+        const channelNum = capabilities?.support?.channelNum ?? 1;
+        const model = deviceInfo.type?.trim();
+
+        const normalizedModel = model ? model.trim() : undefined;
+        const isMultifocalByModel = normalizedModel ? isDualLenseModel(normalizedModel) : false;
+        const channelNumValue = typeof channelNum === "string" ? Number.parseInt(channelNum, 10) : channelNum;
+        const hasDualLensChannelCount = (channelNumValue === 2 || channelNumValue === 3) && Number.isFinite(channelNumValue);
+        const isMultifocal = isMultifocalByModel || hasDualLensChannelCount;
+
+        if (isMultifocal) {
+          const detectionMethod = isMultifocalByModel ? "model match" : "channelNum fallback";
+          logger?.log?.(
+            `[AutoDetect] UDP (${m}) connection successful. Detected multi-focal device (${detectionMethod}: model=${normalizedModel ?? "unknown"}, channelNum=${channelNum}).`,
+          );
+          return {
+            type: "multifocal",
+            transport: "udp",
+            uid: normalizedUid,
+            udpDiscoveryMethod: m,
+            deviceInfo,
+            ...(hostNetworkInfo ? { hostNetworkInfo } : {}),
+            channelNum,
+            api: udpApi,
+          };
+        }
+
+        logger?.log?.(`[AutoDetect] UDP (${m}) connection successful. Detected battery camera.`);
+        return {
+          type: "battery-cam",
+          transport: "udp",
+          uid: normalizedUid,
+          udpDiscoveryMethod: m,
+          deviceInfo,
+          ...(hostNetworkInfo ? { hostNetworkInfo } : {}),
+          channelNum: 1,
+          api: udpApi,
+        };
+      } catch (e) {
+        const msg = fmtErr(e);
+        udpErrors.push(`${m}: ${msg}`);
+        // (best-effort) resources are already closed inside the retry wrapper.
+        logger?.log?.(`[AutoDetect] UDP (${m}) failed: ${msg}`);
+      }
+    }
+
+    throw new Error(`Forced UDP autodetect failed for all methods. ${udpErrors.join(" | ")}`);
+  }
+
   // Try TCP first
   let tcpApi: ReolinkBaichuanApi | undefined;
   try {
     logger?.log?.(`[AutoDetect] Trying TCP connection to ${host}...`);
-    tcpApi = createBaichuanApi(inputs, "tcp");
-    await tcpApi.login();
+    tcpApi = await withRetries(
+      "TCP",
+      maxRetries,
+      async (attempt) => {
+        // Create a fresh API for each attempt to avoid stale socket state.
+        const api = createBaichuanApi(inputs, "tcp");
+        try {
+          await api.login();
+          return api;
+        } catch (e) {
+          try {
+            await api.close({ reason: `autodetect:tcp_failed:attempt_${attempt}` });
+          } catch {
+            // ignore
+          }
+          throw e;
+        }
+      },
+      shouldRetryTcp,
+    );
 
     // Get device info to check device type
-    const deviceInfo = await tcpApi.getInfo();
-    const capabilities = await tcpApi.getDeviceCapabilities();
+    const api = tcpApi;
+    if (!api) throw new Error("AutoDetect internal error: TCP API not initialized after successful login");
+    const deviceInfo = await api.getInfo();
+    const capabilities = await api.getDeviceCapabilities();
     // const hostNetworkInfo = await tcpApi.getNetworkInfo(undefined, { timeoutMs: 1200 }).catch(() => undefined);
     const channelNum = capabilities?.support?.channelNum ?? 1;
     const model = deviceInfo.type?.trim();
@@ -288,7 +481,7 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
         deviceInfo,
         // ...(hostNetworkInfo ? { hostNetworkInfo } : {}),
         channelNum,
-        api: tcpApi,
+        api,
       };
     }
 
@@ -303,7 +496,7 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
         deviceInfo,
         // ...(hostNetworkInfo ? { hostNetworkInfo } : {}),
         channelNum,
-        api: tcpApi,
+        api,
       };
     }
 
@@ -317,13 +510,18 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
       deviceInfo,
       // ...(hostNetworkInfo ? { hostNetworkInfo } : {}),
       channelNum: 1,
-      api: tcpApi,
+      api,
     };
   } catch (tcpError) {
+    if (mode === "tcp") {
+      // Forced TCP mode: never fallback.
+      throw tcpError;
+    }
+
     // TCP failed, try UDP (battery camera)
     if (tcpApi) {
       try {
-        await tcpApi.close();
+        await tcpApi.close({ reason: "autodetect:tcp_failed" });
       } catch {
         // ignore
       }
@@ -414,17 +612,33 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
 
       const udpErrors: string[] = [];
       for (const m of methodsToTry) {
-        let udpApi: ReolinkBaichuanApi | undefined;
         try {
           logger?.log?.(`[AutoDetect] Trying UDP discovery method: ${m}...`);
-          udpApi = createBaichuanApi({ ...inputs, uid: normalizedUid, udpDiscoveryMethod: m }, "udp");
-          await udpApi.login();
+          const udpApi = await withRetries(
+            `UDP(${m})`,
+            maxRetries,
+            async (attempt) => {
+              const api = createBaichuanApi({ ...inputs, uid: normalizedUid, udpDiscoveryMethod: m }, "udp");
+              try {
+                await api.login();
+                return api;
+              } catch (e) {
+                try {
+                  await api.close({ reason: `autodetect:udp_failed:${m}:attempt_${attempt}` });
+                } catch {
+                  // ignore
+                }
+                throw e;
+              }
+            },
+            shouldRetryUdp,
+          );
           return await detectOverUdpApi(udpApi, m);
         } catch (e) {
           const msg = (e as any)?.message || (e as any)?.toString?.() || String(e);
           udpErrors.push(`${m}: ${msg}`);
           try {
-            await udpApi?.close();
+            // ignore (api already closed in retry wrapper)
           } catch {
             // ignore
           }

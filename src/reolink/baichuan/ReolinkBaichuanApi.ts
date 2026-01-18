@@ -699,12 +699,12 @@ export class ReolinkBaichuanApi {
     await this.client.login(maxEncryption);
   }
 
-  async close(): Promise<void> {
+  async close(options?: { reason?: string }): Promise<void> {
     // Stop state polling before closing
     this.stopStatePolling();
     // Stop all RTSP servers before closing the client
     await this.cleanup();
-    await this.client.close();
+    await this.client.close(options?.reason ? { reason: options.reason } : undefined);
   }
 
   /**
