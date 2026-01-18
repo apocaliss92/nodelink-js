@@ -1,7 +1,7 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: ["src/index.ts", "src/cli/rtsp-server.ts", "src/cli/hub-emu.ts"],
+  entry: ["src/index.ts", "src/cli/rtsp-server.ts", "src/cli/hub-emu.ts", "src/cli/fetch-events.ts"],
   format: ["esm", "cjs"],
   dts: false,
   sourcemap: true,

@@ -173,6 +173,8 @@ function getSupportItemForChannel(support: SupportInfo | undefined, channel: num
 
 export function computeDeviceCapabilities(params: {
   channel: number;
+  /** Optional model/type string; used for best-effort heuristics (e.g. doorbell detection). */
+  model?: string;
   abilities?: DeviceAbilities;
   support?: SupportInfo;
 }): DeviceCapabilities {
@@ -204,6 +206,8 @@ export function computeDeviceCapabilities(params: {
   const hasPresetsFromSupport = supportItem ? isTruthyNumberLike((supportItem as any).ptzPreset) : false;
   const doorbellVersionRaw = supportItem ? (supportItem as any).doorbellVersion : undefined;
   const isDoorbellFromSupport = Number.isFinite(Number(doorbellVersionRaw)) ? Number(doorbellVersionRaw) > 0 : isTruthyNumberLike(doorbellVersionRaw);
+  const modelRaw = params.model;
+  const isDoorbellFromModel = typeof modelRaw === "string" ? modelRaw.toLowerCase().includes("doorbell") : false;
 
   // Some firmwares expose an explicit lightType in SupportInfo items.
   // Observed values:
@@ -276,7 +280,7 @@ export function computeDeviceCapabilities(params: {
     hasSiren: hasSirenFromAbilities,
     hasFloodlight: Number.isFinite(lightType as number) ? (lightType as number) > 0 : hasFloodlightFromAbilities,
     hasPir: hasPirFromAbilities || hasPirFromSupport,
-    isDoorbell: isDoorbellFromSupport,
+    isDoorbell: isDoorbellFromSupport || isDoorbellFromModel,
   };
 
   if (ptzMode !== undefined) result.ptzMode = ptzMode;
