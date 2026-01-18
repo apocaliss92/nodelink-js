@@ -208,6 +208,9 @@ export class ReolinkBaichuanApi {
   private simpleEventResubscribeInFlight: Promise<void> | undefined;
   private readonly simpleEventResubscribeIntervalMs = 5 * 60_000;
   private statePollingInterval: NodeJS.Timeout | undefined;
+  private udpSleepInferenceInterval: NodeJS.Timeout | undefined;
+  private readonly udpLastInferredSleepStateByChannel = new Map<number, SleepStatus["state"]>();
+  private readonly udpSleepInferenceIntervalMs = 2_000;
   private lastMotionState: boolean | undefined;
   private lastAiState: AIState | undefined;
   private aiStatePollingDisabled = false;
@@ -592,11 +595,15 @@ export class ReolinkBaichuanApi {
 
     if (this.simpleEventListeners.size === 0) {
       this.stopSimpleEventResubscribeTimer();
+      this.stopUdpSleepInference();
       await this.ensureSimpleEventUnsubscribed();
     } else {
       // If there are still listeners, keep polling running (TCP only)
       const isUdp = this.client.getTransport?.() === "udp";
-      if (!isUdp && this.client.isStatePollingEnabled?.()) {
+      if (isUdp) {
+        this.startUdpSleepInference();
+      }
+      else if (this.client.isStatePollingEnabled?.()) {
         this.startStatePolling();
       }
     }
@@ -655,7 +662,12 @@ export class ReolinkBaichuanApi {
       // Only check current state and start polling for TCP connections (not UDP/battery cameras)
       // UDP/battery cameras should rely on event pushes only, not polling
       const isUdp = this.client.getTransport?.() === "udp";
-      if (!isUdp && this.client.isStatePollingEnabled?.()) {
+      if (isUdp) {
+        // Passive sleep inference for UDP/battery cameras.
+        // This does not send any requests and restores sleeping/awake events.
+        this.startUdpSleepInference();
+      }
+      else if (this.client.isStatePollingEnabled?.()) {
         const channel = this.client.getConfiguredChannel?.() ?? 0;
         // Check current state and dispatch events immediately (TCP only)
         await this.checkAndDispatchCurrentState(channel);
@@ -692,6 +704,9 @@ export class ReolinkBaichuanApi {
 
       // Stop polling when no more listeners
       this.stopStatePolling();
+
+      // Stop UDP sleep inference when unsubscribed.
+      this.stopUdpSleepInference();
     })().finally(() => {
       this.simpleEventUnsubscribeInFlight = undefined;
     });
@@ -710,6 +725,7 @@ export class ReolinkBaichuanApi {
   async close(options?: { reason?: string }): Promise<void> {
     // Stop state polling before closing
     this.stopStatePolling();
+    this.stopUdpSleepInference();
     // Stop all RTSP servers before closing the client
     await this.cleanup();
     await this.client.close(options?.reason ? { reason: options.reason } : undefined);
@@ -3071,6 +3087,78 @@ export class ReolinkBaichuanApi {
       clearInterval(this.statePollingInterval);
       this.statePollingInterval = undefined;
     }
+  }
+
+  /**
+   * UDP/battery cameras don't support safe active polling, but we still want sleeping/awake events.
+   * This timer uses getSleepStatus() which is purely passive (no network requests).
+   */
+  private startUdpSleepInference(): void {
+    if (this.simpleEventListeners.size === 0) {
+      this.stopUdpSleepInference();
+      return;
+    }
+
+    const isUdp = this.client.getTransport?.() === "udp";
+    if (!isUdp) {
+      this.stopUdpSleepInference();
+      return;
+    }
+
+    if (this.udpSleepInferenceInterval) return;
+
+    const pollOnce = () => {
+      // Stop if transport changed or listeners are gone.
+      if (this.simpleEventListeners.size === 0 || this.client.getTransport?.() !== "udp") {
+        this.stopUdpSleepInference();
+        return;
+      }
+
+      const channel = this.client.getConfiguredChannel?.() ?? 0;
+      const status = this.getSleepStatus({ channel });
+      if (status.state === "unknown") return;
+
+      const prev = this.udpLastInferredSleepStateByChannel.get(channel);
+      this.udpLastInferredSleepStateByChannel.set(channel, status.state);
+
+      // On first observation, only emit if sleeping (awake is the default and would be noisy).
+      if (prev === undefined) {
+        if (status.state === "sleeping") {
+          this.dispatchSimpleEvent({ type: "sleeping", channel, timestamp: Date.now() });
+        }
+        return;
+      }
+
+      if (prev !== status.state) {
+        this.dispatchSimpleEvent({
+          type: status.state === "sleeping" ? "sleeping" : "awake",
+          channel,
+          timestamp: Date.now(),
+        });
+      }
+    };
+
+    // Run immediately for quicker feedback.
+    pollOnce();
+
+    this.udpSleepInferenceInterval = setInterval(() => {
+      try {
+        pollOnce();
+      } catch (e) {
+        // Never let inference crash callers.
+        this.logger.debug?.(
+          `[ReolinkBaichuanApi] udp sleep inference tick failed${formatClientIoForLog(this)}: ${formatErrorForLog(e)}`,
+        );
+      }
+    }, this.udpSleepInferenceIntervalMs);
+  }
+
+  private stopUdpSleepInference(): void {
+    if (this.udpSleepInferenceInterval) {
+      clearInterval(this.udpSleepInferenceInterval);
+      this.udpSleepInferenceInterval = undefined;
+    }
+    this.udpLastInferredSleepStateByChannel.clear();
   }
 
   /**
