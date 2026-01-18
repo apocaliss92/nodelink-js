@@ -2171,8 +2171,8 @@ export class ReolinkBaichuanApi {
       const info = infoPerChannel.get(channel);
       const networkInfo = networkInfoPerChannel.get(channel);
       const isBattery = isBatteryByChannel.get(channel) ?? false;
-      const isDoorbell = isDoorbellByChannel.get(channel) ?? false;
       const model = info?.type ?? '';
+      const isDoorbell = (isDoorbellByChannel.get(channel) ?? false) || /doorbell/i.test(model);
 
       const normalizedModel = model ? model.trim() : undefined;
       const isMultifocal = normalizedModel ? isDualLenseModel(normalizedModel) : false;
@@ -6766,13 +6766,19 @@ ${xmlDateTimePayload("endTime", end)}
       probeFloodlight: options?.probeFloodlight ?? true,
     };
 
-    const [abilitiesResult, supportResult] = await Promise.allSettled([
+    const infoPromise: Promise<Partial<ReolinkDeviceInfo> | undefined> = channelProvided
+      ? this.getInfo(ch, { tags: ["type"] })
+      : Promise.resolve(undefined);
+
+    const [abilitiesResult, supportResult, infoResult] = await Promise.allSettled([
       this.getAbilityInfo() as Promise<DeviceAbilities>,
       this.getSupportInfo(),
-    ]);
+      infoPromise,
+    ] as const);
 
     const abilitiesRaw = abilitiesResult.status === "fulfilled" ? abilitiesResult.value : undefined;
     const supportRaw = supportResult.status === "fulfilled" ? supportResult.value : undefined;
+    const model = infoResult.status === "fulfilled" ? infoResult.value?.type : undefined;
 
     // If a channel is explicitly requested, filter returned metadata to avoid confusing callers.
     // Capabilities are always computed for `ch` (0-based).
@@ -6798,7 +6804,8 @@ ${xmlDateTimePayload("endTime", end)}
       )
       : undefined;
 
-    const computeArgs: { channel: number; abilities?: DeviceAbilities; support?: SupportInfo } = { channel: ch };
+    const computeArgs: { channel: number; model?: string; abilities?: DeviceAbilities; support?: SupportInfo } = { channel: ch };
+    if (typeof model === "string" && model) computeArgs.model = model;
     if (abilities) computeArgs.abilities = abilities;
     if (support) computeArgs.support = support;
     const capabilities = computeDeviceCapabilities(computeArgs);
