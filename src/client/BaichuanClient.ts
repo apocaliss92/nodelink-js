@@ -909,7 +909,7 @@ export class BaichuanClient extends EventEmitter<{
       "connected",
       `transport=tcp host=${this.opts.host} port=${port}` +
         `${sid ? ` sid=${sid}` : ""}` +
-        // `${remote ? ` remote=${remote}` : ""}` +
+        `${remote ? ` remote=${remote}` : ""}` +
         `${peer ? ` peer=${peer}` : ""}`,
     );
 
