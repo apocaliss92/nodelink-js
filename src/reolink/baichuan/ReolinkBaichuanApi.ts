@@ -782,7 +782,13 @@ export class ReolinkBaichuanApi {
     // In both cases, fail fast and let higher-level code fall back to findAlarmVideo/CGI.
     return (
       bodyLen === 0 &&
-      (params.cmdId === BC_CMD_ID_FILE_INFO_LIST_GET || params.cmdId === BC_CMD_ID_FILE_INFO_LIST_OPEN)
+      (
+        params.cmdId === BC_CMD_ID_FILE_INFO_LIST_GET ||
+        params.cmdId === BC_CMD_ID_FILE_INFO_LIST_OPEN ||
+        // Non-PTZ cameras commonly return 400+empty body for PTZ preset APIs.
+        // Treat it as "unsupported" rather than triggering relogin loops.
+        params.cmdId === BC_CMD_ID_GET_PTZ_PRESET
+      )
     );
   }
 
@@ -3570,14 +3576,24 @@ export class ReolinkBaichuanApi {
     // Use the same channel_id everywhere (header, Extension, payload).
     // This is 0-based.
     const channelId = ch;
-    const xml = await this.sendXml({
-      cmdId: BC_CMD_ID_GET_PTZ_PRESET,
-      channel: ch,
-      channelIdOverride: channelId,
-      extensionXml: buildChannelExtensionXml(channelId),
-      messageClass: BC_CLASS_MODERN_24,
-      streamType: 0,
-    });
+    let xml = "";
+    try {
+      xml = await this.sendXml({
+        cmdId: BC_CMD_ID_GET_PTZ_PRESET,
+        channel: ch,
+        channelIdOverride: channelId,
+        extensionXml: buildChannelExtensionXml(channelId),
+        messageClass: BC_CLASS_MODERN_24,
+        streamType: 0,
+      });
+    } catch (e) {
+      // Non-PTZ cameras commonly respond with `responseCode=400` and empty body.
+      // Treat that as "unsupported" and return an empty list so higher-level flows
+      // (e.g. device add / capability probing) can continue.
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("responseCode 400, empty body")) return [];
+      throw e;
+    }
 
     const parsed = this.parsePtzPresetList(xml);
     const presets: PtzPreset[] = parsed
@@ -3618,14 +3634,21 @@ export class ReolinkBaichuanApi {
   private async getPtzPresetsRaw(channel: number): Promise<Array<{ id: number; name?: string; enable?: string }>> {
     const ch = this.normalizeChannel(channel);
     const channelId = ch;
-    const xml = await this.sendXml({
-      cmdId: BC_CMD_ID_GET_PTZ_PRESET,
-      channel: ch,
-      channelIdOverride: channelId,
-      extensionXml: buildChannelExtensionXml(channelId),
-      messageClass: BC_CLASS_MODERN_24,
-      streamType: 0,
-    });
+    let xml = "";
+    try {
+      xml = await this.sendXml({
+        cmdId: BC_CMD_ID_GET_PTZ_PRESET,
+        channel: ch,
+        channelIdOverride: channelId,
+        extensionXml: buildChannelExtensionXml(channelId),
+        messageClass: BC_CLASS_MODERN_24,
+        streamType: 0,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("responseCode 400, empty body")) return [];
+      throw e;
+    }
     return this.parsePtzPresetList(xml);
   }
 
@@ -4957,13 +4980,54 @@ export class ReolinkBaichuanApi {
     const objects = await this.getAiDetectTypes(ch, { timeoutMs: 1500 });
 
     let presets: PtzPreset[] | undefined;
-    if (capabilities.hasPresets) {
+    // PTZ preset list (cmd 190) can return responseCode=400 with empty body on non-PTZ cameras.
+    // AbilityInfo sometimes leaks legacy/host PTZ keys and can cause false positives.
+    // If SupportInfo is available, require an explicit per-channel `ptzPreset` signal before probing.
+    const pickBestSupportItemForChannel = (s: SupportInfo, chn: number): SupportItem | undefined => {
+      const items = Array.isArray(s.items) ? s.items : [];
+      const candidates = items.filter((i) => i.chnID === chn);
+      if (!candidates.length) return undefined;
+
+      const score = (item: SupportItem): number => {
+        const anyItem = item as any;
+        let result = 0;
+        if (anyItem.name == null) result += 2;
+        const capabilityKeys = [
+          "ptzType",
+          "ptzControl",
+          "ptzPreset",
+          "ledCtrl",
+          "lightType",
+          "battery",
+          "audioVersion",
+          "motion",
+          "encCtrl",
+          "newIspCfg",
+          "remoteAbility",
+        ];
+        for (const k of capabilityKeys) {
+          if (anyItem[k] !== undefined) result += 3;
+        }
+        result += Math.min(10, Math.max(0, Object.keys(anyItem).length - 1));
+        return result;
+      };
+
+      return candidates.slice().sort((a, b) => score(b) - score(a))[0];
+    };
+
+    const supportItemForPresets = support ? pickBestSupportItemForChannel(support, ch) : undefined;
+    const supportSaysPresets = supportItemForPresets ? truthy((supportItemForPresets as any).ptzPreset) : false;
+    const shouldProbePresets = capabilities.hasPresets && (!support || supportSaysPresets);
+
+    if (!shouldProbePresets && capabilities.hasPresets && support) {
+      // If SupportInfo is present and doesn't explicitly advertise presets, treat it as not supported.
+      capabilities.hasPresets = false;
+    }
+
+    if (shouldProbePresets) {
       const presetsResult = await this.getPtzPresets(ch);
-      const r0 = presetsResult;
-      if (r0) {
-        presets = r0;
-        capabilities.hasPresets = presets.length > 0;
-      }
+      presets = presetsResult;
+      capabilities.hasPresets = presets.length > 0;
     }
 
     // Dual-lens capability merge (simple): if the device is multifocal, OR capabilities across all lenses/channels.

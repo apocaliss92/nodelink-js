@@ -190,6 +190,9 @@ export function computeDeviceCapabilities(params: {
   // even when specific channels are PTZ.
   const ptzTypeRaw = supportItem ? (supportItem as any).ptzType : undefined;
   const ptzControlRaw = supportItem ? (supportItem as any).ptzControl : undefined;
+  const supportExplicitlyDefinesPtz = ptzTypeRaw !== undefined || ptzControlRaw !== undefined;
+  const ptzExplicitlyDisabledBySupportItem =
+    supportExplicitlyDefinesPtz && !isTruthyNumberLike(ptzTypeRaw) && !isTruthyNumberLike(ptzControlRaw);
   const hasPtzFromSupportItem =
     isTruthyNumberLike(ptzTypeRaw) ||
     isTruthyNumberLike(ptzControlRaw) ||
@@ -203,7 +206,12 @@ export function computeDeviceCapabilities(params: {
   const hasBatteryFromSupport = supportItem ? isTruthyNumberLike((supportItem as any).battery) : false;
   // NOTE: ledCtrl is typically the indicator/status LED control, NOT the floodlight.
   // Do not map it to floodlight capability.
-  const hasPresetsFromSupport = supportItem ? isTruthyNumberLike((supportItem as any).ptzPreset) : false;
+  const ptzPresetRaw = supportItem ? (supportItem as any).ptzPreset : undefined;
+  // If SupportInfo explicitly provides ptzPreset, treat it as authoritative.
+  // This avoids false positives from AbilityInfo (some firmwares leak host/legacy preset keys).
+  const supportExplicitlyDefinesPresets = ptzPresetRaw !== undefined;
+  const hasPresetsFromSupport = supportExplicitlyDefinesPresets ? isTruthyNumberLike(ptzPresetRaw) : false;
+  const presetsExplicitlyDisabledBySupport = supportExplicitlyDefinesPresets && !isTruthyNumberLike(ptzPresetRaw);
   const doorbellVersionRaw = supportItem ? (supportItem as any).doorbellVersion : undefined;
   const isDoorbellFromSupport = Number.isFinite(Number(doorbellVersionRaw)) ? Number(doorbellVersionRaw) > 0 : isTruthyNumberLike(doorbellVersionRaw);
   const isDoorbellFromModel = typeof params.model === "string" && /doorbell/i.test(params.model);
@@ -231,8 +239,10 @@ export function computeDeviceCapabilities(params: {
     isTruthyNumberLike((params.support as any)?.audioTalk) ||
     (supportItem ? isTruthyNumberLike((supportItem as any).ipcAudioTalk) : false);
 
-  const hasPanTiltFromAbilities = abilitiesHasAny(flat, /ptz/i);
-  const hasZoomFromAbilities = abilitiesHasAny(flat, /zoom|zoomFocus|StartZoomFocus/i);
+  // AbilityInfo can contain host/legacy PTZ keys even for non-PTZ channels.
+  // If SupportInfo explicitly defines ptzType/ptzControl and both are falsey, treat that as authoritative.
+  const hasPanTiltFromAbilities = ptzExplicitlyDisabledBySupportItem ? false : abilitiesHasAny(flat, /ptz/i);
+  const hasZoomFromAbilities = ptzExplicitlyDisabledBySupportItem ? false : abilitiesHasAny(flat, /zoom|zoomFocus|StartZoomFocus/i);
   const hasPresetsFromAbilities = abilitiesHasAny(flat, /preset/i);
   // PIR detection is inconsistently advertised across firmwares.
   // Observed signals:
@@ -260,7 +270,7 @@ export function computeDeviceCapabilities(params: {
   const hasPan = hasPanTiltFromSupport || hasPanTiltFromAbilities;
   const hasTilt = hasPanTiltFromSupport || hasPanTiltFromAbilities;
   const hasZoom = hasZoomFromSupport || hasZoomFromAbilities;
-  const hasPresets = hasPresetsFromSupport || hasPresetsFromAbilities;
+  const hasPresets = presetsExplicitlyDisabledBySupport ? false : (hasPresetsFromSupport || hasPresetsFromAbilities);
 
   const finalHasPan = ptzDisabledBySupport ? false : hasPan;
   const finalHasTilt = ptzDisabledBySupport ? false : hasTilt;
