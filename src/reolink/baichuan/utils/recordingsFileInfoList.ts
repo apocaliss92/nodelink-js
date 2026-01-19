@@ -84,7 +84,10 @@ export const listRecordingsViaFileInfoList = async (params: {
   start: Date;
   end: Date;
   maxIterations: number;
+  timeoutMs?: number;
 }): Promise<RecordingFile[]> => {
+  const timeoutMs = params.timeoutMs ?? 15_000;
+
   const openXml = buildFileInfoListOpenXml({
     uid: params.uid,
     channel: params.channel,
@@ -98,7 +101,7 @@ export const listRecordingsViaFileInfoList = async (params: {
     cmdId: BC_CMD_ID_FILE_INFO_LIST_OPEN,
     channel: params.channel,
     payloadXml: openXml,
-    timeoutMs: 15_000,
+    timeoutMs,
   });
 
   const handle = parseFileInfoListHandle(openResp);
@@ -116,7 +119,7 @@ export const listRecordingsViaFileInfoList = async (params: {
           cmdId: BC_CMD_ID_FILE_INFO_LIST_GET,
           channel: params.channel,
           payloadXml: pageXml,
-          timeoutMs: 15_000,
+          timeoutMs,
         });
       } catch (e) {
         const errorMsg = e instanceof Error ? e.message : String(e);
@@ -140,7 +143,7 @@ export const listRecordingsViaFileInfoList = async (params: {
         cmdId: BC_CMD_ID_FILE_INFO_LIST_CLOSE,
         channel: params.channel,
         payloadXml: pageXml,
-        timeoutMs: 5_000,
+        timeoutMs: Math.min(timeoutMs, 5_000),
       });
     } catch {
       // ignore

@@ -38,6 +38,8 @@ async function main() {
     console.log(`Listening: ${base}`);
     console.log("Endpoints:");
     console.log(`  GET ${base}/stream?channel=0&profile=main`);
+    console.log(`  GET ${base}/recordings?mode=device&channel=0&today=1&count=50&timeoutMs=3000`);
+    console.log(`  GET ${base}/recordings?mode=nvr&channel=1&today=1&count=50&timeoutMs=3000&source=baichuan`);
     console.log("  GET /download requires uid + fileName (from listRecordings)");
     console.log(`  GET ${base}/download?channel=0&uid=YOUR_UID&fileName=${encodeURIComponent("/mnt/sda/Mp4Record/2025/01/01/RecS01_20250101_000000_000100.mp4")}`);
     console.log("\nNOTE: /download currently depends on Baichuan cmdId=13 class=0x6482 working on your firmware.");

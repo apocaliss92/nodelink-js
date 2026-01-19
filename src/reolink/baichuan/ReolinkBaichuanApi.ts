@@ -2063,11 +2063,25 @@ export class ReolinkBaichuanApi {
             start: params.start,
             end: params.end,
             maxIterations,
+            ...(params.timeoutMs != null ? { timeoutMs: params.timeoutMs } : {}),
           });
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
-          // Some firmwares return responseCode=400 with empty body when the feature is unsupported.
-          // Keep the error so higher-level code can decide how to fall back.
+          // Some firmwares/devices return responseCode=400 with empty body when:
+          // - recordings are unavailable (e.g., no SD inserted), or
+          // - the feature is unsupported.
+          // For standalone camera use-cases, it's better to treat this as "no recordings".
+          // NVR flows that need completeness can still fall back to CGI when we return [].
+          if (msg.includes("responseCode 400, empty body")) {
+            recordingsTraceLog(
+              dbg,
+              logger,
+              "listRecordings",
+              `FileInfoList unavailable (400 empty body); returning empty array (channel=${channel}, streamType=${streamType})`,
+            );
+            return [];
+          }
+
           throw new Error(`FileInfoList open failed: ${msg}`);
         }
 
@@ -2130,6 +2144,8 @@ export class ReolinkBaichuanApi {
     cacheTtlMs?: number;
     /** Unused. Kept for backward compatibility. */
     fetchRtmpUrls?: boolean;
+    /** Optional timeout for underlying FileInfoList operations (open/get/close). */
+    timeoutMs?: number;
   }): Promise<EnrichedRecordingFile[]> {
     const dbg = this.client.getDebugConfig?.();
     const logger = this.logger;
@@ -2152,6 +2168,7 @@ export class ReolinkBaichuanApi {
       end,
       ...(params.recordType ? { recordType: params.recordType } : {}),
       streamType,
+      ...(params.timeoutMs != null ? { timeoutMs: params.timeoutMs } : {}),
     });
 
     const startMs = params.start.getTime();
@@ -2166,15 +2183,217 @@ export class ReolinkBaichuanApi {
     out.sort((a, b) => (a.startTimeMs ?? 0) - (b.startTimeMs ?? 0));
     recordingsTraceLog(dbg, logger, "listDeviceRecordings", `Returning ${out.length} recordings (channel=${effectiveChannel}, streamType=${streamType})`);
 
+    // Best-effort: enrich detection flags by matching against alarm/event listings.
+    // Some HomeHub/NVR firmwares do not encode AI flags into the VOD filename/recordType,
+    // so we use the events list (findAlarmVideo) as the source of truth.
+    const annotated = await this.tryAnnotateEnrichedRecordingsWithAlarmEvents({
+      channel: effectiveChannel,
+      uid: effectiveUid,
+      start,
+      end,
+      streamType,
+      recordings: out,
+    });
+
     const count = params.count;
     if (typeof count === "number" && Number.isFinite(count) && count > 0) {
-      return out.slice(0, count);
+      return annotated.slice(0, count);
     }
-    return out;
+    return annotated;
   }
 
   private enrichRecordingFile(rec: RecordingFile, rtmpUrl?: string): EnrichedRecordingFile {
     return enrichRecordingFileUtil(rec, rtmpUrl);
+  }
+
+  private dateUtcComponentsToLocalMs(dt: Date): number {
+    // parseXmlDateTimeBlock() parses timestamps as UTC to preserve numeric components.
+    // Recording filenames are parsed as local time.
+    // For matching, we need both on the same basis, so we re-create a local Date using UTC components.
+    return new Date(
+      dt.getUTCFullYear(),
+      dt.getUTCMonth(),
+      dt.getUTCDate(),
+      dt.getUTCHours(),
+      dt.getUTCMinutes(),
+      dt.getUTCSeconds(),
+    ).getTime();
+  }
+
+  private mergeDetectionFlags(base: EnrichedRecordingFile, add: Partial<Pick<
+    EnrichedRecordingFile,
+    | "hasPerson"
+    | "hasVehicle"
+    | "hasAnimal"
+    | "hasFace"
+    | "hasMotion"
+    | "hasDoorbell"
+    | "hasPackage"
+    | "hasRf"
+    | "hasOther"
+  >>): EnrichedRecordingFile {
+    const hasPerson = base.hasPerson || (add.hasPerson ?? false);
+    const hasVehicle = base.hasVehicle || (add.hasVehicle ?? false);
+    const hasAnimal = base.hasAnimal || (add.hasAnimal ?? false);
+    const hasFace = base.hasFace || (add.hasFace ?? false);
+    const hasDoorbell = base.hasDoorbell || (add.hasDoorbell ?? false);
+    const hasPackage = base.hasPackage || (add.hasPackage ?? false);
+    const hasRf = base.hasRf || (add.hasRf ?? false);
+    const hasOther = base.hasOther || (add.hasOther ?? false);
+
+    // Treat any AI/doorbell/package/rf/other as motion-like for consumers that expect Motion.
+    const inferredMotion = hasPerson || hasVehicle || hasAnimal || hasFace || hasDoorbell || hasPackage || hasRf || hasOther;
+    const hasMotion = base.hasMotion || (add.hasMotion ?? false) || inferredMotion;
+
+    return {
+      ...base,
+      hasPerson,
+      hasVehicle,
+      hasAnimal,
+      hasFace,
+      hasDoorbell,
+      hasPackage,
+      hasRf,
+      hasOther,
+      hasMotion,
+    };
+  }
+
+  private async tryAnnotateEnrichedRecordingsWithAlarmEvents(params: {
+    channel: number;
+    uid: string;
+    start: Date;
+    end: Date;
+    streamType: RecordingStreamType;
+    recordings: EnrichedRecordingFile[];
+  }): Promise<EnrichedRecordingFile[]> {
+    if (params.recordings.length === 0) return params.recordings;
+
+    // If the VOD listings already include any AI/special detection flags (from filename hex flags
+    // or recordType), we skip the events query to keep responses fast.
+    // This enrichment path is mainly for firmwares that return only "motion".
+    const alreadyHasUsefulDetections = params.recordings.some(
+      (r) => r.hasPerson || r.hasVehicle || r.hasAnimal || r.hasFace || r.hasDoorbell || r.hasPackage || r.hasRf,
+    );
+    if (alreadyHasUsefulDetections) return params.recordings;
+
+    const dbg = this.client.getDebugConfig?.();
+    const logger = this.logger;
+
+    type EventRange = {
+      startMs: number;
+      endMs: number;
+      flags: Pick<
+        EnrichedRecordingFile,
+        | "hasPerson"
+        | "hasVehicle"
+        | "hasAnimal"
+        | "hasFace"
+        | "hasMotion"
+        | "hasDoorbell"
+        | "hasPackage"
+        | "hasRf"
+        | "hasOther"
+      >;
+    };
+
+    const padMs = 2 * 60_000;
+
+    // Hard cap for this best-effort enrichment path.
+    // Keep it small so VOD listing stays responsive.
+    const annotationTimeoutMs = 2_000;
+    const annotationMaxIterations = 1;
+
+    const toRanges = (events: EnrichedRecordingFile[], source: "baichuan" | "cgi"): EventRange[] => {
+      const ranges: EventRange[] = [];
+      for (const ev of events) {
+        let startMs = ev.startTimeMs ?? 0;
+        let endMs = ev.endTimeMs ?? startMs;
+
+        // Only Baichuan XML timestamps are parsed as UTC-preserved components.
+        if (source === "baichuan") {
+          const rawStart = ev.raw?.startTime;
+          const rawEnd = ev.raw?.endTime;
+          if (rawStart instanceof Date && Number.isFinite(rawStart.getTime())) startMs = this.dateUtcComponentsToLocalMs(rawStart);
+          if (rawEnd instanceof Date && Number.isFinite(rawEnd.getTime())) endMs = this.dateUtcComponentsToLocalMs(rawEnd);
+        }
+
+        if (!Number.isFinite(startMs) || startMs <= 0) continue;
+        if (!Number.isFinite(endMs) || endMs <= 0) endMs = startMs;
+
+        ranges.push({
+          startMs,
+          endMs,
+          flags: {
+            hasPerson: ev.hasPerson,
+            hasVehicle: ev.hasVehicle,
+            hasAnimal: ev.hasAnimal,
+            hasFace: ev.hasFace,
+            hasMotion: ev.hasMotion,
+            hasDoorbell: ev.hasDoorbell,
+            hasPackage: ev.hasPackage,
+            hasRf: ev.hasRf,
+            hasOther: ev.hasOther,
+          },
+        });
+      }
+      ranges.sort((a, b) => a.startMs - b.startMs);
+      return ranges;
+    };
+
+    let eventRanges: EventRange[] = [];
+    try {
+      // Prefer Baichuan events list (closest to Hub/NVR UI events list).
+      const alarmFiles = await this.listAlarmVideosViaBaichuan({
+        channel: params.channel,
+        uid: params.uid,
+        start: params.start,
+        end: params.end,
+        streamType: params.streamType,
+        timeoutMs: annotationTimeoutMs,
+        maxIterations: annotationMaxIterations,
+      });
+      const alarmEvents = alarmFiles.map((f) => this.enrichRecordingFile(f));
+      eventRanges = toRanges(alarmEvents, "baichuan");
+      recordingsTraceLog(
+        dbg,
+        logger,
+        "tryAnnotateEnrichedRecordingsWithAlarmEvents",
+        `Baichuan alarm events: ${alarmEvents.length} items -> ${eventRanges.length} time ranges (channel=${params.channel})`,
+      );
+    } catch (e) {
+      recordingsTraceLog(
+        dbg,
+        logger,
+        "tryAnnotateEnrichedRecordingsWithAlarmEvents",
+        `Baichuan alarm events unavailable: ${formatErrorForLog(e)}`,
+      );
+    }
+
+    // NOTE: We intentionally do NOT fall back to CGI here.
+    // CGI event search can be significantly slower, and this enrichment is best-effort.
+
+    if (eventRanges.length === 0) return params.recordings;
+
+    const annotated: EnrichedRecordingFile[] = [];
+    for (const rec of params.recordings) {
+      const recStart = rec.startTimeMs ?? 0;
+      const recEnd = rec.endTimeMs ?? recStart;
+      if (!Number.isFinite(recStart) || recStart <= 0) {
+        annotated.push(rec);
+        continue;
+      }
+
+      let merged = rec;
+      for (const ev of eventRanges) {
+        if (ev.startMs > recEnd + padMs) break;
+        if (ev.endMs < recStart - padMs) continue;
+        merged = this.mergeDetectionFlags(merged, ev.flags);
+      }
+      annotated.push(merged);
+    }
+
+    return annotated;
   }
 
 
@@ -6141,11 +6360,13 @@ export class ReolinkBaichuanApi {
     streamType?: RecordingStreamType;
     alarmType?: string;
     maxIterations?: number;
+    timeoutMs?: number;
   }): Promise<RecordingFile[]> {
     const dbg = this.client.getDebugConfig?.();
     const logger = this.logger;
 
     const maxIterations = params.maxIterations ?? 50;
+    const timeoutMs = params.timeoutMs ?? 15_000;
     const uidBase = (params.uid.split("_")[0] ?? params.uid).trim();
     const streamTypeInt = params.streamType === "subStream" ? 1 : 0;
     const alarmType =
@@ -6200,7 +6421,7 @@ ${xmlDateTimePayload("endTime", end)}
         cmdId: BC_CMD_ID_FIND_REC_VIDEO_OPEN,
         channel: params.channel,
         payloadXml: findOpenXml(currentStart, params.end),
-        timeoutMs: 15_000,
+        timeoutMs,
       });
 
       const fileHandle = getXmlText(openResp, "fileHandle")?.trim();
@@ -6223,7 +6444,7 @@ ${xmlDateTimePayload("endTime", end)}
           cmdId: BC_CMD_ID_FIND_REC_VIDEO_GET,
           channel: params.channel,
           payloadXml: getXml,
-          timeoutMs: 15_000,
+          timeoutMs,
         });
 
         const pageFiles = parseRecordingFilesFromXml(getResp);
@@ -6280,7 +6501,7 @@ ${xmlDateTimePayload("endTime", end)}
             cmdId: BC_CMD_ID_FIND_REC_VIDEO_CLOSE,
             channel: params.channel,
             payloadXml: getXml,
-            timeoutMs: 5_000,
+            timeoutMs: Math.min(timeoutMs, 5_000),
           });
         } catch {
           // ignore
@@ -6487,9 +6708,9 @@ ${xmlDateTimePayload("endTime", end)}
    * @returns Array of enriched recording files
    */
   async listNvrRecordings(
-    params: ListNvrRecordingsParams & { source?: "baichuan" | "cgi" },
+    params: ListNvrRecordingsParams & { source?: "baichuan" | "cgi"; timeoutMs?: number },
   ): Promise<Array<EnrichedRecordingFile>> {
-    const { source = "baichuan", ...rest } = params;
+    const { source = "baichuan", timeoutMs, ...rest } = params;
 
     if (source === "cgi") {
       await this.cgiApi.login();
@@ -6522,6 +6743,7 @@ ${xmlDateTimePayload("endTime", end)}
         start: rest.start,
         end: rest.end,
         streamType,
+        ...(timeoutMs != null ? { timeoutMs } : {}),
         // Do NOT fall back to <findAlarmVideo> here; that would change semantics to “events only”.
         fallbackToAlarmVideo: false,
       });
@@ -6549,6 +6771,17 @@ ${xmlDateTimePayload("endTime", end)}
       await this.cgiApi.login();
       enriched = await this.cgiApi.listNvrRecordings({ ...rest, channel });
     }
+
+    // Best-effort: enrich detection flags by matching against alarm/event listings.
+    // This does not change how recordings are fetched; it only annotates them.
+    enriched = await this.tryAnnotateEnrichedRecordingsWithAlarmEvents({
+      channel,
+      uid,
+      start: rest.start,
+      end: rest.end,
+      streamType,
+      recordings: enriched,
+    });
 
     enriched.sort((a, b) => (a.startTimeMs ?? 0) - (b.startTimeMs ?? 0));
     return enriched;

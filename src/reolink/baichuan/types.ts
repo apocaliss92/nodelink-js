@@ -784,6 +784,8 @@ export interface ListRecordingsParams {
   streamType?: RecordingStreamType;
   /** Comma-separated list for Reolink XML, e.g. "manual, sched, io, md, people". */
   recordType?: string;
+  /** Per-request timeout for FileInfoList operations (open/get/close). Default: 15000ms. */
+  timeoutMs?: number;
   /**
    * If true (default), when FileInfoList returns no results, try the alternate Baichuan listing
    * based on <findAlarmVideo> (cmdId 272/273/274).
