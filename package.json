@@ -134,7 +134,7 @@
   "dependencies": {
     "alawmulaw": "^6.0.0",
     "dotenv": "^17.2.3",
-    "sharp": "^0.34.5",
+    "jimp": "^1.6.0",
     "undici": "^7.16.0",
     "yazl": "^3.3.1"
   }

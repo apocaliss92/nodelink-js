@@ -111,7 +111,7 @@ import type {
   ZoomFocusTriplet
 } from "./types";
 
-import sharp from "sharp";
+import { Jimp, JimpMime } from "jimp";
 import type { CompositeStreamPipOptions } from "../../multifocal/compositeStream";
 import {
   ReolinkCgiApi,
@@ -1890,20 +1890,29 @@ export class ReolinkBaichuanApi {
         timeoutMs,
       });
 
-      const wideMeta = await sharp(wide, { failOn: "none" }).metadata();
-      const teleMeta = await sharp(tele, { failOn: "none" }).metadata();
-
-      const mainW = wideMeta.width ?? 0;
-      const mainH = wideMeta.height ?? 0;
-      if (mainW <= 0 || mainH <= 0) {
+      let wideImg: Awaited<ReturnType<typeof Jimp.read>>;
+      let teleImg: Awaited<ReturnType<typeof Jimp.read>>;
+      try {
+        wideImg = await Jimp.read(wide);
+      } catch {
         // If we can't determine dimensions, return wide snapshot.
         return wide;
       }
 
+      try {
+        teleImg = await Jimp.read(tele);
+      } catch {
+        // If tele cannot be decoded, fall back to wide.
+        return wide;
+      }
+
+      const mainW = wideImg.bitmap.width;
+      const mainH = wideImg.bitmap.height;
+      const teleW = teleImg.bitmap.width;
+      const teleH = teleImg.bitmap.height;
+
       const pipMarginPx = resolvePipMarginPx(mainW, mainH, composite?.pipMargin, 10);
 
-      const teleW = teleMeta.width ?? 0;
-      const teleH = teleMeta.height ?? 0;
       const teleAspect = teleW > 0 && teleH > 0 ? teleW / teleH : 16 / 9;
 
       // PIP size is defined as a fraction of the OUTPUT (wide) snapshot.
@@ -1930,14 +1939,11 @@ export class ReolinkBaichuanApi {
         margin: pipMarginPx,
       });
 
-      const pip = await sharp(tele, { failOn: "none" })
-        .resize({ width: pipW, height: pipH, fit: "fill" })
-        .toBuffer();
+      // Resize to exact PiP bounds (we already computed aspect-aware sizes).
+      teleImg.resize({ w: pipW, h: pipH });
 
-      return await sharp(wide, { failOn: "none" })
-        .composite([{ input: pip, left, top }])
-        .jpeg({ quality: 80, mozjpeg: true })
-        .toBuffer();
+      wideImg.composite(teleImg, left, top);
+      return await wideImg.getBuffer(JimpMime.jpeg, { quality: 80 });
     }
 
     // Regular snapshot for single channel
