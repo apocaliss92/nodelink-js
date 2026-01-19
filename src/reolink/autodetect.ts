@@ -1,5 +1,6 @@
 import type { BaichuanClientOptions } from "../client/BaichuanClient";
 import type { Logger } from "../debug/DebugConfig";
+import { BC_CLASS_MODERN_20, BC_CLASS_MODERN_24 } from "../protocol/constants";
 import { DUAL_LENS_MODELS, isDualLenseModel, ReolinkBaichuanApi } from "./baichuan/ReolinkBaichuanApi";
 import { discoverViaUdpBroadcast, discoverViaUdpDirect } from "./discovery";
 import type { ReolinkDeviceInfo } from "./types";
@@ -138,6 +139,10 @@ export function isTcpFailureThatShouldFallbackToUdp(e: unknown): boolean {
 
   // Fallback only on transport/connection style failures.
   // Wrong credentials won't be fixed by switching to UDP.
+  //
+  // Note: some devices accept the TCP connection but fail during the initial
+  // nonce/encryption negotiation (socket close / timeout / unexpected reply).
+  // In `mode=auto`, it's still reasonable to fallback to UDP/BCUDP in that case.
   return (
     message.includes("ECONNREFUSED") ||
     message.includes("ETIMEDOUT") ||
@@ -145,7 +150,11 @@ export function isTcpFailureThatShouldFallbackToUdp(e: unknown): boolean {
     message.includes("ENETUNREACH") ||
     message.includes("socket hang up") ||
     message.includes("TCP connection timeout") ||
-    message.includes("Baichuan socket closed")
+    message.includes("Baichuan socket closed") ||
+    message.includes("timeout waiting for nonce") ||
+    message.includes("expected encryption info") ||
+    message.includes("ECONNRESET") ||
+    message.includes("EPIPE")
   );
 }
 
@@ -159,7 +168,11 @@ async function pingHost(host: string, timeoutMs: number = 3000): Promise<boolean
     const pingCmd =
       platform === "win32"
         ? `ping -n 1 -w ${timeoutMs} ${host}`
-        : `ping -c 1 -W ${Math.floor(timeoutMs / 1000)} ${host}`;
+        : platform === "darwin"
+          // macOS: -W is in milliseconds (Linux: seconds)
+          ? `ping -c 1 -W ${timeoutMs} ${host}`
+          // Linux/BSD-ish: -W is in seconds on most distros
+          : `ping -c 1 -W ${Math.max(1, Math.floor(timeoutMs / 1000))} ${host}`;
 
     exec(pingCmd, (error: any) => {
       resolve(!error);
@@ -450,13 +463,66 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
     // Get device info to check device type
     const api = tcpApi;
     if (!api) throw new Error("AutoDetect internal error: TCP API not initialized after successful login");
-    const deviceInfo = await api.getInfo();
-    const capabilities = await api.getDeviceCapabilities();
-    // const hostNetworkInfo = await tcpApi.getNetworkInfo(undefined, { timeoutMs: 1200 }).catch(() => undefined);
-    const channelNum = capabilities?.support?.channelNum ?? 1;
-    const model = deviceInfo.type?.trim();
 
-    logger?.log?.(`[AutoDetect] TCP connection successful. channelNum=${channelNum}, model=${model ?? "unknown"}`);
+    // Some older firmwares are picky about message class or do not support the full
+    // post-login capability probe sequence. Treat post-login command failures as a degraded
+    // detection, not as a TCP transport failure.
+    const runProbeVariants = async <T>(
+      label: string,
+      variants: Array<{ variant: string; op: () => Promise<T> }>,
+    ): Promise<{ value: T; variant: string } | undefined> => {
+      let lastMsg: string | undefined;
+      for (const v of variants) {
+        try {
+          const value = await v.op();
+          logger?.log?.(`[AutoDetect] TCP probe ${label} OK (${v.variant})`);
+          return { value, variant: v.variant };
+        } catch (e) {
+          const msg = fmtErr(e);
+          lastMsg = msg;
+          logger?.log?.(`[AutoDetect] TCP probe ${label} failed (${v.variant}): ${msg}`);
+        }
+      }
+      if (lastMsg) {
+        logger?.log?.(`[AutoDetect] TCP probe ${label} failed (all variants): ${lastMsg}`);
+      }
+      return undefined;
+    };
+
+    // Device info probes (firmware-dependent):
+    // - Host cmd_id 80 (GetDevInfo)
+    // - Channel cmd_id 318 (GetDevInfo per channel)
+    // Some older devices respond to one but not the other.
+    const infoProbe = await runProbeVariants<Partial<ReolinkDeviceInfo>>(
+      "getInfo",
+      [
+        { variant: "cmd80 class=0x6414", op: () => api.getInfo(undefined, { timeoutMs: 2500, messageClass: BC_CLASS_MODERN_24 }) },
+        { variant: "cmd80 class=0x6614", op: () => api.getInfo(undefined, { timeoutMs: 3000, messageClass: BC_CLASS_MODERN_20 }) },
+        { variant: "cmd318(ch0) class=0x6414", op: () => api.getInfo(0, { timeoutMs: 3000, messageClass: BC_CLASS_MODERN_24 }) },
+        { variant: "cmd318(ch0) class=0x6614", op: () => api.getInfo(0, { timeoutMs: 3500, messageClass: BC_CLASS_MODERN_20 }) },
+      ],
+    );
+
+    // Support probes (cmd 199). Some firmwares may not support it or are slow.
+    const supportProbe = await runProbeVariants<any>(
+      "getSupportInfo",
+      [
+        { variant: "cmd199 class=0x6414", op: () => api.getSupportInfo({ timeoutMs: 2500, messageClass: BC_CLASS_MODERN_24 }) },
+        { variant: "cmd199 class=0x6614", op: () => api.getSupportInfo({ timeoutMs: 3500, messageClass: BC_CLASS_MODERN_20 }) },
+      ],
+    );
+
+    const deviceInfo = infoProbe?.value;
+    const support = supportProbe?.value;
+
+    const channelNumRaw = support?.channelNum;
+    const channelNum = typeof channelNumRaw === "string" ? Number.parseInt(channelNumRaw, 10) : channelNumRaw;
+    const effectiveChannelNum = Number.isFinite(channelNum) && channelNum != null ? channelNum : 1;
+    const model = deviceInfo?.type?.trim();
+
+    logger?.log?.(
+      `[AutoDetect] TCP connection successful. channelNum=${effectiveChannelNum}${support ? "" : " (support probe failed)"}, model=${model ?? "unknown"}${deviceInfo ? "" : " (info probe failed)"}`,
+    );
 
     // Check if it's a multi-focal device using the dual lens model map or channelNum fallback
     const normalizedModel = model ? model.trim() : undefined;
@@ -464,7 +530,7 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
 
     // Also check if channelNum suggests dual lens (2-3 channels)
     // Handle both number and string types for channelNum
-    const channelNumValue = typeof channelNum === "string" ? Number.parseInt(channelNum, 10) : channelNum;
+    const channelNumValue = effectiveChannelNum;
     const hasDualLensChannelCount = (channelNumValue === 2 || channelNumValue === 3) && Number.isFinite(channelNumValue);
 
     // Consider it dual lens if model matches OR if channelNum suggests it
@@ -478,24 +544,24 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
         type: "multifocal",
         transport: "tcp",
         uid: effectiveUid || uid || "",
-        deviceInfo,
+        ...(deviceInfo ? { deviceInfo } : {}),
         // ...(hostNetworkInfo ? { hostNetworkInfo } : {}),
-        channelNum,
+        channelNum: effectiveChannelNum,
         api,
       };
     }
 
     // If channelNum > 1, it's likely an NVR
-    if (channelNum > 1) {
-      logger?.log?.(`[AutoDetect] Detected NVR (${channelNum} channels)`);
+    if (effectiveChannelNum > 1) {
+      logger?.log?.(`[AutoDetect] Detected NVR (${effectiveChannelNum} channels)`);
       // Don't close the API, return it for continued use
       return {
         type: "nvr",
         transport: "tcp",
         uid: effectiveUid || uid || "",
-        deviceInfo,
+        ...(deviceInfo ? { deviceInfo } : {}),
         // ...(hostNetworkInfo ? { hostNetworkInfo } : {}),
-        channelNum,
+        channelNum: effectiveChannelNum,
         api,
       };
     }
@@ -507,7 +573,7 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
       type: "camera",
       transport: "tcp",
       uid: effectiveUid || uid || "",
-      deviceInfo,
+      ...(deviceInfo ? { deviceInfo } : {}),
       // ...(hostNetworkInfo ? { hostNetworkInfo } : {}),
       channelNum: 1,
       api,

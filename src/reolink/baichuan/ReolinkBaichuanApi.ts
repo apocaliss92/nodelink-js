@@ -929,13 +929,16 @@ export class ReolinkBaichuanApi {
     channel?: number,
     options?: {
       timeoutMs?: number;
+      /** Optional message class override for older firmwares (e.g. 0x6614). */
+      messageClass?: number;
       /** List of XML tags to extract. Defaults to the canonical minimal set. */
       tags?: ReolinkDeviceInfoTag[];
     },
   ): Promise<Partial<ReolinkDeviceInfo>> {
-    const req: { cmdId: number; channel?: number; timeoutMs?: number } = { cmdId: channel == null ? 80 : 318 };
+    const req: { cmdId: number; channel?: number; timeoutMs?: number; messageClass?: number } = { cmdId: channel == null ? 80 : 318 };
     if (channel !== undefined) req.channel = channel;
     if (options?.timeoutMs != null) req.timeoutMs = options.timeoutMs;
+    if (options?.messageClass != null) req.messageClass = options.messageClass;
     const xml = await this.sendXml(req);
     // Canonical minimal set: type, hardwareVersion, firmwareVersion, itemNo, serialNumber, name
     const tags = options?.tags?.length
@@ -4715,8 +4718,12 @@ export class ReolinkBaichuanApi {
    *
    * Returns host-level support info including ptzMode and per-channel flags (battery, ledCtrl, etc).
    */
-  async getSupportInfo(): Promise<SupportInfo | undefined> {
-    const xml = await this.sendXml({ cmdId: BC_CMD_ID_SUPPORT });
+  async getSupportInfo(options?: { timeoutMs?: number; messageClass?: number }): Promise<SupportInfo | undefined> {
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_SUPPORT,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+      ...(options?.messageClass != null ? { messageClass: options.messageClass } : {}),
+    });
     return parseSupportXml(xml);
   }
 
