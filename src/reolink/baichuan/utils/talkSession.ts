@@ -11,6 +11,8 @@ export const createBufferedTalkSession = (params: {
   channelIdOverride?: number;
   info: TalkSessionInfo;
   blocksPerPayload?: number;
+  /** If true, close the underlying socket when stop() completes (for dedicated sessions). */
+  closeSocketOnStop?: boolean;
 }): TalkSession => {
   const { client, channel, channelIdOverride, info } = params;
 
@@ -150,6 +152,14 @@ export const createBufferedTalkSession = (params: {
     });
     if (frame.header.responseCode !== 200) {
       throw new Error(`TalkReset rejected (responseCode ${frame.header.responseCode})`);
+    }
+
+    if (params.closeSocketOnStop) {
+      try {
+        await client.close({ reason: "talk_session_stop" });
+      } catch {
+        // ignore
+      }
     }
   };
 

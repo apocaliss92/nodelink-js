@@ -856,7 +856,14 @@ export class ReolinkBaichuanApi {
    * Input audio format expected by the camera is ADPCM (DVI4/IMA style) in blocks described
    * by TalkAbility.audioConfigList (typically 16kHz mono, lengthPerEncoder=1024).
    */
-  async createTalkSession(channel = 0, options?: { blocksPerPayload?: number }): Promise<TalkSession> {
+  async createTalkSession(
+    channel = 0,
+    options?: {
+      blocksPerPayload?: number;
+      /** Close the underlying socket when stop() completes (recommended for dedicated sessions). */
+      closeSocketOnStop?: boolean;
+    },
+  ): Promise<TalkSession> {
     if (!this.client.loggedIn) await this.client.login();
 
     // BCUDP/battery firmwares often expect 0-based header channelId.
@@ -879,6 +886,7 @@ export class ReolinkBaichuanApi {
       ...(channelIdOverride != null ? { channelIdOverride } : {}),
       info,
       ...(options?.blocksPerPayload != null ? { blocksPerPayload: options.blocksPerPayload } : {}),
+      ...(options?.closeSocketOnStop != null ? { closeSocketOnStop: options.closeSocketOnStop } : {}),
     });
   }
 
