@@ -890,12 +890,27 @@ export class BaichuanClient extends EventEmitter<{
     });
 
     const sid = this.socketSessionId;
-    const remoteAddress = sock.remoteAddress;
-    const remoteFamily = sock.remoteFamily;
-    const remote = remoteAddress ? `${remoteAddress}${remoteFamily ? `/${remoteFamily}` : ""}` : undefined;
+    // NOTE: `remote` here refers to the local endpoint used to initialize the socket (client side).
+    // The camera endpoint is logged as `peer`.
+    const localAddress = sock.localAddress;
+    const localFamily = sock.localFamily;
+    const localPort = sock.localPort;
+    const remote = localAddress
+      ? `${localAddress}${localFamily ? `/${localFamily}` : ""}${localPort ? `:${localPort}` : ""}`
+      : undefined;
+
+    const peerAddress = sock.remoteAddress;
+    const peerFamily = sock.remoteFamily;
+    const peerPort = sock.remotePort;
+    const peer = peerAddress
+      ? `${peerAddress}${peerFamily ? `/${peerFamily}` : ""}${peerPort ? `:${peerPort}` : ""}`
+      : undefined;
     this.logFixed(
       "connected",
-      `transport=tcp host=${this.opts.host} port=${port}${sid ? ` sid=${sid}` : ""}${remote ? ` remote=${remote}` : ""}`,
+      `transport=tcp host=${this.opts.host} port=${port}` +
+        `${sid ? ` sid=${sid}` : ""}` +
+        // `${remote ? ` remote=${remote}` : ""}` +
+        `${peer ? ` peer=${peer}` : ""}`,
     );
 
     this.startKeepAlive();
