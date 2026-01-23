@@ -40,6 +40,7 @@
     "node": ">=18"
   },
   "scripts": {
+    "probe:pcap-derived-settings": "npm run build && node test-pcap-derived-settings-probe.mjs",
     "test:nvr:native-frame-trace": "npm run test:build && node dist/test/nvr/test-nvr-native-secondary-frame-trace.js",
     "test:nvr:native-ffprobe": "npm run test:build && node dist/test/nvr/test-nvr-native-streams-ffprobe.js",
     "test:pcap:baichuan": "npm run test:build && node dist/test/pcap/test-pcap-baichuan-analyze.js",
@@ -134,6 +135,7 @@
   "dependencies": {
     "alawmulaw": "^6.0.0",
     "dotenv": "^17.2.3",
+    "fast-xml-parser": "^4.5.3",
     "jimp": "^1.6.0",
     "undici": "^7.16.0",
     "yazl": "^3.3.1"

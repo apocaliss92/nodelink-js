@@ -1,6 +1,7 @@
 import { getXmlText } from "../../../protocol/xml";
 import { getXmlBlocks } from "../xmlUtils";
 import { parseBoolean01, parseNumber } from "./parsing";
+import { parseXmlToJson } from "./xml";
 import type {
   BaichuanCoordinatePointListPush,
   BaichuanDingdongListPush,
@@ -75,13 +76,15 @@ export const parseDingdongListPushXml = (
 
   const maxPairNumber = parseNumber(getXmlText(xml, "maxPairNumber"));
   const channel = parseNumber(getXmlText(xml, "channel"));
-  const pairedListRawXml = pairedListBlock ? pairedListBlock.trim() : undefined;
+  const pairedList = pairedListBlock
+    ? parseXmlToJson(pairedListBlock)
+    : undefined;
 
   return {
     ...(maxPairNumber != null ? { maxPairNumber } : {}),
     ...(channel != null ? { channel } : {}),
     ...(Number.isFinite(pairedCount) ? { pairedCount } : {}),
-    ...(pairedListRawXml ? { pairedListRawXml } : {}),
+    ...(pairedList != null ? { pairedList } : {}),
   };
 };
 

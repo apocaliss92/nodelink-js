@@ -11,7 +11,7 @@ import {
   traceLog,
   type DebugConfig,
   type DebugOptions,
-  type Logger
+  type Logger,
 } from "../debug/DebugConfig";
 import { createDebugGateLogger } from "../logging/logger";
 import {
@@ -32,16 +32,38 @@ import {
   BC_CMD_ID_TALK_CONFIG,
   BC_CMD_ID_TALK_RESET,
   BC_CMD_ID_UDP_KEEP_ALIVE,
-  BC_TCP_DEFAULT_PORT
+  BC_TCP_DEFAULT_PORT,
 } from "../protocol/constants";
-import { aesDecrypt, aesEncrypt, bcDecrypt, bcEncrypt, deriveAesKey, md5StrModern, type EncryptionProtocol } from "../protocol/crypto";
-import { BaichuanFrameParser, encodeHeader, type BaichuanFrame } from "../protocol/framing";
-import { buildBinaryExtensionXml, buildChannelExtensionXml, buildLoginXml, getXmlText } from "../protocol/xml";
+import {
+  aesDecrypt,
+  aesEncrypt,
+  bcDecrypt,
+  bcEncrypt,
+  deriveAesKey,
+  md5StrModern,
+  type EncryptionProtocol,
+} from "../protocol/crypto";
+import {
+  BaichuanFrameParser,
+  encodeHeader,
+  type BaichuanFrame,
+} from "../protocol/framing";
+import {
+  buildBinaryExtensionXml,
+  buildChannelExtensionXml,
+  buildLoginXml,
+  getXmlText,
+} from "../protocol/xml";
 import type { ReolinkEvent } from "../reolink/baichuan/types";
 export type { Logger };
 
 function isTalkCmd(cmdId: number): boolean {
-  return cmdId === BC_CMD_ID_TALK_ABILITY || cmdId === BC_CMD_ID_TALK_RESET || cmdId === BC_CMD_ID_TALK_CONFIG || cmdId === BC_CMD_ID_TALK;
+  return (
+    cmdId === BC_CMD_ID_TALK_ABILITY ||
+    cmdId === BC_CMD_ID_TALK_RESET ||
+    cmdId === BC_CMD_ID_TALK_CONFIG ||
+    cmdId === BC_CMD_ID_TALK
+  );
 }
 
 export type BaichuanClientOptions = {
@@ -53,10 +75,15 @@ export type BaichuanClientOptions = {
   uid?: string;
   /**
    * UDP discovery method to use when connecting via `uid`.
-    * Default: `local-broadcast` (LAN broadcast). Use `local-direct` to try unicast to the known host first.
+   * Default: `local-broadcast` (LAN broadcast). Use `local-direct` to try unicast to the known host first.
    * Use `remote`/`map`/`relay` for P2P discovery via Reolink servers.
    */
-  udpDiscoveryMethod?: "local-broadcast" | "local-direct" | "remote" | "map" | "relay";
+  udpDiscoveryMethod?:
+    | "local-broadcast"
+    | "local-direct"
+    | "remote"
+    | "map"
+    | "relay";
   /**
    * For NVR: logical channel index (0-based).
    * For standalone cameras: usually 0.
@@ -120,7 +147,10 @@ export class BaichuanClient extends EventEmitter<{
    * - Passive sleep inference should treat the device as awake while ANY client is actively streaming,
    *   even if the current client instance is idle/disconnected.
    */
-  private static readonly streamingRegistry = new Map<string, { activeStreamClients: number }>();
+  private static readonly streamingRegistry = new Map<
+    string,
+    { activeStreamClients: number }
+  >();
 
   private readonly opts: BaichuanClientOptions;
   private readonly debugCfg: DebugConfig;
@@ -135,23 +165,26 @@ export class BaichuanClient extends EventEmitter<{
   private udpSocket: BcUdpStream | undefined;
   private transport: "tcp" | "udp" = "tcp";
   private readonly parser = new BaichuanFrameParser();
-  private readonly pending = new Map<PendingKey, { resolve: (f: BaichuanFrame) => void; reject: (e: Error) => void }>();
+  private readonly pending = new Map<
+    PendingKey,
+    { resolve: (f: BaichuanFrame) => void; reject: (e: Error) => void }
+  >();
   private socketClosed = false;
 
   private pendingCloseInfo:
     | {
-      atMs: number;
-      reason: string;
-    }
+        atMs: number;
+        reason: string;
+      }
     | undefined;
 
   private lastDisconnectInfo:
     | {
-      atMs: number;
-      transport: "tcp" | "udp";
-      voluntary: boolean;
-      reason: string;
-    }
+        atMs: number;
+        transport: "tcp" | "udp";
+        voluntary: boolean;
+        reason: string;
+      }
     | undefined;
 
   private msgNum = 0;
@@ -169,30 +202,37 @@ export class BaichuanClient extends EventEmitter<{
   private idleDisconnectTimer: NodeJS.Timeout | undefined;
   private lastUserActivityAtMs: number | undefined;
   private permitSeq = 1;
-  private readonly permits = new Map<number, { timer: NodeJS.Timeout | undefined; untilMs: number; reason: string | undefined }>();
+  private readonly permits = new Map<
+    number,
+    {
+      timer: NodeJS.Timeout | undefined;
+      untilMs: number;
+      reason: string | undefined;
+    }
+  >();
 
   private lastRxAtMs: number | undefined;
   private lastTxAtMs: number | undefined;
   private lastRxInfo:
     | {
-      atMs: number;
-      cmdId: number;
-      responseCode: number;
-      msgNum: number;
-      channelId: number;
-      streamType: number;
-    }
+        atMs: number;
+        cmdId: number;
+        responseCode: number;
+        msgNum: number;
+        channelId: number;
+        streamType: number;
+      }
     | undefined;
 
   private lastTxInfo:
     | {
-      atMs: number;
-      cmdId: number;
-      responseCode: number;
-      msgNum: number;
-      channelId: number;
-      streamType: number;
-    }
+        atMs: number;
+        cmdId: number;
+        responseCode: number;
+        msgNum: number;
+        channelId: number;
+        streamType: number;
+      }
     | undefined;
 
   // Ring-buffer of the last received frames (metadata only). Used for sleep inference heuristics.
@@ -236,10 +276,16 @@ export class BaichuanClient extends EventEmitter<{
   private contributesToGlobalStreamingRegistry = false;
 
   // Throttled per-stream frame tracing (rx cmd_id=3 stream frames can be extremely chatty).
-  private streamTraceStats = new Map<number, { lastLogMs: number; frames: number }>();
+  private streamTraceStats = new Map<
+    number,
+    { lastLogMs: number; frames: number }
+  >();
 
   // Throttled global RX cmd tracing (useful to debug missing pushes/events).
-  private rxCmdTraceStats = new Map<number, { lastLogMs: number; frames: number }>();
+  private rxCmdTraceStats = new Map<
+    number,
+    { lastLogMs: number; frames: number }
+  >();
 
   // AlarmEventList (cmdId=33) can be very chatty (often sent every second).
   // Track last per-channel alarm state so we only emit on transitions.
@@ -262,8 +308,22 @@ export class BaichuanClient extends EventEmitter<{
     // Centralized verbosity control: treat `.debug()` as opt-in.
     this.logger = createDebugGateLogger(
       options.logger,
-      this.debugCfg.general || this.debugCfg.traceNativeStream || this.debugCfg.traceRecordings || this.debugCfg.traceTalk || this.debugCfg.traceEvents || this.debugCfg.debugRtsp,
+      this.debugCfg.general ||
+        this.debugCfg.traceNativeStream ||
+        this.debugCfg.traceRecordings ||
+        this.debugCfg.traceTalk ||
+        this.debugCfg.traceEvents ||
+        this.debugCfg.debugRtsp,
     );
+
+    // Ensure socket/transport errors never crash the process by default.
+    // Consumers can still add their own `error` listeners.
+    this.on("error", (err) => {
+      this.logFixed("error", {
+        message: err?.message ?? String(err),
+        code: (err as any)?.code,
+      });
+    });
     // this.logger.log("BaichuanClient constructor", { options, dgfg: this.debugCfg });
   }
 
@@ -342,9 +402,25 @@ export class BaichuanClient extends EventEmitter<{
           return;
         }
         const sid = this.socketSessionId;
-        const shortUid = this.opts.uid ? this.opts.uid.substring(0, 5) : undefined;
-        this.logDebug("idle_disconnect", { elapsedMs: elapsed2, timeoutMs, transport: this.transport, host: this.opts.host, sid, uid: shortUid });
-        this.logFixed("idle_disconnect", { elapsedMs: elapsed2, timeoutMs, transport: this.transport, host: this.opts.host, sid, uid: shortUid });
+        const shortUid = this.opts.uid
+          ? this.opts.uid.substring(0, 5)
+          : undefined;
+        this.logDebug("idle_disconnect", {
+          elapsedMs: elapsed2,
+          timeoutMs,
+          transport: this.transport,
+          host: this.opts.host,
+          sid,
+          uid: shortUid,
+        });
+        this.logFixed("idle_disconnect", {
+          elapsedMs: elapsed2,
+          timeoutMs,
+          transport: this.transport,
+          host: this.opts.host,
+          sid,
+          uid: shortUid,
+        });
         void this.close({ reason: "idle_disconnect" });
       } catch (e) {
         this.logDebug("idle_disconnect_error", e);
@@ -372,8 +448,17 @@ export class BaichuanClient extends EventEmitter<{
       // still ensures no pending requests / video subscriptions / permits.
       this.lastUserActivityAtMs = Date.now() - timeoutMs + g;
       const sid = this.socketSessionId;
-      const shortUid = this.opts.uid ? this.opts.uid.substring(0, 5) : undefined;
-      this.logDebug("idle_disconnect_requested", { reason, graceMs: g, timeoutMs, host: this.opts.host, sid, uid: shortUid });
+      const shortUid = this.opts.uid
+        ? this.opts.uid.substring(0, 5)
+        : undefined;
+      this.logDebug("idle_disconnect_requested", {
+        reason,
+        graceMs: g,
+        timeoutMs,
+        host: this.opts.host,
+        sid,
+        uid: shortUid,
+      });
       this.kickIdleDisconnectTimer();
     } catch {
       // ignore
@@ -386,11 +471,11 @@ export class BaichuanClient extends EventEmitter<{
    */
   getLastDisconnectInfo():
     | {
-      atMs: number;
-      transport: "tcp" | "udp";
-      voluntary: boolean;
-      reason: string;
-    }
+        atMs: number;
+        transport: "tcp" | "udp";
+        voluntary: boolean;
+        reason: string;
+      }
     | undefined {
     return this.lastDisconnectInfo;
   }
@@ -400,7 +485,10 @@ export class BaichuanClient extends EventEmitter<{
    *
    * Returns a release function.
    */
-  acquirePermit(holdMs = this.getIdleDisconnectTimeoutMs(), reason?: string): () => void {
+  acquirePermit(
+    holdMs = this.getIdleDisconnectTimeoutMs(),
+    reason?: string,
+  ): () => void {
     const ms = Math.max(0, Math.floor(holdMs));
     const id = this.permitSeq++;
     const untilMs = Date.now() + ms;
@@ -412,7 +500,13 @@ export class BaichuanClient extends EventEmitter<{
     }
 
     this.permits.set(id, { timer, untilMs, reason });
-    this.logDebug("permit_acquired", { id, holdMs: ms, untilMs, reason, permits: this.permits.size });
+    this.logDebug("permit_acquired", {
+      id,
+      holdMs: ms,
+      untilMs,
+      reason,
+      permits: this.permits.size,
+    });
 
     // A permit disables idle disconnect.
     this.clearIdleDisconnectTimer();
@@ -442,10 +536,18 @@ export class BaichuanClient extends EventEmitter<{
     if (shouldContribute === this.contributesToGlobalStreamingRegistry) return;
 
     const key = this.getDeviceRegistryKey();
-    const cur = BaichuanClient.streamingRegistry.get(key) ?? { activeStreamClients: 0 };
-    const nextCount = Math.max(0, cur.activeStreamClients + (shouldContribute ? 1 : -1));
+    const cur = BaichuanClient.streamingRegistry.get(key) ?? {
+      activeStreamClients: 0,
+    };
+    const nextCount = Math.max(
+      0,
+      cur.activeStreamClients + (shouldContribute ? 1 : -1),
+    );
     if (nextCount === 0) BaichuanClient.streamingRegistry.delete(key);
-    else BaichuanClient.streamingRegistry.set(key, { activeStreamClients: nextCount });
+    else
+      BaichuanClient.streamingRegistry.set(key, {
+        activeStreamClients: nextCount,
+      });
 
     this.contributesToGlobalStreamingRegistry = shouldContribute;
   }
@@ -496,13 +598,13 @@ export class BaichuanClient extends EventEmitter<{
   /** Metadata about the last received Baichuan frame, if any. */
   getLastRxInfo():
     | {
-      atMs: number;
-      cmdId: number;
-      responseCode: number;
-      msgNum: number;
-      channelId: number;
-      streamType: number;
-    }
+        atMs: number;
+        cmdId: number;
+        responseCode: number;
+        msgNum: number;
+        channelId: number;
+        streamType: number;
+      }
     | undefined {
     return this.lastRxInfo;
   }
@@ -527,13 +629,13 @@ export class BaichuanClient extends EventEmitter<{
   /** Metadata about the last transmitted Baichuan frame, if any. */
   getLastTxInfo():
     | {
-      atMs: number;
-      cmdId: number;
-      responseCode: number;
-      msgNum: number;
-      channelId: number;
-      streamType: number;
-    }
+        atMs: number;
+        cmdId: number;
+        responseCode: number;
+        msgNum: number;
+        channelId: number;
+        streamType: number;
+      }
     | undefined {
     return this.lastTxInfo;
   }
@@ -613,7 +715,9 @@ export class BaichuanClient extends EventEmitter<{
       return this.tcpSocket !== undefined && !this.tcpSocket.destroyed;
     }
     if (this.transport === "udp") {
-      return this.udpSocket !== undefined && (this.udpSocket.isConnected?.() ?? true);
+      return (
+        this.udpSocket !== undefined && (this.udpSocket.isConnected?.() ?? true)
+      );
     }
     return false;
   }
@@ -709,8 +813,18 @@ export class BaichuanClient extends EventEmitter<{
       payloadOffset: 0,
     });
 
-    this.logDebug("udp_keepalive_ping_tx", { msgNum, channelId: 0, streamType: 0 });
-    this.recordTx({ cmdId: BC_CMD_ID_UDP_KEEP_ALIVE, responseCode: 0, msgNum, channelId: 0, streamType: 0 });
+    this.logDebug("udp_keepalive_ping_tx", {
+      msgNum,
+      channelId: 0,
+      streamType: 0,
+    });
+    this.recordTx({
+      cmdId: BC_CMD_ID_UDP_KEEP_ALIVE,
+      responseCode: 0,
+      msgNum,
+      channelId: 0,
+      streamType: 0,
+    });
     this.writeWire(header);
   }
 
@@ -766,15 +880,21 @@ export class BaichuanClient extends EventEmitter<{
       await Promise.race([
         this.connectTcp(),
         new Promise<void>((_, reject) =>
-          setTimeout(() => reject(new Error("TCP connection timeout (falling back to UDP)")), 4000)
-        )
+          setTimeout(
+            () =>
+              reject(new Error("TCP connection timeout (falling back to UDP)")),
+            4000,
+          ),
+        ),
       ]);
     } catch (e) {
       this.logDebug("auto:tcp_failed", e);
       // Fallback to UDP discovery
       // Requires UID.
       if (!this.opts.uid) {
-        throw new Error("TCP connection failed and UDP fallback requires `options.uid` (BCUDP discovery UID).");
+        throw new Error(
+          "TCP connection failed and UDP fallback requires `options.uid` (BCUDP discovery UID).",
+        );
       }
       await this.waitForUdpReconnectCooldown();
       await this.connectUdp();
@@ -854,8 +974,10 @@ export class BaichuanClient extends EventEmitter<{
       if (sid) tcpDisconnectParts.push(`sid=${sid}`);
       const tcpPort = this.opts.port ?? BC_TCP_DEFAULT_PORT;
       if (tcpPort != null) tcpDisconnectParts.push(`port=${tcpPort}`);
-      if (this.lastRxInfo?.cmdId != null) tcpDisconnectParts.push(`lastRxCmdId=${this.lastRxInfo.cmdId}`);
-      if (this.lastTxInfo?.cmdId != null) tcpDisconnectParts.push(`lastTxCmdId=${this.lastTxInfo.cmdId}`);
+      if (this.lastRxInfo?.cmdId != null)
+        tcpDisconnectParts.push(`lastRxCmdId=${this.lastRxInfo.cmdId}`);
+      if (this.lastTxInfo?.cmdId != null)
+        tcpDisconnectParts.push(`lastTxCmdId=${this.lastTxInfo.cmdId}`);
       this.logFixed("disconnected", tcpDisconnectParts.join(" "));
 
       // End socket session.
@@ -933,14 +1055,18 @@ export class BaichuanClient extends EventEmitter<{
       this.udpSocket = undefined;
     }
     if (!this.opts.uid) {
-      throw new Error("Baichuan UDP requested but `options.uid` is not set (required for BCUDP discovery).");
+      throw new Error(
+        "Baichuan UDP requested but `options.uid` is not set (required for BCUDP discovery).",
+      );
     }
     const sock = new BcUdpStream({
       mode: "uid",
       uid: this.opts.uid,
       // If the camera IP/hostname is known, allow local-direct to try unicast before broadcast.
       ...(this.opts.host?.trim() ? { directHost: this.opts.host.trim() } : {}),
-      ...(this.opts.udpDiscoveryMethod ? { discoveryMethod: this.opts.udpDiscoveryMethod } : {}),
+      ...(this.opts.udpDiscoveryMethod
+        ? { discoveryMethod: this.opts.udpDiscoveryMethod }
+        : {}),
     });
     this.udpSocket = sock;
     this.transport = "udp";
@@ -984,8 +1110,10 @@ export class BaichuanClient extends EventEmitter<{
         const shortUid = this.opts.uid.substring(0, 5);
         udpDisconnectParts.push(`uid=${shortUid}`);
       }
-      if (this.lastRxInfo?.cmdId != null) udpDisconnectParts.push(`lastRxCmdId=${this.lastRxInfo.cmdId}`);
-      if (this.lastTxInfo?.cmdId != null) udpDisconnectParts.push(`lastTxCmdId=${this.lastTxInfo.cmdId}`);
+      if (this.lastRxInfo?.cmdId != null)
+        udpDisconnectParts.push(`lastRxCmdId=${this.lastRxInfo.cmdId}`);
+      if (this.lastTxInfo?.cmdId != null)
+        udpDisconnectParts.push(`lastTxCmdId=${this.lastTxInfo.cmdId}`);
       this.logFixed("disconnected", udpDisconnectParts.join(" "));
 
       // End socket session.
@@ -1021,7 +1149,9 @@ export class BaichuanClient extends EventEmitter<{
       if (err?.message?.includes("D2C_DISC")) {
         const now = Date.now();
         const sid = this.socketSessionId;
-        const shortUid = this.opts.uid ? this.opts.uid.substring(0, 5) : undefined;
+        const shortUid = this.opts.uid
+          ? this.opts.uid.substring(0, 5)
+          : undefined;
         this.logFixed("d2c_disc", {
           transport: "udp",
           host: this.opts.host,
@@ -1036,11 +1166,22 @@ export class BaichuanClient extends EventEmitter<{
         const baseMs = 2_000;
         const maxMs = 30_000;
         const nextBackoffMs = withinWindow
-          ? Math.min(maxMs, Math.max(baseMs, this.udpReconnectBackoffMs > 0 ? this.udpReconnectBackoffMs * 2 : baseMs))
+          ? Math.min(
+              maxMs,
+              Math.max(
+                baseMs,
+                this.udpReconnectBackoffMs > 0
+                  ? this.udpReconnectBackoffMs * 2
+                  : baseMs,
+              ),
+            )
           : baseMs;
         this.udpReconnectLastD2cDiscAtMs = now;
         this.udpReconnectBackoffMs = nextBackoffMs;
-        this.udpReconnectCooldownUntilMs = Math.max(this.udpReconnectCooldownUntilMs, now + nextBackoffMs);
+        this.udpReconnectCooldownUntilMs = Math.max(
+          this.udpReconnectCooldownUntilMs,
+          now + nextBackoffMs,
+        );
         this.logFixed("d2c_disc_backoff", {
           transport: "udp",
           host: this.opts.host,
@@ -1070,7 +1211,8 @@ export class BaichuanClient extends EventEmitter<{
     await sock.connect();
 
     const shortUid = this.opts.uid ? this.opts.uid.substring(0, 5) : "";
-    const udpDiscoveryMethod = this.opts.udpDiscoveryMethod as string | undefined ?? 'local-direct';
+    const udpDiscoveryMethod =
+      (this.opts.udpDiscoveryMethod as string | undefined) ?? "local-direct";
     const sid = this.socketSessionId;
     const udpRemoteHost: string | undefined = (sock as any)?.remote?.host;
     this.logFixed(
@@ -1082,7 +1224,9 @@ export class BaichuanClient extends EventEmitter<{
   }
 
   async close(options?: { reason?: string }): Promise<void> {
-    const hasSocket = Boolean((this.tcpSocket && !this.tcpSocket.destroyed) || this.udpSocket);
+    const hasSocket = Boolean(
+      (this.tcpSocket && !this.tcpSocket.destroyed) || this.udpSocket,
+    );
     const reason = (options?.reason ?? "manual_close").trim() || "manual_close";
     if (hasSocket) {
       this.pendingCloseInfo = {
@@ -1098,7 +1242,9 @@ export class BaichuanClient extends EventEmitter<{
       const transport = this.transport;
       const host = this.opts.host;
       const port = this.opts.port ?? BC_TCP_DEFAULT_PORT;
-      const shortUid = this.opts.uid ? this.opts.uid.substring(0, 5) : undefined;
+      const shortUid = this.opts.uid
+        ? this.opts.uid.substring(0, 5)
+        : undefined;
       this.logFixed("closing", {
         transport,
         host,
@@ -1211,7 +1357,7 @@ export class BaichuanClient extends EventEmitter<{
             this.debugCfg,
             this.logger,
             "BaichuanRx",
-            `rx cmdId=3 frames=${s.frames} lastMsgNum=${frame.header.msgNum} lastResponseCode=${frame.header.responseCode} lastChannelId=${frame.header.channelId} lastStreamType=${frame.header.streamType} lastBodyLen=${frame.body.length} lastPayloadLen=${frame.payload.length}`
+            `rx cmdId=3 frames=${s.frames} lastMsgNum=${frame.header.msgNum} lastResponseCode=${frame.header.responseCode} lastChannelId=${frame.header.channelId} lastStreamType=${frame.header.streamType} lastBodyLen=${frame.body.length} lastPayloadLen=${frame.payload.length}`,
           );
           s.lastLogMs = now;
           s.frames = 0;
@@ -1222,7 +1368,7 @@ export class BaichuanClient extends EventEmitter<{
           this.debugCfg,
           this.logger,
           "BaichuanRx",
-          `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} streamType=${frame.header.streamType} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`
+          `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} streamType=${frame.header.streamType} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`,
         );
       }
     }
@@ -1231,7 +1377,10 @@ export class BaichuanClient extends EventEmitter<{
     // Always reply with response_code=200 using the same msg_num/channel_id/stream_type
     // and do not special-case the incoming response_code.
     // Some firmwares send these with response_code=200 already; we still reply to keep the session alive.
-    if (this.transport === "udp" && frame.header.cmdId === BC_CMD_ID_UDP_KEEP_ALIVE) {
+    if (
+      this.transport === "udp" &&
+      frame.header.cmdId === BC_CMD_ID_UDP_KEEP_ALIVE
+    ) {
       try {
         const header = encodeHeader({
           cmdId: frame.header.cmdId,
@@ -1244,7 +1393,12 @@ export class BaichuanClient extends EventEmitter<{
           payloadOffset: 0,
         });
 
-        this.logDebug("udp_keepalive_rx", { msgNum: frame.header.msgNum, channelId: frame.header.channelId, streamType: frame.header.streamType, responseCode: frame.header.responseCode });
+        this.logDebug("udp_keepalive_rx", {
+          msgNum: frame.header.msgNum,
+          channelId: frame.header.channelId,
+          streamType: frame.header.streamType,
+          responseCode: frame.header.responseCode,
+        });
         this.recordTx({
           cmdId: frame.header.cmdId,
           responseCode: 200,
@@ -1253,7 +1407,11 @@ export class BaichuanClient extends EventEmitter<{
           streamType: frame.header.streamType,
         });
         this.writeWire(header);
-        this.logDebug("udp_keepalive_tx", { msgNum: frame.header.msgNum, channelId: frame.header.channelId, streamType: frame.header.streamType });
+        this.logDebug("udp_keepalive_tx", {
+          msgNum: frame.header.msgNum,
+          channelId: frame.header.channelId,
+          streamType: frame.header.streamType,
+        });
       } catch (e) {
         // Keepalive failures shouldn't crash the client; log when debug is enabled.
         this.logDebug("udp_keepalive_error", e);
@@ -1264,9 +1422,10 @@ export class BaichuanClient extends EventEmitter<{
 
     if (this.debugCfg.traceTalk && isTalkCmd(frame.header.cmdId)) {
       talkTraceLog(
-        this.debugCfg, this.logger,
+        this.debugCfg,
+        this.logger,
         "BaichuanTalk",
-        `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`
+        `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`,
       );
     }
 
@@ -1290,7 +1449,10 @@ export class BaichuanClient extends EventEmitter<{
         if (this.debugCfg.traceNativeStream && frame.header.cmdId === 3) {
           const now = Date.now();
           const key = frame.header.msgNum;
-          const s = this.streamTraceStats.get(key) ?? { lastLogMs: now, frames: 0 };
+          const s = this.streamTraceStats.get(key) ?? {
+            lastLogMs: now,
+            frames: 0,
+          };
           s.frames++;
 
           // Throttle per-frame logs to keep BCUDP ACK/keepalive responsive.
@@ -1299,7 +1461,7 @@ export class BaichuanClient extends EventEmitter<{
               this.debugCfg,
               this.logger,
               "BaichuanTrace",
-              `rx stream frames cmdId=3 msgNum=${frame.header.msgNum} frames=${s.frames} lastChannelId=${frame.header.channelId} lastBodyLen=${frame.body.length} lastPayloadLen=${frame.payload.length} lastPayloadOffset=${frame.header.payloadOffset ?? 0}`
+              `rx stream frames cmdId=3 msgNum=${frame.header.msgNum} frames=${s.frames} lastChannelId=${frame.header.channelId} lastBodyLen=${frame.body.length} lastPayloadLen=${frame.payload.length} lastPayloadOffset=${frame.header.payloadOffset ?? 0}`,
             );
             s.lastLogMs = now;
             s.frames = 0;
@@ -1316,7 +1478,11 @@ export class BaichuanClient extends EventEmitter<{
     if (frame.header.cmdId === BC_CMD_ID_CHANNEL_INFO_ALL) {
       try {
         // Decrypt the body using the same method as sendXml
-        const xml = this.tryDecryptXml(frame.body, frame.header.channelId, this.enc);
+        const xml = this.tryDecryptXml(
+          frame.body,
+          frame.header.channelId,
+          this.enc,
+        );
         if (xml && xml.startsWith("<?xml")) {
           // Emit a special event with the parsed channel info
           this.emit("channelInfo", xml);
@@ -1353,8 +1519,12 @@ export class BaichuanClient extends EventEmitter<{
             this.logger,
             eventLogTag,
             `dispatch cmdId=33 msgNum=${frame.header.msgNum} channelId=${frame.header.channelId} type=${event.type} eventChannel=${event.channel}` +
-            (event.type === "ai" ? ` aiType=${(event.ai as any)?.type ?? "unknown"} detected=${(event.ai as any)?.detected ?? ""}` : "") +
-            (event.type === "motion" ? ` source=${(event.motion as any)?.source ?? ""}` : "")
+              (event.type === "ai"
+                ? ` aiType=${(event.ai as any)?.type ?? "unknown"} detected=${(event.ai as any)?.detected ?? ""}`
+                : "") +
+              (event.type === "motion"
+                ? ` source=${(event.motion as any)?.source ?? ""}`
+                : ""),
           );
           this.emit("event", event);
         }
@@ -1366,7 +1536,7 @@ export class BaichuanClient extends EventEmitter<{
 
   /**
    * Subscribe to video stream frames with a specific cmdId and msgNum.
-   * 
+   *
    * @param cmdId - Command ID to subscribe to (e.g., 3 for MSG_ID_VIDEO)
    * @param msgNum - Message number to subscribe to
    */
@@ -1391,7 +1561,7 @@ export class BaichuanClient extends EventEmitter<{
 
   /**
    * Unsubscribe from video stream frames.
-   * 
+   *
    * @param cmdId - Command ID to unsubscribe from
    * @param msgNum - Message number to unsubscribe from (optional, if not provided, unsubscribes from all msgNum for this cmdId)
    */
@@ -1429,7 +1599,9 @@ export class BaichuanClient extends EventEmitter<{
     if (body.length === 0) return [];
 
     const sid = this.socketSessionId;
-    const eventRawLogTag = sid ? `BaichuanEventRaw sid=${sid}` : "BaichuanEventRaw";
+    const eventRawLogTag = sid
+      ? `BaichuanEventRaw sid=${sid}`
+      : "BaichuanEventRaw";
 
     const xml = this.tryDecryptXml(body, frame.header.channelId, this.enc);
     if (!xml || !xml.startsWith("<?xml")) return [];
@@ -1440,42 +1612,59 @@ export class BaichuanClient extends EventEmitter<{
         this.debugCfg,
         this.logger,
         eventRawLogTag,
-        `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} xml=${JSON.stringify(snippet)}`
+        `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} xml=${JSON.stringify(snippet)}`,
       );
     }
 
     // Default channel from frame header (channelId 250 = host, 1+ = channels)
     const fallbackChannelId = frame.header.channelId;
-    const fallbackChannel = fallbackChannelId === 250 ? 0 : Math.max(0, fallbackChannelId - 1);
+    const fallbackChannel =
+      fallbackChannelId === 250 ? 0 : Math.max(0, fallbackChannelId - 1);
 
     const now = Date.now();
 
     // 1) Format: AlarmEventList
     if (xml.includes("<AlarmEventList")) {
       const out: ReolinkEvent[] = [];
-      const alarmEventMatches = xml.matchAll(/<AlarmEvent\b[^>]*>([\s\S]*?)<\/AlarmEvent>/g);
+      const alarmEventMatches = xml.matchAll(
+        /<AlarmEvent\b[^>]*>([\s\S]*?)<\/AlarmEvent>/g,
+      );
       for (const match of alarmEventMatches) {
         const alarmXml = match[1] ?? "";
         const channelText = getXmlText(alarmXml, "channelId");
-        const channel = channelText !== undefined ? Number(channelText) : fallbackChannel;
+        const channel =
+          channelText !== undefined ? Number(channelText) : fallbackChannel;
         const status = (getXmlText(alarmXml, "status") ?? "").trim();
         const statusUpper = status.toUpperCase();
 
         // Some firmwares may attach AI type in different tag names.
-        const aiTypeRaw = (getXmlText(alarmXml, "AItype") ?? getXmlText(alarmXml, "aiType") ?? getXmlText(alarmXml, "aitype") ?? "").trim();
+        const aiTypeRaw = (
+          getXmlText(alarmXml, "AItype") ??
+          getXmlText(alarmXml, "aiType") ??
+          getXmlText(alarmXml, "aitype") ??
+          ""
+        ).trim();
 
         // Some firmwares include a numeric timeStamp in AlarmEvent; when present and non-zero it can
         // be used to disambiguate real detections from static configured AI types.
-        const timeStampRaw = (getXmlText(alarmXml, "timeStamp") ?? getXmlText(alarmXml, "timestamp") ?? "").trim();
-        const timeStampNum = timeStampRaw.length ? Number(timeStampRaw) : undefined;
-        const alarmTimeStamp = Number.isFinite(timeStampNum as number) ? (timeStampNum as number) : undefined;
+        const timeStampRaw = (
+          getXmlText(alarmXml, "timeStamp") ??
+          getXmlText(alarmXml, "timestamp") ??
+          ""
+        ).trim();
+        const timeStampNum = timeStampRaw.length
+          ? Number(timeStampRaw)
+          : undefined;
+        const alarmTimeStamp = Number.isFinite(timeStampNum as number)
+          ? (timeStampNum as number)
+          : undefined;
 
         if (this.debugCfg.traceEvents) {
           eventTraceLog(
             this.debugCfg,
             this.logger,
             eventRawLogTag,
-            `AlarmEvent channel=${channel} status=${JSON.stringify(status)} aiType=${JSON.stringify(aiTypeRaw)}`
+            `AlarmEvent channel=${channel} status=${JSON.stringify(status)} aiType=${JSON.stringify(aiTypeRaw)}`,
           );
         }
 
@@ -1493,21 +1682,25 @@ export class BaichuanClient extends EventEmitter<{
           .filter((t) => t.length > 0);
 
         const visitorActive = statusTokens.includes("visitor");
-        const dayNightActive = statusTokens.includes("dn") || statusTokens.includes("daynight");
+        const dayNightActive =
+          statusTokens.includes("dn") || statusTokens.includes("daynight");
 
         // Default motion heuristic: status != none, excluding known non-motion flags.
         const statusIndicatesMotion = statusTokens.some(
-          (t) => t !== "none" && t !== "visitor" && t !== "dn" && t !== "daynight"
+          (t) =>
+            t !== "none" && t !== "visitor" && t !== "dn" && t !== "daynight",
         );
         const aiTypeTokenRaw = aiTypeRaw
           ? aiTypeRaw
-            .split(",")
-            .map((t) => t.trim())
-            .find((t) => t.length > 0 && t.toLowerCase() !== "none")
+              .split(",")
+              .map((t) => t.trim())
+              .find((t) => t.length > 0 && t.toLowerCase() !== "none")
           : undefined;
 
         const aiFlag = statusUpper.includes("AI");
-        const aiTypeToken = (aiTypeTokenRaw ?? (aiFlag ? "other" : "none")).toLowerCase();
+        const aiTypeToken = (
+          aiTypeTokenRaw ?? (aiFlag ? "other" : "none")
+        ).toLowerCase();
 
         const prev = this.alarmEventState.get(channel);
         const curr = {
@@ -1525,9 +1718,16 @@ export class BaichuanClient extends EventEmitter<{
 
           // However, some firmwares report an active AI detection immediately upon subscription without
           // toggling state. If a non-zero timeStamp is present, treat it as a concrete detection.
-          if (curr.aiTypeToken !== "none" && curr.aiTimeStamp && curr.aiTimeStamp !== 0) {
+          if (
+            curr.aiTypeToken !== "none" &&
+            curr.aiTimeStamp &&
+            curr.aiTimeStamp !== 0
+          ) {
             const t = curr.aiTypeToken;
-            const aiTypeMap: Record<string, "people" | "vehicle" | "dog_cat" | "face" | "package" | "other"> = {
+            const aiTypeMap: Record<
+              string,
+              "people" | "vehicle" | "dog_cat" | "face" | "package" | "other"
+            > = {
               people: "people",
               person: "people",
               human: "people",
@@ -1554,16 +1754,21 @@ export class BaichuanClient extends EventEmitter<{
           }
 
           // Doorbell/visitor and day/night are discrete flags.
-          if (curr.visitorActive) out.push({ channel, type: "visitor", timestamp: now });
-          if (curr.dayNightActive) out.push({ channel, type: "daynight", timestamp: now });
+          if (curr.visitorActive)
+            out.push({ channel, type: "visitor", timestamp: now });
+          if (curr.dayNightActive)
+            out.push({ channel, type: "daynight", timestamp: now });
 
           continue;
         }
 
         // Motion: emit only on rising edge.
         if (!prev.motionActive && curr.motionActive) {
-          const source =
-            statusUpper.includes("MD") ? "md" : statusUpper.includes("PIR") || statusUpper.includes("OTHER") ? "pir" : "unknown";
+          const source = statusUpper.includes("MD")
+            ? "md"
+            : statusUpper.includes("PIR") || statusUpper.includes("OTHER")
+              ? "pir"
+              : "unknown";
           out.push({
             channel,
             type: "motion",
@@ -1582,9 +1787,15 @@ export class BaichuanClient extends EventEmitter<{
           curr.aiTimeStamp !== 0 &&
           curr.aiTimeStamp !== prev.aiTimeStamp;
 
-        if ((aiTypeChanged && curr.aiTypeToken !== "none") || (aiTimeStampChanged && curr.aiTypeToken !== "none")) {
+        if (
+          (aiTypeChanged && curr.aiTypeToken !== "none") ||
+          (aiTimeStampChanged && curr.aiTypeToken !== "none")
+        ) {
           const t = curr.aiTypeToken;
-          const aiTypeMap: Record<string, "people" | "vehicle" | "dog_cat" | "face" | "package" | "other"> = {
+          const aiTypeMap: Record<
+            string,
+            "people" | "vehicle" | "dog_cat" | "face" | "package" | "other"
+          > = {
             people: "people",
             person: "people",
             human: "people",
@@ -1632,11 +1843,22 @@ export class BaichuanClient extends EventEmitter<{
     const eventXml = eventMatch[1] ?? "";
     const status = (getXmlText(eventXml, "status") ?? "").trim();
     const statusUpper = status.toUpperCase();
-    const aiTypeRaw = (getXmlText(eventXml, "AItype") ?? getXmlText(eventXml, "aiType") ?? getXmlText(eventXml, "aitype") ?? "").trim();
+    const aiTypeRaw = (
+      getXmlText(eventXml, "AItype") ??
+      getXmlText(eventXml, "aiType") ??
+      getXmlText(eventXml, "aitype") ??
+      ""
+    ).trim();
 
-  const timeStampRaw = (getXmlText(eventXml, "timeStamp") ?? getXmlText(eventXml, "timestamp") ?? "").trim();
-  const timeStampNum = timeStampRaw.length ? Number(timeStampRaw) : undefined;
-  const alarmTimeStamp = Number.isFinite(timeStampNum as number) ? (timeStampNum as number) : undefined;
+    const timeStampRaw = (
+      getXmlText(eventXml, "timeStamp") ??
+      getXmlText(eventXml, "timestamp") ??
+      ""
+    ).trim();
+    const timeStampNum = timeStampRaw.length ? Number(timeStampRaw) : undefined;
+    const alarmTimeStamp = Number.isFinite(timeStampNum as number)
+      ? (timeStampNum as number)
+      : undefined;
 
     const out: ReolinkEvent[] = [];
 
@@ -1647,19 +1869,22 @@ export class BaichuanClient extends EventEmitter<{
       .filter((t) => t.length > 0);
 
     const visitorActive = statusTokens.includes("visitor");
-    const dayNightActive = statusTokens.includes("dn") || statusTokens.includes("daynight");
+    const dayNightActive =
+      statusTokens.includes("dn") || statusTokens.includes("daynight");
     const statusIndicatesMotion = statusTokens.some(
-      (t) => t !== "none" && t !== "visitor" && t !== "dn" && t !== "daynight"
+      (t) => t !== "none" && t !== "visitor" && t !== "dn" && t !== "daynight",
     );
 
     const aiTypeTokenRaw = aiTypeRaw
       ? aiTypeRaw
-        .split(",")
-        .map((t) => t.trim())
-        .find((t) => t.length > 0 && t.toLowerCase() !== "none")
+          .split(",")
+          .map((t) => t.trim())
+          .find((t) => t.length > 0 && t.toLowerCase() !== "none")
       : undefined;
     const aiFlag = statusUpper.includes("AI");
-    const aiTypeToken = (aiTypeTokenRaw ?? (aiFlag ? "other" : "none")).toLowerCase();
+    const aiTypeToken = (
+      aiTypeTokenRaw ?? (aiFlag ? "other" : "none")
+    ).toLowerCase();
 
     const prev = this.alarmEventState.get(fallbackChannel);
     const curr = {
@@ -1674,9 +1899,16 @@ export class BaichuanClient extends EventEmitter<{
     if (!prev) {
       this.alarmEventState.set(fallbackChannel, curr);
 
-      if (curr.aiTypeToken !== "none" && curr.aiTimeStamp && curr.aiTimeStamp !== 0) {
+      if (
+        curr.aiTypeToken !== "none" &&
+        curr.aiTimeStamp &&
+        curr.aiTimeStamp !== 0
+      ) {
         const t = curr.aiTypeToken;
-        const aiTypeMap: Record<string, "people" | "vehicle" | "dog_cat" | "face" | "package" | "other"> = {
+        const aiTypeMap: Record<
+          string,
+          "people" | "vehicle" | "dog_cat" | "face" | "package" | "other"
+        > = {
           people: "people",
           person: "people",
           human: "people",
@@ -1702,18 +1934,33 @@ export class BaichuanClient extends EventEmitter<{
         });
       }
 
-      if (curr.visitorActive) out.push({ channel: fallbackChannel, type: "visitor", timestamp: now });
-      if (curr.dayNightActive) out.push({ channel: fallbackChannel, type: "daynight", timestamp: now });
+      if (curr.visitorActive)
+        out.push({ channel: fallbackChannel, type: "visitor", timestamp: now });
+      if (curr.dayNightActive)
+        out.push({
+          channel: fallbackChannel,
+          type: "daynight",
+          timestamp: now,
+        });
 
       return out;
     }
 
     if (!prev.motionActive && curr.motionActive) {
-      const source = statusUpper.includes("MD") ? "md" : statusUpper.includes("PIR") || statusUpper.includes("OTHER") ? "pir" : "unknown";
+      const source = statusUpper.includes("MD")
+        ? "md"
+        : statusUpper.includes("PIR") || statusUpper.includes("OTHER")
+          ? "pir"
+          : "unknown";
       out.push({
         channel: fallbackChannel,
         type: "motion",
-        motion: { channel: fallbackChannel, state: true, timestamp: now, source },
+        motion: {
+          channel: fallbackChannel,
+          state: true,
+          timestamp: now,
+          source,
+        },
         timestamp: now,
       });
     }
@@ -1724,9 +1971,15 @@ export class BaichuanClient extends EventEmitter<{
       curr.aiTimeStamp !== 0 &&
       curr.aiTimeStamp !== prev.aiTimeStamp;
 
-    if ((aiTypeChanged && curr.aiTypeToken !== "none") || (aiTimeStampChanged && curr.aiTypeToken !== "none")) {
+    if (
+      (aiTypeChanged && curr.aiTypeToken !== "none") ||
+      (aiTimeStampChanged && curr.aiTypeToken !== "none")
+    ) {
       const t = curr.aiTypeToken;
-      const aiTypeMap: Record<string, "people" | "vehicle" | "dog_cat" | "face" | "package" | "other"> = {
+      const aiTypeMap: Record<
+        string,
+        "people" | "vehicle" | "dog_cat" | "face" | "package" | "other"
+      > = {
         people: "people",
         person: "people",
         human: "people",
@@ -1752,8 +2005,10 @@ export class BaichuanClient extends EventEmitter<{
       });
     }
 
-    if (!prev.visitorActive && curr.visitorActive) out.push({ channel: fallbackChannel, type: "visitor", timestamp: now });
-    if (!prev.dayNightActive && curr.dayNightActive) out.push({ channel: fallbackChannel, type: "daynight", timestamp: now });
+    if (!prev.visitorActive && curr.visitorActive)
+      out.push({ channel: fallbackChannel, type: "visitor", timestamp: now });
+    if (!prev.dayNightActive && curr.dayNightActive)
+      out.push({ channel: fallbackChannel, type: "daynight", timestamp: now });
 
     this.alarmEventState.set(fallbackChannel, curr);
 
@@ -1786,8 +2041,10 @@ export class BaichuanClient extends EventEmitter<{
   }
 
   private requireSocket(): net.Socket {
-    if (this.transport !== "tcp") throw new Error("Internal: requireSocket called while not using TCP");
-    if (!this.tcpSocket || this.tcpSocket.destroyed) throw new Error("Baichuan TCP socket is not connected");
+    if (this.transport !== "tcp")
+      throw new Error("Internal: requireSocket called while not using TCP");
+    if (!this.tcpSocket || this.tcpSocket.destroyed)
+      throw new Error("Baichuan TCP socket is not connected");
     return this.tcpSocket;
   }
 
@@ -1797,28 +2054,49 @@ export class BaichuanClient extends EventEmitter<{
       this.requireSocket().write(wire);
       return;
     }
-    if (!this.udpSocket) throw new Error("Baichuan UDP stream is not connected");
+    if (!this.udpSocket)
+      throw new Error("Baichuan UDP stream is not connected");
     this.udpSocket.write(wire);
   }
 
-  private encodeBodyXml(extXml: string, payloadXml: string, channelId: number, enc: EncryptionProtocol): Buffer {
+  private encodeBodyXml(
+    extXml: string,
+    payloadXml: string,
+    channelId: number,
+    enc: EncryptionProtocol,
+  ): Buffer {
     const extBuf = Buffer.from(extXml, "utf8");
     const payloadBuf = Buffer.from(payloadXml, "utf8");
 
     if (enc.kind === "none") return Buffer.concat([extBuf, payloadBuf]);
-    if (enc.kind === "bc") return Buffer.concat([bcEncrypt(extBuf, channelId), bcEncrypt(payloadBuf, channelId)]);
-    if (enc.kind === "aes" || enc.kind === "full_aes") return Buffer.concat([aesEncrypt(extBuf, enc.key), aesEncrypt(payloadBuf, enc.key)]);
+    if (enc.kind === "bc")
+      return Buffer.concat([
+        bcEncrypt(extBuf, channelId),
+        bcEncrypt(payloadBuf, channelId),
+      ]);
+    if (enc.kind === "aes" || enc.kind === "full_aes")
+      return Buffer.concat([
+        aesEncrypt(extBuf, enc.key),
+        aesEncrypt(payloadBuf, enc.key),
+      ]);
     // exhaustive
     return Buffer.concat([extBuf, payloadBuf]);
   }
 
-  private encodeBodyBinary(extXml: string, payload: Buffer, channelId: number, enc: EncryptionProtocol): Buffer {
+  private encodeBodyBinary(
+    extXml: string,
+    payload: Buffer,
+    channelId: number,
+    enc: EncryptionProtocol,
+  ): Buffer {
     const extBuf = Buffer.from(extXml, "utf8");
 
     // Binary payloads are sent unencrypted, while the Extension is still encrypted.
     if (enc.kind === "none") return Buffer.concat([extBuf, payload]);
-    if (enc.kind === "bc") return Buffer.concat([bcEncrypt(extBuf, channelId), payload]);
-    if (enc.kind === "aes" || enc.kind === "full_aes") return Buffer.concat([aesEncrypt(extBuf, enc.key), payload]);
+    if (enc.kind === "bc")
+      return Buffer.concat([bcEncrypt(extBuf, channelId), payload]);
+    if (enc.kind === "aes" || enc.kind === "full_aes")
+      return Buffer.concat([aesEncrypt(extBuf, enc.key), payload]);
     return Buffer.concat([extBuf, payload]);
   }
 
@@ -1845,12 +2123,14 @@ export class BaichuanClient extends EventEmitter<{
     internal?: boolean;
   }): Promise<void> {
     const internal = params.internal === true;
-    if (!internal) this.touchUserActivity(`sendBinaryPayloadNoReply cmdId=${params.cmdId}`);
+    if (!internal)
+      this.touchUserActivity(`sendBinaryPayloadNoReply cmdId=${params.cmdId}`);
     await this.connect();
     if (!internal) this.kickIdleDisconnectTimer();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
-    const channelId = params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
+    const channelId =
+      params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
 
     const msgNum = this.nextMsgNum();
     const cmdId = params.cmdId;
@@ -1873,24 +2153,47 @@ export class BaichuanClient extends EventEmitter<{
     });
 
     const enc = params.encryption ?? this.enc;
-    const bodyBytes = this.encodeBodyBinary(extXml, params.payload, channelId, enc);
+    const bodyBytes = this.encodeBodyBinary(
+      extXml,
+      params.payload,
+      channelId,
+      enc,
+    );
     const wire = Buffer.concat([header, bodyBytes]);
 
-    this.logDebug("tx", { cmdId, msgNum, channelId, messageClass, bodyLen, binaryPayload: true });
+    this.logDebug("tx", {
+      cmdId,
+      msgNum,
+      channelId,
+      messageClass,
+      bodyLen,
+      binaryPayload: true,
+    });
     if (this.debugCfg.traceTalk && isTalkCmd(cmdId)) {
       talkTraceLog(
-        this.debugCfg, this.logger,
+        this.debugCfg,
+        this.logger,
         "BaichuanTalk",
-        `tx cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=${params.streamType ?? 0} class=0x${messageClass.toString(16)} bodyLen=${bodyLen} payloadOffset=${payloadOffset} binaryPayloadLen=${params.payload.length}`
+        `tx cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=${params.streamType ?? 0} class=0x${messageClass.toString(16)} bodyLen=${bodyLen} payloadOffset=${payloadOffset} binaryPayloadLen=${params.payload.length}`,
       );
     }
-    this.recordTx({ cmdId, responseCode: 0, msgNum, channelId, streamType: params.streamType ?? 0 });
+    this.recordTx({
+      cmdId,
+      responseCode: 0,
+      msgNum,
+      channelId,
+      streamType: params.streamType ?? 0,
+    });
     this.writeWire(wire);
 
     if (!internal) this.kickIdleDisconnectTimer();
   }
 
-  tryDecryptXml(buf: Buffer, channelId: number, preferred: EncryptionProtocol): string {
+  tryDecryptXml(
+    buf: Buffer,
+    channelId: number,
+    preferred: EncryptionProtocol,
+  ): string {
     const tryDecode = (b: Buffer) => b.toString("utf8");
 
     const tryAs = (enc: EncryptionProtocol): string | undefined => {
@@ -1942,12 +2245,15 @@ export class BaichuanClient extends EventEmitter<{
     if (!internal) this.kickIdleDisconnectTimer();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
-    const channelId = params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
+    const channelId =
+      params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
 
     const msgNum = this.nextMsgNum();
     const cmdId = params.cmdId;
 
-    const extXml = params.extensionXml ?? (params.channel != null ? buildChannelExtensionXml(channel) : "");
+    const extXml =
+      params.extensionXml ??
+      (params.channel != null ? buildChannelExtensionXml(channel) : "");
     const payloadXml = params.payloadXml ?? "";
 
     const messageClass = params.messageClass ?? BC_CLASS_MODERN_24;
@@ -2000,28 +2306,50 @@ export class BaichuanClient extends EventEmitter<{
 
     this.logDebug("tx", { cmdId, msgNum, channelId, messageClass, bodyLen });
     if (this.debugCfg.traceNativeStream && (cmdId === 3 || cmdId === 4)) {
-      traceLog(this.debugCfg, this.logger, "BaichuanTrace", `tx cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=${params.streamType ?? 0} class=0x${messageClass.toString(16)} bodyLen=${bodyLen} payloadOffset=${payloadOffset}`);
+      traceLog(
+        this.debugCfg,
+        this.logger,
+        "BaichuanTrace",
+        `tx cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=${params.streamType ?? 0} class=0x${messageClass.toString(16)} bodyLen=${bodyLen} payloadOffset=${payloadOffset}`,
+      );
     }
     if (this.debugCfg.traceTalk && isTalkCmd(cmdId)) {
       talkTraceLog(
-        this.debugCfg, this.logger,
+        this.debugCfg,
+        this.logger,
         "BaichuanTalk",
-        `tx cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=${params.streamType ?? 0} class=0x${messageClass.toString(16)} bodyLen=${bodyLen} payloadOffset=${payloadOffset}`
+        `tx cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=${params.streamType ?? 0} class=0x${messageClass.toString(16)} bodyLen=${bodyLen} payloadOffset=${payloadOffset}`,
       );
     }
-    this.recordTx({ cmdId, responseCode: 0, msgNum, channelId, streamType: params.streamType ?? 0 });
+    this.recordTx({
+      cmdId,
+      responseCode: 0,
+      msgNum,
+      channelId,
+      streamType: params.streamType ?? 0,
+    });
     this.writeWire(wire);
 
     const frame = await framePromise;
-    this.logDebug("rx", { cmdId: frame.header.cmdId, responseCode: frame.header.responseCode, msgNum: frame.header.msgNum });
+    this.logDebug("rx", {
+      cmdId: frame.header.cmdId,
+      responseCode: frame.header.responseCode,
+      msgNum: frame.header.msgNum,
+    });
     if (this.debugCfg.traceNativeStream && (cmdId === 3 || cmdId === 4)) {
-      traceLog(this.debugCfg, this.logger, "BaichuanTrace", `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`);
+      traceLog(
+        this.debugCfg,
+        this.logger,
+        "BaichuanTrace",
+        `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`,
+      );
     }
     if (this.debugCfg.traceTalk && isTalkCmd(cmdId)) {
       talkTraceLog(
-        this.debugCfg, this.logger,
+        this.debugCfg,
+        this.logger,
         "BaichuanTalk",
-        `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`
+        `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`,
       );
     }
 
@@ -2032,7 +2360,9 @@ export class BaichuanClient extends EventEmitter<{
       const body = frame.body;
       if (body.length === 0) {
         // Empty body with 400 typically means authentication failure
-        throw new Error("Baichuan authentication failed (responseCode 400, empty body) - check username/password");
+        throw new Error(
+          "Baichuan authentication failed (responseCode 400, empty body) - check username/password",
+        );
       }
       // If body is not empty, try to decrypt and return it (might contain error details)
     }
@@ -2077,12 +2407,15 @@ export class BaichuanClient extends EventEmitter<{
     if (!internal) this.kickIdleDisconnectTimer();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
-    const channelId = params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
+    const channelId =
+      params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
 
     const msgNum = params.msgNumOverride ?? this.nextMsgNum();
     const cmdId = params.cmdId;
 
-    const extXml = params.extensionXml ?? (params.channel != null ? buildChannelExtensionXml(channel) : "");
+    const extXml =
+      params.extensionXml ??
+      (params.channel != null ? buildChannelExtensionXml(channel) : "");
     const payloadXml = params.payloadXml ?? "";
 
     const messageClass = params.messageClass ?? BC_CLASS_MODERN_24;
@@ -2143,20 +2476,36 @@ export class BaichuanClient extends EventEmitter<{
       );
     }
     if (this.debugCfg.traceNativeStream && (cmdId === 3 || cmdId === 4)) {
-      traceLog(this.debugCfg, this.logger, "BaichuanTrace", `tx cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=${params.streamType ?? 0} class=0x${messageClass.toString(16)} bodyLen=${bodyLen} payloadOffset=${payloadOffset}`);
+      traceLog(
+        this.debugCfg,
+        this.logger,
+        "BaichuanTrace",
+        `tx cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=${params.streamType ?? 0} class=0x${messageClass.toString(16)} bodyLen=${bodyLen} payloadOffset=${payloadOffset}`,
+      );
     }
     if (this.debugCfg.traceTalk && isTalkCmd(cmdId)) {
       talkTraceLog(
-        this.debugCfg, this.logger,
+        this.debugCfg,
+        this.logger,
         "BaichuanTalk",
-        `tx cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=${params.streamType ?? 0} class=0x${messageClass.toString(16)} bodyLen=${bodyLen} payloadOffset=${payloadOffset}`
+        `tx cmdId=${cmdId} msgNum=${msgNum} channelId=${channelId} streamType=${params.streamType ?? 0} class=0x${messageClass.toString(16)} bodyLen=${bodyLen} payloadOffset=${payloadOffset}`,
       );
     }
-    this.recordTx({ cmdId, responseCode: 0, msgNum, channelId, streamType: params.streamType ?? 0 });
+    this.recordTx({
+      cmdId,
+      responseCode: 0,
+      msgNum,
+      channelId,
+      streamType: params.streamType ?? 0,
+    });
     this.writeWire(wire);
 
     const frame = await framePromise;
-    this.logDebug("rx", { cmdId: frame.header.cmdId, responseCode: frame.header.responseCode, msgNum: frame.header.msgNum });
+    this.logDebug("rx", {
+      cmdId: frame.header.cmdId,
+      responseCode: frame.header.responseCode,
+      msgNum: frame.header.msgNum,
+    });
     if (BaichuanClient.recordingCmdIds.has(frame.header.cmdId)) {
       recordingsTraceLog(
         this.debugCfg,
@@ -2166,13 +2515,19 @@ export class BaichuanClient extends EventEmitter<{
       );
     }
     if (this.debugCfg.traceNativeStream && (cmdId === 3 || cmdId === 4)) {
-      traceLog(this.debugCfg, this.logger, "BaichuanTrace", `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`);
+      traceLog(
+        this.debugCfg,
+        this.logger,
+        "BaichuanTrace",
+        `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`,
+      );
     }
     if (this.debugCfg.traceTalk && isTalkCmd(cmdId)) {
       talkTraceLog(
-        this.debugCfg, this.logger,
+        this.debugCfg,
+        this.logger,
         "BaichuanTalk",
-        `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`
+        `rx cmdId=${frame.header.cmdId} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} channelId=${frame.header.channelId} bodyLen=${frame.body.length} payloadLen=${frame.payload.length} payloadOffset=${frame.header.payloadOffset ?? 0}`,
       );
     }
     if (!internal) this.kickIdleDisconnectTimer();
@@ -2210,7 +2565,9 @@ export class BaichuanClient extends EventEmitter<{
 
     // File download (class=0x6482) is often delivered as a sequence of binary chunks.
     // Handle it similarly to snapshot: send without pending and collect frames until completion.
-    if ((params.messageClass ?? BC_CLASS_MODERN_24) === BC_CLASS_FILE_DOWNLOAD) {
+    if (
+      (params.messageClass ?? BC_CLASS_MODERN_24) === BC_CLASS_FILE_DOWNLOAD
+    ) {
       const res = await this.sendBinaryFileDownload6482(params);
       if (!internal) this.kickIdleDisconnectTimer();
       return res;
@@ -2220,13 +2577,17 @@ export class BaichuanClient extends EventEmitter<{
     if (!internal) this.kickIdleDisconnectTimer();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
-    const channelId = params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
+    const channelId =
+      params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
 
     const msgNum = this.nextMsgNum();
     const cmdId = params.cmdId;
 
     const extXml =
-      params.extensionXml ?? (params.channel != null ? buildBinaryExtensionXml(channel) : buildBinaryExtensionXml(undefined));
+      params.extensionXml ??
+      (params.channel != null
+        ? buildBinaryExtensionXml(channel)
+        : buildBinaryExtensionXml(undefined));
     const payloadXml = params.payloadXml ?? "";
 
     const messageClass = params.messageClass ?? BC_CLASS_MODERN_24;
@@ -2277,17 +2638,31 @@ export class BaichuanClient extends EventEmitter<{
       // The caller will handle the error when they await the promise
     });
 
-    this.logDebug("tx", { cmdId, msgNum, channelId, messageClass, bodyLen, binary: true });
+    this.logDebug("tx", {
+      cmdId,
+      msgNum,
+      channelId,
+      messageClass,
+      bodyLen,
+      binary: true,
+    });
     this.recordTx({ cmdId, responseCode: 0, msgNum, channelId, streamType: 0 });
     this.writeWire(wire);
 
     const frame = await framePromise;
-    this.logDebug("rx", { cmdId: frame.header.cmdId, responseCode: frame.header.responseCode, msgNum: frame.header.msgNum, binary: true });
+    this.logDebug("rx", {
+      cmdId: frame.header.cmdId,
+      responseCode: frame.header.responseCode,
+      msgNum: frame.header.msgNum,
+      binary: true,
+    });
 
     if (frame.header.responseCode === 400) {
       const body = frame.body;
       if (body.length === 0) {
-        throw new Error("Baichuan binary request failed (responseCode 400, empty body)");
+        throw new Error(
+          "Baichuan binary request failed (responseCode 400, empty body)",
+        );
       }
     }
 
@@ -2295,7 +2670,11 @@ export class BaichuanClient extends EventEmitter<{
     const payload = frame.payload;
     if (payload.length === 0) return Buffer.alloc(0);
 
-    const decrypted = this.tryDecryptBinary(payload, frame.header.channelId, enc);
+    const decrypted = this.tryDecryptBinary(
+      payload,
+      frame.header.channelId,
+      enc,
+    );
     if (!internal) this.kickIdleDisconnectTimer();
     return decrypted;
   }
@@ -2315,7 +2694,8 @@ export class BaichuanClient extends EventEmitter<{
     await this.connect();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
-    const channelId = params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
+    const channelId =
+      params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
 
     const msgNum = this.nextMsgNum();
     const cmdId = params.cmdId;
@@ -2374,7 +2754,15 @@ export class BaichuanClient extends EventEmitter<{
       const looksLikeXml = (buf: Buffer): boolean => {
         // Skip leading whitespace/NULs
         let i = 0;
-        while (i < buf.length && (buf[i] === 0x00 || buf[i] === 0x09 || buf[i] === 0x0a || buf[i] === 0x0d || buf[i] === 0x20)) i++;
+        while (
+          i < buf.length &&
+          (buf[i] === 0x00 ||
+            buf[i] === 0x09 ||
+            buf[i] === 0x0a ||
+            buf[i] === 0x0d ||
+            buf[i] === 0x20)
+        )
+          i++;
         if (i >= buf.length) return false;
         return buf[i] === 0x3c; // '<'
       };
@@ -2383,8 +2771,15 @@ export class BaichuanClient extends EventEmitter<{
         if (frame.header.cmdId !== cmdId) return;
 
         // Fail fast if the request was rejected.
-        if (frame.header.msgNum === msgNum && frame.header.responseCode >= 400) {
-          fail(new Error(`Baichuan file download request rejected (cmdId=${cmdId} msgNum=${msgNum} responseCode=${frame.header.responseCode})`));
+        if (
+          frame.header.msgNum === msgNum &&
+          frame.header.responseCode >= 400
+        ) {
+          fail(
+            new Error(
+              `Baichuan file download request rejected (cmdId=${cmdId} msgNum=${msgNum} responseCode=${frame.header.responseCode})`,
+            ),
+          );
           return;
         }
 
@@ -2394,14 +2789,23 @@ export class BaichuanClient extends EventEmitter<{
           let markedBinary = false;
           if (frame.extension.length > 0) {
             try {
-              const extDec = this.tryDecryptXml(frame.extension, frame.header.channelId, enc);
-              if (extDec.includes("<binaryData>1</binaryData>")) markedBinary = true;
+              const extDec = this.tryDecryptXml(
+                frame.extension,
+                frame.header.channelId,
+                enc,
+              );
+              if (extDec.includes("<binaryData>1</binaryData>"))
+                markedBinary = true;
             } catch {
               // ignore
             }
           }
 
-          const decrypted = this.tryDecryptBinary(frame.payload, frame.header.channelId, enc);
+          const decrypted = this.tryDecryptBinary(
+            frame.payload,
+            frame.header.channelId,
+            enc,
+          );
           if (decrypted.length === 0) return;
 
           if (!markedBinary) {
@@ -2416,7 +2820,11 @@ export class BaichuanClient extends EventEmitter<{
           const now = Date.now();
           if (this.debugCfg.general && now - lastProgressLogAt >= 2_000) {
             lastProgressLogAt = now;
-            this.logDebug("file_download_progress", { cmdId, msgNum, bytes: receivedBytes });
+            this.logDebug("file_download_progress", {
+              cmdId,
+              msgNum,
+              bytes: receivedBytes,
+            });
           }
 
           // Completion commonly uses responseCode=201 for the final chunk.
@@ -2429,15 +2837,33 @@ export class BaichuanClient extends EventEmitter<{
       };
 
       timeout = setTimeout(() => {
-        fail(new Error(`Baichuan timeout waiting file download chunks cmdId=${cmdId} msgNum=${msgNum}`));
+        fail(
+          new Error(
+            `Baichuan timeout waiting file download chunks cmdId=${cmdId} msgNum=${msgNum}`,
+          ),
+        );
       }, timeoutMs);
 
       // Attach listener BEFORE sending request.
       this.on("frame", onFrame);
 
       try {
-        this.logDebug("tx", { cmdId, msgNum, channelId, messageClass, bodyLen, binary: true, fileDownload: true });
-        this.recordTx({ cmdId, responseCode: 0, msgNum, channelId, streamType: params.streamType ?? 0 });
+        this.logDebug("tx", {
+          cmdId,
+          msgNum,
+          channelId,
+          messageClass,
+          bodyLen,
+          binary: true,
+          fileDownload: true,
+        });
+        this.recordTx({
+          cmdId,
+          responseCode: 0,
+          msgNum,
+          channelId,
+          streamType: params.streamType ?? 0,
+        });
         this.writeWire(wire);
       } catch (e) {
         fail(e);
@@ -2460,14 +2886,17 @@ export class BaichuanClient extends EventEmitter<{
     await this.connect();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
-    const channelId = params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
+    const channelId =
+      params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
 
     const msgNum = this.nextMsgNum();
     const cmdId = params.cmdId;
 
     // For Snap (cmdId=109) the request uses only channelId (no <binaryData>1</binaryData>).
     // I chunk binari in risposta saranno marcati con <binaryData>1</binaryData> nella Extension.
-    const extXml = params.extensionXml ?? (params.channel != null ? buildChannelExtensionXml(channel) : "");
+    const extXml =
+      params.extensionXml ??
+      (params.channel != null ? buildChannelExtensionXml(channel) : "");
     const payloadXml = params.payloadXml ?? "";
 
     const messageClass = params.messageClass ?? BC_CLASS_MODERN_24;
@@ -2537,8 +2966,15 @@ export class BaichuanClient extends EventEmitter<{
 
         // If the request itself was rejected, fail fast instead of timing out.
         // Some firmwares respond with an empty-body error for snapshot.
-        if (frame.header.msgNum === msgNum && frame.header.responseCode >= 400) {
-          fail(new Error(`Baichuan snapshot request rejected (cmdId=${cmdId} msgNum=${msgNum} responseCode=${frame.header.responseCode})`));
+        if (
+          frame.header.msgNum === msgNum &&
+          frame.header.responseCode >= 400
+        ) {
+          fail(
+            new Error(
+              `Baichuan snapshot request rejected (cmdId=${cmdId} msgNum=${msgNum} responseCode=${frame.header.responseCode})`,
+            ),
+          );
           return;
         }
 
@@ -2548,18 +2984,29 @@ export class BaichuanClient extends EventEmitter<{
           // - reply 2..n: Extension has <binaryData>1</binaryData>, payload is binary chunks (responseCode 200/201)
           let isBinaryChunk = false;
           if (frame.extension.length > 0) {
-            const extDec = this.tryDecryptXml(frame.extension, frame.header.channelId, enc);
+            const extDec = this.tryDecryptXml(
+              frame.extension,
+              frame.header.channelId,
+              enc,
+            );
             if (extDec.includes("<binaryData>1</binaryData>")) {
               isBinaryChunk = true;
             }
           }
 
           // If extension isn't present/parseable, fallback to heuristic: payload contains JPEG SOI.
-          const decrypted = this.tryDecryptBinary(frame.payload, frame.header.channelId, enc);
+          const decrypted = this.tryDecryptBinary(
+            frame.payload,
+            frame.header.channelId,
+            enc,
+          );
           if (decrypted.length === 0) return;
 
-          const head = decrypted.subarray(0, Math.min(16, decrypted.length)).toString("utf8");
-          const looksLikeXml = head.startsWith("<?xml") || head.trimStart().startsWith("<");
+          const head = decrypted
+            .subarray(0, Math.min(16, decrypted.length))
+            .toString("utf8");
+          const looksLikeXml =
+            head.startsWith("<?xml") || head.trimStart().startsWith("<");
           if (!isBinaryChunk && looksLikeXml) return;
 
           let toAppend = decrypted;
@@ -2598,7 +3045,11 @@ export class BaichuanClient extends EventEmitter<{
       };
 
       timeout = setTimeout(() => {
-        fail(new Error(`Baichuan timeout waiting snapshot push cmdId=${cmdId} msgNum=${msgNum}`));
+        fail(
+          new Error(
+            `Baichuan timeout waiting snapshot push cmdId=${cmdId} msgNum=${msgNum}`,
+          ),
+        );
       }, timeoutMs);
 
       // Attach listener BEFORE sending request to avoid missing the first chunk.
@@ -2606,8 +3057,22 @@ export class BaichuanClient extends EventEmitter<{
       this.on("frame", onFrame);
 
       try {
-        this.logDebug("tx", { cmdId, msgNum, channelId, messageClass, bodyLen, binary: true, snapshot: true });
-        this.recordTx({ cmdId, responseCode: 0, msgNum, channelId, streamType: params.streamType ?? 0 });
+        this.logDebug("tx", {
+          cmdId,
+          msgNum,
+          channelId,
+          messageClass,
+          bodyLen,
+          binary: true,
+          snapshot: true,
+        });
+        this.recordTx({
+          cmdId,
+          responseCode: 0,
+          msgNum,
+          channelId,
+          streamType: params.streamType ?? 0,
+        });
         this.writeWire(wire);
       } catch (e) {
         fail(e);
@@ -2638,7 +3103,9 @@ export class BaichuanClient extends EventEmitter<{
     const msgNum = this.nextMsgNum();
     const cmdId = params.cmdId;
 
-    const extXml = params.extensionXml ?? (params.channel != null ? buildChannelExtensionXml(channel) : "");
+    const extXml =
+      params.extensionXml ??
+      (params.channel != null ? buildChannelExtensionXml(channel) : "");
     const payloadXml = params.payloadXml ?? "";
 
     const messageClass = params.messageClass ?? BC_CLASS_MODERN_24;
@@ -2691,8 +3158,15 @@ export class BaichuanClient extends EventEmitter<{
         if (frame.header.cmdId !== cmdId) return;
 
         // If the request itself was rejected, fail fast
-        if (frame.header.msgNum === msgNum && frame.header.responseCode >= 400) {
-          fail(new Error(`Baichuan CoverPreview request rejected (cmdId=${cmdId} msgNum=${msgNum} responseCode=${frame.header.responseCode})`));
+        if (
+          frame.header.msgNum === msgNum &&
+          frame.header.responseCode >= 400
+        ) {
+          fail(
+            new Error(
+              `Baichuan CoverPreview request rejected (cmdId=${cmdId} msgNum=${msgNum} responseCode=${frame.header.responseCode})`,
+            ),
+          );
           return;
         }
 
@@ -2702,18 +3176,29 @@ export class BaichuanClient extends EventEmitter<{
           // - reply 2..n: Extension has <binaryData>1</binaryData>, payload is binary chunks
           let isBinaryChunk = false;
           if (frame.extension.length > 0) {
-            const extDec = this.tryDecryptXml(frame.extension, frame.header.channelId, enc);
+            const extDec = this.tryDecryptXml(
+              frame.extension,
+              frame.header.channelId,
+              enc,
+            );
             if (extDec.includes("<binaryData>1</binaryData>")) {
               isBinaryChunk = true;
             }
           }
 
-          const decrypted = this.tryDecryptBinary(frame.payload, frame.header.channelId, enc);
+          const decrypted = this.tryDecryptBinary(
+            frame.payload,
+            frame.header.channelId,
+            enc,
+          );
           if (decrypted.length === 0) return;
 
           // Skip XML responses
-          const head = decrypted.subarray(0, Math.min(16, decrypted.length)).toString("utf8");
-          const looksLikeXml = head.startsWith("<?xml") || head.trimStart().startsWith("<");
+          const head = decrypted
+            .subarray(0, Math.min(16, decrypted.length))
+            .toString("utf8");
+          const looksLikeXml =
+            head.startsWith("<?xml") || head.trimStart().startsWith("<");
           if (!isBinaryChunk && looksLikeXml) return;
 
           // For CoverPreview, look for stream header magic "1001"
@@ -2746,7 +3231,11 @@ export class BaichuanClient extends EventEmitter<{
           const combined = Buffer.concat(chunks);
           finish(combined);
         } else {
-          fail(new Error(`Baichuan timeout waiting CoverPreview push cmdId=${cmdId} msgNum=${msgNum}`));
+          fail(
+            new Error(
+              `Baichuan timeout waiting CoverPreview push cmdId=${cmdId} msgNum=${msgNum}`,
+            ),
+          );
         }
       }, timeoutMs);
 
@@ -2754,8 +3243,22 @@ export class BaichuanClient extends EventEmitter<{
       this.on("frame", onFrame);
 
       try {
-        this.logDebug("tx", { cmdId, msgNum, channelId, messageClass, bodyLen, binary: true, coverPreview: true });
-        this.recordTx({ cmdId, responseCode: 0, msgNum, channelId, streamType: params.streamType ?? 0 });
+        this.logDebug("tx", {
+          cmdId,
+          msgNum,
+          channelId,
+          messageClass,
+          bodyLen,
+          binary: true,
+          coverPreview: true,
+        });
+        this.recordTx({
+          cmdId,
+          responseCode: 0,
+          msgNum,
+          channelId,
+          streamType: params.streamType ?? 0,
+        });
         this.writeWire(wire);
       } catch (e) {
         fail(e);
@@ -2767,7 +3270,11 @@ export class BaichuanClient extends EventEmitter<{
    * Decrypts binary data (similar to tryDecryptXml but for binary responses).
    * Public method to allow ReolinkBaichuanApi to decrypt audio frames.
    */
-  tryDecryptBinary(buf: Buffer, channelId: number, preferred: EncryptionProtocol): Buffer {
+  tryDecryptBinary(
+    buf: Buffer,
+    channelId: number,
+    preferred: EncryptionProtocol,
+  ): Buffer {
     if (buf.length === 0) return buf;
 
     const tryAs = (enc: EncryptionProtocol): Buffer | null => {
@@ -2788,7 +3295,11 @@ export class BaichuanClient extends EventEmitter<{
     // Try preferred encryption first, then fallback to current encryption, then BC, then none
     return (
       tryAs(preferred) ??
-      (preferred.kind !== "bc" && this.enc.kind !== "none" && (this.enc.kind === "aes" || this.enc.kind === "full_aes") ? tryAs(this.enc) : null) ??
+      (preferred.kind !== "bc" &&
+      this.enc.kind !== "none" &&
+      (this.enc.kind === "aes" || this.enc.kind === "full_aes")
+        ? tryAs(this.enc)
+        : null) ??
       (preferred.kind !== "bc" ? tryAs({ kind: "bc" }) : null) ??
       tryAs({ kind: "none" }) ??
       buf // Return as-is if decryption fails
@@ -2809,7 +3320,8 @@ export class BaichuanClient extends EventEmitter<{
     // downgrade the requested encryption to keep the connection stable.
     let effectiveMaxEncryption: MaxEncryption = maxEncryption;
 
-    const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+    const sleep = (ms: number) =>
+      new Promise<void>((resolve) => setTimeout(resolve, ms));
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
@@ -2873,11 +3385,18 @@ export class BaichuanClient extends EventEmitter<{
 
         // This reply contains <Encryption><nonce>...</nonce></Encryption> and response_code 0xDD??
         const resp = nonceFrame.header.responseCode;
-        if ((resp >>> 8) !== 0xdd) throw new Error(`Baichuan login: expected encryption info (0xDDxx), got 0x${resp.toString(16)}`);
+        if (resp >>> 8 !== 0xdd)
+          throw new Error(
+            `Baichuan login: expected encryption info (0xDDxx), got 0x${resp.toString(16)}`,
+          );
         const encType = resp & 0xff;
 
         // During negotiation the payload is at most BCEncrypt (even if AES is supported).
-        const nonceXml = this.tryDecryptXml(nonceFrame.body, nonceFrame.header.channelId, encType === 0x00 ? { kind: "none" } : { kind: "bc" });
+        const nonceXml = this.tryDecryptXml(
+          nonceFrame.body,
+          nonceFrame.header.channelId,
+          encType === 0x00 ? { kind: "none" } : { kind: "bc" },
+        );
         const nonce = getXmlText(nonceXml, "nonce");
         if (!nonce) throw new Error("Baichuan login: nonce not found in XML");
         this.nonce = nonce;
@@ -2885,9 +3404,20 @@ export class BaichuanClient extends EventEmitter<{
         // set encryption mode for post-login traffic
         if (encType === 0x00) this.enc = { kind: "none" };
         else if (encType === 0x01) this.enc = { kind: "bc" };
-        else if (encType === 0x02) this.enc = { kind: "aes", key: deriveAesKey(nonce, this.opts.password) };
-        else if (encType === 0x12) this.enc = { kind: "full_aes", key: deriveAesKey(nonce, this.opts.password) };
-        else throw new Error(`Baichuan login: unknown encType=0x${encType.toString(16)}`);
+        else if (encType === 0x02)
+          this.enc = {
+            kind: "aes",
+            key: deriveAesKey(nonce, this.opts.password),
+          };
+        else if (encType === 0x12)
+          this.enc = {
+            kind: "full_aes",
+            key: deriveAesKey(nonce, this.opts.password),
+          };
+        else
+          throw new Error(
+            `Baichuan login: unknown encType=0x${encType.toString(16)}`,
+          );
 
         // 2) modern login with username/password hashes
         const userHash = md5StrModern(`${this.opts.username}${nonce}`);
@@ -2900,7 +3430,7 @@ export class BaichuanClient extends EventEmitter<{
           userHash,
           passHashLength: passHash.length,
           loginXmlLength: loginXml.length,
-          loginXmlPreview: loginXml.substring(0, 200)
+          loginXmlPreview: loginXml.substring(0, 200),
         });
 
         // For login, explicitly use channelId 250 (host) and no extension XML
@@ -2919,7 +3449,11 @@ export class BaichuanClient extends EventEmitter<{
           timeoutMs: 10_000,
         });
 
-        const replyXml = this.tryDecryptXml(replyFrame.body, replyFrame.header.channelId, { kind: "bc" });
+        const replyXml = this.tryDecryptXml(
+          replyFrame.body,
+          replyFrame.header.channelId,
+          { kind: "bc" },
+        );
 
         // If login succeeded, camera replies with 200 in responseCode on modern frames.
         // responseCode 400 typically means authentication failed (bad credentials)
@@ -2927,7 +3461,7 @@ export class BaichuanClient extends EventEmitter<{
         this.logDebug("login_reply", {
           replyLength: replyXml.length,
           replyPreview: replyXml.substring(0, 200),
-          startsWithXml: replyXml.startsWith("<?xml")
+          startsWithXml: replyXml.startsWith("<?xml"),
         });
 
         // Check if reply is empty.
@@ -2939,8 +3473,11 @@ export class BaichuanClient extends EventEmitter<{
         }
 
         if (!replyXml.startsWith("<?xml")) {
-          const preview = replyXml.length > 0 ? replyXml.substring(0, 100) : "(empty)";
-          throw new Error(`Baichuan login: unexpected non-XML reply (length: ${replyXml.length}, preview: ${preview})`);
+          const preview =
+            replyXml.length > 0 ? replyXml.substring(0, 100) : "(empty)";
+          throw new Error(
+            `Baichuan login: unexpected non-XML reply (length: ${replyXml.length}, preview: ${preview})`,
+          );
         }
 
         this.loggedIn = true;
@@ -2949,8 +3486,12 @@ export class BaichuanClient extends EventEmitter<{
         lastError = e;
         this.loggedIn = false;
 
-        const msg = e && typeof e === "object" && "message" in e ? String((e as any).message) : String(e);
-        const isNetworkUnreachable = msg.includes("EHOSTUNREACH") || msg.includes("ENETUNREACH");
+        const msg =
+          e && typeof e === "object" && "message" in e
+            ? String((e as any).message)
+            : String(e);
+        const isNetworkUnreachable =
+          msg.includes("EHOSTUNREACH") || msg.includes("ENETUNREACH");
         const looksLikeNegotiationFailure =
           msg.includes("timeout waiting for nonce") ||
           msg.includes("expected encryption info") ||
@@ -2960,7 +3501,10 @@ export class BaichuanClient extends EventEmitter<{
 
         // If negotiation is failing, try a less aggressive encryption mode on next attempt.
         if (looksLikeNegotiationFailure) {
-          if (effectiveMaxEncryption === "full_aes" || effectiveMaxEncryption === "aes") {
+          if (
+            effectiveMaxEncryption === "full_aes" ||
+            effectiveMaxEncryption === "aes"
+          ) {
             effectiveMaxEncryption = "bc";
           } else if (effectiveMaxEncryption === "bc") {
             effectiveMaxEncryption = "none";
@@ -2997,4 +3541,3 @@ export class BaichuanClient extends EventEmitter<{
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 }
-

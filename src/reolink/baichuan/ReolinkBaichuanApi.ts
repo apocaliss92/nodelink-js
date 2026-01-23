@@ -24,6 +24,7 @@ import {
   RunMultifocalDiagnosticsConsecutivelyParams,
 } from "../../debug/DiagnosticsTools";
 import {
+  BC_CLASS_FILE_DOWNLOAD,
   BC_CLASS_MODERN_24,
   BC_CMD_ID_ABILITY_INFO,
   BC_CMD_ID_AUDIO_ALARM_PLAY,
@@ -34,6 +35,7 @@ import {
   BC_CMD_ID_CMD_265,
   BC_CMD_ID_CMD_440,
   BC_CMD_ID_GET_ACCESS_USER_LIST,
+  BC_CMD_ID_GET_AI_ALARM,
   BC_CMD_ID_GET_AI_DENOISE,
   BC_CMD_ID_GET_ABILITY_SUPPORT,
   BC_CMD_ID_GET_AUDIO_CFG,
@@ -45,6 +47,7 @@ import {
   BC_CMD_ID_GET_HDD_INFO_LIST,
   BC_CMD_ID_GET_KIT_AP_CFG,
   BC_CMD_ID_GET_LED_STATE,
+  BC_CMD_ID_GET_MOTION_ALARM,
   BC_CMD_ID_GET_OSD_DATETIME,
   BC_CMD_ID_GET_REC_ENC_CFG,
   BC_CMD_ID_GET_RECORD,
@@ -60,6 +63,10 @@ import {
   BC_CMD_ID_PUSH_SERIAL,
   BC_CMD_ID_PUSH_SLEEP_STATUS,
   BC_CMD_ID_PUSH_VIDEO_INPUT,
+  BC_CMD_ID_FILE_INFO_LIST_DL_VIDEO,
+  BC_CMD_ID_FILE_INFO_LIST_DOWNLOAD,
+  BC_CMD_ID_FILE_INFO_LIST_REPLAY,
+  BC_CMD_ID_FILE_INFO_LIST_STOP,
   BC_CMD_ID_FILE_INFO_LIST_CLOSE,
   BC_CMD_ID_FILE_INFO_LIST_GET,
   BC_CMD_ID_FILE_INFO_LIST_OPEN,
@@ -77,6 +84,7 @@ import {
   BC_CMD_ID_GET_ZOOM_FOCUS,
   BC_CMD_ID_PTZ_CONTROL,
   BC_CMD_ID_PTZ_CONTROL_PRESET,
+  BC_CMD_ID_PING,
   BC_CMD_ID_SET_AI_ALARM,
   BC_CMD_ID_SET_MOTION_ALARM,
   BC_CMD_ID_SET_PIR_INFO,
@@ -86,6 +94,8 @@ import {
   BC_CMD_ID_SUPPORT,
   BC_CMD_ID_TALK,
   BC_CMD_ID_TALK_ABILITY,
+  BC_CMD_ID_TALK_CONFIG,
+  BC_CMD_ID_TALK_RESET,
   BC_CMD_ID_UDP_KEEP_ALIVE,
   BC_CMD_ID_VIDEO,
   BC_CMD_ID_VIDEO_STOP,
@@ -107,6 +117,7 @@ import {
   getXmlText,
   xmlEscape,
 } from "../../protocol/xml";
+import { parseXmlFragmentToJson, type XmlJsonValue } from "./utils/xml";
 import type {
   AIEvent,
   AIState,
@@ -118,7 +129,6 @@ import type {
   BaichuanNetInfoPush,
   BaichuanOsdChannelName,
   BaichuanOsdDatetime,
-  BaichuanParsedResult,
   BaichuanRecordCfg,
   BaichuanRecordSchedule,
   BaichuanSerialPush,
@@ -243,8 +253,8 @@ import {
 } from "./utils/recordingsFileInfoList";
 import { parseAbilityInfoXml } from "./utils/abilityInfo";
 import {
+  buildFileInfoListDownloadXml,
   buildHttpVodSourceCandidates,
-  downloadRecordingViaFileInfoList,
   parseRecStartParamIfPresent,
   sanitizeDownloadFilename,
 } from "./utils/recordingDownload";
@@ -1125,6 +1135,83 @@ export class ReolinkBaichuanApi {
   }
 
   /**
+   * TalkReset via Baichuan: cmd_id 11 (MSG_ID_TALKRESET).
+   * Mostly useful for recovering from responseCode=422 after TalkConfig.
+   */
+  async talkReset(
+    channel = 0,
+    options?: { channelIdOverride?: number },
+  ): Promise<void> {
+    await this.client.login();
+    const ch = this.normalizeChannel(channel);
+
+    const isUdp = this.client.getTransport?.() === "udp";
+    const channelIdOverride =
+      options?.channelIdOverride ?? (isUdp ? ch : undefined);
+
+    const frame = await this.client.sendFrame({
+      cmdId: BC_CMD_ID_TALK_RESET,
+      channel: ch,
+      ...(channelIdOverride != null ? { channelIdOverride } : {}),
+      payloadXml: "",
+      messageClass: BC_CLASS_MODERN_24,
+    });
+
+    if (frame.header.responseCode !== 200) {
+      throw new Error(
+        `TalkReset rejected (responseCode ${frame.header.responseCode})`,
+      );
+    }
+  }
+
+  /**
+   * TalkConfig via Baichuan: cmd_id 201 (MSG_ID_TALKCONFIG).
+   * Performs a TalkReset retry when the device responds with 422.
+   */
+  async talkConfig(
+    payloadXml: string,
+    channel = 0,
+    options?: { channelIdOverride?: number },
+  ): Promise<void> {
+    await this.client.login();
+    const ch = this.normalizeChannel(channel);
+
+    const isUdp = this.client.getTransport?.() === "udp";
+    const channelIdOverride =
+      options?.channelIdOverride ?? (isUdp ? ch : undefined);
+
+    const trySend = async (): Promise<number> => {
+      const frame = await this.client.sendFrame({
+        cmdId: BC_CMD_ID_TALK_CONFIG,
+        channel: ch,
+        ...(channelIdOverride != null ? { channelIdOverride } : {}),
+        payloadXml,
+        messageClass: BC_CLASS_MODERN_24,
+      });
+      return frame.header.responseCode;
+    };
+
+    const code = await trySend();
+    if (code === 422) {
+      await this.talkReset(
+        ch,
+        channelIdOverride != null ? { channelIdOverride } : undefined,
+      );
+      const retryCode = await trySend();
+      if (retryCode !== 200) {
+        throw new Error(
+          `TalkConfig rejected after reset (responseCode ${retryCode})`,
+        );
+      }
+      return;
+    }
+
+    if (code !== 200) {
+      throw new Error(`TalkConfig rejected (responseCode ${code})`);
+    }
+  }
+
+  /**
    * Create a talk (two-way audio) session.
    *
    * Input audio format expected by the camera is ADPCM (DVI4/IMA style) in blocks described
@@ -1959,7 +2046,7 @@ export class ReolinkBaichuanApi {
 
   /** Ping via Baichuan: cmd_id 93 (header-only / no payload) */
   async ping(): Promise<void> {
-    await this.sendXml({ cmdId: 93 });
+    await this.sendXml({ cmdId: BC_CMD_ID_PING });
   }
 
   /**
@@ -2115,15 +2202,60 @@ export class ReolinkBaichuanApi {
    * Returns true if motion detection is enabled.
    */
   async getMotionState(channel?: number): Promise<boolean> {
-    const cmdId = 46; // GetMdAlarm
     const xml = await this.sendXml({
-      cmdId,
+      cmdId: BC_CMD_ID_GET_MOTION_ALARM,
       ...(channel !== undefined ? { channel } : {}),
     });
     // Parse XML to extract motion state from sensInfoNew
     // Expected format: <sensInfoNew><enable>1</enable>...</sensInfoNew>
     const enable = getXmlText(xml, "enable");
     return enable === "1" || enable === "true";
+  }
+
+  /**
+   * GetMdAlarm via Baichuan.
+   * cmd_id: 46 (GetMdAlarm)
+   * Returns the response parsed as JSON (no XML exposure).
+   */
+  async getMotionAlarm(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<XmlJsonValue> {
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_MOTION_ALARM,
+      ...(channel !== undefined ? { channel } : {}),
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+    return parseXmlFragmentToJson(xml);
+  }
+
+  /**
+   * SetMdAlarm via Baichuan.
+   * cmd_id: 47 (SetMdAlarm)
+   * Alias of `setMotionDetection()`.
+   */
+  async setMotionAlarm(
+    enabled: boolean,
+    sensitivity?: number,
+    channel?: number,
+  ): Promise<void>;
+  async setMotionAlarm(
+    channel: number,
+    enabled: boolean,
+    sensitivity?: number,
+  ): Promise<void>;
+  async setMotionAlarm(
+    arg1: number | boolean,
+    arg2?: boolean | number,
+    arg3?: number,
+  ): Promise<void> {
+    // Delegate to preserve the existing logic (read-modify-write using GetMdAlarm + SetMdAlarm).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return await (this.setMotionDetection as any)(
+      arg1 as any,
+      arg2 as any,
+      arg3 as any,
+    );
   }
 
   /**
@@ -2203,6 +2335,46 @@ export class ReolinkBaichuanApi {
         ? { candidateTypes }
         : {}),
     });
+  }
+
+  /** Alias for `getAiState()` (cmd_id 342, GetAiAlarm). */
+  async getAiAlarm(channel?: number): Promise<AIState> {
+    return await this.getAiState(channel);
+  }
+
+  /**
+   * Raw GetAiAlarm (cmd_id 342) returning parsed JSON.
+   * Useful to inspect full payload without exposing XML.
+   */
+  async getAiAlarmRaw(
+    channel: number,
+    aiType: string,
+    options?: { timeoutMs?: number; channelIdOverride?: number },
+  ): Promise<XmlJsonValue> {
+    const ch = this.normalizeChannel(channel);
+    const payloadXml =
+      `<?xml version="1.0" encoding="UTF-8" ?>` +
+      `<body>` +
+      `<AiDetectCfg version="1.1">` +
+      `<chn>${ch}</chn>` +
+      `<type>${xmlEscape(aiType)}</type>` +
+      `</AiDetectCfg>` +
+      `</body>`;
+
+    const xml = await this.sendXml(
+      {
+        cmdId: BC_CMD_ID_GET_AI_ALARM,
+        channel: ch,
+        payloadXml,
+        ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+        ...(options?.channelIdOverride != null
+          ? { channelIdOverride: options.channelIdOverride }
+          : {}),
+      },
+      0,
+    );
+
+    return parseXmlFragmentToJson(xml);
   }
 
   private normalizeAiDetectTypeForGetAiAlarm(type: string): string[] {
@@ -2584,6 +2756,55 @@ export class ReolinkBaichuanApi {
         throw e;
       }
     });
+  }
+
+  /**
+   * Legacy FileInfoList replay (cmdId=5).
+   * This cmdId exists in firmware but is not currently used by the library.
+   * Returns response parsed as JSON (no XML exposure).
+   */
+  async fileInfoListReplay(params?: {
+    channel?: number;
+    payloadXml?: string;
+    timeoutMs?: number;
+  }): Promise<XmlJsonValue> {
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_FILE_INFO_LIST_REPLAY,
+      ...(params?.channel != null ? { channel: params.channel } : {}),
+      ...(params?.payloadXml != null ? { payloadXml: params.payloadXml } : {}),
+      ...(params?.timeoutMs != null ? { timeoutMs: params.timeoutMs } : {}),
+    });
+    return parseXmlFragmentToJson(xml);
+  }
+
+  /** Legacy FileInfoList stop (cmdId=7). Returns response parsed as JSON. */
+  async fileInfoListStop(params?: {
+    channel?: number;
+    payloadXml?: string;
+    timeoutMs?: number;
+  }): Promise<XmlJsonValue> {
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_FILE_INFO_LIST_STOP,
+      ...(params?.channel != null ? { channel: params.channel } : {}),
+      ...(params?.payloadXml != null ? { payloadXml: params.payloadXml } : {}),
+      ...(params?.timeoutMs != null ? { timeoutMs: params.timeoutMs } : {}),
+    });
+    return parseXmlFragmentToJson(xml);
+  }
+
+  /** Legacy FileInfoList DL Video (cmdId=8). Returns response parsed as JSON. */
+  async fileInfoListDownloadVideo(params?: {
+    channel?: number;
+    payloadXml?: string;
+    timeoutMs?: number;
+  }): Promise<XmlJsonValue> {
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_FILE_INFO_LIST_DL_VIDEO,
+      ...(params?.channel != null ? { channel: params.channel } : {}),
+      ...(params?.payloadXml != null ? { payloadXml: params.payloadXml } : {}),
+      ...(params?.timeoutMs != null ? { timeoutMs: params.timeoutMs } : {}),
+    });
+    return parseXmlFragmentToJson(xml);
   }
 
   /**
@@ -3610,6 +3831,34 @@ export class ReolinkBaichuanApi {
    * Download a recording via Baichuan FileInfoList download (cmdId=13, class=0x6482).
    * Returns raw bytes (often an mp4/flv/ps payload depending on firmware/camera).
    */
+  async fileInfoListDownload(params: {
+    channel: number;
+    fileName: string;
+    /** Optional UID; if omitted, the library will attempt to infer/discover it. */
+    uid?: string;
+    timeoutMs?: number;
+  }): Promise<Buffer> {
+    await this.client.login();
+
+    const channel = this.normalizeChannel(params.channel);
+    const uid = await this.ensureUidForRecordings(channel, params.uid);
+
+    const payloadXml = buildFileInfoListDownloadXml({
+      channel,
+      uid,
+      fileName: params.fileName,
+    });
+
+    return await this.client.sendBinary({
+      cmdId: BC_CMD_ID_FILE_INFO_LIST_DOWNLOAD,
+      channel,
+      messageClass: BC_CLASS_FILE_DOWNLOAD,
+      extensionXml: buildBinaryExtensionXml(channel),
+      payloadXml,
+      timeoutMs: params.timeoutMs ?? 120_000,
+    });
+  }
+
   async downloadRecording(params: DownloadRecordingParams): Promise<Buffer> {
     await this.client.login();
 
@@ -3620,8 +3869,7 @@ export class ReolinkBaichuanApi {
     const fallbackToHttp = params.fallbackToHttp ?? false;
 
     try {
-      return await downloadRecordingViaFileInfoList({
-        sendBinary: (p) => this.client.sendBinary(p),
+      return await this.fileInfoListDownload({
         channel,
         uid,
         fileName,
@@ -5600,7 +5848,10 @@ export class ReolinkBaichuanApi {
       typeof arg1 === "number" ? arg3 : (arg2 as number | undefined);
     const ch = this.normalizeChannel(channel);
     // First get current settings
-    const currentXml = await this.sendXml({ cmdId: 46, channel: ch }); // GetMdAlarm
+    const currentXml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_MOTION_ALARM,
+      channel: ch,
+    });
 
     // Parse and modify XML
     // Expected format: <sensInfoNew><enable>...</enable><sensitivityDefault>...</sensitivityDefault></sensInfoNew>
@@ -5680,7 +5931,7 @@ export class ReolinkBaichuanApi {
   </body>`;
 
     const currentXml = await this.sendXml({
-      cmdId: 342, // GetAiAlarm
+      cmdId: BC_CMD_ID_GET_AI_ALARM,
       channel: ch,
       payloadXml: getXml,
     });
@@ -8154,7 +8405,7 @@ ${xmlDateTimePayload("endTime", end)}
       const value = parseVideoInputPushXml(xml);
       const channel =
         normalizePushChannel(value.channelId) ?? channelFromHeader;
-      getEntry(channel).videoInput = { updatedAtMs: now, rawXml: xml, value };
+      getEntry(channel).videoInput = { updatedAtMs: now, value };
       return;
     }
 
@@ -8162,7 +8413,7 @@ ${xmlDateTimePayload("endTime", end)}
       const value = parseSerialPushXml(xml);
       const channel =
         normalizePushChannel(value.channelId) ?? channelFromHeader;
-      getEntry(channel).serial = { updatedAtMs: now, rawXml: xml, value };
+      getEntry(channel).serial = { updatedAtMs: now, value };
       return;
     }
 
@@ -8170,7 +8421,6 @@ ${xmlDateTimePayload("endTime", end)}
       const value = parseNetInfoPushXml(xml);
       getEntry(channelFromHeader).netInfo = {
         updatedAtMs: now,
-        rawXml: xml,
         value,
       };
       return;
@@ -8179,7 +8429,7 @@ ${xmlDateTimePayload("endTime", end)}
     if (cmdId === BC_CMD_ID_PUSH_DINGDONG_LIST) {
       const value = parseDingdongListPushXml(xml);
       const channel = normalizePushChannel(value.channel) ?? channelFromHeader;
-      getEntry(channel).dingdongList = { updatedAtMs: now, rawXml: xml, value };
+      getEntry(channel).dingdongList = { updatedAtMs: now, value };
       return;
     }
 
@@ -8187,7 +8437,6 @@ ${xmlDateTimePayload("endTime", end)}
       const value = parseSleepStatusPushXml(xml);
       getEntry(channelFromHeader).sleepStatus = {
         updatedAtMs: now,
-        rawXml: xml,
         value,
       };
       return;
@@ -8197,7 +8446,6 @@ ${xmlDateTimePayload("endTime", end)}
       const value = parseCoordinatePointListPushXml(xml);
       getEntry(channelFromHeader).coordinatePointList = {
         updatedAtMs: now,
-        rawXml: xml,
         value,
       };
       return;
@@ -8381,7 +8629,7 @@ ${xmlDateTimePayload("endTime", end)}
   async getOsdDatetime(
     channel: number,
     options?: { timeoutMs?: number },
-  ): Promise<BaichuanParsedResult<BaichuanGetOsdDatetimeResult>> {
+  ): Promise<BaichuanGetOsdDatetimeResult> {
     const rawXml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_OSD_DATETIME,
       channel,
@@ -8438,18 +8686,15 @@ ${xmlDateTimePayload("endTime", end)}
       : undefined;
 
     return {
-      rawXml,
-      value: {
-        ...(osdDatetime ? { osdDatetime } : {}),
-        ...(osdChannelName ? { osdChannelName } : {}),
-      },
+      ...(osdDatetime ? { osdDatetime } : {}),
+      ...(osdChannelName ? { osdChannelName } : {}),
     };
   }
 
   async getRecordCfg(
     channel: number,
     options?: { timeoutMs?: number },
-  ): Promise<BaichuanParsedResult<BaichuanRecordCfg>> {
+  ): Promise<BaichuanRecordCfg> {
     const rawXml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_RECORD_CFG,
       channel,
@@ -8491,13 +8736,13 @@ ${xmlDateTimePayload("endTime", end)}
         })()
       : {};
 
-    return { rawXml, value };
+    return value;
   }
 
   async getRecordSchedule(
     channel: number,
     options?: { timeoutMs?: number },
-  ): Promise<BaichuanParsedResult<BaichuanRecordSchedule>> {
+  ): Promise<BaichuanRecordSchedule> {
     const rawXml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_RECORD,
       channel,
@@ -8531,13 +8776,13 @@ ${xmlDateTimePayload("endTime", end)}
         })()
       : {};
 
-    return { rawXml, value };
+    return value;
   }
 
   async getWifiSignal(
     channel: number,
     options?: { timeoutMs?: number },
-  ): Promise<BaichuanParsedResult<BaichuanWifiSignal>> {
+  ): Promise<BaichuanWifiSignal> {
     const rawXml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_WIFI_SIGNAL,
       channel,
@@ -8545,17 +8790,14 @@ ${xmlDateTimePayload("endTime", end)}
     });
     const signal = parseNumber(getXmlText(rawXml, "signal"));
     return {
-      rawXml,
-      value: {
-        ...(signal != null ? { signal } : {}),
-      },
+      ...(signal != null ? { signal } : {}),
     };
   }
 
   async getWifi(
     channel: number,
     options?: { timeoutMs?: number },
-  ): Promise<BaichuanParsedResult<BaichuanWifi>> {
+  ): Promise<BaichuanWifi> {
     const rawXml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_WIFI,
       channel,
@@ -8569,22 +8811,19 @@ ${xmlDateTimePayload("endTime", end)}
     const isNVRSsid = parseNumber(getXmlText(rawXml, "isNVRSsid"));
 
     return {
-      rawXml,
-      value: {
-        ...(protocol != null ? { protocol } : {}),
-        ...(mode ? { mode } : {}),
-        ...(ssid ? { ssid } : {}),
-        ...(key ? { key } : {}),
-        ...(wifiChannel != null ? { channel: wifiChannel } : {}),
-        ...(isNVRSsid != null ? { isNVRSsid } : {}),
-      },
+      ...(protocol != null ? { protocol } : {}),
+      ...(mode ? { mode } : {}),
+      ...(ssid ? { ssid } : {}),
+      ...(key ? { key } : {}),
+      ...(wifiChannel != null ? { channel: wifiChannel } : {}),
+      ...(isNVRSsid != null ? { isNVRSsid } : {}),
     };
   }
 
   async getStreamInfoList(
     channel: number,
     options?: { timeoutMs?: number },
-  ): Promise<BaichuanParsedResult<BaichuanStreamInfoList>> {
+  ): Promise<BaichuanStreamInfoList> {
     const rawXml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_STREAM_INFO_LIST,
       channel,
@@ -8652,13 +8891,13 @@ ${xmlDateTimePayload("endTime", end)}
       };
     });
 
-    return { rawXml, value: { streams } };
+    return { streams };
   }
 
   async getLedState(
     channel: number,
     options?: { timeoutMs?: number },
-  ): Promise<BaichuanParsedResult<BaichuanLedState>> {
+  ): Promise<BaichuanLedState> {
     const rawXml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_LED_STATE,
       channel,
@@ -8679,13 +8918,13 @@ ${xmlDateTimePayload("endTime", end)}
           };
         })()
       : {};
-    return { rawXml, value };
+    return value;
   }
 
   async getSleepState(
     channel: number,
     options?: { timeoutMs?: number },
-  ): Promise<BaichuanParsedResult<BaichuanSleepState>> {
+  ): Promise<BaichuanSleepState> {
     const rawXml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_SLEEP_STATE,
       channel,
@@ -8708,185 +8947,358 @@ ${xmlDateTimePayload("endTime", end)}
           };
         })()
       : {};
-    return { rawXml, value };
+    return value;
   }
 
-  // Remaining PCAP-derived cmdIds: expose as typed raw XML wrappers (parsers can be added later).
-  async getAbilitySupportXml(
+  // Remaining PCAP-derived cmdIds: expose as JSON (XML parsed client-side).
+  async getAbilitySupport(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<string> {
-    return await this.sendPcapDerivedSettingsGetXml({
+  ): Promise<XmlJsonValue> {
+    const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_ABILITY_SUPPORT,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
+    return parseXmlFragmentToJson(xml);
   }
-  async getFtpTaskXml(
+
+  /** @deprecated Use `getAbilitySupport()` */
+  async getAbilitySupportXml(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<string> {
-    return await this.sendPcapDerivedSettingsGetXml({
+  ): Promise<XmlJsonValue> {
+    return await this.getAbilitySupport(channel, options);
+  }
+
+  async getFtpTask(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<XmlJsonValue> {
+    const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_FTP_TASK,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
+    return parseXmlFragmentToJson(xml);
   }
-  async getHddInfoListXml(options?: { timeoutMs?: number }): Promise<string> {
-    return await this.sendXml({
+
+  /** @deprecated Use `getFtpTask()` */
+  async getFtpTaskXml(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<XmlJsonValue> {
+    return await this.getFtpTask(channel, options);
+  }
+
+  async getHddInfoList(options?: {
+    timeoutMs?: number;
+  }): Promise<XmlJsonValue> {
+    const xml = await this.sendXml({
       cmdId: BC_CMD_ID_GET_HDD_INFO_LIST,
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
+    return parseXmlFragmentToJson(xml);
   }
-  async getDayRecordsXml(
+
+  /** @deprecated Use `getHddInfoList()` */
+  async getHddInfoListXml(options?: {
+    timeoutMs?: number;
+  }): Promise<XmlJsonValue> {
+    return await this.getHddInfoList(options);
+  }
+
+  async getDayRecords(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<string> {
-    return await this.sendPcapDerivedSettingsGetXml({
+  ): Promise<XmlJsonValue> {
+    const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_DAY_RECORDS,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
+    return parseXmlFragmentToJson(xml);
   }
-  async getEmailTaskXml(
+
+  /** @deprecated Use `getDayRecords()` */
+  async getDayRecordsXml(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<string> {
-    return await this.sendPcapDerivedSettingsGetXml({
+  ): Promise<XmlJsonValue> {
+    return await this.getDayRecords(channel, options);
+  }
+
+  async getEmailTask(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<XmlJsonValue> {
+    const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_EMAIL_TASK,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
+    return parseXmlFragmentToJson(xml);
   }
-  async getAudioTaskXml(
+
+  /** @deprecated Use `getEmailTask()` */
+  async getEmailTaskXml(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<string> {
-    return await this.sendPcapDerivedSettingsGetXml({
+  ): Promise<XmlJsonValue> {
+    return await this.getEmailTask(channel, options);
+  }
+
+  async getAudioTask(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<XmlJsonValue> {
+    const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_AUDIO_TASK,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
+    return parseXmlFragmentToJson(xml);
   }
-  async getAudioCfgXml(
+
+  /** @deprecated Use `getAudioTask()` */
+  async getAudioTaskXml(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<string> {
-    return await this.sendPcapDerivedSettingsGetXml({
+  ): Promise<XmlJsonValue> {
+    return await this.getAudioTask(channel, options);
+  }
+
+  async getAudioCfg(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<XmlJsonValue> {
+    const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_AUDIO_CFG,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
+    return parseXmlFragmentToJson(xml);
   }
-  async getDayNightThresholdXml(
+
+  /** @deprecated Use `getAudioCfg()` */
+  async getAudioCfgXml(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<string> {
-    return await this.sendPcapDerivedSettingsGetXml({
+  ): Promise<XmlJsonValue> {
+    return await this.getAudioCfg(channel, options);
+  }
+
+  async getDayNightThreshold(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<XmlJsonValue> {
+    const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_DAY_NIGHT_THRESHOLD,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
+    return parseXmlFragmentToJson(xml);
   }
-  async getTimelapseCfgXml(
+
+  /** @deprecated Use `getDayNightThreshold()` */
+  async getDayNightThresholdXml(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<string> {
-    return await this.sendPcapDerivedSettingsGetXml({
+  ): Promise<XmlJsonValue> {
+    return await this.getDayNightThreshold(channel, options);
+  }
+
+  async getTimelapseCfg(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<XmlJsonValue> {
+    const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_TIMELAPSE_CFG,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
+    return parseXmlFragmentToJson(xml);
   }
-  async getAiDenoiseXml(
+
+  /** @deprecated Use `getTimelapseCfg()` */
+  async getTimelapseCfgXml(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<string> {
-    return await this.sendPcapDerivedSettingsGetXml({
+  ): Promise<XmlJsonValue> {
+    return await this.getTimelapseCfg(channel, options);
+  }
+
+  async getAiDenoise(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<XmlJsonValue> {
+    const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_AI_DENOISE,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
+    return parseXmlFragmentToJson(xml);
   }
-  async getKitApCfgXml(options?: { timeoutMs?: number }): Promise<string> {
-    return await this.sendXml({
+
+  /** @deprecated Use `getAiDenoise()` */
+  async getAiDenoiseXml(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<XmlJsonValue> {
+    return await this.getAiDenoise(channel, options);
+  }
+
+  async getKitApCfg(options?: { timeoutMs?: number }): Promise<XmlJsonValue> {
+    const xml = await this.sendXml({
       cmdId: BC_CMD_ID_GET_KIT_AP_CFG,
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
+    return parseXmlFragmentToJson(xml);
   }
-  async getRecEncCfgXml(
+
+  /** @deprecated Use `getKitApCfg()` */
+  async getKitApCfgXml(options?: {
+    timeoutMs?: number;
+  }): Promise<XmlJsonValue> {
+    return await this.getKitApCfg(options);
+  }
+
+  async getRecEncCfg(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<string> {
-    return await this.sendPcapDerivedSettingsGetXml({
+  ): Promise<XmlJsonValue> {
+    const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_REC_ENC_CFG,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
+    return parseXmlFragmentToJson(xml);
   }
-  async getAccessUserListXml(options?: {
+
+  /** @deprecated Use `getRecEncCfg()` */
+  async getRecEncCfgXml(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<XmlJsonValue> {
+    return await this.getRecEncCfg(channel, options);
+  }
+
+  async getAccessUserList(options?: {
     timeoutMs?: number;
-  }): Promise<string> {
-    return await this.sendXml({
+  }): Promise<XmlJsonValue> {
+    const xml = await this.sendXml({
       cmdId: BC_CMD_ID_GET_ACCESS_USER_LIST,
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
+    return parseXmlFragmentToJson(xml);
+  }
+
+  /** @deprecated Use `getAccessUserList()` */
+  async getAccessUserListXml(options?: {
+    timeoutMs?: number;
+  }): Promise<XmlJsonValue> {
+    return await this.getAccessUserList(options);
   }
 
   // Placeholder cmdIds seen in PCAPs but without XML samples yet.
-  // Expose as raw XML wrappers for debugging / future parsers.
-  async getCmd123Xml(
+  // Expose as JSON (parsed from XML) for easy inspection.
+  async getCmd123(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<string> {
-    return await this.sendPcapDerivedSettingsGetXml({
+  ): Promise<XmlJsonValue> {
+    const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_CMD_123,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
+    return parseXmlFragmentToJson(xml);
   }
 
-  async getCmd209Xml(
+  /** @deprecated Use `getCmd123()` */
+  async getCmd123Xml(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<string> {
-    return await this.sendPcapDerivedSettingsGetXml({
+  ): Promise<XmlJsonValue> {
+    return await this.getCmd123(channel, options);
+  }
+
+  async getCmd209(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<XmlJsonValue> {
+    const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_CMD_209,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
+    return parseXmlFragmentToJson(xml);
   }
 
-  async getCmd231Xml(
+  /** @deprecated Use `getCmd209()` */
+  async getCmd209Xml(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<string> {
-    return await this.sendPcapDerivedSettingsGetXml({
+  ): Promise<XmlJsonValue> {
+    return await this.getCmd209(channel, options);
+  }
+
+  async getCmd231(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<XmlJsonValue> {
+    const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_CMD_231,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
+    return parseXmlFragmentToJson(xml);
   }
 
-  async getCmd265Xml(
+  /** @deprecated Use `getCmd231()` */
+  async getCmd231Xml(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<string> {
-    return await this.sendPcapDerivedSettingsGetXml({
+  ): Promise<XmlJsonValue> {
+    return await this.getCmd231(channel, options);
+  }
+
+  async getCmd265(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<XmlJsonValue> {
+    const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_CMD_265,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
+    return parseXmlFragmentToJson(xml);
   }
 
-  async getCmd440Xml(
+  /** @deprecated Use `getCmd265()` */
+  async getCmd265Xml(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<string> {
-    return await this.sendPcapDerivedSettingsGetXml({
+  ): Promise<XmlJsonValue> {
+    return await this.getCmd265(channel, options);
+  }
+
+  async getCmd440(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<XmlJsonValue> {
+    const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_CMD_440,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
+    return parseXmlFragmentToJson(xml);
+  }
+
+  /** @deprecated Use `getCmd440()` */
+  async getCmd440Xml(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<XmlJsonValue> {
+    return await this.getCmd440(channel, options);
   }
 }

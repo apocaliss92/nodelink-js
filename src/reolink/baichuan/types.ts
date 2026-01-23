@@ -260,6 +260,8 @@ export interface WhiteLedState {
   brightness?: number;
 }
 
+import type { XmlJsonValue } from "./utils/xml";
+
 /** Public snapshot entry returned by `ReolinkBaichuanApi.getChannelInfoFromPushCache()`. */
 export type ChannelPushCacheEntry = {
   name: string;
@@ -288,13 +290,9 @@ export type ChannelPushDataEntry = ChannelPushCacheEntry & {
 // PCAP-derived push cache (cmd_id 78/79/464/484/623/723)
 // --------------------
 
-export type BaichuanParsedResult<T> = {
-  rawXml: string;
-  value: T;
-};
-
-export type BaichuanCachedPush<T> = BaichuanParsedResult<T> & {
+export type BaichuanCachedPush<T> = {
   updatedAtMs: number;
+  value: T;
 };
 
 export type BaichuanVideoInputPush = {
@@ -329,7 +327,7 @@ export type BaichuanDingdongListPush = {
   /** -1 commonly means "all" / host-level. */
   channel?: number;
   pairedCount?: number;
-  pairedListRawXml?: string;
+  pairedList?: XmlJsonValue;
 };
 
 export type BaichuanSleepStatusPush = {

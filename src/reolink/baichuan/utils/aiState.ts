@@ -1,13 +1,17 @@
+import { BC_CMD_ID_GET_AI_ALARM } from "../../../protocol/constants";
 import { getXmlText, xmlEscape } from "../../../protocol/xml";
 import type { AIState } from "../types";
 import { formatErrorForLog } from "./logging";
 
-export type SendXmlLike = (params: {
-  cmdId: number;
-  channel?: number;
-  payloadXml?: string;
-  channelIdOverride?: number;
-}, retry?: number) => Promise<string>;
+export type SendXmlLike = (
+  params: {
+    cmdId: number;
+    channel?: number;
+    payloadXml?: string;
+    channelIdOverride?: number;
+  },
+  retry?: number,
+) => Promise<string>;
 
 const looksLikeConnectionDrop = (e: unknown): boolean => {
   const msg = formatErrorForLog(e);
@@ -25,16 +29,26 @@ export const getAiStateViaGetAiAlarm = async (params: {
   channel: number;
   candidateTypes?: string[];
 }): Promise<AIState> => {
-  const cmdId = 342;
+  const cmdId = BC_CMD_ID_GET_AI_ALARM;
   const ch = params.channel;
 
-  const defaultCandidateTypes = ["people", "vehicle", "dog_cat", "face", "package"] as const;
-  const candidateTypes = (params.candidateTypes && params.candidateTypes.length > 0)
-    ? params.candidateTypes
-    : [...defaultCandidateTypes];
+  const defaultCandidateTypes = [
+    "people",
+    "vehicle",
+    "dog_cat",
+    "face",
+    "package",
+  ] as const;
+  const candidateTypes =
+    params.candidateTypes && params.candidateTypes.length > 0
+      ? params.candidateTypes
+      : [...defaultCandidateTypes];
   let lastErr: unknown;
 
-  const tryOnce = async (type: string, channelIdOverride?: number): Promise<string> => {
+  const tryOnce = async (
+    type: string,
+    channelIdOverride?: number,
+  ): Promise<string> => {
     const payloadXml =
       `<?xml version="1.0" encoding="UTF-8" ?>` +
       `<body>` +
@@ -87,5 +101,7 @@ export const getAiStateViaGetAiAlarm = async (params: {
     }
   }
 
-  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr ?? "getAiState failed"));
+  throw lastErr instanceof Error
+    ? lastErr
+    : new Error(String(lastErr ?? "getAiState failed"));
 };
