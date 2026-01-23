@@ -45,5 +45,7 @@ fullTest/audio-samples/*
 .tmp/*
 pcap/*
 firmwares/*
+downloads/*
+docs/*
 tools/stream-probe/*
 

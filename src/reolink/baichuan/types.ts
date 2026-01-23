@@ -59,7 +59,15 @@ export type ZoomFocusStatus = {
 
 export interface PtzCommand {
   action: "start" | "stop";
-  command: "Left" | "Right" | "Up" | "Down" | "ZoomIn" | "ZoomOut" | "FocusNear" | "FocusFar";
+  command:
+    | "Left"
+    | "Right"
+    | "Up"
+    | "Down"
+    | "ZoomIn"
+    | "ZoomOut"
+    | "FocusNear"
+    | "FocusFar";
   speed?: number;
   /** Optional: how long to move before sending an automatic stop (ms). Set to 0 to disable auto-stop. */
   autoStopMs?: number;
@@ -274,6 +282,175 @@ export type ChannelPushDataEntry = ChannelPushCacheEntry & {
   /** Lowercased state for convenience (e.g. "connect", "none"). */
   stateLower?: string;
   updatedAtMs: number;
+};
+
+// --------------------
+// PCAP-derived push cache (cmd_id 78/79/464/484/623/723)
+// --------------------
+
+export type BaichuanParsedResult<T> = {
+  rawXml: string;
+  value: T;
+};
+
+export type BaichuanCachedPush<T> = BaichuanParsedResult<T> & {
+  updatedAtMs: number;
+};
+
+export type BaichuanVideoInputPush = {
+  channelId?: number;
+  bright?: number;
+  contrast?: number;
+  saturation?: number;
+  hue?: number;
+  sharpen?: number;
+  corridorAbility?: number;
+  corridorMode?: string;
+};
+
+export type BaichuanSerialPush = {
+  channelId?: number;
+  baudRate?: number;
+  dataBit?: string;
+  stopBit?: string;
+  parity?: string;
+  flowControl?: string;
+  controlProtocol?: string;
+  controlAddress?: number;
+};
+
+export type BaichuanNetInfoPush = {
+  netType?: string;
+  signal?: number;
+};
+
+export type BaichuanDingdongListPush = {
+  maxPairNumber?: number;
+  /** -1 commonly means "all" / host-level. */
+  channel?: number;
+  pairedCount?: number;
+  pairedListRawXml?: string;
+};
+
+export type BaichuanSleepStatusPush = {
+  /** Parsed from <sleep>0/1 when present. */
+  sleep?: boolean;
+  rawSleep?: number;
+  /** Some firmwares use <statusList>... for per-channel statuses. */
+  statusListPresent?: boolean;
+};
+
+export type BaichuanCoordinatePointListPush = {
+  count: number;
+  points?: Array<{ x: number; y: number }>;
+};
+
+export type BaichuanSettingsPushCacheEntry = {
+  /** Map key (0-based) when known; -1 for host-level pushes. */
+  channel: number;
+  videoInput?: BaichuanCachedPush<BaichuanVideoInputPush>;
+  serial?: BaichuanCachedPush<BaichuanSerialPush>;
+  netInfo?: BaichuanCachedPush<BaichuanNetInfoPush>;
+  dingdongList?: BaichuanCachedPush<BaichuanDingdongListPush>;
+  sleepStatus?: BaichuanCachedPush<BaichuanSleepStatusPush>;
+  coordinatePointList?: BaichuanCachedPush<BaichuanCoordinatePointListPush>;
+};
+
+// --------------------
+// PCAP-derived getters (cmd_id 44/54/81/115/116/146/208/574/...)
+// --------------------
+
+export type BaichuanOsdDatetime = {
+  channelId?: number;
+  enable?: boolean;
+  topLeftX?: number;
+  topLeftY?: number;
+  width?: number;
+  height?: number;
+  language?: string;
+};
+
+export type BaichuanOsdChannelName = {
+  channelId?: number;
+  name?: string;
+  enable?: boolean;
+  topLeftX?: number;
+  topLeftY?: number;
+  enWatermark?: boolean;
+  enBgcolor?: boolean;
+};
+
+export type BaichuanGetOsdDatetimeResult = {
+  osdDatetime?: BaichuanOsdDatetime;
+  osdChannelName?: BaichuanOsdChannelName;
+};
+
+export type BaichuanRecordCfg = {
+  channelId?: number;
+  cycle?: number;
+  recordAbility?: number;
+  smartRecord?: number;
+  recordDelayTime?: number;
+  preRecordTime?: number;
+  packageTime?: number;
+  cycleList?: number[];
+};
+
+export type BaichuanRecordSchedule = {
+  channelId?: number;
+  enable?: boolean;
+  typeScheduleList?: Array<{ type: string; valueTable: string }>;
+};
+
+export type BaichuanWifiSignal = {
+  signal?: number;
+};
+
+export type BaichuanWifi = {
+  protocol?: number;
+  mode?: string;
+  ssid?: string;
+  /** Masked in many firmwares (e.g. ***********) */
+  key?: string;
+  channel?: number;
+  isNVRSsid?: number;
+};
+
+export type BaichuanLedState = {
+  channelId?: number;
+  ledVersion?: number;
+  state?: string;
+  lightState?: string;
+};
+
+export type BaichuanSleepState = {
+  sleep?: number;
+  mode?: number;
+  panPos?: number;
+  tiltPos?: number;
+  imageName?: string;
+};
+
+export type BaichuanStreamEncodeTable = {
+  type?: string;
+  width?: number;
+  height?: number;
+  videoEncType?: number;
+  videoEncTypeList?: number[];
+  defaultFramerate?: number;
+  defaultBitrate?: number;
+  framerateTable?: number[];
+  bitrateTable?: number[];
+  defaultGop?: number;
+};
+
+export type BaichuanStreamInfo = {
+  channelBits?: number;
+  encodeTables: BaichuanStreamEncodeTable[];
+};
+
+export type BaichuanStreamInfoList = {
+  streams: BaichuanStreamInfo[];
 };
 
 export type AiTypesCacheEntry = {
@@ -520,7 +697,7 @@ export interface TalkSession {
 
 /**
  * Device ability/capability information for a specific channel or host.
- * 
+ *
  * Keys are capability names (e.g., "preview_rw", "control_rw", "motion_rw", "reboot_rw").
  * Values are:
  * - 1 = capability is supported (typically with _rw suffix for read-write, _ro for read-only)
@@ -531,7 +708,7 @@ export type AbilityInfo = Record<string, number | string | undefined>;
 
 /**
  * Complete device abilities structure returned by getAbilityInfo.
- * 
+ *
  * - Channel numbers (0, 1, 2, etc.): Channel-specific abilities
  * - "Host": Host-level/system abilities
  */
@@ -734,7 +911,7 @@ export interface EnrichedRecordingFile {
   durationMs: number;
   /** File size in bytes (if available) */
   sizeBytes?: number;
-  
+
   // Detection flags (from hex decoding or recordType parsing)
   /** Person/people detected */
   hasPerson: boolean;
@@ -756,22 +933,22 @@ export interface EnrichedRecordingFile {
   hasRf: boolean;
   /** Other AI detection */
   hasOther: boolean;
-  
+
   /** Original record type string from camera (e.g. "md,people,dog_cat") */
   recordType?: string;
-  
+
   /** RTMP VOD playback URL (if available) */
   rtmpUrl?: string;
-  
+
   /** Stream type hint (main/sub/unknown) */
   streamHint: RecordingVodStreamHint;
-  
+
   /** Device type (cam/hub) */
   devType: RecordingDevType;
-  
+
   /** Raw parsed filename data for advanced usage */
   parsedFileName?: ParsedRecordingFileName;
-  
+
   /** Original RecordingFile for reference */
   raw: RecordingFile;
 }
@@ -896,4 +1073,3 @@ export interface DualLensChannelAnalysis {
     presets: number[];
   };
 }
-

@@ -10,7 +10,9 @@ export const BC_MAGIC = Buffer.from([0xf0, 0xde, 0xbc, 0x0a]);
 export const BC_MAGIC_REV = Buffer.from([0xa0, 0xcb, 0xed, 0x0f]);
 
 /** Reolink "BCEncrypt" XOR key for XML payloads. */
-export const BC_XML_KEY = Uint8Array.from([0x1f, 0x2d, 0x3c, 0x4b, 0x5a, 0x69, 0x78, 0xff]);
+export const BC_XML_KEY = Uint8Array.from([
+  0x1f, 0x2d, 0x3c, 0x4b, 0x5a, 0x69, 0x78, 0xff,
+]);
 
 /** Fixed IV used by Reolink for AES-CFB. */
 export const BC_AES_IV = Buffer.from("0123456789abcdef", "utf8");
@@ -23,12 +25,16 @@ export const BC_CLASS_MODERN_24_ALT = 0x0000;
 export const BC_CLASS_FILE_DOWNLOAD = 0x6482;
 
 export function bcHeaderHasPayloadOffset(messageClass: number): boolean {
-  return messageClass === BC_CLASS_MODERN_24 || messageClass === BC_CLASS_MODERN_24_ALT || messageClass === BC_CLASS_FILE_DOWNLOAD;
+  return (
+    messageClass === BC_CLASS_MODERN_24 ||
+    messageClass === BC_CLASS_MODERN_24_ALT ||
+    messageClass === BC_CLASS_FILE_DOWNLOAD
+  );
 }
 
 /**
  * Baichuan command IDs for video streaming.
- * 
+ *
  * Values:
  * - MSG_ID_VIDEO = 3: Video and Audio Streams messages
  * - MSG_ID_VIDEO_STOP = 4: ID used to stop the video stream
@@ -112,3 +118,45 @@ export const BC_CMD_ID_PING = 93; // MSG_ID_PING - Keep connection alive / check
 // Channel Info command IDs
 export const BC_CMD_ID_CHANNEL_INFO_ALL = 145; // Get channel info for all channels in a single request
 
+// --- PCAP-derived (settings) command IDs (not yet wrapped in helpers) ---
+// These command IDs were observed in our settings PCAPs and are exported here so they can be used
+// by library callers (e.g. via ReolinkBaichuanApi.sendXml({ cmdId, ... })).
+// Naming is best-effort and derived from the first XML tag under <body> seen in responses.
+
+// client->device (request/response)
+export const BC_CMD_ID_GET_OSD_DATETIME = 44; // <OsdDatetime>
+export const BC_CMD_ID_GET_RECORD_CFG = 54; // <RecordCfg>
+export const BC_CMD_ID_GET_ABILITY_SUPPORT = 58; // <AbilitySuppport> (spelling as seen in XML)
+export const BC_CMD_ID_GET_FTP_TASK = 70; // <FtpTask>
+export const BC_CMD_ID_GET_RECORD = 81; // <Record>
+export const BC_CMD_ID_GET_HDD_INFO_LIST = 102; // <HddInfoList>
+export const BC_CMD_ID_GET_WIFI_SIGNAL = 115; // <WifiSignal>
+export const BC_CMD_ID_GET_WIFI = 116; // <Wifi>
+export const BC_CMD_ID_GET_DAY_RECORDS = 142; // <DayRecords>
+export const BC_CMD_ID_GET_STREAM_INFO_LIST = 146; // <StreamInfoList>
+export const BC_CMD_ID_GET_LED_STATE = 208; // <LedState>
+export const BC_CMD_ID_GET_EMAIL_TASK = 217; // <EmailTask>
+export const BC_CMD_ID_GET_AUDIO_TASK = 232; // <AudioTask>
+export const BC_CMD_ID_GET_AUDIO_CFG = 264; // <audioCfg>
+export const BC_CMD_ID_GET_DAY_NIGHT_THRESHOLD = 296; // <DayNightThreshold>
+export const BC_CMD_ID_GET_TIMELAPSE_CFG = 319; // <timelapseCfg>
+export const BC_CMD_ID_GET_AI_DENOISE = 439; // <aiDenoise>
+export const BC_CMD_ID_GET_KIT_AP_CFG = 481; // <kitApCfg>
+export const BC_CMD_ID_GET_REC_ENC_CFG = 507; // <RecEncCfg>
+export const BC_CMD_ID_GET_ACCESS_USER_LIST = 511; // <accessUserList>
+export const BC_CMD_ID_GET_SLEEP_STATE = 574; // <sleepState>
+
+// Unknown / no XML samples captured in current PCAP corpus (still observed cmdIds)
+export const BC_CMD_ID_CMD_123 = 123;
+export const BC_CMD_ID_CMD_209 = 209;
+export const BC_CMD_ID_CMD_231 = 231;
+export const BC_CMD_ID_CMD_265 = 265;
+export const BC_CMD_ID_CMD_440 = 440;
+
+// push/device->client (camera-initiated)
+export const BC_CMD_ID_PUSH_VIDEO_INPUT = 78; // <VideoInput>
+export const BC_CMD_ID_PUSH_SERIAL = 79; // <Serial>
+export const BC_CMD_ID_PUSH_NET_INFO = 464; // <NetInfo>
+export const BC_CMD_ID_PUSH_DINGDONG_LIST = 484; // <dingdongList>
+export const BC_CMD_ID_PUSH_SLEEP_STATUS = 623; // <sleepStatus>
+export const BC_CMD_ID_PUSH_COORDINATE_POINT_LIST = 723; // <coordinatePointList>
