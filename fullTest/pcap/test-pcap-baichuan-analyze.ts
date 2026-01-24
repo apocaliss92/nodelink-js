@@ -25,29 +25,41 @@ function parseEnvSessionOverride(): SessionInfo | undefined {
   const encTypeRaw = process.env.BAICHUAN_ENC_TYPE?.trim();
   if (!nonce || !encTypeRaw) return undefined;
 
-  const encType = encTypeRaw.startsWith("0x") || encTypeRaw.startsWith("0X") ? parseInt(encTypeRaw, 16) : parseInt(encTypeRaw, 10);
+  const encType =
+    encTypeRaw.startsWith("0x") || encTypeRaw.startsWith("0X")
+      ? parseInt(encTypeRaw, 16)
+      : parseInt(encTypeRaw, 10);
   if (!Number.isFinite(encType)) return undefined;
 
   if (encType === 0x00) return { enc: { kind: "none" }, nonce, encType };
   if (encType === 0x01) return { enc: { kind: "bc" }, nonce, encType };
 
-  const password = process.env.BAICHUAN_PASSWORD ?? process.env.NVR_PASSWORD ?? process.env.TCP_PASSWORD;
+  const password =
+    process.env.BAICHUAN_PASSWORD ??
+    process.env.NVR_PASSWORD ??
+    process.env.TCP_PASSWORD;
   if (!password) return { enc: { kind: "unknown" }, nonce, encType };
 
-  const md5HexUpper = (input: string): string => createHash("md5").update(input, "utf8").digest("hex").toUpperCase();
-  const md5StrModern = (input: string): string => md5HexUpper(input).slice(0, 31);
+  const md5HexUpper = (input: string): string =>
+    createHash("md5").update(input, "utf8").digest("hex").toUpperCase();
+  const md5StrModern = (input: string): string =>
+    md5HexUpper(input).slice(0, 31);
   const keyStr = md5StrModern(`${nonce}-${password}`).slice(0, 16);
   const key = Buffer.from(keyStr, "utf8");
 
-  if (encType === 0x02) return { enc: { kind: "aes", key, mode: "aes" }, nonce, encType };
-  if (encType === 0x12) return { enc: { kind: "aes", key, mode: "full_aes" }, nonce, encType };
+  if (encType === 0x02)
+    return { enc: { kind: "aes", key, mode: "aes" }, nonce, encType };
+  if (encType === 0x12)
+    return { enc: { kind: "aes", key, mode: "full_aes" }, nonce, encType };
 
   return { enc: { kind: "unknown" }, nonce, encType };
 }
 
 function detectSessionFromFrames(frames: BaichuanFrame[]): SessionInfo {
-  const md5HexUpper = (input: string): string => createHash("md5").update(input, "utf8").digest("hex").toUpperCase();
-  const md5StrModern = (input: string): string => md5HexUpper(input).slice(0, 31);
+  const md5HexUpper = (input: string): string =>
+    createHash("md5").update(input, "utf8").digest("hex").toUpperCase();
+  const md5StrModern = (input: string): string =>
+    md5HexUpper(input).slice(0, 31);
   const deriveAesKey = (nonce: string, password: string): Buffer => {
     const keyStr = md5StrModern(`${nonce}-${password}`).slice(0, 16);
     return Buffer.from(keyStr, "utf8");
@@ -79,7 +91,9 @@ function detectSessionFromFrames(frames: BaichuanFrame[]): SessionInfo {
     const encType = resp & 0xff;
     const preferred = encType === 0x00 ? "none" : "bc";
     const xml =
-      (preferred === "none" ? f.body.toString("utf8") : bcXor(Buffer.from(f.body), f.header.channelId).toString("utf8")) ||
+      (preferred === "none"
+        ? f.body.toString("utf8")
+        : bcXor(Buffer.from(f.body), f.header.channelId).toString("utf8")) ||
       f.body.toString("utf8");
     const nonce = xmlText(xml, "nonce");
     if (!nonce) continue;
@@ -87,11 +101,28 @@ function detectSessionFromFrames(frames: BaichuanFrame[]): SessionInfo {
     if (encType === 0x00) return { enc: { kind: "none" }, nonce, encType };
     if (encType === 0x01) return { enc: { kind: "bc" }, nonce, encType };
 
-    const password = process.env.BAICHUAN_PASSWORD ?? process.env.NVR_PASSWORD ?? process.env.TCP_PASSWORD;
+    const password =
+      process.env.BAICHUAN_PASSWORD ??
+      process.env.NVR_PASSWORD ??
+      process.env.TCP_PASSWORD;
     if (!password) return { enc: { kind: "unknown" }, nonce, encType };
 
-    if (encType === 0x02) return { enc: { kind: "aes", key: deriveAesKey(nonce, password), mode: "aes" }, nonce, encType };
-    if (encType === 0x12) return { enc: { kind: "aes", key: deriveAesKey(nonce, password), mode: "full_aes" }, nonce, encType };
+    if (encType === 0x02)
+      return {
+        enc: { kind: "aes", key: deriveAesKey(nonce, password), mode: "aes" },
+        nonce,
+        encType,
+      };
+    if (encType === 0x12)
+      return {
+        enc: {
+          kind: "aes",
+          key: deriveAesKey(nonce, password),
+          mode: "full_aes",
+        },
+        nonce,
+        encType,
+      };
 
     return { enc: { kind: "unknown" }, nonce, encType };
   }
@@ -109,13 +140,16 @@ type Endian = "le" | "be";
 // Reuse the same BCUDP XOR keystream used in the UDP probe.
 // This is a best-effort heuristic: some UDP/7777 payloads look BCUDP-related.
 const BCUDP_XML_KEY_U32 = Uint32Array.from([
-  0x1f2d3c4b, 0x5a6c7f8d, 0x38172e4b, 0x8271635a, 0x863f1a2b, 0xa5c6f7d8, 0x8371e1b4, 0x17f2d3a5,
+  0x1f2d3c4b, 0x5a6c7f8d, 0x38172e4b, 0x8271635a, 0x863f1a2b, 0xa5c6f7d8,
+  0x8371e1b4, 0x17f2d3a5,
 ]);
 
 function* bcudpXmlKeystream(offset: number): Generator<number, void, void> {
   let idx = 0;
   while (true) {
-    const word = (BCUDP_XML_KEY_U32[idx % BCUDP_XML_KEY_U32.length]! + (offset >>> 0)) >>> 0;
+    const word =
+      (BCUDP_XML_KEY_U32[idx % BCUDP_XML_KEY_U32.length]! + (offset >>> 0)) >>>
+      0;
     yield word & 0xff;
     yield (word >>> 8) & 0xff;
     yield (word >>> 16) & 0xff;
@@ -127,7 +161,8 @@ function* bcudpXmlKeystream(offset: number): Generator<number, void, void> {
 function bcudpXmlDecrypt(tid: number, enc: Buffer): Buffer {
   const out = Buffer.allocUnsafe(enc.length);
   const ks = bcudpXmlKeystream(tid >>> 0);
-  for (let i = 0; i < enc.length; i++) out[i] = enc[i]! ^ (ks.next().value as number);
+  for (let i = 0; i < enc.length; i++)
+    out[i] = enc[i]! ^ (ks.next().value as number);
   return out;
 }
 
@@ -137,7 +172,7 @@ function getCrcTable(): Uint32Array {
   const t = new Uint32Array(256);
   for (let i = 0; i < 256; i++) {
     let c = i;
-    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
     t[i] = c >>> 0;
   }
   crcTable = t;
@@ -194,9 +229,16 @@ function parseUdp7777(payload: Buffer): Udp7777Parsed {
   const uid = (nul >= 0 ? uidRaw.subarray(0, nul) : uidRaw).toString("ascii");
 
   // Data is typically at offset=headerLen (often 44 bytes).
-  const data = headerLen >= 0 && headerLen <= payload.length ? payload.subarray(headerLen) : Buffer.alloc(0);
-  const dataHeadHex = data.subarray(0, Math.min(24, data.length)).toString("hex");
-  const dataTailHex = data.subarray(Math.max(0, data.length - 16)).toString("hex");
+  const data =
+    headerLen >= 0 && headerLen <= payload.length
+      ? payload.subarray(headerLen)
+      : Buffer.alloc(0);
+  const dataHeadHex = data
+    .subarray(0, Math.min(24, data.length))
+    .toString("hex");
+  const dataTailHex = data
+    .subarray(Math.max(0, data.length - 16))
+    .toString("hex");
 
   // Heuristic: try BCUDP XOR decrypt using a few candidate offsets.
   let decodedPreview: string | undefined;
@@ -205,7 +247,13 @@ function parseUdp7777(payload: Buffer): Udp7777Parsed {
     for (const tid of candidates) {
       const plain = bcudpXmlDecrypt(tid, data);
       const text = plain.toString("utf8");
-      if (text.includes("<?xml") || text.includes("<Alarm") || text.includes("<body") || text.includes("<Event") || text.includes("<PIR")) {
+      if (
+        text.includes("<?xml") ||
+        text.includes("<Alarm") ||
+        text.includes("<body") ||
+        text.includes("<Event") ||
+        text.includes("<PIR")
+      ) {
         decodedPreview = text.length > 300 ? `${text.slice(0, 300)}...` : text;
         break;
       }
@@ -219,7 +267,13 @@ function parseUdp7777(payload: Buffer): Udp7777Parsed {
       try {
         const out = fn(data);
         const txt = out.toString("utf8");
-        if (txt.includes("<?xml") || txt.includes("<Alarm") || txt.includes("<body") || txt.includes("<Event") || txt.includes("PIR")) {
+        if (
+          txt.includes("<?xml") ||
+          txt.includes("<Alarm") ||
+          txt.includes("<body") ||
+          txt.includes("<Event") ||
+          txt.includes("PIR")
+        ) {
           inflatedPreview = txt.length > 300 ? `${txt.slice(0, 300)}...` : txt;
         }
       } catch {
@@ -247,12 +301,22 @@ function parseUdp7777(payload: Buffer): Udp7777Parsed {
       const pktTail = payload.readUInt32LE(payload.length - 4) >>> 0;
       const pr0 = crc32ReolinkInit0(pktCore);
       const ps0 = crc32Standard(pktCore);
-      if (pktTail === pr0) checksumHint = `pkt_tail=crc32_reolink(init0,pktCore)`;
-      else if (pktTail === ps0) checksumHint = `pkt_tail=crc32_standard(pktCore)`;
+      if (pktTail === pr0)
+        checksumHint = `pkt_tail=crc32_reolink(init0,pktCore)`;
+      else if (pktTail === ps0)
+        checksumHint = `pkt_tail=crc32_standard(pktCore)`;
     }
   }
 
-  const out: Udp7777Parsed = { magicLE, dataLen, seq, uid, headerLen, dataHeadHex, dataTailHex };
+  const out: Udp7777Parsed = {
+    magicLE,
+    dataLen,
+    seq,
+    uid,
+    headerLen,
+    dataHeadHex,
+    dataTailHex,
+  };
   if (decodedPreview) out.decodedPreview = decodedPreview;
   if (inflatedPreview) out.inflatedPreview = inflatedPreview;
   if (checksumHint) out.checksumHint = checksumHint;
@@ -261,7 +325,11 @@ function parseUdp7777(payload: Buffer): Udp7777Parsed {
 
 function isPrivateIpv4(ip: string): boolean {
   const parts = ip.split(".").map((p) => Number(p));
-  if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n) || n < 0 || n > 255)) return false;
+  if (
+    parts.length !== 4 ||
+    parts.some((n) => !Number.isFinite(n) || n < 0 || n > 255)
+  )
+    return false;
   const [a, b] = parts as [number, number, number, number];
   if (a === 10) return true;
   if (a === 172 && b >= 16 && b <= 31) return true;
@@ -296,9 +364,13 @@ function hexPreview(buf: Buffer, maxBytes = 256): string {
   const lines: string[] = [];
   for (let off = 0; off < max; off += 16) {
     const chunk = buf.subarray(off, Math.min(off + 16, max));
-    const hex = [...chunk].map((b) => b.toString(16).padStart(2, "0")).join(" ");
+    const hex = [...chunk]
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join(" ");
     const ascii = previewAscii(chunk);
-    lines.push(`${off.toString(16).padStart(4, "0")}: ${hex.padEnd(16 * 3 - 1, " ")}  |${ascii}|`);
+    lines.push(
+      `${off.toString(16).padStart(4, "0")}: ${hex.padEnd(16 * 3 - 1, " ")}  |${ascii}|`,
+    );
   }
   return lines.join("\n");
 }
@@ -308,19 +380,29 @@ function guessProtocolFromTcpPrefix(buf: Buffer): string | undefined {
   // TLS ClientHello/ServerHello: 0x16 0x03 0x01/0x03/0x02...
   if (buf[0] === 0x16 && buf[1] === 0x03) return "TLS handshake";
   const s = buf.subarray(0, Math.min(buf.length, 12)).toString("utf8");
-  if (s.startsWith("GET ") || s.startsWith("POST ") || s.startsWith("HTTP/")) return "HTTP";
+  if (s.startsWith("GET ") || s.startsWith("POST ") || s.startsWith("HTTP/"))
+    return "HTTP";
   return undefined;
 }
 
-function extractSrcDstIpFromDirKey(dirKey: string): { srcIp: string; dstIp: string } | undefined {
-  const m = /^(\d+\.\d+\.\d+\.\d+):\d+ -> (\d+\.\d+\.\d+\.\d+):\d+$/.exec(dirKey.trim());
+function extractSrcDstIpFromDirKey(
+  dirKey: string,
+): { srcIp: string; dstIp: string } | undefined {
+  const m = /^(\d+\.\d+\.\d+\.\d+):\d+ -> (\d+\.\d+\.\d+\.\d+):\d+$/.exec(
+    dirKey.trim(),
+  );
   if (!m) return undefined;
   return { srcIp: m[1]!, dstIp: m[2]! };
 }
 
 type LenTypeRecord = { len: number; type: number };
 
-type LenTypeRecordWithPayload = { off: number; len: number; type: number; payload: Buffer };
+type LenTypeRecordWithPayload = {
+  off: number;
+  len: number;
+  type: number;
+  payload: Buffer;
+};
 
 function tryParseLenTypeRecords(data: Buffer): LenTypeRecord[] | undefined {
   // Observed on hub<->battery (TCP/6666):
@@ -347,12 +429,17 @@ function tryParseLenTypeRecords(data: Buffer): LenTypeRecord[] | undefined {
   return records.length > 0 ? records : undefined;
 }
 
-function findLenTypeRecordsAnywhere(data: Buffer, maxRecords = 500): LenTypeRecordWithPayload[] {
+function findLenTypeRecordsAnywhere(
+  data: Buffer,
+  maxRecords = 500,
+): LenTypeRecordWithPayload[] {
   const magic = 0x0001000c;
   const records: LenTypeRecordWithPayload[] = [];
   let off = 0;
 
-  const tryParseSequenceAt = (start: number): { records: LenTypeRecordWithPayload[]; end: number } | undefined => {
+  const tryParseSequenceAt = (
+    start: number,
+  ): { records: LenTypeRecordWithPayload[]; end: number } | undefined => {
     let cur = start;
     const out: LenTypeRecordWithPayload[] = [];
     while (cur + 12 <= data.length) {
@@ -400,7 +487,12 @@ function scanForPrivateIpv4InBinary(buf: Buffer, limit = 32): string[] {
   return [...found.values()];
 }
 
-function scanForU16Value(buf: Buffer, value: number, endian: Endian, limit = 20): number[] {
+function scanForU16Value(
+  buf: Buffer,
+  value: number,
+  endian: Endian,
+  limit = 20,
+): number[] {
   const offs: number[] = [];
   for (let i = 0; i + 2 <= buf.length; i++) {
     const v = endian === "le" ? buf.readUInt16LE(i) : buf.readUInt16BE(i);
@@ -420,7 +512,10 @@ function scanForAsciiTokens(buf: Buffer, minLen = 8, limit = 20): string[] {
     cur = "";
   };
   for (const b of buf) {
-    const isAlnum = (b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x5a) || (b >= 0x61 && b <= 0x7a);
+    const isAlnum =
+      (b >= 0x30 && b <= 0x39) ||
+      (b >= 0x41 && b <= 0x5a) ||
+      (b >= 0x61 && b <= 0x7a);
     if (isAlnum) {
       cur += String.fromCharCode(b);
       if (cur.length > 64) push();
@@ -451,7 +546,11 @@ function parseMacUidToken(token: string): { macHex?: string; uid?: string } {
 
 function ipv4ToBytes(ip: string): Buffer | undefined {
   const parts = ip.split(".").map((p) => Number(p));
-  if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n) || n < 0 || n > 255)) return undefined;
+  if (
+    parts.length !== 4 ||
+    parts.some((n) => !Number.isFinite(n) || n < 0 || n > 255)
+  )
+    return undefined;
   return Buffer.from(parts.map((n) => n & 0xff));
 }
 
@@ -471,6 +570,16 @@ function findAllOccurrences(hay: Buffer, needle: Buffer, limit = 20): number[] {
 
 function ensureDir(dir: string): void {
   fs.mkdirSync(dir, { recursive: true });
+}
+
+function sanitizeForFilename(s: string): string {
+  // Keep it stable and cross-platform-ish: collapse whitespace and strip weird characters.
+  return s
+    .trim()
+    .replace(/\s+/g, "_")
+    .replace(/[^A-Za-z0-9._-]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
 }
 
 function writeJson(filePath: string, obj: unknown): void {
@@ -504,7 +613,10 @@ type Tcp6666RecordEvent = {
   len: number;
 };
 
-function reassembleTcpSegments(segments: TcpSegment[]): { data: Buffer; gaps: number } {
+function reassembleTcpSegments(segments: TcpSegment[]): {
+  data: Buffer;
+  gaps: number;
+} {
   if (segments.length === 0) return { data: Buffer.alloc(0), gaps: 0 };
 
   const sorted = [...segments].sort((a, b) => a.seq - b.seq);
@@ -534,12 +646,18 @@ function reassembleTcpSegments(segments: TcpSegment[]): { data: Buffer; gaps: nu
   return { data: Buffer.concat(chunks), gaps };
 }
 
-function parse6666RecordsFromSegments(dirKey: string, segments: TcpSegment[], maxEvents = 5000): {
+function parse6666RecordsFromSegments(
+  dirKey: string,
+  segments: TcpSegment[],
+  maxEvents = 5000,
+): {
   prefix: Buffer;
   events: Tcp6666RecordEvent[];
 } {
   const magicBytes = Buffer.from([0x0c, 0x00, 0x01, 0x00]); // u32le 0x0001000c
-  const sorted = [...segments].filter((s) => s.payload.length > 0).sort((a, b) => a.seq - b.seq);
+  const sorted = [...segments]
+    .filter((s) => s.payload.length > 0)
+    .sort((a, b) => a.seq - b.seq);
 
   if (sorted.length === 0) return { prefix: Buffer.alloc(0), events: [] };
 
@@ -613,7 +731,8 @@ function parse6666RecordsFromSegments(dirKey: string, segments: TcpSegment[], ma
       if (buf.length < totalLen) break; // need more bytes
 
       events.push({ dirKey, tsMs: seg.tsMs, streamOff, type, len: payloadLen });
-      if (events.length >= maxEvents) return { prefix: Buffer.concat(prefixChunks), events };
+      if (events.length >= maxEvents)
+        return { prefix: Buffer.concat(prefixChunks), events };
 
       // consume record
       streamOff += totalLen;
@@ -624,7 +743,10 @@ function parse6666RecordsFromSegments(dirKey: string, segments: TcpSegment[], ma
   return { prefix: Buffer.concat(prefixChunks), events };
 }
 
-function tryGet6666RecordPayloadAt(reassembled: Buffer, streamOff: number): { type: number; len: number; payload: Buffer } | undefined {
+function tryGet6666RecordPayloadAt(
+  reassembled: Buffer,
+  streamOff: number,
+): { type: number; len: number; payload: Buffer } | undefined {
   if (streamOff < 0 || streamOff + 12 > reassembled.length) return undefined;
   const magic = reassembled.readUInt32LE(streamOff);
   if (magic !== 0x0001000c) return undefined;
@@ -632,7 +754,11 @@ function tryGet6666RecordPayloadAt(reassembled: Buffer, streamOff: number): { ty
   const type = reassembled.readUInt32LE(streamOff + 8);
   const total = 12 + len;
   if (streamOff + total > reassembled.length) return undefined;
-  return { type, len, payload: reassembled.subarray(streamOff + 12, streamOff + total) };
+  return {
+    type,
+    len,
+    payload: reassembled.subarray(streamOff + 12, streamOff + total),
+  };
 }
 
 function analyzeBaichuanStream(label: string, stream: Buffer): void {
@@ -647,15 +773,20 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
       .map((s) => Number.parseInt(s, 10))
       .filter((n) => Number.isFinite(n)),
   );
-  const dumpCmdLimit = Number.parseInt(String(process.env.PCAP_DUMP_CMD_LIMIT ?? "30"), 10);
+  const dumpCmdLimit = Number.parseInt(
+    String(process.env.PCAP_DUMP_CMD_LIMIT ?? "30"),
+    10,
+  );
   if (String(process.env.PCAP_DUMP_DEBUG ?? "").trim() === "1") {
     console.log(
       `[PCAP_DUMP_DEBUG] PCAP_DUMP_CMDIDS=${JSON.stringify(process.env.PCAP_DUMP_CMDIDS ?? "")} parsed=[${[...dumpCmdIds].join(",")}] limit=${dumpCmdLimit}`,
     );
   }
 
-  const md5HexUpper = (input: string): string => createHash("md5").update(input, "utf8").digest("hex").toUpperCase();
-  const md5StrModern = (input: string): string => md5HexUpper(input).slice(0, 31);
+  const md5HexUpper = (input: string): string =>
+    createHash("md5").update(input, "utf8").digest("hex").toUpperCase();
+  const md5StrModern = (input: string): string =>
+    md5HexUpper(input).slice(0, 31);
   const deriveAesKey = (nonce: string, password: string): Buffer => {
     const keyStr = md5StrModern(`${nonce}-${password}`).slice(0, 16);
     return Buffer.from(keyStr, "utf8");
@@ -695,7 +826,9 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
       const encType = resp & 0xff;
       const preferred = encType === 0x00 ? "none" : "bc";
       const xml =
-        (preferred === "none" ? f.body.toString("utf8") : bcXor(Buffer.from(f.body), f.header.channelId).toString("utf8")) ||
+        (preferred === "none"
+          ? f.body.toString("utf8")
+          : bcXor(Buffer.from(f.body), f.header.channelId).toString("utf8")) ||
         f.body.toString("utf8");
       const nonce = xmlText(xml, "nonce");
       if (!nonce) continue;
@@ -703,11 +836,28 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
       if (encType === 0x00) return { enc: { kind: "none" }, nonce, encType };
       if (encType === 0x01) return { enc: { kind: "bc" }, nonce, encType };
 
-      const password = process.env.BAICHUAN_PASSWORD ?? process.env.NVR_PASSWORD ?? process.env.TCP_PASSWORD;
+      const password =
+        process.env.BAICHUAN_PASSWORD ??
+        process.env.NVR_PASSWORD ??
+        process.env.TCP_PASSWORD;
       if (!password) return { enc: { kind: "unknown" }, nonce, encType };
 
-      if (encType === 0x02) return { enc: { kind: "aes", key: deriveAesKey(nonce, password), mode: "aes" }, nonce, encType };
-      if (encType === 0x12) return { enc: { kind: "aes", key: deriveAesKey(nonce, password), mode: "full_aes" }, nonce, encType };
+      if (encType === 0x02)
+        return {
+          enc: { kind: "aes", key: deriveAesKey(nonce, password), mode: "aes" },
+          nonce,
+          encType,
+        };
+      if (encType === 0x12)
+        return {
+          enc: {
+            kind: "aes",
+            key: deriveAesKey(nonce, password),
+            mode: "full_aes",
+          },
+          nonce,
+          encType,
+        };
 
       return { enc: { kind: "unknown" }, nonce, encType };
     }
@@ -721,7 +871,8 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
   const tryDecodeXml = (buf: Buffer, channelId: number): string | undefined => {
     const asUtf8 = (b: Buffer) => b.toString("utf8");
     const candidates: Buffer[] = [buf, bcXor(buf, channelId)];
-    if (session.enc.kind === "aes") candidates.unshift(aesDecrypt(buf, session.enc.key));
+    if (session.enc.kind === "aes")
+      candidates.unshift(aesDecrypt(buf, session.enc.key));
     for (const c of candidates) {
       const s = asUtf8(c);
       // Some payloads start directly with <body> (no XML declaration), so accept common tags too.
@@ -749,12 +900,15 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
     byCmd.set(f.header.cmdId, (byCmd.get(f.header.cmdId) ?? 0) + 1);
     byCmdStreamType.set(
       `${f.header.cmdId}/${f.header.streamType}`,
-      (byCmdStreamType.get(`${f.header.cmdId}/${f.header.streamType}`) ?? 0) + 1,
+      (byCmdStreamType.get(`${f.header.cmdId}/${f.header.streamType}`) ?? 0) +
+        1,
     );
   }
 
   const topCmd = [...byCmd.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
-  const topCmdStream = [...byCmdStreamType.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
+  const topCmdStream = [...byCmdStreamType.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 20);
 
   console.log(`\n=== ${label} ===`);
   console.log(`Baichuan frames decoded: ${frames.length}`);
@@ -784,23 +938,81 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
       countsByCmd.set(f.header.cmdId, seen + 1);
 
       const xml =
-        (f.payload.length > 0 ? tryDecodeXml(Buffer.from(f.payload), f.header.channelId) : undefined) ??
-        (f.body.length > 0 ? tryDecodeXml(Buffer.from(f.body), f.header.channelId) : undefined) ??
-        (f.extension.length > 0 ? tryDecodeXml(Buffer.from(f.extension), f.header.channelId) : undefined);
+        (f.payload.length > 0
+          ? tryDecodeXml(Buffer.from(f.payload), f.header.channelId)
+          : undefined) ??
+        (f.body.length > 0
+          ? tryDecodeXml(Buffer.from(f.body), f.header.channelId)
+          : undefined) ??
+        (f.extension.length > 0
+          ? tryDecodeXml(Buffer.from(f.extension), f.header.channelId)
+          : undefined);
 
-      const tag = xml ? rootTag(xml) ?? "<unknown>" : "<no-xml>";
+      const tag = xml ? (rootTag(xml) ?? "<unknown>") : "<no-xml>";
       tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
 
       const previewMax = 700;
-      const xmlPreview = xml ? (xml.length <= previewMax ? xml : xml.slice(0, previewMax) + `\n...truncated (+${xml.length - previewMax} chars)`) : undefined;
+      const xmlPreview = xml
+        ? xml.length <= previewMax
+          ? xml
+          : xml.slice(0, previewMax) +
+            `\n...truncated (+${xml.length - previewMax} chars)`
+        : undefined;
 
       console.log(
         `\n[PCAP_DUMP_CMDIDS] cmdId=${f.header.cmdId} msgNum=${f.header.msgNum} rc=${f.header.responseCode} ch=${f.header.channelId} streamType=${f.header.streamType} class=${f.header.messageClass} bodyLen=${f.body.length} payloadLen=${f.payload.length} payloadOffset=${f.header.payloadOffset ?? 0} xmlRoot=${tag}`,
       );
       if (xmlPreview) console.log(xmlPreview);
+
+      if ((process.env.PCAP_DUMP_WRITE_FILES ?? "").trim() === "1") {
+        const outDirRaw = (
+          process.env.PCAP_DUMP_WRITE_DIR ?? "pcap/reports/extracts"
+        ).trim();
+        const outDir = path.isAbsolute(outDirRaw)
+          ? outDirRaw
+          : path.resolve(process.cwd(), outDirRaw);
+        ensureDir(outDir);
+
+        const labelSafe = sanitizeForFilename(label);
+        const base = path.join(
+          outDir,
+          `${labelSafe}.cmd${f.header.cmdId}.ch${f.header.channelId}.st${f.header.streamType}.msg${f.header.msgNum}.rc${f.header.responseCode}.i${seen}`,
+        );
+
+        // Raw components as parsed by BaichuanFrameParser.
+        fs.writeFileSync(`${base}.body.bin`, Buffer.from(f.body));
+        fs.writeFileSync(`${base}.extension.bin`, Buffer.from(f.extension));
+        fs.writeFileSync(`${base}.payload.bin`, Buffer.from(f.payload));
+
+        if (xml) {
+          fs.writeFileSync(`${base}.decoded.xml`, xml, "utf8");
+        }
+
+        writeJson(`${base}.meta.json`, {
+          label,
+          header: {
+            cmdId: f.header.cmdId,
+            bodyLen: f.header.bodyLen,
+            channelId: f.header.channelId,
+            streamType: f.header.streamType,
+            msgNum: f.header.msgNum,
+            responseCode: f.header.responseCode,
+            messageClass: `0x${f.header.messageClass.toString(16)}`,
+            payloadOffset: f.header.payloadOffset ?? 0,
+          },
+          parsed: {
+            bodyLen: f.body.length,
+            extensionLen: f.extension.length,
+            payloadLen: f.payload.length,
+          },
+          xmlRoot: tag,
+        });
+      }
     }
 
-    const topTags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
+    const topTags = [...tagCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 20);
     if (topTags.length > 0) {
       console.log(`\n[PCAP_DUMP_CMDIDS] XML root tags (top):`);
       for (const [tag, count] of topTags) console.log(`  ${tag} x${count}`);
@@ -852,9 +1064,13 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
 
     for (const f of previewRequests) {
       const xml =
-        (f.payload.length > 0 ? tryDecodeXml(Buffer.from(f.payload), f.header.channelId) : undefined) ??
+        (f.payload.length > 0
+          ? tryDecodeXml(Buffer.from(f.payload), f.header.channelId)
+          : undefined) ??
         tryDecodeXml(Buffer.from(f.body), f.header.channelId) ??
-        (f.extension.length > 0 ? tryDecodeXml(Buffer.from(f.extension), f.header.channelId) : undefined);
+        (f.extension.length > 0
+          ? tryDecodeXml(Buffer.from(f.extension), f.header.channelId)
+          : undefined);
       if (!xml || !xml.includes("<Preview")) continue;
 
       const channelId = xmlText(xml, "channelId");
@@ -863,7 +1079,10 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
       const handleNum = handle ? parseInt(handle, 10) : undefined;
       const channelNum = channelId ? parseInt(channelId, 10) : undefined;
       const handleBase =
-        handleNum !== undefined && Number.isFinite(handleNum) && channelNum !== undefined && Number.isFinite(channelNum)
+        handleNum !== undefined &&
+        Number.isFinite(handleNum) &&
+        channelNum !== undefined &&
+        Number.isFinite(channelNum)
           ? handleNum - channelNum
           : undefined;
       const key = `ch=${channelId ?? "?"} handle=${handle ?? "?"} streamType=${streamType ?? "?"} base=${handleBase ?? "?"}`;
@@ -880,26 +1099,46 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
       cur.count++;
       cur.firstMsgNum = Math.min(cur.firstMsgNum, f.header.msgNum);
       cur.lastMsgNum = Math.max(cur.lastMsgNum, f.header.msgNum);
-      if (!cur.sampleXml) cur.sampleXml = xml.replace(/\s+/g, " ").slice(0, 240);
+      if (!cur.sampleXml)
+        cur.sampleXml = xml.replace(/\s+/g, " ").slice(0, 240);
       previewSummary.set(key, cur);
     }
 
     if (previewSummary.size > 0) {
       console.log("Preview request summary (cmdId=3 rc=0):");
-      for (const [k, v] of [...previewSummary.entries()].sort((a, b) => b[1].count - a[1].count)) {
-        console.log(`  ${k} count=${v.count} msgNum=${v.firstMsgNum}..${v.lastMsgNum}`);
+      for (const [k, v] of [...previewSummary.entries()].sort(
+        (a, b) => b[1].count - a[1].count,
+      )) {
+        console.log(
+          `  ${k} count=${v.count} msgNum=${v.firstMsgNum}..${v.lastMsgNum}`,
+        );
         if (v.sampleXml) console.log(`    xmlHead: ${v.sampleXml}`);
       }
     }
   }
 
   // Surface other small XML commands (often includes PTZ/zoom/etc) once we have the session key.
-  const keywordRe = /(Ptz|Zoom|focal|lens|Track|Tele|Wide|multi|ratio|digital|optical)/i;
-  const smallFrames = frames.filter((f) => f.header.bodyLen > 0 && f.header.bodyLen <= 2048);
-  const hits: Array<{ cmdId: number; rc: number; ch: number; msgNum: number; head: string }> = [];
+  const keywordRe =
+    /(Ptz|Zoom|focal|lens|Track|Tele|Wide|multi|ratio|digital|optical)/i;
+  const smallFrames = frames.filter(
+    (f) => f.header.bodyLen > 0 && f.header.bodyLen <= 2048,
+  );
+  const hits: Array<{
+    cmdId: number;
+    rc: number;
+    ch: number;
+    msgNum: number;
+    head: string;
+  }> = [];
   for (const f of smallFrames) {
-    const extXml = f.extension.length > 0 ? tryDecodeXml(Buffer.from(f.extension), f.header.channelId) : undefined;
-    const payXml = f.payload.length > 0 ? tryDecodeXml(Buffer.from(f.payload), f.header.channelId) : undefined;
+    const extXml =
+      f.extension.length > 0
+        ? tryDecodeXml(Buffer.from(f.extension), f.header.channelId)
+        : undefined;
+    const payXml =
+      f.payload.length > 0
+        ? tryDecodeXml(Buffer.from(f.payload), f.header.channelId)
+        : undefined;
     const bodyXml = tryDecodeXml(Buffer.from(f.body), f.header.channelId);
     const xml = payXml ?? bodyXml ?? extXml;
     if (!xml) continue;
@@ -916,20 +1155,39 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
   if (hits.length > 0) {
     console.log("Small XML keyword hits (first 12):");
     for (const h of hits) {
-      console.log(`  cmdId=${h.cmdId} rc=${h.rc} ch=${h.ch} msgNum=${h.msgNum} xmlHead: ${h.head}`);
+      console.log(
+        `  cmdId=${h.cmdId} rc=${h.rc} ch=${h.ch} msgNum=${h.msgNum} xmlHead: ${h.head}`,
+      );
     }
   }
 
   // Specifically hunt for motion/PIR/event payloads (cmdId=33, cmdId=31, etc).
   // When encryption is negotiated, these may become visible only after we derive the session key.
-  const eventKeywordRe = /(AlarmEventList|AiAlarm|MdAlarm|PIR|Pir|motion|Motion)/;
-  const eventHits: Array<{ cmdId: number; rc: number; ch: number; msgNum: number; head: string }> = [];
+  const eventKeywordRe =
+    /(AlarmEventList|AiAlarm|MdAlarm|PIR|Pir|motion|Motion)/;
+  const eventHits: Array<{
+    cmdId: number;
+    rc: number;
+    ch: number;
+    msgNum: number;
+    head: string;
+  }> = [];
   for (const f of smallFrames) {
     // Heuristic: focus on typical event-ish commands first, but keep it generic.
-    if (![31, 33, 46, 93, 212, 253].includes(f.header.cmdId) && f.header.bodyLen > 1024) continue;
+    if (
+      ![31, 33, 46, 93, 212, 253].includes(f.header.cmdId) &&
+      f.header.bodyLen > 1024
+    )
+      continue;
 
-    const extXml = f.extension.length > 0 ? tryDecodeXml(Buffer.from(f.extension), f.header.channelId) : undefined;
-    const payXml = f.payload.length > 0 ? tryDecodeXml(Buffer.from(f.payload), f.header.channelId) : undefined;
+    const extXml =
+      f.extension.length > 0
+        ? tryDecodeXml(Buffer.from(f.extension), f.header.channelId)
+        : undefined;
+    const payXml =
+      f.payload.length > 0
+        ? tryDecodeXml(Buffer.from(f.payload), f.header.channelId)
+        : undefined;
     const bodyXml = tryDecodeXml(Buffer.from(f.body), f.header.channelId);
     const xml = payXml ?? bodyXml ?? extXml;
     if (!xml) continue;
@@ -947,7 +1205,9 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
   if (eventHits.length > 0) {
     console.log("Event XML hits (first 12):");
     for (const h of eventHits) {
-      console.log(`  cmdId=${h.cmdId} rc=${h.rc} ch=${h.ch} msgNum=${h.msgNum} xmlHead: ${h.head}`);
+      console.log(
+        `  cmdId=${h.cmdId} rc=${h.rc} ch=${h.ch} msgNum=${h.msgNum} xmlHead: ${h.head}`,
+      );
     }
   }
 
@@ -961,8 +1221,14 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
   if (eventSamples.length > 0) {
     console.log("Event frame samples (cmdId=33/252, first 8):");
     for (const f of eventSamples) {
-      const extXml = f.extension.length > 0 ? tryDecodeXml(Buffer.from(f.extension), f.header.channelId) : undefined;
-      const payXml = f.payload.length > 0 ? tryDecodeXml(Buffer.from(f.payload), f.header.channelId) : undefined;
+      const extXml =
+        f.extension.length > 0
+          ? tryDecodeXml(Buffer.from(f.extension), f.header.channelId)
+          : undefined;
+      const payXml =
+        f.payload.length > 0
+          ? tryDecodeXml(Buffer.from(f.payload), f.header.channelId)
+          : undefined;
       const bodyXml = tryDecodeXml(Buffer.from(f.body), f.header.channelId);
       console.log(
         `  cmdId=${f.header.cmdId} rc=${f.header.responseCode} ch=${f.header.channelId} streamType=${f.header.streamType} msgNum=${f.header.msgNum} bodyLen=${f.header.bodyLen} payloadLen=${f.payload.length} extLen=${f.extension.length}`,
@@ -972,14 +1238,18 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
         console.log(`    xmlHead: ${xml.replace(/\s+/g, " ").slice(0, 320)}`);
       } else {
         const raw = Buffer.from(f.body);
-        console.log(`    bodyRaw hex: ${raw.subarray(0, Math.min(64, raw.length)).toString("hex")}`);
+        console.log(
+          `    bodyRaw hex: ${raw.subarray(0, Math.min(64, raw.length)).toString("hex")}`,
+        );
       }
     }
   }
 
   // Decode candidate request frames (usually responseCode=0) to understand which parameters are sent to the hub.
   // Many firmwares use XML in Extension/Payload, often encrypted (AES/BC).
-  const requestCmdIds = new Set<number>([3, 44, 104, 253, 10, 299, 80, 151, 58, 146, 192, 199, 102, 93, 319, 511]);
+  const requestCmdIds = new Set<number>([
+    3, 44, 104, 253, 10, 299, 80, 151, 58, 146, 192, 199, 102, 93, 319, 511,
+  ]);
   const requestFrames = frames
     .filter((f) => requestCmdIds.has(f.header.cmdId))
     .filter((f) => f.header.responseCode === 0)
@@ -988,8 +1258,14 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
   if (requestFrames.length > 0) {
     console.log("Request-frame XML decode (responseCode=0, bodyLen<=4096):");
     for (const f of requestFrames.slice(0, 12)) {
-      const extXml = f.extension.length > 0 ? tryDecodeXml(Buffer.from(f.extension), f.header.channelId) : undefined;
-      const payXml = f.payload.length > 0 ? tryDecodeXml(Buffer.from(f.payload), f.header.channelId) : undefined;
+      const extXml =
+        f.extension.length > 0
+          ? tryDecodeXml(Buffer.from(f.extension), f.header.channelId)
+          : undefined;
+      const payXml =
+        f.payload.length > 0
+          ? tryDecodeXml(Buffer.from(f.payload), f.header.channelId)
+          : undefined;
       const bodyXml = tryDecodeXml(Buffer.from(f.body), f.header.channelId);
 
       console.log(
@@ -1005,7 +1281,9 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
         console.log(`    xmlHead: ${head}`);
       } else {
         const raw = Buffer.from(f.body);
-        console.log(`    bodyRaw hex: ${raw.subarray(0, Math.min(64, raw.length)).toString("hex")}`);
+        console.log(
+          `    bodyRaw hex: ${raw.subarray(0, Math.min(64, raw.length)).toString("hex")}`,
+        );
       }
     }
   }
@@ -1021,20 +1299,30 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
   if (cmd3XmlCandidates.length > 0) {
     console.log("cmdId=3 XML-ish candidates (bodyLen<=2048):");
     for (const f of cmd3XmlCandidates.slice(0, 5)) {
-      const extXml = f.extension.length > 0 ? tryDecodeXml(Buffer.from(f.extension), f.header.channelId) : undefined;
-      const payXml = f.payload.length > 0 ? tryDecodeXml(Buffer.from(f.payload), f.header.channelId) : undefined;
+      const extXml =
+        f.extension.length > 0
+          ? tryDecodeXml(Buffer.from(f.extension), f.header.channelId)
+          : undefined;
+      const payXml =
+        f.payload.length > 0
+          ? tryDecodeXml(Buffer.from(f.payload), f.header.channelId)
+          : undefined;
 
       console.log(
         `  header: ch=${f.header.channelId} streamType=${f.header.streamType} msgNum=${f.header.msgNum} class=${f.header.messageClass} rc=${f.header.responseCode} bodyLen=${f.header.bodyLen} payloadOffset=${f.header.payloadOffset ?? 0}`,
       );
-      console.log(`  parts: extLen=${f.extension.length} payloadLen=${f.payload.length} extXml=${extXml ? "yes" : "no"} payloadXml=${payXml ? "yes" : "no"}`);
+      console.log(
+        `  parts: extLen=${f.extension.length} payloadLen=${f.payload.length} extXml=${extXml ? "yes" : "no"} payloadXml=${payXml ? "yes" : "no"}`,
+      );
 
       const previewXml = payXml ?? extXml;
       if (previewXml) {
         const channelId = xmlText(previewXml, "channelId");
         const handle = xmlText(previewXml, "handle");
         const streamTypeTag = xmlText(previewXml, "streamType");
-        console.log(`  Preview params: channelId=${channelId ?? "?"} handle=${handle ?? "?"} streamTypeTag=${streamTypeTag ?? "?"}`);
+        console.log(
+          `  Preview params: channelId=${channelId ?? "?"} handle=${handle ?? "?"} streamTypeTag=${streamTypeTag ?? "?"}`,
+        );
       }
 
       if (!extXml && f.extension.length > 0) {
@@ -1048,8 +1336,14 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
         console.log(`  payloadRaw hex: ${slice.toString("hex")}`);
       }
 
-      if (extXml) console.log(`  extXmlHead: ${extXml.replace(/\s+/g, " ").slice(0, 180)}`);
-      if (payXml) console.log(`  payloadXmlHead: ${payXml.replace(/\s+/g, " ").slice(0, 220)}`);
+      if (extXml)
+        console.log(
+          `  extXmlHead: ${extXml.replace(/\s+/g, " ").slice(0, 180)}`,
+        );
+      if (payXml)
+        console.log(
+          `  payloadXmlHead: ${payXml.replace(/\s+/g, " ").slice(0, 220)}`,
+        );
     }
   }
 
@@ -1058,7 +1352,9 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
   const cmd3 = frames.filter((f) => f.header.cmdId === 3);
   const payloadStream = Buffer.concat(cmd3.map((f) => f.payload));
 
-  const scanBcMediaMagics = (buf: Buffer): { hits: number; firstOffset: number; score: number } => {
+  const scanBcMediaMagics = (
+    buf: Buffer,
+  ): { hits: number; firstOffset: number; score: number } => {
     if (buf.length < 4) return { hits: 0, firstOffset: -1, score: -1 };
     const maxScan = Math.min(64 * 1024, buf.length - 4);
     let hits = 0;
@@ -1085,13 +1381,25 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
   let payloadStreamDecrypted: Buffer | undefined;
   if (session.enc.kind === "aes") {
     const parts: Buffer[] = [];
-    const cmd3Resp = cmd3.filter((f) => f.header.responseCode === 200 && f.payload.length > 0);
+    const cmd3Resp = cmd3.filter(
+      (f) => f.header.responseCode === 200 && f.payload.length > 0,
+    );
     for (const f of cmd3Resp) {
-      const extXml = f.extension.length > 0 ? tryDecodeXml(Buffer.from(f.extension), f.header.channelId) : undefined;
+      const extXml =
+        f.extension.length > 0
+          ? tryDecodeXml(Buffer.from(f.extension), f.header.channelId)
+          : undefined;
       const encryptLenText = extXml ? xmlText(extXml, "encryptLen") : undefined;
-      const encryptLen = encryptLenText ? parseInt(encryptLenText, 10) : undefined;
+      const encryptLen = encryptLenText
+        ? parseInt(encryptLenText, 10)
+        : undefined;
       const payload = Buffer.from(f.payload);
-      if (encryptLen !== undefined && Number.isFinite(encryptLen) && encryptLen > 0 && payload.length !== encryptLen) {
+      if (
+        encryptLen !== undefined &&
+        Number.isFinite(encryptLen) &&
+        encryptLen > 0 &&
+        payload.length !== encryptLen
+      ) {
         // If ext says encryptLen but doesn't match, don't guess.
         continue;
       }
@@ -1109,12 +1417,15 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
   }
 
   const scan = scanBcMediaMagics(payloadStream);
-  const scanDec = payloadStreamDecrypted ? scanBcMediaMagics(payloadStreamDecrypted) : undefined;
+  const scanDec = payloadStreamDecrypted
+    ? scanBcMediaMagics(payloadStreamDecrypted)
+    : undefined;
   const dumpHex = (b: Buffer): string => b.toString("hex");
-  const dumpAscii = (b: Buffer): string => b
-    .toString("latin1")
-    .replace(/[\x00-\x1f\x7f-\xff]/g, ".")
-    .slice(0, 64);
+  const dumpAscii = (b: Buffer): string =>
+    b
+      .toString("latin1")
+      .replace(/[\x00-\x1f\x7f-\xff]/g, ".")
+      .slice(0, 64);
 
   console.log(
     `BcMedia scan: payloadBytes=${payloadStream.length} magicHits=${scan.hits} firstOffset=${scan.firstOffset} (encrypted? ${scan.hits === 0 ? "likely" : "unknown"})`,
@@ -1125,13 +1436,19 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
     );
   }
   if (scan.firstOffset >= 0) {
-    const slice = payloadStream.subarray(scan.firstOffset, Math.min(payloadStream.length, scan.firstOffset + 64));
+    const slice = payloadStream.subarray(
+      scan.firstOffset,
+      Math.min(payloadStream.length, scan.firstOffset + 64),
+    );
     console.log(`BcMedia first-magic bytes (hex): ${dumpHex(slice)}`);
     console.log(`BcMedia first-magic bytes (ascii): ${dumpAscii(slice)}`);
   }
 
   const codec = new BcMediaCodec(false /* strict */);
-  const chosenPayload = scanDec && scanDec.hits > scan.hits ? payloadStreamDecrypted! : payloadStream;
+  const chosenPayload =
+    scanDec && scanDec.hits > scan.hits
+      ? payloadStreamDecrypted!
+      : payloadStream;
   const medias: BcMedia[] = codec.decode(chosenPayload) as BcMedia[];
   if (medias.length === 0) {
     console.log("BcMedia decoded: 0 (could be encrypted or too short capture)");
@@ -1139,16 +1456,26 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
   }
 
   const byType = new Map<string, number>();
-  const infos: Array<{ idx: number; t: string; w: number; h: number; fps: number }> = [];
+  const infos: Array<{
+    idx: number;
+    t: string;
+    w: number;
+    h: number;
+    fps: number;
+  }> = [];
   const videoTypes = new Map<string, number>();
   const spsHashes = new Map<string, number>();
 
-  const sha1Hex = (b: Buffer): string => createHash("sha1").update(b).digest("hex");
+  const sha1Hex = (b: Buffer): string =>
+    createHash("sha1").update(b).digest("hex");
 
   const findH264SpsInAnnexB = (accessUnit: Buffer): Buffer | null => {
     // minimal scan: find NAL type 7 (SPS) in Annex-B
     for (let i = 0; i < accessUnit.length - 4; i++) {
-      const is3 = accessUnit[i] === 0x00 && accessUnit[i + 1] === 0x00 && accessUnit[i + 2] === 0x01;
+      const is3 =
+        accessUnit[i] === 0x00 &&
+        accessUnit[i + 1] === 0x00 &&
+        accessUnit[i + 2] === 0x01;
       const is4 =
         accessUnit[i] === 0x00 &&
         accessUnit[i + 1] === 0x00 &&
@@ -1163,7 +1490,11 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
       // extract until next start code
       let j = nalStart;
       while (j < accessUnit.length) {
-        const next3 = j + 3 < accessUnit.length && accessUnit[j] === 0x00 && accessUnit[j + 1] === 0x00 && accessUnit[j + 2] === 0x01;
+        const next3 =
+          j + 3 < accessUnit.length &&
+          accessUnit[j] === 0x00 &&
+          accessUnit[j + 1] === 0x00 &&
+          accessUnit[j + 2] === 0x01;
         const next4 =
           j + 4 < accessUnit.length &&
           accessUnit[j] === 0x00 &&
@@ -1183,14 +1514,21 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
     byType.set(m.type, (byType.get(m.type) ?? 0) + 1);
 
     if (m.type === "InfoV1" || m.type === "InfoV2") {
-      infos.push({ idx: i, t: m.type, w: m.videoWidth, h: m.videoHeight, fps: m.fps });
+      infos.push({
+        idx: i,
+        t: m.type,
+        w: m.videoWidth,
+        h: m.videoHeight,
+        fps: m.fps,
+      });
     }
 
     if (m.type === "Iframe" || m.type === "Pframe") {
       videoTypes.set(m.videoType, (videoTypes.get(m.videoType) ?? 0) + 1);
       if (m.videoType === "H264" && m.type === "Iframe") {
         const sps = findH264SpsInAnnexB(m.data);
-        if (sps) spsHashes.set(sha1Hex(sps), (spsHashes.get(sha1Hex(sps)) ?? 0) + 1);
+        if (sps)
+          spsHashes.set(sha1Hex(sps), (spsHashes.get(sha1Hex(sps)) ?? 0) + 1);
       }
     }
   }
@@ -1203,7 +1541,9 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
 
   if (videoTypes.size > 0) {
     console.log("VideoType counts:");
-    for (const [t, c] of [...videoTypes.entries()].sort((a, b) => b[1] - a[1])) {
+    for (const [t, c] of [...videoTypes.entries()].sort(
+      (a, b) => b[1] - a[1],
+    )) {
       console.log(`  ${t}: ${c}`);
     }
   }
@@ -1224,11 +1564,15 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
       return badWxH || badFps;
     });
     if (hasInvalidInfo) {
-      console.log("Info packets look suspicious (e.g. 0x0 dimensions). Payload likely encrypted or not standard BcMedia.");
+      console.log(
+        "Info packets look suspicious (e.g. 0x0 dimensions). Payload likely encrypted or not standard BcMedia.",
+      );
     }
 
     if (uniq.size > 1) {
-      console.log("Resolution/fps change detected (InfoV1/InfoV2 differ). First occurrences:");
+      console.log(
+        "Resolution/fps change detected (InfoV1/InfoV2 differ). First occurrences:",
+      );
       const seen = new Set<string>();
       for (const inf of infos) {
         const k = `${inf.w}x${inf.h}@${inf.fps}`;
@@ -1245,7 +1589,9 @@ function analyzeBaichuanStream(label: string, stream: Buffer): void {
 
   if (spsHashes.size > 0) {
     console.log(`H264 SPS hashes observed: ${spsHashes.size}`);
-    for (const [h, c] of [...spsHashes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5)) {
+    for (const [h, c] of [...spsHashes.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)) {
       console.log(`  spsSha1=${h} count=${c}`);
     }
   }
@@ -1262,14 +1608,17 @@ function analyzeBaichuanSegments(label: string, segments: TcpSegment[]): void {
   const sorted = [...segments].sort((a, b) => a.tsMs - b.tsMs || a.seq - b.seq);
   for (const seg of sorted) {
     const out = parser.push(seg.payload);
-    for (const f of out) framesWithTime.push({ tsMs: seg.tsMs, frame: f as BaichuanFrame });
+    for (const f of out)
+      framesWithTime.push({ tsMs: seg.tsMs, frame: f as BaichuanFrame });
   }
 
   const frames = framesWithTime.map((x) => x.frame);
   console.log(`\n=== ${label} ===`);
   console.log(`Baichuan frames decoded: ${frames.length}`);
   if (Number.isFinite(tsMin) && Number.isFinite(tsMax) && tsMax >= tsMin) {
-    console.log(`Flow span: ${(tsMax - tsMin).toFixed(1)}ms (firstTs=${tsMin.toFixed(1)} lastTs=${tsMax.toFixed(1)})`);
+    console.log(
+      `Flow span: ${(tsMax - tsMin).toFixed(1)}ms (firstTs=${tsMin.toFixed(1)} lastTs=${tsMax.toFixed(1)})`,
+    );
   }
 
   const byCmd = new Map<number, number>();
@@ -1278,14 +1627,18 @@ function analyzeBaichuanSegments(label: string, segments: TcpSegment[]): void {
     byCmd.set(f.header.cmdId, (byCmd.get(f.header.cmdId) ?? 0) + 1);
     byCmdStreamType.set(
       `${f.header.cmdId}/${f.header.streamType}`,
-      (byCmdStreamType.get(`${f.header.cmdId}/${f.header.streamType}`) ?? 0) + 1,
+      (byCmdStreamType.get(`${f.header.cmdId}/${f.header.streamType}`) ?? 0) +
+        1,
     );
   }
 
   const topCmd = [...byCmd.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
-  const topCmdStream = [...byCmdStreamType.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
+  const topCmdStream = [...byCmdStreamType.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 20);
   console.log("Top cmdId:");
-  for (const [cmdId, count] of topCmd) console.log(`  cmdId=${cmdId} count=${count}`);
+  for (const [cmdId, count] of topCmd)
+    console.log(`  cmdId=${cmdId} count=${count}`);
   console.log("Top cmdId/streamType:");
   for (const [k, count] of topCmdStream) {
     const [cmdId, streamType] = k.split("/");
@@ -1300,7 +1653,10 @@ function analyzeBaichuanSegments(label: string, segments: TcpSegment[]): void {
       .map((s) => Number.parseInt(s, 10))
       .filter((n) => Number.isFinite(n)),
   );
-  const dumpCmdLimit = Number.parseInt(String(process.env.PCAP_DUMP_CMD_LIMIT ?? "30"), 10);
+  const dumpCmdLimit = Number.parseInt(
+    String(process.env.PCAP_DUMP_CMD_LIMIT ?? "30"),
+    10,
+  );
   if (String(process.env.PCAP_DUMP_DEBUG ?? "").trim() === "1") {
     console.log(
       `[PCAP_DUMP_DEBUG] (segments) PCAP_DUMP_CMDIDS=${JSON.stringify(process.env.PCAP_DUMP_CMDIDS ?? "")} parsed=[${[...dumpCmdIds].join(",")}] limit=${dumpCmdLimit}`,
@@ -1308,7 +1664,10 @@ function analyzeBaichuanSegments(label: string, segments: TcpSegment[]): void {
   }
 
   if (dumpCmdIds.size > 0 && framesWithTime.length > 0) {
-    const session = parseEnvSessionOverride() ?? globalSession ?? detectSessionFromFrames(frames);
+    const session =
+      parseEnvSessionOverride() ??
+      globalSession ??
+      detectSessionFromFrames(frames);
     globalSession ??= session;
 
     const bcXor = (buf: Buffer, offset: number): Buffer => {
@@ -1329,10 +1688,14 @@ function analyzeBaichuanSegments(label: string, segments: TcpSegment[]): void {
       return Buffer.concat([decipher.update(buf), decipher.final()]);
     };
 
-    const tryDecodeXml = (buf: Buffer, channelId: number): string | undefined => {
+    const tryDecodeXml = (
+      buf: Buffer,
+      channelId: number,
+    ): string | undefined => {
       const asUtf8 = (b: Buffer) => b.toString("utf8");
       const candidates: Buffer[] = [buf, bcXor(buf, channelId)];
-      if (session.enc.kind === "aes") candidates.unshift(aesDecrypt(buf, session.enc.key));
+      if (session.enc.kind === "aes")
+        candidates.unshift(aesDecrypt(buf, session.enc.key));
       for (const c of candidates) {
         const s = asUtf8(c);
         if (
@@ -1365,27 +1728,84 @@ function analyzeBaichuanSegments(label: string, segments: TcpSegment[]): void {
       countsByCmd.set(f.header.cmdId, seen + 1);
 
       const xml =
-        (f.payload.length > 0 ? tryDecodeXml(Buffer.from(f.payload), f.header.channelId) : undefined) ??
-        (f.body.length > 0 ? tryDecodeXml(Buffer.from(f.body), f.header.channelId) : undefined) ??
-        (f.extension.length > 0 ? tryDecodeXml(Buffer.from(f.extension), f.header.channelId) : undefined);
+        (f.payload.length > 0
+          ? tryDecodeXml(Buffer.from(f.payload), f.header.channelId)
+          : undefined) ??
+        (f.body.length > 0
+          ? tryDecodeXml(Buffer.from(f.body), f.header.channelId)
+          : undefined) ??
+        (f.extension.length > 0
+          ? tryDecodeXml(Buffer.from(f.extension), f.header.channelId)
+          : undefined);
 
-      const tag = xml ? rootTag(xml) ?? "<unknown>" : "<no-xml>";
+      const tag = xml ? (rootTag(xml) ?? "<unknown>") : "<no-xml>";
       tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
 
       const previewMax = 700;
       const xmlPreview = xml
         ? xml.length <= previewMax
           ? xml
-          : xml.slice(0, previewMax) + `\n...truncated (+${xml.length - previewMax} chars)`
+          : xml.slice(0, previewMax) +
+            `\n...truncated (+${xml.length - previewMax} chars)`
         : undefined;
 
       console.log(
         `\n[PCAP_DUMP_CMDIDS] tsMs=${tsMs.toFixed(1)} cmdId=${f.header.cmdId} msgNum=${f.header.msgNum} rc=${f.header.responseCode} ch=${f.header.channelId} streamType=${f.header.streamType} class=${f.header.messageClass} bodyLen=${f.body.length} payloadLen=${f.payload.length} payloadOffset=${f.header.payloadOffset ?? 0} xmlRoot=${tag}`,
       );
+
+      if ((process.env.PCAP_DUMP_WRITE_FILES ?? "").trim() === "1") {
+        const outDirRaw = (
+          process.env.PCAP_DUMP_WRITE_DIR ?? "pcap/reports/extracts"
+        ).trim();
+        const outDir = path.isAbsolute(outDirRaw)
+          ? outDirRaw
+          : path.resolve(process.cwd(), outDirRaw);
+        ensureDir(outDir);
+
+        const labelSafe = sanitizeForFilename(label);
+        const tsToken = Number.isFinite(tsMs)
+          ? `ts${Math.round(tsMs)}`
+          : "tsNA";
+        const base = path.join(
+          outDir,
+          `${labelSafe}.${tsToken}.cmd${f.header.cmdId}.ch${f.header.channelId}.st${f.header.streamType}.msg${f.header.msgNum}.rc${f.header.responseCode}.i${seen}`,
+        );
+
+        fs.writeFileSync(`${base}.body.bin`, Buffer.from(f.body));
+        fs.writeFileSync(`${base}.extension.bin`, Buffer.from(f.extension));
+        fs.writeFileSync(`${base}.payload.bin`, Buffer.from(f.payload));
+
+        if (xml) {
+          fs.writeFileSync(`${base}.decoded.xml`, xml, "utf8");
+        }
+
+        writeJson(`${base}.meta.json`, {
+          label,
+          tsMs,
+          header: {
+            cmdId: f.header.cmdId,
+            bodyLen: f.header.bodyLen,
+            channelId: f.header.channelId,
+            streamType: f.header.streamType,
+            msgNum: f.header.msgNum,
+            responseCode: f.header.responseCode,
+            messageClass: `0x${f.header.messageClass.toString(16)}`,
+            payloadOffset: f.header.payloadOffset ?? 0,
+          },
+          parsed: {
+            bodyLen: f.body.length,
+            extensionLen: f.extension.length,
+            payloadLen: f.payload.length,
+          },
+          xmlRoot: tag,
+        });
+      }
+
       if (xmlPreview) {
         console.log(xmlPreview);
       } else {
-        const previewBuf = f.payload.length > 0 ? Buffer.from(f.payload) : Buffer.from(f.body);
+        const previewBuf =
+          f.payload.length > 0 ? Buffer.from(f.payload) : Buffer.from(f.body);
         const hex = previewBuf.subarray(0, 64).toString("hex");
         const utf8 = previewBuf
           .subarray(0, 200)
@@ -1394,11 +1814,20 @@ function analyzeBaichuanSegments(label: string, segments: TcpSegment[]): void {
         console.log(`[PCAP_DUMP_CMDIDS] no-xml previewHex=${hex}`);
         console.log(`[PCAP_DUMP_CMDIDS] no-xml previewUtf8=${utf8}`);
 
-        if ((process.env.PCAP_DUMP_BRUTE_BC ?? "").trim() === "1" && previewBuf.length > 0 && previewBuf.length <= 2048) {
+        if (
+          (process.env.PCAP_DUMP_BRUTE_BC ?? "").trim() === "1" &&
+          previewBuf.length > 0 &&
+          previewBuf.length <= 2048
+        ) {
           let found: { offset: number; xml: string } | undefined;
           for (let off = 0; off <= 0xff; off++) {
             const s = bcXor(previewBuf, off).toString("utf8");
-            if (s.startsWith("<?xml") || s.startsWith("<body") || s.includes("<body>") || s.includes("<Encryption")) {
+            if (
+              s.startsWith("<?xml") ||
+              s.startsWith("<body") ||
+              s.includes("<body>") ||
+              s.includes("<Encryption")
+            ) {
               found = { offset: off, xml: s };
               break;
             }
@@ -1408,7 +1837,8 @@ function analyzeBaichuanSegments(label: string, segments: TcpSegment[]): void {
             const xmlPreview =
               found.xml.length <= previewMax
                 ? found.xml
-                : found.xml.slice(0, previewMax) + `\n...truncated (+${found.xml.length - previewMax} chars)`;
+                : found.xml.slice(0, previewMax) +
+                  `\n...truncated (+${found.xml.length - previewMax} chars)`;
             console.log(`[PCAP_DUMP_CMDIDS] bruteBcOffset=${found.offset}`);
             console.log(xmlPreview);
           }
@@ -1416,35 +1846,54 @@ function analyzeBaichuanSegments(label: string, segments: TcpSegment[]): void {
       }
     }
 
-    const topTags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
+    const topTags = [...tagCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 20);
     if (topTags.length > 0) {
       console.log(`\n[PCAP_DUMP_CMDIDS] XML root tags (top):`);
       for (const [tag, count] of topTags) console.log(`  ${tag} x${count}`);
     }
   }
 
-  if (frames.length === 0 && (process.env.PCAP_DUMP_TCP_UNKNOWN ?? "").trim() === "1") {
+  if (
+    frames.length === 0 &&
+    (process.env.PCAP_DUMP_TCP_UNKNOWN ?? "").trim() === "1"
+  ) {
     const { data, gaps } = reassembleTcpSegments(segments);
-    console.log(`Unknown TCP payload preview (reassembledLen=${data.length} gaps=${gaps}):`);
+    console.log(
+      `Unknown TCP payload preview (reassembledLen=${data.length} gaps=${gaps}):`,
+    );
     const guess = guessProtocolFromTcpPrefix(data);
     if (guess) console.log(`Protocol guess: ${guess}`);
     const recs = tryParseLenTypeRecords(data);
     if (recs) {
-      const byType = new Map<number, { count: number; lens: Map<number, number> }>();
+      const byType = new Map<
+        number,
+        { count: number; lens: Map<number, number> }
+      >();
       for (const r of recs) {
-        const t = byType.get(r.type) ?? { count: 0, lens: new Map<number, number>() };
+        const t = byType.get(r.type) ?? {
+          count: 0,
+          lens: new Map<number, number>(),
+        };
         t.count += 1;
         t.lens.set(r.len, (t.lens.get(r.len) ?? 0) + 1);
         byType.set(r.type, t);
       }
-      console.log(`Record framing detected: magic=0x0001000c records=${recs.length}`);
-      for (const [type, info] of [...byType.entries()].sort((a, b) => b[1].count - a[1].count)) {
+      console.log(
+        `Record framing detected: magic=0x0001000c records=${recs.length}`,
+      );
+      for (const [type, info] of [...byType.entries()].sort(
+        (a, b) => b[1].count - a[1].count,
+      )) {
         const lensTop = [...info.lens.entries()]
           .sort((a, b) => b[1] - a[1])
           .slice(0, 5)
           .map(([len, c]) => `${len}x${c}`)
           .join(" ");
-        console.log(`  type=0x${type.toString(16)} (${type}) count=${info.count} lens=${lensTop}`);
+        console.log(
+          `  type=0x${type.toString(16)} (${type}) count=${info.count} lens=${lensTop}`,
+        );
       }
     }
     if (data.length > 0) console.log(hexPreview(data, 256));
@@ -1464,10 +1913,22 @@ function analyzeBaichuanSegments(label: string, segments: TcpSegment[]): void {
   };
 
   const t0 = cmd3Timed[0]!.tsMs;
-  const buckets = new Map<number, { count: number; sumBody: number; sumPayload: number; minBody: number; maxBody: number }>();
+  const buckets = new Map<
+    number,
+    {
+      count: number;
+      sumBody: number;
+      sumPayload: number;
+      minBody: number;
+      maxBody: number;
+    }
+  >();
 
   for (const { tsMs, frame } of cmd3Timed) {
-    bodyLenCounts.set(frame.header.bodyLen, (bodyLenCounts.get(frame.header.bodyLen) ?? 0) + 1);
+    bodyLenCounts.set(
+      frame.header.bodyLen,
+      (bodyLenCounts.get(frame.header.bodyLen) ?? 0) + 1,
+    );
     if (frame.header.bodyLen <= 512) bodyLenBins.le512++;
     else if (frame.header.bodyLen <= 1024) bodyLenBins.le1024++;
     else if (frame.header.bodyLen <= 4096) bodyLenBins.le4096++;
@@ -1475,7 +1936,13 @@ function analyzeBaichuanSegments(label: string, segments: TcpSegment[]): void {
     else bodyLenBins.gt16384++;
 
     const sec = Math.floor((tsMs - t0) / 1000);
-    const b = buckets.get(sec) ?? { count: 0, sumBody: 0, sumPayload: 0, minBody: Number.POSITIVE_INFINITY, maxBody: 0 };
+    const b = buckets.get(sec) ?? {
+      count: 0,
+      sumBody: 0,
+      sumPayload: 0,
+      minBody: Number.POSITIVE_INFINITY,
+      maxBody: 0,
+    };
     b.count += 1;
     b.sumBody += frame.header.bodyLen;
     b.sumPayload += frame.payload.length;
@@ -1499,7 +1966,9 @@ function analyzeBaichuanSegments(label: string, segments: TcpSegment[]): void {
     `cmdId=3 bodyLen bins: <=512=${bodyLenBins.le512} <=1024=${bodyLenBins.le1024} <=4096=${bodyLenBins.le4096} <=16384=${bodyLenBins.le16384} >16384=${bodyLenBins.gt16384}`,
   );
   console.log("Top cmdId=3 bodyLen values:");
-  for (const [len, c] of [...bodyLenCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)) {
+  for (const [len, c] of [...bodyLenCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 12)) {
     console.log(`  bodyLen=${len} count=${c}`);
   }
 
@@ -1516,8 +1985,12 @@ function main() {
 
   const hubIp = process.env.HUB_IP ?? "192.168.1.161";
   const pcIp = process.env.PC_IP ?? "192.168.1.193";
-  const baichuanTcpPort = Number.parseInt(process.env.BAICHUAN_TCP_PORT ?? "9000", 10);
-  const analyzeAll9000 = (process.env.PCAP_ANALYZE_ALL_9000 ?? "").trim() === "1";
+  const baichuanTcpPort = Number.parseInt(
+    process.env.BAICHUAN_TCP_PORT ?? "9000",
+    10,
+  );
+  const analyzeAll9000 =
+    (process.env.PCAP_ANALYZE_ALL_9000 ?? "").trim() === "1";
 
   const buf = fs.readFileSync(pcapPath);
   if (buf.length < 12) throw new Error("Capture too small");
@@ -1541,13 +2014,24 @@ function main() {
   const udpSrcPortBytes = new Map<number, number>();
   const udpSrcPortPackets = new Map<number, number>();
 
-  const udp7777Samples: Array<{ tsMs: number; dirKey: string; payloadLen: number; payload: Buffer }> = [];
+  const udp7777Samples: Array<{
+    tsMs: number;
+    dirKey: string;
+    payloadLen: number;
+    payload: Buffer;
+  }> = [];
 
   const ipBytes = new Map<string, number>();
   const ipPackets = new Map<string, number>();
 
-  const highlightUdpPorts = new Set([2015, 2018, 9000, 1900, 3702, 5353, 9999, 5000, 554, 80, 443]);
-  const highlightedUdpFlows: Array<{ dirKey: string; bytes: number; packets: number }> = [];
+  const highlightUdpPorts = new Set([
+    2015, 2018, 9000, 1900, 3702, 5353, 9999, 5000, 554, 80, 443,
+  ]);
+  const highlightedUdpFlows: Array<{
+    dirKey: string;
+    bytes: number;
+    packets: number;
+  }> = [];
 
   function ingestPacket(pkt: Buffer, linkType: number, tsMs: number) {
     // DLT_EN10MB = 1 (Ethernet), DLT_NULL = 0 (loopback)
@@ -1631,22 +2115,39 @@ function main() {
       const dstPort = pkt.readUInt16BE(udpOffset + 2);
       const udpLen = pkt.readUInt16BE(udpOffset + 4);
       const payloadOffset = udpOffset + 8;
-      const payloadLen = Math.max(0, Math.min(udpLen - 8, pkt.length - payloadOffset));
+      const payloadLen = Math.max(
+        0,
+        Math.min(udpLen - 8, pkt.length - payloadOffset),
+      );
       if (payloadLen <= 0) return;
       const dirKey = `${srcIp}:${srcPort} -> ${dstIp}:${dstPort}`;
 
-      if ((srcPort === 7777 || dstPort === 7777) && udp7777Samples.length < 40) {
+      if (
+        (srcPort === 7777 || dstPort === 7777) &&
+        udp7777Samples.length < 40
+      ) {
         const payload = pkt.subarray(payloadOffset, payloadOffset + payloadLen);
-        udp7777Samples.push({ tsMs, dirKey, payloadLen, payload: Buffer.from(payload) });
+        udp7777Samples.push({
+          tsMs,
+          dirKey,
+          payloadLen,
+          payload: Buffer.from(payload),
+        });
       }
 
       ingestedUdpPayloadPackets += 1;
       udpBytesByDir.set(dirKey, (udpBytesByDir.get(dirKey) ?? 0) + payloadLen);
       udpPacketsByDir.set(dirKey, (udpPacketsByDir.get(dirKey) ?? 0) + 1);
 
-      udpDstPortBytes.set(dstPort, (udpDstPortBytes.get(dstPort) ?? 0) + payloadLen);
+      udpDstPortBytes.set(
+        dstPort,
+        (udpDstPortBytes.get(dstPort) ?? 0) + payloadLen,
+      );
       udpDstPortPackets.set(dstPort, (udpDstPortPackets.get(dstPort) ?? 0) + 1);
-      udpSrcPortBytes.set(srcPort, (udpSrcPortBytes.get(srcPort) ?? 0) + payloadLen);
+      udpSrcPortBytes.set(
+        srcPort,
+        (udpSrcPortBytes.get(srcPort) ?? 0) + payloadLen,
+      );
       udpSrcPortPackets.set(srcPort, (udpSrcPortPackets.get(srcPort) ?? 0) + 1);
 
       ipBytes.set(srcIp, (ipBytes.get(srcIp) ?? 0) + payloadLen);
@@ -1677,7 +2178,10 @@ function main() {
     let endian: Endian;
     if (bomLE === 0x1a2b3c4d) endian = "le";
     else if (bomBE === 0x1a2b3c4d) endian = "be";
-    else throw new Error(`Unknown PCAPNG byte-order magic (LE=0x${bomLE.toString(16)} BE=0x${bomBE.toString(16)})`);
+    else
+      throw new Error(
+        `Unknown PCAPNG byte-order magic (LE=0x${bomLE.toString(16)} BE=0x${bomBE.toString(16)})`,
+      );
 
     const interfaces = interfaceDefs;
     let off = 0;
@@ -1726,11 +2230,15 @@ function main() {
           const pktStart = off + 28;
           const pktEnd = Math.min(pktStart + capLen, blockEnd - 4);
           if (pktEnd > pktStart) {
-            const iface = interfaces[interfaceId] ?? interfaces[0] ?? { linkType: 1, tsResol: 1e-6 };
+            const iface = interfaces[interfaceId] ??
+              interfaces[0] ?? { linkType: 1, tsResol: 1e-6 };
             const ticks = (BigInt(tsHigh) << 32n) | BigInt(tsLow);
             const tsMs = Number(ticks) * iface.tsResol * 1000;
 
-            interfacePackets.set(interfaceId, (interfacePackets.get(interfaceId) ?? 0) + 1);
+            interfacePackets.set(
+              interfaceId,
+              (interfacePackets.get(interfaceId) ?? 0) + 1,
+            );
             ingestPacket(buf.subarray(pktStart, pktEnd), iface.linkType, tsMs);
           }
         }
@@ -1740,7 +2248,10 @@ function main() {
           const pktLen = readU32(buf, off + 8, endian);
           const pktStart = off + 12;
           const maxDataLen = Math.max(0, blockLen - 16);
-          const pktEnd = Math.min(pktStart + Math.min(pktLen, maxDataLen), blockEnd - 4);
+          const pktEnd = Math.min(
+            pktStart + Math.min(pktLen, maxDataLen),
+            blockEnd - 4,
+          );
           if (pktEnd > pktStart) {
             const iface = interfaces[0] ?? { linkType: 1, tsResol: 1e-6 };
             interfacePackets.set(0, (interfacePackets.get(0) ?? 0) + 1);
@@ -1794,7 +2305,9 @@ function main() {
     console.log("\nPCAP interfaces:");
     for (let i = 0; i < interfaceDefs.length; i++) {
       const d = interfaceDefs[i]!;
-      console.log(`  if#${i} linkType=${d.linkType} tsResol=${d.tsResol} packets=${interfacePackets.get(i) ?? 0}`);
+      console.log(
+        `  if#${i} linkType=${d.linkType} tsResol=${d.tsResol} packets=${interfacePackets.get(i) ?? 0}`,
+      );
     }
   }
 
@@ -1802,31 +2315,45 @@ function main() {
     `\nIngest stats: ipPackets=${ingestedIpPackets} tcpPayloadPackets=${ingestedTcpPayloadPackets} udpPayloadPackets=${ingestedUdpPayloadPackets}`,
   );
 
-  const dirs = [...bytesByDir.entries()].sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0));
+  const dirs = [...bytesByDir.entries()].sort(
+    (a, b) => (b[1] ?? 0) - (a[1] ?? 0),
+  );
   console.log("\nTop TCP payload directions by bytes:");
   for (const [k, bytes] of dirs.slice(0, 20)) {
-    console.log(`  ${k} packets=${packetsByDir.get(k) ?? 0} payloadBytes=${bytes}`);
+    console.log(
+      `  ${k} packets=${packetsByDir.get(k) ?? 0} payloadBytes=${bytes}`,
+    );
   }
 
-  const udpDirs = [...udpBytesByDir.entries()].sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0));
+  const udpDirs = [...udpBytesByDir.entries()].sort(
+    (a, b) => (b[1] ?? 0) - (a[1] ?? 0),
+  );
   if (udpDirs.length > 0) {
     console.log("\nTop UDP payload directions by bytes:");
     for (const [k, bytes] of udpDirs.slice(0, 20)) {
-      console.log(`  ${k} packets=${udpPacketsByDir.get(k) ?? 0} payloadBytes=${bytes}`);
+      console.log(
+        `  ${k} packets=${udpPacketsByDir.get(k) ?? 0} payloadBytes=${bytes}`,
+      );
     }
 
     console.log("\nTop UDP destination ports by bytes:");
     for (const row of topN(udpDstPortBytes, udpDstPortPackets, 20)) {
-      console.log(`  dstPort=${row.key} packets=${row.packets} payloadBytes=${row.bytes}`);
+      console.log(
+        `  dstPort=${row.key} packets=${row.packets} payloadBytes=${row.bytes}`,
+      );
     }
 
     console.log("\nTop UDP source ports by bytes:");
     for (const row of topN(udpSrcPortBytes, udpSrcPortPackets, 20)) {
-      console.log(`  srcPort=${row.key} packets=${row.packets} payloadBytes=${row.bytes}`);
+      console.log(
+        `  srcPort=${row.key} packets=${row.packets} payloadBytes=${row.bytes}`,
+      );
     }
 
     const privateUdp = udpDirs.filter(([k]) => {
-      const m = /^(\d+\.\d+\.\d+\.\d+):\d+ -> (\d+\.\d+\.\d+\.\d+):\d+$/.exec(k);
+      const m = /^(\d+\.\d+\.\d+\.\d+):\d+ -> (\d+\.\d+\.\d+\.\d+):\d+$/.exec(
+        k,
+      );
       if (!m) return false;
       const src = m[1]!;
       const dst = m[2]!;
@@ -1835,12 +2362,16 @@ function main() {
     if (privateUdp.length > 0) {
       console.log("\nTop UDP flows involving private IPs:");
       for (const [k, bytes] of privateUdp.slice(0, 20)) {
-        console.log(`  ${k} packets=${udpPacketsByDir.get(k) ?? 0} payloadBytes=${bytes}`);
+        console.log(
+          `  ${k} packets=${udpPacketsByDir.get(k) ?? 0} payloadBytes=${bytes}`,
+        );
       }
     }
 
     const privateToPrivateUdp = udpDirs.filter(([k]) => {
-      const m = /^(\d+\.\d+\.\d+\.\d+):\d+ -> (\d+\.\d+\.\d+\.\d+):\d+$/.exec(k);
+      const m = /^(\d+\.\d+\.\d+\.\d+):\d+ -> (\d+\.\d+\.\d+\.\d+):\d+$/.exec(
+        k,
+      );
       if (!m) return false;
       const src = m[1]!;
       const dst = m[2]!;
@@ -1849,7 +2380,9 @@ function main() {
     if (privateToPrivateUdp.length > 0) {
       console.log("\nTop UDP flows private -> private:");
       for (const [k, bytes] of privateToPrivateUdp.slice(0, 50)) {
-        console.log(`  ${k} packets=${udpPacketsByDir.get(k) ?? 0} payloadBytes=${bytes}`);
+        console.log(
+          `  ${k} packets=${udpPacketsByDir.get(k) ?? 0} payloadBytes=${bytes}`,
+        );
       }
     }
 
@@ -1857,17 +2390,21 @@ function main() {
     if (flows192.length > 0) {
       console.log("\nTop UDP flows involving 192.168.*:");
       for (const [k, bytes] of flows192.slice(0, 50)) {
-        console.log(`  ${k} packets=${udpPacketsByDir.get(k) ?? 0} payloadBytes=${bytes}`);
+        console.log(
+          `  ${k} packets=${udpPacketsByDir.get(k) ?? 0} payloadBytes=${bytes}`,
+        );
       }
     }
 
-    const highlighted = [...new Map(highlightedUdpFlows.map((x) => [x.dirKey, x])).values()].sort(
-      (a, b) => (b.bytes ?? 0) - (a.bytes ?? 0),
-    );
+    const highlighted = [
+      ...new Map(highlightedUdpFlows.map((x) => [x.dirKey, x])).values(),
+    ].sort((a, b) => (b.bytes ?? 0) - (a.bytes ?? 0));
     if (highlighted.length > 0) {
       console.log("\nHighlighted UDP flows (common ports):");
       for (const f of highlighted.slice(0, 50)) {
-        console.log(`  ${f.dirKey} packets=${f.packets} payloadBytes=${f.bytes}`);
+        console.log(
+          `  ${f.dirKey} packets=${f.packets} payloadBytes=${f.bytes}`,
+        );
       }
     }
   }
@@ -1877,14 +2414,20 @@ function main() {
     console.log("\nTop IPs by payload bytes (TCP+UDP):");
     for (const row of ipTop) {
       const priv = isPrivateIpv4(String(row.key)) ? "private" : "public";
-      console.log(`  ip=${row.key} (${priv}) packets=${row.packets} payloadBytes=${row.bytes}`);
+      console.log(
+        `  ip=${row.key} (${priv}) packets=${row.packets} payloadBytes=${row.bytes}`,
+      );
     }
   }
 
-  if ((process.env.PCAP_DUMP_UDP_7777 ?? "").trim() === "1" && udp7777Samples.length > 0) {
+  if (
+    (process.env.PCAP_DUMP_UDP_7777 ?? "").trim() === "1" &&
+    udp7777Samples.length > 0
+  ) {
     console.log("\nUDP/7777 samples (first 40):");
     const byLen = new Map<number, number>();
-    for (const s of udp7777Samples) byLen.set(s.payloadLen, (byLen.get(s.payloadLen) ?? 0) + 1);
+    for (const s of udp7777Samples)
+      byLen.set(s.payloadLen, (byLen.get(s.payloadLen) ?? 0) + 1);
     console.log(
       `Lengths: ${[...byLen.entries()]
         .sort((a, b) => b[1] - a[1])
@@ -1892,9 +2435,12 @@ function main() {
         .join(" ")}`,
     );
     for (const s of udp7777Samples) {
-      const headHex = s.payload.subarray(0, Math.min(48, s.payload.length)).toString("hex");
+      const headHex = s.payload
+        .subarray(0, Math.min(48, s.payload.length))
+        .toString("hex");
       const parsed = parseUdp7777(s.payload);
-      const magic = parsed.magicLE !== undefined ? `0x${parsed.magicLE.toString(16)}` : "?";
+      const magic =
+        parsed.magicLE !== undefined ? `0x${parsed.magicLE.toString(16)}` : "?";
       console.log(
         `  t=${s.tsMs.toFixed(1)} ${s.dirKey} len=${s.payloadLen}` +
           ` magicLE=${magic} dataLen=${parsed.dataLen ?? "?"} headerLen=${parsed.headerLen ?? "?"} seq=${parsed.seq ?? "?"}` +
@@ -1902,15 +2448,26 @@ function main() {
           (parsed.checksumHint ? ` checksum=${parsed.checksumHint}` : "") +
           ` dataHeadHex=${parsed.dataHeadHex ?? ""}` +
           ` dataTailHex=${parsed.dataTailHex ?? ""}` +
-          (parsed.decodedPreview ? ` decoded=${JSON.stringify(parsed.decodedPreview)}` : "") +
-          (parsed.inflatedPreview ? ` inflated=${JSON.stringify(parsed.inflatedPreview)}` : "") +
+          (parsed.decodedPreview
+            ? ` decoded=${JSON.stringify(parsed.decodedPreview)}`
+            : "") +
+          (parsed.inflatedPreview
+            ? ` inflated=${JSON.stringify(parsed.inflatedPreview)}`
+            : "") +
           ` headHex=${headHex}`,
       );
     }
   }
 
-  if ((process.env.PCAP_DUMP_UDP_7777 ?? "").trim() === "1" && udp7777Samples.length > 0) {
-    const sumTcpBytesInWindow = (port: number, t0: number, t1: number): number => {
+  if (
+    (process.env.PCAP_DUMP_UDP_7777 ?? "").trim() === "1" &&
+    udp7777Samples.length > 0
+  ) {
+    const sumTcpBytesInWindow = (
+      port: number,
+      t0: number,
+      t1: number,
+    ): number => {
       let sum = 0;
       for (const [dirKey, segs] of segmentsByDir.entries()) {
         if (!dirKey.includes(`:${port}`)) continue;
@@ -1922,7 +2479,9 @@ function main() {
     };
 
     console.log("\nUDP/7777 correlation (bytes near packet):");
-    console.log("  window: [-250ms, +2000ms] around each UDP/7777 packet (approx)");
+    console.log(
+      "  window: [-250ms, +2000ms] around each UDP/7777 packet (approx)",
+    );
     for (const u of udp7777Samples) {
       const parsed = parseUdp7777(u.payload);
       const w0 = u.tsMs - 250;
@@ -1937,23 +2496,42 @@ function main() {
   }
 
   if ((process.env.PCAP_ANALYZE_6666 ?? "").trim() === "1") {
-    const flows6666 = [...segmentsByDir.entries()].filter(([k]) => k.includes(":6666") || k.includes("->") && k.includes(":6666 "));
+    const flows6666 = [...segmentsByDir.entries()].filter(
+      ([k]) =>
+        k.includes(":6666") || (k.includes("->") && k.includes(":6666 ")),
+    );
     if (flows6666.length > 0) {
       console.log("\nTCP/6666 analysis (custom hub<->battery framing):");
-      console.log("  Looks for u32le magic=0x0001000c, then u32le payloadLen, u32le type, then payloadLen bytes");
+      console.log(
+        "  Looks for u32le magic=0x0001000c, then u32le payloadLen, u32le type, then payloadLen bytes",
+      );
 
-      const dumpStreamEvents = (process.env.PCAP_6666_DUMP_STREAM_EVENTS ?? "").trim() === "1";
-      const dumpStreamEventsLimit = Number.parseInt((process.env.PCAP_6666_DUMP_STREAM_EVENTS_LIMIT ?? "200").trim(), 10);
+      const dumpStreamEvents =
+        (process.env.PCAP_6666_DUMP_STREAM_EVENTS ?? "").trim() === "1";
+      const dumpStreamEventsLimit = Number.parseInt(
+        (process.env.PCAP_6666_DUMP_STREAM_EVENTS_LIMIT ?? "200").trim(),
+        10,
+      );
       const focusDirKey = (process.env.PCAP_6666_FOCUS_DIRKEY ?? "").trim();
       const focusIp = (process.env.PCAP_6666_FOCUS_IP ?? "").trim();
 
       const all6666Events: Tcp6666RecordEvent[] = [];
-      const exportTranscript = (process.env.PCAP_EXPORT_6666_TRANSCRIPT ?? "").trim() === "1";
-      const exportOnlyIp = (process.env.PCAP_EXPORT_6666_TRANSCRIPT_IP ?? "").trim();
-      const exportPathRaw = (process.env.PCAP_EXPORT_6666_TRANSCRIPT_PATH ?? "").trim();
+      const exportTranscript =
+        (process.env.PCAP_EXPORT_6666_TRANSCRIPT ?? "").trim() === "1";
+      const exportOnlyIp = (
+        process.env.PCAP_EXPORT_6666_TRANSCRIPT_IP ?? ""
+      ).trim();
+      const exportPathRaw = (
+        process.env.PCAP_EXPORT_6666_TRANSCRIPT_PATH ?? ""
+      ).trim();
       const exportPath = exportPathRaw
-        ? (path.isAbsolute(exportPathRaw) ? exportPathRaw : path.resolve(process.cwd(), exportPathRaw))
-        : path.resolve(process.cwd(), "test/pcap/exports/last-6666-transcript.json");
+        ? path.isAbsolute(exportPathRaw)
+          ? exportPathRaw
+          : path.resolve(process.cwd(), exportPathRaw)
+        : path.resolve(
+            process.cwd(),
+            "test/pcap/exports/last-6666-transcript.json",
+          );
 
       const exportOut: {
         generatedAt: string;
@@ -1969,9 +2547,22 @@ function main() {
           prefixU16le2?: number;
           prefixTokens: string[];
           prefixTokenHint?: { macHex?: string; uid?: string };
-          records: Array<{ tsMs: number; relMs: number; streamOff: number; type: number; len: number; payloadB64: string }>;
+          records: Array<{
+            tsMs: number;
+            relMs: number;
+            streamOff: number;
+            type: number;
+            len: number;
+            payloadB64: string;
+          }>;
         }>;
-        udp7777Samples: Array<{ tsMs: number; dirKey: string; payloadLen: number; parsed: Udp7777Parsed; payloadB64: string }>;
+        udp7777Samples: Array<{
+          tsMs: number;
+          dirKey: string;
+          payloadLen: number;
+          parsed: Udp7777Parsed;
+          payloadB64: string;
+        }>;
       } = {
         generatedAt: new Date().toISOString(),
         pcapPath,
@@ -1989,11 +2580,21 @@ function main() {
       for (const [dirKey, segments] of flows6666) {
         const { data, gaps } = reassembleTcpSegments(segments);
         const proto = guessProtocolFromTcpPrefix(data);
-        console.log(`\n  Flow ${dirKey} segments=${segments.length} reassembledBytes=${data.length} gaps=${gaps}${proto ? ` protoGuess=${proto}` : ""}`);
-        console.log(`  headHex=${data.subarray(0, Math.min(48, data.length)).toString("hex")}`);
+        console.log(
+          `\n  Flow ${dirKey} segments=${segments.length} reassembledBytes=${data.length} gaps=${gaps}${proto ? ` protoGuess=${proto}` : ""}`,
+        );
+        console.log(
+          `  headHex=${data.subarray(0, Math.min(48, data.length)).toString("hex")}`,
+        );
 
         const searchIps = (process.env.PCAP_6666_SEARCH_IPS ?? "").trim();
-        const ipsToSearch = [hubIp, ...searchIps.split(",").map((s) => s.trim()).filter(Boolean)];
+        const ipsToSearch = [
+          hubIp,
+          ...searchIps
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean),
+        ];
         const ipNeedles = ipsToSearch
           .map((ip) => ({ ip, bytes: ipv4ToBytes(ip) }))
           .filter((x): x is { ip: string; bytes: Buffer } => Boolean(x.bytes));
@@ -2003,21 +2604,29 @@ function main() {
         const records = findLenTypeRecordsAnywhere(data, 500);
         if (records.length === 0) {
           const p = tryParseLenTypeRecords(data);
-          console.log(`  No 0x0001000c records found (tryParseLenTypeRecords=${p ? p.length : 0})`);
+          console.log(
+            `  No 0x0001000c records found (tryParseLenTypeRecords=${p ? p.length : 0})`,
+          );
           continue;
         }
 
         // Timestamp-aware parsing (works even if reassembled payload was out-of-order in capture)
-        const parsedStream = parse6666RecordsFromSegments(dirKey, segments, 20000);
+        const parsedStream = parse6666RecordsFromSegments(
+          dirKey,
+          segments,
+          20000,
+        );
         all6666Events.push(...parsedStream.events);
         if (parsedStream.events.length > 0) {
           const firstTs = parsedStream.events[0]!.tsMs;
-          const lastTs = parsedStream.events[parsedStream.events.length - 1]!.tsMs;
+          const lastTs =
+            parsedStream.events[parsedStream.events.length - 1]!.tsMs;
           console.log(
             `  Stream records (timestamped): count=${parsedStream.events.length} span≈${(lastTs - firstTs).toFixed(1)}ms firstTs=${firstTs.toFixed(1)} lastTs=${lastTs.toFixed(1)}`,
           );
           const byTypeTs = new Map<number, number>();
-          for (const e of parsedStream.events) byTypeTs.set(e.type, (byTypeTs.get(e.type) ?? 0) + 1);
+          for (const e of parsedStream.events)
+            byTypeTs.set(e.type, (byTypeTs.get(e.type) ?? 0) + 1);
           const topTypesTs = [...byTypeTs.entries()]
             .sort((a, b) => b[1] - a[1])
             .slice(0, 10)
@@ -2028,15 +2637,27 @@ function main() {
           if (dumpStreamEvents) {
             const focusOk =
               (!focusDirKey || dirKey.includes(focusDirKey)) &&
-              (!focusIp || dirKey.includes(`${focusIp}:`) || dirKey.includes(`-> ${focusIp}:`));
+              (!focusIp ||
+                dirKey.includes(`${focusIp}:`) ||
+                dirKey.includes(`-> ${focusIp}:`));
 
             if (focusOk) {
-              const limit = Number.isFinite(dumpStreamEventsLimit) && dumpStreamEventsLimit > 0 ? dumpStreamEventsLimit : 200;
-              console.log(`  Stream event timeline (first ${Math.min(limit, parsedStream.events.length)}):`);
+              const limit =
+                Number.isFinite(dumpStreamEventsLimit) &&
+                dumpStreamEventsLimit > 0
+                  ? dumpStreamEventsLimit
+                  : 200;
+              console.log(
+                `  Stream event timeline (first ${Math.min(limit, parsedStream.events.length)}):`,
+              );
               for (const e of parsedStream.events.slice(0, limit)) {
                 const rel = (e.tsMs - firstTs).toFixed(1);
                 const pay = tryGet6666RecordPayloadAt(data, e.streamOff);
-                const head = pay?.payload ? pay.payload.subarray(0, Math.min(24, pay.payload.length)).toString("hex") : "";
+                const head = pay?.payload
+                  ? pay.payload
+                      .subarray(0, Math.min(24, pay.payload.length))
+                      .toString("hex")
+                  : "";
                 console.log(
                   `    t+${rel}ms off=${e.streamOff} type=${e.type} len=${e.len}` +
                     (head ? ` payloadHeadHex=${head}` : ""),
@@ -2047,18 +2668,32 @@ function main() {
 
           if (parsedStream.prefix.length > 0) {
             const tks = scanForAsciiTokens(parsedStream.prefix, 6, 20);
-            const hint = tks.map(parseMacUidToken).find((x) => x.macHex || x.uid);
-            const head = parsedStream.prefix.subarray(0, Math.min(96, parsedStream.prefix.length)).toString("hex");
-            console.log(`  Stream prefixCaptured=${parsedStream.prefix.length} headHex=${head}`);
-            if (tks.length) console.log(`  Stream prefixTokens=${tks.map((t) => JSON.stringify(t)).join(" ")}`);
-            if (hint?.macHex || hint?.uid) console.log(`  Stream prefixTokenHint: macHex=${hint.macHex ?? "?"} uid=${hint.uid ?? "?"}`);
+            const hint = tks
+              .map(parseMacUidToken)
+              .find((x) => x.macHex || x.uid);
+            const head = parsedStream.prefix
+              .subarray(0, Math.min(96, parsedStream.prefix.length))
+              .toString("hex");
+            console.log(
+              `  Stream prefixCaptured=${parsedStream.prefix.length} headHex=${head}`,
+            );
+            if (tks.length)
+              console.log(
+                `  Stream prefixTokens=${tks.map((t) => JSON.stringify(t)).join(" ")}`,
+              );
+            if (hint?.macHex || hint?.uid)
+              console.log(
+                `  Stream prefixTokenHint: macHex=${hint.macHex ?? "?"} uid=${hint.uid ?? "?"}`,
+              );
           }
         }
 
         const firstOff = records[0]!.off;
         if (firstOff > 0) {
           const prefix = data.subarray(0, firstOff);
-          const prefixHeadHex = prefix.subarray(0, Math.min(96, prefix.length)).toString("hex");
+          const prefixHeadHex = prefix
+            .subarray(0, Math.min(96, prefix.length))
+            .toString("hex");
           const prefixTokens = scanForAsciiTokens(prefix, 6, 20);
           const u32a = prefix.length >= 4 ? prefix.readUInt32LE(0) : undefined;
           const u16a = prefix.length >= 2 ? prefix.readUInt16LE(0) : undefined;
@@ -2066,14 +2701,22 @@ function main() {
           console.log(
             `  Prefix before framed records: len=${prefix.length}` +
               (u32a !== undefined ? ` u32le@0=${u32a}` : "") +
-              (u16a !== undefined && u16b !== undefined ? ` u16le@0=${u16a} u16le@2=${u16b}` : ""),
+              (u16a !== undefined && u16b !== undefined
+                ? ` u16le@0=${u16a} u16le@2=${u16b}`
+                : ""),
           );
           console.log(`  prefixHeadHex=${prefixHeadHex}`);
           if (prefixTokens.length) {
-            console.log(`  prefixTokens=${prefixTokens.map((t) => JSON.stringify(t)).join(" ")}`);
-            const macUid = prefixTokens.map(parseMacUidToken).find((x) => x.macHex || x.uid);
+            console.log(
+              `  prefixTokens=${prefixTokens.map((t) => JSON.stringify(t)).join(" ")}`,
+            );
+            const macUid = prefixTokens
+              .map(parseMacUidToken)
+              .find((x) => x.macHex || x.uid);
             if (macUid?.macHex || macUid?.uid) {
-              console.log(`  prefixTokenHint: macHex=${macUid.macHex ?? "?"} uid=${macUid.uid ?? "?"}`);
+              console.log(
+                `  prefixTokenHint: macHex=${macUid.macHex ?? "?"} uid=${macUid.uid ?? "?"}`,
+              );
             }
           }
 
@@ -2091,27 +2734,47 @@ function main() {
           }
           for (const n of ipNeedles) {
             const occ = findAllOccurrences(prefix, n.bytes, 6);
-            if (occ.length) console.log(`  prefix has ip=${n.ip} at off=${occ.join(",")}`);
+            if (occ.length)
+              console.log(`  prefix has ip=${n.ip} at off=${occ.join(",")}`);
           }
         }
 
         if (exportTranscript) {
-          if (exportOnlyIp && !dirKey.includes(`${exportOnlyIp}:`) && !dirKey.includes(`-> ${exportOnlyIp}:`)) {
+          if (
+            exportOnlyIp &&
+            !dirKey.includes(`${exportOnlyIp}:`) &&
+            !dirKey.includes(`-> ${exportOnlyIp}:`)
+          ) {
             // skip
           } else {
             const firstOff2 = records[0]!.off;
-            const prefix = firstOff2 > 0 ? data.subarray(0, firstOff2) : Buffer.alloc(0);
-            const prefixU32le0 = prefix.length >= 4 ? prefix.readUInt32LE(0) : undefined;
-            const prefixU16le0 = prefix.length >= 2 ? prefix.readUInt16LE(0) : undefined;
-            const prefixU16le2 = prefix.length >= 4 ? prefix.readUInt16LE(2) : undefined;
+            const prefix =
+              firstOff2 > 0 ? data.subarray(0, firstOff2) : Buffer.alloc(0);
+            const prefixU32le0 =
+              prefix.length >= 4 ? prefix.readUInt32LE(0) : undefined;
+            const prefixU16le0 =
+              prefix.length >= 2 ? prefix.readUInt16LE(0) : undefined;
+            const prefixU16le2 =
+              prefix.length >= 4 ? prefix.readUInt16LE(2) : undefined;
             const prefixTokens = scanForAsciiTokens(prefix, 6, 50);
-            const prefixTokenHint = prefixTokens.map(parseMacUidToken).find((x) => x.macHex || x.uid);
+            const prefixTokenHint = prefixTokens
+              .map(parseMacUidToken)
+              .find((x) => x.macHex || x.uid);
 
             const firstTs = parsedStream.events[0]?.tsMs ?? 0;
-            const outRecs: Array<{ tsMs: number; relMs: number; streamOff: number; type: number; len: number; payloadB64: string }> = [];
+            const outRecs: Array<{
+              tsMs: number;
+              relMs: number;
+              streamOff: number;
+              type: number;
+              len: number;
+              payloadB64: string;
+            }> = [];
             for (const e of parsedStream.events) {
               const pay = tryGet6666RecordPayloadAt(data, e.streamOff);
-              const payloadB64 = pay?.payload ? pay.payload.toString("base64") : "";
+              const payloadB64 = pay?.payload
+                ? pay.payload.toString("base64")
+                : "";
               outRecs.push({
                 tsMs: e.tsMs,
                 relMs: e.tsMs - firstTs,
@@ -2133,7 +2796,8 @@ function main() {
             if (prefixU32le0 != null) entry.prefixU32le0 = prefixU32le0;
             if (prefixU16le0 != null) entry.prefixU16le0 = prefixU16le0;
             if (prefixU16le2 != null) entry.prefixU16le2 = prefixU16le2;
-            if (prefixTokenHint?.macHex || prefixTokenHint?.uid) entry.prefixTokenHint = prefixTokenHint;
+            if (prefixTokenHint?.macHex || prefixTokenHint?.uid)
+              entry.prefixTokenHint = prefixTokenHint;
             exportOut.entries.push(entry);
           }
         }
@@ -2154,7 +2818,9 @@ function main() {
           .slice(0, 12)
           .map(([l, c]) => `${l}x${c}`)
           .join(" ");
-        console.log(`  Parsed records=${records.length} (top types: ${topTypes || "-"})`);
+        console.log(
+          `  Parsed records=${records.length} (top types: ${topTypes || "-"})`,
+        );
         console.log(`  Payload lengths: ${topLens || "-"}`);
 
         for (const r of records.slice(0, 40)) {
@@ -2163,7 +2829,8 @@ function main() {
           const p9000le = scanForU16Value(r.payload, 9000, "le", 4);
           const p9000be = scanForU16Value(r.payload, 9000, "be", 4);
           const tokens = scanForAsciiTokens(r.payload, 10, 8);
-          const tokenHint = tokens.find((t) => t.length >= 16 && t.length <= 24) ?? tokens[0];
+          const tokenHint =
+            tokens.find((t) => t.length >= 16 && t.length <= 24) ?? tokens[0];
 
           const ipHits: string[] = [];
           for (const n of ipNeedles) {
@@ -2171,18 +2838,32 @@ function main() {
             if (occ.length) ipHits.push(`${n.ip}@${occ.join("|")}`);
           }
 
-          const head = r.payload.subarray(0, Math.min(32, r.payload.length)).toString("hex");
-          const tail = r.payload.subarray(Math.max(0, r.payload.length - 16)).toString("hex");
+          const head = r.payload
+            .subarray(0, Math.min(32, r.payload.length))
+            .toString("hex");
+          const tail = r.payload
+            .subarray(Math.max(0, r.payload.length - 16))
+            .toString("hex");
           console.log(
             `  rec off=${r.off} type=${r.type} len=${r.len} head=${head}${r.payload.length > 32 ? ` tail=${tail}` : ""}` +
               (ipHits.length ? ` ipHits=${ipHits.join(",")}` : "") +
-              (p7777le.length || p7777be.length ? ` port7777@${[...p7777le.map((o) => `le:${o}`), ...p7777be.map((o) => `be:${o}`)].join("|")}` : "") +
-              (p9000le.length || p9000be.length ? ` port9000@${[...p9000le.map((o) => `le:${o}`), ...p9000be.map((o) => `be:${o}`)].join("|")}` : "") +
+              (p7777le.length || p7777be.length
+                ? ` port7777@${[...p7777le.map((o) => `le:${o}`), ...p7777be.map((o) => `be:${o}`)].join("|")}`
+                : "") +
+              (p9000le.length || p9000be.length
+                ? ` port9000@${[...p9000le.map((o) => `le:${o}`), ...p9000be.map((o) => `be:${o}`)].join("|")}`
+                : "") +
               (tokenHint ? ` token=${JSON.stringify(tokenHint)}` : ""),
           );
 
-          if ((process.env.PCAP_DUMP_6666_PAYLOADS ?? "").trim() === "1" && r.len > 0 && r.len <= 512) {
-            console.log(`    ascii=${JSON.stringify(previewAscii(r.payload.subarray(0, Math.min(256, r.payload.length))))}`);
+          if (
+            (process.env.PCAP_DUMP_6666_PAYLOADS ?? "").trim() === "1" &&
+            r.len > 0 &&
+            r.len <= 512
+          ) {
+            console.log(
+              `    ascii=${JSON.stringify(previewAscii(r.payload.subarray(0, Math.min(256, r.payload.length))))}`,
+            );
           }
         }
       }
@@ -2190,12 +2871,20 @@ function main() {
       if (exportTranscript && exportOut.entries.length > 0) {
         writeJson(exportPath, exportOut);
         console.log(`\nWrote TCP/6666 transcript export: ${exportPath}`);
-        console.log(`  entries=${exportOut.entries.length} udp7777Samples=${exportOut.udp7777Samples.length}`);
+        console.log(
+          `  entries=${exportOut.entries.length} udp7777Samples=${exportOut.udp7777Samples.length}`,
+        );
       }
 
-      if ((process.env.PCAP_DUMP_UDP_7777 ?? "").trim() === "1" && udp7777Samples.length > 0 && all6666Events.length > 0) {
+      if (
+        (process.env.PCAP_DUMP_UDP_7777 ?? "").trim() === "1" &&
+        udp7777Samples.length > 0 &&
+        all6666Events.length > 0
+      ) {
         console.log("\nUDP/7777 vs TCP/6666 record correlation:");
-        console.log("  window: [-250ms, +2000ms] around each UDP/7777 packet (approx)");
+        console.log(
+          "  window: [-250ms, +2000ms] around each UDP/7777 packet (approx)",
+        );
         const eventsSorted = [...all6666Events].sort((a, b) => a.tsMs - b.tsMs);
         const reassembledByDir = new Map<string, Buffer>();
         for (const [dirKey, segs] of flows6666) {
@@ -2211,10 +2900,14 @@ function main() {
           const hits = eventsSorted.filter((e) => {
             if (e.tsMs < w0 || e.tsMs > w1) return false;
             if (!camIp) return true;
-            return e.dirKey.includes(`${camIp}:`) || e.dirKey.includes(`-> ${camIp}:`);
+            return (
+              e.dirKey.includes(`${camIp}:`) ||
+              e.dirKey.includes(`-> ${camIp}:`)
+            );
           });
           const byType = new Map<number, number>();
-          for (const h of hits) byType.set(h.type, (byType.get(h.type) ?? 0) + 1);
+          for (const h of hits)
+            byType.set(h.type, (byType.get(h.type) ?? 0) + 1);
           const top = [...byType.entries()]
             .sort((a, b) => b[1] - a[1])
             .slice(0, 8)
@@ -2224,12 +2917,21 @@ function main() {
             `  t=${u.tsMs.toFixed(1)} len=${u.payloadLen} src=${camIp ?? "?"} -> 6666records=${hits.length}${top ? ` types=${top}` : ""}`,
           );
 
-          if ((process.env.PCAP_6666_DUMP_AROUND_UDP ?? "").trim() === "1" && hits.length > 0) {
+          if (
+            (process.env.PCAP_6666_DUMP_AROUND_UDP ?? "").trim() === "1" &&
+            hits.length > 0
+          ) {
             for (const h of hits.slice(0, 12)) {
               const dt = h.tsMs - u.tsMs;
               const reassembled = reassembledByDir.get(h.dirKey);
-              const pay = reassembled ? tryGet6666RecordPayloadAt(reassembled, h.streamOff) : undefined;
-              const head = pay?.payload ? pay.payload.subarray(0, Math.min(24, pay.payload.length)).toString("hex") : "";
+              const pay = reassembled
+                ? tryGet6666RecordPayloadAt(reassembled, h.streamOff)
+                : undefined;
+              const head = pay?.payload
+                ? pay.payload
+                    .subarray(0, Math.min(24, pay.payload.length))
+                    .toString("hex")
+                : "";
               console.log(
                 `    dt=${dt.toFixed(1)}ms dir=${h.dirKey} off=${h.streamOff} type=${h.type} len=${h.len}` +
                   (head ? ` payloadHeadHex=${head}` : ""),
@@ -2257,15 +2959,21 @@ function main() {
   // Example: BAICHUAN_NONCE=... BAICHUAN_ENC_TYPE=0x12
   globalSession = parseEnvSessionOverride() ?? globalSession;
   if (globalSession?.nonce) {
-    const encTypeHex = globalSession.encType !== undefined ? `0x${globalSession.encType.toString(16)}` : "?";
+    const encTypeHex =
+      globalSession.encType !== undefined
+        ? `0x${globalSession.encType.toString(16)}`
+        : "?";
     const encKind = globalSession.enc.kind;
     const aesNote =
       encKind === "aes"
         ? ` (${globalSession.enc.mode}, key derived: yes)`
-        : globalSession.encType && (globalSession.encType === 0x02 || globalSession.encType === 0x12)
+        : globalSession.encType &&
+            (globalSession.encType === 0x02 || globalSession.encType === 0x12)
           ? " (AES, key derived: no - set BAICHUAN_PASSWORD/NVR_PASSWORD/TCP_PASSWORD)"
           : "";
-    console.log(`Session override: nonce=${globalSession.nonce} encType=${encTypeHex} -> enc=${encKind}${aesNote}`);
+    console.log(
+      `Session override: nonce=${globalSession.nonce} encType=${encTypeHex} -> enc=${encKind}${aesNote}`,
+    );
   }
 
   // Detect session encryption by scanning both directions for the legacy login reply.
@@ -2281,15 +2989,21 @@ function main() {
     globalSession = detectSessionFromFrames(allFrames);
   }
   if (globalSession?.nonce) {
-    const encTypeHex = globalSession.encType !== undefined ? `0x${globalSession.encType.toString(16)}` : "?";
+    const encTypeHex =
+      globalSession.encType !== undefined
+        ? `0x${globalSession.encType.toString(16)}`
+        : "?";
     const encKind = globalSession.enc.kind;
     const aesNote =
       encKind === "aes"
         ? ` (${globalSession.enc.mode}, key derived: yes)`
-        : globalSession.encType && (globalSession.encType === 0x02 || globalSession.encType === 0x12)
+        : globalSession.encType &&
+            (globalSession.encType === 0x02 || globalSession.encType === 0x12)
           ? " (AES, key derived: no - set BAICHUAN_PASSWORD/NVR_PASSWORD/TCP_PASSWORD)"
           : "";
-    console.log(`Session negotiation observed: nonce=${globalSession.nonce} encType=${encTypeHex} -> enc=${encKind}${aesNote}`);
+    console.log(
+      `Session negotiation observed: nonce=${globalSession.nonce} encType=${encTypeHex} -> enc=${encKind}${aesNote}`,
+    );
   }
 
   for (const [dirKey, segments] of targets) {

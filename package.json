@@ -41,6 +41,8 @@
   },
   "scripts": {
     "probe:pcap-derived-settings": "npm run build && node test-pcap-derived-settings-probe.mjs",
+    "util:clip:mp4": "npm run build && node tools/stream-clip-to-mp4.mjs",
+    "util:replay:mp4": "npm run build && node tools/replay-clip-to-mp4.mjs",
     "test:nvr:native-frame-trace": "npm run test:build && node dist/test/nvr/test-nvr-native-secondary-frame-trace.js",
     "test:nvr:native-ffprobe": "npm run test:build && node dist/test/nvr/test-nvr-native-streams-ffprobe.js",
     "test:pcap:baichuan": "npm run test:build && node dist/test/pcap/test-pcap-baichuan-analyze.js",

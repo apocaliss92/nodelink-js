@@ -935,6 +935,12 @@ export interface EnrichedRecordingFile {
   /** Original record type string from camera (e.g. "md,people,dog_cat") */
   recordType?: string;
 
+  /**
+   * Derived detection classes for convenience (computed from flags/recordType).
+   * Useful for NVR/HomeHub event listings where consumers expect a list.
+   */
+  detectionClasses?: RecordingDetectionClass[];
+
   /** RTMP VOD playback URL (if available) */
   rtmpUrl?: string;
 
@@ -950,6 +956,18 @@ export interface EnrichedRecordingFile {
   /** Original RecordingFile for reference */
   raw: RecordingFile;
 }
+
+export type RecordingDetectionClass =
+  | "person"
+  | "vehicle"
+  | "animal"
+  | "face"
+  | "package"
+  | "doorbell"
+  | "rf"
+  | "other"
+  | "motion"
+  | "schedule";
 
 export interface ListRecordingsParams {
   channel: number;

@@ -1,7 +1,13 @@
-import type { EnrichedRecordingFile, RecordingFile } from "../types";
+import type {
+  EnrichedRecordingFile,
+  RecordingDetectionClass,
+  RecordingFile,
+} from "../types";
 import { parseRecordingFileName } from "../recordingFileName";
 
-export const parseRecordTypeFlags = (recordType?: string): {
+export const parseRecordTypeFlags = (
+  recordType?: string,
+): {
   hasPerson: boolean;
   hasVehicle: boolean;
   hasAnimal: boolean;
@@ -37,10 +43,12 @@ export const parseRecordTypeFlags = (recordType?: string): {
   for (const t of types) {
     if (t === "people" || t === "person") flags.hasPerson = true;
     else if (t === "vehicle" || t === "car") flags.hasVehicle = true;
-    else if (t === "dog_cat" || t === "animal" || t === "pet") flags.hasAnimal = true;
+    else if (t === "dog_cat" || t === "animal" || t === "pet")
+      flags.hasAnimal = true;
     else if (t === "face") flags.hasFace = true;
     else if (t === "md" || t === "motion") flags.hasMotion = true;
-    else if (t === "sched" || t === "schedule" || t === "timer") flags.hasSchedule = true;
+    else if (t === "sched" || t === "schedule" || t === "timer")
+      flags.hasSchedule = true;
     else if (t === "visitor" || t === "doorbell") flags.hasDoorbell = true;
     else if (t === "package") flags.hasPackage = true;
     else if (t === "rf" || t === "io" || t === "pir") flags.hasRf = true;
@@ -50,8 +58,13 @@ export const parseRecordTypeFlags = (recordType?: string): {
   return flags;
 };
 
-export const enrichRecordingFile = (rec: RecordingFile, rtmpUrl?: string): EnrichedRecordingFile => {
-  const parsed = rec.parsedFileName ?? (rec.fileName ? parseRecordingFileName(rec.fileName) : undefined);
+export const enrichRecordingFile = (
+  rec: RecordingFile,
+  rtmpUrl?: string,
+): EnrichedRecordingFile => {
+  const parsed =
+    rec.parsedFileName ??
+    (rec.fileName ? parseRecordingFileName(rec.fileName) : undefined);
 
   const startTime = rec.startTime ?? parsed?.start;
   const endTime = rec.endTime ?? parsed?.end;
@@ -78,6 +91,18 @@ export const enrichRecordingFile = (rec: RecordingFile, rtmpUrl?: string): Enric
   const hasRf = (hexFlags?.rf ?? false) || typeFlags.hasRf;
   const hasOther = (hexFlags?.aiOther ?? false) || typeFlags.hasOther;
 
+  const detectionClasses: RecordingDetectionClass[] = [];
+  if (hasPerson) detectionClasses.push("person");
+  if (hasVehicle) detectionClasses.push("vehicle");
+  if (hasAnimal) detectionClasses.push("animal");
+  if (hasFace) detectionClasses.push("face");
+  if (hasPackage) detectionClasses.push("package");
+  if (hasDoorbell) detectionClasses.push("doorbell");
+  if (hasRf) detectionClasses.push("rf");
+  if (hasOther) detectionClasses.push("other");
+  if (hasMotion) detectionClasses.push("motion");
+  if (hasSchedule) detectionClasses.push("schedule");
+
   const enriched: EnrichedRecordingFile = {
     fileName: rec.fileName,
     id: rec.id ?? rec.fileName,
@@ -94,6 +119,7 @@ export const enrichRecordingFile = (rec: RecordingFile, rtmpUrl?: string): Enric
     hasPackage,
     hasRf,
     hasOther,
+    detectionClasses,
     streamHint: parsed?.streamHint ?? "unknown",
     devType: parsed?.devType ?? "cam",
     raw: rec,

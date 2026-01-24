@@ -1,10 +1,12 @@
 import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
+import { PassThrough, type Readable } from "node:stream";
 import {
   BaichuanRtspServer,
   type BaichuanRtspServerOptions,
 } from "../../baichuan/stream/BaichuanRtspServer";
+import { BaichuanVideoStream } from "../../baichuan/stream/BaichuanVideoStream";
 import {
   BaichuanClient,
   type BaichuanClientOptions,
@@ -258,6 +260,14 @@ import {
   parseRecStartParamIfPresent,
   sanitizeDownloadFilename,
 } from "./utils/recordingDownload";
+import {
+  buildFileInfoListReplayByIdXml,
+  buildFileInfoListReplayByNameXml,
+  buildFileInfoListStopXml,
+  buildReplayStopNameFromFileName,
+  type RecordingReplayIFrameMode,
+  type RecordingReplayStreamType,
+} from "./utils/recordingReplay";
 import {
   buildDeletePtzPresetAttempts,
   extractFrameErrorDetails,
@@ -2792,6 +2802,228 @@ export class ReolinkBaichuanApi {
     return parseXmlFragmentToJson(xml);
   }
 
+  /**
+   * Start a recording replay stream over Baichuan push frames.
+   *
+   * Socket-based equivalent of a “clip playback”: the device will push BcMedia frames
+   * on cmdId=5, and you must stop it with cmdId=7.
+   */
+  async startRecordingReplayStream(params: {
+    channel: number;
+    fileName: string;
+    streamType?: RecordingReplayStreamType;
+    iframeReplay?: RecordingReplayIFrameMode;
+    timeoutMs?: number;
+    logger?: Logger;
+  }): Promise<{
+    msgNum: number;
+    stream: BaichuanVideoStream;
+    stop: () => Promise<void>;
+  }> {
+    await this.client.login();
+
+    const channel = this.normalizeChannel(params.channel);
+    const streamType = params.streamType ?? "mainStream";
+    const ident = params.fileName;
+
+    const payloadXml = ident.includes("/")
+      ? buildFileInfoListReplayByIdXml({
+          channel,
+          id: ident,
+          streamType,
+          ...(params.iframeReplay != null
+            ? { iframeReplay: params.iframeReplay }
+            : {}),
+        })
+      : buildFileInfoListReplayByNameXml({
+          channel,
+          name: ident,
+          streamType,
+          ...(params.iframeReplay != null
+            ? { iframeReplay: params.iframeReplay }
+            : {}),
+        });
+
+    const msgNum = this.client.reserveNextMsgNum();
+    this.client.subscribeVideoStream(BC_CMD_ID_FILE_INFO_LIST_REPLAY, msgNum);
+
+    const profile: StreamProfile = streamType === "subStream" ? "sub" : "main";
+    const stream = new BaichuanVideoStream({
+      client: this.client,
+      channel,
+      profile,
+      variant: "default",
+      cmdId: BC_CMD_ID_FILE_INFO_LIST_REPLAY,
+      msgNum,
+      acceptAnyStreamType: true,
+      logger: params.logger ?? this.logger,
+    });
+
+    let started = false;
+    try {
+      await stream.start();
+
+      const attempts: Array<{
+        label: string;
+        p: Parameters<BaichuanClient["sendFrame"]>[0];
+      }> = [
+        {
+          label: "per-channel (binary ext, modern24)",
+          p: {
+            cmdId: BC_CMD_ID_FILE_INFO_LIST_REPLAY,
+            channel,
+            payloadXml,
+            extensionXml: buildBinaryExtensionXml(channel),
+            messageClass: BC_CLASS_MODERN_24,
+            msgNumOverride: msgNum,
+          },
+        },
+        {
+          label: "per-channel (no ext, modern24)",
+          p: {
+            cmdId: BC_CMD_ID_FILE_INFO_LIST_REPLAY,
+            channel,
+            payloadXml,
+            messageClass: BC_CLASS_MODERN_24,
+            msgNumOverride: msgNum,
+          },
+        },
+        {
+          label: "host channelId=250 (binary ext no channelId, modern24)",
+          p: {
+            cmdId: BC_CMD_ID_FILE_INFO_LIST_REPLAY,
+            channel,
+            channelIdOverride: 250,
+            payloadXml,
+            extensionXml: buildBinaryExtensionXml(undefined),
+            messageClass: BC_CLASS_MODERN_24,
+            msgNumOverride: msgNum,
+          },
+        },
+        {
+          label: "host channelId=250 (binary ext, file_download class)",
+          p: {
+            cmdId: BC_CMD_ID_FILE_INFO_LIST_REPLAY,
+            channel,
+            channelIdOverride: 250,
+            payloadXml,
+            extensionXml: buildBinaryExtensionXml(undefined),
+            messageClass: BC_CLASS_FILE_DOWNLOAD,
+            msgNumOverride: msgNum,
+          },
+        },
+        {
+          label: "channelIdOverride=0 (binary ext no channelId, modern24)",
+          p: {
+            cmdId: BC_CMD_ID_FILE_INFO_LIST_REPLAY,
+            channel,
+            channelIdOverride: 0,
+            payloadXml,
+            extensionXml: buildBinaryExtensionXml(undefined),
+            messageClass: BC_CLASS_MODERN_24,
+            msgNumOverride: msgNum,
+          },
+        },
+      ];
+
+      const timeoutMs = params.timeoutMs ?? 20_000;
+      let lastCode: number | undefined;
+      const tried: string[] = [];
+
+      let ok = false;
+      let lastErr: unknown;
+
+      for (const a of attempts) {
+        try {
+          const frame = await this.client.sendFrame({
+            ...a.p,
+            timeoutMs,
+            internal: true,
+          });
+          lastCode = frame.header.responseCode;
+          tried.push(`${a.label}: ${frame.header.responseCode}`);
+          if (frame.header.responseCode === 200) {
+            ok = true;
+            break;
+          }
+        } catch (e) {
+          lastErr = e;
+          const msg = e instanceof Error ? e.message : String(e);
+          tried.push(`${a.label}: err=${msg}`);
+          // Try next variant.
+          continue;
+        }
+      }
+
+      if (!ok) {
+        const lastMsg =
+          lastErr instanceof Error
+            ? lastErr.message
+            : lastErr != null
+              ? String(lastErr)
+              : "";
+        throw new Error(
+          `Recording replay start rejected (response_code ${lastCode ?? "unknown"}) cmdId=${BC_CMD_ID_FILE_INFO_LIST_REPLAY} msgNum=${msgNum} attempts=[${tried.join(" | ")}]` +
+            (lastMsg ? ` lastErr=${lastMsg}` : ""),
+        );
+      }
+
+      started = true;
+    } catch (e) {
+      try {
+        await stream.stop();
+      } catch {
+        // ignore
+      }
+      try {
+        this.client.unsubscribeVideoStream(
+          BC_CMD_ID_FILE_INFO_LIST_REPLAY,
+          msgNum,
+        );
+      } catch {
+        // ignore
+      }
+      throw e;
+    }
+
+    const stop = async (): Promise<void> => {
+      const stopName = buildReplayStopNameFromFileName(params.fileName);
+      if (started && stopName) {
+        try {
+          const stopXml = buildFileInfoListStopXml({
+            channel,
+            name: stopName,
+            streamType,
+          });
+
+          await this.client.sendXml({
+            cmdId: BC_CMD_ID_FILE_INFO_LIST_STOP,
+            channel,
+            payloadXml: stopXml,
+            messageClass: BC_CLASS_MODERN_24,
+            timeoutMs: 10_000,
+            internal: true,
+          });
+        } catch {
+          // ignore
+        }
+      }
+
+      try {
+        this.client.unsubscribeVideoStream(
+          BC_CMD_ID_FILE_INFO_LIST_REPLAY,
+          msgNum,
+        );
+      } catch {
+        // ignore
+      }
+
+      await stream.stop();
+    };
+
+    return { msgNum, stream, stop };
+  }
+
   /** Legacy FileInfoList DL Video (cmdId=8). Returns response parsed as JSON. */
   async fileInfoListDownloadVideo(params?: {
     channel?: number;
@@ -3414,21 +3646,38 @@ export class ReolinkBaichuanApi {
       timeoutMs,
     });
 
-    // Parse stream header (first 32 bytes)
+    // Parse stream header
     if (payload.length < 32) {
       throw new Error(
         `CoverPreview payload too short: ${payload.length} bytes`,
       );
     }
 
-    const streamHeader = payload.subarray(0, 32);
-    const magic = streamHeader.subarray(0, 4).toString("ascii");
-
-    if (magic !== "1001") {
+    const magic = payload.subarray(0, 4).toString("ascii");
+    const supportedMagics = new Set(["1001", "1002"]);
+    if (!supportedMagics.has(magic)) {
       throw new Error(
-        `CoverPreview payload did not start with stream header magic '1001' but with '${magic}'`,
+        `CoverPreview payload did not start with a supported stream header magic ('1001'/'1002') but with '${magic}'`,
       );
     }
+
+    // Most captures show a u32le header length at offset 4 (often 32). Be defensive.
+    let streamHeaderLen = 32;
+    try {
+      const candidate = payload.readUInt32LE(4);
+      if (
+        Number.isFinite(candidate) &&
+        candidate >= 16 &&
+        candidate <= 4096 &&
+        candidate <= payload.length
+      ) {
+        streamHeaderLen = candidate;
+      }
+    } catch {
+      // ignore
+    }
+
+    const streamHeader = payload.subarray(0, streamHeaderLen);
 
     // Parse stream header fields
     const width = streamHeader.readUInt32LE(8);
@@ -3436,7 +3685,7 @@ export class ReolinkBaichuanApi {
     const frameRate = streamHeader.length > 17 ? streamHeader[17] : 0;
 
     // Search for frame magic "00dc" after stream header
-    const frameSearchArea = payload.subarray(32);
+    const frameSearchArea = payload.subarray(streamHeaderLen);
     const frameMagic = Buffer.from("00dc", "ascii");
     let frameMagicIndex = -1;
 
@@ -3453,12 +3702,68 @@ export class ReolinkBaichuanApi {
     }
 
     if (frameMagicIndex === -1) {
-      throw new Error(
-        `CoverPreview frame magic '00dc' not found. First bytes after header: ${frameSearchArea.subarray(0, 30).toString("hex")}`,
-      );
+      // Some firmwares appear to return a raw Annex-B payload without the AVI-like "00dc" wrapper.
+      // Fall back to returning everything after the stream header as the frame payload.
+      const frame = payload.subarray(streamHeaderLen);
+      if (frame.length === 0) {
+        throw new Error(
+          `CoverPreview frame marker '00dc' not found and no payload after header. First bytes after header: ${frameSearchArea.subarray(0, 30).toString("hex")}`,
+        );
+      }
+
+      const detectEncoding = (buf: Buffer): string => {
+        // Find the first Annex-B startcode (0x000001 or 0x00000001)
+        const maxScan = Math.min(buf.length - 6, 64 * 1024);
+        let start = -1;
+        let scLen = 0;
+        for (let i = 0; i < maxScan; i++) {
+          if (buf[i] !== 0x00 || buf[i + 1] !== 0x00) continue;
+          if (buf[i + 2] === 0x01) {
+            start = i;
+            scLen = 3;
+            break;
+          }
+          if (buf[i + 2] === 0x00 && buf[i + 3] === 0x01) {
+            start = i;
+            scLen = 4;
+            break;
+          }
+        }
+
+        if (start < 0) return "unknown";
+        const nalHeaderIndex = start + scLen;
+        if (nalHeaderIndex >= buf.length) return "unknown";
+
+        const b0 = buf[nalHeaderIndex];
+        if (b0 === undefined) return "unknown";
+        const h264Type = b0 & 0x1f;
+        const h265Type = (b0 >> 1) & 0x3f;
+
+        // H.264 common NAL unit types: 7(SPS),8(PPS),5(IDR),1(non-IDR)
+        if ([7, 8, 5, 1].includes(h264Type)) return "H264";
+        // H.265 common NAL unit types: 32(VPS),33(SPS),34(PPS),19/20(IDR)
+        if ([32, 33, 34, 19, 20].includes(h265Type)) return "H265";
+
+        return "unknown";
+      };
+
+      const encoding = detectEncoding(frame);
+
+      const streamInfo: PlaybackSnapshotStreamInfo = {};
+      if (width > 0) streamInfo.width = width;
+      if (height > 0) streamInfo.height = height;
+      const fr = frameRate ?? 0;
+      if (fr > 0) streamInfo.frameRate = fr;
+
+      return {
+        frame,
+        encoding,
+        frameLength: frame.length,
+        streamInfo,
+      };
     }
 
-    const idx = 32 + frameMagicIndex;
+    const idx = streamHeaderLen + frameMagicIndex;
 
     // Parse frame header
     // Frame header structure:
@@ -3513,6 +3818,134 @@ export class ReolinkBaichuanApi {
     if (frameTime !== undefined) result.frameTime = frameTime;
 
     return result;
+  }
+
+  /**
+   * Like {@link ReolinkBaichuanApi#snapshotFromPlayback | snapshotFromPlayback}, but returns a JPEG.
+   *
+   * Uses `ffmpeg` to decode the CoverPreview I-frame.
+   */
+  async snapshotJpegFromPlayback(params: {
+    channel?: number;
+    time: Date;
+    snapType?: "main" | "sub";
+    timeoutMs?: number;
+    ffmpegPath?: string;
+  }): Promise<Buffer> {
+    const timeoutMs = params.timeoutMs ?? 30_000;
+    const ffmpegPath = params.ffmpegPath ?? "ffmpeg";
+
+    const snapParams: {
+      channel?: number;
+      time: Date;
+      snapType?: "main" | "sub";
+      timeoutMs?: number;
+    } = {
+      time: params.time,
+      timeoutMs,
+    };
+    if (params.channel !== undefined) snapParams.channel = params.channel;
+    if (params.snapType !== undefined) snapParams.snapType = params.snapType;
+
+    const snap = await this.snapshotFromPlayback(snapParams);
+
+    return this.decodeCoverPreviewFrameToJpeg({
+      frame: snap.frame,
+      encoding: snap.encoding,
+      ffmpegPath,
+      timeoutMs,
+    });
+  }
+
+  private async decodeCoverPreviewFrameToJpeg(params: {
+    frame: Buffer;
+    encoding: string;
+    ffmpegPath: string;
+    timeoutMs: number;
+  }): Promise<Buffer> {
+    const encodingUpper = params.encoding.toUpperCase();
+    const fmts: string[] = [];
+    if (encodingUpper.includes("265") || encodingUpper.includes("HEVC")) {
+      fmts.push("hevc", "h264");
+    } else {
+      fmts.push("h264", "hevc");
+    }
+
+    const tryDecode = (fmt: string): Promise<Buffer> => {
+      return new Promise<Buffer>((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        let stderr = "";
+        let timedOut = false;
+
+        const ff = spawn(params.ffmpegPath, [
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-f",
+          fmt,
+          "-i",
+          "pipe:0",
+          "-frames:v",
+          "1",
+          "-f",
+          "image2",
+          "-c:v",
+          "mjpeg",
+          "-q:v",
+          "2",
+          "pipe:1",
+        ]);
+
+        const timeout = setTimeout(() => {
+          timedOut = true;
+          ff.kill("SIGKILL");
+          reject(new Error(`ffmpeg timed out after ${params.timeoutMs}ms`));
+        }, params.timeoutMs);
+
+        ff.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+        ff.stderr.on("data", (data: Buffer) => (stderr += data.toString()));
+
+        ff.on("close", (code) => {
+          clearTimeout(timeout);
+          if (timedOut) return;
+
+          if (code !== 0) {
+            reject(new Error(`ffmpeg exited with code ${code}: ${stderr}`));
+            return;
+          }
+
+          const imageBuffer = Buffer.concat(chunks);
+          if (imageBuffer.length === 0) {
+            reject(new Error(`ffmpeg produced no output. stderr: ${stderr}`));
+            return;
+          }
+
+          resolve(imageBuffer);
+        });
+
+        ff.on("error", (err) => {
+          clearTimeout(timeout);
+          if (timedOut) return;
+          reject(new Error(`ffmpeg error: ${err.message}`));
+        });
+
+        ff.stdin.end(params.frame);
+      });
+    };
+
+    let lastErr: unknown;
+    for (const fmt of fmts) {
+      try {
+        return await tryDecode(fmt);
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+
+    const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
+    throw new Error(
+      `Failed to decode CoverPreview frame to JPEG (encoding=${params.encoding}). Last error: ${msg}`,
+    );
   }
 
   /**
@@ -9300,5 +9733,231 @@ ${xmlDateTimePayload("endTime", end)}
     options?: { timeoutMs?: number },
   ): Promise<XmlJsonValue> {
     return await this.getCmd440(channel, options);
+  }
+
+  /**
+   * Convenience helper: convert CoverPreview (cmdId=298) snapshot to a JPEG.
+   *
+   * Implementation detail: uses `ffmpeg` from PATH (same dependency already used by endpoints-server VOD streaming).
+   */
+  async snapshotFromPlaybackJpeg(params: {
+    channel?: number;
+    time: Date;
+    snapType?: "main" | "sub";
+    timeoutMs?: number;
+    /** 2..31 (lower = better quality). Default: 2 */
+    jpegQuality?: number;
+  }): Promise<{
+    jpeg: Buffer;
+    snapshot: SnapshotFromPlaybackResult;
+  }> {
+    const snapshot = await this.snapshotFromPlayback(params);
+    const enc = String(snapshot.encoding || "").toUpperCase();
+    const demux = enc.includes("265") || enc.includes("HEVC") ? "hevc" : "h264";
+    const q = params.jpegQuality ?? 2;
+
+    const args = [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-fflags",
+      "+genpts",
+      "-f",
+      demux,
+      "-i",
+      "pipe:0",
+      "-frames:v",
+      "1",
+      "-q:v",
+      String(q),
+      "-f",
+      "image2pipe",
+      "-vcodec",
+      "mjpeg",
+      "pipe:1",
+    ];
+
+    const ff = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
+    const chunks: Buffer[] = [];
+    let stderr = "";
+    ff.stdout.on("data", (d) => chunks.push(Buffer.from(d)));
+    ff.stderr.on("data", (d) => (stderr += String(d)));
+
+    ff.stdin.write(snapshot.frame);
+    ff.stdin.end();
+
+    const exitCode: number = await new Promise((resolve, reject) => {
+      ff.on("error", reject);
+      ff.on("close", (code) => resolve(code ?? 0));
+    });
+
+    if (exitCode !== 0) {
+      throw new Error(
+        `ffmpeg failed converting CoverPreview I-frame to JPEG (exit=${exitCode}): ${stderr}`,
+      );
+    }
+
+    const jpeg = Buffer.concat(chunks);
+    if (jpeg.length < 16) {
+      throw new Error(
+        `ffmpeg produced an empty JPEG buffer (${jpeg.length} bytes)`,
+      );
+    }
+
+    return { jpeg, snapshot };
+  }
+
+  /**
+   * Stream a recording replay (cmdId=5) as a fragmented MP4 (streamable over HTTP).
+   *
+   * Notes:
+   * - This is video-only (audio is currently not muxed).
+   * - Uses `ffmpeg` from PATH.
+   */
+  async createRecordingReplayMp4Stream(params: {
+    channel: number;
+    fileName: string;
+    streamType?: RecordingReplayStreamType;
+    iframeReplay?: RecordingReplayIFrameMode;
+    /** Stop replay after N seconds (default: 20). */
+    seconds?: number;
+    /** Assumed input FPS for muxing when timestamps are missing (default: 25). */
+    fps?: number;
+    logger?: Logger;
+  }): Promise<{
+    mp4: Readable;
+    stop: () => Promise<void>;
+  }> {
+    const fps = params.fps ?? 25;
+    const seconds = params.seconds ?? 20;
+
+    const startParams: Parameters<
+      ReolinkBaichuanApi["startRecordingReplayStream"]
+    >[0] = {
+      channel: params.channel,
+      fileName: params.fileName,
+      ...(params.streamType != null ? { streamType: params.streamType } : {}),
+      ...(params.iframeReplay != null
+        ? { iframeReplay: params.iframeReplay }
+        : {}),
+      ...(params.logger != null ? { logger: params.logger } : {}),
+    };
+
+    const { stream, stop: stopReplay } =
+      await this.startRecordingReplayStream(startParams);
+
+    const input = new PassThrough();
+    const output = new PassThrough();
+
+    const H264_AUD = Buffer.from([0x00, 0x00, 0x00, 0x01, 0x09, 0xf0]);
+
+    let ff: ReturnType<typeof spawn> | null = null;
+    let ended = false;
+
+    const startFfmpeg = (videoType: "H264" | "H265") => {
+      if (ff) return;
+      const demux = videoType === "H265" ? "hevc" : "h264";
+      const args = [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-fflags",
+        "+genpts",
+        "-r",
+        String(fps),
+        "-f",
+        demux,
+        "-i",
+        "pipe:0",
+        "-c",
+        "copy",
+        "-movflags",
+        "frag_keyframe+empty_moov",
+        "-f",
+        "mp4",
+        "pipe:1",
+      ];
+
+      ff = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
+      if (!ff.stdin || !ff.stdout || !ff.stderr) {
+        throw new Error("ffmpeg stdio streams not available");
+      }
+      input.pipe(ff.stdin);
+      ff.stdout.pipe(output);
+
+      let stderr = "";
+      ff.stderr.on("data", (d) => (stderr += String(d)));
+      ff.on("close", (code) => {
+        if (ended) return;
+        ended = true;
+        // Best-effort: surface ffmpeg errors to consumers.
+        if ((code ?? 0) !== 0 && stderr.trim()) {
+          output.destroy(
+            new Error(`ffmpeg exited with code ${code ?? 0}: ${stderr}`),
+          );
+        } else {
+          output.end();
+        }
+      });
+    };
+
+    const stopAll = async (): Promise<void> => {
+      if (ended) return;
+      ended = true;
+      try {
+        await stopReplay();
+      } catch {
+        // ignore
+      }
+      try {
+        await stream.stop();
+      } catch {
+        // ignore
+      }
+      try {
+        input.end();
+      } catch {
+        // ignore
+      }
+      try {
+        ff?.kill("SIGKILL");
+      } catch {
+        // ignore
+      }
+      try {
+        output.end();
+      } catch {
+        // ignore
+      }
+    };
+
+    const timer = setTimeout(
+      () => {
+        void stopAll();
+      },
+      Math.max(1, seconds) * 1000,
+    );
+
+    output.on("close", () => {
+      clearTimeout(timer);
+      void stopAll();
+    });
+
+    stream.on("error", (e) => {
+      output.destroy(e);
+      void stopAll();
+    });
+
+    stream.on("videoAccessUnit", ({ data, videoType }) => {
+      if (ended) return;
+      startFfmpeg(videoType);
+      if (videoType === "H264") input.write(H264_AUD);
+      input.write(data);
+    });
+
+    return {
+      mp4: output,
+      stop: stopAll,
+    };
   }
 }

@@ -11,5 +11,6 @@ This folder contains firmware analysis documentation.
 
 - `docs/_shared/CAMERA_FIRMWARE_RUNBOOK.md`
 - `docs/_shared/CAMERA_REPORT_TEMPLATE.md`
+- `docs/_shared/PCAP_TO_MP4_RUNBOOK.md`
 - `docs/IPC_529SD78MP/REPORT.md`
 - `docs/IPC_529SD78MP/ANALYSIS.md`

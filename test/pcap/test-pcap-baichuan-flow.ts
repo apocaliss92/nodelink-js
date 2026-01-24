@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 /**
- * Extract a raw concatenated payload stream for a given Baichuan cmdId from a PCAPNG.
+ * PCAP-based analysis: reconstruct a high-level "flow" for Baichuan commands.
  *
- * This is intended for reverse-engineering the app's "download" path (e.g. cmdId=143)
- * by checking for MP4 boxes (ftyp/moov/moof/mdat) or other signatures.
+ * Goal: for a given host (camera/NVR/HomeHub), group frames by cmdId+msgNum
+ * and extract human-readable XML bodies (when present), to understand download
+ * workflows (e.g. cmd143/cmd298 for events download).
  *
  * Usage:
- *   npm run test:build && node dist/test/pcap/test-pcap-baichuan-extract-cmd-stream.js \
- *     pcap/host\ 192.168.50.226\ _DOWNLOAD.pcapng --host 192.168.50.226 --cmd 143 --any-port \
- *     --out test/artifacts/pcap/extracts/226-cmd143.bin --max-bytes 5000000
+ *   npm run test:build && node dist/test/pcap/test-pcap-baichuan-flow.js \
+ *     "pcap/host 192.168.1.161 EVENTS_DOWNLOAD.pcapng" --host 192.168.1.161 --any-port \
+ *     --out pcap/reports/host-192.168.1.161_EVENTS_DOWNLOAD.flow.json
  */
 
 import fs from "node:fs";
@@ -41,11 +42,6 @@ type FrameLike = {
   payload: Buffer;
   extension: Buffer;
 };
-
-function tryParseNonce(xml: string): string | null {
-  const m = /<nonce>([^<]+)<\/nonce>/i.exec(xml);
-  return m?.[1]?.trim() ? m[1].trim() : null;
-}
 
 function readU16(buf: Buffer, off: number, endian: Endian): number {
   return endian === "le" ? buf.readUInt16LE(off) : buf.readUInt16BE(off);
@@ -99,28 +95,29 @@ function reassembleTcpSegments(segments: TcpSegment[]): {
   return { data: Buffer.concat(out), gaps };
 }
 
-function detectAnyMp4BoxAt(buf: Buffer, i: number): string | null {
-  if (i + 8 > buf.length) return null;
-  const type = buf.subarray(i + 4, i + 8).toString("ascii");
-  if (!/^[A-Za-z0-9 ]{4}$/.test(type)) return null;
-  if (
-    ["ftyp", "moov", "moof", "mdat", "styp", "sidx", "free", "skip"].includes(
-      type,
-    )
-  )
-    return type;
-  return null;
+function tryParseXmlPrefix(buf: Buffer, maxBytes: number): string | null {
+  const slice = buf.subarray(0, Math.min(buf.length, maxBytes));
+  const s = slice.toString("utf8");
+  const i = s.indexOf("<?xml");
+  if (i !== 0) return null;
+
+  // heuristically cut at first NUL or obvious binary
+  const nul = s.indexOf("\u0000");
+  return (nul >= 0 ? s.slice(0, nul) : s).trim() || null;
+}
+
+function tryParseNonce(xml: string): string | null {
+  const m = /<nonce>([^<]+)<\/nonce>/i.exec(xml);
+  return m?.[1]?.trim() ? m[1].trim() : null;
 }
 
 function passwordForHostFromEnv(host: string): string | undefined {
   const h = host.trim();
   if (!h) return undefined;
 
-  // Prefer explicit Baichuan password if set.
   const direct = (process.env.BAICHUAN_PASSWORD ?? "").trim();
   if (direct) return direct;
 
-  // Common convention: <PREFIX>_HOST and <PREFIX>_PASSWORD
   for (const [k, v] of Object.entries(process.env)) {
     if (!k.endsWith("_HOST")) continue;
     if (!v) continue;
@@ -129,7 +126,6 @@ function passwordForHostFromEnv(host: string): string | undefined {
     if (pw) return pw;
   }
 
-  // Fallbacks used elsewhere in this repo.
   const tcp = (process.env.TCP_PASSWORD ?? "").trim();
   if (tcp) return tcp;
   const nvr = (process.env.NVR_PASSWORD ?? "").trim();
@@ -142,15 +138,7 @@ function parseArgs(argv: string[]): {
   pcapPath: string;
   host: string;
   port: number;
-  cmdId: number;
-  msgNum?: number;
-  channelId?: number;
-  streamType?: number;
   outPath: string;
-  maxBytes: number;
-  mode: "payload" | "body";
-  direction: "rsp" | "req" | "both";
-  decryptAes: boolean;
   password?: string;
 } {
   const args = [...argv];
@@ -159,15 +147,7 @@ function parseArgs(argv: string[]): {
 
   let host = process.env.BAICHUAN_HOST ?? "";
   let port = Number.parseInt(process.env.BAICHUAN_TCP_PORT ?? "9000", 10);
-  let cmdId = 143;
-  let msgNum: number | undefined;
-  let channelId: number | undefined;
-  let streamType: number | undefined;
-  let outPath = "test/artifacts/pcap/extracts/cmd.bin";
-  let maxBytes = 5_000_000;
-  let mode: "payload" | "body" = "payload";
-  let direction: "rsp" | "req" | "both" = "rsp";
-  let decryptAes = false;
+  let outPath = "pcap/reports/flow.json";
   let password: string | undefined;
 
   while (args.length) {
@@ -185,71 +165,10 @@ function parseArgs(argv: string[]): {
       port = 0;
       continue;
     }
-    if (a === "--cmd") {
-      cmdId = Number.parseInt(String(args.shift() ?? "143"), 10);
-      continue;
-    }
-    if (a === "--msg" || a === "--msg-num" || a === "--msgNum") {
-      const v = Number.parseInt(String(args.shift() ?? ""), 10);
-      if (!Number.isFinite(v) || v < 0)
-        throw new Error(`Invalid --msg ${JSON.stringify(v)}`);
-      msgNum = v;
-      continue;
-    }
-
-    if (a === "--channel" || a === "--channel-id" || a === "--channelId") {
-      const v = Number.parseInt(String(args.shift() ?? ""), 10);
-      if (!Number.isFinite(v) || v < 0)
-        throw new Error(`Invalid --channel-id ${JSON.stringify(v)}`);
-      channelId = v;
-      continue;
-    }
-
-    if (a === "--stream" || a === "--stream-type" || a === "--streamType") {
-      const v = Number.parseInt(String(args.shift() ?? ""), 10);
-      if (!Number.isFinite(v) || v < 0)
-        throw new Error(`Invalid --stream-type ${JSON.stringify(v)}`);
-      streamType = v;
-      continue;
-    }
     if (a === "--out") {
       outPath = String(args.shift() ?? outPath);
       continue;
     }
-    if (a === "--max-bytes") {
-      maxBytes = Number.parseInt(String(args.shift() ?? String(maxBytes)), 10);
-      continue;
-    }
-    if (
-      a === "--body" ||
-      a === "--include-ext" ||
-      a === "--include-extension"
-    ) {
-      mode = "body";
-      continue;
-    }
-    if (a === "--payload") {
-      mode = "payload";
-      continue;
-    }
-
-    if (a === "--direction") {
-      const v = String(args.shift() ?? "")
-        .trim()
-        .toLowerCase();
-      if (v === "rsp" || v === "req" || v === "both") direction = v;
-      else
-        throw new Error(
-          `Invalid --direction ${JSON.stringify(v)} (expected rsp|req|both)`,
-        );
-      continue;
-    }
-
-    if (a === "--decrypt-aes" || a === "--decrypt") {
-      decryptAes = true;
-      continue;
-    }
-
     if (a === "--password") {
       password = String(args.shift() ?? "").trim() || undefined;
       continue;
@@ -260,54 +179,23 @@ function parseArgs(argv: string[]): {
   if (!host) throw new Error("Missing --host (or BAICHUAN_HOST)");
   if (!Number.isFinite(port) || port < 0)
     throw new Error(`Invalid port: ${port}`);
-  if (!Number.isFinite(cmdId) || cmdId <= 0)
-    throw new Error(`Invalid cmdId: ${cmdId}`);
-  if (!outPath) throw new Error("Missing --out");
-  if (!Number.isFinite(maxBytes) || maxBytes <= 0)
-    throw new Error(`Invalid --max-bytes: ${maxBytes}`);
 
-  if (!password) {
-    password = passwordForHostFromEnv(host);
-  }
+  if (!password) password = passwordForHostFromEnv(host);
 
   return {
     pcapPath,
     host,
     port,
-    cmdId,
-    ...(msgNum != null ? { msgNum } : {}),
-    ...(channelId != null ? { channelId } : {}),
-    ...(streamType != null ? { streamType } : {}),
     outPath,
-    maxBytes,
-    mode,
-    direction,
-    decryptAes,
     ...(password != null ? { password } : {}),
   };
 }
 
 function main(): void {
-  // Avoid crashing when stdout is closed early (e.g. piping to `head`).
-  process.stdout.on("error", (err: any) => {
-    if (err?.code === "EPIPE") process.exit(0);
-  });
+  const { pcapPath, host, port, outPath, password } = parseArgs(
+    process.argv.slice(2),
+  );
 
-  const {
-    pcapPath,
-    host,
-    port,
-    cmdId,
-    msgNum,
-    channelId,
-    streamType,
-    outPath,
-    maxBytes,
-    mode,
-    direction,
-    decryptAes,
-    password,
-  } = parseArgs(process.argv.slice(2));
   const abs = path.resolve(process.cwd(), pcapPath);
   const buf = fs.readFileSync(abs);
   if (buf.length < 12) throw new Error("Capture too small");
@@ -443,14 +331,12 @@ function main(): void {
     off = blockEnd;
   }
 
-  // Optional: derive AES key from cmdId=1 negotiation response.
-  // This lets us extract decrypted payload streams for bulk commands (e.g. 143).
+  // Derive AES key from cmdId=1 negotiation response.
   let negotiatedAesKey: Buffer | null = null;
   let negotiatedEncType: number | null = null;
   let negotiatedNonce: string | null = null;
 
-  if (decryptAes && password) {
-    // We need Baichuan frames to find cmdId=1; only scan camera->client directions.
+  if (password) {
     for (const [dirKey, segs] of segmentsByDir.entries()) {
       const m =
         /^(\d+\.\d+\.\d+\.\d+):(\d+) -> (\d+\.\d+\.\d+\.\d+):(\d+)$/.exec(
@@ -477,7 +363,6 @@ function main(): void {
         if (encType === 0x00) {
           nonceXml = body.toString("utf8");
         } else {
-          // Negotiation itself is often BC-XOR encrypted, even when it negotiates AES.
           for (const offTry of [f.header.channelId, 250, 0]) {
             try {
               const s = bcDecrypt(body, offTry).toString("utf8");
@@ -493,9 +378,7 @@ function main(): void {
           }
         }
 
-        if (!negotiatedNonce) {
-          negotiatedNonce = tryParseNonce(nonceXml);
-        }
+        if (!negotiatedNonce) negotiatedNonce = tryParseNonce(nonceXml);
 
         if (negotiatedNonce && (encType === 0x02 || encType === 0x12)) {
           negotiatedAesKey = deriveAesKey(negotiatedNonce, password);
@@ -508,19 +391,63 @@ function main(): void {
     }
   }
 
-  const selectedChunks: Buffer[] = [];
-  let selectedBytes = 0;
-  let selectedFrames = 0;
+  type MsgGroup = {
+    frames: number;
+    payloadBytes: number;
+    bodyBytes: number;
+    extBytes: number;
+    payloadOffset: Record<string, number>;
+    exampleHeader?: {
+      channelId: number;
+      streamType: number;
+      responseCode: number;
+      messageClass: string;
+    };
+    exampleXml?: string;
+  };
+
+  type CmdGroup = {
+    cmdId: number;
+    req: Record<string, MsgGroup>;
+    rsp: Record<string, MsgGroup>;
+  };
+
+  const cmds: Record<string, CmdGroup> = {};
+
+  const ensure = (cmdId: number): CmdGroup => {
+    const k = String(cmdId);
+    if (!cmds[k]) cmds[k] = { cmdId, req: {}, rsp: {} };
+    return cmds[k];
+  };
+
+  const update = (g: MsgGroup, f: FrameLike, body: Buffer): void => {
+    g.frames++;
+    g.bodyBytes += body.length;
+    g.extBytes += f.extension.length;
+    g.payloadBytes += f.payload.length;
+
+    const po =
+      typeof f.header.payloadOffset === "number" ? f.header.payloadOffset : 0;
+    g.payloadOffset[String(po)] = (g.payloadOffset[String(po)] ?? 0) + 1;
+
+    if (!g.exampleHeader) {
+      g.exampleHeader = {
+        channelId: f.header.channelId,
+        streamType: f.header.streamType,
+        responseCode: f.header.responseCode,
+        messageClass: `0x${f.header.messageClass.toString(16)}`,
+      };
+    }
+
+    if (!g.exampleXml) {
+      const xml = tryParseXmlPrefix(body, 4096);
+      if (xml) g.exampleXml = xml;
+    }
+  };
+
   let gapsTotal = 0;
 
-  const mp4Hits: Record<string, number> = {};
-  let annexBHits = 0;
-  let totalExtBytes = 0;
-
   for (const [dirKey, segs] of segmentsByDir.entries()) {
-    const { data, gaps } = reassembleTcpSegments(segs);
-    gapsTotal += gaps;
-
     const m = /^(\d+\.\d+\.\d+\.\d+):(\d+) -> (\d+\.\d+\.\d+\.\d+):(\d+)$/.exec(
       dirKey,
     );
@@ -529,111 +456,66 @@ function main(): void {
 
     const isRsp = srcIp === host;
     const isReq = dstIp === host;
+    if (!isRsp && !isReq) continue;
 
-    if (direction === "rsp" && !isRsp) continue;
-    if (direction === "req" && !isReq) continue;
-    if (direction === "both" && !isRsp && !isReq) continue;
+    const { data, gaps } = reassembleTcpSegments(segs);
+    gapsTotal += gaps;
 
     const parser = new BaichuanFrameParser();
     const frames = parser.push(data) as unknown as FrameLike[];
 
     for (const f of frames) {
-      if (f.header.cmdId !== cmdId) continue;
-      if (msgNum != null && f.header.msgNum !== msgNum) continue;
-      if (channelId != null && f.header.channelId !== channelId) continue;
-      if (streamType != null && f.header.streamType !== streamType) continue;
-      if (direction === "rsp" && dstIp === host) continue; // sanity
-      if (direction === "req" && srcIp === host) continue; // sanity
+      const cmd = ensure(f.header.cmdId);
+      const bucket = isReq ? cmd.req : cmd.rsp;
+      const msgKey = `${f.header.channelId}:${f.header.streamType}:${f.header.msgNum}`;
+      const g =
+        bucket[msgKey] ??
+        (bucket[msgKey] = {
+          frames: 0,
+          payloadBytes: 0,
+          bodyBytes: 0,
+          extBytes: 0,
+          payloadOffset: {},
+        });
 
       const rawBody = Buffer.concat([f.extension, f.payload]);
+      let body = rawBody;
 
-      const payloadOffRaw =
-        typeof f.header.payloadOffset === "number" ? f.header.payloadOffset : 0;
-      const payloadOff = Math.min(Math.max(payloadOffRaw, 0), rawBody.length);
-
-      // Many captures appear to contain a cleartext prefix (e.g. XML body / BcMedia Info)
-      // followed by an AES-CFB encrypted payload. Decrypting the entire body would corrupt
-      // that prefix and destroy magic markers.
-      let bodyToUse = rawBody;
-      if (decryptAes && negotiatedAesKey) {
+      if (
+        negotiatedAesKey &&
+        negotiatedEncType != null &&
+        (negotiatedEncType === 0x02 || negotiatedEncType === 0x12)
+      ) {
         try {
-          const prefix = rawBody.subarray(0, payloadOff);
-          const encrypted = rawBody.subarray(payloadOff);
-          const decrypted = encrypted.length
-            ? aesDecrypt(encrypted, negotiatedAesKey)
-            : Buffer.alloc(0);
-          bodyToUse = Buffer.concat([prefix, decrypted]);
+          body = aesDecrypt(rawBody, negotiatedAesKey);
         } catch {
-          // Keep raw if decryption fails.
-          bodyToUse = rawBody;
+          body = rawBody;
         }
       }
 
-      const decPayload = bodyToUse.subarray(payloadOff);
-
-      const dataBlob = mode === "body" ? bodyToUse : decPayload;
-
-      if (dataBlob.length === 0) continue;
-
-      selectedFrames++;
-      const remain = maxBytes - selectedBytes;
-      if (remain <= 0) break;
-      const chunk =
-        dataBlob.length <= remain ? dataBlob : dataBlob.subarray(0, remain);
-      selectedChunks.push(chunk);
-      selectedBytes += chunk.length;
-      totalExtBytes += mode === "body" ? f.extension.length : 0;
-
-      // quick signature scan in the chunk
-      for (let i = 0; i + 8 <= chunk.length && i < 1024; i++) {
-        const t = detectAnyMp4BoxAt(chunk, i);
-        if (t) mp4Hits[t] = (mp4Hits[t] ?? 0) + 1;
-      }
-      if (chunk.includes(Buffer.from([0x00, 0x00, 0x00, 0x01]))) annexBHits++;
-
-      if (selectedBytes >= maxBytes) break;
+      update(g, f, body);
     }
   }
 
-  const outAbs = path.resolve(process.cwd(), outPath);
-  fs.mkdirSync(path.dirname(outAbs), { recursive: true });
-  fs.writeFileSync(outAbs, Buffer.concat(selectedChunks));
-
-  const report = {
-    input: {
-      pcapPath,
-      host,
-      port,
-      cmdId,
-      ...(msgNum != null ? { msgNum } : {}),
-      ...(channelId != null ? { channelId } : {}),
-      ...(streamType != null ? { streamType } : {}),
-      mode,
-      direction,
-      decryptAes,
-      ...(decryptAes
-        ? {
-            negotiatedEncType:
-              negotiatedEncType != null
-                ? `0x${negotiatedEncType.toString(16)}`
-                : null,
-            nonce: negotiatedNonce,
-            aesKeyDerived: !!negotiatedAesKey,
-            passwordProvided: !!password,
-          }
-        : {}),
+  const out = {
+    input: { pcapPath, host, port },
+    negotiation: {
+      encType:
+        negotiatedEncType != null
+          ? `0x${negotiatedEncType.toString(16)}`
+          : null,
+      nonce: negotiatedNonce,
+      aesKeyDerived: !!negotiatedAesKey,
+      passwordProvided: !!password,
     },
-    outPath: outAbs,
-    selected: {
-      frames: selectedFrames,
-      bytes: selectedBytes,
-      gapsTotal,
-      totalExtBytes,
-    },
-    signatures: { mp4Hits, annexBHits },
+    tcp: { dirs: segmentsByDir.size, gapsTotal },
+    cmds,
   };
 
-  process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  const outAbs = path.resolve(process.cwd(), outPath);
+  fs.mkdirSync(path.dirname(outAbs), { recursive: true });
+  fs.writeFileSync(outAbs, JSON.stringify(out, null, 2));
+  process.stdout.write(`${outAbs}\n`);
 }
 
 main();

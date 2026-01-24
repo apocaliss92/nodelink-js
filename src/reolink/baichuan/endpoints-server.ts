@@ -40,12 +40,22 @@ function parseNativeVariant(v: string | null): NativeVariantParam {
   throw new Error("Invalid variant (must be default, autotrack, or telephoto)");
 }
 
+function parseDateParam(v: string | null): Date {
+  if (!v) throw new Error("Missing time");
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime()))
+    throw new Error("Invalid time (expected ISO string)");
+  return d;
+}
+
 /**
  * Minimal HTTP server exposing two endpoints:
  * - `GET /stream?channel=0&profile=main` -> returns a local RTSP URL (Baichuan socket -> RTSP)
  * - `GET /download?channel=0&uid=...&fileName=...` -> downloads a recording via Baichuan socket
  */
-export function createBaichuanEndpointsServer(opts: BaichuanEndpointsServerOptions): http.Server {
+export function createBaichuanEndpointsServer(
+  opts: BaichuanEndpointsServerOptions,
+): http.Server {
   const api = new ReolinkBaichuanApi({
     ...opts.baichuan,
   });
@@ -110,7 +120,10 @@ export function createBaichuanEndpointsServer(opts: BaichuanEndpointsServerOptio
         const channel = parseIntParam(u.searchParams.get("channel"), 0);
         const uid = (u.searchParams.get("uid") ?? "").trim();
         const fileName = (u.searchParams.get("fileName") ?? "").trim();
-        const timeoutMs = parseIntParam(u.searchParams.get("timeoutMs"), 120_000);
+        const timeoutMs = parseIntParam(
+          u.searchParams.get("timeoutMs"),
+          120_000,
+        );
 
         if (!uid) {
           res.statusCode = 400;
@@ -131,10 +144,14 @@ export function createBaichuanEndpointsServer(opts: BaichuanEndpointsServerOptio
           fallbackToHttp: false,
         });
 
-        const outName = fileName.split("/").filter(Boolean).at(-1) ?? "recording.bin";
+        const outName =
+          fileName.split("/").filter(Boolean).at(-1) ?? "recording.bin";
         res.statusCode = 200;
         res.setHeader("Content-Type", "application/octet-stream");
-        res.setHeader("Content-Disposition", `attachment; filename="${outName}"`);
+        res.setHeader(
+          "Content-Disposition",
+          `attachment; filename="${outName}"`,
+        );
         res.setHeader("Content-Length", String(buf.length));
         res.end(buf);
         return;
@@ -143,8 +160,12 @@ export function createBaichuanEndpointsServer(opts: BaichuanEndpointsServerOptio
       if (u.pathname === "/vod/stream" || u.pathname === "/vod/download") {
         const channel = parseIntParam(u.searchParams.get("channel"), 0);
         const fileName = (u.searchParams.get("fileName") ?? "").trim();
-        const streamType = (u.searchParams.get("streamType") ?? "mainStream").trim();
-        const rtspTransport = (u.searchParams.get("rtmpTransport") ?? "tcp").trim();
+        const streamType = (
+          u.searchParams.get("streamType") ?? "mainStream"
+        ).trim();
+        const rtspTransport = (
+          u.searchParams.get("rtmpTransport") ?? "tcp"
+        ).trim();
 
         if (!fileName) {
           res.statusCode = 400;
@@ -169,7 +190,8 @@ export function createBaichuanEndpointsServer(opts: BaichuanEndpointsServerOptio
           ensureEnabled: true,
         });
 
-        const outName = fileName.split("/").filter(Boolean).at(-1) ?? "recording.mp4";
+        const outName =
+          fileName.split("/").filter(Boolean).at(-1) ?? "recording.mp4";
 
         if (u.pathname === "/vod/stream") {
           // Stream-only: RTMP -> MPEG-TS passthrough.
@@ -210,7 +232,10 @@ export function createBaichuanEndpointsServer(opts: BaichuanEndpointsServerOptio
         // Download/export: RTMP -> MP4 (best-effort streamable MP4).
         res.statusCode = 200;
         res.setHeader("Content-Type", "video/mp4");
-        res.setHeader("Content-Disposition", `attachment; filename="${outName}"`);
+        res.setHeader(
+          "Content-Disposition",
+          `attachment; filename="${outName}"`,
+        );
         res.setHeader("Cache-Control", "no-cache");
         res.setHeader("Connection", "close");
 
@@ -239,6 +264,94 @@ export function createBaichuanEndpointsServer(opts: BaichuanEndpointsServerOptio
         req.on("close", cleanup);
         res.on("close", cleanup);
         ff.on("close", () => {
+          res.end();
+        });
+        return;
+      }
+
+      if (u.pathname === "/replay/cover.jpg") {
+        const channel = parseIntParam(u.searchParams.get("channel"), 0);
+        const time = parseDateParam(u.searchParams.get("time"));
+        const snapType = (u.searchParams.get("snapType") ?? "sub").trim();
+        const timeoutMs = parseIntParam(
+          u.searchParams.get("timeoutMs"),
+          30_000,
+        );
+        const jpegQuality = parseIntParam(u.searchParams.get("jpegQuality"), 2);
+
+        if (snapType !== "main" && snapType !== "sub") {
+          res.statusCode = 400;
+          res.end("Invalid snapType (must be main or sub)");
+          return;
+        }
+
+        const { jpeg, snapshot } = await api.snapshotFromPlaybackJpeg({
+          channel,
+          time,
+          snapType: snapType as any,
+          timeoutMs,
+          jpegQuality,
+        });
+
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "image/jpeg");
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("X-Reolink-Encoding", snapshot.encoding);
+        res.setHeader("X-Reolink-Frame-Length", String(snapshot.frameLength));
+        res.setHeader("Content-Length", String(jpeg.length));
+        res.end(jpeg);
+        return;
+      }
+
+      if (u.pathname === "/replay/stream.mp4") {
+        const channel = parseIntParam(u.searchParams.get("channel"), 0);
+        const fileName = (u.searchParams.get("fileName") ?? "").trim();
+        const streamType = (
+          u.searchParams.get("streamType") ?? "mainStream"
+        ).trim();
+        const seconds = parseIntParam(u.searchParams.get("seconds"), 20);
+        const fps = parseIntParam(u.searchParams.get("fps"), 25);
+
+        if (!fileName) {
+          res.statusCode = 400;
+          res.end("Missing fileName");
+          return;
+        }
+        if (streamType !== "mainStream" && streamType !== "subStream") {
+          res.statusCode = 400;
+          res.end("Invalid streamType (must be mainStream or subStream)");
+          return;
+        }
+
+        const { mp4, stop } = await api.createRecordingReplayMp4Stream({
+          channel,
+          fileName,
+          streamType: streamType as any,
+          seconds,
+          fps,
+        });
+
+        res.writeHead(200, {
+          "Content-Type": "video/mp4",
+          "Cache-Control": "no-cache",
+          Connection: "close",
+        });
+        mp4.pipe(res);
+
+        const cleanup = () => {
+          void stop();
+          try {
+            mp4.destroy();
+          } catch {
+            // ignore
+          }
+        };
+        req.on("close", cleanup);
+        res.on("close", cleanup);
+        mp4.on("end", () => {
+          res.end();
+        });
+        mp4.on("error", () => {
           res.end();
         });
         return;
