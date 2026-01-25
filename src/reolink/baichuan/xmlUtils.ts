@@ -37,10 +37,11 @@ export const parseXmlDateTimeBlock = (block: string): Date | undefined => {
   const second = Number.parseInt(getXmlText(block, "second") ?? "", 10);
 
   if ([year, month, day, hour, minute, second].every(Number.isFinite)) {
-    // Treat as UTC to avoid timezone shifts when serializing to JSON.
-    // Camera timestamps are typically in local time, but we parse as UTC to preserve
-    // the exact values without timezone conversion artifacts.
-    return new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+    // Parse as LOCAL TIME because camera timestamps represent local time on the camera.
+    // When the camera says "08:30:00", it means 8:30 AM in the camera's configured timezone.
+    // By parsing as local time (assuming server and camera share the same timezone),
+    // the Date object will correctly represent that moment in time.
+    return new Date(year, month - 1, day, hour, minute, second);
   }
 
   // Some firmwares encode the timestamp as plain text instead of nested tags.
@@ -56,7 +57,7 @@ export const parseXmlDateTimeBlock = (block: string): Date | undefined => {
   const mi = Number.parseInt(m[5] ?? "0", 10);
   const se = Number.parseInt(m[6] ?? "0", 10);
   if (![y, mo, da, ho, mi, se].every(Number.isFinite)) return undefined;
-  return new Date(Date.UTC(y, mo - 1, da, ho, mi, se));
+  return new Date(y, mo - 1, da, ho, mi, se);
 };
 
 export const parseRecordingFilesFromXml = (xml: string): RecordingFile[] => {
