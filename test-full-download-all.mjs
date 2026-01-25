@@ -87,16 +87,28 @@ async function testCamera(cam) {
             try {
                 // Cerca registrazioni: prima oggi, poi 22 gennaio, poi ultimi 7 giorni
                 const today = new Date();
-                let recordings = await api.getVideoclips({
-                    channel,
-                    start: new Date(today.getFullYear(), today.getMonth(), today.getDate(), 0, 0, 0),
-                    end: new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59),
-                    streamType: "mainStream"
-                });
+                let recordings = [];
 
-                // Se non trova oggi, prova il 22 gennaio
+                // Per TCP265 (H.265) sappiamo che i file di oggi falliscono con 400,
+                // quindi saltiamo direttamente ai file più vecchi
+                const skipTodayFor170 = cam.name.includes("TCP265") || cam.host.includes("170");
+
+                if (!skipTodayFor170) {
+                    recordings = await api.getVideoclips({
+                        channel,
+                        start: new Date(today.getFullYear(), today.getMonth(), today.getDate(), 0, 0, 0),
+                        end: new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59),
+                        streamType: "mainStream"
+                    });
+                }
+
+                // Se non trova oggi (o se l'abbiamo saltato), prova il 22 gennaio
                 if (recordings.length === 0) {
-                    console.log(`     Nessuna registrazione oggi, provo 22 gennaio...`);
+                    if (skipTodayFor170) {
+                        console.log(`     (Skip file di oggi per TCP265, noti per fallire)`);
+                    } else {
+                        console.log(`     Nessuna registrazione oggi, provo 22 gennaio...`);
+                    }
                     recordings = await api.getVideoclips({
                         channel,
                         start: new Date(2026, 0, 22, 0, 0, 0),

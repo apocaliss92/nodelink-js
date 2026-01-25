@@ -85,13 +85,14 @@ export const buildFileInfoListReplayByNameXml = (params: {
           ? "<iIframeReplay>1</iIframeReplay>"
           : "";
 
+  // Simplified XML format matching the official Reolink app:
+  // - No <name> or <fileName> tags (app doesn't use them)
+  // - Only <Id> with the full path/filename
   return `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <FileInfoList version="1.1">
 <FileInfo>
 <channelId>${xmlCh}</channelId>
-<name>${xmlEscape(params.name)}</name>
-<fileName>${xmlEscape(params.name)}</fileName>
 <Id>${xmlEscape(params.name)}</Id>
 ${params.uid ? `<uid>${xmlEscape(params.uid)}</uid>` : ""}
 <supportSub>${supportSub}</supportSub>

@@ -3044,8 +3044,10 @@ export class ReolinkBaichuanApi {
     try {
       await stream.start();
 
-      // NVR streaming: use resolved headerChannelId or default to 82 (PCAP-verified)
-      const channelIdOverride = headerChannelIdOverride ?? 82;
+      // Same logic as fileInfoListReplayBinaryDownload:
+      // NVR has headerChannelIdOverride resolved, standalone doesn't
+      const isNvr = headerChannelIdOverride != null;
+      const channelIdOverride = isNvr ? (headerChannelIdOverride ?? 82) : 0;
 
       const frame = await this.client.sendFrame({
         cmdId: BC_CMD_ID_FILE_INFO_LIST_REPLAY,
@@ -10305,7 +10307,13 @@ export class ReolinkBaichuanApi {
     const streamType = params.streamType ?? "mainStream";
     const timeoutMs = params.timeoutMs ?? 20_000;
 
-    return await this.startRecordingReplayStream({
+    await this.client.login();
+
+    // IMPORTANT: Always use standalone method for standalone cameras,
+    // regardless of whether fileName contains "/" (full path).
+    // The NVR vs Standalone distinction in startRecordingReplayStream
+    // is based on path format, but standalone cameras can have full paths too.
+    return await this.startRecordingReplayStreamStandalone({
       channel,
       fileName: params.fileName,
       streamType,
