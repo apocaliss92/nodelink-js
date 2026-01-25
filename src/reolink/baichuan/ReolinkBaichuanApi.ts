@@ -466,7 +466,57 @@ export class ReolinkBaichuanApi {
    * Queue for serializing listRecordings calls to prevent socket crashes from concurrent requests.
    */
   private recordingsQueue: RecordingsQueueItem[] = [];
+
+  /**
+   * Queue for thumbnail generation with limited concurrency (max 2 concurrent).
+   */
+  private thumbnailQueue: Array<{
+    run: () => Promise<void>;
+  }> = [];
+  private thumbnailActiveCount = 0;
+  private readonly thumbnailMaxConcurrency = 1;
   private recordingsQueueProcessing = false;
+
+  /**
+   * Process thumbnail queue with limited concurrency.
+   */
+  private async processThumbnailQueue(): Promise<void> {
+    while (
+      this.thumbnailQueue.length > 0 &&
+      this.thumbnailActiveCount < this.thumbnailMaxConcurrency
+    ) {
+      const item = this.thumbnailQueue.shift();
+      if (!item) break;
+
+      this.thumbnailActiveCount++;
+      // Run without awaiting to allow parallel execution up to max concurrency
+      item.run().finally(() => {
+        this.thumbnailActiveCount--;
+        // Process next items when a slot frees up
+        void this.processThumbnailQueue();
+      });
+    }
+  }
+
+  /**
+   * Enqueue a thumbnail operation with limited concurrency.
+   */
+  private async enqueueThumbnailOperation<T>(
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      this.thumbnailQueue.push({
+        run: async () => {
+          try {
+            resolve(await operation());
+          } catch (e) {
+            reject(e);
+          }
+        },
+      });
+      void this.processThumbnailQueue();
+    });
+  }
 
   /**
    * Cache for buildVideoStreamOptions.
@@ -4753,6 +4803,72 @@ export class ReolinkBaichuanApi {
         hasAudio,
       },
     };
+  }
+
+  /**
+   * Get a JPEG thumbnail from a recording file.
+   *
+   * This method uses the playback snapshot protocol to extract a frame from the
+   * beginning of a recording and converts it to JPEG. Requests are queued with
+   * limited concurrency (max 2 simultaneous) to avoid overwhelming the camera.
+   *
+   * Example usage:
+   * ```ts
+   * const jpeg = await api.getRecordingThumbnail({
+   *   channel: 0,
+   *   fileName: "/mnt/sda/Mp4Record/2026-01-22/Rec_20260122_000320.mp4"
+   * });
+   *
+   * // Save as JPEG file
+   * await fs.writeFile("thumbnail.jpg", jpeg);
+   * ```
+   *
+   * @param params - Thumbnail parameters
+   * @returns JPEG buffer
+   */
+  async getRecordingThumbnail(params: {
+    /** Channel number (default: 0) */
+    channel?: number;
+    /** Recording file name/path */
+    fileName: string;
+    /** Snapshot quality (default: "main") */
+    snapType?: "main" | "sub";
+    /** Timeout in ms (default: 30000) */
+    timeoutMs?: number;
+    /** Path to ffmpeg binary (default: "ffmpeg") */
+    ffmpegPath?: string;
+  }): Promise<Buffer> {
+    return this.enqueueThumbnailOperation(async () => {
+      const channel = this.normalizeChannel(params.channel ?? 0);
+      const timeoutMs = params.timeoutMs ?? 30_000;
+
+      // Parse the filename to extract the start timestamp
+      const parsed = parseRecordingFileName(params.fileName);
+      if (!parsed?.start) {
+        throw new Error(
+          `Cannot extract timestamp from recording filename: ${params.fileName}`,
+        );
+      }
+
+      this.logger?.debug?.(
+        `[getRecordingThumbnail] Extracting thumbnail: channel=${channel}, file=${params.fileName}, time=${parsed.start.toISOString()}`,
+      );
+
+      // Use snapshotJpegFromPlayback with the extracted timestamp
+      const jpeg = await this.snapshotJpegFromPlayback({
+        channel,
+        time: parsed.start,
+        snapType: params.snapType ?? "main",
+        timeoutMs,
+        ...(params.ffmpegPath ? { ffmpegPath: params.ffmpegPath } : {}),
+      });
+
+      this.logger?.debug?.(
+        `[getRecordingThumbnail] Thumbnail extracted: ${jpeg.length} bytes`,
+      );
+
+      return jpeg;
+    });
   }
 
   /**
