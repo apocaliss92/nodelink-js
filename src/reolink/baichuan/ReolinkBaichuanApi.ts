@@ -255,6 +255,7 @@ import {
 import {
   dedupeRecordingFiles,
   listRecordingsViaFileInfoList,
+  downloadRecordingViaFileInfoListPaged,
 } from "./utils/recordingsFileInfoList";
 import { parseAbilityInfoXml } from "./utils/abilityInfo";
 import {
@@ -4649,6 +4650,66 @@ export class ReolinkBaichuanApi {
   }
 
   /**
+   * Download a recording via paged FileInfoList (cmdId=14 OPEN, 15 GET, 16 CLOSE).
+   * This method is used by some cameras (e.g., TrackMix PoE) where cmdId=5/13 return empty.
+   * It opens the file, retrieves data in chunks, and closes the session.
+   */
+  async fileInfoListPagedDownload(params: {
+    channel: number;
+    fileName: string;
+    uid?: string;
+    timeoutMs?: number;
+  }): Promise<Buffer> {
+    await this.client.login();
+
+    const dbg = this.client.getDebugConfig?.();
+    const logger = this.logger;
+    const trace = (message: string): void =>
+      recordingsTraceLog(dbg, logger, "fileInfoListPagedDownload", message);
+
+    const channel = this.normalizeChannel(params.channel);
+    const uid = await this.ensureUidForRecordings(channel, params.uid);
+
+    trace(`Starting paged download: channel=${channel}, uid=${uid}, fileName=${params.fileName}`);
+
+    const sendXml = async (p: {
+      cmdId: number;
+      payloadXml?: string;
+      timeoutMs?: number;
+    }): Promise<string> => {
+      return await this.client.sendXml({
+        cmdId: p.cmdId,
+        ...(p.payloadXml != null ? { payloadXml: p.payloadXml } : {}),
+        ...(p.timeoutMs != null ? { timeoutMs: p.timeoutMs } : {}),
+      });
+    };
+
+    const sendBinary = async (p: {
+      cmdId: number;
+      payloadXml?: string;
+      timeoutMs?: number;
+    }): Promise<Buffer> => {
+      return await this.client.sendBinary({
+        cmdId: p.cmdId,
+        ...(p.payloadXml != null ? { payloadXml: p.payloadXml } : {}),
+        ...(p.timeoutMs != null ? { timeoutMs: p.timeoutMs } : {}),
+      });
+    };
+
+    const result = await downloadRecordingViaFileInfoListPaged({
+      sendXml,
+      sendBinary,
+      channel,
+      uid,
+      fileName: params.fileName,
+      timeoutMs: params.timeoutMs ?? 120_000,
+    });
+
+    trace(`Paged download completed: ${result.length} bytes`);
+    return result;
+  }
+
+  /**
    * Download a recording via FileInfoList replay (cmdId=5) using the PCAP-observed binary chunk flow.
    * This is native-only and does NOT involve CGI/HTTP.
    */
@@ -4806,6 +4867,7 @@ export class ReolinkBaichuanApi {
       replayErr = e;
     }
 
+    let downloadErr: unknown;
     try {
       return await this.fileInfoListDownload({
         channel,
@@ -4815,18 +4877,41 @@ export class ReolinkBaichuanApi {
         ...(params.timeoutMs != null ? { timeoutMs: params.timeoutMs } : {}),
       });
     } catch (e) {
-      const replayMsg =
-        replayErr instanceof Error
-          ? replayErr.message
-          : replayErr != null
-            ? String(replayErr)
-            : "";
-      const dlMsg = e instanceof Error ? e.message : String(e);
-      // Native-only: do not fall back to HTTP/CGI.
-      throw new Error(
-        `Baichuan download failed (native-only). replay(cmdId=${BC_CMD_ID_FILE_INFO_LIST_REPLAY}) err=${replayMsg || "(unknown)"}; download(cmdId=${BC_CMD_ID_FILE_INFO_LIST_DOWNLOAD}) err=${dlMsg}`,
-      );
+      downloadErr = e;
     }
+
+    // Third fallback: paged download via cmdId=14/15/16
+    // This works for TrackMix PoE and other cameras where cmdId=5/13 return empty
+    try {
+      const result = await this.fileInfoListPagedDownload({
+        channel,
+        uid,
+        fileName,
+        ...(params.timeoutMs != null ? { timeoutMs: params.timeoutMs } : {}),
+      });
+      if (result.length > 0) {
+        return result;
+      }
+    } catch (e) {
+      // Fall through to error
+    }
+
+    const replayMsg =
+      replayErr instanceof Error
+        ? replayErr.message
+        : replayErr != null
+          ? String(replayErr)
+          : "";
+    const dlMsg =
+      downloadErr instanceof Error
+        ? downloadErr.message
+        : downloadErr != null
+          ? String(downloadErr)
+          : "";
+    // Native-only: do not fall back to HTTP/CGI.
+    throw new Error(
+      `Baichuan download failed (native-only). replay(cmdId=${BC_CMD_ID_FILE_INFO_LIST_REPLAY}) err=${replayMsg || "(unknown)"}; download(cmdId=${BC_CMD_ID_FILE_INFO_LIST_DOWNLOAD}) err=${dlMsg}`,
+    );
   }
 
   /**
