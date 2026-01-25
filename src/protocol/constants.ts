@@ -132,6 +132,7 @@ export const BC_CMD_ID_GET_RECORD = 81; // <Record>
 export const BC_CMD_ID_GET_HDD_INFO_LIST = 102; // <HddInfoList>
 export const BC_CMD_ID_GET_WIFI_SIGNAL = 115; // <WifiSignal>
 export const BC_CMD_ID_GET_WIFI = 116; // <Wifi>
+export const BC_CMD_ID_GET_ONLINE_USER_LIST = 120; // <OnlineUserList> - active user sessions
 export const BC_CMD_ID_GET_DAY_RECORDS = 142; // <DayRecords>
 export const BC_CMD_ID_GET_STREAM_INFO_LIST = 146; // <StreamInfoList>
 export const BC_CMD_ID_GET_LED_STATE = 208; // <LedState>

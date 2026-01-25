@@ -51,6 +51,7 @@ import {
   BC_CMD_ID_FLOODLIGHT_STATUS_LIST,
   BC_CMD_ID_GET_ABILITY_SUPPORT,
   BC_CMD_ID_GET_ACCESS_USER_LIST,
+  BC_CMD_ID_GET_ONLINE_USER_LIST,
   BC_CMD_ID_GET_AI_ALARM,
   BC_CMD_ID_GET_AI_DENOISE,
   BC_CMD_ID_GET_AUDIO_ALARM,
@@ -4831,43 +4832,230 @@ export class ReolinkBaichuanApi {
     channel?: number;
     /** Recording file name/path */
     fileName: string;
-    /** Snapshot quality (default: "main") */
-    snapType?: "main" | "sub";
-    /** Timeout in ms (default: 30000) */
+    /** Stream type for thumbnail extraction (default: "mainStream") */
+    streamType?: RecordingReplayStreamType;
+    /** Timeout in ms (default: 15000) */
     timeoutMs?: number;
     /** Path to ffmpeg binary (default: "ffmpeg") */
     ffmpegPath?: string;
   }): Promise<Buffer> {
     return this.enqueueThumbnailOperation(async () => {
       const channel = this.normalizeChannel(params.channel ?? 0);
-      const timeoutMs = params.timeoutMs ?? 30_000;
-
-      // Parse the filename to extract the start timestamp
-      const parsed = parseRecordingFileName(params.fileName);
-      if (!parsed?.start) {
-        throw new Error(
-          `Cannot extract timestamp from recording filename: ${params.fileName}`,
-        );
-      }
+      const streamType = params.streamType ?? "mainStream";
+      const timeoutMs = params.timeoutMs ?? 15_000;
+      const ffmpegPath = params.ffmpegPath ?? "ffmpeg";
 
       this.logger?.debug?.(
-        `[getRecordingThumbnail] Extracting thumbnail: channel=${channel}, file=${params.fileName}, time=${parsed.start.toISOString()}`,
+        `[getRecordingThumbnail] Extracting thumbnail via streaming: channel=${channel}, file=${params.fileName}, streamType=${streamType}`,
       );
 
-      // Use snapshotJpegFromPlayback with the extracted timestamp
-      const jpeg = await this.snapshotJpegFromPlayback({
+      // Start replay stream to capture first keyframe
+      const { stream, stop } = await this.startRecordingReplayStream({
         channel,
-        time: parsed.start,
-        snapType: params.snapType ?? "main",
+        fileName: params.fileName,
+        streamType,
         timeoutMs,
-        ...(params.ffmpegPath ? { ffmpegPath: params.ffmpegPath } : {}),
       });
 
-      this.logger?.debug?.(
-        `[getRecordingThumbnail] Thumbnail extracted: ${jpeg.length} bytes`,
-      );
+      try {
+        // Wait for first keyframe that contains parameter sets (SPS/PPS for H.264, VPS/SPS/PPS for H.265)
+        const keyframe = await new Promise<{
+          data: Buffer;
+          videoType: BcMediaVideoType;
+        }>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            reject(
+              new Error("Timeout waiting for keyframe with parameter sets"),
+            );
+          }, timeoutMs);
 
-      return jpeg;
+          const hasH264ParamSets = (data: Buffer): boolean => {
+            // Look for SPS (NAL type 7) and PPS (NAL type 8) in Annex-B stream
+            let hasSps = false;
+            let hasPps = false;
+            let i = 0;
+            while (i < data.length - 4) {
+              // Find start code (00 00 00 01 or 00 00 01)
+              if (data[i] === 0 && data[i + 1] === 0) {
+                let nalStart = -1;
+                if (data[i + 2] === 0 && data[i + 3] === 1) {
+                  nalStart = i + 4;
+                } else if (data[i + 2] === 1) {
+                  nalStart = i + 3;
+                }
+                if (nalStart >= 0 && nalStart < data.length) {
+                  const nalByte = data[nalStart];
+                  if (nalByte !== undefined) {
+                    const nalType = nalByte & 0x1f;
+                    if (nalType === 7) hasSps = true;
+                    if (nalType === 8) hasPps = true;
+                    if (hasSps && hasPps) return true;
+                  }
+                  i = nalStart;
+                  continue;
+                }
+              }
+              i++;
+            }
+            return hasSps && hasPps;
+          };
+
+          const hasH265ParamSets = (data: Buffer): boolean => {
+            // Look for VPS (32), SPS (33), PPS (34) in Annex-B stream
+            let hasVps = false;
+            let hasSps = false;
+            let hasPps = false;
+            let i = 0;
+            while (i < data.length - 4) {
+              if (data[i] === 0 && data[i + 1] === 0) {
+                let nalStart = -1;
+                if (data[i + 2] === 0 && data[i + 3] === 1) {
+                  nalStart = i + 4;
+                } else if (data[i + 2] === 1) {
+                  nalStart = i + 3;
+                }
+                if (nalStart >= 0 && nalStart < data.length) {
+                  const nalByte = data[nalStart];
+                  if (nalByte !== undefined) {
+                    const nalType = (nalByte >> 1) & 0x3f;
+                    if (nalType === 32) hasVps = true;
+                    if (nalType === 33) hasSps = true;
+                    if (nalType === 34) hasPps = true;
+                    if (hasVps && hasSps && hasPps) return true;
+                  }
+                  i = nalStart;
+                  continue;
+                }
+              }
+              i++;
+            }
+            return hasVps && hasSps && hasPps;
+          };
+
+          const onFrame = (au: {
+            data: Buffer;
+            isKeyframe: boolean;
+            videoType: "H264" | "H265";
+          }) => {
+            if (!au.isKeyframe) return;
+
+            // Verify the keyframe contains parameter sets
+            const hasParams =
+              au.videoType === "H265"
+                ? hasH265ParamSets(au.data)
+                : hasH264ParamSets(au.data);
+
+            if (!hasParams) {
+              // Log but keep waiting for a complete keyframe
+              this.logger?.debug?.(
+                `[getRecordingThumbnail] Keyframe missing parameter sets, waiting for next: codec=${au.videoType}, size=${au.data.length}`,
+              );
+              return;
+            }
+
+            clearTimeout(timeout);
+            stream.off("videoAccessUnit", onFrame);
+            resolve({
+              data: au.data,
+              videoType: au.videoType,
+            });
+          };
+
+          stream.on("videoAccessUnit", onFrame);
+          stream.once("error", (err) => {
+            clearTimeout(timeout);
+            stream.off("videoAccessUnit", onFrame);
+            reject(err);
+          });
+          stream.once("close", () => {
+            clearTimeout(timeout);
+            stream.off("videoAccessUnit", onFrame);
+            reject(new Error("Stream closed before keyframe received"));
+          });
+        });
+
+        this.logger?.debug?.(
+          `[getRecordingThumbnail] Got keyframe with params: ${keyframe.data.length} bytes, codec=${keyframe.videoType}`,
+        );
+
+        // Convert keyframe to JPEG using ffmpeg
+        const jpeg = await this.convertFrameToJpeg({
+          frameData: keyframe.data,
+          videoCodec: keyframe.videoType,
+          ffmpegPath,
+        });
+
+        this.logger?.debug?.(
+          `[getRecordingThumbnail] Thumbnail extracted: ${jpeg.length} bytes`,
+        );
+
+        return jpeg;
+      } finally {
+        await stop().catch(() => {});
+      }
+    });
+  }
+
+  /**
+   * Convert a raw video keyframe to JPEG using ffmpeg.
+   */
+  private async convertFrameToJpeg(params: {
+    frameData: Buffer;
+    videoCodec: BcMediaVideoType;
+    ffmpegPath?: string;
+  }): Promise<Buffer> {
+    const { spawn } = await import("node:child_process");
+    const ffmpeg = params.ffmpegPath ?? "ffmpeg";
+    const inputFormat = params.videoCodec === "H265" ? "hevc" : "h264";
+
+    return new Promise<Buffer>((resolve, reject) => {
+      const args = [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        inputFormat,
+        "-i",
+        "pipe:0",
+        "-frames:v",
+        "1",
+        "-f",
+        "image2",
+        "-c:v",
+        "mjpeg",
+        "-q:v",
+        "2",
+        "pipe:1",
+      ];
+
+      const proc = spawn(ffmpeg, args, {
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+
+      const chunks: Buffer[] = [];
+      let stderr = "";
+
+      proc.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+      proc.stderr.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString();
+      });
+
+      proc.on("close", (code) => {
+        if (code !== 0 || chunks.length === 0) {
+          reject(
+            new Error(
+              `ffmpeg failed to convert frame to JPEG (code=${code}): ${stderr}`,
+            ),
+          );
+          return;
+        }
+        resolve(Buffer.concat(chunks));
+      });
+
+      proc.on("error", reject);
+
+      proc.stdin.write(params.frameData);
+      proc.stdin.end();
     });
   }
 
@@ -9874,6 +10062,20 @@ export class ReolinkBaichuanApi {
   }): Promise<XmlJsonValue> {
     const xml = await this.sendXml({
       cmdId: BC_CMD_ID_GET_ACCESS_USER_LIST,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+    return parseXmlFragmentToJson(xml);
+  }
+
+  /**
+   * Get list of active/online user sessions (cmdId=120).
+   * Returns information about currently connected users/sessions on the device.
+   */
+  async getOnlineUserList(options?: {
+    timeoutMs?: number;
+  }): Promise<XmlJsonValue> {
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_ONLINE_USER_LIST,
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
     return parseXmlFragmentToJson(xml);
