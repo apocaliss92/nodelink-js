@@ -1,41 +1,53 @@
-# Integration tests (real devices)
+# Reolink Baichuan Test Suite
 
-Questa repo include una suite di integration test che parla con device reali (camera TCP, camera UDP/battery, NVR).
+Offline test suite che lavora su fixture di dati video catturati, senza necessità di connessione live ai dispositivi.
 
-## Setup
+## Struttura
 
-1) Crea un file di config locale (non committato):
+```
+test/
+├── README.md                    # Questa guida
+├── run-tests.mjs                # Entry point per eseguire tutti i test
+├── capture-raw-data.mjs         # Script per catturare nuove fixture
+├── fixtures/raw/                # Dati catturati (gitignore)
+│   ├── tcp/                     # TrackMix PoE (H.264 full_aes)
+│   ├── tcp265/                  # E1 Outdoor (H.265 full_aes)
+│   └── nvr/                     # NVR RLN8-410 (3 canali)
+├── utils/
+│   ├── fixture-loader.mjs       # Caricamento e parsing fixture
+│   └── test-runner.mjs          # Framework di test leggero
+└── unit/
+    ├── video-stream.test.mjs    # Test struttura video H.264/H.265
+    ├── bcmedia.test.mjs         # Test parsing pacchetti BcMedia
+    └── nvr-channels.test.mjs    # Test multi-canale NVR
+```
 
-- copia `test/devices.config.template.json` in `test/devices.config.json`
-- aggiorna IP/UID/canali
+## Esecuzione Test
 
-Il JSON supporta placeholder di variabili d'ambiente:
-- `${VAR}`
-- `${VAR:-default}` (fallback se la variabile non esiste)
-- `$VAR` (solo se la stringa è *esattamente* `$VAR`)
+```bash
+# Tutti i test
+node test/run-tests.mjs
 
-2) Imposta le credenziali in `.env` (o variabili d'ambiente):
+# Solo test specifici
+node test/run-tests.mjs video      # video-stream tests
+node test/run-tests.mjs bcmedia    # bcmedia tests
+node test/run-tests.mjs nvr        # nvr-channels tests
+```
 
-- Per device TCP standalone:
-	- `TCP_USERNAME=...`
-	- `TCP_PASSWORD=...`
-- Per device UDP/battery:
-	- `UDP_USERNAME=...`
-	- `UDP_PASSWORD=...`
-- Per NVR:
-	- `NVR_USERNAME=...`
-	- `NVR_PASSWORD=...`
+## Dispositivi Supportati
 
-Opzionali (usati dalla suite `streams`):
-- `RECORD_DURATION=10` (secondi, default 5)
-- `FFMPEG_BIN=/path/to/ffmpeg` (default `ffmpeg` in PATH)
-- `REOLINK_TEST_ARTIFACTS_DIR=test/artifacts` (default `test/artifacts`)
+| Device              | Host           | Codec | Encryption | Canali |
+| ------------------- | -------------- | ----- | ---------- | ------ |
+| TCP (TrackMix PoE)  | 192.168.50.226 | H.264 | full_aes   | 0      |
+| TCP265 (E1 Outdoor) | 192.168.1.170  | H.265 | full_aes   | 0      |
+| NVR (RLN8-410)      | 192.168.1.161  | Mixed | full_aes   | 0,1,2  |
 
-## Esecuzione
+## Test Coverage
 
-- `npm run test:integration`
-
-Note:
-- I test sono *safe-by-default*: eseguono solo chiamate principalmente read-only.
-- Alcune suite (streaming/recordings/ptz/setters) possono essere lente o invasive: abilitarle via `suites` nel config.
-- La suite `streams` salva JPEG + MP4 sotto `test/artifacts/` (ignorato da git).
+- **78 test totali** su 3 file di test
+- Validazione struttura NAL H.264/H.265
+- Verifica parametri SPS/PPS/VPS
+- Test formato Annex-B
+- Test metadati encryption
+- Confronto live vs playback
+- Test multi-canale NVR

@@ -1,0 +1,31 @@
+{
+  "device": "tcp",
+  "name": "TrackMix PoE (H.264 full_aes)",
+  "host": "192.168.50.226",
+  "capturedAt": "2026-01-25T20:59:02.540Z",
+  "channels": {
+    "0": {
+      "liveStream": {
+        "frameCount": 123,
+        "keyframes": 3,
+        "videoType": "H264",
+        "durationMs": 5057,
+        "totalBytes": 5225859
+      },
+      "playback": {
+        "fileName": "/mnt/sda/Mp4Record/2026-01-25/RecM03_20260125_000001_000022_6732808_167509B.mp4",
+        "frameCount": 150,
+        "keyframes": 9,
+        "videoType": "H264",
+        "durationMs": 1955,
+        "totalBytes": 8726039
+      }
+    }
+  },
+  "deviceInfo": {
+    "firmwareVersion": "v3.1.0.5223_2510172100"
+  },
+  "encryption": {
+    "kind": "full_aes"
+  }
+}

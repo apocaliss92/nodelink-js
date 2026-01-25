@@ -13,6 +13,7 @@ import type { StreamProfile } from "../../reolink/baichuan/types";
 import type { ReolinkBaichuanApi } from "../../reolink/baichuan/ReolinkBaichuanApi";
 import type { NativeVideoStreamVariant } from "../../reolink/baichuan/types";
 import type { EncryptionProtocol } from "../../protocol/crypto";
+import { aesDecrypt, AesStreamDecryptor } from "../../protocol/crypto";
 import { ensureDumpDir, type Logger } from "../../debug/DebugConfig";
 import { BcMediaCodec } from "./BcMediaCodec";
 import {
@@ -252,6 +253,10 @@ export class BaichuanVideoStream extends EventEmitter<{
   private lastPpsH265: Buffer | null = null; // H.265 PPS
   private lastPrependedParamSetsH265 = false; // Track if we've prepended H.265 param sets
 
+  // Stateful AES decryptor for fragmented BcMedia packets (full_aes mode)
+  // In CFB mode, continuation frames must use the cipher state from previous frames.
+  private aesStreamDecryptor: AesStreamDecryptor | null = null;
+
   private emitSafeError(err: Error): void {
     // If we're no longer active, this is almost always a late/rejected in-flight request.
     // Emitting 'error' with no listeners will crash the process, so guard both cases.
@@ -327,11 +332,85 @@ export class BaichuanVideoStream extends EventEmitter<{
       return best.first > 0 ? chosen.subarray(best.first) : chosen;
     }
 
+    // --- Special handling for full_aes mode ---
+    // In AES-128-CFB mode, decryption behavior differs between live and replay:
+    //
+    // LIVE STREAM (cmdId=3): Each Baichuan frame contains complete BcMedia packets.
+    // Fresh IV decryption works correctly for every frame.
+    //
+    // PLAYBACK/REPLAY (cmdId=5): Large I-frames (e.g., 400KB for 4K) are fragmented
+    // across multiple Baichuan frames (~39KB each). Continuation frames MUST be
+    // decrypted using the cipher state from the previous frame, not a fresh IV.
+    //
+    // We use stateful decryption ONLY for replay mode (cmdId=5).
+    if (enc.kind === "full_aes") {
+      const key = enc.key;
+      const isReplayMode = this.cmdId === 5; // BC_CMD_ID_FILE_INFO_LIST_REPLAY
+
+      // Try decryption with fresh IV
+      const freshDecrypted = aesDecrypt(raw, key);
+      const freshScore = BaichuanVideoStream.scoreBcMediaLike(freshDecrypted);
+      const rawScore = BaichuanVideoStream.scoreBcMediaLike(raw);
+
+      // Check if fresh-decrypted data starts with a BcMedia magic
+      const startsWithMagic = freshScore.first === 0 && freshScore.score > 0;
+
+      // For live stream (cmdId=3), always use fresh IV decryption
+      if (!isReplayMode) {
+        const chosen = freshScore.score > rawScore.score ? freshDecrypted : raw;
+        if (!allowResync) return chosen;
+        const best = BaichuanVideoStream.scoreBcMediaLike(chosen);
+        return best.first > 0 ? chosen.subarray(best.first) : chosen;
+      }
+
+      // --- Replay mode: use stateful decryption for fragmented packets ---
+
+      if (startsWithMagic) {
+        // New BcMedia packet! Reset the stateful decryptor and use fresh result.
+        // We must also advance the stateful decryptor's state by feeding it the raw data,
+        // so subsequent continuation frames can be decrypted correctly.
+        if (!this.aesStreamDecryptor) {
+          this.aesStreamDecryptor = new AesStreamDecryptor(key);
+        }
+        this.aesStreamDecryptor.reset();
+        this.aesStreamDecryptor.update(raw); // Advance state (discard result, we use freshDecrypted)
+
+        const chosen = freshDecrypted;
+        if (!allowResync) return chosen;
+        const best = BaichuanVideoStream.scoreBcMediaLike(chosen);
+        return best.first > 0 ? chosen.subarray(best.first) : chosen;
+      }
+
+      // Check if raw data already looks like valid BcMedia (not encrypted)
+      if (rawScore.first === 0 && rawScore.score > freshScore.score) {
+        // Data is not encrypted - use raw
+        // Note: we don't reset the decryptor here since the stream may be mixed
+        const chosen = raw;
+        if (!allowResync) return chosen;
+        const best = BaichuanVideoStream.scoreBcMediaLike(chosen);
+        return best.first > 0 ? chosen.subarray(best.first) : chosen;
+      }
+
+      // Continuation frame - use stateful decryptor if available
+      if (this.aesStreamDecryptor && this.aesStreamDecryptor.isInitialized()) {
+        const statefulDecrypted = this.aesStreamDecryptor.update(raw);
+        // Continuation frames don't start with magic, so we return as-is
+        // (the BcMediaCodec will append to its buffer)
+        return statefulDecrypted;
+      }
+
+      // Fallback: no stateful decryptor yet - might be first frame or stream desync
+      // Try fresh decryption as last resort
+      const chosen = freshScore.score > rawScore.score ? freshDecrypted : raw;
+      if (!allowResync) return chosen;
+      const best = BaichuanVideoStream.scoreBcMediaLike(chosen);
+      return best.first > 0 ? chosen.subarray(best.first) : chosen;
+    }
+
+    // --- Standard handling for other encryption modes ---
     const rawScore = BaichuanVideoStream.scoreBcMediaLike(raw);
     const dec =
-      this.client.enc.kind === "aes" ||
-      this.client.enc.kind === "full_aes" ||
-      this.client.enc.kind === "bc"
+      this.client.enc.kind === "aes" || this.client.enc.kind === "bc"
         ? this.client.tryDecryptBinary(raw, channelId, enc)
         : raw;
     const decScore = BaichuanVideoStream.scoreBcMediaLike(dec);
@@ -538,18 +617,26 @@ export class BaichuanVideoStream extends EventEmitter<{
 
       // Filter by msgNum if we were able to capture it from the API.
       // Some firmwares reuse streamType but keep msgNum distinct per stream.
+      // NOTE: Some cameras (e.g., TrackMix PoE) always respond with msgNum=0 regardless
+      // of what msgNum we used in the request. When acceptAnyStreamType is true (replay mode),
+      // we also accept msgNum=0 as a fallback.
       if (
         this.activeMsgNum !== undefined &&
         frame.header.msgNum !== this.activeMsgNum
       ) {
-        const frameCount = ((this as any)._msgNumMismatchCount =
-          ((this as any)._msgNumMismatchCount || 0) + 1);
-        if (frameCount <= 5) {
-          this.logger?.log(
-            `[BaichuanVideoStream] Frame msgNum mismatch: received=${frame.header.msgNum}, expected=${this.activeMsgNum}, channel=${this.channel}, profile=${this.profile}, variant=${this.variant} (frame discarded)`,
-          );
+        // Accept msgNum=0 as fallback when in permissive mode (replay)
+        const allowMsgNum0Fallback =
+          this.acceptAnyStreamType && frame.header.msgNum === 0;
+        if (!allowMsgNum0Fallback) {
+          const frameCount = ((this as any)._msgNumMismatchCount =
+            ((this as any)._msgNumMismatchCount || 0) + 1);
+          if (frameCount <= 5) {
+            this.logger?.log(
+              `[BaichuanVideoStream] Frame msgNum mismatch: received=${frame.header.msgNum}, expected=${this.activeMsgNum}, channel=${this.channel}, profile=${this.profile}, variant=${this.variant} (frame discarded)`,
+            );
+          }
+          return;
         }
-        return;
       }
 
       // Filter by expected streamType(s). Some devices use 0/1, others 2/3 for variants.

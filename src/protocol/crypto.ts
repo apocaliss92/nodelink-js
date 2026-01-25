@@ -59,3 +59,70 @@ export function aesDecrypt(buf: Buffer, key: Buffer): Buffer {
   return Buffer.concat([decipher.update(buf), decipher.final()]);
 }
 
+/**
+ * Stateful AES-128-CFB stream decryptor.
+ *
+ * AES-128-CFB mode requires maintaining cipher state across chunk boundaries.
+ * When a large BcMedia packet (e.g., a 400KB I-frame) is fragmented into multiple
+ * Baichuan frames, each frame must be decrypted using the cipher state from the
+ * previous frame, NOT a fresh IV.
+ *
+ * The first frame of a new BcMedia packet starts with a recognizable magic
+ * (e.g., "cd00", "1001", "1002"). This signals we should reset the cipher state.
+ * Subsequent frames (continuations) should use the continued cipher state.
+ *
+ * Usage:
+ * ```ts
+ * const decryptor = new AesStreamDecryptor(key);
+ *
+ * for (const frame of baichuanFrames) {
+ *   // Try fresh IV to detect new packet
+ *   const freshDecrypted = aesDecrypt(frame.payload, key);
+ *   if (startsWithBcMediaMagic(freshDecrypted)) {
+ *     // New packet - reset and decrypt with fresh state
+ *     decryptor.reset();
+ *     const decrypted = decryptor.update(frame.payload);
+ *   } else {
+ *     // Continuation - use existing state
+ *     const decrypted = decryptor.update(frame.payload);
+ *   }
+ * }
+ * ```
+ */
+export class AesStreamDecryptor {
+  private decipher: ReturnType<typeof createDecipheriv> | null = null;
+  private readonly key: Buffer;
+
+  constructor(key: Buffer) {
+    this.key = key;
+  }
+
+  /**
+   * Reset the cipher state (start decrypting with fresh IV).
+   * Call this when a new BcMedia packet is detected.
+   */
+  reset(): void {
+    this.decipher = createDecipheriv("aes-128-cfb", this.key, BC_AES_IV);
+    this.decipher.setAutoPadding(false);
+  }
+
+  /**
+   * Decrypt a chunk using the current cipher state.
+   * Automatically resets if no cipher exists.
+   *
+   * @param buf - Encrypted buffer to decrypt
+   * @returns Decrypted buffer
+   */
+  update(buf: Buffer): Buffer {
+    if (buf.length === 0) return Buffer.alloc(0);
+    if (!this.decipher) this.reset();
+    return this.decipher!.update(buf);
+  }
+
+  /**
+   * Check if the decryptor has been initialized.
+   */
+  isInitialized(): boolean {
+    return this.decipher !== null;
+  }
+}

@@ -1,0 +1,123 @@
+{
+  "capturedAt": "2026-01-25T20:59:46.467Z",
+  "devices": {
+    "tcp": {
+      "device": "tcp",
+      "name": "TrackMix PoE (H.264 full_aes)",
+      "host": "192.168.50.226",
+      "capturedAt": "2026-01-25T20:59:02.540Z",
+      "channels": {
+        "0": {
+          "liveStream": {
+            "frameCount": 123,
+            "keyframes": 3,
+            "videoType": "H264",
+            "durationMs": 5057,
+            "totalBytes": 5225859
+          },
+          "playback": {
+            "fileName": "/mnt/sda/Mp4Record/2026-01-25/RecM03_20260125_000001_000022_6732808_167509B.mp4",
+            "frameCount": 150,
+            "keyframes": 9,
+            "videoType": "H264",
+            "durationMs": 1955,
+            "totalBytes": 8726039
+          }
+        }
+      },
+      "deviceInfo": {
+        "firmwareVersion": "v3.1.0.5223_2510172100"
+      },
+      "encryption": {
+        "kind": "full_aes"
+      }
+    },
+    "tcp265": {
+      "device": "tcp265",
+      "name": "E1 Outdoor PoE (H.265)",
+      "host": "192.168.1.170",
+      "capturedAt": "2026-01-25T20:59:11.114Z",
+      "channels": {
+        "0": {
+          "liveStream": {
+            "error": "Video stream request rejected (response_code 430). Expected response_code 200, camera returned 430"
+          },
+          "playback": {
+            "error": "No recordings found"
+          }
+        }
+      },
+      "deviceInfo": {
+        "firmwareVersion": "v3.2.0.4741_2503281992"
+      },
+      "encryption": {
+        "kind": "full_aes"
+      }
+    },
+    "nvr": {
+      "device": "nvr",
+      "name": "NVR RLN8-410",
+      "host": "192.168.1.161",
+      "capturedAt": "2026-01-25T20:59:12.082Z",
+      "channels": {
+        "0": {
+          "liveStream": {
+            "frameCount": 59,
+            "keyframes": 2,
+            "videoType": "H265",
+            "durationMs": 5033,
+            "totalBytes": 915413
+          },
+          "playback": {
+            "fileName": "/mnt/sda/U109527000HXOHJ142G-Videocamera lavanderia/Mp4Record/2026-01-25/RecM04_20260125_082554_082641_0_900_510_033C8200000000_C95676.mp4",
+            "frameCount": 150,
+            "keyframes": 0,
+            "videoType": "H264",
+            "durationMs": 3119,
+            "totalBytes": 1847147
+          }
+        },
+        "1": {
+          "liveStream": {
+            "frameCount": 48,
+            "keyframes": 2,
+            "videoType": "H265",
+            "durationMs": 5058,
+            "totalBytes": 755299
+          },
+          "playback": {
+            "fileName": "/mnt/sda/U10952700093ABW14UB-Videocamera porta retro/Mp4Record/2026-01-25/RecM04_20260125_105707_105756_0_F00_870_033C8200000000_C1A5B9.mp4",
+            "frameCount": 150,
+            "keyframes": 0,
+            "videoType": "H264",
+            "durationMs": 4982,
+            "totalBytes": 468248
+          }
+        },
+        "2": {
+          "liveStream": {
+            "frameCount": 60,
+            "keyframes": 2,
+            "videoType": "H265",
+            "durationMs": 5042,
+            "totalBytes": 232282
+          },
+          "playback": {
+            "fileName": "/mnt/sda/U109527000HZ56U1ORU-Baby monitor/Mp4Record/2026-01-25/RecM04_20260125_122602_122615_0_900_510_033C8200000000_2AE399.mp4",
+            "frameCount": 150,
+            "keyframes": 0,
+            "videoType": "H264",
+            "durationMs": 1389,
+            "totalBytes": 1706023
+          }
+        }
+      },
+      "deviceInfo": {
+        "firmwareVersion": "v3.3.0.456_25122258"
+      },
+      "encryption": {
+        "kind": "full_aes"
+      }
+    }
+  }
+}
