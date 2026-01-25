@@ -971,13 +971,11 @@ export type RecordingDetectionClass =
 
 export interface DownloadRecordingParams {
   channel: number;
-  uid: string;
+  uid?: string;
   /** Recording identifier (usually one of the `fileName` returned by getVideoclips). */
   fileName: string;
   /** Stream type for the recording. Default: "subStream" (matches PCAP observations for NVR). */
   streamType?: "mainStream" | "subStream";
-  /** If true, fall back to HTTP CGI `cmd=Download` when Baichuan download fails/times out. Default: false (socket-first). */
-  fallbackToHttp?: boolean;
   timeoutMs?: number;
 }
 
@@ -1071,4 +1069,78 @@ export interface DualLensChannelAnalysis {
     /** Channel numbers that support PTZ presets */
     presets: number[];
   };
+}
+
+// ---------------------------------------------------------------------------
+// Recording download result types
+// ---------------------------------------------------------------------------
+
+/**
+ * Video codec type detected from BcMedia stream.
+ */
+export type RecordingVideoCodec = "H264" | "H265";
+
+/**
+ * Audio codec type detected from BcMedia stream.
+ */
+export type RecordingAudioCodec = "Aac" | "Adpcm";
+
+/**
+ * Statistics returned by getRecordingVideo() about the demuxed/muxed recording.
+ */
+export interface GetRecordingVideoStats {
+  /** Total bytes received from camera */
+  bytesIn: number;
+  /** Total video bytes after demuxing */
+  videoBytesOut: number;
+  /** Total audio bytes after demuxing */
+  audioBytesOut: number;
+  /** Number of video packets */
+  videoPackets: number;
+  /** Number of audio packets */
+  audioPackets: number;
+  /** Number of keyframes */
+  keyframes: number;
+  /** Calculated frames per second */
+  fps: number;
+  /** Duration in seconds */
+  durationSeconds: number;
+  /** Video codec detected */
+  videoCodec: RecordingVideoCodec;
+  /** Audio codec detected (null if no audio) */
+  audioCodec: RecordingAudioCodec | null;
+  /** Whether audio was present */
+  hasAudio: boolean;
+}
+
+/**
+ * Result of getRecordingVideo() - a fully muxed MP4 with stats.
+ */
+export interface GetRecordingVideoResult {
+  /** MP4 file with video and audio muxed together */
+  mp4: Buffer;
+  /** Statistics about the demuxing/muxing process */
+  stats: GetRecordingVideoStats;
+}
+
+/**
+ * Parameters for getVideoclips() recording search.
+ */
+export interface GetVideoclipsParams {
+  /** Channel number (0-based). Optional for standalone cameras, required for NVR. */
+  channel?: number;
+  /** Start time for search */
+  start: Date;
+  /** End time for search */
+  end: Date;
+  /** Stream type. Default: "subStream" */
+  streamType?: RecordingStreamType;
+  /** Comma-separated record types. Default includes all types. */
+  recordType?: string;
+  /** Explicit UID (skip auto-discovery if provided) */
+  uid?: string;
+  /** Per-request timeout in ms. Default: 15000 */
+  timeoutMs?: number;
+  /** Max pagination iterations. Default: 50 */
+  maxIterations?: number;
 }

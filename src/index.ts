@@ -38,6 +38,16 @@ export * from "./baichuan/stream/BcMediaParser";
 export * from "./baichuan/stream/BcMediaCodec";
 export * from "./baichuan/stream/H264Converter";
 export {
+  BcMediaAnnexBDecoder,
+  detectVideoCodecFromNal,
+  type BcMediaVideoType,
+  type BcMediaAudioType,
+  type BcMediaAudioFrame,
+  type BcMediaVideoFrame,
+  type BcMediaAnnexBInfo,
+  type BcMediaAnnexBDecoderStats,
+} from "./baichuan/stream/BcMediaAnnexBDecoder";
+export {
   H265RtpDepacketizer,
   getH265NalType,
   isH265Irap,

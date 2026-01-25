@@ -157,7 +157,6 @@ export function createBaichuanEndpointsServer(
           uid,
           fileName,
           timeoutMs,
-          fallbackToHttp: false,
         });
 
         const outName =

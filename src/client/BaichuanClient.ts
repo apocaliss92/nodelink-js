@@ -3058,7 +3058,10 @@ export class BaichuanClient extends EventEmitter<{
     const wire = Buffer.concat([header, bodyBytes]);
 
     const timeoutMs = params.timeoutMs ?? 120_000;
-    const idleTimeoutMs = 2_000;
+    // Idle timeout: finish after no data received for this duration.
+    // Cameras may send data in bursts with pauses between GOP boundaries.
+    // Use longer timeout to ensure full file is received.
+    const idleTimeoutMs = 15_000;
     const chunks: Buffer[] = [];
     let streamMsgNum: number | undefined;
     let lockedChannelId: number | undefined;

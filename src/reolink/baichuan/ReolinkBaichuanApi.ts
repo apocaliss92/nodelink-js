@@ -9,6 +9,7 @@ import {
 import { BaichuanVideoStream } from "../../baichuan/stream/BaichuanVideoStream";
 import {
   BcMediaAnnexBDecoder,
+  type BcMediaAudioType,
   type BcMediaVideoType,
 } from "../../baichuan/stream/BcMediaAnnexBDecoder";
 import {
@@ -21,7 +22,6 @@ import {
   recordingsTraceLog,
   type Logger,
 } from "../../debug/DebugConfig";
-import { createDebugGateLogger } from "../../logging/logger";
 import {
   collectNvrDiagnostics,
   runAllDiagnosticsConsecutively,
@@ -29,6 +29,7 @@ import {
   runMultifocalDiagnosticsConsecutively,
   RunMultifocalDiagnosticsConsecutivelyParams,
 } from "../../debug/DiagnosticsTools";
+import { createDebugGateLogger } from "../../logging/logger";
 import {
   BC_CLASS_FILE_DOWNLOAD,
   BC_CLASS_MODERN_24,
@@ -41,12 +42,22 @@ import {
   BC_CMD_ID_CMD_231,
   BC_CMD_ID_CMD_265,
   BC_CMD_ID_CMD_440,
+  BC_CMD_ID_FILE_INFO_LIST_DL_VIDEO,
+  BC_CMD_ID_FILE_INFO_LIST_DOWNLOAD,
+  BC_CMD_ID_FILE_INFO_LIST_GET,
+  BC_CMD_ID_FILE_INFO_LIST_OPEN,
+  BC_CMD_ID_FILE_INFO_LIST_REPLAY,
+  BC_CMD_ID_FILE_INFO_LIST_STOP,
+  BC_CMD_ID_FLOODLIGHT_STATUS_LIST,
+  BC_CMD_ID_GET_ABILITY_SUPPORT,
   BC_CMD_ID_GET_ACCESS_USER_LIST,
   BC_CMD_ID_GET_AI_ALARM,
   BC_CMD_ID_GET_AI_DENOISE,
-  BC_CMD_ID_GET_ABILITY_SUPPORT,
+  BC_CMD_ID_GET_AUDIO_ALARM,
   BC_CMD_ID_GET_AUDIO_CFG,
   BC_CMD_ID_GET_AUDIO_TASK,
+  BC_CMD_ID_GET_BATTERY_INFO,
+  BC_CMD_ID_GET_BATTERY_INFO_LIST,
   BC_CMD_ID_GET_DAY_NIGHT_THRESHOLD,
   BC_CMD_ID_GET_DAY_RECORDS,
   BC_CMD_ID_GET_EMAIL_TASK,
@@ -56,42 +67,28 @@ import {
   BC_CMD_ID_GET_LED_STATE,
   BC_CMD_ID_GET_MOTION_ALARM,
   BC_CMD_ID_GET_OSD_DATETIME,
+  BC_CMD_ID_GET_PIR_INFO,
+  BC_CMD_ID_GET_PTZ_POSITION,
+  BC_CMD_ID_GET_PTZ_PRESET,
   BC_CMD_ID_GET_REC_ENC_CFG,
   BC_CMD_ID_GET_RECORD,
   BC_CMD_ID_GET_RECORD_CFG,
   BC_CMD_ID_GET_SLEEP_STATE,
   BC_CMD_ID_GET_STREAM_INFO_LIST,
   BC_CMD_ID_GET_TIMELAPSE_CFG,
+  BC_CMD_ID_GET_WHITE_LED,
   BC_CMD_ID_GET_WIFI,
   BC_CMD_ID_GET_WIFI_SIGNAL,
+  BC_CMD_ID_GET_ZOOM_FOCUS,
+  BC_CMD_ID_PING,
+  BC_CMD_ID_PTZ_CONTROL,
+  BC_CMD_ID_PTZ_CONTROL_PRESET,
   BC_CMD_ID_PUSH_COORDINATE_POINT_LIST,
   BC_CMD_ID_PUSH_DINGDONG_LIST,
   BC_CMD_ID_PUSH_NET_INFO,
   BC_CMD_ID_PUSH_SERIAL,
   BC_CMD_ID_PUSH_SLEEP_STATUS,
   BC_CMD_ID_PUSH_VIDEO_INPUT,
-  BC_CMD_ID_FILE_INFO_LIST_DL_VIDEO,
-  BC_CMD_ID_FILE_INFO_LIST_DOWNLOAD,
-  BC_CMD_ID_FILE_INFO_LIST_REPLAY,
-  BC_CMD_ID_FILE_INFO_LIST_STOP,
-  BC_CMD_ID_FILE_INFO_LIST_CLOSE,
-  BC_CMD_ID_FILE_INFO_LIST_GET,
-  BC_CMD_ID_FILE_INFO_LIST_OPEN,
-  BC_CMD_ID_FIND_REC_VIDEO_CLOSE,
-  BC_CMD_ID_FIND_REC_VIDEO_GET,
-  BC_CMD_ID_FIND_REC_VIDEO_OPEN,
-  BC_CMD_ID_FLOODLIGHT_STATUS_LIST,
-  BC_CMD_ID_GET_AUDIO_ALARM,
-  BC_CMD_ID_GET_BATTERY_INFO,
-  BC_CMD_ID_GET_BATTERY_INFO_LIST,
-  BC_CMD_ID_GET_PIR_INFO,
-  BC_CMD_ID_GET_PTZ_POSITION,
-  BC_CMD_ID_GET_PTZ_PRESET,
-  BC_CMD_ID_GET_WHITE_LED,
-  BC_CMD_ID_GET_ZOOM_FOCUS,
-  BC_CMD_ID_PTZ_CONTROL,
-  BC_CMD_ID_PTZ_CONTROL_PRESET,
-  BC_CMD_ID_PING,
   BC_CMD_ID_SET_AI_ALARM,
   BC_CMD_ID_SET_MOTION_ALARM,
   BC_CMD_ID_SET_PIR_INFO,
@@ -99,7 +96,6 @@ import {
   BC_CMD_ID_SET_WHITE_LED_TASK,
   BC_CMD_ID_SET_ZOOM_FOCUS,
   BC_CMD_ID_SUPPORT,
-  BC_CMD_ID_TALK,
   BC_CMD_ID_TALK_ABILITY,
   BC_CMD_ID_TALK_CONFIG,
   BC_CMD_ID_TALK_RESET,
@@ -124,10 +120,9 @@ import {
   getXmlText,
   xmlEscape,
 } from "../../protocol/xml";
-import { parseXmlFragmentToJson, type XmlJsonValue } from "./utils/xml";
 import type {
-  AIEvent,
   AIState,
+  AiTypesCacheEntry,
   BaichuanCachedPush,
   BaichuanCoordinatePointListPush,
   BaichuanDingdongListPush,
@@ -147,7 +142,8 @@ import type {
   BaichuanWifi,
   BaichuanWifiSignal,
   BatteryInfo,
-  ChannelRecordingFile,
+  ChannelPushCacheEntry,
+  ChannelPushDataEntry,
   ChannelStreamMetadata,
   DeviceAbilities,
   DeviceCapabilitiesResult,
@@ -155,55 +151,51 @@ import type {
   DownloadRecordingParams,
   DualLensChannelAnalysis,
   DualLensChannelInfo,
-  EnrichedChannelRecordingFile,
   EnrichedRecordingFile,
-  AiTypesCacheEntry,
-  ChannelPushCacheEntry,
-  ChannelPushDataEntry,
   Events,
+  GetRecordingVideoResult,
+  GetRecordingVideoStats,
+  GetVideoclipsParams,
   LastSleepProbe,
   NativeVideoStreamVariant,
   NvrChannelsSummaryCacheEntry,
   OsdConfig,
-  PlaybackSnapshotStreamInfo,
   PirState,
-  PtzPosition,
+  PlaybackSnapshotStreamInfo,
   PtzCommand,
+  PtzPosition,
   PtzPreset,
+  RecordingFile,
+  RecordingPlaybackUrls,
   RecordingsCacheEntry,
   RecordingsQueueItem,
-  RecordingFile,
   RecordingStreamType,
-  RecordingPlaybackUrls,
   ReolinkBaichuanChannelIdentity,
   ReolinkBaichuanChannelInfo,
-  ReolinkBaichuanPorts,
-  ReolinkBaichuanDeviceSummary,
   ReolinkBaichuanNetworkInfo,
-  ReolinkNvrChannelInfo,
+  ReolinkBaichuanPorts,
+  ReolinkEvent,
   ReolinkNvrDeviceGroupsResult,
   ReolinkNvrDeviceGroupSummary,
-  ReolinkEvent,
-  ReolinkSupportedStream,
   ReolinkSimpleEvent,
-  ReolinkSimpleEventType,
+  ReolinkSupportedStream,
   ReolinkVideoStreamOptionsResult,
   RtspCreateOptions,
   RunAllDiagnosticsConsecutivelyResult,
   RunMultifocalDiagnosticsConsecutivelyResult,
   SirenState,
-  SnapshotFromPlaybackResult,
   SleepStatus,
+  SnapshotFromPlaybackResult,
   StreamMetadata,
   StreamProfile,
   SupportInfo,
   TwoWayAudioConfig,
-  VideoCodec,
   WakeUpOptions,
   WhiteLedState,
   ZoomFocusStatus,
   ZoomFocusTriplet,
 } from "./types";
+import { parseXmlFragmentToJson, type XmlJsonValue } from "./utils/xml";
 
 import { Jimp, JimpMime } from "jimp";
 import type { CompositeStreamPipOptions } from "../../multifocal/compositeStream";
@@ -213,65 +205,23 @@ import {
   type GetVodUrlParams,
 } from "../cgi/ReolinkCgiApi";
 import { ReolinkHttpClient } from "../http/ReolinkHttpClient";
-import type { ReolinkCmdResponse } from "../http/types";
 import type { ReolinkDeviceInfo, ReolinkDeviceInfoTag } from "../types";
 import {
   computeDeviceCapabilities,
   flattenAbilitiesForChannel,
   parseSupportXml,
 } from "./capabilities";
-import {
-  getXmlBlocks,
-  getXmlTexts,
-  parseRecordingFilesFromXml,
-  parseTalkAbilityXml,
-  parseXmlDateTimeBlock,
-} from "./xmlUtils";
-import { mapToSimpleEvent } from "./utils/events";
-import { formatClientIoForLog, formatErrorForLog } from "./utils/logging";
-import { parseBoolean01, parseNumber } from "./utils/parsing";
-import { calculatePipOverlayPosition, resolvePipMarginPx } from "./utils/pip";
-import { sleepMs, xmlDateTimePayload } from "./utils/recordings";
-import { createBufferedTalkSession } from "./utils/talkSession";
-import {
-  buildTalkSessionInfoFromAbility,
-  sendTalkConfigWithReset,
-} from "./utils/talkConfig";
-import { parseChannelStreamMetadataFromGetEncXml } from "./utils/streamMetadata";
-import { extractReolinkUidLike, isReolinkUidLike } from "./utils/uid";
+import { parseAbilityInfoXml } from "./utils/abilityInfo";
+import { getAiStateViaGetAiAlarm } from "./utils/aiState";
 import { parseChannelInfoPushBlocks } from "./utils/channelInfoPush";
-import {
-  parseCoordinatePointListPushXml,
-  parseDingdongListPushXml,
-  parseNetInfoPushXml,
-  parseSerialPushXml,
-  parseSleepStatusPushXml,
-  parseVideoInputPushXml,
-} from "./utils/pushSettings";
 import {
   buildChannelPushDataLogSnapshot,
   computeChannelPushUpdateFromEntry,
 } from "./utils/channelInfoStore";
-import {
-  dedupeRecordingFiles,
-  listRecordingsViaFileInfoList,
-  downloadRecordingViaFileInfoListPaged,
-} from "./utils/recordingsFileInfoList";
-import { parseAbilityInfoXml } from "./utils/abilityInfo";
-import {
-  buildFileInfoListDownloadXml,
-  buildHttpVodSourceCandidates,
-  parseRecStartParamIfPresent,
-  sanitizeDownloadFilename,
-} from "./utils/recordingDownload";
-import {
-  buildFileInfoListReplayByIdXml,
-  buildFileInfoListReplayByNameXml,
-  buildFileInfoListStopXml,
-  buildReplayStopNameFromFileName,
-  type RecordingReplayIFrameMode,
-  type RecordingReplayStreamType,
-} from "./utils/recordingReplay";
+import { mapToSimpleEvent } from "./utils/events";
+import { formatClientIoForLog, formatErrorForLog } from "./utils/logging";
+import { parseBoolean01, parseNumber } from "./utils/parsing";
+import { calculatePipOverlayPosition, resolvePipMarginPx } from "./utils/pip";
 import {
   buildDeletePtzPresetAttempts,
   extractFrameErrorDetails,
@@ -280,19 +230,47 @@ import {
   resolvePtzSpeed,
   runDeletePtzPresetAttempts,
 } from "./utils/ptz";
-import { getAiStateViaGetAiAlarm } from "./utils/aiState";
+import {
+  parseCoordinatePointListPushXml,
+  parseDingdongListPushXml,
+  parseNetInfoPushXml,
+  parseSerialPushXml,
+  parseSleepStatusPushXml,
+  parseVideoInputPushXml,
+} from "./utils/pushSettings";
+import { buildFileInfoListDownloadXml } from "./utils/recordingDownload";
+import {
+  buildFileInfoListReplayByIdXml,
+  buildFileInfoListReplayByNameXml,
+  buildFileInfoListStopXml,
+  buildReplayStopNameFromFileName,
+  type RecordingReplayStreamType,
+} from "./utils/recordingReplay";
+import { sleepMs } from "./utils/recordings";
+import {
+  dedupeRecordingFiles,
+  downloadRecordingViaFileInfoListPaged,
+  listRecordingsViaFileInfoList,
+} from "./utils/recordingsFileInfoList";
+import { parseChannelStreamMetadataFromGetEncXml } from "./utils/streamMetadata";
+import {
+  buildTalkSessionInfoFromAbility,
+  sendTalkConfigWithReset,
+} from "./utils/talkConfig";
+import { createBufferedTalkSession } from "./utils/talkSession";
 import { discoverPerChannelUidViaCgiChannelstatus } from "./utils/uidDiscovery";
-import { enrichRecordingFile as enrichRecordingFileUtil } from "./utils/recordingEnrich";
+import { getXmlBlocks, getXmlTexts, parseTalkAbilityXml } from "./xmlUtils";
+
+import { parseRecordingFileName } from "./recordingFileName";
 import { parseEventsFromGetEventsXml } from "./utils/eventsGetEvents";
+import { parsePirInfoFromXml } from "./utils/pir";
+import { discoverDeviceUidForRecordings as discoverDeviceUidForRecordingsUtil } from "./utils/uidRecordings";
 import {
   applyWhiteLedBrightnessToXml,
   applyWhiteLedOnOffToXml,
   buildWhiteLedManualPayloadXml,
   parseWhiteLedStateFromXml,
 } from "./utils/whiteLed";
-import { parsePirInfoFromXml } from "./utils/pir";
-import { discoverDeviceUidForRecordings as discoverDeviceUidForRecordingsUtil } from "./utils/uidRecordings";
-import { parseRecordingFileName } from "./recordingFileName";
 
 type TalkAbility = import("./types").TalkAbility;
 type TalkAudioConfig = import("./types").TalkAudioConfig;
@@ -2814,24 +2792,7 @@ export class ReolinkBaichuanApi {
    * });
    * ```
    */
-  async getVideoclips(params: {
-    /** Channel number (0-based). Optional for standalone cameras, required for NVR. */
-    channel?: number;
-    /** Start time for search */
-    start: Date;
-    /** End time for search */
-    end: Date;
-    /** Stream type. Default: "subStream" */
-    streamType?: RecordingStreamType;
-    /** Comma-separated record types. Default includes all types. */
-    recordType?: string;
-    /** Explicit UID (skip auto-discovery if provided) */
-    uid?: string;
-    /** Per-request timeout in ms. Default: 15000 */
-    timeoutMs?: number;
-    /** Max pagination iterations. Default: 50 */
-    maxIterations?: number;
-  }): Promise<RecordingFile[]> {
+  async getVideoclips(params: GetVideoclipsParams): Promise<RecordingFile[]> {
     return await this.enqueueRecordingsOperation(async () => {
       const dbg = this.client.getDebugConfig?.();
       const logger = this.logger;
@@ -3083,48 +3044,25 @@ export class ReolinkBaichuanApi {
     try {
       await stream.start();
 
-      // NVR streaming: try multiple channelIdOverride values like download does
-      // PCAP analysis shows headerChannelId candidates: 82, 134, 0, channel+1
-      const headerChannelIdCandidates = [
-        82, // PCAP: works for replay download
-        134,
-        headerChannelIdOverride,
-        0,
-        channel + 1,
-      ].filter((v, i, a) => v !== undefined && a.indexOf(v) === i) as number[];
+      // NVR streaming: use resolved headerChannelId or default to 82 (PCAP-verified)
+      const channelIdOverride = headerChannelIdOverride ?? 82;
 
-      let lastCode: number | undefined;
-      let success = false;
+      const frame = await this.client.sendFrame({
+        cmdId: BC_CMD_ID_FILE_INFO_LIST_REPLAY,
+        channel,
+        channelIdOverride,
+        payloadXml,
+        // PCAP-verified: NO extension XML for NVR replay (payloadOffset=0)
+        extensionXml: "",
+        messageClass: BC_CLASS_MODERN_24,
+        msgNumOverride: msgNum,
+        timeoutMs: params.timeoutMs,
+        internal: true,
+      });
 
-      for (const chId of headerChannelIdCandidates) {
-        try {
-          const frame = await this.client.sendFrame({
-            cmdId: BC_CMD_ID_FILE_INFO_LIST_REPLAY,
-            channel,
-            channelIdOverride: chId,
-            payloadXml,
-            // PCAP-verified: NO extension XML for NVR replay (payloadOffset=0)
-            extensionXml: "",
-            messageClass: BC_CLASS_MODERN_24,
-            msgNumOverride: msgNum,
-            timeoutMs: params.timeoutMs,
-            internal: true,
-          });
-
-          lastCode = frame.header.responseCode;
-          if (frame.header.responseCode === 200) {
-            success = true;
-            break;
-          }
-        } catch {
-          // Try next candidate
-          continue;
-        }
-      }
-
-      if (!success) {
+      if (frame.header.responseCode !== 200) {
         throw new Error(
-          `NVR replay rejected (response_code=${lastCode ?? "unknown"}) tried channelIds=[${headerChannelIdCandidates.join(",")}]`,
+          `NVR replay rejected (response_code=${frame.header.responseCode}) channelIdOverride=${channelIdOverride}`,
         );
       }
 
@@ -3238,229 +3176,6 @@ export class ReolinkBaichuanApi {
       ...(params?.timeoutMs != null ? { timeoutMs: params.timeoutMs } : {}),
     });
     return parseXmlFragmentToJson(xml);
-  }
-
-  private enrichRecordingFile(
-    rec: RecordingFile,
-    rtmpUrl?: string,
-  ): EnrichedRecordingFile {
-    return enrichRecordingFileUtil(rec, rtmpUrl);
-  }
-
-  private dateUtcComponentsToLocalMs(dt: Date): number {
-    // parseXmlDateTimeBlock() parses timestamps as UTC to preserve numeric components.
-    // Recording filenames are parsed as local time.
-    // For matching, we need both on the same basis, so we re-create a local Date using UTC components.
-    return new Date(
-      dt.getUTCFullYear(),
-      dt.getUTCMonth(),
-      dt.getUTCDate(),
-      dt.getUTCHours(),
-      dt.getUTCMinutes(),
-      dt.getUTCSeconds(),
-    ).getTime();
-  }
-
-  private mergeDetectionFlags(
-    base: EnrichedRecordingFile,
-    add: Partial<
-      Pick<
-        EnrichedRecordingFile,
-        | "hasPerson"
-        | "hasVehicle"
-        | "hasAnimal"
-        | "hasFace"
-        | "hasMotion"
-        | "hasDoorbell"
-        | "hasPackage"
-        | "hasRf"
-        | "hasOther"
-      >
-    >,
-  ): EnrichedRecordingFile {
-    const hasPerson = base.hasPerson || (add.hasPerson ?? false);
-    const hasVehicle = base.hasVehicle || (add.hasVehicle ?? false);
-    const hasAnimal = base.hasAnimal || (add.hasAnimal ?? false);
-    const hasFace = base.hasFace || (add.hasFace ?? false);
-    const hasDoorbell = base.hasDoorbell || (add.hasDoorbell ?? false);
-    const hasPackage = base.hasPackage || (add.hasPackage ?? false);
-    const hasRf = base.hasRf || (add.hasRf ?? false);
-    const hasOther = base.hasOther || (add.hasOther ?? false);
-
-    // Treat any AI/doorbell/package/rf/other as motion-like for consumers that expect Motion.
-    const inferredMotion =
-      hasPerson ||
-      hasVehicle ||
-      hasAnimal ||
-      hasFace ||
-      hasDoorbell ||
-      hasPackage ||
-      hasRf ||
-      hasOther;
-    const hasMotion =
-      base.hasMotion || (add.hasMotion ?? false) || inferredMotion;
-
-    return {
-      ...base,
-      hasPerson,
-      hasVehicle,
-      hasAnimal,
-      hasFace,
-      hasDoorbell,
-      hasPackage,
-      hasRf,
-      hasOther,
-      hasMotion,
-    };
-  }
-
-  private async tryAnnotateEnrichedRecordingsWithAlarmEvents(params: {
-    channel: number;
-    uid: string;
-    start: Date;
-    end: Date;
-    streamType: RecordingStreamType;
-    recordings: EnrichedRecordingFile[];
-  }): Promise<EnrichedRecordingFile[]> {
-    if (params.recordings.length === 0) return params.recordings;
-
-    // If the VOD listings already include any AI/special detection flags (from filename hex flags
-    // or recordType), we skip the events query to keep responses fast.
-    // This enrichment path is mainly for firmwares that return only "motion".
-    const alreadyHasUsefulDetections = params.recordings.some(
-      (r) =>
-        r.hasPerson ||
-        r.hasVehicle ||
-        r.hasAnimal ||
-        r.hasFace ||
-        r.hasDoorbell ||
-        r.hasPackage ||
-        r.hasRf,
-    );
-    if (alreadyHasUsefulDetections) return params.recordings;
-
-    const dbg = this.client.getDebugConfig?.();
-    const logger = this.logger;
-
-    type EventRange = {
-      startMs: number;
-      endMs: number;
-      flags: Pick<
-        EnrichedRecordingFile,
-        | "hasPerson"
-        | "hasVehicle"
-        | "hasAnimal"
-        | "hasFace"
-        | "hasMotion"
-        | "hasDoorbell"
-        | "hasPackage"
-        | "hasRf"
-        | "hasOther"
-      >;
-    };
-
-    const padMs = 2 * 60_000;
-
-    // Hard cap for this best-effort enrichment path.
-    // Keep it small so VOD listing stays responsive.
-    const annotationTimeoutMs = 2_000;
-    const annotationMaxIterations = 1;
-
-    const toRanges = (
-      events: EnrichedRecordingFile[],
-      source: "baichuan" | "cgi",
-    ): EventRange[] => {
-      const ranges: EventRange[] = [];
-      for (const ev of events) {
-        let startMs = ev.startTimeMs ?? 0;
-        let endMs = ev.endTimeMs ?? startMs;
-
-        // Only Baichuan XML timestamps are parsed as UTC-preserved components.
-        if (source === "baichuan") {
-          const rawStart = ev.raw?.startTime;
-          const rawEnd = ev.raw?.endTime;
-          if (rawStart instanceof Date && Number.isFinite(rawStart.getTime()))
-            startMs = this.dateUtcComponentsToLocalMs(rawStart);
-          if (rawEnd instanceof Date && Number.isFinite(rawEnd.getTime()))
-            endMs = this.dateUtcComponentsToLocalMs(rawEnd);
-        }
-
-        if (!Number.isFinite(startMs) || startMs <= 0) continue;
-        if (!Number.isFinite(endMs) || endMs <= 0) endMs = startMs;
-
-        ranges.push({
-          startMs,
-          endMs,
-          flags: {
-            hasPerson: ev.hasPerson,
-            hasVehicle: ev.hasVehicle,
-            hasAnimal: ev.hasAnimal,
-            hasFace: ev.hasFace,
-            hasMotion: ev.hasMotion,
-            hasDoorbell: ev.hasDoorbell,
-            hasPackage: ev.hasPackage,
-            hasRf: ev.hasRf,
-            hasOther: ev.hasOther,
-          },
-        });
-      }
-      ranges.sort((a, b) => a.startMs - b.startMs);
-      return ranges;
-    };
-
-    let eventRanges: EventRange[] = [];
-    try {
-      // Prefer Baichuan events list (closest to Hub/NVR UI events list).
-      const alarmFiles = await this.listAlarmVideosViaBaichuan({
-        channel: params.channel,
-        uid: params.uid,
-        start: params.start,
-        end: params.end,
-        streamType: params.streamType,
-        timeoutMs: annotationTimeoutMs,
-        maxIterations: annotationMaxIterations,
-      });
-      const alarmEvents = alarmFiles.map((f) => this.enrichRecordingFile(f));
-      eventRanges = toRanges(alarmEvents, "baichuan");
-      recordingsTraceLog(
-        dbg,
-        logger,
-        "tryAnnotateEnrichedRecordingsWithAlarmEvents",
-        `Baichuan alarm events: ${alarmEvents.length} items -> ${eventRanges.length} time ranges (channel=${params.channel})`,
-      );
-    } catch (e) {
-      recordingsTraceLog(
-        dbg,
-        logger,
-        "tryAnnotateEnrichedRecordingsWithAlarmEvents",
-        `Baichuan alarm events unavailable: ${formatErrorForLog(e)}`,
-      );
-    }
-
-    // NOTE: We intentionally do NOT fall back to CGI here.
-    // CGI event search can be significantly slower, and this enrichment is best-effort.
-
-    if (eventRanges.length === 0) return params.recordings;
-
-    const annotated: EnrichedRecordingFile[] = [];
-    for (const rec of params.recordings) {
-      const recStart = rec.startTimeMs ?? 0;
-      const recEnd = rec.endTimeMs ?? recStart;
-      if (!Number.isFinite(recStart) || recStart <= 0) {
-        annotated.push(rec);
-        continue;
-      }
-
-      let merged = rec;
-      for (const ev of eventRanges) {
-        if (ev.startMs > recEnd + padMs) break;
-        if (ev.endMs < recStart - padMs) continue;
-        merged = this.mergeDetectionFlags(merged, ev.flags);
-      }
-      annotated.push(merged);
-    }
-
-    return annotated;
   }
 
   /**
@@ -4743,108 +4458,48 @@ export class ReolinkBaichuanApi {
     // PCAP analysis: NVR recordings use subStream by default
     const streamType = params.streamType ?? "subStream";
 
-    // PCAP (events+cover+download): FileInfoList replay uses service-like header channelIds.
-    // Verified working: headerChannelId=82 with xmlChannelId=0, NO Extension XML
-    const headerChannelCandidates = [
-      82, // PCAP: works for replay
-      134,
-      headerChannelIdOverride,
-      channel + 1,
-      undefined,
-      250,
-      0,
-      251,
-    ].filter((v, i, a) => a.indexOf(v) === i);
-    // PCAP: xmlChannelId=0 works for NVR
-    const xmlChannelIdCandidates = [
-      0, // PCAP: xmlChannelId=0 works
-      channel,
-      channel + 1,
-      headerChannelIdOverride,
-      1,
-    ]
-      .filter((v): v is number => typeof v === "number" && Number.isFinite(v))
-      .filter((v, i, a) => a.indexOf(v) === i);
+    // Simplified: use resolved headerChannelId or 82 for NVR, 0 for standalone
+    const isNvr = headerChannelIdOverride != null;
+    const channelIdOverride = isNvr ? (headerChannelIdOverride ?? 82) : 0;
 
-    const totalTimeoutMs = params.timeoutMs ?? 120_000;
-    const startedAt = Date.now();
-    const headerStreamTypeCandidates = [0, 2];
-    const messageClassCandidates = [BC_CLASS_MODERN_24, BC_CLASS_MODERN_24_ALT];
-    let lastErr: unknown;
-    let attempts = 0;
-    const maxAttempts = 12;
+    const payloadXml = ident.includes("/")
+      ? buildFileInfoListReplayByIdXml({
+          channel,
+          xmlChannelId: 0, // PCAP-verified: xmlChannelId=0 works
+          id: ident,
+          uid,
+          streamType,
+        })
+      : buildFileInfoListReplayByNameXml({
+          channel,
+          xmlChannelId: 0,
+          name: ident,
+          uid,
+          streamType,
+        });
+
+    const timeoutMs = params.timeoutMs ?? 120_000;
 
     trace(
-      `attempt budget: channel=${channel} uid=${uid || "(missing)"} ident=${ident} streamType=${streamType} headerChannelId=[${headerChannelCandidates.map((v) => (v == null ? "(default)" : String(v))).join(",")}] xmlChannelId=[${xmlChannelIdCandidates.join(",")}] headerStreamType=[${headerStreamTypeCandidates.join(",")}] messageClass=[${messageClassCandidates.join(",")}] totalTimeoutMs=${totalTimeoutMs} maxAttempts=${maxAttempts}`,
+      `download: channel=${channel} uid=${uid || "(missing)"} ident=${ident} streamType=${streamType} channelIdOverride=${channelIdOverride} timeoutMs=${timeoutMs}`,
     );
 
-    for (const xmlCh of xmlChannelIdCandidates) {
-      const payloadXml = ident.includes("/")
-        ? buildFileInfoListReplayByIdXml({
-            channel,
-            xmlChannelId: xmlCh,
-            id: ident,
-            uid,
-            streamType,
-          })
-        : buildFileInfoListReplayByNameXml({
-            channel,
-            xmlChannelId: xmlCh,
-            name: ident,
-            uid,
-            streamType,
-          });
-
-      for (const chId of headerChannelCandidates) {
-        for (const st of headerStreamTypeCandidates) {
-          const remaining = totalTimeoutMs - (Date.now() - startedAt);
-          if (remaining <= 0) break;
-          if (attempts >= maxAttempts) break;
-          attempts++;
-          const attemptTimeoutMs = Math.min(5_000, remaining);
-          trace(
-            `attempt=${attempts}/${maxAttempts} ident=${ident} xmlCh=${xmlCh} headerCh=${chId == null ? "(default)" : chId} headerStreamType=${st} attemptTimeoutMs=${attemptTimeoutMs}`,
-          );
-          for (const messageClass of messageClassCandidates) {
-            try {
-              return await this.client.sendBinary({
-                cmdId: BC_CMD_ID_FILE_INFO_LIST_REPLAY,
-                channel,
-                ...(typeof chId === "number"
-                  ? { channelIdOverride: chId }
-                  : {}),
-                // PCAP: request msgNum is 0 for this flow.
-                msgNumOverride: 0,
-                messageClass,
-                // PCAP analysis: Replay requests have NO Extension XML (verified working)
-                // extensionXml: undefined,
-                payloadXml,
-                streamType: st,
-                timeoutMs: attemptTimeoutMs,
-              });
-            } catch (e) {
-              lastErr = e;
-              const msg = e instanceof Error ? e.message : String(e);
-              trace(`attempt=${attempts} mc=${messageClass} failed: ${msg}`);
-              // Timeouts can be variant-dependent; continue while within budget.
-              if (msg.includes("timeout")) continue;
-              if (
-                !msg.includes("rejected") &&
-                !msg.includes("responseCode=400")
-              ) {
-                break;
-              }
-            }
-          }
-        }
-        if (attempts >= maxAttempts) break;
-      }
-      if (attempts >= maxAttempts) break;
+    try {
+      return await this.client.sendBinary({
+        cmdId: BC_CMD_ID_FILE_INFO_LIST_REPLAY,
+        channel,
+        channelIdOverride,
+        msgNumOverride: 0,
+        messageClass: BC_CLASS_MODERN_24,
+        payloadXml,
+        streamType: 0,
+        timeoutMs,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      trace(`download failed: ${msg}`);
+      throw e;
     }
-
-    throw lastErr instanceof Error
-      ? lastErr
-      : new Error(String(lastErr ?? "FileInfoList replay failed"));
   }
 
   async downloadRecording(params: DownloadRecordingParams): Promise<Buffer> {
@@ -4978,6 +4633,420 @@ export class ReolinkBaichuanApi {
         keyframes: stats.keyframes,
       },
     };
+  }
+
+  /**
+   * Get a recording as a ready-to-play MP4 file with video and audio muxed together.
+   *
+   * This method downloads a recording via Baichuan protocol, demuxes it, and uses
+   * ffmpeg to mux video+audio into a single MP4 file.
+   *
+   * Example usage:
+   * ```ts
+   * const { mp4, stats } = await api.getRecordingVideo({
+   *   channel: 0,
+   *   fileName: "/mnt/sda/Mp4Record/2026-01-22/Rec_20260122_000320.mp4"
+   * });
+   *
+   * // Save directly as playable MP4
+   * await fs.writeFile("recording.mp4", mp4);
+   * ```
+   *
+   * @param params - Download parameters
+   * @returns MP4 buffer with muxed video+audio and statistics
+   */
+  async getRecordingVideo(
+    params: DownloadRecordingParams & {
+      /** Path to ffmpeg binary (default: "ffmpeg" from PATH) */
+      ffmpegPath?: string;
+    },
+  ): Promise<GetRecordingVideoResult> {
+    const raw = await this.downloadRecording(params);
+
+    const videoFrames: { annexB: Buffer; microseconds: number }[] = [];
+    const audioFrames: Buffer[] = [];
+    let audioCodec: BcMediaAudioType | null = null;
+
+    const decoder = new BcMediaAnnexBDecoder({
+      strict: false,
+      logger: this.logger,
+      onVideoAccessUnit: ({ annexB, microseconds }) => {
+        videoFrames.push({ annexB, microseconds });
+      },
+      onAudioFrame: ({ audioType, data }) => {
+        if (audioCodec == null) audioCodec = audioType;
+        audioFrames.push(data);
+      },
+    });
+
+    decoder.push(raw);
+
+    const decoderStats = decoder.getStats();
+    const videoCodec = decoderStats.videoType ?? "H264";
+
+    // Determine FPS - prefer timestamps over info FPS for correct audio sync
+    // The info FPS tells what the camera records at, but the actual frames transmitted
+    // may be subsampled (e.g., 30fps recording -> 15fps transmission for bandwidth)
+    // Using timestamps ensures video duration matches audio duration
+    let fps: number;
+    let durationSeconds: number;
+
+    if (videoFrames.length >= 2) {
+      const firstTs = videoFrames[0]!.microseconds;
+      const lastTs = videoFrames[videoFrames.length - 1]!.microseconds;
+      const durationUs = lastTs - firstTs;
+
+      if (durationUs > 0) {
+        // Calculate from timestamps - most reliable for A/V sync
+        durationSeconds = durationUs / 1_000_000;
+        fps = (videoFrames.length - 1) / durationSeconds;
+      } else {
+        // Fallback to info FPS if timestamps are invalid
+        const infoFps = decoderStats.infos[0]?.fps;
+        fps = infoFps && infoFps > 0 ? infoFps : 15;
+        durationSeconds = videoFrames.length / fps;
+      }
+    } else {
+      // Not enough frames, use info FPS
+      const infoFps = decoderStats.infos[0]?.fps;
+      fps = infoFps && infoFps > 0 ? infoFps : 15;
+      durationSeconds = videoFrames.length / fps;
+    }
+
+    // Round FPS to common values if close
+    if (fps > 14 && fps < 16) fps = 15;
+    else if (fps > 23 && fps < 26) fps = 25;
+    else if (fps > 29 && fps < 31) fps = 30;
+    else fps = Math.round(fps * 100) / 100;
+
+    const videoData = Buffer.concat(videoFrames.map((f) => f.annexB));
+    const audioData =
+      audioFrames.length > 0 ? Buffer.concat(audioFrames) : null;
+    const hasAudio = audioData != null && audioData.length > 0;
+
+    // Mux video+audio with ffmpeg
+    const mp4 = await this.muxToMp4({
+      videoData,
+      videoCodec,
+      audioData,
+      audioCodec,
+      fps,
+      durationHint: durationSeconds,
+      ...(params.ffmpegPath ? { ffmpegPath: params.ffmpegPath } : {}),
+    });
+
+    return {
+      mp4,
+      stats: {
+        bytesIn: decoderStats.bytesIn,
+        videoBytesOut: decoderStats.bytesOut,
+        audioBytesOut: decoderStats.audioBytesOut,
+        videoPackets: decoderStats.videoPackets,
+        audioPackets: decoderStats.audioPackets,
+        keyframes: decoderStats.keyframes,
+        fps,
+        durationSeconds,
+        videoCodec,
+        audioCodec,
+        hasAudio,
+      },
+    };
+  }
+
+  /**
+   * Get a recording as MP4 by streaming it frame-by-frame.
+   *
+   * This is an alternative to getRecordingVideo() that uses the replay streaming
+   * protocol instead of bulk download. Useful for cameras that don't support
+   * the download protocol (cmdId=5/13) but support streaming playback.
+   *
+   * @param params - Streaming parameters
+   * @returns MP4 buffer with video (audio not supported in streaming mode)
+   */
+  async getRecordingVideoViaStreaming(params: {
+    channel?: number;
+    fileName: string;
+    streamType?: "mainStream" | "subStream";
+    /** Maximum streaming duration in ms (default: 300000 = 5 min) */
+    maxDurationMs?: number;
+    /** Idle timeout - stop if no frames received for this duration (default: 10000ms) */
+    idleTimeoutMs?: number;
+    /** Path to ffmpeg binary (default: "ffmpeg" from PATH) */
+    ffmpegPath?: string;
+  }): Promise<{
+    mp4: Buffer;
+    stats: {
+      videoPackets: number;
+      keyframes: number;
+      fps: number;
+      durationSeconds: number;
+      videoCodec: BcMediaVideoType;
+    };
+  }> {
+    const channel = this.normalizeChannel(params.channel ?? 0);
+    const maxDurationMs = params.maxDurationMs ?? 300_000; // 5 min max
+    const idleTimeoutMs = params.idleTimeoutMs ?? 10_000; // 10s idle timeout
+
+    this.logger?.info?.(
+      `[getRecordingVideoViaStreaming] Starting stream: channel=${channel}, file=${params.fileName}`,
+    );
+
+    const { stream, stop } = await this.startRecordingReplayStream({
+      channel,
+      fileName: params.fileName,
+      streamType: params.streamType ?? "mainStream",
+      timeoutMs: 30_000,
+    });
+
+    const videoFrames: Buffer[] = [];
+    let videoCodec: BcMediaVideoType = "H264";
+    let keyframes = 0;
+    let lastFrameAt = Date.now();
+    const startedAt = Date.now();
+
+    // Collect frames until stream ends or timeout
+    await new Promise<void>((resolve) => {
+      let resolved = false;
+      const finish = () => {
+        if (resolved) return;
+        resolved = true;
+        clearInterval(checkInterval);
+        resolve();
+      };
+
+      // Handle video frames
+      stream.on("videoAccessUnit", (frame) => {
+        lastFrameAt = Date.now();
+        videoFrames.push(frame.data);
+        videoCodec = frame.videoType;
+        if (frame.isKeyframe) keyframes++;
+
+        // Log progress
+        if (videoFrames.length % 100 === 0) {
+          this.logger?.debug?.(
+            `[getRecordingVideoViaStreaming] Collected ${videoFrames.length} frames (${keyframes} keyframes)`,
+          );
+        }
+      });
+
+      // Handle stream close (end of recording)
+      stream.on("close", () => {
+        this.logger?.info?.(
+          `[getRecordingVideoViaStreaming] Stream closed after ${videoFrames.length} frames`,
+        );
+        finish();
+      });
+
+      // Handle errors
+      stream.on("error", (err) => {
+        this.logger?.warn?.(
+          `[getRecordingVideoViaStreaming] Stream error: ${err.message}`,
+        );
+        finish();
+      });
+
+      // Check for timeout/idle periodically
+      const checkInterval = setInterval(() => {
+        const now = Date.now();
+        const elapsed = now - startedAt;
+        const idleTime = now - lastFrameAt;
+
+        // Max duration exceeded
+        if (elapsed > maxDurationMs) {
+          this.logger?.info?.(
+            `[getRecordingVideoViaStreaming] Max duration reached (${elapsed}ms)`,
+          );
+          finish();
+          return;
+        }
+
+        // Idle timeout - no frames for a while means recording ended
+        if (videoFrames.length > 0 && idleTime > idleTimeoutMs) {
+          this.logger?.info?.(
+            `[getRecordingVideoViaStreaming] Idle timeout (${idleTime}ms with no frames)`,
+          );
+          finish();
+          return;
+        }
+      }, 1000);
+    });
+
+    // Stop the stream
+    try {
+      await stop();
+    } catch {
+      // Ignore stop errors
+    }
+
+    if (videoFrames.length === 0) {
+      throw new Error(
+        "No video frames received from streaming - recording may be empty or streaming not supported",
+      );
+    }
+
+    // Estimate FPS from frame count and duration
+    const streamDuration = (Date.now() - startedAt) / 1000;
+    const estimatedFps =
+      streamDuration > 0 ? Math.round(videoFrames.length / streamDuration) : 15;
+    // Use common FPS values
+    const fps =
+      estimatedFps >= 28
+        ? 30
+        : estimatedFps >= 23
+          ? 25
+          : estimatedFps >= 13
+            ? 15
+            : 10;
+
+    this.logger?.info?.(
+      `[getRecordingVideoViaStreaming] Collected ${videoFrames.length} frames, ${keyframes} keyframes, estimated ${fps} fps`,
+    );
+
+    const videoData = Buffer.concat(videoFrames);
+    const durationSeconds = videoFrames.length / fps;
+
+    // Mux to MP4 (no audio in streaming mode)
+    const mp4 = await this.muxToMp4({
+      videoData,
+      videoCodec,
+      audioData: null,
+      audioCodec: null,
+      fps,
+      ...(params.ffmpegPath ? { ffmpegPath: params.ffmpegPath } : {}),
+    });
+
+    return {
+      mp4,
+      stats: {
+        videoPackets: videoFrames.length,
+        keyframes,
+        fps,
+        durationSeconds,
+        videoCodec,
+      },
+    };
+  }
+
+  /**
+   * Internal helper to mux video+audio into MP4 using ffmpeg.
+   */
+  private async muxToMp4(params: {
+    videoData: Buffer;
+    videoCodec: BcMediaVideoType;
+    audioData: Buffer | null;
+    audioCodec: BcMediaAudioType | null;
+    fps: number;
+    durationHint?: number;
+    ffmpegPath?: string;
+  }): Promise<Buffer> {
+    const { spawn } = await import("node:child_process");
+    const { randomUUID } = await import("node:crypto");
+    const fs = await import("node:fs/promises");
+    const os = await import("node:os");
+    const path = await import("node:path");
+
+    const ffmpeg = params.ffmpegPath ?? "ffmpeg";
+    const tmpDir = os.tmpdir();
+    const id = randomUUID();
+
+    const videoFormat = params.videoCodec === "H265" ? "hevc" : "h264";
+    const videoPath = path.join(tmpDir, `reolink-${id}.${videoFormat}`);
+    const outputPath = path.join(tmpDir, `reolink-${id}.mp4`);
+
+    let audioPath: string | null = null;
+    if (params.audioData && params.audioData.length > 0 && params.audioCodec) {
+      const audioExt = params.audioCodec === "Aac" ? "aac" : "raw";
+      audioPath = path.join(tmpDir, `reolink-${id}.${audioExt}`);
+    }
+
+    try {
+      // Write temp files
+      await fs.writeFile(videoPath, params.videoData);
+      if (audioPath && params.audioData) {
+        await fs.writeFile(audioPath, params.audioData);
+      }
+
+      // Build ffmpeg args
+      const args: string[] = ["-hide_banner", "-loglevel", "error", "-y"];
+
+      // Video input with framerate
+      // Using -r on input tells ffmpeg to interpret the raw stream at this rate
+      if (params.fps > 0) {
+        args.push("-r", String(params.fps));
+      }
+      args.push("-f", videoFormat, "-i", videoPath);
+
+      // Audio input (if present)
+      if (audioPath && params.audioCodec) {
+        if (params.audioCodec === "Aac") {
+          // AAC ADTS has its own timestamps, ffmpeg will read them
+          args.push("-f", "aac", "-i", audioPath);
+        } else {
+          // ADPCM: s16le format, mono, 8000Hz sample rate
+          args.push("-f", "s16le", "-ar", "8000", "-ac", "1", "-i", audioPath);
+        }
+      }
+
+      // Output options: copy codecs, fragmented MP4 for streaming compatibility
+      args.push("-c:v", "copy");
+      if (audioPath && params.audioCodec) {
+        if (params.audioCodec === "Aac") {
+          // AAC in ADTS format needs bitstream filter for MP4 muxing
+          args.push("-c:a", "copy", "-bsf:a", "aac_adtstoasc");
+        } else {
+          // ADPCM needs transcoding to AAC
+          args.push("-c:a", "aac");
+        }
+        // NOTE: Do NOT use -shortest as it can drop audio when video has no timestamps
+      }
+
+      // Set output framerate to match input
+      if (params.fps > 0) {
+        args.push("-r", String(params.fps));
+      }
+
+      args.push(
+        "-movflags",
+        "frag_keyframe+empty_moov+default_base_moof",
+        "-f",
+        "mp4",
+        outputPath,
+      );
+
+      // Run ffmpeg
+      await new Promise<void>((resolve, reject) => {
+        const p = spawn(ffmpeg, args, { stdio: ["ignore", "ignore", "pipe"] });
+        let stderr = "";
+
+        p.stderr.on("data", (d: Buffer) => {
+          stderr += d.toString();
+        });
+
+        p.on("error", (e) => {
+          reject(new Error(`ffmpeg spawn error: ${e.message}`));
+        });
+
+        p.on("close", (code) => {
+          if (code === 0) {
+            resolve();
+          } else {
+            reject(
+              new Error(
+                `ffmpeg exited with code ${code}: ${stderr.slice(-1000)}`,
+              ),
+            );
+          }
+        });
+      });
+
+      // Read output
+      return await fs.readFile(outputPath);
+    } finally {
+      // Cleanup temp files
+      await fs.unlink(videoPath).catch(() => {});
+      if (audioPath) await fs.unlink(audioPath).catch(() => {});
+      await fs.unlink(outputPath).catch(() => {});
+    }
   }
 
   /**
@@ -8849,367 +8918,6 @@ export class ReolinkBaichuanApi {
     const info = this.getPushCacheEntryForLogicalChannel(channel);
     const uid = typeof info?.uid === "string" ? info.uid.trim() : "";
     return uid ? uid : undefined;
-  }
-
-  private async listAlarmVideosViaBaichuan(params: {
-    channel: number;
-    uid: string;
-    start: Date;
-    end: Date;
-    streamType?: RecordingStreamType;
-    alarmType?: string;
-    maxIterations?: number;
-    timeoutMs?: number;
-  }): Promise<RecordingFile[]> {
-    const dbg = this.client.getDebugConfig?.();
-    const logger = this.logger;
-
-    const maxIterations = params.maxIterations ?? 50;
-    const timeoutMs = params.timeoutMs ?? 15_000;
-    const uidBase = (params.uid.split("_")[0] ?? params.uid).trim();
-    const streamTypeInt = params.streamType === "subStream" ? 1 : 0;
-    const alarmType =
-      params.alarmType ??
-      "md, pir, io, people, face, vehicle, dog_cat, visitor, other, package, cry, crossline, intrusion, loitering, legacy, loss";
-
-    // NOTE: channelId in the XML payload is 0-based (same as `params.channel`).
-    // The Baichuan transport header uses (channel + 1) internally.
-    const xmlChannelId = params.channel;
-
-    const findOpenXml = (
-      start: Date,
-      end: Date,
-    ) => `<?xml version="1.0" encoding="UTF-8" ?>
-<body>
-<findAlarmVideo version="1.1">
-  <channelId>${xmlChannelId}</channelId>
-<uid>${xmlEscape(uidBase)}</uid>
-<logicChnBitmap>255</logicChnBitmap>
-<streamType>${streamTypeInt}</streamType>
-<notSearchVideo>0</notSearchVideo>
-${xmlDateTimePayload("startTime", start)}
-${xmlDateTimePayload("endTime", end)}
-<alarmType>${xmlEscape(alarmType)}</alarmType>
-</findAlarmVideo>
-</body>`;
-
-    const findGetXml = (
-      fileHandle: string,
-    ) => `<?xml version="1.0" encoding="UTF-8" ?>
-<body>
-<findAlarmVideo version="1.1">
-  <channelId>${xmlChannelId}</channelId>
-<fileHandle>${xmlEscape(fileHandle)}</fileHandle>
-</findAlarmVideo>
-</body>`;
-
-    const out: RecordingFile[] = [];
-    let currentStart = params.start;
-
-    recordingsTraceLog(
-      dbg,
-      logger,
-      "listAlarmVideosViaBaichuan",
-      `init: channel=${params.channel}, uid=${uidBase}, streamType=${streamTypeInt}, start=${params.start.toISOString()}, end=${params.end.toISOString()}, alarmType=${alarmType}`,
-    );
-
-    for (let i = 0; i < maxIterations; i++) {
-      recordingsTraceLog(
-        dbg,
-        logger,
-        "listAlarmVideosViaBaichuan",
-        `findAlarmVideo iteration ${i + 1}/${maxIterations}: channel=${params.channel}, start=${currentStart.toISOString()}, end=${params.end.toISOString()}`,
-      );
-
-      const openResp = await this.sendXml({
-        cmdId: BC_CMD_ID_FIND_REC_VIDEO_OPEN,
-        channel: params.channel,
-        payloadXml: findOpenXml(currentStart, params.end),
-        timeoutMs,
-      });
-
-      const fileHandle = getXmlText(openResp, "fileHandle")?.trim();
-      if (!fileHandle) {
-        const rspCode =
-          getXmlText(openResp, "rspCode")?.trim() ??
-          getXmlText(openResp, "code")?.trim();
-        const msg =
-          getXmlText(openResp, "rspMsg")?.trim() ??
-          getXmlText(openResp, "message")?.trim();
-        const snippet =
-          openResp.length > 800 ? `${openResp.slice(0, 800)}...` : openResp;
-        recordingsTraceLog(
-          dbg,
-          logger,
-          "listAlarmVideosViaBaichuan",
-          `findAlarmVideo OPEN: missing fileHandle (rspCode=${rspCode ?? "?"} msg=${msg ?? "?"}). resp=${snippet}`,
-        );
-        break;
-      }
-
-      const getXml = findGetXml(fileHandle);
-      try {
-        const getResp = await this.sendXml({
-          cmdId: BC_CMD_ID_FIND_REC_VIDEO_GET,
-          channel: params.channel,
-          payloadXml: getXml,
-          timeoutMs,
-        });
-
-        const pageFiles = parseRecordingFilesFromXml(getResp);
-        if (dbg?.traceRecordings && logger) {
-          const withTimes = pageFiles.find(
-            (f) => f.startTime != null || f.endTime != null,
-          );
-          recordingsTraceLog(
-            dbg,
-            logger,
-            "listAlarmVideosViaBaichuan",
-            `findAlarmVideo GET parsed sample: ${withTimes ? `${withTimes.fileName} type=${withTimes.recordType ?? "-"} start=${withTimes.startTime?.toISOString() ?? "-"} end=${withTimes.endTime?.toISOString() ?? "-"}` : "(none)"}`,
-          );
-        }
-        out.push(...pageFiles);
-
-        const alarmBlocks = getXmlBlocks(getResp, "alarmVideo");
-        const bFinishedText = getXmlText(getResp, "bFinished")?.trim();
-        recordingsTraceLog(
-          dbg,
-          logger,
-          "listAlarmVideosViaBaichuan",
-          `findAlarmVideo GET: fileHandle=${fileHandle} parsedFiles=${pageFiles.length} alarmVideoBlocks=${alarmBlocks.length} bFinished=${bFinishedText ?? "?"}`,
-        );
-        if (dbg?.traceRecordings && logger && alarmBlocks.length > 0) {
-          const sample = alarmBlocks[0]!.replace(/\s+/g, " ").slice(0, 700);
-          const extractedAlarmType = getXmlText(
-            alarmBlocks[0]!,
-            "alarmType",
-          )?.trim();
-          recordingsTraceLog(
-            dbg,
-            logger,
-            "listAlarmVideosViaBaichuan",
-            `findAlarmVideo GET sample alarmVideo[0]=${sample} (extracted alarmType=${extractedAlarmType ?? "-"})`,
-          );
-        }
-        if (bFinishedText === "1") break;
-
-        // If not finished, advance start to the last returned event startTime if possible.
-        // NOTE: startTime is parsed as UTC to preserve camera-provided numeric components.
-        // For requests, we must send those same numeric components back (local time methods),
-        // so we re-create a local Date from the UTC components.
-        const lastWithStart = [...pageFiles]
-          .reverse()
-          .find((f) => f.startTime != null);
-        if (!lastWithStart?.startTime) break;
-        const s = lastWithStart.startTime;
-        currentStart = new Date(
-          s.getUTCFullYear(),
-          s.getUTCMonth(),
-          s.getUTCDate(),
-          s.getUTCHours(),
-          s.getUTCMinutes(),
-          s.getUTCSeconds(),
-        );
-      } finally {
-        // Best-effort close.
-        try {
-          await this.sendXml({
-            cmdId: BC_CMD_ID_FIND_REC_VIDEO_CLOSE,
-            channel: params.channel,
-            payloadXml: getXml,
-            timeoutMs: Math.min(timeoutMs, 5_000),
-          });
-        } catch {
-          // ignore
-        }
-      }
-    }
-
-    const seen = new Set<string>();
-    return out.filter((f) => {
-      if (seen.has(f.fileName)) return false;
-      seen.add(f.fileName);
-      return true;
-    });
-  }
-
-  /**
-   * List "alarm video" events directly from an NVR/Hub via Baichuan.
-   *
-   * This uses the Baichuan <findAlarmVideo> flow (cmdId 272/273/274), which is the closest
-   * Baichuan-side equivalent to an "events list" coming from the hub.
-   *
-   * Returned items include timestamps and an alarmType string (stored in RecordingFile.recordType).
-   */
-  async listNvrAlarmEventsViaBaichuan(params: {
-    start: Date;
-    end: Date;
-    /** Channels to query. If omitted, best-effort discovery is used. */
-    channels?: number[];
-    /** Stream type hint for the request (default: mainStream). */
-    streamType?: RecordingStreamType;
-    /** Comma-separated alarmType list (Reolink XML format). */
-    alarmType?: string;
-    /** Safety limit for pagination/iterations per channel (default 50). */
-    maxIterations?: number;
-  }): Promise<ChannelRecordingFile[]> {
-    const requestedChannels = params.channels?.length
-      ? [...params.channels]
-      : [...this.channelPushData.keys()];
-
-    let channels = requestedChannels
-      .map((c) => this.normalizeChannel(c))
-      .filter((n, i, a) => a.indexOf(n) === i)
-      .sort((a, b) => a - b);
-
-    // If we can read channelNum, use it as a hard upper bound.
-    // Some NVRs/hubs expose placeholder channels in cmd_id 145 that will reject recording queries.
-    try {
-      const support = await this.getSupportInfo().catch(() => undefined);
-      const chNum = support?.channelNum;
-      if (typeof chNum === "number" && Number.isFinite(chNum) && chNum > 0) {
-        channels = channels.filter((c) => c >= 0 && c < chNum);
-      }
-    } catch {
-      // ignore
-    }
-
-    // Best-effort fallback when we couldn't infer any channel list.
-    if (channels.length === 0) {
-      const support = await this.getSupportInfo().catch(() => undefined);
-      const chNum = support?.channelNum;
-      if (typeof chNum === "number" && Number.isFinite(chNum) && chNum > 0) {
-        for (let i = 0; i < chNum; i++) channels.push(i);
-      } else {
-        channels.push(this.normalizeChannel(undefined));
-      }
-    }
-
-    const results: ChannelRecordingFile[] = [];
-    for (const channel of channels) {
-      try {
-        const uid =
-          this.getUidFromPushCacheForChannel(channel) ??
-          (await this.ensureUidForRecordings(channel, undefined));
-
-        const files = await this.listAlarmVideosViaBaichuan({
-          channel,
-          uid,
-          start: params.start,
-          end: params.end,
-          ...(params.streamType !== undefined
-            ? { streamType: params.streamType }
-            : {}),
-          ...(params.alarmType !== undefined
-            ? { alarmType: params.alarmType }
-            : {}),
-          ...(params.maxIterations !== undefined
-            ? { maxIterations: params.maxIterations }
-            : {}),
-        });
-
-        for (const f of files) results.push({ channel, uid, ...f });
-      } catch (e) {
-        // Some NVRs expose placeholder channels (or reject certain commands on some channels).
-        // Don't fail the whole request if one channel fails.
-        const msg = e instanceof Error ? e.message : String(e);
-        // this.logger?.log?.(`[listNvrAlarmEventsViaBaichuan] channel ${channel} failed: ${msg}`);
-      }
-    }
-
-    return results;
-  }
-
-  /**
-   * Like {@link ReolinkBaichuanApi#listNvrAlarmEventsViaBaichuan | listNvrAlarmEventsViaBaichuan},
-   * but returns enriched items (detection flags, ms timestamps, etc.).
-   */
-  async listNvrAlarmEventsEnrichedViaBaichuan(params: {
-    start: Date;
-    end: Date;
-    /** Channels to query. If omitted, best-effort discovery is used. */
-    channels?: number[];
-    /** Stream type hint for the request (default: mainStream). */
-    streamType?: RecordingStreamType;
-    /** Comma-separated alarmType list (Reolink XML format). */
-    alarmType?: string;
-    /** Safety limit for pagination/iterations per channel (default 50). */
-    maxIterations?: number;
-  }): Promise<EnrichedChannelRecordingFile[]> {
-    const events = await this.listNvrAlarmEventsViaBaichuan(params);
-    return events.map((ev) => {
-      const { channel, uid, ...rec } = ev;
-      const enriched = this.enrichRecordingFile(rec);
-      return { ...enriched, channel, ...(uid ? { uid } : {}) };
-    });
-  }
-
-  /**
-   * List "alarm-like" events from an NVR/Hub via CGI VOD search.
-   *
-   * This is the pragmatic fallback when Baichuan <findAlarmVideo> returns no entries on some
-   * NVR/HomeHub firmwares.
-   *
-   * The output is filtered to items that look like events:
-   * - motion OR any AI detection OR doorbell/package
-   */
-  async listNvrAlarmEventsEnrichedViaCgi(params: {
-    start: Date;
-    end: Date;
-    channels?: number[];
-    /** Stream type hint (default: mainStream -> CGI "main"). */
-    streamType?: RecordingStreamType;
-    /** If true (default), use day-by-day status table when available for better completeness. */
-    autoSearchByDay?: boolean;
-  }): Promise<EnrichedChannelRecordingFile[]> {
-    const streamType = params.streamType === "subStream" ? "sub" : "main";
-    const autoSearchByDay = params.autoSearchByDay ?? true;
-
-    // Determine channels (prefer explicit list; else use support.channelNum)
-    let channels: number[] = [];
-    if (params.channels?.length) {
-      channels = [
-        ...new Set(params.channels.map((c) => this.normalizeChannel(c))),
-      ].sort((a, b) => a - b);
-    } else {
-      const support = await this.getSupportInfo().catch(() => undefined);
-      const chNum = support?.channelNum;
-      if (typeof chNum === "number" && Number.isFinite(chNum) && chNum > 0) {
-        channels = Array.from({ length: chNum }, (_, i) => i);
-      } else {
-        channels = [this.normalizeChannel(undefined)];
-      }
-    }
-
-    await this.cgiApi.login();
-
-    const out: EnrichedChannelRecordingFile[] = [];
-    for (const channel of channels) {
-      const recs = await this.cgiApi.listNvrRecordings({
-        channel,
-        start: params.start,
-        end: params.end,
-        streamType,
-        autoSearchByDay,
-      });
-
-      for (const r of recs) {
-        const isEvent =
-          r.hasMotion ||
-          r.hasPerson ||
-          r.hasVehicle ||
-          r.hasAnimal ||
-          r.hasFace ||
-          r.hasDoorbell ||
-          r.hasPackage ||
-          r.hasRf ||
-          r.hasOther;
-        if (!isEvent) continue;
-        out.push({ ...r, channel });
-      }
-    }
-
-    return out;
   }
 
   // ====================================================================
