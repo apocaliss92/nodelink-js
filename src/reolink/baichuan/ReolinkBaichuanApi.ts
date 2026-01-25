@@ -4670,7 +4670,9 @@ export class ReolinkBaichuanApi {
     const channel = this.normalizeChannel(params.channel);
     const uid = await this.ensureUidForRecordings(channel, params.uid);
 
-    trace(`Starting paged download: channel=${channel}, uid=${uid}, fileName=${params.fileName}`);
+    trace(
+      `Starting paged download: channel=${channel}, uid=${uid}, fileName=${params.fileName}`,
+    );
 
     const sendXml = async (p: {
       cmdId: number;

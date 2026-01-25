@@ -180,7 +180,8 @@ export const buildFileInfoListDownloadOpenXml = (params: {
   channel: number;
   fileName: string;
 }): string => {
-  const name = params.fileName.split("/").filter(Boolean).at(-1) ?? params.fileName;
+  const name =
+    params.fileName.split("/").filter(Boolean).at(-1) ?? params.fileName;
   return `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <FileInfoList version="1.1">
@@ -274,7 +275,8 @@ export const downloadRecordingViaFileInfoListPaged = async (params: {
       } catch (e) {
         const errorMsg = e instanceof Error ? e.message : String(e);
         // 400 or empty response = end of data
-        if (errorMsg.includes("responseCode 400") || errorMsg.includes("empty")) break;
+        if (errorMsg.includes("responseCode 400") || errorMsg.includes("empty"))
+          break;
         throw e;
       }
 
