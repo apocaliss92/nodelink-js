@@ -40,7 +40,11 @@ ${xmlDateTimePayload("endTime", params.end)}
 </body>`;
 };
 
-export const buildFileInfoListPageXml = (params: { channel: number; uid: string; handle: number }): string => {
+export const buildFileInfoListPageXml = (params: {
+  channel: number;
+  uid: string;
+  handle: number;
+}): string => {
   return `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <FileInfoList version="1.1">
@@ -66,7 +70,9 @@ export const parseFileInfoListHandle = (openRespXml: string): number => {
   return handle;
 };
 
-export const dedupeRecordingFiles = (files: RecordingFile[]): RecordingFile[] => {
+export const dedupeRecordingFiles = (
+  files: RecordingFile[],
+): RecordingFile[] => {
   const seen = new Set<string>();
   return files.filter((f) => {
     if (seen.has(f.fileName)) return false;
@@ -97,16 +103,24 @@ export const listRecordingsViaFileInfoList = async (params: {
     end: params.end,
   });
 
+  // NOTE: For FileInfoList, we do NOT pass channel to sendXml for header calculation.
+  // The channel is only passed inside the XML payload (<channelId>).
+  // Passing channel causes channelId=channel+1 in the Baichuan header, which NVRs reject (400).
+  // Without channel, sendXml uses hostChannelId (250) which is correct.
   const openResp = await params.sendXml({
     cmdId: BC_CMD_ID_FILE_INFO_LIST_OPEN,
-    channel: params.channel,
+    // channel is NOT passed here - only in XML payload
     payloadXml: openXml,
     timeoutMs,
   });
 
   const handle = parseFileInfoListHandle(openResp);
 
-  const pageXml = buildFileInfoListPageXml({ channel: params.channel, uid: params.uid, handle });
+  const pageXml = buildFileInfoListPageXml({
+    channel: params.channel,
+    uid: params.uid,
+    handle,
+  });
 
   const files: RecordingFile[] = [];
   const TYPICAL_PAGE_SIZE = 40;
@@ -117,7 +131,7 @@ export const listRecordingsViaFileInfoList = async (params: {
       try {
         resp = await params.sendXml({
           cmdId: BC_CMD_ID_FILE_INFO_LIST_GET,
-          channel: params.channel,
+          // channel is NOT passed here - only in XML payload
           payloadXml: pageXml,
           timeoutMs,
         });
@@ -130,10 +144,14 @@ export const listRecordingsViaFileInfoList = async (params: {
       const pageFiles = parseRecordingFilesFromXml(resp);
       files.push(...pageFiles);
 
-      const bFinishedText = getXmlText(resp, "bFinished") ?? getXmlText(resp, "finished");
+      const bFinishedText =
+        getXmlText(resp, "bFinished") ?? getXmlText(resp, "finished");
       if (bFinishedText != null) {
         if (bFinishedText.trim() === "1") break;
-      } else if (pageFiles.length === 0 || pageFiles.length < TYPICAL_PAGE_SIZE) {
+      } else if (
+        pageFiles.length === 0 ||
+        pageFiles.length < TYPICAL_PAGE_SIZE
+      ) {
         break;
       }
     }
@@ -141,7 +159,7 @@ export const listRecordingsViaFileInfoList = async (params: {
     try {
       await params.sendXml({
         cmdId: BC_CMD_ID_FILE_INFO_LIST_CLOSE,
-        channel: params.channel,
+        // channel is NOT passed here - only in XML payload
         payloadXml: pageXml,
         timeoutMs: Math.min(timeoutMs, 5_000),
       });

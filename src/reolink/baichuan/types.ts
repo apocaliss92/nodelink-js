@@ -969,30 +969,13 @@ export type RecordingDetectionClass =
   | "motion"
   | "schedule";
 
-export interface ListRecordingsParams {
-  channel: number;
-  uid: string;
-  start: Date;
-  end: Date;
-  streamType?: RecordingStreamType;
-  /** Comma-separated list for Reolink XML, e.g. "manual, sched, io, md, people". */
-  recordType?: string;
-  /** Per-request timeout for FileInfoList operations (open/get/close). Default: 15000ms. */
-  timeoutMs?: number;
-  /**
-   * If true (default), when FileInfoList returns no results, try the alternate Baichuan listing
-   * based on <findAlarmVideo> (cmdId 272/273/274).
-   */
-  fallbackToAlarmVideo?: boolean;
-  /** Safety limit for pagination/iterations (default 50). */
-  maxIterations?: number;
-}
-
 export interface DownloadRecordingParams {
   channel: number;
   uid: string;
-  /** Recording identifier (usually one of the `fileName` returned by listRecordings). */
+  /** Recording identifier (usually one of the `fileName` returned by getVideoclips). */
   fileName: string;
+  /** Stream type for the recording. Default: "subStream" (matches PCAP observations for NVR). */
+  streamType?: "mainStream" | "subStream";
   /** If true, fall back to HTTP CGI `cmd=Download` when Baichuan download fails/times out. Default: false (socket-first). */
   fallbackToHttp?: boolean;
   timeoutMs?: number;

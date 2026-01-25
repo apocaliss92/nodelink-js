@@ -26,6 +26,14 @@ function parseIntParam(v: string | null, def: number): number {
   return Number.isFinite(n) ? n : def;
 }
 
+function parseBoolParam(v: string | null, def: boolean): boolean {
+  if (v == null) return def;
+  const s = v.trim().toLowerCase();
+  if (s === "1" || s === "true" || s === "yes" || s === "y") return true;
+  if (s === "0" || s === "false" || s === "no" || s === "n") return false;
+  return def;
+}
+
 function parseProfile(v: string | null): StreamProfile {
   const p = (v ?? "sub").trim();
   if (p === "main" || p === "sub" || p === "ext") return p;
@@ -45,6 +53,14 @@ function parseDateParam(v: string | null): Date {
   const d = new Date(v);
   if (Number.isNaN(d.getTime()))
     throw new Error("Invalid time (expected ISO string)");
+  return d;
+}
+
+function parseDateParamNamed(name: string, v: string | null): Date {
+  if (!v) throw new Error(`Missing ${name}`);
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime()))
+    throw new Error(`Invalid ${name} (expected ISO string)`);
   return d;
 }
 
@@ -154,6 +170,51 @@ export function createBaichuanEndpointsServer(
         );
         res.setHeader("Content-Length", String(buf.length));
         res.end(buf);
+        return;
+      }
+
+      if (u.pathname === "/recordings") {
+        const channel = parseIntParam(u.searchParams.get("channel"), 0);
+        const streamType = (
+          u.searchParams.get("streamType") ?? "subStream"
+        ).trim();
+        const start = parseDateParamNamed("start", u.searchParams.get("start"));
+        const end = parseDateParamNamed("end", u.searchParams.get("end"));
+        const recordType = (u.searchParams.get("recordType") ?? "").trim();
+        const count = parseIntParam(u.searchParams.get("count"), 0);
+        const timeoutMs = parseIntParam(
+          u.searchParams.get("timeoutMs"),
+          30_000,
+        );
+
+        if (streamType !== "mainStream" && streamType !== "subStream") {
+          res.statusCode = 400;
+          res.end("Invalid streamType (must be mainStream or subStream)");
+          return;
+        }
+
+        let recordings = await api.getVideoclips({
+          channel,
+          start,
+          end,
+          streamType: streamType as any,
+          ...(recordType ? { recordType } : {}),
+          timeoutMs,
+        });
+
+        if (count > 0) recordings = recordings.slice(-count);
+
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            channel,
+            streamType,
+            start: start.toISOString(),
+            end: end.toISOString(),
+            recordings,
+          }),
+        );
         return;
       }
 
@@ -306,29 +367,16 @@ export function createBaichuanEndpointsServer(
       if (u.pathname === "/replay/stream.mp4") {
         const channel = parseIntParam(u.searchParams.get("channel"), 0);
         const fileName = (u.searchParams.get("fileName") ?? "").trim();
-        const streamType = (
-          u.searchParams.get("streamType") ?? "mainStream"
-        ).trim();
-        const seconds = parseIntParam(u.searchParams.get("seconds"), 20);
-        const fps = parseIntParam(u.searchParams.get("fps"), 25);
 
         if (!fileName) {
           res.statusCode = 400;
           res.end("Missing fileName");
           return;
         }
-        if (streamType !== "mainStream" && streamType !== "subStream") {
-          res.statusCode = 400;
-          res.end("Invalid streamType (must be mainStream or subStream)");
-          return;
-        }
 
         const { mp4, stop } = await api.createRecordingReplayMp4Stream({
           channel,
           fileName,
-          streamType: streamType as any,
-          seconds,
-          fps,
         });
 
         res.writeHead(200, {

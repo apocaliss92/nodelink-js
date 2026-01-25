@@ -46,7 +46,7 @@
     "test:nvr:native-frame-trace": "npm run test:build && node dist/test/nvr/test-nvr-native-secondary-frame-trace.js",
     "test:nvr:native-ffprobe": "npm run test:build && node dist/test/nvr/test-nvr-native-streams-ffprobe.js",
     "test:pcap:baichuan": "npm run test:build && node dist/test/pcap/test-pcap-baichuan-analyze.js",
-    "test:pcap:hub-events-list": "npm run test:build && node dist/test/pcap/test-pcap-hub-events-list.js",
+    "test:pcap:hub-events-list": "npm run test:build && node dist/test/pcap/test-pcap-homehub-events-stream.js",
     "test:pcap:6666-transcripts": "npm run test:build && node dist/test/pcap/test-6666-transcripts-analyze.js",
     "test:pcap:6666-multi": "npm run test:build && node dist/test/pcap/test-6666-multi-session-compare.js",
     "build:js": "npx tsup",

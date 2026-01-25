@@ -20,6 +20,7 @@ import {
   BC_CLASS_MODERN_24,
   BC_CMD_ID_CHANNEL_INFO_ALL,
   BC_CMD_ID_FILE_INFO_LIST_CLOSE,
+  BC_CMD_ID_FILE_INFO_LIST_REPLAY,
   BC_CMD_ID_FILE_INFO_LIST_DOWNLOAD,
   BC_CMD_ID_FILE_INFO_LIST_GET,
   BC_CMD_ID_FILE_INFO_LIST_OPEN,
@@ -158,6 +159,9 @@ export class BaichuanClient extends EventEmitter<{
 
   private tcpSocket: net.Socket | undefined;
   private socketSessionId: string | undefined;
+  // Default header channelId to use for host-scoped commands (when `channel` is omitted).
+  // Some NVR/HomeHub firmwares use channelId=0 for host operations (PCAP-observed), while others use 250.
+  private hostChannelId = 250;
 
   isStatePollingEnabled(): boolean {
     return this.opts.enableStatePolling ?? false;
@@ -2130,7 +2134,8 @@ export class BaichuanClient extends EventEmitter<{
 
     const channel = params.channel ?? this.opts.channel ?? 0;
     const channelId =
-      params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
+      params.channelIdOverride ??
+      (params.channel == null ? this.hostChannelId : channel + 1);
 
     const msgNum = this.nextMsgNum();
     const cmdId = params.cmdId;
@@ -2246,7 +2251,8 @@ export class BaichuanClient extends EventEmitter<{
 
     const channel = params.channel ?? this.opts.channel ?? 0;
     const channelId =
-      params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
+      params.channelIdOverride ??
+      (params.channel == null ? this.hostChannelId : channel + 1);
 
     const msgNum = this.nextMsgNum();
     const cmdId = params.cmdId;
@@ -2408,7 +2414,8 @@ export class BaichuanClient extends EventEmitter<{
 
     const channel = params.channel ?? this.opts.channel ?? 0;
     const channelId =
-      params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
+      params.channelIdOverride ??
+      (params.channel == null ? this.hostChannelId : channel + 1);
 
     const msgNum = params.msgNumOverride ?? this.nextMsgNum();
     const cmdId = params.cmdId;
@@ -2543,6 +2550,8 @@ export class BaichuanClient extends EventEmitter<{
     channel?: number;
     /** Override the header channelId (and encryption channelId) for this request. */
     channelIdOverride?: number;
+    /** Override the header msgNum for this request (advanced). */
+    msgNumOverride?: number;
     payloadXml?: string;
     extensionXml?: string;
     messageClass?: number;
@@ -2563,6 +2572,14 @@ export class BaichuanClient extends EventEmitter<{
       return res;
     }
 
+    // FileInfoList replay (cmdId=5) is commonly delivered as a sequence of binary chunks.
+    // PCAP: response Extension has <binaryData>1</binaryData> and then many payload-only frames.
+    if (params.cmdId === BC_CMD_ID_FILE_INFO_LIST_REPLAY) {
+      const res = await this.sendBinaryFileInfoListReplay5(params);
+      if (!internal) this.kickIdleDisconnectTimer();
+      return res;
+    }
+
     // File download (class=0x6482) is often delivered as a sequence of binary chunks.
     // Handle it similarly to snapshot: send without pending and collect frames until completion.
     if (
@@ -2578,7 +2595,8 @@ export class BaichuanClient extends EventEmitter<{
 
     const channel = params.channel ?? this.opts.channel ?? 0;
     const channelId =
-      params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
+      params.channelIdOverride ??
+      (params.channel == null ? this.hostChannelId : channel + 1);
 
     const msgNum = this.nextMsgNum();
     const cmdId = params.cmdId;
@@ -2695,7 +2713,8 @@ export class BaichuanClient extends EventEmitter<{
 
     const channel = params.channel ?? this.opts.channel ?? 0;
     const channelId =
-      params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
+      params.channelIdOverride ??
+      (params.channel == null ? this.hostChannelId : channel + 1);
 
     const msgNum = this.nextMsgNum();
     const cmdId = params.cmdId;
@@ -2727,6 +2746,11 @@ export class BaichuanClient extends EventEmitter<{
     const chunks: Buffer[] = [];
     let receivedBytes = 0;
     let lastProgressLogAt = 0;
+    let streamMsgNum: number | undefined;
+    let lockedChannelId: number | undefined;
+    let lockedStreamType: number | undefined;
+
+    const expectedStreamType = params.streamType ?? 0;
 
     return await new Promise<Buffer>((resolve, reject) => {
       let timeout: NodeJS.Timeout | undefined;
@@ -2767,8 +2791,108 @@ export class BaichuanClient extends EventEmitter<{
         return buf[i] === 0x3c; // '<'
       };
 
+      const decryptBinaryForDownload = (
+        payload: Buffer,
+        frameChannelId: number,
+        encryptLen?: number,
+      ): Buffer => {
+        // If encryptLen is provided, only decrypt the first encryptLen bytes
+        // and keep the rest as-is. This is how Reolink partial encryption works.
+        if (
+          encryptLen !== undefined &&
+          encryptLen > 0 &&
+          encryptLen < payload.length
+        ) {
+          const encryptedPart = payload.subarray(0, encryptLen);
+          const clearPart = payload.subarray(encryptLen);
+          const decryptedPart = this.tryDecryptBinary(
+            encryptedPart,
+            frameChannelId,
+            enc,
+          );
+          return Buffer.concat([decryptedPart, clearPart]);
+        }
+
+        // Helper to score how "BcMedia-like" a buffer is
+        const scoreBcMediaLike = (b: Buffer): number => {
+          if (b.length < 4) return -1;
+          const maxScan = Math.min(64 * 1024, b.length - 4);
+          let count = 0;
+          let first = -1;
+          for (let i = 0; i <= maxScan; i++) {
+            const magic = b.readUInt32LE(i);
+            const isInfoV1 = magic === 0x31303031;
+            const isInfoV2 = magic === 0x32303031;
+            const isIFrame = magic >= 0x63643030 && magic <= 0x63643039;
+            const isPFrame = magic >= 0x63643130 && magic <= 0x63643139;
+            const isAac = magic === 0x62773530;
+            const isAdpcm = magic === 0x62773130;
+            if (
+              isInfoV1 ||
+              isInfoV2 ||
+              isIFrame ||
+              isPFrame ||
+              isAac ||
+              isAdpcm
+            ) {
+              count++;
+              if (first < 0) first = i;
+              if (count > 32 && first === 0) break;
+            }
+          }
+          return count * 1000 - (first < 0 ? 50000 : first);
+        };
+
+        if (enc.kind !== "bc") {
+          // In AES/full_aes mode, video data may NOT be encrypted.
+          // Compare raw vs decrypted and choose the one that looks more like BcMedia.
+          const decrypted = this.tryDecryptBinary(payload, frameChannelId, enc);
+          const rawScore = scoreBcMediaLike(payload);
+          const decScore = scoreBcMediaLike(decrypted);
+          // Use >= so we prefer raw if scores are equal (avoid unnecessary decrypt)
+          return rawScore >= decScore ? payload : decrypted;
+        }
+
+        const candidates = [frameChannelId, channelId, 250, 0, 1].filter(
+          (n, i, a) => Number.isFinite(n) && a.indexOf(n) === i,
+        );
+        const decrypted = candidates.map((cid) =>
+          this.tryDecryptBinary(payload, cid, enc),
+        );
+
+        // Prefer a candidate that doesn't look like XML (chunks are binary).
+        for (const d of decrypted) {
+          if (d.length > 0 && !looksLikeXml(d)) return d;
+        }
+        return decrypted[0] ?? Buffer.alloc(0);
+      };
+
       const onFrame = (frame: BaichuanFrame) => {
         if (frame.header.cmdId !== cmdId) return;
+
+        if (
+          lockedStreamType !== undefined &&
+          frame.header.streamType !== lockedStreamType
+        ) {
+          return;
+        }
+
+        // Filter by request context (avoid mixing concurrent downloads on the same socket).
+        // Some NVR firmwares reply with a different channelId than the request.
+        if (
+          lockedChannelId !== undefined &&
+          frame.header.channelId !== lockedChannelId
+        ) {
+          return;
+        }
+
+        // Once we lock onto a stream msgNum, ignore everything else.
+        if (
+          streamMsgNum !== undefined &&
+          frame.header.msgNum !== streamMsgNum
+        ) {
+          return;
+        }
 
         // Fail fast if the request was rejected.
         if (
@@ -2777,7 +2901,7 @@ export class BaichuanClient extends EventEmitter<{
         ) {
           fail(
             new Error(
-              `Baichuan file download request rejected (cmdId=${cmdId} msgNum=${msgNum} responseCode=${frame.header.responseCode})`,
+              `Baichuan file download request rejected (cmdId=${cmdId} reqChannelId=${channelId} rspChannelId=${frame.header.channelId} msgNum=${msgNum} responseCode=${frame.header.responseCode})`,
             ),
           );
           return;
@@ -2787,6 +2911,7 @@ export class BaichuanClient extends EventEmitter<{
           // Some firmwares do NOT mark file download chunks with <binaryData>1</binaryData>.
           // Prefer the marker when present, otherwise fall back to a payload heuristic.
           let markedBinary = false;
+          let encryptLen: number | undefined;
           if (frame.extension.length > 0) {
             try {
               const extDec = this.tryDecryptXml(
@@ -2796,21 +2921,35 @@ export class BaichuanClient extends EventEmitter<{
               );
               if (extDec.includes("<binaryData>1</binaryData>"))
                 markedBinary = true;
+              // Extract encryptLen if present - only first N bytes of payload are encrypted
+              const encryptLenMatch = extDec.match(
+                /<encryptLen>(\d+)<\/encryptLen>/i,
+              );
+              if (encryptLenMatch && encryptLenMatch[1]) {
+                encryptLen = parseInt(encryptLenMatch[1], 10);
+              }
             } catch {
               // ignore
             }
           }
 
-          const decrypted = this.tryDecryptBinary(
+          const decrypted = decryptBinaryForDownload(
             frame.payload,
             frame.header.channelId,
-            enc,
+            encryptLen,
           );
           if (decrypted.length === 0) return;
 
           if (!markedBinary) {
             // If the payload looks like XML, it's probably an ACK/info frame, not a chunk.
             if (looksLikeXml(decrypted)) return;
+          }
+
+          // Lock onto the msgNum that is actually carrying binary chunks.
+          if (streamMsgNum === undefined) {
+            streamMsgNum = frame.header.msgNum;
+            lockedChannelId = frame.header.channelId;
+            lockedStreamType = frame.header.streamType;
           }
 
           chunks.push(decrypted);
@@ -2862,7 +3001,313 @@ export class BaichuanClient extends EventEmitter<{
           responseCode: 0,
           msgNum,
           channelId,
-          streamType: params.streamType ?? 0,
+          streamType: expectedStreamType,
+        });
+        this.writeWire(wire);
+      } catch (e) {
+        fail(e);
+      }
+    });
+  }
+
+  private async sendBinaryFileInfoListReplay5(params: {
+    cmdId: number;
+    channel?: number;
+    /** Override the header channelId (and encryption channelId) for this request. */
+    channelIdOverride?: number;
+    /** Override the header msgNum for this request (advanced). */
+    msgNumOverride?: number;
+    payloadXml?: string;
+    extensionXml?: string;
+    messageClass?: number;
+    streamType?: number;
+    encryption?: EncryptionProtocol;
+    timeoutMs?: number;
+  }): Promise<Buffer> {
+    await this.connect();
+
+    const channel = params.channel ?? this.opts.channel ?? 0;
+    const channelId =
+      params.channelIdOverride ??
+      (params.channel == null ? this.hostChannelId : channel + 1);
+
+    const msgNum = params.msgNumOverride ?? this.nextMsgNum();
+    const cmdId = params.cmdId;
+
+    // PCAP: request uses empty extension (payloadOffset=0).
+    const extXml = params.extensionXml ?? "";
+    const payloadXml = params.payloadXml ?? "";
+
+    const messageClass = params.messageClass ?? BC_CLASS_MODERN_24;
+    const payloadOffset = Buffer.byteLength(extXml, "utf8");
+    const bodyLen = payloadOffset + Buffer.byteLength(payloadXml, "utf8");
+    const expectedStreamType = params.streamType ?? 0;
+    const header = encodeHeader({
+      cmdId,
+      bodyLen,
+      channelId,
+      streamType: expectedStreamType,
+      msgNum,
+      responseCode: 0,
+      messageClass,
+      payloadOffset,
+    });
+
+    const enc = params.encryption ?? this.enc;
+    const bodyBytes = this.encodeBodyXml(extXml, payloadXml, channelId, enc);
+    const wire = Buffer.concat([header, bodyBytes]);
+
+    const timeoutMs = params.timeoutMs ?? 120_000;
+    const idleTimeoutMs = 2_000;
+    const chunks: Buffer[] = [];
+    let streamMsgNum: number | undefined;
+    let lockedChannelId: number | undefined;
+    let lockedStreamType: number | undefined;
+    let idleTimer: NodeJS.Timeout | undefined;
+    const looksLikeXml = (buf: Buffer): boolean => {
+      let i = 0;
+      while (
+        i < buf.length &&
+        (buf[i] === 0x00 ||
+          buf[i] === 0x09 ||
+          buf[i] === 0x0a ||
+          buf[i] === 0x0d ||
+          buf[i] === 0x20)
+      )
+        i++;
+      if (i >= buf.length) return false;
+      return buf[i] === 0x3c;
+    };
+
+    const decryptBinaryForReplay = (
+      payload: Buffer,
+      frameChannelId: number,
+      encryptLen?: number,
+    ) => {
+      // If encryptLen is provided, only decrypt the first encryptLen bytes
+      // and keep the rest as-is. This is how Reolink partial encryption works.
+      if (
+        encryptLen !== undefined &&
+        encryptLen > 0 &&
+        encryptLen < payload.length
+      ) {
+        const encryptedPart = payload.subarray(0, encryptLen);
+        const clearPart = payload.subarray(encryptLen);
+        const decryptedPart = this.tryDecryptBinary(
+          encryptedPart,
+          frameChannelId,
+          enc,
+        );
+        return Buffer.concat([decryptedPart, clearPart]);
+      }
+
+      // Helper to score how "BcMedia-like" a buffer is
+      const scoreBcMediaLike = (b: Buffer): number => {
+        if (b.length < 4) return -1;
+        const maxScan = Math.min(64 * 1024, b.length - 4);
+        let count = 0;
+        let first = -1;
+        for (let i = 0; i <= maxScan; i++) {
+          const magic = b.readUInt32LE(i);
+          const isInfoV1 = magic === 0x31303031;
+          const isInfoV2 = magic === 0x32303031;
+          const isIFrame = magic >= 0x63643030 && magic <= 0x63643039;
+          const isPFrame = magic >= 0x63643130 && magic <= 0x63643139;
+          const isAac = magic === 0x62773530;
+          const isAdpcm = magic === 0x62773130;
+          if (
+            isInfoV1 ||
+            isInfoV2 ||
+            isIFrame ||
+            isPFrame ||
+            isAac ||
+            isAdpcm
+          ) {
+            count++;
+            if (first < 0) first = i;
+            if (count > 32 && first === 0) break;
+          }
+        }
+        return count * 1000 - (first < 0 ? 50000 : first);
+      };
+
+      if (enc.kind !== "bc") {
+        // In AES/full_aes mode, video data may NOT be encrypted.
+        // Compare raw vs decrypted and choose the one that looks more like BcMedia.
+        const decrypted = this.tryDecryptBinary(payload, frameChannelId, enc);
+        const rawScore = scoreBcMediaLike(payload);
+        const decScore = scoreBcMediaLike(decrypted);
+        // Use >= so we prefer raw if scores are equal (avoid unnecessary decrypt)
+        return rawScore >= decScore ? payload : decrypted;
+      }
+
+      const candidates = [frameChannelId, channelId, 250, 0, 1].filter(
+        (n, i, a) => Number.isFinite(n) && a.indexOf(n) === i,
+      );
+      const decrypted = candidates.map((cid) =>
+        this.tryDecryptBinary(payload, cid, enc),
+      );
+
+      for (const d of decrypted) {
+        if (d.length > 0 && !looksLikeXml(d)) return d;
+      }
+      return decrypted[0] ?? Buffer.alloc(0);
+    };
+
+    return await new Promise<Buffer>((resolve, reject) => {
+      let timeout: NodeJS.Timeout | undefined;
+      let done = false;
+
+      const cleanup = () => {
+        this.off("frame", onFrame);
+        if (timeout) clearTimeout(timeout);
+        if (idleTimer) clearTimeout(idleTimer);
+      };
+
+      const finish = (buf: Buffer) => {
+        if (done) return;
+        done = true;
+        cleanup();
+        resolve(buf);
+      };
+
+      const fail = (e: unknown) => {
+        if (done) return;
+        done = true;
+        cleanup();
+        reject(e instanceof Error ? e : new Error(String(e)));
+      };
+
+      const armIdleFinish = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+          if (chunks.length > 0) finish(Buffer.concat(chunks));
+        }, idleTimeoutMs);
+      };
+
+      const onFrame = (frame: BaichuanFrame) => {
+        if (frame.header.cmdId !== cmdId) return;
+
+        // Some firmwares reply with a different streamType than the request.
+        // Lock streamType once we see the stream header / first binary chunk.
+        if (
+          lockedStreamType !== undefined &&
+          frame.header.streamType !== lockedStreamType
+        ) {
+          return;
+        }
+
+        // Some NVR firmwares reply with a different channelId than the request.
+        // Lock channelId once we see the first binary chunk.
+        if (
+          lockedChannelId !== undefined &&
+          frame.header.channelId !== lockedChannelId
+        ) {
+          return;
+        }
+
+        if (
+          streamMsgNum !== undefined &&
+          frame.header.msgNum !== streamMsgNum
+        ) {
+          return;
+        }
+
+        // PCAP: replay binary chunks can use responseCode=60052 (and similar 60k codes).
+        // Only treat classic 4xx/5xx-like codes as a hard error, and prefer tying it to
+        // the request msgNum to avoid cross-talk from other in-flight attempts.
+        const rc = frame.header.responseCode;
+        const isHardError = rc >= 400 && rc < 60_000;
+        if (isHardError && frame.header.msgNum === msgNum) {
+          fail(
+            new Error(
+              `Baichuan FileInfoList replay rejected (cmdId=${cmdId} reqChannelId=${channelId} rspChannelId=${frame.header.channelId} streamType=${expectedStreamType} msgNum=${frame.header.msgNum} responseCode=${rc})`,
+            ),
+          );
+          return;
+        }
+
+        try {
+          let markedBinary = false;
+          let encryptLen: number | undefined;
+          if (frame.extension.length > 0) {
+            try {
+              const extDec = this.tryDecryptXml(
+                frame.extension,
+                frame.header.channelId,
+                enc,
+              );
+              if (extDec.includes("<binaryData>1</binaryData>")) {
+                markedBinary = true;
+              }
+              // Extract encryptLen if present - only first N bytes of payload are encrypted
+              const encryptLenMatch = extDec.match(
+                /<encryptLen>(\d+)<\/encryptLen>/i,
+              );
+              if (encryptLenMatch && encryptLenMatch[1]) {
+                encryptLen = parseInt(encryptLenMatch[1], 10);
+              }
+            } catch {
+              // ignore
+            }
+          }
+
+          const decrypted = decryptBinaryForReplay(
+            frame.payload,
+            frame.header.channelId,
+            encryptLen,
+          );
+          if (decrypted.length === 0) return;
+
+          if (!markedBinary && looksLikeXml(decrypted)) return;
+
+          if (streamMsgNum === undefined) {
+            streamMsgNum = frame.header.msgNum;
+            lockedChannelId = frame.header.channelId;
+            lockedStreamType = frame.header.streamType;
+          }
+
+          chunks.push(decrypted);
+          armIdleFinish();
+
+          if (frame.header.responseCode === 201) {
+            finish(Buffer.concat(chunks));
+          }
+        } catch (e) {
+          fail(e);
+        }
+      };
+
+      timeout = setTimeout(() => {
+        if (chunks.length > 0) {
+          finish(Buffer.concat(chunks));
+          return;
+        }
+        fail(
+          new Error(
+            `Baichuan timeout waiting FileInfoList replay binary chunks cmdId=${cmdId} channelId=${channelId} streamType=${expectedStreamType}`,
+          ),
+        );
+      }, timeoutMs);
+
+      this.on("frame", onFrame);
+
+      try {
+        this.logDebug("tx", {
+          cmdId,
+          msgNum,
+          channelId,
+          messageClass,
+          bodyLen,
+          binary: true,
+          fileInfoListReplay: true,
+        });
+        this.recordTx({
+          cmdId,
+          responseCode: 0,
+          msgNum,
+          channelId,
+          streamType: expectedStreamType,
         });
         this.writeWire(wire);
       } catch (e) {
@@ -2887,7 +3332,8 @@ export class BaichuanClient extends EventEmitter<{
 
     const channel = params.channel ?? this.opts.channel ?? 0;
     const channelId =
-      params.channelIdOverride ?? (params.channel == null ? 250 : channel + 1);
+      params.channelIdOverride ??
+      (params.channel == null ? this.hostChannelId : channel + 1);
 
     const msgNum = this.nextMsgNum();
     const cmdId = params.cmdId;
@@ -2984,13 +3430,18 @@ export class BaichuanClient extends EventEmitter<{
           // - reply 2..n: Extension has <binaryData>1</binaryData>, payload is binary chunks (responseCode 200/201)
           let isBinaryChunk = false;
           if (frame.extension.length > 0) {
-            const extDec = this.tryDecryptXml(
-              frame.extension,
-              frame.header.channelId,
-              enc,
-            );
-            if (extDec.includes("<binaryData>1</binaryData>")) {
-              isBinaryChunk = true;
+            try {
+              const extDec = this.tryDecryptXml(
+                frame.extension,
+                frame.header.channelId,
+                enc,
+              );
+              if (extDec.includes("<binaryData>1</binaryData>")) {
+                isBinaryChunk = true;
+              }
+            } catch {
+              // PCAP: some firmwares send a non-XML (and not AES-decryptable) extension.
+              // Treat as "not marked" and rely on payload heuristics.
             }
           }
 
@@ -3088,6 +3539,10 @@ export class BaichuanClient extends EventEmitter<{
   async sendBinaryCoverPreview(params: {
     cmdId: number;
     channel?: number;
+    /** Override the header channelId (and encryption channelId) for this request. */
+    channelIdOverride?: number;
+    /** Override the header msgNum for this request (advanced). */
+    msgNumOverride?: number;
     payloadXml?: string;
     extensionXml?: string;
     messageClass?: number;
@@ -3098,14 +3553,15 @@ export class BaichuanClient extends EventEmitter<{
     await this.connect();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
-    const channelId = params.channel == null ? 250 : channel + 1;
+    const channelId =
+      params.channelIdOverride ??
+      (params.channel == null ? this.hostChannelId : channel + 1);
 
-    const msgNum = this.nextMsgNum();
+    const msgNum = params.msgNumOverride ?? this.nextMsgNum();
     const cmdId = params.cmdId;
 
-    const extXml =
-      params.extensionXml ??
-      (params.channel != null ? buildChannelExtensionXml(channel) : "");
+    // PCAP: CoverPreview requests use empty extension (payloadOffset=0).
+    const extXml = params.extensionXml ?? "";
     const payloadXml = params.payloadXml ?? "";
 
     const messageClass = params.messageClass ?? BC_CLASS_MODERN_24;
@@ -3130,6 +3586,102 @@ export class BaichuanClient extends EventEmitter<{
     const timeoutMs = params.timeoutMs ?? 30_000;
     const chunks: Buffer[] = [];
     let seenStreamHeader = false;
+    let streamMsgNum: number | undefined;
+    let lockedChannelId: number | undefined;
+    let lockedStreamType: number | undefined;
+    let lastXmlReply: string | undefined;
+    const supportedMagics = new Set(["1001", "1002"]);
+
+    const expectedStreamType = params.streamType ?? 0;
+
+    const looksLikeAnnexB = (buf: Buffer): boolean => {
+      // Look for 0x000001 or 0x00000001 start codes early in the payload.
+      const maxScan = Math.min(Math.max(buf.length - 4, 0), 64 * 1024);
+      for (let i = 0; i < maxScan; i++) {
+        if (buf[i] !== 0x00 || buf[i + 1] !== 0x00) continue;
+        if (buf[i + 2] === 0x01) return true;
+        if (buf[i + 2] === 0x00 && buf[i + 3] === 0x01) return true;
+      }
+      return false;
+    };
+
+    const decryptBinaryForCover = (
+      payload: Buffer,
+      frameChannelId: number,
+      encryptLen?: number,
+    ) => {
+      // If encryptLen is provided, only decrypt the first encryptLen bytes
+      // and keep the rest as-is. This is how Reolink partial encryption works.
+      if (
+        encryptLen !== undefined &&
+        encryptLen > 0 &&
+        encryptLen < payload.length
+      ) {
+        const encryptedPart = payload.subarray(0, encryptLen);
+        const clearPart = payload.subarray(encryptLen);
+        const decryptedPart = this.tryDecryptBinary(
+          encryptedPart,
+          frameChannelId,
+          enc,
+        );
+        return Buffer.concat([decryptedPart, clearPart]);
+      }
+
+      // Helper to score how "BcMedia-like" a buffer is
+      const scoreBcMediaLike = (b: Buffer): number => {
+        if (b.length < 4) return -1;
+        const maxScan = Math.min(64 * 1024, b.length - 4);
+        let count = 0;
+        let first = -1;
+        for (let i = 0; i <= maxScan; i++) {
+          const magic = b.readUInt32LE(i);
+          const isInfoV1 = magic === 0x31303031;
+          const isInfoV2 = magic === 0x32303031;
+          const isIFrame = magic >= 0x63643030 && magic <= 0x63643039;
+          const isPFrame = magic >= 0x63643130 && magic <= 0x63643139;
+          const isAac = magic === 0x62773530;
+          const isAdpcm = magic === 0x62773130;
+          if (
+            isInfoV1 ||
+            isInfoV2 ||
+            isIFrame ||
+            isPFrame ||
+            isAac ||
+            isAdpcm
+          ) {
+            count++;
+            if (first < 0) first = i;
+            if (count > 32 && first === 0) break;
+          }
+        }
+        return count * 1000 - (first < 0 ? 50000 : first);
+      };
+
+      // For BC XOR encryption, some firmwares appear to use an offset different from
+      // the response header channelId. Try a small set of plausible offsets.
+      if (enc.kind !== "bc") {
+        // In AES/full_aes mode, video data may NOT be encrypted.
+        // Compare raw vs decrypted and choose the one that looks more like BcMedia.
+        const decrypted = this.tryDecryptBinary(payload, frameChannelId, enc);
+        const rawScore = scoreBcMediaLike(payload);
+        const decScore = scoreBcMediaLike(decrypted);
+        return decScore > rawScore ? decrypted : payload;
+      }
+
+      const candidates = [frameChannelId, channelId, 250, 0, 1].filter(
+        (n, i, a) => Number.isFinite(n) && a.indexOf(n) === i,
+      );
+      const decrypted = candidates.map((cid) =>
+        this.tryDecryptBinary(payload, cid, enc),
+      );
+      for (const d of decrypted) {
+        if (d.length >= 4) {
+          const magic = d.subarray(0, 4).toString("ascii");
+          if (supportedMagics.has(magic)) return d;
+        }
+      }
+      return decrypted[0] ?? Buffer.alloc(0);
+    };
 
     return await new Promise<Buffer>((resolve, reject) => {
       let timeout: NodeJS.Timeout | undefined;
@@ -3157,14 +3709,39 @@ export class BaichuanClient extends EventEmitter<{
       const onFrame = (frame: BaichuanFrame) => {
         if (frame.header.cmdId !== cmdId) return;
 
-        // If the request itself was rejected, fail fast
         if (
-          frame.header.msgNum === msgNum &&
-          frame.header.responseCode >= 400
+          lockedStreamType !== undefined &&
+          frame.header.streamType !== lockedStreamType
+        ) {
+          return;
+        }
+
+        // Filter by request context (avoid mixing concurrent CoverPreview attempts).
+        // Some NVR firmwares reply with a different channelId than the request.
+        if (
+          lockedChannelId !== undefined &&
+          frame.header.channelId !== lockedChannelId
+        ) {
+          return;
+        }
+
+        // Once we lock onto a stream msgNum, ignore everything else.
+        if (
+          streamMsgNum !== undefined &&
+          frame.header.msgNum !== streamMsgNum
+        ) {
+          return;
+        }
+
+        // If the request itself was rejected, fail fast.
+        // Prefer tying the reject to the request msgNum to avoid accidental cross-talk.
+        if (
+          frame.header.responseCode >= 400 &&
+          frame.header.msgNum === msgNum
         ) {
           fail(
             new Error(
-              `Baichuan CoverPreview request rejected (cmdId=${cmdId} msgNum=${msgNum} responseCode=${frame.header.responseCode})`,
+              `Baichuan CoverPreview request rejected (cmdId=${cmdId} reqChannelId=${channelId} rspChannelId=${frame.header.channelId} reqStreamType=${expectedStreamType} rspStreamType=${frame.header.streamType} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode})`,
             ),
           );
           return;
@@ -3175,6 +3752,7 @@ export class BaichuanClient extends EventEmitter<{
           // - reply 1: XML body (no binaryData)
           // - reply 2..n: Extension has <binaryData>1</binaryData>, payload is binary chunks
           let isBinaryChunk = false;
+          let encryptLen: number | undefined;
           if (frame.extension.length > 0) {
             const extDec = this.tryDecryptXml(
               frame.extension,
@@ -3184,12 +3762,19 @@ export class BaichuanClient extends EventEmitter<{
             if (extDec.includes("<binaryData>1</binaryData>")) {
               isBinaryChunk = true;
             }
+            // Extract encryptLen if present - only first N bytes of payload are encrypted
+            const encryptLenMatch = extDec.match(
+              /<encryptLen>(\d+)<\/encryptLen>/i,
+            );
+            if (encryptLenMatch && encryptLenMatch[1]) {
+              encryptLen = parseInt(encryptLenMatch[1], 10);
+            }
           }
 
-          const decrypted = this.tryDecryptBinary(
+          const decrypted = decryptBinaryForCover(
             frame.payload,
             frame.header.channelId,
-            enc,
+            encryptLen,
           );
           if (decrypted.length === 0) return;
 
@@ -3199,16 +3784,33 @@ export class BaichuanClient extends EventEmitter<{
             .toString("utf8");
           const looksLikeXml =
             head.startsWith("<?xml") || head.trimStart().startsWith("<");
-          if (!isBinaryChunk && looksLikeXml) return;
+          if (!isBinaryChunk && looksLikeXml) {
+            // Keep the last XML reply for diagnostics (some firmwares ACK with XML and never send chunks).
+            // Limit size to avoid huge errors.
+            const asText = decrypted.toString("utf8");
+            lastXmlReply =
+              asText.length > 2000 ? `${asText.slice(0, 2000)}…` : asText;
+            return;
+          }
 
-          // For CoverPreview, look for stream header magic "1001"
+          // For CoverPreview, look for stream header magic "1001"/"1002".
+          // Lock onto the msgNum that carries the stream header to avoid mixing
+          // frames from other in-flight/previous attempts.
           if (!seenStreamHeader) {
             const streamMagic = decrypted.subarray(0, 4).toString("ascii");
-            if (streamMagic === "1001") {
+            if (supportedMagics.has(streamMagic)) {
+              lockedChannelId = frame.header.channelId;
+              lockedStreamType = frame.header.streamType;
+              streamMsgNum = frame.header.msgNum;
               seenStreamHeader = true;
               chunks.push(decrypted);
-            } else if (isBinaryChunk) {
-              // Binary chunk but no stream header yet - might be continuation
+            } else if (looksLikeAnnexB(decrypted)) {
+              // Some firmwares appear to send a raw Annex-B payload without a 1001/1002 stream header.
+              // Treat the first Annex-B chunk as the start of the stream.
+              lockedChannelId = frame.header.channelId;
+              lockedStreamType = frame.header.streamType;
+              streamMsgNum = frame.header.msgNum;
+              seenStreamHeader = true;
               chunks.push(decrypted);
             }
           } else {
@@ -3231,9 +3833,12 @@ export class BaichuanClient extends EventEmitter<{
           const combined = Buffer.concat(chunks);
           finish(combined);
         } else {
+          const extra = lastXmlReply
+            ? `; lastXmlReply=${JSON.stringify(lastXmlReply)}`
+            : "; lastXmlReply=(none)";
           fail(
             new Error(
-              `Baichuan timeout waiting CoverPreview push cmdId=${cmdId} msgNum=${msgNum}`,
+              `Baichuan timeout waiting CoverPreview push cmdId=${cmdId} msgNum=${msgNum}${extra}`,
             ),
           );
         }
@@ -3319,6 +3924,7 @@ export class BaichuanClient extends EventEmitter<{
     // If the nonce/encryption negotiation fails (socket close / timeout), automatically
     // downgrade the requested encryption to keep the connection stable.
     let effectiveMaxEncryption: MaxEncryption = maxEncryption;
+    let effectiveHostChannelId = this.hostChannelId;
 
     const sleep = (ms: number) =>
       new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -3328,21 +3934,27 @@ export class BaichuanClient extends EventEmitter<{
         // 1) legacy header-only login upgrade to obtain nonce + encryption type
 
         // 1) legacy header-only login upgrade to obtain nonce + encryption type
-        // IMPORTANT: AES request uses 0xdc12.
-        // Some cameras will close the socket if you request an unsupported enc byte (es. 0xdc02).
+        // Encryption negotiation request byte (0xDC??):
+        // - 0xDC00: none
+        // - 0xDC01: bc
+        // - 0xDC02: aes
+        // - 0xDC12: full_aes
+        // Some firmwares will reset the socket if you request an unsupported mode.
         const encByte =
           effectiveMaxEncryption === "none"
             ? 0xdc00
             : effectiveMaxEncryption === "bc"
               ? 0xdc01
-              : /* aes/full_aes */ 0xdc12;
+              : effectiveMaxEncryption === "aes"
+                ? 0xdc02
+                : /* full_aes */ 0xdc12;
 
         await this.connect();
         // legacy login is supported on both transports
 
         const msgNum = this.nextMsgNum();
         const cmdId = 1;
-        const channelId = 250; // host
+        const channelId = effectiveHostChannelId;
 
         const header = encodeHeader({
           cmdId,
@@ -3434,25 +4046,29 @@ export class BaichuanClient extends EventEmitter<{
         });
 
         // For login, explicitly use channelId 250 (host) and no extension XML
-        // This ensures correct BCEncrypt channelId offset (channelId 250 = 0xFA = offset 250)
+        // This ensures correct BCEncrypt channelId offset for firmwares that depend on it.
         // Use sendFrame directly (not sendXml from ReolinkBaichuanApi) to avoid recursion
         // since sendXml might call login() which would cause infinite recursion
-        // Don't pass channel to use channelId 250 (host)
+        // Don't pass channel to use host channelId (device-specific: 250 or 0)
+        // For the login message itself, some firmwares expect BCEncrypt even if AES is supported.
+        // However if negotiation says "none" (0xDD00), sending BC-encrypted login will fail.
+        const loginEnc: EncryptionProtocol =
+          encType === 0x00 ? { kind: "none" } : { kind: "bc" };
+
         const replyFrame = await this.sendFrame({
           cmdId: 1,
           payloadXml: loginXml,
           extensionXml: "",
           messageClass: BC_CLASS_MODERN_24,
-          // For the login message itself, many firmwares expect BCEncrypt regardless of negotiated encryption.
-          // Always use BCEncrypt for login.
-          encryption: { kind: "bc" },
+          channelIdOverride: effectiveHostChannelId,
+          encryption: loginEnc,
           timeoutMs: 10_000,
         });
 
         const replyXml = this.tryDecryptXml(
           replyFrame.body,
           replyFrame.header.channelId,
-          { kind: "bc" },
+          loginEnc,
         );
 
         // If login succeeded, camera replies with 200 in responseCode on modern frames.
@@ -3481,6 +4097,8 @@ export class BaichuanClient extends EventEmitter<{
         }
 
         this.loggedIn = true;
+        // Persist the host channelId variant that worked, so future host-scoped commands use it.
+        this.hostChannelId = effectiveHostChannelId;
         return;
       } catch (e) {
         lastError = e;
@@ -3499,12 +4117,18 @@ export class BaichuanClient extends EventEmitter<{
           msg.includes("ECONNRESET") ||
           msg.includes("EPIPE");
 
+        // Some NVR/HomeHub firmwares expect host channelId=0 (PCAP-observed). If negotiation fails,
+        // automatically try the alternate host channelId on the next attempt.
+        if (looksLikeNegotiationFailure && effectiveHostChannelId === 250) {
+          effectiveHostChannelId = 0;
+        }
+
         // If negotiation is failing, try a less aggressive encryption mode on next attempt.
+        // Prefer stepping down full_aes -> aes -> bc -> none.
         if (looksLikeNegotiationFailure) {
-          if (
-            effectiveMaxEncryption === "full_aes" ||
-            effectiveMaxEncryption === "aes"
-          ) {
+          if (effectiveMaxEncryption === "full_aes") {
+            effectiveMaxEncryption = "aes";
+          } else if (effectiveMaxEncryption === "aes") {
             effectiveMaxEncryption = "bc";
           } else if (effectiveMaxEncryption === "bc") {
             effectiveMaxEncryption = "none";

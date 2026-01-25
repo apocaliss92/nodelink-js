@@ -61,13 +61,13 @@ import { CompositeRtspServer } from "@reolink/baichuan-js";
 
 const rtspServer = new CompositeRtspServer({
   api,
-  widerChannel: 0,      // Wide-angle channel
-  teleChannel: 1,        // Telephoto channel
-  widerProfile: "main",  // Profile for wider stream
-  teleProfile: "sub",    // Profile for tele stream
+  widerChannel: 0, // Wide-angle channel
+  teleChannel: 1, // Telephoto channel
+  widerProfile: "main", // Profile for wider stream
+  teleProfile: "sub", // Profile for tele stream
   pipPosition: "bottom-right", // PIP position
-  pipSize: 0.25,         // PIP size (25% of screen)
-  pipMargin: 10,         // Margin from edge in pixels
+  pipSize: 0.25, // PIP size (25% of screen)
+  pipMargin: 10, // Margin from edge in pixels
   listenPort: 8554,
 });
 
@@ -128,11 +128,13 @@ npm run rtsp-server -- --host 192.168.1.100 --username admin --password pass
 ### Options
 
 **Required:**
+
 - `--host <ip>`: Camera IP address
 - `--username <user>` or `-u`: Username
 - `--password <pass>` or `-p`: Password
 
 **Optional:**
+
 - `--channel <num>`: Channel number (default: 0)
 - `--profile <profile>`: Stream profile: `main`, `sub`, `ext` (default: `main`)
 - `--port <port>`: RTSP server port (default: 8554)
@@ -189,9 +191,36 @@ await rtspServer.start();
 console.log(`RTSP URL: ${rtspServer.getRtspUrl()}`);
 ```
 
+## HTTP Endpoints Server (debug/dev)
+
+There is a small HTTP server used for manual debugging and tooling.
+
+```bash
+npm run serve:baichuan:endpoints
+```
+
+### `GET /recordings`
+
+Unified recordings entrypoint (internally calls `api.listRecordings({ enriched: true })`) and returns recordings already enriched with `detectionClasses`.
+
+Query params:
+
+- `channel` (number, default `0`)
+- `uid` (string, optional; needed for some BCUDP/battery devices)
+- `streamType` (`mainStream` | `subStream`, default `mainStream`)
+- `start` / `end` (ISO datetime)
+- `recordType` (optional)
+- `count` (optional; returns only last N items)
+- `alarms` (optional boolean, default `true`; best-effort merge with alarm events to complete detections)
+
+Response:
+
+- `{ recordings: EnrichedRecordingFile[], ... }`
+
 ## Bifocal/Multifocal Cameras
 
 Bifocal cameras (e.g., Reolink TrackMix) have two lenses:
+
 - **Wide-angle lens** (channel 0): Provides a wider field of view
 - **Telephoto lens** (channel 1): Provides a zoomed/telephoto view
 

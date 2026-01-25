@@ -3,7 +3,9 @@ import { xmlEscape } from "../../../protocol/xml";
 export type RecordingReplayStreamType = "mainStream" | "subStream";
 export type RecordingReplayIFrameMode = "b" | "i" | "both" | true | false;
 
-export const parseRecStartParamIfPresent = (fileName: string): string | undefined => {
+export const parseRecStartParamIfPresent = (
+  fileName: string,
+): string | undefined => {
   const m = /Rec(\w{3})(?:_|_DST)(\d{8})_(\d{6})_.*/.exec(fileName);
   if (!m) return undefined;
   return `${m[2]}${m[3]}`;
@@ -13,7 +15,9 @@ export const parseRecStartParamIfPresent = (fileName: string): string | undefine
  * Some firmwares want a stop <name> like: 01YYYYMMDDHHMMSS (derived from Rec*_YYYYMMDD_HHMMSS).
  * If the caller already has a 01xxxxxxxxxxxxxx name, keep it.
  */
-export const buildReplayStopNameFromFileName = (fileName: string): string | undefined => {
+export const buildReplayStopNameFromFileName = (
+  fileName: string,
+): string | undefined => {
   const trimmed = (fileName ?? "").trim();
   if (/^01\d{14}$/.test(trimmed)) return trimmed;
   const start = parseRecStartParamIfPresent(fileName);
@@ -23,11 +27,16 @@ export const buildReplayStopNameFromFileName = (fileName: string): string | unde
 
 export const buildFileInfoListReplayByIdXml = (params: {
   channel: number;
+  /** Optional override for the <channelId> value inside the XML payload. */
+  xmlChannelId?: number;
   id: string;
+  uid?: string;
   streamType?: RecordingReplayStreamType;
   iframeReplay?: RecordingReplayIFrameMode;
 }): string => {
   const st = params.streamType ?? "mainStream";
+  const supportSub = st === "subStream" ? 1 : 0;
+  const xmlCh = params.xmlChannelId ?? params.channel;
   const iframe = params.iframeReplay;
   const iframeXml =
     iframe === true || iframe === "both"
@@ -42,9 +51,10 @@ export const buildFileInfoListReplayByIdXml = (params: {
 <body>
 <FileInfoList version="1.1">
 <FileInfo>
-<channelId>${params.channel}</channelId>
+<channelId>${xmlCh}</channelId>
 <Id>${xmlEscape(params.id)}</Id>
-<supportSub>0</supportSub>
+${params.uid ? `<uid>${xmlEscape(params.uid)}</uid>` : ""}
+<supportSub>${supportSub}</supportSub>
 <playSpeed>1</playSpeed>
 <streamType>${xmlEscape(st)}</streamType>
 ${iframeXml}
@@ -55,11 +65,16 @@ ${iframeXml}
 
 export const buildFileInfoListReplayByNameXml = (params: {
   channel: number;
+  /** Optional override for the <channelId> value inside the XML payload. */
+  xmlChannelId?: number;
   name: string;
+  uid?: string;
   streamType?: RecordingReplayStreamType;
   iframeReplay?: RecordingReplayIFrameMode;
 }): string => {
   const st = params.streamType ?? "mainStream";
+  const supportSub = st === "subStream" ? 1 : 0;
+  const xmlCh = params.xmlChannelId ?? params.channel;
   const iframe = params.iframeReplay;
   const iframeXml =
     iframe === true || iframe === "both"
@@ -74,9 +89,12 @@ export const buildFileInfoListReplayByNameXml = (params: {
 <body>
 <FileInfoList version="1.1">
 <FileInfo>
-<channelId>${params.channel}</channelId>
+<channelId>${xmlCh}</channelId>
 <name>${xmlEscape(params.name)}</name>
-<supportSub>0</supportSub>
+<fileName>${xmlEscape(params.name)}</fileName>
+<Id>${xmlEscape(params.name)}</Id>
+${params.uid ? `<uid>${xmlEscape(params.uid)}</uid>` : ""}
+<supportSub>${supportSub}</supportSub>
 <playSpeed>1</playSpeed>
 <streamType>${xmlEscape(st)}</streamType>
 ${iframeXml}

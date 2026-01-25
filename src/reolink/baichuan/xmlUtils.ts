@@ -5,7 +5,10 @@ import { parseRecordingFileName } from "./recordingFileName";
 type TalkAbility = import("./types").TalkAbility;
 type TalkAudioConfig = import("./types").TalkAudioConfig;
 
-export const getXmlTexts = <T extends string>(xml: string, tags: readonly T[]): Partial<Record<T, string>> => {
+export const getXmlTexts = <T extends string>(
+  xml: string,
+  tags: readonly T[],
+): Partial<Record<T, string>> => {
   const out: Partial<Record<T, string>> = {};
   for (const tag of tags) {
     const v = getXmlText(xml, tag);
@@ -42,7 +45,9 @@ export const parseXmlDateTimeBlock = (block: string): Date | undefined => {
 
   // Some firmwares encode the timestamp as plain text instead of nested tags.
   const text = block.replace(/<[^>]*>/g, "").trim();
-  const m = text.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
+  const m = text.match(
+    /(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/,
+  );
   if (!m) return undefined;
   const y = Number.parseInt(m[1] ?? "", 10);
   const mo = Number.parseInt(m[2] ?? "", 10);
@@ -60,7 +65,8 @@ export const parseRecordingFilesFromXml = (xml: string): RecordingFile[] => {
   // FileInfoList commonly returns <FileInfo> blocks with <name> and/or <Id>.
   const fileInfoBlocks = getXmlBlocks(xml, "FileInfo");
   for (const b of fileInfoBlocks) {
-    const id = getXmlText(b, "Id") ?? getXmlText(b, "ID") ?? getXmlText(b, "id");
+    const id =
+      getXmlText(b, "Id") ?? getXmlText(b, "ID") ?? getXmlText(b, "id");
     const name = getXmlText(b, "name") ?? getXmlText(b, "fileName");
     const chosen = (id ?? name)?.trim();
     if (!chosen) continue;
@@ -69,12 +75,16 @@ export const parseRecordingFilesFromXml = (xml: string): RecordingFile[] => {
     if (name != null && name.trim()) item.name = name.trim();
     if (id != null && id.trim()) item.id = id.trim();
 
-    const recordType = getXmlText(b, "type") ?? getXmlText(b, "recordType") ?? getXmlText(b, "alarmType");
+    const recordType =
+      getXmlText(b, "type") ??
+      getXmlText(b, "recordType") ??
+      getXmlText(b, "alarmType");
     if (recordType != null) item.recordType = recordType;
 
     const sizeText = getXmlText(b, "size") ?? getXmlText(b, "fileSize");
     const sizeBytes = sizeText ? Number.parseInt(sizeText, 10) : undefined;
-    if (sizeBytes != null && Number.isFinite(sizeBytes)) item.sizeBytes = sizeBytes;
+    if (sizeBytes != null && Number.isFinite(sizeBytes))
+      item.sizeBytes = sizeBytes;
 
     const start = getXmlBlocks(b, "startTime")[0];
     const end = getXmlBlocks(b, "endTime")[0];
@@ -96,18 +106,24 @@ export const parseRecordingFilesFromXml = (xml: string): RecordingFile[] => {
   // Preferred: parse <File> blocks.
   const fileBlocks = getXmlBlocks(xml, "File");
   for (const b of fileBlocks) {
-    const fileName = (getXmlText(b, "fileName") ?? getXmlText(b, "name"))?.trim();
+    const fileName = (
+      getXmlText(b, "fileName") ?? getXmlText(b, "name")
+    )?.trim();
     if (!fileName) continue;
 
     const sizeText = getXmlText(b, "size") ?? getXmlText(b, "fileSize");
     const sizeBytes = sizeText ? Number.parseInt(sizeText, 10) : undefined;
-    const recordType = getXmlText(b, "type") ?? getXmlText(b, "recordType") ?? getXmlText(b, "alarmType");
+    const recordType =
+      getXmlText(b, "type") ??
+      getXmlText(b, "recordType") ??
+      getXmlText(b, "alarmType");
 
     const start = getXmlBlocks(b, "startTime")[0];
     const end = getXmlBlocks(b, "endTime")[0];
 
     const item: RecordingFile = { fileName };
-    if (sizeBytes != null && Number.isFinite(sizeBytes)) item.sizeBytes = sizeBytes;
+    if (sizeBytes != null && Number.isFinite(sizeBytes))
+      item.sizeBytes = sizeBytes;
     if (recordType != null) item.recordType = recordType;
 
     const startDt = start ? parseXmlDateTimeBlock(start) : undefined;
@@ -163,6 +179,17 @@ export const parseRecordingFilesFromXml = (xml: string): RecordingFile[] => {
       const fileName = fileNameRaw?.trim();
       if (!fileName) continue;
 
+      const candidateId =
+        getXmlText(b, "fileId") ??
+        getXmlText(b, "recFileId") ??
+        getXmlText(b, "recFileName") ??
+        getXmlText(b, "recFile") ??
+        getXmlText(b, "recordFile") ??
+        getXmlText(b, "Id") ??
+        getXmlText(b, "ID") ??
+        getXmlText(b, "id");
+      const alarmId = (candidateId ?? "").trim();
+
       const alarmType = getXmlText(b, "alarmType")?.trim();
       const start = getXmlBlocks(b, "startTime")[0];
       const end = getXmlBlocks(b, "endTime")[0];
@@ -170,6 +197,7 @@ export const parseRecordingFilesFromXml = (xml: string): RecordingFile[] => {
       const endDt = end ? parseXmlDateTimeBlock(end) : undefined;
 
       const target = byName.get(fileName) ?? { fileName };
+      if (alarmId && !target.id) target.id = alarmId;
       if (alarmType) target.recordType = alarmType;
       if (startDt) target.startTime = startDt;
       if (endDt) target.endTime = endDt;
@@ -203,12 +231,24 @@ export const parseRecordingFilesFromXml = (xml: string): RecordingFile[] => {
 function parseTalkAudioConfig(block: string): TalkAudioConfig | null {
   const audioType = getXmlText(block, "audioType");
   const sampleRate = Number.parseInt(getXmlText(block, "sampleRate") ?? "", 10);
-  const samplePrecision = Number.parseInt(getXmlText(block, "samplePrecision") ?? "", 10);
-  const lengthPerEncoder = Number.parseInt(getXmlText(block, "lengthPerEncoder") ?? "", 10);
+  const samplePrecision = Number.parseInt(
+    getXmlText(block, "samplePrecision") ?? "",
+    10,
+  );
+  const lengthPerEncoder = Number.parseInt(
+    getXmlText(block, "lengthPerEncoder") ?? "",
+    10,
+  );
   const soundTrack = getXmlText(block, "soundTrack");
   const priorityText = getXmlText(block, "priority");
 
-  if (!audioType || !Number.isFinite(sampleRate) || !Number.isFinite(samplePrecision) || !Number.isFinite(lengthPerEncoder) || !soundTrack) {
+  if (
+    !audioType ||
+    !Number.isFinite(sampleRate) ||
+    !Number.isFinite(samplePrecision) ||
+    !Number.isFinite(lengthPerEncoder) ||
+    !soundTrack
+  ) {
     return null;
   }
 
@@ -235,13 +275,22 @@ export const parseTalkAbilityXml = (xml: string): TalkAbility => {
   }
 
   const duplexListBlocks = getXmlBlocks(talkAbilityBlock, "duplexList");
-  const duplexList = duplexListBlocks.map((b) => getXmlText(b, "duplex")).filter((v): v is string => Boolean(v));
+  const duplexList = duplexListBlocks
+    .map((b) => getXmlText(b, "duplex"))
+    .filter((v): v is string => Boolean(v));
 
-  const audioStreamModeListBlocks = getXmlBlocks(talkAbilityBlock, "audioStreamModeList");
-  const audioStreamModeList = audioStreamModeListBlocks.map((b) => getXmlText(b, "audioStreamMode")).filter((v): v is string => Boolean(v));
+  const audioStreamModeListBlocks = getXmlBlocks(
+    talkAbilityBlock,
+    "audioStreamModeList",
+  );
+  const audioStreamModeList = audioStreamModeListBlocks
+    .map((b) => getXmlText(b, "audioStreamMode"))
+    .filter((v): v is string => Boolean(v));
 
   const audioConfigBlocks = getXmlBlocks(talkAbilityBlock, "audioConfig");
-  const audioConfigList = audioConfigBlocks.map(parseTalkAudioConfig).filter((v): v is TalkAudioConfig => Boolean(v));
+  const audioConfigList = audioConfigBlocks
+    .map(parseTalkAudioConfig)
+    .filter((v): v is TalkAudioConfig => Boolean(v));
 
   return {
     duplexList,

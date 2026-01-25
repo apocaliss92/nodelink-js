@@ -307,8 +307,26 @@ export class BaichuanVideoStream extends EventEmitter<{
     enc: EncryptionProtocol;
     channelId: number;
     allowResync: boolean;
+    encryptLen?: number;
   }): Buffer {
-    const { raw, enc, channelId, allowResync } = params;
+    const { raw, enc, channelId, allowResync, encryptLen } = params;
+
+    // If encryptLen is provided, only decrypt the first encryptLen bytes
+    // and keep the rest as-is. This is how Reolink partial encryption works.
+    if (encryptLen !== undefined && encryptLen > 0 && encryptLen < raw.length) {
+      const encryptedPart = raw.subarray(0, encryptLen);
+      const clearPart = raw.subarray(encryptLen);
+      const decryptedPart = this.client.tryDecryptBinary(
+        encryptedPart,
+        channelId,
+        enc,
+      );
+      const chosen = Buffer.concat([decryptedPart, clearPart]);
+      if (!allowResync) return chosen;
+      const best = BaichuanVideoStream.scoreBcMediaLike(chosen);
+      return best.first > 0 ? chosen.subarray(best.first) : chosen;
+    }
+
     const rawScore = BaichuanVideoStream.scoreBcMediaLike(raw);
     const dec =
       this.client.enc.kind === "aes" ||

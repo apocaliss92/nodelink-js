@@ -3,7 +3,10 @@ import { recordingsTraceLog } from "../../debug/DebugConfig";
 import { collectNvrDiagnostics } from "../../debug/DiagnosticsTools";
 import { parseRecordingFileName } from "../baichuan/recordingFileName";
 import type { EnrichedRecordingFile, RecordingFile } from "../baichuan/types";
-import { ReolinkHttpClient, type ReolinkHttpClientOptions } from "../http/ReolinkHttpClient";
+import {
+  ReolinkHttpClient,
+  type ReolinkHttpClientOptions,
+} from "../http/ReolinkHttpClient";
 import type { ReolinkCmdRequest, ReolinkCmdResponse } from "../http/types";
 import type { ReolinkDeviceInfo, ReolinkDeviceInfoTag } from "../types";
 
@@ -11,11 +14,12 @@ export type JsonPrimitive = string | number | boolean | null;
 export type JsonObject = { [key: string]: JsonValue };
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
 
-export type ReolinkCmdResponseExt<TValue = JsonValue> = ReolinkCmdResponse<TValue> & {
-  /** Some CGI commands (notably GetEnc) return additional metadata fields. */
-  initial?: JsonValue;
-  range?: JsonValue;
-};
+export type ReolinkCmdResponseExt<TValue = JsonValue> =
+  ReolinkCmdResponse<TValue> & {
+    /** Some CGI commands (notably GetEnc) return additional metadata fields. */
+    initial?: JsonValue;
+    range?: JsonValue;
+  };
 
 export type CgiChannelStatusEntry = {
   channel: number;
@@ -42,7 +46,13 @@ export type CgiDetectionState = {
   support: number;
 };
 
-export type CgiAiKey = "dog_cat" | "face" | "other" | "package" | "people" | "vehicle";
+export type CgiAiKey =
+  | "dog_cat"
+  | "face"
+  | "other"
+  | "package"
+  | "people"
+  | "vehicle";
 
 export type CgiAiStateValue = Partial<Record<CgiAiKey, CgiDetectionState>> & {
   channel: number;
@@ -70,13 +80,15 @@ export type CgiEncValue = {
   Enc: CgiEnc;
 };
 
-export type CgiGetChannelstatusResponse = ReolinkCmdResponseExt<CgiGetChannelstatusValue> & {
-  cmd: "GetChannelstatus";
-};
+export type CgiGetChannelstatusResponse =
+  ReolinkCmdResponseExt<CgiGetChannelstatusValue> & {
+    cmd: "GetChannelstatus";
+  };
 
-export type CgiGetChnTypeInfoResponse = ReolinkCmdResponseExt<CgiChnTypeInfoValue> & {
-  cmd: "GetChnTypeInfo";
-};
+export type CgiGetChnTypeInfoResponse =
+  ReolinkCmdResponseExt<CgiChnTypeInfoValue> & {
+    cmd: "GetChnTypeInfo";
+  };
 
 export type CgiGetAiStateResponse = ReolinkCmdResponseExt<CgiAiStateValue> & {
   cmd: "GetAiState";
@@ -95,9 +107,10 @@ export type CgiGetRtspUrlValue = {
   rtsp?: string;
 } & Record<string, JsonValue>;
 
-export type CgiGetRtspUrlResponse = ReolinkCmdResponseExt<CgiGetRtspUrlValue> & {
-  cmd: "GetRtspUrl";
-};
+export type CgiGetRtspUrlResponse =
+  ReolinkCmdResponseExt<CgiGetRtspUrlValue> & {
+    cmd: "GetRtspUrl";
+  };
 
 export type CgiAbilityLeaf = {
   permit: number;
@@ -225,14 +238,15 @@ export type CgiAbilityChn = {
 };
 
 export type CgiAbility = {
-  Ability: ({ abilityChn?: CgiAbilityChn[] } & Record<string, JsonValue>);
+  Ability: { abilityChn?: CgiAbilityChn[] } & Record<string, JsonValue>;
 };
 
 export type CgiGetAbilityValue = CgiAbility;
 
-export type CgiGetAbilityResponse = ReolinkCmdResponseExt<CgiGetAbilityValue> & {
-  cmd: "GetAbility";
-};
+export type CgiGetAbilityResponse =
+  ReolinkCmdResponseExt<CgiGetAbilityValue> & {
+    cmd: "GetAbility";
+  };
 
 export type CgiDevInfo = {
   B485?: number;
@@ -260,9 +274,10 @@ export type CgiGetDevInfoValue = {
   DevInfo: CgiDevInfo;
 };
 
-export type CgiGetDevInfoResponse = ReolinkCmdResponseExt<CgiGetDevInfoValue> & {
-  cmd: "GetDevInfo";
-};
+export type CgiGetDevInfoResponse =
+  ReolinkCmdResponseExt<CgiGetDevInfoValue> & {
+    cmd: "GetDevInfo";
+  };
 
 export type CgiOsd = {
   channel: number;
@@ -489,7 +504,7 @@ export class ReolinkCgiApi {
     dumpEnabled: false,
     dumpDir: "",
     dumpBcMedia: false,
-    dumpNals: false
+    dumpNals: false,
   };
 
   // Recordings cache: key -> { data, expiresAt }
@@ -498,12 +513,18 @@ export class ReolinkCgiApi {
 
   // Some devices (notably some Hub firmwares) do not support the `NvrDownload` prepare command.
   // Cache the capability to avoid repeated failing calls.
-  private nvrDownloadPrepareSupport: "unknown" | "supported" | "unsupported" = "unknown";
+  private nvrDownloadPrepareSupport: "unknown" | "supported" | "unsupported" =
+    "unknown";
 
   // Default cache TTL: 5 minutes
   private recordingsCacheTtlMs = 5 * 60 * 1000;
 
-  constructor(opts: ReolinkHttpClientOptions & { logger?: Logger; debugConfig?: DebugConfig }) {
+  constructor(
+    opts: ReolinkHttpClientOptions & {
+      logger?: Logger;
+      debugConfig?: DebugConfig;
+    },
+  ) {
     this.client = new ReolinkHttpClient(opts);
     if (opts.logger) {
       this.logger = opts.logger;
@@ -551,7 +572,8 @@ export class ReolinkCgiApi {
     entries: Array<{ key: string; expiresAt: number; expired: boolean }>;
   } {
     const now = Date.now();
-    const entries: Array<{ key: string; expiresAt: number; expired: boolean }> = [];
+    const entries: Array<{ key: string; expiresAt: number; expired: boolean }> =
+      [];
     for (const [key, entry] of this.recordingsCache.entries()) {
       entries.push({
         key,
@@ -583,11 +605,25 @@ export class ReolinkCgiApi {
    */
   private getNvrRecordingsCacheKey(
     channel: number,
-    startTime: { year: number; mon: number; day: number; hour: number; min: number; sec: number },
-    endTime: { year: number; mon: number; day: number; hour: number; min: number; sec: number },
+    startTime: {
+      year: number;
+      mon: number;
+      day: number;
+      hour: number;
+      min: number;
+      sec: number;
+    },
+    endTime: {
+      year: number;
+      mon: number;
+      day: number;
+      hour: number;
+      min: number;
+      sec: number;
+    },
     streamType: string,
     iLogicChannel: number,
-    autoSearchByDay: boolean
+    autoSearchByDay: boolean,
   ): RecordingsCacheKey {
     return `nvr:${channel}:${startTime.year}-${startTime.mon}-${startTime.day}-${startTime.hour}-${startTime.min}-${startTime.sec}:${endTime.year}-${endTime.mon}-${endTime.day}-${endTime.hour}-${endTime.min}-${endTime.sec}:${streamType}:${iLogicChannel}:${autoSearchByDay ? 1 : 0}`;
   }
@@ -600,13 +636,20 @@ export class ReolinkCgiApi {
     await this.client.logout();
   }
 
-  async call<TValue = JsonValue, TParam = JsonValue>(cmd: string, param?: TParam, action = 0): Promise<ReolinkCmdResponse<TValue>[]> {
+  async call<TValue = JsonValue, TParam = JsonValue>(
+    cmd: string,
+    param?: TParam,
+    action = 0,
+  ): Promise<ReolinkCmdResponse<TValue>[]> {
     // Avoid `param: undefined` with exactOptionalPropertyTypes
-    if (param === undefined) return await this.client.call<TValue, TParam>(cmd, { action });
+    if (param === undefined)
+      return await this.client.call<TValue, TParam>(cmd, { action });
     return await this.client.call<TValue, TParam>(cmd, { action, param });
   }
 
-  async callMany<TValue = JsonValue>(cmds: ReolinkCmdRequest[]): Promise<ReolinkCmdResponse<TValue>[]> {
+  async callMany<TValue = JsonValue>(
+    cmds: ReolinkCmdRequest[],
+  ): Promise<ReolinkCmdResponse<TValue>[]> {
     return await this.client.callMany<TValue>(cmds);
   }
 
@@ -639,7 +682,9 @@ export class ReolinkCgiApi {
   }
 
   // Common wrappers
-  async GetDevInfo(channel?: number): Promise<Array<ReolinkCmdResponseExt<CgiGetDevInfoValue>>> {
+  async GetDevInfo(
+    channel?: number,
+  ): Promise<Array<ReolinkCmdResponseExt<CgiGetDevInfoValue>>> {
     const param = channel == null ? {} : { channel };
     return await this.call("GetDevInfo", param);
   }
@@ -666,18 +711,32 @@ export class ReolinkCgiApi {
     const devInfo = (rsp as any)?.[0]?.value?.DevInfo as CgiDevInfo | undefined;
 
     const normalized: Partial<ReolinkDeviceInfo> = {};
-    const type = (devInfo?.type ?? devInfo?.model ?? devInfo?.exactType) as string | undefined;
-    const itemNo = (devInfo?.exactType ?? devInfo?.model ?? devInfo?.detail) as string | undefined;
+    const type = (devInfo?.type ?? devInfo?.model ?? devInfo?.exactType) as
+      | string
+      | undefined;
+    const itemNo = (devInfo?.exactType ?? devInfo?.model ?? devInfo?.detail) as
+      | string
+      | undefined;
     if (typeof type === "string") normalized.type = type;
-    if (typeof devInfo?.hardVer === "string") normalized.hardwareVersion = devInfo.hardVer;
-    if (typeof devInfo?.firmVer === "string") normalized.firmwareVersion = devInfo.firmVer;
+    if (typeof devInfo?.hardVer === "string")
+      normalized.hardwareVersion = devInfo.hardVer;
+    if (typeof devInfo?.firmVer === "string")
+      normalized.firmwareVersion = devInfo.firmVer;
     if (typeof itemNo === "string") normalized.itemNo = itemNo;
-    if (typeof devInfo?.serial === "string") normalized.serialNumber = devInfo.serial;
+    if (typeof devInfo?.serial === "string")
+      normalized.serialNumber = devInfo.serial;
     if (typeof devInfo?.name === "string") normalized.name = devInfo.name;
 
     const tags: ReolinkDeviceInfoTag[] = options?.tags?.length
       ? options.tags
-      : (["type", "hardwareVersion", "firmwareVersion", "itemNo", "serialNumber", "name"] satisfies ReolinkDeviceInfoTag[]);
+      : ([
+          "type",
+          "hardwareVersion",
+          "firmwareVersion",
+          "itemNo",
+          "serialNumber",
+          "name",
+        ] satisfies ReolinkDeviceInfoTag[]);
 
     const out: Partial<ReolinkDeviceInfo> = {};
     for (const t of tags) {
@@ -692,7 +751,9 @@ export class ReolinkCgiApi {
     return await this.call("GetChnTypeInfo", param);
   }
 
-  async GetChannelstatus(): Promise<Array<ReolinkCmdResponseExt<CgiGetChannelstatusValue>>> {
+  async GetChannelstatus(): Promise<
+    Array<ReolinkCmdResponseExt<CgiGetChannelstatusValue>>
+  > {
     return await this.call("GetChannelstatus", undefined, 0);
   }
 
@@ -706,16 +767,22 @@ export class ReolinkCgiApi {
     return await this.call("GetWifiSignal", param);
   }
 
-  async GetOsd(channel?: number): Promise<Array<ReolinkCmdResponseExt<CgiGetOsdValue>>> {
+  async GetOsd(
+    channel?: number,
+  ): Promise<Array<ReolinkCmdResponseExt<CgiGetOsdValue>>> {
     const param = channel == null ? {} : { channel };
     return await this.call("GetOsd", param, 1);
   }
 
-  async SetOsd(osd: CgiSetOsdParam): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+  async SetOsd(
+    osd: CgiSetOsdParam,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
     return await this.call("SetOsd", osd, 0);
   }
 
-  async GetEnc(channel?: number): Promise<Array<ReolinkCmdResponseExt<CgiEncValue>>> {
+  async GetEnc(
+    channel?: number,
+  ): Promise<Array<ReolinkCmdResponseExt<CgiEncValue>>> {
     const param = channel == null ? {} : { channel };
     return await this.call("GetEnc", param, 1);
   }
@@ -726,7 +793,9 @@ export class ReolinkCgiApi {
    * `[{"cmd":"GetRtspUrl","action":0,"param":{"channel":<channel>}}]`.
    */
   async GetRtspUrl(channel: number): Promise<Array<CgiGetRtspUrlResponse>> {
-    const body: ReolinkCmdRequest[] = [{ cmd: "GetRtspUrl", action: 0, param: { channel } }];
+    const body: ReolinkCmdRequest[] = [
+      { cmd: "GetRtspUrl", action: 0, param: { channel } },
+    ];
     return (await this.callMany(body)) as Array<CgiGetRtspUrlResponse>;
   }
 
@@ -736,12 +805,16 @@ export class ReolinkCgiApi {
     const value = rsp?.[0]?.value;
     const url = ReolinkCgiApi.findFirstRtspUrl(value);
     if (!url) {
-      throw new Error(`GetRtspUrl: RTSP URL not found in response (channel=${channel})`);
+      throw new Error(
+        `GetRtspUrl: RTSP URL not found in response (channel=${channel})`,
+      );
     }
     return url;
   }
 
-  async GetAiState(channel?: number): Promise<Array<ReolinkCmdResponseExt<CgiAiStateValue>>> {
+  async GetAiState(
+    channel?: number,
+  ): Promise<Array<ReolinkCmdResponseExt<CgiAiStateValue>>> {
     const param = channel == null ? {} : { channel };
     return await this.call("GetAiState", param, 0);
   }
@@ -761,21 +834,29 @@ export class ReolinkCgiApi {
     return await this.call("GetBatteryInfo", param, 0);
   }
 
-  async GetWhiteLed(channel?: number): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+  async GetWhiteLed(
+    channel?: number,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
     const param = channel == null ? {} : { channel };
     return await this.call("GetWhiteLed", param, 0);
   }
 
-  async SetWhiteLed(whiteLed: CgiSetWhiteLedParam): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+  async SetWhiteLed(
+    whiteLed: CgiSetWhiteLedParam,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
     return await this.call("SetWhiteLed", whiteLed, 0);
   }
 
-  async GetPirInfo(channel?: number): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+  async GetPirInfo(
+    channel?: number,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
     const param = channel == null ? {} : { channel };
     return await this.call("GetPirInfo", param, 0);
   }
 
-  async SetPirInfo(pirInfo: CgiSetPirInfoParam): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+  async SetPirInfo(
+    pirInfo: CgiSetPirInfoParam,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
     return await this.call("SetPirInfo", pirInfo, 0);
   }
 
@@ -789,7 +870,9 @@ export class ReolinkCgiApi {
     return await this.call("GetAudioAlarmV20", param, 0);
   }
 
-  async AudioAlarmPlay(params: CgiAudioAlarmPlayParam): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+  async AudioAlarmPlay(
+    params: CgiAudioAlarmPlayParam,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
     return await this.call("AudioAlarmPlay", params, 0);
   }
 
@@ -797,7 +880,9 @@ export class ReolinkCgiApi {
     return await this.call("GetNetPort", {});
   }
 
-  async SetNetPort(netPort: CgiNetPort): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+  async SetNetPort(
+    netPort: CgiNetPort,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
     return await this.call("SetNetPort", { NetPort: netPort });
   }
 
@@ -820,7 +905,12 @@ export class ReolinkCgiApi {
   // --------------------
 
   /** Returns the list of channels that have a non-empty UID (typically the connected cameras on NVR/Home Hub). */
-  async getChannels(options?: { useChannelNumFallback?: boolean }): Promise<{ channels: number[]; channelsResponse: Array<ReolinkCmdResponseExt<CgiGetChannelstatusValue>> }> {
+  async getChannels(options?: {
+    useChannelNumFallback?: boolean;
+  }): Promise<{
+    channels: number[];
+    channelsResponse: Array<ReolinkCmdResponseExt<CgiGetChannelstatusValue>>;
+  }> {
     const channelsResponse = await this.GetChannelstatus();
     const status = channelsResponse?.[0]?.value?.status;
     let channels = (status ?? [])
@@ -832,7 +922,9 @@ export class ReolinkCgiApi {
     if (channels.length === 0 && options?.useChannelNumFallback) {
       try {
         const devInfoRsp = await this.GetDevInfo();
-        const devInfo = (devInfoRsp as any)?.[0]?.value?.DevInfo as CgiDevInfo | undefined;
+        const devInfo = (devInfoRsp as any)?.[0]?.value?.DevInfo as
+          | CgiDevInfo
+          | undefined;
         const channelNum = devInfo?.channelNum;
         if (channelNum != null && channelNum > 0) {
           channels = Array.from({ length: channelNum }, (_, i) => i);
@@ -845,16 +937,25 @@ export class ReolinkCgiApi {
     return { channels, channelsResponse };
   }
 
-  async getNvrInfo(): Promise<{ abilities: CgiAbility | undefined; nvrData: CgiGetDevInfoValue | undefined; devInfo: CgiDevInfo | undefined; response: Array<ReolinkCmdResponseExt<JsonValue>> }> {
+  async getNvrInfo(): Promise<{
+    abilities: CgiAbility | undefined;
+    nvrData: CgiGetDevInfoValue | undefined;
+    devInfo: CgiDevInfo | undefined;
+    response: Array<ReolinkCmdResponseExt<JsonValue>>;
+  }> {
     const username = this.client.getUsername();
     const body: ReolinkCmdRequest[] = [
       { cmd: "GetAbility", action: 0, param: { User: { userName: username } } },
       { cmd: "GetDevInfo", action: 0, param: {} },
     ];
 
-    const response = (await this.callMany(body)) as Array<ReolinkCmdResponseExt<JsonValue>>;
-    const abilities = response.find((item: any) => item?.cmd === "GetAbility")?.value as CgiAbility | undefined;
-    const nvrData = response.find((item: any) => item?.cmd === "GetDevInfo")?.value as CgiGetDevInfoValue | undefined;
+    const response = (await this.callMany(body)) as Array<
+      ReolinkCmdResponseExt<JsonValue>
+    >;
+    const abilities = response.find((item: any) => item?.cmd === "GetAbility")
+      ?.value as CgiAbility | undefined;
+    const nvrData = response.find((item: any) => item?.cmd === "GetDevInfo")
+      ?.value as CgiGetDevInfoValue | undefined;
     const devInfo = nvrData?.DevInfo;
 
     return { abilities, nvrData, devInfo, response };
@@ -873,7 +974,11 @@ export class ReolinkCgiApi {
 
     const body: ReolinkCmdRequest[] = [];
 
-    body.push({ cmd: "GetAbility", action: 0, param: { User: { userName: username } } });
+    body.push({
+      cmd: "GetAbility",
+      action: 0,
+      param: { User: { userName: username } },
+    });
 
     for (const channel of channels) {
       body.push(
@@ -883,7 +988,9 @@ export class ReolinkCgiApi {
       );
     }
 
-    const response = (await this.callMany(body)) as Array<ReolinkCmdResponseExt<JsonValue>>;
+    const response = (await this.callMany(body)) as Array<
+      ReolinkCmdResponseExt<JsonValue>
+    >;
 
     const abilities = (response[0] as CgiGetAbilityResponse | undefined)?.value;
     const abilitiesChn = abilities?.Ability?.abilityChn;
@@ -892,11 +999,15 @@ export class ReolinkCgiApi {
     for (let i = 0; i < channels.length; i++) {
       const channel = channels[i]!;
       const base = 1 + i * 3;
-      const chnInfoItem = response[base] as CgiGetChnTypeInfoResponse | undefined;
+      const chnInfoItem = response[base] as
+        | CgiGetChnTypeInfoResponse
+        | undefined;
       const aiItem = response[base + 1] as CgiGetAiStateResponse | undefined;
       const encItem = response[base + 2] as CgiGetEncResponse | undefined;
 
-      const channelStatus = channelsResponse?.[0]?.value?.status?.find((item) => item?.channel === channel);
+      const channelStatus = channelsResponse?.[0]?.value?.status?.find(
+        (item) => item?.channel === channel,
+      );
 
       const device: DeviceInfoResponse = {
         entries: [chnInfoItem, aiItem, encItem],
@@ -905,17 +1016,28 @@ export class ReolinkCgiApi {
       const perChannelAbilities = abilitiesChn?.[channel];
       if (perChannelAbilities) device.abilities = perChannelAbilities;
 
-      if (!(chnInfoItem as any)?.error) device.channelInfo = (chnInfoItem as any)?.value as CgiChnTypeInfoValue;
-      if (!(aiItem as any)?.error) device.ai = (aiItem as any)?.value as CgiAiStateValue;
-      if (!(encItem as any)?.error) device.enc = (encItem as any)?.value as CgiEncValue;
+      if (!(chnInfoItem as any)?.error)
+        device.channelInfo = (chnInfoItem as any)?.value as CgiChnTypeInfoValue;
+      if (!(aiItem as any)?.error)
+        device.ai = (aiItem as any)?.value as CgiAiStateValue;
+      if (!(encItem as any)?.error)
+        device.enc = (encItem as any)?.value as CgiEncValue;
 
       ret[channel] = device;
     }
 
-    return { devicesData: ret, response, channels, channelsResponse, requestBody: body };
+    return {
+      devicesData: ret,
+      response,
+      channels,
+      channelsResponse,
+      requestBody: body,
+    };
   }
 
-  async getAllChannelsEvents(options?: { useChannelNumFallback?: boolean }): Promise<{
+  async getAllChannelsEvents(options?: {
+    useChannelNumFallback?: boolean;
+  }): Promise<{
     parsed: Record<number, EventsResponse>;
     response: ReolinkCmdResponse[];
     channels: number[];
@@ -926,7 +1048,10 @@ export class ReolinkCgiApi {
 
     // Always call all relevant endpoints per channel and merge.
     const body: ReolinkCmdRequest[] = [];
-    const index: Record<number, { events?: number; motion?: number; ai?: number }> = {};
+    const index: Record<
+      number,
+      { events?: number; motion?: number; ai?: number }
+    > = {};
 
     for (const channel of channels) {
       index[channel] = {};
@@ -958,8 +1083,12 @@ export class ReolinkCgiApi {
       const aiEntry = ai != null ? response[ai] : undefined;
 
       const classes = new Set<string>();
-      for (const c of processDetections((aiEntry as any)?.value)) classes.add(c);
-      for (const c of processDetections((eventsEntry as any)?.value?.ai ?? (eventsEntry as any)?.value)) classes.add(c);
+      for (const c of processDetections((aiEntry as any)?.value))
+        classes.add(c);
+      for (const c of processDetections(
+        (eventsEntry as any)?.value?.ai ?? (eventsEntry as any)?.value,
+      ))
+        classes.add(c);
 
       const list = Array.from(classes);
       const objects = list.filter((cl) => cl !== "other");
@@ -975,7 +1104,9 @@ export class ReolinkCgiApi {
     return { parsed, response, channels, channelsResponse, requestBody: body };
   }
 
-  async getAllChannelsBatteryInfo(options?: { useChannelNumFallback?: boolean }): Promise<{
+  async getAllChannelsBatteryInfo(options?: {
+    useChannelNumFallback?: boolean;
+  }): Promise<{
     batteryInfoData: Record<number, BatteryInfoResponse>;
     response: Array<ReolinkCmdResponseExt<JsonValue>>;
     channels: number[];
@@ -992,13 +1123,20 @@ export class ReolinkCgiApi {
       index[channel] = body.length - 1;
     }
 
-    const response = (await this.callMany(body)) as Array<ReolinkCmdResponseExt<JsonValue>>;
+    const response = (await this.callMany(body)) as Array<
+      ReolinkCmdResponseExt<JsonValue>
+    >;
     const channelStatusData = response[0];
 
     const batteryInfoData: Record<number, BatteryInfoResponse> = {};
     for (const channel of channels) {
-      const batteryInfoEntry = ((response[index[channel]!] as any)?.value?.Battery ?? undefined) as CgiBattery | undefined;
-      const channelStatusEntry = (channelStatusData as any)?.value?.status?.find((elem: any) => elem?.channel === channel) as CgiChannelStatusEntry | undefined;
+      const batteryInfoEntry = ((response[index[channel]!] as any)?.value
+        ?.Battery ?? undefined) as CgiBattery | undefined;
+      const channelStatusEntry = (
+        channelStatusData as any
+      )?.value?.status?.find((elem: any) => elem?.channel === channel) as
+        | CgiChannelStatusEntry
+        | undefined;
       batteryInfoData[channel] = {
         entries: [batteryInfoEntry, channelStatusEntry],
         batteryLevel: Number(batteryInfoEntry?.batteryPercent ?? 0),
@@ -1006,7 +1144,13 @@ export class ReolinkCgiApi {
       };
     }
 
-    return { batteryInfoData, response, channels, channelsResponse, requestBody: body };
+    return {
+      batteryInfoData,
+      response,
+      channels,
+      channelsResponse,
+      requestBody: body,
+    };
   }
 
   async getStatusInfo(channelsMap: Map<number, DeviceInputData>): Promise<{
@@ -1014,7 +1158,10 @@ export class ReolinkCgiApi {
     response: Array<ReolinkCmdResponseExt<JsonValue>>;
   }> {
     const body: ReolinkCmdRequest[] = [];
-    const index: Record<number, { osd?: number; floodlight?: number; pir?: number; presets?: number }> = {};
+    const index: Record<
+      number,
+      { osd?: number; floodlight?: number; pir?: number; presets?: number }
+    > = {};
 
     for (const [channel, info] of channelsMap.entries()) {
       index[channel] = {};
@@ -1039,7 +1186,9 @@ export class ReolinkCgiApi {
       }
     }
 
-    const response = (await this.callMany(body)) as Array<ReolinkCmdResponseExt<JsonValue>>;
+    const response = (await this.callMany(body)) as Array<
+      ReolinkCmdResponseExt<JsonValue>
+    >;
 
     const deviceStatusData: Record<number, DeviceStatusResponse> = {};
     for (const [channel, info] of channelsMap.entries()) {
@@ -1048,26 +1197,31 @@ export class ReolinkCgiApi {
 
       if (osd != null) {
         const osdEntry = response[osd]!;
-        deviceStatusData[channel].osd = osdEntry as ReolinkCmdResponseExt<CgiGetOsdValue>;
+        deviceStatusData[channel].osd =
+          osdEntry as ReolinkCmdResponseExt<CgiGetOsdValue>;
         deviceStatusData[channel].entries.push(osdEntry);
       }
 
       if (info.hasFloodlight && floodlight != null) {
         const floodlightEntry = response[floodlight]!;
-        deviceStatusData[channel].floodlightEnabled = (floodlightEntry as any)?.value?.WhiteLed?.state === 1;
+        deviceStatusData[channel].floodlightEnabled =
+          (floodlightEntry as any)?.value?.WhiteLed?.state === 1;
         deviceStatusData[channel].entries.push(floodlightEntry);
       }
 
       if (info.hasPirEvents && pir != null) {
         const pirEntry = response[pir]!;
-        deviceStatusData[channel].pirEnabled = (pirEntry as any)?.value?.pirInfo?.enable === 1;
+        deviceStatusData[channel].pirEnabled =
+          (pirEntry as any)?.value?.pirInfo?.enable === 1;
         deviceStatusData[channel].entries.push(pirEntry);
       }
 
       if (info.hasPtz && presets != null) {
         const ptzPresetsEntry = response[presets]!;
         const list = (ptzPresetsEntry as any)?.value?.PtzPreset;
-        deviceStatusData[channel].ptzPresets = Array.isArray(list) ? (list.filter((p: any) => p?.enable === 1) as CgiPtzPreset[]) : [];
+        deviceStatusData[channel].ptzPresets = Array.isArray(list)
+          ? (list.filter((p: any) => p?.enable === 1) as CgiPtzPreset[])
+          : [];
         deviceStatusData[channel].entries.push(ptzPresetsEntry);
       }
     }
@@ -1076,7 +1230,9 @@ export class ReolinkCgiApi {
   }
 
   /** Convenience wrapper returning raw OSD response for a channel. */
-  async getOsd(channel: number): Promise<ReolinkCmdResponseExt<CgiGetOsdValue> | undefined> {
+  async getOsd(
+    channel: number,
+  ): Promise<ReolinkCmdResponseExt<CgiGetOsdValue> | undefined> {
     const rsp = await this.GetOsd(channel);
     return rsp?.[0];
   }
@@ -1115,7 +1271,9 @@ export class ReolinkCgiApi {
     return await this.client.snap(channel, {
       ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
       ...(opts?.snapType !== undefined ? { snapType: opts.snapType } : {}),
-      ...(opts?.iLogicChannel !== undefined ? { iLogicChannel: opts.iLogicChannel } : {}),
+      ...(opts?.iLogicChannel !== undefined
+        ? { iLogicChannel: opts.iLogicChannel }
+        : {}),
     });
   }
 
@@ -1124,23 +1282,39 @@ export class ReolinkCgiApi {
     return { enabled: (rsp as any)?.[0]?.value?.Audio?.enable === 1 };
   }
 
-  async setSiren(channel: number, on: boolean, duration?: number): Promise<{ value: JsonValue | undefined; data: Array<ReolinkCmdResponseExt<JsonValue>> }> {
+  async setSiren(
+    channel: number,
+    on: boolean,
+    duration?: number,
+  ): Promise<{
+    value: JsonValue | undefined;
+    data: Array<ReolinkCmdResponseExt<JsonValue>>;
+  }> {
     const params: CgiAudioAlarmPlayParam = duration
       ? { channel, alarm_mode: "times", times: duration }
       : { channel, alarm_mode: "manul", manual_switch: on ? 1 : 0 };
 
     const rsp = await this.AudioAlarmPlay(params);
-    return { value: (rsp as any)?.[0]?.value ?? (rsp as any)?.value, data: rsp };
+    return {
+      value: (rsp as any)?.[0]?.value ?? (rsp as any)?.value,
+      data: rsp,
+    };
   }
 
-  async setWhiteLedState(channel: number, on?: boolean, brightness?: number): Promise<void> {
+  async setWhiteLedState(
+    channel: number,
+    on?: boolean,
+    brightness?: number,
+  ): Promise<void> {
     const settings: any = { channel };
     if (on !== undefined) settings.state = on ? 1 : 0;
     if (brightness !== undefined) settings.bright = brightness;
     await this.SetWhiteLed({ WhiteLed: settings });
   }
 
-  async getPirState(channel: number): Promise<{ enabled: boolean; state: CgiPirInfo | undefined }> {
+  async getPirState(
+    channel: number,
+  ): Promise<{ enabled: boolean; state: CgiPirInfo | undefined }> {
     const rsp = await this.GetPirInfo(channel);
     const state = (rsp as any)?.[0]?.value?.pirInfo as CgiPirInfo | undefined;
     return { enabled: state?.enable === 1, state };
@@ -1153,21 +1327,31 @@ export class ReolinkCgiApi {
     if (currentEnable === newState) return;
 
     const pirInfo = {
-      ...(current?.state && typeof current.state === "object" ? current.state : {}),
+      ...(current?.state && typeof current.state === "object"
+        ? current.state
+        : {}),
       channel,
       enable: newState,
     };
     await this.SetPirInfo({ pirInfo });
   }
 
-  async getLocalLink(channel: number): Promise<{ activeLink: string | undefined; wifiSignal: number | undefined; isWifi: boolean }> {
+  async getLocalLink(
+    channel: number,
+  ): Promise<{
+    activeLink: string | undefined;
+    wifiSignal: number | undefined;
+    isWifi: boolean;
+  }> {
     const body: ReolinkCmdRequest[] = [
       { cmd: "GetLocalLink", action: 0, param: {} },
       { cmd: "GetWifiSignal", action: 0, param: { channel } },
     ];
     const rsp = await this.callMany(body);
-    const activeLink = (rsp as any).find((e: any) => e?.cmd === "GetLocalLink")?.value?.LocalLink?.activeLink as string | undefined;
-    const wifiSignal = (rsp as any).find((e: any) => e?.cmd === "GetWifiSignal")?.value?.wifiSignal as number | undefined;
+    const activeLink = (rsp as any).find((e: any) => e?.cmd === "GetLocalLink")
+      ?.value?.LocalLink?.activeLink as string | undefined;
+    const wifiSignal = (rsp as any).find((e: any) => e?.cmd === "GetWifiSignal")
+      ?.value?.wifiSignal as number | undefined;
 
     let isWifi = false;
     if (wifiSignal !== undefined) {
@@ -1184,11 +1368,13 @@ export class ReolinkCgiApi {
    * Comprehensive NVR/HUB diagnostics.
    * Collects and returns all available information about the NVR/HUB device and all its channels.
    * Automatically prints diagnostics after collection using the provided logger.
-   * 
+   *
    * @param options - Configuration object with logger property for progress messages
    * @returns Complete diagnostics data including NVR info, channels, and per-channel details
    */
-  async collectNvrDiagnostics(options: CollectNvrDiagnosticsOptions): Promise<Record<string, unknown>> {
+  async collectNvrDiagnostics(
+    options: CollectNvrDiagnosticsOptions,
+  ): Promise<Record<string, unknown>> {
     const diagnostics = await collectNvrDiagnostics({
       cgi: this,
       logger: options.logger,
@@ -1203,14 +1389,16 @@ export class ReolinkCgiApi {
   /**
    * List enriched recordings from NVR/Hub.
    * This command does NOT wake up battery cameras connected to the hub.
-   * 
+   *
    * Always returns enriched recording files with parsed metadata, detection flags, and timestamps.
    * Note: For best results, use autoSearchByDay=true to automatically search day-by-day when Status table is available.
-   * 
+   *
    * @param params - Search parameters
    * @returns Array of enriched recording files
    */
-  async listNvrRecordings(params: ListNvrRecordingsParams): Promise<Array<EnrichedRecordingFile>> {
+  async listNvrRecordings(
+    params: ListNvrRecordingsParams,
+  ): Promise<Array<EnrichedRecordingFile>> {
     const { channel, start, end } = params;
     const streamType = params.streamType ?? "main";
     const iLogicChannel = params.iLogicChannel ?? 0;
@@ -1242,7 +1430,7 @@ export class ReolinkCgiApi {
     }
 
     // Log date conversion for debugging (using both general debug and recordings trace)
-    // debugLog(this.debugConfig, this.logger, "listNvrRecordings", 
+    // debugLog(this.debugConfig, this.logger, "listNvrRecordings",
     //   `Date conversion: start=${start.toISOString()} (local: ${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')} ${String(start.getHours()).padStart(2, '0')}:${String(start.getMinutes()).padStart(2, '0')}:${String(start.getSeconds()).padStart(2, '0')}) -> ReolinkTime=${JSON.stringify(startTime)}, ` +
     //   `end=${end.toISOString()} (local: ${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-${String(end.getDate()).padStart(2, '0')} ${String(end.getHours()).padStart(2, '0')}:${String(end.getMinutes()).padStart(2, '0')}:${String(end.getSeconds()).padStart(2, '0')}) -> ReolinkTime=${JSON.stringify(endTime)}`
     // );
@@ -1250,20 +1438,27 @@ export class ReolinkCgiApi {
       this.debugConfig,
       this.logger,
       "listNvrRecordings",
-      `Date conversion: start=${start.toISOString()} -> ReolinkTime=${JSON.stringify(startTime)}, end=${end.toISOString()} -> ReolinkTime=${JSON.stringify(endTime)}`
+      `Date conversion: start=${start.toISOString()} -> ReolinkTime=${JSON.stringify(startTime)}, end=${end.toISOString()} -> ReolinkTime=${JSON.stringify(endTime)}`,
     );
 
     // Check cache first (unless bypassing)
     if (!bypassCache) {
       this.cleanRecordingsCache();
-      const cacheKey = this.getNvrRecordingsCacheKey(channel, startTime, endTime, streamType, iLogicChannel, autoSearchByDay);
+      const cacheKey = this.getNvrRecordingsCacheKey(
+        channel,
+        startTime,
+        endTime,
+        streamType,
+        iLogicChannel,
+        autoSearchByDay,
+      );
       const cached = this.recordingsCache.get(cacheKey);
       if (cached && cached.expiresAt > Date.now()) {
         recordingsTraceLog(
           this.debugConfig,
           this.logger,
           "listNvrRecordings",
-          `Cache hit: returning ${cached.data.length} cached enriched recordings`
+          `Cache hit: returning ${cached.data.length} cached enriched recordings`,
         );
         return cached.data;
       }
@@ -1295,12 +1490,19 @@ export class ReolinkCgiApi {
         statusParam.Search.iLogicChannel = iLogicChannel;
       }
 
-      const statusResponse = await this.call<VodSearchResult>("Search", statusParam, 0);
+      const statusResponse = await this.call<VodSearchResult>(
+        "Search",
+        statusParam,
+        0,
+      );
       const allResults: Array<VodSearchResponse> = [];
 
       // Parse Status table to find days with recordings
       for (const statusResult of statusResponse) {
-        if (statusResult.code === 0 && statusResult.value?.SearchResult?.Status) {
+        if (
+          statusResult.code === 0 &&
+          statusResult.value?.SearchResult?.Status
+        ) {
           for (const status of statusResult.value.SearchResult.Status) {
             if (status.table) {
               // Find days with recordings from bitmap
@@ -1320,15 +1522,33 @@ export class ReolinkCgiApi {
                 // requested window. Restrict queries to days that overlap [start,end], and clamp
                 // the per-day query range to the window.
                 const dayStartDate = new Date(year, month - 1, day, 0, 0, 0, 0);
-                const dayEndDate = new Date(year, month - 1, day, 23, 59, 59, 999);
+                const dayEndDate = new Date(
+                  year,
+                  month - 1,
+                  day,
+                  23,
+                  59,
+                  59,
+                  999,
+                );
 
                 // Skip days completely outside the requested window.
                 if (Number.isFinite(startMs) && Number.isFinite(endMs)) {
-                  if (dayEndDate.getTime() < startMs || dayStartDate.getTime() > endMs) continue;
+                  if (
+                    dayEndDate.getTime() < startMs ||
+                    dayStartDate.getTime() > endMs
+                  )
+                    continue;
                 }
 
-                const queryStartDate = clampDateToWindow(dayStartDate.getTime() < startMs ? new Date(startMs) : dayStartDate);
-                const queryEndDate = clampDateToWindow(dayEndDate.getTime() > endMs ? new Date(endMs) : dayEndDate);
+                const queryStartDate = clampDateToWindow(
+                  dayStartDate.getTime() < startMs
+                    ? new Date(startMs)
+                    : dayStartDate,
+                );
+                const queryEndDate = clampDateToWindow(
+                  dayEndDate.getTime() > endMs ? new Date(endMs) : dayEndDate,
+                );
                 if (queryStartDate.getTime() > queryEndDate.getTime()) continue;
 
                 const dayStart = this.dateToReolinkTime(queryStartDate);
@@ -1347,27 +1567,37 @@ export class ReolinkCgiApi {
                   dayParam.Search.iLogicChannel = iLogicChannel;
                 }
 
-                const dayResponse = await this.call<VodSearchResult>("Search", dayParam, 0);
+                const dayResponse = await this.call<VodSearchResult>(
+                  "Search",
+                  dayParam,
+                  0,
+                );
                 // Log raw API response for debugging
                 if (dayResponse && dayResponse.length > 0) {
                   const firstResult = dayResponse[0];
-                  if (firstResult && firstResult.code === 0 && firstResult.value?.SearchResult?.File) {
+                  if (
+                    firstResult &&
+                    firstResult.code === 0 &&
+                    firstResult.value?.SearchResult?.File
+                  ) {
                     const files = firstResult.value.SearchResult.File;
                     if (files.length > 0 && files[0]) {
                       recordingsTraceLog(
                         this.debugConfig,
                         this.logger,
                         "listNvrRecordings",
-                        `Raw API response for day ${day}/${month}/${year}: ${JSON.stringify({
-                          fileCount: files.length,
-                          sampleFile: {
-                            name: files[0].name,
-                            type: files[0].type,
-                            size: files[0].size,
-                            StartTime: files[0].StartTime,
-                            EndTime: files[0].EndTime,
+                        `Raw API response for day ${day}/${month}/${year}: ${JSON.stringify(
+                          {
+                            fileCount: files.length,
+                            sampleFile: {
+                              name: files[0].name,
+                              type: files[0].type,
+                              size: files[0].size,
+                              StartTime: files[0].StartTime,
+                              EndTime: files[0].EndTime,
+                            },
                           },
-                        })}`
+                        )}`,
                       );
                     }
                   }
@@ -1420,12 +1650,19 @@ export class ReolinkCgiApi {
           this.debugConfig,
           this.logger,
           "listNvrRecordings",
-          `Returning ${enriched.length} enriched recording files from autoSearchByDay`
+          `Returning ${enriched.length} enriched recording files from autoSearchByDay`,
         );
 
         // Cache enriched results
         if (!bypassCache) {
-          const cacheKey = this.getNvrRecordingsCacheKey(channel, startTime, endTime, streamType, iLogicChannel, autoSearchByDay);
+          const cacheKey = this.getNvrRecordingsCacheKey(
+            channel,
+            startTime,
+            endTime,
+            streamType,
+            iLogicChannel,
+            autoSearchByDay,
+          );
           this.recordingsCache.set(cacheKey, {
             data: enriched,
             expiresAt: Date.now() + this.recordingsCacheTtlMs,
@@ -1474,7 +1711,7 @@ export class ReolinkCgiApi {
         this.debugConfig,
         this.logger,
         "listNvrRecordings",
-        `Range spans ${dayRanges.length} days, splitting into separate day queries`
+        `Range spans ${dayRanges.length} days, splitting into separate day queries`,
       );
 
       for (const range of dayRanges) {
@@ -1496,7 +1733,7 @@ export class ReolinkCgiApi {
           this.debugConfig,
           this.logger,
           "listNvrRecordings",
-          `Querying day: ${range.start.year}-${range.start.mon}-${range.start.day} (${range.start.hour}:${range.start.min}:${range.start.sec} to ${range.end.hour}:${range.end.min}:${range.end.sec})`
+          `Querying day: ${range.start.year}-${range.start.mon}-${range.start.day} (${range.start.hour}:${range.start.min}:${range.start.sec} to ${range.end.hour}:${range.end.min}:${range.end.sec})`,
         );
 
         const response = await this.call<VodSearchResult>("Search", param, 0);
@@ -1509,7 +1746,11 @@ export class ReolinkCgiApi {
     // Log raw API response for debugging
     if (result && result.length > 0) {
       const firstResult = result[0];
-      if (firstResult && firstResult.code === 0 && firstResult.value?.SearchResult?.File) {
+      if (
+        firstResult &&
+        firstResult.code === 0 &&
+        firstResult.value?.SearchResult?.File
+      ) {
         const files = firstResult.value.SearchResult.File;
         if (files.length > 0 && files[0]) {
           recordingsTraceLog(
@@ -1525,7 +1766,7 @@ export class ReolinkCgiApi {
                 StartTime: files[0].StartTime,
                 EndTime: files[0].EndTime,
               },
-            })}`
+            })}`,
           );
         }
       }
@@ -1546,7 +1787,7 @@ export class ReolinkCgiApi {
       this.debugConfig,
       this.logger,
       "listNvrRecordings",
-      `Collected ${allFiles.length} raw VodFiles from API search results`
+      `Collected ${allFiles.length} raw VodFiles from API search results`,
     );
     if (allFiles.length > 0) {
       // Log first few files as sample
@@ -1564,7 +1805,7 @@ export class ReolinkCgiApi {
               size: file.size,
               StartTime: file.StartTime,
               EndTime: file.EndTime,
-            })}`
+            })}`,
           );
         }
       }
@@ -1599,12 +1840,19 @@ export class ReolinkCgiApi {
       this.debugConfig,
       this.logger,
       "listNvrRecordings",
-      `Returning ${enriched.length} enriched recording files`
+      `Returning ${enriched.length} enriched recording files`,
     );
 
     // Cache enriched results
     if (!bypassCache) {
-      const cacheKey = this.getNvrRecordingsCacheKey(channel, startTime, endTime, streamType, iLogicChannel, autoSearchByDay);
+      const cacheKey = this.getNvrRecordingsCacheKey(
+        channel,
+        startTime,
+        endTime,
+        streamType,
+        iLogicChannel,
+        autoSearchByDay,
+      );
       this.recordingsCache.set(cacheKey, {
         data: enriched,
         expiresAt: Date.now() + this.recordingsCacheTtlMs,
@@ -1618,7 +1866,7 @@ export class ReolinkCgiApi {
    * Prepare a VOD file for download on NVR/Hub.
    * This is required before downloading VOD files from NVR/Hub.
    * This command does NOT wake up battery cameras connected to the hub.
-   * 
+   *
    * @param channel - Channel number (0-based)
    * @param startTime - Start time for the recording
    * @param endTime - End time for the recording
@@ -1648,7 +1896,7 @@ export class ReolinkCgiApi {
     options?: {
       /** For multifocal cameras: logical channel (0 or 1) */
       iLogicChannel?: number;
-    }
+    },
   ): Promise<string> {
     if (this.nvrDownloadPrepareSupport === "unsupported") {
       throw new Error("NvrDownload is not supported on this device");
@@ -1695,25 +1943,37 @@ export class ReolinkCgiApi {
       this.debugConfig,
       this.logger,
       "prepareNvrVodDownload",
-      `Request body: ${JSON.stringify(body)}`
+      `Request body: ${JSON.stringify(body)}`,
     );
 
     try {
       // Use callMany to send the request exactly as reolink_aio does
-      const response = await this.callMany<{ fileList: Array<{ fileName: string; fileSize: number }> }>(body);
+      const response = await this.callMany<{
+        fileList: Array<{ fileName: string; fileSize: number }>;
+      }>(body);
 
       // Log the response for debugging
       recordingsTraceLog(
         this.debugConfig,
         this.logger,
         "prepareNvrVodDownload",
-        `Response: ${JSON.stringify(response)}`
+        `Response: ${JSON.stringify(response)}`,
       );
 
       const first = response[0];
       if (!first || first.code !== 0 || !first.value?.fileList) {
         const rspCode = (first as any)?.error?.rspCode;
-        if (rspCode === -17) {
+        const detail = String(
+          (first as any)?.error?.detail ?? "",
+        ).toLowerCase();
+        // Some firmwares report rspCode=-17 for multiple causes (including invalid params).
+        // Only mark as unsupported when the device explicitly says it's not supported.
+        if (
+          rspCode === -17 &&
+          (detail.includes("not support") ||
+            detail.includes("unsupported") ||
+            detail.includes("not supported"))
+        ) {
           this.nvrDownloadPrepareSupport = "unsupported";
         }
         throw new Error(`NvrDownload failed: ${JSON.stringify(response)}`);
@@ -1743,7 +2003,7 @@ export class ReolinkCgiApi {
         this.debugConfig,
         this.logger,
         "prepareNvrVodDownload",
-        `Error: ${error instanceof Error ? error.message : String(error)}`
+        `Error: ${error instanceof Error ? error.message : String(error)}`,
       );
       throw error;
     }
@@ -1752,7 +2012,7 @@ export class ReolinkCgiApi {
   /**
    * Get URL for VOD playback, download, or streaming.
    * Supports automatic file preparation for NVR/Hub when needed.
-   * 
+   *
    * @param filenameOrVodFile - Filename string or VodFile object from listNvrRecordings
    * @param channel - Channel number (0-based)
    * @param options - Optional parameters
@@ -1761,29 +2021,38 @@ export class ReolinkCgiApi {
   async getVodUrl(
     filenameOrVodFile: string | VodFile,
     channel: number,
-    options?: GetVodUrlParams
+    options?: GetVodUrlParams,
   ): Promise<string> {
     await this.login();
     const requestType = options?.requestType ?? "Playback";
-    const streamType = options?.streamType ?? options?.videoStreamType ?? "main";
+    const streamType =
+      options?.streamType ?? options?.videoStreamType ?? "main";
     const videoStreamType = options?.videoStreamType ?? streamType;
     const seek = options?.seek ?? 0;
     // IMPORTANT: On NVR/Hub, `cmd=Download` typically requires a prior `NvrDownload` preparation
     // to translate the Search filename into a downloadable source.
     const shouldPrepare =
       options?.prepare ??
-      (requestType === "Playback" || requestType === "Download" || requestType === "NVR_DOWNLOAD");
+      (requestType === "Playback" ||
+        requestType === "Download" ||
+        requestType === "NVR_DOWNLOAD");
     let startTime = options?.startTime ?? "";
 
     // Extract filename from VodFile or use string directly
-    let filename = typeof filenameOrVodFile === "string" ? filenameOrVodFile : filenameOrVodFile.name;
-    const vodFile = typeof filenameOrVodFile === "string" ? undefined : filenameOrVodFile;
+    let filename =
+      typeof filenameOrVodFile === "string"
+        ? filenameOrVodFile
+        : filenameOrVodFile.name;
+    const vodFile =
+      typeof filenameOrVodFile === "string" ? undefined : filenameOrVodFile;
 
     // For NVR and Playback/Download, prepare the file first if needed
     if (
       shouldPrepare &&
       this.nvrDownloadPrepareSupport !== "unsupported" &&
-      (requestType === "Playback" || requestType === "Download" || requestType === "NVR_DOWNLOAD")
+      (requestType === "Playback" ||
+        requestType === "Download" ||
+        requestType === "NVR_DOWNLOAD")
     ) {
       // Try to prepare from startTimeObj/endTimeObj first
       if (options?.startTimeObj && options?.endTimeObj) {
@@ -1796,11 +2065,13 @@ export class ReolinkCgiApi {
             channel,
             startTimeReolink,
             endTimeReolink,
-            streamType
+            streamType,
           );
           // Extract start time from prepared filename if not provided
           if (!startTime) {
-            const timeMatch = filename.match(/Rec\w{3}(?:_|_DST)?(\d{8})_(\d{6})_/);
+            const timeMatch = filename.match(
+              /Rec\w{3}(?:_|_DST)?(\d{8})_(\d{6})_/,
+            );
             if (timeMatch) {
               startTime = `${timeMatch[1]}${timeMatch[2]}`;
             }
@@ -1816,7 +2087,7 @@ export class ReolinkCgiApi {
             channel,
             vodFile.StartTime,
             vodFile.EndTime,
-            videoStreamType
+            videoStreamType,
           );
         } catch (error) {
           // If preparation fails, continue with original filename
@@ -1834,7 +2105,9 @@ export class ReolinkCgiApi {
             const startHms = m[2];
             const endHms = m[3];
             if (!ymd || !startHms || !endHms) {
-              throw new Error(`Failed to parse recording time from filename: ${filename}`);
+              throw new Error(
+                `Failed to parse recording time from filename: ${filename}`,
+              );
             }
 
             const year = Number(ymd.slice(0, 4));
@@ -1859,7 +2132,12 @@ export class ReolinkCgiApi {
               sec: Number(endHms.slice(4, 6)),
             };
 
-            filename = await this.prepareNvrVodDownload(channel, startTimeReolink, endTimeReolink, streamType);
+            filename = await this.prepareNvrVodDownload(
+              channel,
+              startTimeReolink,
+              endTimeReolink,
+              streamType,
+            );
           } catch (error) {
             // If preparation fails, continue with original filename
           }
@@ -1868,7 +2146,12 @@ export class ReolinkCgiApi {
     }
 
     const token = this.client.getToken();
-    if (!token && (requestType === "Playback" || requestType === "Download" || requestType === "NVR_DOWNLOAD")) {
+    if (
+      !token &&
+      (requestType === "Playback" ||
+        requestType === "Download" ||
+        requestType === "NVR_DOWNLOAD")
+    ) {
       throw new Error("Not logged in. Call login() first.");
     }
 
@@ -1886,7 +2169,10 @@ export class ReolinkCgiApi {
     let streamTypeNum = 0; // main
     if (videoStreamType === "sub") {
       streamTypeNum = 1;
-    } else if (videoStreamType.startsWith("autotrack_") || videoStreamType.startsWith("telephoto_")) {
+    } else if (
+      videoStreamType.startsWith("autotrack_") ||
+      videoStreamType.startsWith("telephoto_")
+    ) {
       streamTypeNum = videoStreamType.includes("sub") ? 3 : 2;
     }
 
@@ -1932,11 +2218,10 @@ export class ReolinkCgiApi {
     return url;
   }
 
-
   /**
    * Download a VOD file.
    * For NVR/Hub, use prepareNvrVodDownload first to get the filename.
-   * 
+   *
    * @param filename - Filename from listNvrRecordings or prepareNvrVodDownload
    * @param options - Optional download parameters
    * @returns Buffer containing the video file
@@ -1948,9 +2233,13 @@ export class ReolinkCgiApi {
       output?: string;
       /** Start time string */
       start?: string;
-    }
+    },
   ): Promise<Buffer> {
-    return await this.client.downloadVod(filename, options?.output, options?.start);
+    return await this.client.downloadVod(
+      filename,
+      options?.output,
+      options?.start,
+    );
   }
 
   /**
@@ -1983,15 +2272,21 @@ export class ReolinkCgiApi {
 
     if (!recordType) return flags;
 
-    const types = recordType.toLowerCase().split(/[,\s]+/).map((s) => s.trim()).filter(Boolean);
+    const types = recordType
+      .toLowerCase()
+      .split(/[,\s]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
 
     for (const t of types) {
       if (t === "people" || t === "person") flags.hasPerson = true;
       else if (t === "vehicle" || t === "car") flags.hasVehicle = true;
-      else if (t === "dog_cat" || t === "animal" || t === "pet") flags.hasAnimal = true;
+      else if (t === "dog_cat" || t === "animal" || t === "pet")
+        flags.hasAnimal = true;
       else if (t === "face") flags.hasFace = true;
       else if (t === "md" || t === "motion") flags.hasMotion = true;
-      else if (t === "sched" || t === "schedule" || t === "timer") flags.hasSchedule = true;
+      else if (t === "sched" || t === "schedule" || t === "timer")
+        flags.hasSchedule = true;
       else if (t === "visitor" || t === "doorbell") flags.hasDoorbell = true;
       else if (t === "package") flags.hasPackage = true;
       else if (t === "rf" || t === "io" || t === "pir") flags.hasRf = true;
@@ -2005,20 +2300,82 @@ export class ReolinkCgiApi {
    * Generate day-by-day ranges from startTime to endTime.
    * Each range covers exactly one day (00:00:00 to 23:59:59), except the first and last day
    * which use the original start/end times.
-   * 
+   *
    * @param startTime - Start time in Reolink format
    * @param endTime - End time in Reolink format
    * @returns Array of day ranges, each with \{start, end\} in Reolink time format
    */
   private generateDayRanges(
-    startTime: { year: number; mon: number; day: number; hour: number; min: number; sec: number },
-    endTime: { year: number; mon: number; day: number; hour: number; min: number; sec: number }
-  ): Array<{ start: { year: number; mon: number; day: number; hour: number; min: number; sec: number }; end: { year: number; mon: number; day: number; hour: number; min: number; sec: number } }> {
-    const ranges: Array<{ start: { year: number; mon: number; day: number; hour: number; min: number; sec: number }; end: { year: number; mon: number; day: number; hour: number; min: number; sec: number } }> = [];
+    startTime: {
+      year: number;
+      mon: number;
+      day: number;
+      hour: number;
+      min: number;
+      sec: number;
+    },
+    endTime: {
+      year: number;
+      mon: number;
+      day: number;
+      hour: number;
+      min: number;
+      sec: number;
+    },
+  ): Array<{
+    start: {
+      year: number;
+      mon: number;
+      day: number;
+      hour: number;
+      min: number;
+      sec: number;
+    };
+    end: {
+      year: number;
+      mon: number;
+      day: number;
+      hour: number;
+      min: number;
+      sec: number;
+    };
+  }> {
+    const ranges: Array<{
+      start: {
+        year: number;
+        mon: number;
+        day: number;
+        hour: number;
+        min: number;
+        sec: number;
+      };
+      end: {
+        year: number;
+        mon: number;
+        day: number;
+        hour: number;
+        min: number;
+        sec: number;
+      };
+    }> = [];
 
     // Convert to Date objects to calculate day differences
-    const startDate = new Date(startTime.year, startTime.mon - 1, startTime.day, startTime.hour, startTime.min, startTime.sec);
-    const endDate = new Date(endTime.year, endTime.mon - 1, endTime.day, endTime.hour, endTime.min, endTime.sec);
+    const startDate = new Date(
+      startTime.year,
+      startTime.mon - 1,
+      startTime.day,
+      startTime.hour,
+      startTime.min,
+      startTime.sec,
+    );
+    const endDate = new Date(
+      endTime.year,
+      endTime.mon - 1,
+      endTime.day,
+      endTime.hour,
+      endTime.min,
+      endTime.sec,
+    );
 
     if (endDate < startDate) {
       // Invalid range, return empty
@@ -2102,8 +2459,22 @@ export class ReolinkCgiApi {
   /**
    * Convert Reolink time object to Date.
    */
-  private reolinkTimeToDate(time: { year: number; mon: number; day: number; hour: number; min: number; sec: number }): Date {
-    return new Date(time.year, time.mon - 1, time.day, time.hour, time.min, time.sec);
+  private reolinkTimeToDate(time: {
+    year: number;
+    mon: number;
+    day: number;
+    hour: number;
+    min: number;
+    sec: number;
+  }): Date {
+    return new Date(
+      time.year,
+      time.mon - 1,
+      time.day,
+      time.hour,
+      time.min,
+      time.sec,
+    );
   }
 
   /**
@@ -2111,12 +2482,19 @@ export class ReolinkCgiApi {
    * IMPORTANT: Uses LOCAL TIME values because the Reolink API interprets time values as local time
    * (matching the timezone of the camera/NVR). This ensures that when we pass time values to the API,
    * they match the values stored in filenames (e.g., "20260106_072650" means 6 January 2026, 07:26:50 local time).
-   * 
+   *
    * To ensure correct extraction of local time values, we create a new Date object from the local time
    * components, similar to how it's done in test files: `new Date().setHours(0, 0, 0, 0)`.
    * This normalizes the Date to represent the exact local time moment, avoiding any UTC conversion issues.
    */
-  private dateToReolinkTime(date: Date): { year: number; mon: number; day: number; hour: number; min: number; sec: number } {
+  private dateToReolinkTime(date: Date): {
+    year: number;
+    mon: number;
+    day: number;
+    hour: number;
+    min: number;
+    sec: number;
+  } {
     // Extract local time components first (these are what we want to pass to the API)
     const year = date.getFullYear();
     const month = date.getMonth();
@@ -2144,7 +2522,11 @@ export class ReolinkCgiApi {
   /**
    * Enrich a VodFile into EnrichedRecordingFile.
    */
-  private enrichVodFile(vodFile: VodFile, channel: number, streamUrl?: string): EnrichedRecordingFile {
+  private enrichVodFile(
+    vodFile: VodFile,
+    channel: number,
+    streamUrl?: string,
+  ): EnrichedRecordingFile {
     // Log raw VodFile data from API (log entire object to see if there are hidden fields)
     recordingsTraceLog(
       this.debugConfig,
@@ -2158,21 +2540,31 @@ export class ReolinkCgiApi {
         EndTime: vodFile.EndTime,
         PlaybackTime: vodFile.PlaybackTime,
         fullVodFile: JSON.parse(JSON.stringify(vodFile)),
-      })}`
+      })}`,
     );
 
     // Parse filename
     const parsed = parseRecordingFileName(vodFile.name);
 
     // Extract hex value from filename for debugging
-    const filenameParts = vodFile.name.split('_');
-    const hexValueFromFilename = filenameParts.length >= 8 ? filenameParts[filenameParts.length - 2] : 'unknown';
+    const filenameParts = vodFile.name.split("_");
+    const hexValueFromFilename =
+      filenameParts.length >= 8
+        ? filenameParts[filenameParts.length - 2]
+        : "unknown";
     // For version 4, the last part (hash) might contain detection info
-    const hashPart = filenameParts.length >= 9 ? filenameParts[filenameParts.length - 1]?.replace('.mp4', '') : null;
+    const hashPart =
+      filenameParts.length >= 9
+        ? filenameParts[filenameParts.length - 1]?.replace(".mp4", "")
+        : null;
 
     // Debug: analyze hex value bit by bit
     let hexAnalysis: any = null;
-    if (hexValueFromFilename && hexValueFromFilename !== 'unknown' && /^[0-9a-fA-F]+$/.test(hexValueFromFilename)) {
+    if (
+      hexValueFromFilename &&
+      hexValueFromFilename !== "unknown" &&
+      /^[0-9a-fA-F]+$/.test(hexValueFromFilename)
+    ) {
       const bitLen = hexValueFromFilename.length * 4;
       const hexInt = BigInt(`0x${hexValueFromFilename}`);
       const bin = hexInt.toString(2).padStart(bitLen, "0");
@@ -2232,21 +2624,24 @@ export class ReolinkCgiApi {
         hashPart: hashPart,
         hexAnalysis: hexAnalysis,
         hashAnalysis: hashAnalysis,
-        parsed: parsed ? {
-          start: parsed.start?.toISOString(),
-          end: parsed.end?.toISOString(),
-          durationMs: parsed.durationMs,
-          flags: parsed.flags,
-          rawFlags: parsed.rawFlags,
-          streamHint: parsed.streamHint,
-          devType: parsed.devType,
-          version: parsed.version,
-        } : null,
-      })}`
+        parsed: parsed
+          ? {
+              start: parsed.start?.toISOString(),
+              end: parsed.end?.toISOString(),
+              durationMs: parsed.durationMs,
+              flags: parsed.flags,
+              rawFlags: parsed.rawFlags,
+              streamHint: parsed.streamHint,
+              devType: parsed.devType,
+              version: parsed.version,
+            }
+          : null,
+      })}`,
     );
 
     // Get times from various sources
-    const startTime = parsed?.start ?? this.reolinkTimeToDate(vodFile.StartTime);
+    const startTime =
+      parsed?.start ?? this.reolinkTimeToDate(vodFile.StartTime);
     const endTime = parsed?.end ?? this.reolinkTimeToDate(vodFile.EndTime);
 
     const startTimeMs = startTime.getTime();
@@ -2263,18 +2658,18 @@ export class ReolinkCgiApi {
 
     // For Hub v4, check if hex value is constant (suggests detection info might not be in filename)
     if (parsed?.devType === "hub" && parsed?.version === 4) {
-      if (hexValueFromFilename && hexValueFromFilename !== 'unknown') {
+      if (hexValueFromFilename && hexValueFromFilename !== "unknown") {
         recordingsTraceLog(
           this.debugConfig,
           this.logger,
           "enrichVodFile",
-          `WARNING: Hub v4 hex value "${hexValueFromFilename}" appears to be constant across files. Detection flags are likely NOT encoded in filename for this version. Detection information may need to be retrieved via a separate API call or may not be available.`
+          `WARNING: Hub v4 hex value "${hexValueFromFilename}" appears to be constant across files. Detection flags are likely NOT encoded in filename for this version. Detection information may need to be retrieved via a separate API call or may not be available.`,
         );
         recordingsTraceLog(
           this.debugConfig,
           this.logger,
           "enrichVodFile",
-          `NOTE: For Hub v4, the API response only provides 'type' field which is "${vodFile.type}". No detection-specific fields are available in the Search API response.`
+          `NOTE: For Hub v4, the API response only provides 'type' field which is "${vodFile.type}". No detection-specific fields are available in the Search API response.`,
         );
       }
     }
@@ -2283,7 +2678,7 @@ export class ReolinkCgiApi {
       this.debugConfig,
       this.logger,
       "enrichVodFile",
-      `Hex flags from filename: ${JSON.stringify(hexFlags)}`
+      `Hex flags from filename: ${JSON.stringify(hexFlags)}`,
     );
 
     // Get flags from recordType string (if available in VodFile)
@@ -2293,7 +2688,7 @@ export class ReolinkCgiApi {
       this.debugConfig,
       this.logger,
       "enrichVodFile",
-      `Type flags from recordType "${vodFile.type}": ${JSON.stringify(typeFlags)}`
+      `Type flags from recordType "${vodFile.type}": ${JSON.stringify(typeFlags)}`,
     );
 
     // Merge flags: OR them together
@@ -2323,7 +2718,7 @@ export class ReolinkCgiApi {
         hasPackage,
         hasRf,
         hasOther,
-      })}`
+      })}`,
     );
 
     // Create RecordingFile for raw reference
@@ -2366,6 +2761,4 @@ export class ReolinkCgiApi {
 
     return enriched;
   }
-
 }
-
