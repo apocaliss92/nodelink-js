@@ -607,6 +607,7 @@ export class BaichuanVideoStream extends EventEmitter<{
       try {
         await this.api.stopVideoStream(this.channel, this.profile, {
           variant: this.variant,
+          client: this.client,
         });
       } catch {
         // ignore
@@ -614,6 +615,7 @@ export class BaichuanVideoStream extends EventEmitter<{
 
       await this.api.startVideoStream(this.channel, this.profile, {
         variant: this.variant,
+        client: this.client,
       });
 
       try {
@@ -1363,6 +1365,7 @@ export class BaichuanVideoStream extends EventEmitter<{
           try {
             await this.api.stopVideoStream(this.channel, this.profile, {
               variant: "default",
+              client: this.client,
             });
           } catch {
             // ignore
@@ -1375,6 +1378,7 @@ export class BaichuanVideoStream extends EventEmitter<{
           try {
             await this.api.stopVideoStream(this.channel, this.profile, {
               variant: this.variant,
+              client: this.client,
             });
             this.logger?.log(
               `[BaichuanVideoStream] Successfully stopped existing variant stream: ${this.variant}`,
@@ -1396,7 +1400,7 @@ export class BaichuanVideoStream extends EventEmitter<{
         const startPromise = this.api.startVideoStream(
           this.channel,
           this.profile,
-          { variant: this.variant },
+          { variant: this.variant, client: this.client },
         );
 
         // On UDP/battery cams the stream typically will NOT start automatically; wait for the response.
@@ -1485,6 +1489,7 @@ export class BaichuanVideoStream extends EventEmitter<{
       try {
         await this.api.stopVideoStream(this.channel, this.profile, {
           variant: this.variant,
+          client: this.client,
         });
       } catch (error) {
         // Log error but continue

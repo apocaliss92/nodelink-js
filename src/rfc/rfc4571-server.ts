@@ -3,6 +3,7 @@ import netImpl from "node:net";
 import type { ReolinkBaichuanApi } from "../reolink/baichuan/ReolinkBaichuanApi";
 import type { NativeVideoStreamVariant } from "../reolink/baichuan/types";
 import type { StreamProfile } from "../reolink/baichuan/types";
+import type { BaichuanClient } from "../client/BaichuanClient";
 import { BaichuanVideoStream } from "../baichuan/stream/BaichuanVideoStream";
 import {
   CompositeStream,
@@ -103,6 +104,14 @@ export interface Rfc4571TcpServerOptions {
   getCompositeApis?: () =>
     | Promise<{ widerApi: ReolinkBaichuanApi; teleApi: ReolinkBaichuanApi }>
     | { widerApi: ReolinkBaichuanApi; teleApi: ReolinkBaichuanApi };
+
+  /**
+   * External identifier for dedicated socket session.
+   * When provided, a dedicated BaichuanClient is created for this deviceId.
+   * This allows multiple concurrent streams without interference.
+   * The dedicated socket is automatically closed when the stream ends.
+   */
+  deviceId?: string;
 }
 
 export interface Rfc4571TcpServer {
@@ -210,6 +219,14 @@ export async function createRfc4571TcpServer(
     aacAudioHint,
   } = options;
 
+  // Track dedicated session if deviceId is provided (for auto-release on close)
+  let dedicatedSession:
+    | {
+        client: BaichuanClient;
+        release: () => Promise<void>;
+      }
+    | undefined;
+
   const apisToClose = new Set<ReolinkBaichuanApi>();
   apisToClose.add(baseApi);
   if (resolvedCompositeApis?.widerApi)
@@ -227,14 +244,21 @@ export async function createRfc4571TcpServer(
     : `[native-rfc4571 ch=${channel} profile=${profile}${variantSuffix}]`;
   const log = (message: string) => {
     try {
-      if (logger?.warn) {
-        logger.warn(`${logPrefix} ${message}`);
+      if (logger?.info) {
+        logger.info(`${logPrefix} ${message}`);
       } else if (logger?.log) {
         logger.log(`${logPrefix} ${message}`);
       }
     } catch {
       // Ignore logging errors if logger is not properly initialized
     }
+  };
+
+  const logSessionsSummary = (action: string) => {
+    const summary = baseApi.getDedicatedSessionsSummary();
+    log(
+      `${action} [sessions: ${summary.count} active${summary.count > 0 ? ` (${summary.keys.join(", ")})` : ""}]`,
+    );
   };
 
   log(
@@ -435,8 +459,28 @@ export async function createRfc4571TcpServer(
   } else {
     // Use regular BaichuanVideoStream
     const ch = channel!;
+
+    // If deviceId is provided, create a dedicated socket session for this stream.
+    // This allows multiple concurrent streams without interference.
+    // BaichuanVideoStream now passes client to startVideoStream/stopVideoStream,
+    // so commands go to the correct socket.
+    const deviceId = options.deviceId;
+    let streamClient: BaichuanClient;
+
+    if (deviceId) {
+      const sessionKey = `live:${deviceId}:ch${ch}:${profile}${variant && variant !== "default" ? `:${variant}` : ""}`;
+      dedicatedSession = await baseApi.createDedicatedSession(
+        sessionKey,
+        logger,
+      );
+      streamClient = dedicatedSession.client;
+      logSessionsSummary(`dedicated session created: ${sessionKey}`);
+    } else {
+      streamClient = baseApi.client;
+    }
+
     videoStream = new BaichuanVideoStream({
-      client: baseApi.client,
+      client: streamClient,
       api: baseApi,
       channel: ch,
       profile,
@@ -446,7 +490,7 @@ export async function createRfc4571TcpServer(
 
     await videoStream.start();
     log(
-      "baichuan stream started; waiting for keyframe to extract parameter sets",
+      `stream started (ch=${ch} profile=${profile}${deviceId ? ` dedicated=${deviceId}` : ""})`,
     );
   }
 
@@ -642,8 +686,6 @@ export async function createRfc4571TcpServer(
     );
   }
 
-  log(`video detected: codec=${keyframe.videoType} (primed via keyframe)`);
-
   // Best-effort framerate for raw elementary-stream input.
   let fps = 25;
   try {
@@ -696,8 +738,6 @@ export async function createRfc4571TcpServer(
   } catch {
     // ignore
   }
-
-  log(`video framerate hint: ${fps} fps`);
 
   // Prime audio: prefer ADTS (self-describing), but support raw AAC by using a hint/default config.
   // Note: CompositeStream may forward native audio frames (typically from wider input).
@@ -784,14 +824,6 @@ export async function createRfc4571TcpServer(
 
   audio = await tryPrimeAudio();
 
-  if (audio) {
-    log(
-      `audio detected: codec=aac sampleRate=${audio.sampleRate} channels=${audio.channels} mode=${audio.mode}`,
-    );
-  } else {
-    log("audio not detected/advertised (no AAC config within timeout)");
-  }
-
   const video: VideoParamSets = {
     videoType: keyframe.videoType,
     payloadType: videoPayloadType,
@@ -835,7 +867,7 @@ export async function createRfc4571TcpServer(
   let muxer = makeMuxer();
 
   log(
-    `SDP ready (video=${keyframe.videoType}/90000 pt=${videoPayloadType}${aacAudio ? `, audio=aac/${aacAudio.sampleRate}/${aacAudio.channels} pt=${audioPayloadType}` : ", audio=none"})`,
+    `ready (video=${keyframe.videoType} fps=${fps}${aacAudio ? ` audio=aac/${aacAudio.sampleRate}/${aacAudio.channels}` : " audio=none"})`,
   );
 
   let rfcClients = 0;
@@ -972,18 +1004,11 @@ export async function createRfc4571TcpServer(
 
     stopUptimeMonitor();
     cancelIdleTeardown();
-    const message =
-      (reason as any)?.message || (reason as any)?.toString?.() || reason;
-    const address = server.address();
-    const addrStr =
-      address && typeof address !== "string"
-        ? `${address.address}:${address.port}`
-        : "unbound";
-    if (message)
-      log(
-        `teardown requested (addr=${addrStr} clients=${rfcClients} reason=${message})`,
-      );
-    else log(`teardown requested (addr=${addrStr} clients=${rfcClients})`);
+    const reasonStr =
+      (reason as any)?.message ||
+      (reason as any)?.toString?.() ||
+      reason ||
+      "requested";
 
     muxer.close();
 
@@ -991,6 +1016,16 @@ export async function createRfc4571TcpServer(
       await videoStream.stop();
     } catch {
       // ignore
+    }
+
+    // Release dedicated session if one was created
+    if (dedicatedSession) {
+      try {
+        await dedicatedSession.release();
+        logSessionsSummary("dedicated session released");
+      } catch {
+        // ignore
+      }
     }
 
     if (closeApiOnTeardown) {
@@ -1011,13 +1046,12 @@ export async function createRfc4571TcpServer(
       // ignore
     }
 
-    log("teardown complete");
+    log(`teardown (${reasonStr})`);
   };
 
   server.on("connection", (socket) => {
     touchActivity();
     const remote = `${socket.remoteAddress ?? "unknown"}:${socket.remotePort ?? "unknown"}`;
-    log(`client connecting (remote=${remote} requireAuth=${requireAuth})`);
 
     const setupClient = () => {
       rfcClients++;
@@ -1039,7 +1073,7 @@ export async function createRfc4571TcpServer(
       }
 
       muxer.addClient(socket);
-      log(`client connected (remote=${remote} clients=${rfcClients})`);
+      log(`client connected (${remote} total=${rfcClients})`);
     };
 
     if (!requireAuth) {
@@ -1106,7 +1140,7 @@ export async function createRfc4571TcpServer(
       counted = false;
       rfcClients = Math.max(0, rfcClients - 1);
       sockets.delete(socket);
-      log(`client disconnected (remote=${remote} clients=${rfcClients})`);
+      log(`client disconnected (${remote} total=${rfcClients})`);
       if (rfcClients === 0) scheduleIdleTeardown(close);
     };
 
@@ -1282,6 +1316,14 @@ export interface Rfc4571ReplayServerOptions {
   /** How long to wait for an IDR/IRAP to extract parameter sets and produce SDP. */
   keyframeTimeoutMs?: number;
 
+  /**
+   * External identifier for dedicated socket session.
+   * When provided, a dedicated BaichuanClient is created for this deviceId.
+   * This allows multiple concurrent replay streams without interference.
+   * The dedicated socket is automatically closed when the replay ends.
+   */
+  deviceId?: string;
+
   /** If true (default), closes the API when replay ends or server closes. */
   closeApiOnTeardown?: boolean;
   username: string;
@@ -1350,6 +1392,8 @@ export async function createRfc4571TcpServerForReplay(
     options.streamType ??
     (fileName.includes("RecS03_") ? "subStream" : "mainStream");
 
+  const deviceId = options.deviceId;
+
   const log = (msg: string, ...args: unknown[]) =>
     logger.log(
       `[RFC4571-Replay ch=${channel} file=${fileName}] ${msg}`,
@@ -1361,7 +1405,9 @@ export async function createRfc4571TcpServerForReplay(
       ...args,
     );
 
-  log(`starting replay: streamType=${streamType}`);
+  log(
+    `starting replay: streamType=${streamType}${deviceId ? ` deviceId=${deviceId}` : ""}`,
+  );
 
   // Start the recording replay stream
   const replayParams: {
@@ -1371,6 +1417,7 @@ export async function createRfc4571TcpServerForReplay(
     timeoutMs: number;
     logger: Console;
     isNvr?: boolean;
+    deviceId?: string;
   } = {
     channel,
     fileName,
@@ -1380,6 +1427,9 @@ export async function createRfc4571TcpServerForReplay(
   };
   if (isNvr !== undefined) {
     replayParams.isNvr = isNvr;
+  }
+  if (deviceId !== undefined) {
+    replayParams.deviceId = deviceId;
   }
 
   const { stream: videoStream, stop: stopReplay } =

@@ -400,8 +400,8 @@ export class ReolinkBaichuanApi {
    * Each replay/stream operation gets its own dedicated socket to avoid interference
    * when switching between clips or concurrent operations.
    *
-   * Key: unique session ID (e.g., `replay:${channel}:${fileName}`)
-   * Value: { client, refCount, createdAt }
+   * Key: unique session ID (e.g., "replay:channel:fileName")
+   * Value: client, refCount, createdAt
    */
   private readonly dedicatedClients = new Map<
     string,
@@ -411,6 +411,17 @@ export class ReolinkBaichuanApi {
       createdAt: number;
     }
   >();
+
+  /**
+   * Get a summary of currently active dedicated sessions.
+   * Useful for debugging/logging to see how many sockets are open.
+   */
+  getDedicatedSessionsSummary(): { count: number; keys: string[] } {
+    return {
+      count: this.dedicatedClients.size,
+      keys: Array.from(this.dedicatedClients.keys()),
+    };
+  }
 
   /**
    * Cached per-channel data from cmd_id 145 push (NVR sends this automatically on connection).
@@ -752,7 +763,7 @@ export class ReolinkBaichuanApi {
    * Create or reuse a dedicated BaichuanClient for streaming/replay operations.
    * Each streaming session gets its own socket to avoid interference when switching clips.
    *
-   * @param sessionKey - Unique key for this session (e.g., `replay:${deviceId}`)
+   * @param sessionKey - Unique key for this session (e.g., `replay:\$\{deviceId\}`)
    * @returns The dedicated client and a release function to call when done
    *
    * IMPORTANT: A socket cannot do concurrent streaming. If a client already exists
@@ -827,6 +838,39 @@ export class ReolinkBaichuanApi {
     } catch (e) {
       logger?.debug?.(`[DedicatedClient] Error closing socket: ${e}`);
     }
+  }
+
+  /**
+   * Create a dedicated Baichuan client session for streaming.
+   * This is useful for consumers that need isolated socket connections per stream.
+   *
+   * @param sessionKey - Unique key for this session (e.g., `live:\$\{deviceId\}:\$\{channel\}:\$\{profile\}`)
+   * @param logger - Optional logger for debug output
+   * @returns Object with `client` (the dedicated BaichuanClient) and `release` function to call when done
+   *
+   * The dedicated client is automatically cleaned up when:
+   * 1. `release()` is called explicitly
+   * 2. A new session is created with the same sessionKey (old one is closed first)
+   * 3. The API is closed via `close()`
+   *
+   * @example
+   * ```typescript
+   * const { client, release } = await api.createDedicatedSession('live:device123:ch0:main');
+   * try {
+   *   // Use client for streaming...
+   * } finally {
+   *   await release();
+   * }
+   * ```
+   */
+  async createDedicatedSession(
+    sessionKey: string,
+    logger?: Logger,
+  ): Promise<{
+    client: BaichuanClient;
+    release: () => Promise<void>;
+  }> {
+    return await this.acquireDedicatedClient(sessionKey, logger);
   }
 
   /**
@@ -1731,6 +1775,191 @@ export class ReolinkBaichuanApi {
         ? { closeSocketOnStop: options.closeSocketOnStop }
         : {}),
     });
+  }
+
+  /**
+   * Create a dedicated talk session with its own isolated socket connection.
+   * This is the recommended way to use intercom - the library manages the socket lifecycle.
+   *
+   * The dedicated socket is automatically closed when:
+   * 1. `stop()` is called on the returned session
+   * 2. The idle timeout expires (no audio sent for `idleTimeoutMs`)
+   * 3. The API is closed via `close()`
+   *
+   * @param channel - Channel number (usually 0)
+   * @param options - Configuration options (blocksPerPayload, idleTimeoutMs, deviceId, logger)
+   *
+   * @example
+   * ```typescript
+   * const session = await api.createDedicatedTalkSession(0, {
+   *   blocksPerPayload: 2,
+   *   idleTimeoutMs: 30000,
+   *   deviceId: 'camera-123',
+   * });
+   * try {
+   *   await session.sendAudio(adpcmBuffer);
+   * } finally {
+   *   await session.stop();
+   * }
+   * ```
+   */
+  async createDedicatedTalkSession(
+    channel = 0,
+    options?: {
+      blocksPerPayload?: number;
+      /** Auto-teardown if no audio sent for this duration (default 30000ms). Set to 0 to disable. */
+      idleTimeoutMs?: number;
+      /** Optional device identifier for logging/tracking */
+      deviceId?: string;
+      /** Optional logger for debug output */
+      logger?: Logger;
+    },
+  ): Promise<TalkSession> {
+    const logger = options?.logger ?? this.logger;
+    const idleTimeoutMs = options?.idleTimeoutMs ?? 30000;
+    const deviceId = options?.deviceId ?? "unknown";
+
+    // Create a unique session key for this talk session
+    const sessionKey = `talk:${deviceId}:ch${channel}:${Date.now()}`;
+
+    logger?.info?.(
+      `[DedicatedTalk] Creating session: ${sessionKey} (idleTimeout=${idleTimeoutMs}ms)`,
+    );
+
+    // Create dedicated socket session
+    const { client: dedicatedClient, release } =
+      await this.acquireDedicatedClient(sessionKey, logger);
+
+    // Log sessions summary
+    const summary = this.getDedicatedSessionsSummary();
+    logger?.info?.(
+      `[DedicatedTalk] Session created [sessions: ${summary.count} active${summary.count > 0 ? ` (${summary.keys.join(", ")})` : ""}]`,
+    );
+
+    try {
+      // BCUDP/battery firmwares often expect 0-based header channelId.
+      const isUdp = dedicatedClient.getTransport?.() === "udp";
+      const channelIdOverride = isUdp ? channel : undefined;
+
+      // Get talk ability and build session info
+      const ability = await this.getTalkAbilityWithClient(
+        dedicatedClient,
+        channel,
+      );
+      const { payloadXml, info } = buildTalkSessionInfoFromAbility({
+        channel,
+        ability,
+      });
+
+      // Send talk config
+      await sendTalkConfigWithReset({
+        client: dedicatedClient,
+        channel,
+        payloadXml,
+        ...(channelIdOverride != null ? { channelIdOverride } : {}),
+      });
+
+      // Create the underlying talk session
+      const innerSession = createBufferedTalkSession({
+        client: dedicatedClient,
+        channel,
+        ...(channelIdOverride != null ? { channelIdOverride } : {}),
+        info,
+        ...(options?.blocksPerPayload != null
+          ? { blocksPerPayload: options.blocksPerPayload }
+          : {}),
+        // Don't close socket on inner stop - we manage it here
+        closeSocketOnStop: false,
+      });
+
+      // Idle timeout tracking
+      let idleTimer: NodeJS.Timeout | undefined;
+      let stopped = false;
+
+      const resetIdleTimer = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        if (idleTimeoutMs > 0 && !stopped) {
+          idleTimer = setTimeout(async () => {
+            if (!stopped) {
+              logger?.info?.(
+                `[DedicatedTalk] Idle timeout (${idleTimeoutMs}ms), stopping session: ${sessionKey}`,
+              );
+              await wrappedStop();
+            }
+          }, idleTimeoutMs);
+        }
+      };
+
+      const wrappedStop = async (): Promise<void> => {
+        if (stopped) return;
+        stopped = true;
+
+        if (idleTimer) {
+          clearTimeout(idleTimer);
+          idleTimer = undefined;
+        }
+
+        try {
+          await innerSession.stop();
+        } catch (e) {
+          logger?.debug?.(`[DedicatedTalk] Error stopping inner session: ${e}`);
+        }
+
+        // Release the dedicated socket
+        try {
+          await release();
+          const summary = this.getDedicatedSessionsSummary();
+          logger?.info?.(
+            `[DedicatedTalk] Session released: ${sessionKey} [sessions: ${summary.count} active${summary.count > 0 ? ` (${summary.keys.join(", ")})` : ""}]`,
+          );
+        } catch (e) {
+          logger?.debug?.(`[DedicatedTalk] Error releasing session: ${e}`);
+        }
+      };
+
+      // Start idle timer
+      resetIdleTimer();
+
+      return {
+        info: innerSession.info,
+        sendAudio: async (adpcm: Buffer) => {
+          if (stopped) throw new Error("Talk session is closed");
+          resetIdleTimer();
+          return await innerSession.sendAudio(adpcm);
+        },
+        stop: wrappedStop,
+      };
+    } catch (e) {
+      // If setup fails, release the dedicated socket
+      try {
+        await release();
+      } catch {
+        // ignore
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Get talk ability using a specific client (for dedicated sessions).
+   * @internal
+   */
+  private async getTalkAbilityWithClient(
+    client: BaichuanClient,
+    channel: number,
+  ): Promise<TalkAbility> {
+    const frame = await client.sendFrame({
+      cmdId: BC_CMD_ID_TALK_ABILITY,
+      channel,
+      payloadXml: "",
+      messageClass: BC_CLASS_MODERN_24,
+    });
+    // Decrypt and parse the XML response
+    const xml =
+      frame.body.length === 0
+        ? ""
+        : client.tryDecryptXml(frame.body, frame.header.channelId, client.enc);
+    return parseTalkAbilityXml(xml);
   }
 
   /** Generic Baichuan cmd_id call, returns binary data (for commands like Snap). */
@@ -6366,6 +6595,7 @@ export class ReolinkBaichuanApi {
    *
    * @param channel - Channel number (0-based)
    * @param profile - Stream profile ("main" | "sub" | "ext")
+   * @param options - Optional settings including variant and dedicated client
    * @returns Promise that resolves when stream request is sent
    */
   async startVideoStream(
@@ -6374,6 +6604,12 @@ export class ReolinkBaichuanApi {
     options?: {
       /** Native-only: request TrackMix tele/autotrack variants (usually on NVR/Hub). */
       variant?: NativeVideoStreamVariant;
+      /**
+       * Dedicated client to use for this stream. If provided, the command is sent
+       * on this client instead of the main API client. This is essential when using
+       * dedicated sockets for streaming to avoid frame routing issues.
+       */
+      client?: BaichuanClient;
     },
   ): Promise<void> {
     const ch = this.normalizeChannel(channel);
@@ -6381,6 +6617,9 @@ export class ReolinkBaichuanApi {
     const channelId = ch;
 
     const variant: NativeVideoStreamVariant = options?.variant ?? "default";
+
+    // Use dedicated client if provided, otherwise use the main API client
+    const targetClient = options?.client ?? this.client;
 
     // Map profile to handle and stream_type values.
     // handle: 0 for main, 256 for sub, 1024 for extern
@@ -6480,22 +6719,22 @@ export class ReolinkBaichuanApi {
     // Subscribe (MSG_ID_VIDEO, msg_num) BEFORE sending the command.
     // On some BCUDP/battery models, the start-stream request can sporadically timeout;
     // retry a few times and ensure we unsubscribe on failures.
-    const isUdp = this.client.getTransport?.() === "udp";
+    const isUdp = targetClient.getTransport?.() === "udp";
     const maxAttempts = isUdp ? 3 : 1;
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       // NOTE: must be atomic. Two parallel startVideoStream() calls (e.g. composite wider+tele)
       // can otherwise pick the same msgNum and cause stream packet mixups.
-      const msgNum = this.client.reserveNextMsgNum();
-      this.client.subscribeVideoStream(BC_CMD_ID_VIDEO, msgNum);
+      const msgNum = targetClient.reserveNextMsgNum();
+      targetClient.subscribeVideoStream(BC_CMD_ID_VIDEO, msgNum);
 
       // Optimistically publish msgNum immediately so stream consumers can start filtering
       // even if the NVR/Hub takes a long time to reply to the start request.
       this.activeVideoMsgNums.set(`${ch}:${profile}:${variant}`, msgNum);
 
       try {
-        const baseParams: Parameters<typeof this.client.sendFrame>[0] = {
+        const baseParams: Parameters<typeof targetClient.sendFrame>[0] = {
           cmdId: BC_CMD_ID_VIDEO,
           channel: ch,
           channelIdOverride: channelId,
@@ -6512,7 +6751,7 @@ export class ReolinkBaichuanApi {
         // Try the PCAP-observed tele Preview v1.1 request first (and try both 0-based and 1-based channelId tags),
         // then fall back to the legacy request.
         let frame:
-          | Awaited<ReturnType<typeof this.client.sendFrame>>
+          | Awaited<ReturnType<typeof targetClient.sendFrame>>
           | undefined;
         if (
           teleChannelIdCandidates.length > 0 &&
@@ -6521,7 +6760,7 @@ export class ReolinkBaichuanApi {
         ) {
           for (const teleChannelIdTag of teleChannelIdCandidates) {
             try {
-              frame = await this.client.sendFrame({
+              frame = await targetClient.sendFrame({
                 ...baseParams,
                 // Client traffic shows no Extension XML on VIDEO start.
                 extensionXml: "",
@@ -6538,7 +6777,7 @@ export class ReolinkBaichuanApi {
             }
           }
         }
-        if (!frame) frame = await this.client.sendFrame(baseParams);
+        if (!frame) frame = await targetClient.sendFrame(baseParams);
 
         // if (this.logger?.log) {
         //   try {
@@ -6567,7 +6806,7 @@ export class ReolinkBaichuanApi {
       } catch (error) {
         lastError = error;
         try {
-          this.client.unsubscribeVideoStream(BC_CMD_ID_VIDEO, msgNum);
+          targetClient.unsubscribeVideoStream(BC_CMD_ID_VIDEO, msgNum);
         } catch {
           // ignore
         }
@@ -6623,6 +6862,7 @@ export class ReolinkBaichuanApi {
    *
    * @param channel - Channel number (0-based)
    * @param profile - Stream profile ("main" | "sub" | "ext")
+   * @param options - Optional settings including variant and dedicated client
    */
   async stopVideoStream(
     channel?: number,
@@ -6630,12 +6870,21 @@ export class ReolinkBaichuanApi {
     options?: {
       /** Native-only: stop TrackMix tele/autotrack variants (must match the started variant). */
       variant?: NativeVideoStreamVariant;
+      /**
+       * Dedicated client to use for this stream. If provided, the command is sent
+       * on this client instead of the main API client. Must match the client used
+       * in startVideoStream.
+       */
+      client?: BaichuanClient;
     },
   ): Promise<void> {
     const ch = this.normalizeChannel(channel);
     const channelId = ch;
 
     const variant: NativeVideoStreamVariant = options?.variant ?? "default";
+
+    // Use dedicated client if provided, otherwise use the main API client
+    const targetClient = options?.client ?? this.client;
 
     // Map profile to handle value
     const profileConfig: Record<
@@ -6724,7 +6973,7 @@ export class ReolinkBaichuanApi {
 
       for (const a of attempts) {
         try {
-          await this.client.sendFrame({
+          await targetClient.sendFrame({
             cmdId: BC_CMD_ID_VIDEO_STOP,
             channel: ch,
             channelIdOverride: channelId,
@@ -6748,7 +6997,7 @@ export class ReolinkBaichuanApi {
       // Always unsubscribe when stopping the stream, even if VIDEO_STOP times out.
       try {
         if (msgNum !== undefined)
-          this.client.unsubscribeVideoStream(BC_CMD_ID_VIDEO, msgNum);
+          targetClient.unsubscribeVideoStream(BC_CMD_ID_VIDEO, msgNum);
       } catch {
         // ignore
       }

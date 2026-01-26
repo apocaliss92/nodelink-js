@@ -31,7 +31,7 @@ export type BcMediaAudioType = "Aac" | "Adpcm";
  * Some cameras report wrong codec (e.g. "H264" but send H.265 data).
  * This function analyzes the NAL header to determine the real codec.
  *
- * @param data Raw video data (either Annex-B or length-prefixed)
+ * @param data - Raw video data (either Annex-B or length-prefixed)
  * @returns Detected codec type or null if detection fails
  */
 export function detectVideoCodecFromNal(data: Buffer): BcMediaVideoType | null {
