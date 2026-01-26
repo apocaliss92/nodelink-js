@@ -12,6 +12,7 @@ import {
   type BcMediaAudioType,
   type BcMediaVideoType,
 } from "../../baichuan/stream/BcMediaAnnexBDecoder";
+import { MpegTsMuxer } from "../../baichuan/stream/MpegTsMuxer";
 import {
   BaichuanClient,
   type BaichuanClientOptions,
@@ -395,6 +396,23 @@ export class ReolinkBaichuanApi {
   >();
 
   /**
+   * Pool of dedicated BaichuanClient instances for streaming/replay operations.
+   * Each replay/stream operation gets its own dedicated socket to avoid interference
+   * when switching between clips or concurrent operations.
+   *
+   * Key: unique session ID (e.g., `replay:${channel}:${fileName}`)
+   * Value: { client, refCount, createdAt }
+   */
+  private readonly dedicatedClients = new Map<
+    string,
+    {
+      client: BaichuanClient;
+      refCount: number;
+      createdAt: number;
+    }
+  >();
+
+  /**
    * Cached per-channel data from cmd_id 145 push (NVR sends this automatically on connection).
    *
    * This unifies identity (name/uid/state) + best-effort flags (sleep/online).
@@ -729,6 +747,106 @@ export class ReolinkBaichuanApi {
   }
 
   private recordingsCacheTtlMs = 20 * 60 * 1000;
+
+  /**
+   * Create or reuse a dedicated BaichuanClient for streaming/replay operations.
+   * Each streaming session gets its own socket to avoid interference when switching clips.
+   *
+   * @param sessionKey - Unique key for this session (e.g., `replay:${deviceId}`)
+   * @returns The dedicated client and a release function to call when done
+   *
+   * IMPORTANT: A socket cannot do concurrent streaming. If a client already exists
+   * for this sessionKey (same device switching clips), we close the old socket
+   * immediately and create a new one. This ensures clean state for each clip.
+   */
+  private async acquireDedicatedClient(
+    sessionKey: string,
+    logger?: Logger,
+  ): Promise<{
+    client: BaichuanClient;
+    release: () => Promise<void>;
+  }> {
+    // Check if there's an existing client for this session key
+    // If so, close it immediately - a socket can't do concurrent streaming
+    const existing = this.dedicatedClients.get(sessionKey);
+    if (existing) {
+      logger?.debug?.(
+        `[DedicatedClient] Closing existing client for ${sessionKey} (new stream requested)`,
+      );
+      this.dedicatedClients.delete(sessionKey);
+      // Close asynchronously - don't block the new connection
+      existing.client
+        .close({ reason: "new stream for same device" })
+        .catch((e) => {
+          logger?.debug?.(`[DedicatedClient] Error closing old socket: ${e}`);
+        });
+    }
+
+    // Create a new dedicated client with the same credentials
+    logger?.debug?.(`[DedicatedClient] Creating new client for ${sessionKey}`);
+    const dedicatedClient = new BaichuanClient({
+      host: this.host,
+      username: this.username,
+      password: this.password,
+      logger: logger ?? this.logger,
+      debugOptions: this.client.getDebugConfig?.(),
+    });
+
+    // Login the dedicated client
+    await dedicatedClient.login();
+
+    this.dedicatedClients.set(sessionKey, {
+      client: dedicatedClient,
+      refCount: 1, // Keep for compatibility, but not used for reuse logic
+      createdAt: Date.now(),
+    });
+
+    return {
+      client: dedicatedClient,
+      release: () => this.releaseDedicatedClient(sessionKey, logger),
+    };
+  }
+
+  /**
+   * Release a dedicated client. Always closes the socket immediately.
+   * This ensures clean teardown at the end of each clip.
+   */
+  private async releaseDedicatedClient(
+    sessionKey: string,
+    logger?: Logger,
+  ): Promise<void> {
+    const entry = this.dedicatedClients.get(sessionKey);
+    if (!entry) return;
+
+    // Always remove and close - no refCount logic
+    this.dedicatedClients.delete(sessionKey);
+    logger?.debug?.(`[DedicatedClient] Releasing and closing ${sessionKey}`);
+
+    try {
+      await entry.client.close({ reason: "dedicated session ended" });
+    } catch (e) {
+      logger?.debug?.(`[DedicatedClient] Error closing socket: ${e}`);
+    }
+  }
+
+  /**
+   * Cleanup all dedicated clients. Called during API close.
+   */
+  private async cleanupDedicatedClients(): Promise<void> {
+    const entries = Array.from(this.dedicatedClients.entries());
+    this.dedicatedClients.clear();
+
+    await Promise.allSettled(
+      entries.map(async ([key, entry]) => {
+        try {
+          this.logger?.debug?.(`[DedicatedClient] Cleanup: closing ${key}`);
+          await entry.client.close({ reason: "API cleanup" });
+        } catch {
+          // ignore
+        }
+      }),
+    );
+  }
 
   private dispatchSimpleEvent(evt: ReolinkSimpleEvent): void {
     const debugCfg = this.client.getDebugConfig?.();
@@ -1345,6 +1463,8 @@ export class ReolinkBaichuanApi {
     this.stopUdpSleepInference();
     // Stop all RTSP servers before closing the client
     await this.cleanup();
+    // Cleanup dedicated clients used for streaming/replay
+    await this.cleanupDedicatedClients();
     await this.client.close(
       options?.reason ? { reason: options.reason } : undefined,
     );
@@ -3172,6 +3292,8 @@ export class ReolinkBaichuanApi {
     streamType: RecordingReplayStreamType;
     timeoutMs: number;
     logger?: Logger;
+    /** External identifier for the dedicated socket session (e.g., deviceId). */
+    deviceId?: string;
   }): Promise<{
     msgNum: number;
     stream: BaichuanVideoStream;
@@ -3179,6 +3301,16 @@ export class ReolinkBaichuanApi {
   }> {
     const channel = params.channel;
     const streamType = params.streamType;
+    const logger = params.logger ?? this.logger;
+
+    // Create a dedicated client for this replay session
+    // This avoids interference when switching between clips
+    // Use external deviceId if provided, otherwise generate a unique key
+    const sessionKey = params.deviceId
+      ? `replay:${params.deviceId}`
+      : `replay:standalone:${channel}:${Date.now()}`;
+    const { client: dedicatedClient, release: releaseDedicatedClient } =
+      await this.acquireDedicatedClient(sessionKey, logger);
 
     // Get UID for the recording (like download does)
     const uid = await this.ensureUidForRecordings(channel, undefined);
@@ -3196,18 +3328,21 @@ export class ReolinkBaichuanApi {
 
     // Use msgNum=0 like the working download method
     const msgNum = 0;
-    this.client.subscribeVideoStream(BC_CMD_ID_FILE_INFO_LIST_REPLAY, msgNum);
+    dedicatedClient.subscribeVideoStream(
+      BC_CMD_ID_FILE_INFO_LIST_REPLAY,
+      msgNum,
+    );
 
     const profile: StreamProfile = streamType === "subStream" ? "sub" : "main";
     const stream = new BaichuanVideoStream({
-      client: this.client,
+      client: dedicatedClient,
       channel,
       profile,
       variant: "default",
       cmdId: BC_CMD_ID_FILE_INFO_LIST_REPLAY,
       msgNum,
       acceptAnyStreamType: true,
-      logger: params.logger ?? this.logger,
+      logger,
     });
 
     let started = false;
@@ -3219,8 +3354,8 @@ export class ReolinkBaichuanApi {
       // - Some H265 cameras reject channelId=0 with responseCode=400
       // - messageClass = BC_CLASS_MODERN_24 (0x6414)
       // - NO extensionXml
-      const sessionCounter = this.client.reserveNextMsgNum();
-      const frame = await this.client.sendFrame({
+      const sessionCounter = dedicatedClient.reserveNextMsgNum();
+      const frame = await dedicatedClient.sendFrame({
         cmdId: BC_CMD_ID_FILE_INFO_LIST_REPLAY,
         channel,
         channelIdOverride: sessionCounter,
@@ -3245,17 +3380,25 @@ export class ReolinkBaichuanApi {
         // ignore
       }
       try {
-        this.client.unsubscribeVideoStream(
+        dedicatedClient.unsubscribeVideoStream(
           BC_CMD_ID_FILE_INFO_LIST_REPLAY,
           msgNum,
         );
       } catch {
         // ignore
       }
+      // Release dedicated client on error
+      await releaseDedicatedClient();
       throw e;
     }
 
+    // Track if teardown has been executed to prevent double-close
+    let tornDown = false;
+
     const stop = async (): Promise<void> => {
+      if (tornDown) return;
+      tornDown = true;
+
       const stopName = buildReplayStopNameFromFileName(params.fileName);
       if (started && stopName) {
         try {
@@ -3265,7 +3408,7 @@ export class ReolinkBaichuanApi {
             streamType,
           });
 
-          await this.client.sendXml({
+          await dedicatedClient.sendXml({
             cmdId: BC_CMD_ID_FILE_INFO_LIST_STOP,
             channel,
             payloadXml: stopXml,
@@ -3279,7 +3422,7 @@ export class ReolinkBaichuanApi {
       }
 
       try {
-        this.client.unsubscribeVideoStream(
+        dedicatedClient.unsubscribeVideoStream(
           BC_CMD_ID_FILE_INFO_LIST_REPLAY,
           msgNum,
         );
@@ -3288,7 +3431,31 @@ export class ReolinkBaichuanApi {
       }
 
       await stream.stop();
+
+      // Release dedicated client when stream stops (closes socket)
+      await releaseDedicatedClient();
     };
+
+    // Auto-teardown: if stream closes/errors, ensure socket is closed
+    // This is like closeApiOnTeardown in RFC4571 server
+    const autoTeardown = (reason: string) => {
+      if (tornDown) return;
+      logger?.debug?.(
+        `[DedicatedClient] Auto-teardown for ${sessionKey}: ${reason}`,
+      );
+      void stop();
+    };
+
+    stream.once("close", () => autoTeardown("stream closed"));
+    stream.once("error", (e) =>
+      autoTeardown(`stream error: ${e?.message || e}`),
+    );
+
+    // Also listen to dedicated client socket errors
+    dedicatedClient.once("error", (e) =>
+      autoTeardown(`client error: ${e?.message || e}`),
+    );
+    dedicatedClient.once("close", () => autoTeardown("client closed"));
 
     return { msgNum, stream, stop };
   }
@@ -3309,6 +3476,8 @@ export class ReolinkBaichuanApi {
     streamType: RecordingReplayStreamType;
     timeoutMs: number;
     logger?: Logger;
+    /** External identifier for the dedicated socket session (e.g., deviceId). */
+    deviceId?: string;
   }): Promise<{
     msgNum: number;
     stream: BaichuanVideoStream;
@@ -3316,6 +3485,16 @@ export class ReolinkBaichuanApi {
   }> {
     const channel = params.channel;
     const streamType = params.streamType;
+    const logger = params.logger ?? this.logger;
+
+    // Create a dedicated client for this replay session
+    // This avoids interference when switching between clips
+    // Use external deviceId if provided, otherwise generate a unique key
+    const sessionKey = params.deviceId
+      ? `replay:${params.deviceId}`
+      : `replay:nvr:${channel}:${Date.now()}`;
+    const { client: dedicatedClient, release: releaseDedicatedClient } =
+      await this.acquireDedicatedClient(sessionKey, logger);
 
     // NVR needs UID for channel mapping
     let uid: string | undefined;
@@ -3341,18 +3520,21 @@ export class ReolinkBaichuanApi {
 
     // PCAP-verified: NVR replay uses msgNum=0 (like download)
     const msgNum = 0;
-    this.client.subscribeVideoStream(BC_CMD_ID_FILE_INFO_LIST_REPLAY, msgNum);
+    dedicatedClient.subscribeVideoStream(
+      BC_CMD_ID_FILE_INFO_LIST_REPLAY,
+      msgNum,
+    );
 
     const profile: StreamProfile = streamType === "subStream" ? "sub" : "main";
     const stream = new BaichuanVideoStream({
-      client: this.client,
+      client: dedicatedClient,
       channel,
       profile,
       variant: "default",
       cmdId: BC_CMD_ID_FILE_INFO_LIST_REPLAY,
       msgNum,
       acceptAnyStreamType: true,
-      logger: params.logger ?? this.logger,
+      logger,
     });
 
     let started = false;
@@ -3365,9 +3547,9 @@ export class ReolinkBaichuanApi {
       const isNvr = headerChannelIdOverride != null;
       const channelIdOverride = isNvr
         ? (headerChannelIdOverride ?? 82)
-        : this.client.reserveNextMsgNum();
+        : dedicatedClient.reserveNextMsgNum();
 
-      const frame = await this.client.sendFrame({
+      const frame = await dedicatedClient.sendFrame({
         cmdId: BC_CMD_ID_FILE_INFO_LIST_REPLAY,
         channel,
         channelIdOverride,
@@ -3394,17 +3576,25 @@ export class ReolinkBaichuanApi {
         // ignore
       }
       try {
-        this.client.unsubscribeVideoStream(
+        dedicatedClient.unsubscribeVideoStream(
           BC_CMD_ID_FILE_INFO_LIST_REPLAY,
           msgNum,
         );
       } catch {
         // ignore
       }
+      // Release dedicated client on error
+      await releaseDedicatedClient();
       throw e;
     }
 
+    // Track if teardown has been executed to prevent double-close
+    let tornDown = false;
+
     const stop = async (): Promise<void> => {
+      if (tornDown) return;
+      tornDown = true;
+
       const stopName = buildReplayStopNameFromFileName(params.fileName);
       if (started && stopName) {
         try {
@@ -3414,7 +3604,7 @@ export class ReolinkBaichuanApi {
             streamType,
           });
 
-          await this.client.sendXml({
+          await dedicatedClient.sendXml({
             cmdId: BC_CMD_ID_FILE_INFO_LIST_STOP,
             channel,
             payloadXml: stopXml,
@@ -3428,7 +3618,7 @@ export class ReolinkBaichuanApi {
       }
 
       try {
-        this.client.unsubscribeVideoStream(
+        dedicatedClient.unsubscribeVideoStream(
           BC_CMD_ID_FILE_INFO_LIST_REPLAY,
           msgNum,
         );
@@ -3437,7 +3627,31 @@ export class ReolinkBaichuanApi {
       }
 
       await stream.stop();
+
+      // Release dedicated client when stream stops (closes socket)
+      await releaseDedicatedClient();
     };
+
+    // Auto-teardown: if stream closes/errors, ensure socket is closed
+    // This is like closeApiOnTeardown in RFC4571 server
+    const autoTeardown = (reason: string) => {
+      if (tornDown) return;
+      logger?.debug?.(
+        `[DedicatedClient] Auto-teardown for ${sessionKey}: ${reason}`,
+      );
+      void stop();
+    };
+
+    stream.once("close", () => autoTeardown("stream closed"));
+    stream.once("error", (e) =>
+      autoTeardown(`stream error: ${e?.message || e}`),
+    );
+
+    // Also listen to dedicated client socket errors
+    dedicatedClient.once("error", (e) =>
+      autoTeardown(`client error: ${e?.message || e}`),
+    );
+    dedicatedClient.once("close", () => autoTeardown("client closed"));
 
     return { msgNum, stream, stop };
   }
@@ -3465,6 +3679,13 @@ export class ReolinkBaichuanApi {
      * NOTE: A path containing "/" does NOT indicate NVR - standalone cameras also return full paths.
      */
     isNvr?: boolean;
+    /**
+     * External identifier for the dedicated socket session.
+     * When provided, a dedicated BaichuanClient is created/reused for this deviceId.
+     * This allows multiple concurrent replay sessions without interference.
+     * If not provided, a unique session key is generated automatically.
+     */
+    deviceId?: string;
   }): Promise<{
     msgNum: number;
     stream: BaichuanVideoStream;
@@ -3490,6 +3711,7 @@ export class ReolinkBaichuanApi {
       streamType,
       timeoutMs,
       ...(params.logger != null ? { logger: params.logger } : {}),
+      ...(params.deviceId != null ? { deviceId: params.deviceId } : {}),
     };
 
     const result = isNvr
@@ -10563,26 +10785,39 @@ export class ReolinkBaichuanApi {
      * If not specified, the library will detect based on device channel count.
      */
     isNvr?: boolean;
+    /** Optional logger override. If not provided, uses the API's logger. */
+    logger?: Logger;
+    /**
+     * External identifier for the dedicated socket session.
+     * When provided, a dedicated BaichuanClient is created/reused for this deviceId.
+     * This allows switching between clips without interfering with other sessions.
+     * Recommended: pass a unique identifier per logical device/player instance.
+     */
+    deviceId?: string;
   }): Promise<{
     mp4: Readable;
     stop: () => Promise<void>;
   }> {
-    // Extract duration and framerate from filename timestamps
+    const logger = params.logger ?? this.logger;
+
+    // Extract duration from filename timestamps
     const parsed = parseRecordingFileName(params.fileName);
     const durationMs = parsed?.durationMs ?? 300_000; // Fallback: 5 minutes
-    // Use framerate from filename hex flags, fallback to 15 fps (common for recordings)
-    const fps =
-      parsed?.framerate && parsed.framerate > 0 ? parsed.framerate : 15;
     // Add 10% buffer to ensure we get the complete clip
     const seconds = Math.ceil((durationMs / 1000) * 1.1);
+
+    logger?.debug?.(
+      `[createRecordingReplayMp4Stream] Starting: channel=${params.channel}, fileName=${params.fileName}, durationMs=${durationMs}, timeoutSec=${seconds}, deviceId=${params.deviceId ?? "auto"}`,
+    );
 
     const startParams: Parameters<
       ReolinkBaichuanApi["startRecordingReplayStream"]
     >[0] = {
       channel: params.channel,
       fileName: params.fileName,
-      logger: this.logger,
+      logger,
       ...(params.isNvr != null ? { isNvr: params.isNvr } : {}),
+      ...(params.deviceId != null ? { deviceId: params.deviceId } : {}),
     };
 
     // Use streaming queue - holds the slot until release() is called
@@ -10596,24 +10831,33 @@ export class ReolinkBaichuanApi {
     const input = new PassThrough();
     const output = new PassThrough();
 
-    const H264_AUD = Buffer.from([0x00, 0x00, 0x00, 0x01, 0x09, 0xf0]);
+    // Use MPEG-TS muxer to preserve frame timestamps (PTS)
+    // This ensures correct playback speed regardless of variable framerate
+    let tsMuxer: MpegTsMuxer | null = null;
 
     let ff: ReturnType<typeof spawn> | null = null;
     let ended = false;
+    let frameCount = 0;
 
     const startFfmpeg = (videoType: "H264" | "H265") => {
       if (ff) return;
-      const demux = videoType === "H265" ? "hevc" : "h264";
+
+      logger?.debug?.(
+        `[createRecordingReplayMp4Stream] Starting ffmpeg with videoType=${videoType}`,
+      );
+
+      // Initialize MPEG-TS muxer for this video type
+      MpegTsMuxer.resetCounters();
+      tsMuxer = new MpegTsMuxer({ videoType });
+
+      // ffmpeg reads MPEG-TS input (which has PTS) and outputs fMP4
+      // No -r needed because timestamps come from the TS stream
       const args = [
         "-hide_banner",
         "-loglevel",
         "error",
-        "-fflags",
-        "+genpts",
-        "-r",
-        String(fps),
         "-f",
-        demux,
+        "mpegts",
         "-i",
         "pipe:0",
         "-c",
@@ -10632,6 +10876,12 @@ export class ReolinkBaichuanApi {
       input.pipe(ff.stdin);
       ff.stdout.pipe(output);
 
+      // Prevent uncaught ECONNRESET/EPIPE errors on streams
+      ff.stdin.on("error", () => {});
+      ff.stdout.on("error", () => {});
+      input.on("error", () => {});
+      output.on("error", () => {});
+
       let stderr = "";
       ff.stderr.on("data", (d) => (stderr += String(d)));
       ff.on("close", (code) => {
@@ -10639,10 +10889,16 @@ export class ReolinkBaichuanApi {
         ended = true;
         // Best-effort: surface ffmpeg errors to consumers.
         if ((code ?? 0) !== 0 && stderr.trim()) {
+          logger?.error?.(
+            `[createRecordingReplayMp4Stream] ffmpeg exited with code ${code}: ${stderr}`,
+          );
           output.destroy(
             new Error(`ffmpeg exited with code ${code ?? 0}: ${stderr}`),
           );
         } else {
+          logger?.debug?.(
+            `[createRecordingReplayMp4Stream] ffmpeg closed normally, frames=${frameCount}`,
+          );
           output.end();
         }
       });
@@ -10651,6 +10907,9 @@ export class ReolinkBaichuanApi {
     const stopAll = async (): Promise<void> => {
       if (ended) return;
       ended = true;
+      logger?.debug?.(
+        `[createRecordingReplayMp4Stream] Stopping stream, frames=${frameCount}`,
+      );
       try {
         await stopReplay();
       } catch {
@@ -10682,6 +10941,9 @@ export class ReolinkBaichuanApi {
 
     const timer = setTimeout(
       () => {
+        logger?.debug?.(
+          `[createRecordingReplayMp4Stream] Timeout reached (${seconds}s), stopping`,
+        );
         void stopAll();
       },
       Math.max(1, seconds) * 1000,
@@ -10693,16 +10955,26 @@ export class ReolinkBaichuanApi {
     });
 
     stream.on("error", (e) => {
+      logger?.error?.(
+        `[createRecordingReplayMp4Stream] Stream error: ${e.message}`,
+      );
       output.destroy(e);
       void stopAll();
     });
 
-    stream.on("videoAccessUnit", ({ data, videoType }) => {
-      if (ended) return;
-      startFfmpeg(videoType);
-      if (videoType === "H264") input.write(H264_AUD);
-      input.write(data);
-    });
+    stream.on(
+      "videoAccessUnit",
+      ({ data, videoType, isKeyframe, microseconds }) => {
+        if (ended) return;
+        startFfmpeg(videoType);
+        frameCount++;
+        // Mux frame into MPEG-TS with correct PTS timestamp
+        if (tsMuxer) {
+          const tsData = tsMuxer.mux(data, microseconds, isKeyframe);
+          input.write(tsData);
+        }
+      },
+    );
 
     return {
       mp4: output,

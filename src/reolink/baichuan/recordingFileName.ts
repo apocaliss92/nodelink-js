@@ -186,6 +186,7 @@ function parseDateTimeLocal(
  * - .../RecS07_20250219_111146_111238_0_<HEX>_<SIZE>.mp4
  * - .../RecM02_DST20240827_090302_090334_0_800_800_<HEX>_<SIZE>.mp4
  * - 0120260107000000 (numeric identifier format: [channel][YYYYMMDD][HHMMSS])
+ * - 829_0_900_510_033C8200000000_184C8B5.mp4 (NVR compact format)
  */
 export function parseRecordingFileName(
   fileName: string,
@@ -215,6 +216,46 @@ export function parseRecordingFileName(
       }
     }
   }
+
+  // Try NVR compact format: {timestamp}_{channel}_{duration?}_{flags1}_{hexFlags}_{hash}.mp4
+  // Example: 829_0_900_510_033C8200000000_184C8B5.mp4
+  // The hexFlags field contains video metadata including framerate
+  const nvrCompactMatch =
+    /^(\d+)_(\d+)_(\d+)_(\d+)_([0-9A-Fa-f]+)_[0-9A-Fa-f]+\.mp4$/i.exec(
+      fileName,
+    );
+  if (nvrCompactMatch) {
+    const [, , channelStr, durationField, , hexFlags] = nvrCompactMatch;
+    if (hexFlags && hexFlags.length >= 8) {
+      // Duration field appears to be in deciseconds (900 = 90 seconds)
+      const durationDs = Number.parseInt(durationField ?? "0", 10);
+      const durationMs = durationDs > 0 ? durationDs * 100 : 60_000; // Default 60s if unknown
+
+      // Try to decode flags using hub format (NVR uses similar structure)
+      const decoded = decodeKnownFlags("hub", 2, hexFlags);
+      const parsed: ParsedRecordingFileName = {
+        baseName: fileName.replace(/\.mp4$/i, ""),
+        ext: "mp4",
+        streamHint: "main",
+        version: 2,
+        devType: "hub",
+        start: new Date(), // Unknown start time in compact format
+        end: new Date(Date.now() + durationMs),
+        durationMs,
+      };
+
+      if (decoded) {
+        parsed.flags = decoded.flags;
+        parsed.rawFlags = decoded.raw;
+        if (decoded.raw.framerate != null && decoded.raw.framerate > 0) {
+          parsed.framerate = decoded.raw.framerate;
+        }
+      }
+
+      return parsed;
+    }
+  }
+
   const dot = fileName.lastIndexOf(".");
   if (dot <= 0 || dot === fileName.length - 1) return undefined;
   const ext = fileName.slice(dot + 1);
