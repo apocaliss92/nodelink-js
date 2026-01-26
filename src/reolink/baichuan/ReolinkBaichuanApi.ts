@@ -326,6 +326,13 @@ export class ReolinkBaichuanApi {
    * Will be lazily populated on demand when needed (e.g. for recordings).
    */
   private uid: string | undefined;
+  /**
+   * Cached channel count from device capabilities.
+   * - 1 = standalone camera
+   * - >1 = NVR/Hub with multiple channels
+   * Set during login or when capabilities are queried.
+   */
+  private _channelCount: number | undefined;
 
   private rebootAfterDisconnectionsPerMinute: number | undefined;
   private readonly disconnectStormVoluntaryAtMs: number[] = [];
@@ -1102,6 +1109,55 @@ export class ReolinkBaichuanApi {
 
   private normalizeChannel(channel?: number | null): number {
     return channel == null ? 0 : channel;
+  }
+
+  /**
+   * Returns the cached channel count, or fetches it from device capabilities if not cached.
+   * - 1 = standalone camera
+   * - >1 = NVR/Hub with multiple channels
+   */
+  async getChannelCount(): Promise<number> {
+    if (this._channelCount !== undefined) {
+      return this._channelCount;
+    }
+
+    try {
+      const support = await this.getAbilitySupport(0);
+      const channelNum =
+        (support as Record<string, unknown>)?.AbilitySupport &&
+        typeof (support as Record<string, unknown>).AbilitySupport === "object"
+          ? ((support as Record<string, Record<string, unknown>>).AbilitySupport
+              ?.channelNum as number | string | undefined)
+          : undefined;
+
+      if (channelNum !== undefined) {
+        this._channelCount =
+          typeof channelNum === "string"
+            ? Number.parseInt(channelNum, 10)
+            : channelNum;
+      }
+    } catch {
+      // Ignore errors - will default to 1
+    }
+
+    // Default to 1 (standalone camera) if not determinable
+    if (
+      this._channelCount === undefined ||
+      !Number.isFinite(this._channelCount)
+    ) {
+      this._channelCount = 1;
+    }
+
+    return this._channelCount;
+  }
+
+  /**
+   * Determines if this device is an NVR/Hub (multiple channels) vs a standalone camera.
+   * Based on channel count: standalone cameras have channelCount=1.
+   */
+  async isNvrDevice(): Promise<boolean> {
+    const channelCount = await this.getChannelCount();
+    return channelCount > 1;
   }
 
   async login(
@@ -2853,6 +2909,33 @@ export class ReolinkBaichuanApi {
       // Discover UID: try explicit -> channel-specific (NVR) -> device-level (standalone)
       const uid = await this.ensureUidForRecordings(channel, params.uid);
 
+      // IMPORTANT: Reolink recordings are organized per-day.
+      // If start overflows into previous day, cap it to midnight of end's day.
+      let start = params.start;
+      const end = params.end;
+      if (start && end) {
+        const startDay = new Date(
+          start.getFullYear(),
+          start.getMonth(),
+          start.getDate(),
+        );
+        const endDay = new Date(
+          end.getFullYear(),
+          end.getMonth(),
+          end.getDate(),
+        );
+        if (startDay.getTime() < endDay.getTime()) {
+          // Start is in a previous day - cap to midnight of end's day
+          start = endDay;
+          recordingsTraceLog(
+            dbg,
+            logger,
+            "getVideoclips",
+            `Start date capped to midnight: ${start.toISOString()} (was crossing days)`,
+          );
+        }
+      }
+
       recordingsTraceLog(
         dbg,
         logger,
@@ -2881,8 +2964,8 @@ export class ReolinkBaichuanApi {
         uid,
         streamType,
         recordType,
-        start: params.start,
-        end: params.end,
+        start,
+        end,
         maxIterations,
         ...(params.timeoutMs != null ? { timeoutMs: params.timeoutMs } : {}),
       });
@@ -2926,14 +3009,22 @@ export class ReolinkBaichuanApi {
     const channel = params.channel;
     const streamType = params.streamType;
 
+    // Get UID for the recording (like download does)
+    const uid = await this.ensureUidForRecordings(channel, undefined);
+
     // Build payload XML - standalone uses filename (name attribute)
+    // Include UID like the working download method does
+    // For standalone cameras, use xmlChannelId=0 explicitly
     const payloadXml = buildFileInfoListReplayByNameXml({
       channel,
+      xmlChannelId: 0, // PCAP-verified: xmlChannelId=0 for standalone
       name: params.fileName,
+      uid,
       streamType,
     });
 
-    const msgNum = this.client.reserveNextMsgNum();
+    // Use msgNum=0 like the working download method
+    const msgNum = 0;
     this.client.subscribeVideoStream(BC_CMD_ID_FILE_INFO_LIST_REPLAY, msgNum);
 
     const profile: StreamProfile = streamType === "subStream" ? "sub" : "main";
@@ -2962,7 +3053,7 @@ export class ReolinkBaichuanApi {
         channelIdOverride: 0,
         payloadXml,
         messageClass: BC_CLASS_MODERN_24,
-        msgNumOverride: msgNum,
+        msgNumOverride: 0,
         timeoutMs: params.timeoutMs,
         internal: true,
       });
@@ -3188,6 +3279,14 @@ export class ReolinkBaichuanApi {
     streamType?: RecordingReplayStreamType;
     timeoutMs?: number;
     logger?: Logger;
+    /**
+     * Force NVR mode (uses id-based XML with UID) or standalone mode (name-based XML).
+     * If not specified, the library will detect based on device channel count:
+     * - channelCount=1 → standalone camera
+     * - channelCount>1 → NVR/Hub
+     * NOTE: A path containing "/" does NOT indicate NVR - standalone cameras also return full paths.
+     */
+    isNvr?: boolean;
   }): Promise<{
     msgNum: number;
     stream: BaichuanVideoStream;
@@ -3195,11 +3294,16 @@ export class ReolinkBaichuanApi {
   }> {
     await this.client.login();
 
-    const isNvrPath = params.fileName.includes("/");
     // For standalone, default to channel 0. For NVR, channel is required.
     const channel = this.normalizeChannel(params.channel ?? 0);
     const streamType = params.streamType ?? "mainStream";
     const timeoutMs = params.timeoutMs ?? 20_000;
+
+    // Determine NVR vs standalone mode:
+    // - If explicitly specified, use that
+    // - Otherwise, detect based on device channel count (channelCount>1 = NVR)
+    // NOTE: Do NOT use fileName.includes("/") - standalone cameras also return full paths like /mnt/sda/...
+    const isNvr = params.isNvr ?? (await this.isNvrDevice());
 
     const commonParams = {
       channel,
@@ -3209,7 +3313,7 @@ export class ReolinkBaichuanApi {
       ...(params.logger != null ? { logger: params.logger } : {}),
     };
 
-    if (isNvrPath) {
+    if (isNvr) {
       return this.startRecordingReplayStreamNvr(commonParams);
     } else {
       return this.startRecordingReplayStreamStandalone(commonParams);

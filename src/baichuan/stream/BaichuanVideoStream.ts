@@ -338,11 +338,14 @@ export class BaichuanVideoStream extends EventEmitter<{
     // LIVE STREAM (cmdId=3): Each Baichuan frame contains complete BcMedia packets.
     // Fresh IV decryption works correctly for every frame.
     //
-    // PLAYBACK/REPLAY (cmdId=5): Large I-frames (e.g., 400KB for 4K) are fragmented
-    // across multiple Baichuan frames (~39KB each). Continuation frames MUST be
-    // decrypted using the cipher state from the previous frame, not a fresh IV.
+    // PLAYBACK/REPLAY (cmdId=5):
+    // - I-frames: Entire chunk is encrypted, fresh IV works.
+    // - P-frames: Only the BcMedia HEADER is encrypted, video PAYLOAD is clear!
+    //   Fresh IV decryption corrupts the clear payload.
+    //   We must use partial decryption: decrypt header, keep payload as-is.
     //
-    // We use stateful decryption ONLY for replay mode (cmdId=5).
+    // Detection: After fresh decrypt, check if raw bytes at video payload offset
+    // have H.264 start codes. If yes, use partial decryption.
     if (enc.kind === "full_aes") {
       const key = enc.key;
       const isReplayMode = this.cmdId === 5; // BC_CMD_ID_FILE_INFO_LIST_REPLAY
@@ -363,22 +366,68 @@ export class BaichuanVideoStream extends EventEmitter<{
         return best.first > 0 ? chosen.subarray(best.first) : chosen;
       }
 
-      // --- Replay mode: use stateful decryption for fragmented packets ---
+      // --- Replay mode: handle partial encryption for P-frames ---
 
-      if (startsWithMagic) {
-        // New BcMedia packet! Reset the stateful decryptor and use fresh result.
-        // We must also advance the stateful decryptor's state by feeding it the raw data,
-        // so subsequent continuation frames can be decrypted correctly.
-        if (!this.aesStreamDecryptor) {
-          this.aesStreamDecryptor = new AesStreamDecryptor(key);
+      if (startsWithMagic && freshDecrypted.length >= 24) {
+        // Parse BcMedia header to determine if we need partial decryption
+        const magic = freshDecrypted.readUInt32LE(0);
+        const isIFrame = magic >= 0x63643030 && magic <= 0x63643039;
+        const isPFrame = magic >= 0x63643130 && magic <= 0x63643139;
+
+        if ((isIFrame || isPFrame) && freshDecrypted.length >= 24) {
+          // Video frame: magic(4) + videoType(4) + payloadSize(4) + additionalHeaderSize(4) + microseconds(4) + unknown(4) + additionalHeader + payload
+          const additionalHeaderSize = freshDecrypted.readUInt32LE(12);
+          const headerLen = 24 + additionalHeaderSize;
+
+          if (headerLen > 0 && headerLen < raw.length) {
+            // Check if raw bytes at headerLen have H.264 start codes (clear payload indicator)
+            const rawPayloadStart = raw.subarray(headerLen, headerLen + 4);
+            const hasRawStartCode =
+              rawPayloadStart.length >= 4 &&
+              rawPayloadStart[0] === 0 &&
+              rawPayloadStart[1] === 0 &&
+              (rawPayloadStart[2] === 1 ||
+                (rawPayloadStart[2] === 0 && rawPayloadStart[3] === 1));
+
+            if (hasRawStartCode) {
+              // P-frame case: header is encrypted, payload is clear
+              // Use partial decryption: decrypt only the header
+              const headerDecrypted = aesDecrypt(
+                raw.subarray(0, headerLen),
+                key,
+              );
+              const clearPayload = raw.subarray(headerLen);
+              const chosen = Buffer.concat([headerDecrypted, clearPayload]);
+              if (!allowResync) return chosen;
+              const best = BaichuanVideoStream.scoreBcMediaLike(chosen);
+              return best.first > 0 ? chosen.subarray(best.first) : chosen;
+            }
+          }
         }
-        this.aesStreamDecryptor.reset();
-        this.aesStreamDecryptor.update(raw); // Advance state (discard result, we use freshDecrypted)
 
-        const chosen = freshDecrypted;
-        if (!allowResync) return chosen;
-        const best = BaichuanVideoStream.scoreBcMediaLike(chosen);
-        return best.first > 0 ? chosen.subarray(best.first) : chosen;
+        // I-frame case: Reolink encrypts only the first 1024 bytes of the BcMedia frame.
+        // Bytes 0-1023 are encrypted, bytes 1024+ are clear (unencrypted).
+        // This is a form of partial encryption for efficiency (64 AES blocks).
+        const IFRAME_ENCRYPT_BOUNDARY = 1024;
+        
+        if (raw.length > IFRAME_ENCRYPT_BOUNDARY) {
+          // Partial encryption: decrypt first 1024 bytes, keep rest as-is
+          const encryptedPart = raw.subarray(0, IFRAME_ENCRYPT_BOUNDARY);
+          const clearPart = raw.subarray(IFRAME_ENCRYPT_BOUNDARY);
+          const decryptedPart = aesDecrypt(encryptedPart, key);
+          const chosen = Buffer.concat([decryptedPart, clearPart]);
+          if (!allowResync) return chosen;
+          const best = BaichuanVideoStream.scoreBcMediaLike(chosen);
+          return best.first > 0 ? chosen.subarray(best.first) : chosen;
+        }
+        
+        // Small frame (<=1024 bytes): full decryption needed
+        {
+          const chosen = freshDecrypted;
+          if (!allowResync) return chosen;
+          const best = BaichuanVideoStream.scoreBcMediaLike(chosen);
+          return best.first > 0 ? chosen.subarray(best.first) : chosen;
+        }
       }
 
       // Check if raw data already looks like valid BcMedia (not encrypted)
