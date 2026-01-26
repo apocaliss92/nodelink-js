@@ -215,7 +215,7 @@ Query params:
 
 Response:
 
-- `{ recordings: EnrichedRecordingFile[], ... }`
+- `{ recordings: RecordingFile[], ... }`
 
 ## Bifocal/Multifocal Cameras
 

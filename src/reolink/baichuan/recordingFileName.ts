@@ -1,4 +1,9 @@
-import type { ParsedRecordingFileName, RecordingDevType, RecordingVodFlags, RecordingVodStreamHint } from "./types";
+import type {
+  ParsedRecordingFileName,
+  RecordingDevType,
+  RecordingVodFlags,
+  RecordingVodStreamHint,
+} from "./types";
 
 type FlagSpec = Record<string, readonly [number, number]>;
 
@@ -66,7 +71,6 @@ const FLAGS_HUB_V2: FlagSpec = {
   upload_flag: [38, 1],
 };
 
-
 const FLAGS_MAPPING: Record<RecordingDevType, Record<number, FlagSpec>> = {
   cam: {
     2: FLAGS_CAM_V2,
@@ -86,7 +90,10 @@ const FLAGS_MAPPING: Record<RecordingDevType, Record<number, FlagSpec>> = {
   },
 };
 
-function decodeHexToFlags(hexValue: string, mapping: FlagSpec): Record<string, number> | undefined {
+function decodeHexToFlags(
+  hexValue: string,
+  mapping: FlagSpec,
+): Record<string, number> | undefined {
   if (!hexValue) return undefined;
   if (!/^[0-9a-fA-F]+$/.test(hexValue)) return undefined;
 
@@ -102,15 +109,26 @@ function decodeHexToFlags(hexValue: string, mapping: FlagSpec): Record<string, n
     const size = BigInt(bitSize);
     const mask = ((1n << size) - 1n) << pos;
     const segRev = (revInt & mask) >> pos;
-    const segBin = segRev.toString(2).padStart(bitSize, "0").split("").reverse().join("");
+    const segBin = segRev
+      .toString(2)
+      .padStart(bitSize, "0")
+      .split("")
+      .reverse()
+      .join("");
     out[flag] = Number.parseInt(segBin, 2);
   }
   return out;
 }
 
-function decodeKnownFlags(devType: RecordingDevType, version: number, hexValue: string): { raw: Record<string, number>; flags: RecordingVodFlags } | undefined {
+function decodeKnownFlags(
+  devType: RecordingDevType,
+  version: number,
+  hexValue: string,
+): { raw: Record<string, number>; flags: RecordingVodFlags } | undefined {
   const versions = FLAGS_MAPPING[devType];
-  const mapping = versions[version] ?? versions[Math.max(...Object.keys(versions).map((k) => Number(k)))];
+  const mapping =
+    versions[version] ??
+    versions[Math.max(...Object.keys(versions).map((k) => Number(k)))];
   if (!mapping) return undefined;
   const raw = decodeHexToFlags(hexValue, mapping);
   if (!raw) return undefined;
@@ -120,18 +138,27 @@ function decodeKnownFlags(devType: RecordingDevType, version: number, hexValue: 
     aiVehicle: raw.ai_vd === 1,
     aiAnimal: raw.ai_ad === 1,
     aiFace: raw.ai_fd === 1,
-    aiOther: (raw.is_ai_other_record === 1) || (raw.ai_other === 1) || (raw.ai_other ?? 0) > 0,
+    aiOther:
+      raw.is_ai_other_record === 1 ||
+      raw.ai_other === 1 ||
+      (raw.ai_other ?? 0) > 0,
     schedule: raw.is_schedule_record === 1,
     motion: raw.is_motion_record === 1,
     rf: raw.is_rf_record === 1,
     doorbell: raw.is_doorbell_record === 1,
-    package: (raw.package_event === 1) || (raw.package_delivered === 1) || (raw.package_takenaway === 1),
+    package:
+      raw.package_event === 1 ||
+      raw.package_delivered === 1 ||
+      raw.package_takenaway === 1,
   };
 
   return { raw, flags };
 }
 
-function parseDateTimeLocal(yyyymmdd: string, hhmmss: string): Date | undefined {
+function parseDateTimeLocal(
+  yyyymmdd: string,
+  hhmmss: string,
+): Date | undefined {
   if (!/^\d{8}$/.test(yyyymmdd)) return undefined;
   if (!/^\d{6}$/.test(hhmmss)) return undefined;
   const year = Number.parseInt(yyyymmdd.slice(0, 4), 10);
@@ -140,7 +167,8 @@ function parseDateTimeLocal(yyyymmdd: string, hhmmss: string): Date | undefined 
   const hour = Number.parseInt(hhmmss.slice(0, 2), 10);
   const minute = Number.parseInt(hhmmss.slice(2, 4), 10);
   const second = Number.parseInt(hhmmss.slice(4, 6), 10);
-  if (![year, month, day, hour, minute, second].every(Number.isFinite)) return undefined;
+  if (![year, month, day, hour, minute, second].every(Number.isFinite))
+    return undefined;
   // IMPORTANT: Parse as LOCAL TIME because the camera stores timestamps in local time in the filename.
   // When we create a Date object with new Date(year, month, day, hour, minute, second), JavaScript
   // interprets these values as local time and stores the date internally as UTC timestamp.
@@ -159,7 +187,9 @@ function parseDateTimeLocal(yyyymmdd: string, hhmmss: string): Date | undefined 
  * - .../RecM02_DST20240827_090302_090334_0_800_800_<HEX>_<SIZE>.mp4
  * - 0120260107000000 (numeric identifier format: [channel][YYYYMMDD][HHMMSS])
  */
-export function parseRecordingFileName(fileName: string): ParsedRecordingFileName | undefined {
+export function parseRecordingFileName(
+  fileName: string,
+): ParsedRecordingFileName | undefined {
   // Try numeric identifier format first (e.g., "0120260107000000")
   // Format: [channel][YYYYMMDD][HHMMSS] where channel is 2 digits, date is 8 digits, time is 6 digits
   const numericMatch = /^(\d{2})(\d{8})(\d{6})$/.exec(fileName);
@@ -197,7 +227,8 @@ export function parseRecordingFileName(fileName: string): ParsedRecordingFileNam
   if (!prefix.startsWith("Rec") || prefix.length !== 6) return undefined;
 
   const streamChar = prefix[3];
-  const streamHint: RecordingVodStreamHint = streamChar === "M" ? "main" : streamChar === "S" ? "sub" : "unknown";
+  const streamHint: RecordingVodStreamHint =
+    streamChar === "M" ? "main" : streamChar === "S" ? "sub" : "unknown";
 
   const version = Number.parseInt(prefix.slice(4, 6), 16);
   if (!Number.isFinite(version)) return undefined;
@@ -241,7 +272,8 @@ export function parseRecordingFileName(fileName: string): ParsedRecordingFileNam
   startDate = startDate.toLowerCase().replace("dst", "");
   const start = parseDateTimeLocal(startDate, startTime);
   if (!start) return undefined;
-  const end = endTime === "000000" ? start : parseDateTimeLocal(startDate, endTime);
+  const end =
+    endTime === "000000" ? start : parseDateTimeLocal(startDate, endTime);
   if (!end) return undefined;
 
   const durationMs = Math.max(0, end.getTime() - start.getTime());
@@ -261,6 +293,10 @@ export function parseRecordingFileName(fileName: string): ParsedRecordingFileNam
   if (decoded) {
     parsed.flags = decoded.flags;
     parsed.rawFlags = decoded.raw;
+    // Extract framerate if available in rawFlags
+    if (decoded.raw.framerate != null && decoded.raw.framerate > 0) {
+      parsed.framerate = decoded.raw.framerate;
+    }
   }
 
   if (animalTypeRaw != null) parsed.animalTypeRaw = animalTypeRaw;

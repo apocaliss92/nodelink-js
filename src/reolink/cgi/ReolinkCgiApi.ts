@@ -2,7 +2,7 @@ import type { DebugConfig, Logger } from "../../debug/DebugConfig";
 import { recordingsTraceLog } from "../../debug/DebugConfig";
 import { collectNvrDiagnostics } from "../../debug/DiagnosticsTools";
 import { parseRecordingFileName } from "../baichuan/recordingFileName";
-import type { EnrichedRecordingFile, RecordingFile } from "../baichuan/types";
+import type { RecordingFile } from "../baichuan/types";
 import {
   ReolinkHttpClient,
   type ReolinkHttpClientOptions,
@@ -429,7 +429,7 @@ export type VodSearchResponse = ReolinkCmdResponseExt<VodSearchResult> & {
 type RecordingsCacheKey = string;
 
 type RecordingsCacheEntry = {
-  data: Array<EnrichedRecordingFile>;
+  data: Array<RecordingFile>;
   expiresAt: number;
 };
 
@@ -905,9 +905,7 @@ export class ReolinkCgiApi {
   // --------------------
 
   /** Returns the list of channels that have a non-empty UID (typically the connected cameras on NVR/Home Hub). */
-  async getChannels(options?: {
-    useChannelNumFallback?: boolean;
-  }): Promise<{
+  async getChannels(options?: { useChannelNumFallback?: boolean }): Promise<{
     channels: number[];
     channelsResponse: Array<ReolinkCmdResponseExt<CgiGetChannelstatusValue>>;
   }> {
@@ -1336,9 +1334,7 @@ export class ReolinkCgiApi {
     await this.SetPirInfo({ pirInfo });
   }
 
-  async getLocalLink(
-    channel: number,
-  ): Promise<{
+  async getLocalLink(channel: number): Promise<{
     activeLink: string | undefined;
     wifiSignal: number | undefined;
     isWifi: boolean;
@@ -1398,7 +1394,7 @@ export class ReolinkCgiApi {
    */
   async listNvrRecordings(
     params: ListNvrRecordingsParams,
-  ): Promise<Array<EnrichedRecordingFile>> {
+  ): Promise<Array<RecordingFile>> {
     const { channel, start, end } = params;
     const streamType = params.streamType ?? "main";
     const iLogicChannel = params.iLogicChannel ?? 0;
@@ -1622,7 +1618,7 @@ export class ReolinkCgiApi {
         }
 
         // Enrich all files
-        const enriched: EnrichedRecordingFile[] = [];
+        const enriched: RecordingFile[] = [];
         const fetchStreamUrls = params.fetchStreamUrls === true;
         const streamUrlType = params.streamUrlType ?? "FLV";
 
@@ -1812,7 +1808,7 @@ export class ReolinkCgiApi {
     }
 
     // Enrich each file
-    const enriched: EnrichedRecordingFile[] = [];
+    const enriched: RecordingFile[] = [];
     const fetchStreamUrls = params.fetchStreamUrls === true;
     const streamUrlType = params.streamUrlType ?? "FLV";
 
@@ -2520,13 +2516,13 @@ export class ReolinkCgiApi {
   }
 
   /**
-   * Enrich a VodFile into EnrichedRecordingFile.
+   * Convert a VodFile to RecordingFile with parsed metadata.
    */
   private enrichVodFile(
     vodFile: VodFile,
     channel: number,
     streamUrl?: string,
-  ): EnrichedRecordingFile {
+  ): RecordingFile {
     // Log raw VodFile data from API (log entire object to see if there are hidden fields)
     recordingsTraceLog(
       this.debugConfig,
@@ -2721,44 +2717,19 @@ export class ReolinkCgiApi {
       })}`,
     );
 
-    // Create RecordingFile for raw reference
-    const raw: RecordingFile = {
+    // Create RecordingFile with all available metadata
+    const result: RecordingFile = {
       fileName: vodFile.name,
+      id: vodFile.name,
       sizeBytes: vodFile.size,
       startTime,
       endTime,
       recordType: vodFile.type,
     };
     if (parsed) {
-      raw.parsedFileName = parsed;
+      result.parsedFileName = parsed;
     }
 
-    const enriched: EnrichedRecordingFile = {
-      fileName: vodFile.name,
-      id: vodFile.name,
-      startTimeMs,
-      endTimeMs,
-      durationMs,
-      hasPerson,
-      hasVehicle,
-      hasAnimal,
-      hasFace,
-      hasMotion,
-      hasSchedule,
-      hasDoorbell,
-      hasPackage,
-      hasRf,
-      hasOther,
-      streamHint: parsed?.streamHint ?? "unknown",
-      devType: parsed?.devType ?? "hub",
-      raw,
-    };
-
-    if (vodFile.size !== undefined) enriched.sizeBytes = vodFile.size;
-    if (vodFile.type) enriched.recordType = vodFile.type;
-    if (streamUrl) enriched.rtmpUrl = streamUrl;
-    if (parsed) enriched.parsedFileName = parsed;
-
-    return enriched;
+    return result;
   }
 }

@@ -152,7 +152,6 @@ import type {
   DownloadRecordingParams,
   DualLensChannelAnalysis,
   DualLensChannelInfo,
-  EnrichedRecordingFile,
   Events,
   GetRecordingVideoResult,
   GetRecordingVideoStats,
@@ -907,7 +906,7 @@ export class ReolinkBaichuanApi {
     start: Date,
     end: Date,
     streamType: string,
-  ): EnrichedRecordingFile[] | undefined {
+  ): RecordingFile[] | undefined {
     const key = this.getRecordingsCacheKey(channel, start, end, streamType);
     const cached = this.recordingsCache.get(key);
 
@@ -931,7 +930,7 @@ export class ReolinkBaichuanApi {
     start: Date,
     end: Date,
     streamType: string,
-    recordings: EnrichedRecordingFile[],
+    recordings: RecordingFile[],
     ttlMs?: number,
   ): void {
     const key = this.getRecordingsCacheKey(channel, start, end, streamType);
@@ -10568,11 +10567,12 @@ export class ReolinkBaichuanApi {
     mp4: Readable;
     stop: () => Promise<void>;
   }> {
-    const fps = 25; // Default FPS for muxing
-
-    // Extract duration from filename timestamps
+    // Extract duration and framerate from filename timestamps
     const parsed = parseRecordingFileName(params.fileName);
     const durationMs = parsed?.durationMs ?? 300_000; // Fallback: 5 minutes
+    // Use framerate from filename hex flags, fallback to 15 fps (common for recordings)
+    const fps =
+      parsed?.framerate && parsed.framerate > 0 ? parsed.framerate : 15;
     // Add 10% buffer to ensure we get the complete clip
     const seconds = Math.ceil((durationMs / 1000) * 1.1);
 
@@ -10749,8 +10749,12 @@ export class ReolinkBaichuanApi {
     mp4: Readable;
     stop: () => Promise<void>;
   }> {
-    const fps = 25; // Default FPS for muxing
     const timeoutMs = params.timeoutMs ?? 120_000;
+
+    // Extract framerate from filename hex flags, fallback to 15 fps (common for recordings)
+    const parsed = parseRecordingFileName(params.fileName);
+    const fps =
+      parsed?.framerate && parsed.framerate > 0 ? parsed.framerate : 15;
 
     // Get UID for the channel (required for download)
     const channel = this.normalizeChannel(params.channel);

@@ -462,7 +462,7 @@ export type NvrChannelsSummaryCacheEntry = {
 };
 
 export type RecordingsCacheEntry = {
-  recordings: EnrichedRecordingFile[];
+  recordings: RecordingFile[];
   cachedAt: number;
   /** TTL in milliseconds (default 5 minutes) */
   ttlMs: number;
@@ -842,6 +842,8 @@ export interface ParsedRecordingFileName {
   start: Date;
   end: Date;
   durationMs: number;
+  /** Frame rate extracted from filename hex flags (if available) */
+  framerate?: number;
   flags?: RecordingVodFlags;
   rawFlags?: Record<string, number>;
   animalTypeRaw?: string;
@@ -879,82 +881,6 @@ export interface ChannelRecordingFile extends RecordingFile {
   channel: number;
   /** Optional UID used for the request (when known). */
   uid?: string;
-}
-
-/**
- * An EnrichedRecordingFile associated with an explicit logical channel.
- *
- * Useful for NVR/Hub-style listings where you want detection flags + timestamps
- * while still keeping the channel context.
- */
-export interface EnrichedChannelRecordingFile extends EnrichedRecordingFile {
-  channel: number;
-  uid?: string;
-}
-
-/**
- * Enriched recording file with all parsed metadata, ready for consumption.
- * Contains detection flags, duration, timestamps in milliseconds, and playback URLs.
- */
-export interface EnrichedRecordingFile {
-  /** Original file name/path from the camera */
-  fileName: string;
-  /** Unique identifier for the recording */
-  id: string;
-  /** Start time in milliseconds since epoch */
-  startTimeMs: number;
-  /** End time in milliseconds since epoch */
-  endTimeMs: number;
-  /** Duration in milliseconds */
-  durationMs: number;
-  /** File size in bytes (if available) */
-  sizeBytes?: number;
-
-  // Detection flags (from hex decoding or recordType parsing)
-  /** Person/people detected */
-  hasPerson: boolean;
-  /** Vehicle detected */
-  hasVehicle: boolean;
-  /** Animal (dog/cat) detected */
-  hasAnimal: boolean;
-  /** Face detected */
-  hasFace: boolean;
-  /** Motion detected */
-  hasMotion: boolean;
-  /** Scheduled recording */
-  hasSchedule: boolean;
-  /** Doorbell/visitor event */
-  hasDoorbell: boolean;
-  /** Package event */
-  hasPackage: boolean;
-  /** RF sensor trigger */
-  hasRf: boolean;
-  /** Other AI detection */
-  hasOther: boolean;
-
-  /** Original record type string from camera (e.g. "md,people,dog_cat") */
-  recordType?: string;
-
-  /**
-   * Derived detection classes for convenience (computed from flags/recordType).
-   * Useful for NVR/HomeHub event listings where consumers expect a list.
-   */
-  detectionClasses?: RecordingDetectionClass[];
-
-  /** RTMP VOD playback URL (if available) */
-  rtmpUrl?: string;
-
-  /** Stream type hint (main/sub/unknown) */
-  streamHint: RecordingVodStreamHint;
-
-  /** Device type (cam/hub) */
-  devType: RecordingDevType;
-
-  /** Raw parsed filename data for advanced usage */
-  parsedFileName?: ParsedRecordingFileName;
-
-  /** Original RecordingFile for reference */
-  raw: RecordingFile;
 }
 
 export type RecordingDetectionClass =
