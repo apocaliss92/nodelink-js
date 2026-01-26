@@ -3037,8 +3037,30 @@ export class ReolinkBaichuanApi {
       // Discover UID: try explicit -> channel-specific (NVR) -> device-level (standalone)
       const uid = await this.ensureUidForRecordings(channel, params.uid);
 
+      // Reolink cameras organize recordings per-day.
+      // Ensure start and end are always on the same day by forcing end to 23:59:59 of start's day.
       const start = params.start;
-      const end = params.end;
+      const endOfStartDay = new Date(
+        start.getFullYear(),
+        start.getMonth(),
+        start.getDate(),
+        23,
+        59,
+        59,
+        999,
+      );
+      // Use the earlier of params.end or end-of-start-day
+      const end =
+        params.end.getTime() > endOfStartDay.getTime()
+          ? endOfStartDay
+          : params.end;
+
+      recordingsTraceLog(
+        dbg,
+        logger,
+        "getVideoclips",
+        `Query: start=${start.toISOString()}, end=${end.toISOString()} (forced same day)`,
+      );
 
       recordingsTraceLog(
         dbg,
