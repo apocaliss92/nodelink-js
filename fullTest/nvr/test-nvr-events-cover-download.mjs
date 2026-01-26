@@ -224,8 +224,8 @@ async function main() {
             console.log(`\n  🔍 Recupero eventi di OGGI (channel ${channel})...`);
             try {
                 // NOTA: Il PCAP mostra che si usa subStream, non mainStream!
-                // Prima proviamo con listRecordings (FileInfoList)
-                let todayEventsRaw = await api.listRecordings({
+                // Prima proviamo con getVideoclips (FileInfoList)
+                let todayEventsRaw = await api.getVideoclips({
                     channel,
                     uid: uidForRecordings,  // Usa UID della CAMERA (da push 145), non dell'NVR!
                     start: today.start,
@@ -277,8 +277,8 @@ async function main() {
             // ========================================================================
             console.log(`\n  🔍 Recupero eventi di IERI (channel ${channel})...`);
             try {
-                // Prima proviamo con listRecordings (FileInfoList)
-                let yesterdayEventsRaw = await api.listRecordings({
+                // Prima proviamo con getVideoclips (FileInfoList)
+                let yesterdayEventsRaw = await api.getVideoclips({
                     channel,
                     uid: uidForRecordings,  // Usa UID della CAMERA (da push 145), non dell'NVR!
                     start: yesterday.start,
@@ -500,15 +500,17 @@ async function main() {
                 console.log(`     Output: ${outPath}`);
 
                 try {
-                    const snapshot = await api.snapshotFromPlayback({
+                    const thumbnail = await api.getVideoclipThumbnail({
                         channel,
                         uid: uidForRecordings,
                         time: event.startTime,
+                        endTime: event.endTime || new Date(event.startTime.getTime() + 60_000),
                         snapType: "sub",
                         timeoutMs: 30_000,
+                        isNvr: true,  // Force NVR mode for cover download
                     });
 
-                    await fs.writeFile(outPath, snapshot.frame);
+                    await fs.writeFile(outPath, thumbnail.frame);
                     const stats = await fs.stat(outPath);
 
                     result.downloads.push({
@@ -520,7 +522,7 @@ async function main() {
                         sizeBytes: stats.size,
                     });
 
-                    console.log(`     ✅ Salvato: ${stats.size} bytes (codec: ${snapshot.encoding})`);
+                    console.log(`     ✅ Salvato: ${stats.size} bytes (codec: ${thumbnail.encoding})`);
                 } catch (e) {
                     const msg = e instanceof Error ? e.message : String(e);
                     result.downloads.push({
@@ -548,15 +550,17 @@ async function main() {
                 console.log(`     Output: ${outPath}`);
 
                 try {
-                    const snapshot = await api.snapshotFromPlayback({
+                    const thumbnail = await api.getVideoclipThumbnail({
                         channel,
                         uid: uidForRecordings,
                         time: event.startTime,
+                        endTime: event.endTime || new Date(event.startTime.getTime() + 60_000),
                         snapType: "sub",
                         timeoutMs: 30_000,
+                        isNvr: true,  // Force NVR mode for cover download
                     });
 
-                    await fs.writeFile(outPath, snapshot.frame);
+                    await fs.writeFile(outPath, thumbnail.frame);
                     const stats = await fs.stat(outPath);
 
                     result.downloads.push({
@@ -568,7 +572,7 @@ async function main() {
                         sizeBytes: stats.size,
                     });
 
-                    console.log(`     ✅ Salvato: ${stats.size} bytes (codec: ${snapshot.encoding})`);
+                    console.log(`     ✅ Salvato: ${stats.size} bytes (codec: ${thumbnail.encoding})`);
                 } catch (e) {
                     const msg = e instanceof Error ? e.message : String(e);
                     result.downloads.push({

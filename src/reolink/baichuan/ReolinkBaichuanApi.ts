@@ -312,6 +312,31 @@ export const isDualLenseModel = (model: string): boolean => {
   );
 };
 
+/**
+ * Model patterns that indicate NVR/Hub devices.
+ * These devices may report channelNum=1 but actually support multiple channels.
+ * Case-insensitive matching is used.
+ */
+export const NVR_HUB_MODEL_PATTERNS: RegExp[] = [
+  /home\s*hub/i, // "Home Hub", "HomeHub"
+  /reolink\s*hub/i, // "Reolink Hub"
+  /wifi[-\s]*nvr/i, // "WIFI-NVR", "WiFi NVR"
+  /^nvr/i, // "NVR8-xxx", "NVR16-xxx"
+  /^rlk\d+-\d+/i, // "RLK8-xxx", "RLK16-xxx" (NVR kits)
+  /^rlk\d+w/i, // "RLK8W-xxx" (wireless NVR kits)
+];
+
+/**
+ * Check if a model name indicates an NVR/Hub device.
+ * @param model - The device model/type string
+ * @returns true if the model matches NVR/Hub patterns
+ */
+export const isNvrHubModel = (model?: string): boolean => {
+  if (!model) return false;
+  const normalized = model.trim();
+  return NVR_HUB_MODEL_PATTERNS.some((pattern) => pattern.test(normalized));
+};
+
 export class ReolinkBaichuanApi {
   readonly client: BaichuanClient;
   readonly logger: Logger;
@@ -1281,11 +1306,32 @@ export class ReolinkBaichuanApi {
 
   /**
    * Determines if this device is an NVR/Hub (multiple channels) vs a standalone camera.
-   * Based on channel count: standalone cameras have channelCount=1.
+   * Checks:
+   * 1. Channel count > 1 (typical NVR detection)
+   * 2. Device model matches NVR/Hub patterns (for devices like Home Hub that report channelNum=1)
    */
   async isNvrDevice(): Promise<boolean> {
     const channelCount = await this.getChannelCount();
-    return channelCount > 1;
+    if (channelCount > 1) return true;
+
+    // Fallback: check device model for NVR/Hub patterns
+    // Some devices (e.g., Home Hub) report channelNum=1 but are actually NVR/Hub
+    try {
+      const info = await this.getInfo(undefined, {
+        tags: ["type"],
+        timeoutMs: 5000,
+      });
+      if (info.type && isNvrHubModel(info.type)) {
+        this.logger.debug?.(
+          `[ReolinkBaichuanApi] isNvrDevice: model "${info.type}" matches NVR/Hub pattern`,
+        );
+        return true;
+      }
+    } catch {
+      // Ignore errors - model check is best-effort
+    }
+
+    return false;
   }
 
   async login(
@@ -3723,6 +3769,8 @@ export class ReolinkBaichuanApi {
     uid?: string;
     /** Timeout in milliseconds (default: 30000) */
     timeoutMs?: number;
+    /** Explicitly specify if this is an NVR device. If omitted, auto-detects. */
+    isNvr?: boolean;
   }): Promise<VideoclipThumbnailResult> {
     // If no request in flight, execute immediately
     if (!this.videoclipThumbnailInFlight) {
@@ -3776,6 +3824,7 @@ export class ReolinkBaichuanApi {
     snapType?: "main" | "sub";
     uid?: string;
     timeoutMs?: number;
+    isNvr?: boolean;
   }): Promise<VideoclipThumbnailResult> {
     await this.client.login();
 
@@ -3791,20 +3840,58 @@ export class ReolinkBaichuanApi {
     const timeoutMs = params.timeoutMs ?? 30_000;
     const time = params.time;
 
+    // Determine if this is an NVR (multiple channels).
+    // For NVR, we need to use hostChannelId (250) or push-cache channelId.
+    // For standalone cameras, use session counter.
+    // Allow explicit override via params.isNvr for cases where auto-detection fails.
+    const isNvr = params.isNvr ?? (await this.isNvrDevice());
+    const headerChannelIdOverride = isNvr
+      ? (this.resolveHeaderChannelIdForLogicalChannel(channel) ?? 250)
+      : undefined;
+
     // CoverPreview requires a time range
     // PCAP shows the app uses the full recording range, not just time + 10 seconds
     const endTime = params.endTime ?? new Date(time.getTime() + 10_000);
 
+    // For NVR devices, we need to include the camera UID in the CoverPreview XML.
+    // PCAP analysis shows: NVR requests always include <uid> element after <channelId>.
+    // The UID is the device identifier of the sub-camera connected to the NVR.
+    let uidForXml: string | undefined;
+    if (isNvr) {
+      // First check if UID was provided in params
+      uidForXml = params.uid;
+      // Otherwise, get it from the push cache
+      if (!uidForXml) {
+        const pushInfo = this.getChannelInfoFromPushCache();
+        const channelInfo = pushInfo.get(channel);
+        uidForXml = channelInfo?.uid;
+      }
+      if (uidForXml) {
+        trace(
+          `CoverPreview: using UID ${uidForXml} for NVR channel ${channel}`,
+        );
+      } else {
+        trace(
+          `CoverPreview: no UID found for NVR channel ${channel}, omitting from XML`,
+        );
+      }
+    }
+
     // Build CoverPreview XML exactly as seen in working PCAP capture:
     // - <channelId> = logical channel (0-based)
+    // - <uid> = device identifier (required for NVR, omit for standalone cameras)
     // - NO <desc> tag (PCAP shows it's not present in working requests!)
-    // - NO <uid> for standalone cameras
     // - streamType = "subStream" or "mainStream"
     // NOTE: uses LOCAL time (not UTC) for timestamps
     const xml = `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <CoverPreview version="1.1">
-<channelId>${channel}</channelId>
+<channelId>${channel}</channelId>${
+      isNvr && uidForXml
+        ? `
+<uid>${uidForXml}</uid>`
+        : ""
+    }
 <streamType>${snapStreamType}</streamType>
 <startTime>
 <year>${time.getFullYear()}</year>
@@ -3829,24 +3916,27 @@ export class ReolinkBaichuanApi {
 </body>`;
 
     trace(
-      `CoverPreview: channel=${channel} snapStreamType=${snapStreamType} time=${time.toISOString()} timeoutMs=${timeoutMs}`,
+      `CoverPreview: channel=${channel} snapStreamType=${snapStreamType} time=${time.toISOString()} timeoutMs=${timeoutMs} isNvr=${isNvr} headerChId=${headerChannelIdOverride} uid=${uidForXml ?? "N/A"}`,
     );
     trace(`CoverPreview XML:\n${xml}`);
 
     // reolink_aio calls: send_payload(cmd_id=298, body=xml)
     // - message_class="1464" (0x6414) → BC_CLASS_MODERN_24
     // - No extension XML
-    // PCAP analysis shows: ch_id is a counter (29,30,32,33...), NOT 250!
-    // Let it use the default channelId from the client (nextMsgNum-based)
     //
-    // NOTE: Retry logic is now handled inside sendBinaryCoverPreview (moved to BaichuanClient).
+    // For NVR: use the resolved headerChannelId from push cache (like FileInfoList).
+    // For standalone cameras: use session counter (let client handle it).
+    //
+    // NOTE: Retry logic is handled inside sendBinaryCoverPreview.
     // PCAP analysis shows the camera often rejects first few requests with 400 before accepting.
     let payload: Buffer;
     try {
       payload = await this.client.sendBinaryCoverPreview({
         cmdId: 298,
-        // PCAP shows: ch_id is a SESSION COUNTER (29,30,31...), NOT 250 or channel+1!
-        // Let the client use its internal counter by NOT passing channelIdOverride
+        // For NVR: use push-cache channelId. For standalone: let client use session counter.
+        ...(isNvr && headerChannelIdOverride != null
+          ? { channelIdOverride: headerChannelIdOverride }
+          : {}),
         // PCAP shows: msgNum=0 for all CoverPreview requests
         msgNumOverride: 0,
         messageClass: BC_CLASS_MODERN_24,
@@ -4105,6 +4195,8 @@ export class ReolinkBaichuanApi {
     snapType?: "main" | "sub";
     timeoutMs?: number;
     ffmpegPath?: string;
+    /** Explicitly specify if this is an NVR device. If omitted, auto-detects. */
+    isNvr?: boolean;
   }): Promise<Buffer> {
     const timeoutMs = params.timeoutMs ?? 30_000;
     const ffmpegPath = params.ffmpegPath ?? "ffmpeg";
@@ -4115,6 +4207,7 @@ export class ReolinkBaichuanApi {
       endTime?: Date;
       snapType?: "main" | "sub";
       timeoutMs?: number;
+      isNvr?: boolean;
     } = {
       time: params.time,
       timeoutMs,
@@ -4122,6 +4215,7 @@ export class ReolinkBaichuanApi {
     if (params.channel !== undefined) snapParams.channel = params.channel;
     if (params.endTime !== undefined) snapParams.endTime = params.endTime;
     if (params.snapType !== undefined) snapParams.snapType = params.snapType;
+    if (params.isNvr !== undefined) snapParams.isNvr = params.isNvr;
 
     const snap = await this.getVideoclipThumbnail(snapParams);
 
@@ -10465,6 +10559,11 @@ export class ReolinkBaichuanApi {
     channel: number;
     /** Full path to the recording file. Required. Duration is extracted from filename. */
     fileName: string;
+    /**
+     * Force NVR mode (uses id-based XML with UID) or standalone mode (name-based XML).
+     * If not specified, the library will detect based on device channel count.
+     */
+    isNvr?: boolean;
   }): Promise<{
     mp4: Readable;
     stop: () => Promise<void>;
@@ -10483,6 +10582,7 @@ export class ReolinkBaichuanApi {
       channel: params.channel,
       fileName: params.fileName,
       logger: this.logger,
+      ...(params.isNvr != null ? { isNvr: params.isNvr } : {}),
     };
 
     // Use streaming queue - holds the slot until release() is called

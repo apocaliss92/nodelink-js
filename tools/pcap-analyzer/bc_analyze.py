@@ -221,12 +221,12 @@ def analyze_pcap(pcap_file, args):
         direction = "REQ" if dport == 9000 else "RSP"
         frames = parse_baichuan_frames(data, direction)
         
-        # Try to extract nonce from login response
+        # Try to extract nonce from login response (code 56594 = challenge with nonce)
         for frame in frames:
-            if frame['cmd_id'] == 1 and frame['direction'] == 'RSP' and frame['response_code'] == 200:
-                # Try to decrypt and find nonce
+            if frame['cmd_id'] == 1 and frame['direction'] == 'RSP':
+                # Try to decrypt and find nonce (can be in 56594 challenge or 200 success)
                 decrypted, method = try_decrypt_body(frame['body'], frame['channel_id'])
-                if method == 'xor' and b'<nonce>' in decrypted:
+                if b'<nonce>' in decrypted:
                     try:
                         start = decrypted.index(b'<nonce>') + 7
                         end = decrypted.index(b'</nonce>')
