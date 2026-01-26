@@ -3552,15 +3552,70 @@ export class BaichuanClient extends EventEmitter<{
     streamType?: number;
     encryption?: EncryptionProtocol;
     timeoutMs?: number;
+    /** Maximum retry attempts on 400 rejection (default: 5). PCAP analysis shows camera often rejects first few requests. */
+    maxRetries?: number;
+    /** Delay between retries in ms (default: 1000). */
+    retryDelayMs?: number;
+  }): Promise<Buffer> {
+    const maxRetries = params.maxRetries ?? 5;
+    const retryDelayMs = params.retryDelayMs ?? 1000;
+
+    let lastError: Error | undefined;
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        return await this._sendBinaryCoverPreviewOnce(params);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        lastError = e instanceof Error ? e : new Error(msg);
+
+        // Check if it's a 400 rejection that might be recoverable with retry
+        const is400Rejection =
+          msg.includes("rejected") &&
+          (msg.includes("responseCode=400") || msg.includes("resp_code=400"));
+
+        if (is400Rejection && attempt < maxRetries - 1) {
+          console.log(
+            `[CoverPreview] Attempt ${attempt + 1} got 400, retrying in ${retryDelayMs}ms...`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+          continue;
+        }
+
+        throw lastError;
+      }
+    }
+
+    throw lastError ?? new Error("CoverPreview failed after all retries");
+  }
+
+  /**
+   * Internal: single attempt for sendBinaryCoverPreview
+   */
+  private async _sendBinaryCoverPreviewOnce(params: {
+    cmdId: number;
+    channel?: number;
+    channelIdOverride?: number;
+    msgNumOverride?: number;
+    payloadXml?: string;
+    extensionXml?: string;
+    messageClass?: number;
+    streamType?: number;
+    encryption?: EncryptionProtocol;
+    timeoutMs?: number;
   }): Promise<Buffer> {
     await this.connect();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
-    const channelId =
-      params.channelIdOverride ??
-      (params.channel == null ? this.hostChannelId : channel + 1);
 
-    const msgNum = params.msgNumOverride ?? this.nextMsgNum();
+    // For CoverPreview, PCAP analysis shows:
+    // - channelId in header is a session counter (29,30,32...) - use nextMsgNum()
+    // - msgNum in header is always 0
+    // So we use the message counter for channelId, but fix msgNum to 0.
+    const sessionCounter = this.nextMsgNum();
+    const channelId = params.channelIdOverride ?? sessionCounter;
+    const msgNum = params.msgNumOverride ?? 0; // PCAP shows msgNum is always 0 for CoverPreview
+
     const cmdId = params.cmdId;
 
     // PCAP: CoverPreview requests use empty extension (payloadOffset=0).
@@ -3710,7 +3765,19 @@ export class BaichuanClient extends EventEmitter<{
       };
 
       const onFrame = (frame: BaichuanFrame) => {
-        if (frame.header.cmdId !== cmdId) return;
+        // Accept responses with the same cmdId as the request,
+        // OR with cmdId=138 (BC_CMD_ID_COVER_RESPONSE) which is used by standalone cameras
+        // for cover data when requesting with cmdId 458-462.
+        // Also accept cmdId=0 which is used as ACK in standalone protocol.
+        const standaloneCoverCmds = new Set([458, 459, 460, 461, 462]);
+        const isStandaloneCover = standaloneCoverCmds.has(cmdId);
+        const acceptedCmdIds = isStandaloneCover
+          ? new Set([cmdId, 138, 0]) // Standalone: request cmdId, data response (138), ACK (0)
+          : new Set([cmdId]);
+
+        if (!acceptedCmdIds.has(frame.header.cmdId)) {
+          return;
+        }
 
         if (
           lockedStreamType !== undefined &&
@@ -3729,22 +3796,33 @@ export class BaichuanClient extends EventEmitter<{
         }
 
         // Once we lock onto a stream msgNum, ignore everything else.
-        if (
-          streamMsgNum !== undefined &&
-          frame.header.msgNum !== streamMsgNum
-        ) {
-          return;
+        // NOTE: For standalone cameras using cmdId 458-462, the correlation is done
+        // via response_code field (which contains the original request msgNum) instead
+        // of the header msgNum field. So we check both.
+        if (streamMsgNum !== undefined) {
+          const matchesByMsgNum = frame.header.msgNum === streamMsgNum;
+          const matchesByResponseCode =
+            isStandaloneCover && frame.header.responseCode === streamMsgNum;
+          if (!matchesByMsgNum && !matchesByResponseCode) {
+            return;
+          }
         }
 
         // If the request itself was rejected, fail fast.
-        // Prefer tying the reject to the request msgNum to avoid accidental cross-talk.
-        if (
-          frame.header.responseCode >= 400 &&
-          frame.header.msgNum === msgNum
-        ) {
+        // For standalone protocol, check both msgNum and responseCode for correlation.
+        // ext1=400 (0x190) in cmd_id=0 response seems to indicate rejection.
+        const isRejected =
+          (frame.header.responseCode >= 400 &&
+            frame.header.msgNum === msgNum) ||
+          (isStandaloneCover &&
+            frame.header.cmdId === 0 &&
+            frame.header.payloadOffset === 400 &&
+            frame.header.responseCode === msgNum);
+
+        if (isRejected) {
           fail(
             new Error(
-              `Baichuan CoverPreview request rejected (cmdId=${cmdId} reqChannelId=${channelId} rspChannelId=${frame.header.channelId} reqStreamType=${expectedStreamType} rspStreamType=${frame.header.streamType} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode})`,
+              `Baichuan CoverPreview request rejected (cmdId=${cmdId} reqChannelId=${channelId} rspChannelId=${frame.header.channelId} reqStreamType=${expectedStreamType} rspStreamType=${frame.header.streamType} msgNum=${frame.header.msgNum} responseCode=${frame.header.responseCode} payloadOffset=${frame.header.payloadOffset})`,
             ),
           );
           return;
@@ -3779,6 +3857,23 @@ export class BaichuanClient extends EventEmitter<{
             frame.header.channelId,
             encryptLen,
           );
+
+          // Check for end-of-stream marker BEFORE checking payload length,
+          // since the end marker frame has bodyLen=0
+          const isEndMarker =
+            frame.header.responseCode === 201 ||
+            frame.header.responseCode === 300;
+          const isEndMarkerStandalone =
+            isStandaloneCover &&
+            frame.header.cmdId === 0 &&
+            frame.header.payloadOffset === 300;
+
+          if (isEndMarker || isEndMarkerStandalone) {
+            const combined = Buffer.concat(chunks);
+            finish(combined);
+            return;
+          }
+
           if (decrypted.length === 0) return;
 
           // Skip XML responses
@@ -3799,12 +3894,16 @@ export class BaichuanClient extends EventEmitter<{
           // For CoverPreview, look for stream header magic "1001"/"1002".
           // Lock onto the msgNum that carries the stream header to avoid mixing
           // frames from other in-flight/previous attempts.
+          // For standalone cameras (cmdId 458-462), the correlation is via response_code.
           if (!seenStreamHeader) {
             const streamMagic = decrypted.subarray(0, 4).toString("ascii");
             if (supportedMagics.has(streamMagic)) {
               lockedChannelId = frame.header.channelId;
               lockedStreamType = frame.header.streamType;
-              streamMsgNum = frame.header.msgNum;
+              // For standalone protocol, lock on response_code instead of msgNum
+              streamMsgNum = isStandaloneCover
+                ? frame.header.responseCode
+                : frame.header.msgNum;
               seenStreamHeader = true;
               chunks.push(decrypted);
             } else if (looksLikeAnnexB(decrypted)) {
@@ -3812,18 +3911,14 @@ export class BaichuanClient extends EventEmitter<{
               // Treat the first Annex-B chunk as the start of the stream.
               lockedChannelId = frame.header.channelId;
               lockedStreamType = frame.header.streamType;
-              streamMsgNum = frame.header.msgNum;
+              streamMsgNum = isStandaloneCover
+                ? frame.header.responseCode
+                : frame.header.msgNum;
               seenStreamHeader = true;
               chunks.push(decrypted);
             }
           } else {
             chunks.push(decrypted);
-          }
-
-          // CoverPreview ends when responseCode is 201 (end of stream)
-          if (frame.header.responseCode === 201) {
-            const combined = Buffer.concat(chunks);
-            finish(combined);
           }
         } catch (e) {
           fail(e);

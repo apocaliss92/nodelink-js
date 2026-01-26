@@ -345,7 +345,7 @@ export function createBaichuanEndpointsServer(
           return;
         }
 
-        const { jpeg, snapshot } = await api.snapshotFromPlaybackJpeg({
+        const { jpeg, snapshot } = await api.getVideoclipThumbnailJpegRaw({
           channel,
           time,
           snapType: snapType as any,

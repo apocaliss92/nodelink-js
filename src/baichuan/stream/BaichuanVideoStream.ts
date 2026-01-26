@@ -850,16 +850,16 @@ export class BaichuanVideoStream extends EventEmitter<{
       }
 
       // Log detailed info for first few frames and periodically
-      if (totalFramesReceived <= 10 || totalFramesReceived % 100 === 0) {
-        const remainingBuffer = this.bcMediaCodec.getRemainingBuffer();
-        const typesStr = Array.from(packetTypes.entries())
-          .map(([t, c]) => `${t}:${c}`)
-          .join(", ");
-        // ALWAYS log for H.265 debugging
-        console.log(
-          `[BaichuanVideoStream] Frame #${totalFramesReceived}: dataToParse=${dataAfterXml.length} bytes, parsed ${mediaPackets.length} BcMedia packets (${typesStr || "none"}), total: ${totalMediaPackets}, remaining buffer: ${remainingBuffer.length} bytes`,
-        );
-      }
+      // Disabled for production - enable for debugging only
+      // if (totalFramesReceived <= 10 || totalFramesReceived % 100 === 0) {
+      //   const remainingBuffer = this.bcMediaCodec.getRemainingBuffer();
+      //   const typesStr = Array.from(packetTypes.entries())
+      //     .map(([t, c]) => `${t}:${c}`)
+      //     .join(", ");
+      //   console.log(
+      //     `[BaichuanVideoStream] Frame #${totalFramesReceived}: dataToParse=${dataAfterXml.length} bytes, parsed ${mediaPackets.length} BcMedia packets (${typesStr || "none"}), total: ${totalMediaPackets}, remaining buffer: ${remainingBuffer.length} bytes`,
+      //   );
+      // }
 
       // Process complete BcMedia packets.
       // Each BcMedia::Iframe/Pframe already contains a complete frame (access unit).

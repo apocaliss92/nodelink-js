@@ -974,8 +974,6 @@ export interface DownloadRecordingParams {
   uid?: string;
   /** Recording identifier (usually one of the `fileName` returned by getVideoclips). */
   fileName: string;
-  /** Stream type for the recording. Default: "subStream" (matches PCAP observations for NVR). */
-  streamType?: "mainStream" | "subStream";
   timeoutMs?: number;
 }
 
@@ -990,7 +988,7 @@ export type PlaybackSnapshotStreamInfo = {
   frameRate?: number;
 };
 
-export type SnapshotFromPlaybackResult = {
+export type VideoclipThumbnailResult = {
   /** Raw I-frame data (H.264 or H.265) */
   frame: Buffer;
   /** Video encoding type detected from frame header */

@@ -56,6 +56,19 @@ export const BC_CMD_ID_FIND_REC_VIDEO_OPEN = 272; // <findAlarmVideo> (open)
 export const BC_CMD_ID_FIND_REC_VIDEO_GET = 273; // <findAlarmVideo> (get)
 export const BC_CMD_ID_FIND_REC_VIDEO_CLOSE = 274; // <findAlarmVideo> (close)
 
+// CoverPreview / Thumbnail commands
+// cmd_id=298: CoverPreview for NVR/HomeHub (XML-based, returns I-frame)
+export const BC_CMD_ID_COVER_PREVIEW = 298; // <CoverPreview> - I-frame from recording
+// cmd_id=458-462: Cover/Thumbnail for standalone cameras (PCAP-observed)
+// These appear to be batch/paged cover requests used by the Reolink app
+export const BC_CMD_ID_COVER_STANDALONE_458 = 458; // Standalone cover request type A
+export const BC_CMD_ID_COVER_STANDALONE_459 = 459; // Standalone cover request type B
+export const BC_CMD_ID_COVER_STANDALONE_460 = 460; // Standalone cover request type C (main)
+export const BC_CMD_ID_COVER_STANDALONE_461 = 461; // Standalone cover request type D
+export const BC_CMD_ID_COVER_STANDALONE_462 = 462; // Standalone cover request type E
+// Response cmd_id for cover data (observed in PCAP)
+export const BC_CMD_ID_COVER_RESPONSE = 138; // Response containing cover/thumbnail data (0x8A)
+
 // Talk / two-way audio command IDs
 export const BC_CMD_ID_TALK_ABILITY = 10; // MSG_ID_TALKABILITY - get talk ability/config
 export const BC_CMD_ID_TALK_RESET = 11; // MSG_ID_TALKRESET - stop/reset talk session

@@ -186,7 +186,7 @@ import type {
   RunMultifocalDiagnosticsConsecutivelyResult,
   SirenState,
   SleepStatus,
-  SnapshotFromPlaybackResult,
+  VideoclipThumbnailResult,
   StreamMetadata,
   StreamProfile,
   SupportInfo,
@@ -474,56 +474,184 @@ export class ReolinkBaichuanApi {
    * Queue for serializing listRecordings calls to prevent socket crashes from concurrent requests.
    */
   private recordingsQueue: RecordingsQueueItem[] = [];
-
-  /**
-   * Queue for thumbnail generation with limited concurrency (max 2 concurrent).
-   */
-  private thumbnailQueue: Array<{
-    run: () => Promise<void>;
-  }> = [];
-  private thumbnailActiveCount = 0;
-  private readonly thumbnailMaxConcurrency = 1;
   private recordingsQueueProcessing = false;
 
   /**
-   * Process thumbnail queue with limited concurrency.
+   * Map for de-duplicating in-flight replay operations.
+   * Key is a composite of operation type + fileName, value is the pending promise.
    */
-  private async processThumbnailQueue(): Promise<void> {
-    while (
-      this.thumbnailQueue.length > 0 &&
-      this.thumbnailActiveCount < this.thumbnailMaxConcurrency
-    ) {
-      const item = this.thumbnailQueue.shift();
-      if (!item) break;
+  private pendingReplayOperations = new Map<string, Promise<unknown>>();
 
-      this.thumbnailActiveCount++;
-      // Run without awaiting to allow parallel execution up to max concurrency
-      item.run().finally(() => {
-        this.thumbnailActiveCount--;
-        // Process next items when a slot frees up
-        void this.processThumbnailQueue();
-      });
+  /**
+   * Simple async queue for serializing replay operations.
+   * Operations are executed one at a time in FIFO order.
+   */
+  private replayQueue: Array<{
+    execute: () => Promise<void>;
+  }> = [];
+  private replayQueueProcessing = false;
+
+  /** Minimum delay between replay operations to give camera time to reset */
+  private readonly REPLAY_COOLDOWN_MS = 500;
+  private lastReplayEndTime = 0;
+
+  /**
+   * Queue for serializing getVideoclipThumbnail calls.
+   * Only one snapshot request can be in-flight at a time since the camera
+   * often rejects concurrent CoverPreview requests.
+   */
+  private videoclipThumbnailInFlight: Promise<VideoclipThumbnailResult> | null =
+    null;
+  private videoclipThumbnailQueue: Array<{
+    params: Parameters<ReolinkBaichuanApi["getVideoclipThumbnail"]>[0];
+    resolve: (result: VideoclipThumbnailResult) => void;
+    reject: (error: Error) => void;
+  }> = [];
+
+  /**
+   * Process the replay queue - executes operations one at a time.
+   */
+  private async processReplayQueue(): Promise<void> {
+    if (this.replayQueueProcessing) return;
+    this.replayQueueProcessing = true;
+
+    while (this.replayQueue.length > 0) {
+      const item = this.replayQueue.shift();
+      if (item) {
+        // Ensure minimum cooldown between replay operations
+        const timeSinceLastReplay = Date.now() - this.lastReplayEndTime;
+        if (timeSinceLastReplay < this.REPLAY_COOLDOWN_MS) {
+          await new Promise((r) =>
+            setTimeout(r, this.REPLAY_COOLDOWN_MS - timeSinceLastReplay),
+          );
+        }
+
+        await item.execute();
+
+        // Record when this operation ended
+        this.lastReplayEndTime = Date.now();
+      }
     }
+
+    this.replayQueueProcessing = false;
   }
 
   /**
-   * Enqueue a thumbnail operation with limited concurrency.
+   * Enqueue a replay operation with optional de-duplication.
+   * If dedupKey is provided and an operation with that key is in progress, returns the existing promise.
+   * Operations are serialized - only one runs at a time.
    */
-  private async enqueueThumbnailOperation<T>(
+  private enqueueReplayOperation<T>(
     operation: () => Promise<T>,
+    dedupKey?: string,
   ): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-      this.thumbnailQueue.push({
-        run: async () => {
-          try {
-            resolve(await operation());
-          } catch (e) {
-            reject(e);
-          }
-        },
-      });
-      void this.processThumbnailQueue();
+    // Check for de-duplication
+    if (dedupKey) {
+      const existing = this.pendingReplayOperations.get(dedupKey);
+      if (existing) {
+        this.logger?.debug?.(
+          `[ReplayQueue] Reusing existing promise for: ${dedupKey}`,
+        );
+        return existing as Promise<T>;
+      }
+    }
+
+    // Create the promise that will be resolved when the operation completes
+    let resolvePromise: (value: T) => void;
+    let rejectPromise: (error: unknown) => void;
+    const promise = new Promise<T>((resolve, reject) => {
+      resolvePromise = resolve;
+      rejectPromise = reject;
     });
+
+    // Track for de-duplication if key provided
+    if (dedupKey) {
+      this.pendingReplayOperations.set(dedupKey, promise);
+      promise.finally(() => {
+        this.pendingReplayOperations.delete(dedupKey);
+      });
+    }
+
+    // Add to queue
+    this.replayQueue.push({
+      execute: async () => {
+        try {
+          const result = await operation();
+          resolvePromise(result);
+        } catch (e) {
+          rejectPromise(e);
+        }
+      },
+    });
+
+    // Start processing (no-op if already processing)
+    void this.processReplayQueue();
+
+    return promise;
+  }
+
+  /**
+   * Enqueue a streaming replay operation.
+   * The queue slot is held until the returned release function is called.
+   * This is for operations like createRecordingReplayMp4Stream where the stream
+   * continues producing data after the initial setup.
+   *
+   * @param setup - Function that sets up the stream. Called when it's this operation's turn.
+   * @returns Promise that resolves when setup is complete, with the result and a release function.
+   */
+  private enqueueStreamingReplayOperation<T>(
+    setup: () => Promise<T>,
+  ): Promise<{ result: T; release: () => void }> {
+    let resolvePromise: (value: { result: T; release: () => void }) => void;
+    let rejectPromise: (error: unknown) => void;
+    const promise = new Promise<{ result: T; release: () => void }>(
+      (resolve, reject) => {
+        resolvePromise = resolve;
+        rejectPromise = reject;
+      },
+    );
+
+    // Add to queue
+    this.replayQueue.push({
+      execute: () => {
+        return new Promise<void>((releaseSlot) => {
+          // Run the setup
+          setup()
+            .then((result) => {
+              // Setup succeeded - resolve with result and release function
+              resolvePromise({
+                result,
+                release: () => releaseSlot(),
+              });
+            })
+            .catch((e) => {
+              // Setup failed - reject and release slot
+              rejectPromise(e);
+              releaseSlot();
+            });
+        });
+      },
+    });
+
+    // Start processing (no-op if already processing)
+    void this.processReplayQueue();
+
+    return promise;
+  }
+
+  /**
+   * Determine streamType from fileName automatically.
+   * Checks if there's an 'S' in the first 10 characters of the basename,
+   * which indicates subStream (e.g., RecS03_, RecS_).
+   */
+  private determineStreamTypeFromFileName(
+    fileName: string,
+  ): RecordingReplayStreamType {
+    // Extract basename (last part of path)
+    const basename = fileName.split("/").pop() ?? fileName;
+    // Check first 10 characters for 'S' (case-insensitive)
+    const prefix = basename.substring(0, 10).toUpperCase();
+    return prefix.includes("S") ? "subStream" : "mainStream";
   }
 
   /**
@@ -2909,32 +3037,8 @@ export class ReolinkBaichuanApi {
       // Discover UID: try explicit -> channel-specific (NVR) -> device-level (standalone)
       const uid = await this.ensureUidForRecordings(channel, params.uid);
 
-      // IMPORTANT: Reolink recordings are organized per-day.
-      // If start overflows into previous day, cap it to midnight of end's day.
-      let start = params.start;
+      const start = params.start;
       const end = params.end;
-      if (start && end) {
-        const startDay = new Date(
-          start.getFullYear(),
-          start.getMonth(),
-          start.getDate(),
-        );
-        const endDay = new Date(
-          end.getFullYear(),
-          end.getMonth(),
-          end.getDate(),
-        );
-        if (startDay.getTime() < endDay.getTime()) {
-          // Start is in a previous day - cap to midnight of end's day
-          start = endDay;
-          recordingsTraceLog(
-            dbg,
-            logger,
-            "getVideoclips",
-            `Start date capped to midnight: ${start.toISOString()} (was crossing days)`,
-          );
-        }
-      }
 
       recordingsTraceLog(
         dbg,
@@ -3271,12 +3375,14 @@ export class ReolinkBaichuanApi {
    * Dispatches to the appropriate method based on fileName format:
    * - NVR recordings have "/" in the path (e.g., "/mnt/...")
    * - Standalone recordings are just filenames
+   *
+   * NOTE: Only one replay stream can be active at a time on a single socket connection.
+   * Use enqueueReplayOperation() to serialize access.
    */
   async startRecordingReplayStream(params: {
     /** Channel number. Optional for standalone cameras (defaults to 0). Required for NVR. */
     channel?: number;
     fileName: string;
-    streamType?: RecordingReplayStreamType;
     timeoutMs?: number;
     logger?: Logger;
     /**
@@ -3296,7 +3402,8 @@ export class ReolinkBaichuanApi {
 
     // For standalone, default to channel 0. For NVR, channel is required.
     const channel = this.normalizeChannel(params.channel ?? 0);
-    const streamType = params.streamType ?? "mainStream";
+    // Auto-detect streamType from fileName
+    const streamType = this.determineStreamTypeFromFileName(params.fileName);
     const timeoutMs = params.timeoutMs ?? 20_000;
 
     // Determine NVR vs standalone mode:
@@ -3313,11 +3420,11 @@ export class ReolinkBaichuanApi {
       ...(params.logger != null ? { logger: params.logger } : {}),
     };
 
-    if (isNvr) {
-      return this.startRecordingReplayStreamNvr(commonParams);
-    } else {
-      return this.startRecordingReplayStreamStandalone(commonParams);
-    }
+    const result = isNvr
+      ? await this.startRecordingReplayStreamNvr(commonParams)
+      : await this.startRecordingReplayStreamStandalone(commonParams);
+
+    return result;
   }
 
   /** Legacy FileInfoList DL Video (cmdId=8). Returns response parsed as JSON. */
@@ -3569,110 +3676,124 @@ export class ReolinkBaichuanApi {
    *
    * Inspired by reolink_aio's snapshot_past functionality.
    *
+   * NOTE: Requests are queued and processed one at a time. The camera often
+   * rejects concurrent CoverPreview requests, so this serialization prevents
+   * unnecessary failures and retries.
+   *
    * @param params - Parameters for the snapshot
    * @returns Object containing the raw I-frame data and metadata
    */
-  async snapshotFromPlayback(params: {
+  async getVideoclipThumbnail(params: {
     /** Channel number (0-based) */
     channel?: number;
-    /** Timestamp to capture */
+    /** Timestamp to capture (start time) */
     time: Date;
+    /** Optional end time. If omitted, uses time + 10 seconds. For best results, use the full recording range. */
+    endTime?: Date;
     /** Stream type for snapshot quality ("main" or "sub", default: "sub") */
     snapType?: "main" | "sub";
     /** Optional UID for the camera (required for NVR). If omitted, will be discovered. */
     uid?: string;
     /** Timeout in milliseconds (default: 30000) */
     timeoutMs?: number;
-  }): Promise<SnapshotFromPlaybackResult> {
+  }): Promise<VideoclipThumbnailResult> {
+    // If no request in flight, execute immediately
+    if (!this.videoclipThumbnailInFlight) {
+      this.videoclipThumbnailInFlight = this._getVideoclipThumbnailImpl(params);
+      try {
+        return await this.videoclipThumbnailInFlight;
+      } finally {
+        this.videoclipThumbnailInFlight = null;
+        // Process next queued request if any
+        this._processVideoclipThumbnailQueue();
+      }
+    }
+
+    // Otherwise, queue the request and return a promise
+    return new Promise<VideoclipThumbnailResult>((resolve, reject) => {
+      this.videoclipThumbnailQueue.push({ params, resolve, reject });
+    });
+  }
+
+  /**
+   * Process the next item in the thumbnail queue.
+   */
+  private _processVideoclipThumbnailQueue(): void {
+    const next = this.videoclipThumbnailQueue.shift();
+    if (!next) return;
+
+    this.videoclipThumbnailInFlight = this._getVideoclipThumbnailImpl(
+      next.params,
+    );
+    this.videoclipThumbnailInFlight
+      .then((result) => {
+        next.resolve(result);
+      })
+      .catch((error) => {
+        next.reject(error instanceof Error ? error : new Error(String(error)));
+      })
+      .finally(() => {
+        this.videoclipThumbnailInFlight = null;
+        this._processVideoclipThumbnailQueue();
+      });
+  }
+
+  /**
+   * Internal implementation of getVideoclipThumbnail.
+   * This is the actual work - the public method handles queueing.
+   */
+  private async _getVideoclipThumbnailImpl(params: {
+    channel?: number;
+    time: Date;
+    endTime?: Date;
+    snapType?: "main" | "sub";
+    uid?: string;
+    timeoutMs?: number;
+  }): Promise<VideoclipThumbnailResult> {
     await this.client.login();
 
     const dbg = this.client.getDebugConfig?.();
     const logger = this.logger;
     const trace = (message: string): void =>
-      recordingsTraceLog(dbg, logger, "snapshotFromPlayback", message);
+      recordingsTraceLog(dbg, logger, "getVideoclipThumbnail", message);
 
     const channel = this.normalizeChannel(params.channel);
     const snapType = params.snapType ?? "sub";
+    // reolink_aio uses "{stream}Stream" format, e.g. "subStream" or "mainStream"
     const snapStreamType = snapType === "main" ? "mainStream" : "subStream";
     const timeoutMs = params.timeoutMs ?? 30_000;
     const time = params.time;
 
-    // NVR/Home Hub: CoverPreview may require per-channel UID to target the camera behind the NVR.
-    // Native-only: this will use push cache if available and will not fall back to HTTP/CGI.
-    const uid = await this.ensureUidForRecordings(channel, params.uid);
+    // CoverPreview requires a time range
+    // PCAP shows the app uses the full recording range, not just time + 10 seconds
+    const endTime = params.endTime ?? new Date(time.getTime() + 10_000);
 
-    // NVR/Home Hub: Baichuan header channelId often differs from logical channel.
-    // Best-effort: map logical channel -> header channelId using cmd_id=145 push cache.
-    const headerChannelIdOverride =
-      this.resolveHeaderChannelIdForLogicalChannel(channel);
-
-    // CoverPreview requires a time range - use 10 seconds from the target time
-    const endTime = new Date(time.getTime() + 10_000);
-
-    // Build CoverPreview XML (cmd_id=298)
-    // IMPORTANT: many Baichuan timestamps are exchanged as numeric components (YYYY/MM/DD hh:mm:ss)
-    // and our parsers often treat them as UTC to preserve the numeric values.
-    // Use UTC getters here so callers can safely pass Dates derived from Date.UTC(...)
-    // without introducing local timezone shifts.
-    // Some NVRs appear to accept only a specific payload channelId regardless of logical channel.
-    // Prioritize 0 first since alarmVideo blocks frequently report <logicChn>0</logicChn>.
-    const xmlChannelIdCandidates = [0, channel, channel + 1].filter(
-      (v, i, a) => a.indexOf(v) === i,
-    );
-
-    // Send the CoverPreview command and receive binary payload.
-    // PCAP (events+cover+download): CoverPreview verified working with headerChannelId=59, NO Extension
-    const headerChannelCandidates = [
-      59, // PCAP: verified working for CoverPreview
-      // This often differs from both logical channel and cmd145 push channelId.
-      54,
-      // Also observed for streamType=5 flows in the same capture.
-      181,
-      // For recordings-related commands, many firmwares use channel+1 in the header.
-      channel + 1,
-      headerChannelIdOverride,
-      // Common NVR/Hub variants (similar to snapshot cmd109 quirks).
-      undefined,
-      250,
-      0,
-      251,
-    ].filter((v, i, a) => a.indexOf(v) === i);
-    const streamTypeCandidates = [0, 5, 6];
-
-    const messageClassCandidates = [BC_CLASS_MODERN_24, BC_CLASS_MODERN_24_ALT];
-
-    trace(
-      `CoverPreview candidates: channel=${channel} snapStreamType=${snapStreamType} uid=${uid || "(missing)"} xmlChannelId=[${xmlChannelIdCandidates.join(",")}] headerChannelId=[${headerChannelCandidates.map((v) => (v == null ? "(default)" : String(v))).join(",")}] headerStreamType=[${streamTypeCandidates.join(",")}] messageClass=[${messageClassCandidates.join(",")}] timeoutMs=${timeoutMs}`,
-    );
-
-    const startedAt = Date.now();
-    let lastErr: unknown;
-    let payload: Buffer | undefined;
-    let attempts = 0;
-    const maxAttempts = 12;
-
-    for (const xmlCh of xmlChannelIdCandidates) {
-      const xml = `<?xml version="1.0" encoding="UTF-8" ?>
+    // Build CoverPreview XML exactly as seen in working PCAP capture:
+    // - <channelId> = logical channel (0-based)
+    // - NO <desc> tag (PCAP shows it's not present in working requests!)
+    // - NO <uid> for standalone cameras
+    // - streamType = "subStream" or "mainStream"
+    // NOTE: uses LOCAL time (not UTC) for timestamps
+    const xml = `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <CoverPreview version="1.1">
-<channelId>${xmlCh}</channelId>
-<uid>${uid}</uid>
+<channelId>${channel}</channelId>
 <streamType>${snapStreamType}</streamType>
 <startTime>
-<year>${time.getUTCFullYear()}</year>
-<month>${time.getUTCMonth() + 1}</month>
-<day>${time.getUTCDate()}</day>
-<hour>${time.getUTCHours()}</hour>
-<minute>${time.getUTCMinutes()}</minute>
-<second>${time.getUTCSeconds()}</second>
+<year>${time.getFullYear()}</year>
+<month>${time.getMonth() + 1}</month>
+<day>${time.getDate()}</day>
+<hour>${time.getHours()}</hour>
+<minute>${time.getMinutes()}</minute>
+<second>${time.getSeconds()}</second>
 </startTime>
 <endTime>
-<year>${endTime.getUTCFullYear()}</year>
-<month>${endTime.getUTCMonth() + 1}</month>
-<day>${endTime.getUTCDate()}</day>
-<hour>${endTime.getUTCHours()}</hour>
-<minute>${endTime.getUTCMinutes()}</minute>
-<second>${endTime.getUTCSeconds()}</second>
+<year>${endTime.getFullYear()}</year>
+<month>${endTime.getMonth() + 1}</month>
+<day>${endTime.getDate()}</day>
+<hour>${endTime.getHours()}</hour>
+<minute>${endTime.getMinutes()}</minute>
+<second>${endTime.getSeconds()}</second>
 </endTime>
 <frameList>
 <frameNo>1</frameNo>
@@ -3680,69 +3801,40 @@ export class ReolinkBaichuanApi {
 </CoverPreview>
 </body>`;
 
-      for (const chId of headerChannelCandidates) {
-        for (const st of streamTypeCandidates) {
-          const remaining = timeoutMs - (Date.now() - startedAt);
-          if (remaining <= 0) break;
-          if (attempts >= maxAttempts) break;
-          // Keep per-attempt time low so we can scan multiple shapes within the global timeout.
-          const attemptTimeoutMs = Math.min(2_500, remaining);
+    trace(
+      `CoverPreview: channel=${channel} snapStreamType=${snapStreamType} time=${time.toISOString()} timeoutMs=${timeoutMs}`,
+    );
+    trace(`CoverPreview XML:\n${xml}`);
 
-          attempts++;
-          trace(
-            `CoverPreview attempt=${attempts} xmlCh=${xmlCh} headerCh=${chId == null ? "(default)" : chId} headerStreamType=${st} attemptTimeoutMs=${attemptTimeoutMs}`,
-          );
-          for (const messageClass of messageClassCandidates) {
-            try {
-              payload = await this.client.sendBinaryCoverPreview({
-                cmdId: 298,
-                channel,
-                ...(typeof chId === "number"
-                  ? { channelIdOverride: chId }
-                  : {}),
-                // PCAP: request msgNum is 0 for this flow.
-                msgNumOverride: 0,
-                messageClass,
-                // PCAP analysis: CoverPreview requests have NO Extension XML (verified working)
-                // extensionXml: undefined,
-                streamType: st,
-                payloadXml: xml,
-                timeoutMs: attemptTimeoutMs,
-              });
-              break;
-            } catch (e) {
-              lastErr = e;
-              const msg = e instanceof Error ? e.message : String(e);
-              trace(
-                `CoverPreview attempt=${attempts} mc=${messageClass} failed: ${msg}`,
-              );
-              // Timeouts can be variant-dependent; keep trying other shapes within the global timeout.
-              if (msg.includes("timeout waiting CoverPreview push")) {
-                continue;
-              }
-              // Only try alternates on explicit reject; other errors likely won't improve.
-              if (
-                !msg.includes("rejected") &&
-                !msg.includes("responseCode=400")
-              ) {
-                break;
-              }
-            }
-          }
-
-          if (payload != null) {
-            break;
-          }
-        }
-        if (payload != null) break;
-      }
-      if (payload != null) break;
-    }
-
-    if (!payload) {
-      throw lastErr instanceof Error
-        ? lastErr
-        : new Error(String(lastErr ?? "CoverPreview failed"));
+    // reolink_aio calls: send_payload(cmd_id=298, body=xml)
+    // - message_class="1464" (0x6414) → BC_CLASS_MODERN_24
+    // - No extension XML
+    // PCAP analysis shows: ch_id is a counter (29,30,32,33...), NOT 250!
+    // Let it use the default channelId from the client (nextMsgNum-based)
+    //
+    // NOTE: Retry logic is now handled inside sendBinaryCoverPreview (moved to BaichuanClient).
+    // PCAP analysis shows the camera often rejects first few requests with 400 before accepting.
+    let payload: Buffer;
+    try {
+      payload = await this.client.sendBinaryCoverPreview({
+        cmdId: 298,
+        // PCAP shows: ch_id is a SESSION COUNTER (29,30,31...), NOT 250 or channel+1!
+        // Let the client use its internal counter by NOT passing channelIdOverride
+        // PCAP shows: msgNum=0 for all CoverPreview requests
+        msgNumOverride: 0,
+        messageClass: BC_CLASS_MODERN_24,
+        streamType: 0,
+        payloadXml: xml,
+        timeoutMs,
+        // Retry parameters - camera often rejects first few requests
+        maxRetries: 8,
+        retryDelayMs: 1500,
+      });
+      trace(`CoverPreview succeeded`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      trace(`CoverPreview failed: ${msg}`);
+      throw e;
     }
 
     // Parse stream header
@@ -3963,7 +4055,7 @@ export class ReolinkBaichuanApi {
     if (fr > 0) streamInfo.frameRate = fr;
 
     // Build result conditionally for frameTime
-    const result: SnapshotFromPlaybackResult = {
+    const result: VideoclipThumbnailResult = {
       frame,
       encoding,
       frameLength: frameLen,
@@ -3975,13 +4067,14 @@ export class ReolinkBaichuanApi {
   }
 
   /**
-   * Like {@link ReolinkBaichuanApi#snapshotFromPlayback | snapshotFromPlayback}, but returns a JPEG.
+   * Like {@link ReolinkBaichuanApi#getVideoclipThumbnail | getVideoclipThumbnail}, but returns a JPEG.
    *
    * Uses `ffmpeg` to decode the CoverPreview I-frame.
    */
-  async snapshotJpegFromPlayback(params: {
+  async getVideoclipThumbnailJpeg(params: {
     channel?: number;
     time: Date;
+    endTime?: Date;
     snapType?: "main" | "sub";
     timeoutMs?: number;
     ffmpegPath?: string;
@@ -3992,6 +4085,7 @@ export class ReolinkBaichuanApi {
     const snapParams: {
       channel?: number;
       time: Date;
+      endTime?: Date;
       snapType?: "main" | "sub";
       timeoutMs?: number;
     } = {
@@ -3999,9 +4093,10 @@ export class ReolinkBaichuanApi {
       timeoutMs,
     };
     if (params.channel !== undefined) snapParams.channel = params.channel;
+    if (params.endTime !== undefined) snapParams.endTime = params.endTime;
     if (params.snapType !== undefined) snapParams.snapType = params.snapType;
 
-    const snap = await this.snapshotFromPlayback(snapParams);
+    const snap = await this.getVideoclipThumbnail(snapParams);
 
     return this.decodeCoverPreviewFrameToJpeg({
       frame: snap.frame,
@@ -4423,8 +4518,6 @@ export class ReolinkBaichuanApi {
     fileName: string;
     /** Optional UID; if omitted, the library will attempt to infer/discover it. */
     uid?: string;
-    /** Stream type for recording. Not used in payload but kept for API consistency. */
-    streamType?: RecordingReplayStreamType;
     timeoutMs?: number;
   }): Promise<Buffer> {
     await this.client.login();
@@ -4592,7 +4685,6 @@ export class ReolinkBaichuanApi {
     fileName: string;
     /** Optional UID; if omitted, the library will attempt to infer/discover it. */
     uid?: string;
-    streamType?: RecordingReplayStreamType;
     timeoutMs?: number;
   }): Promise<Buffer> {
     await this.client.login();
@@ -4612,8 +4704,8 @@ export class ReolinkBaichuanApi {
     const headerChannelIdOverride =
       this.resolveHeaderChannelIdForLogicalChannel(channel);
     const ident = params.fileName;
-    // PCAP analysis: NVR recordings use subStream by default
-    const streamType = params.streamType ?? "subStream";
+    // Auto-detect streamType from fileName
+    const streamType = this.determineStreamTypeFromFileName(params.fileName);
 
     // Simplified: use resolved headerChannelId or 82 for NVR, 0 for standalone
     const isNvr = headerChannelIdOverride != null;
@@ -4660,72 +4752,71 @@ export class ReolinkBaichuanApi {
   }
 
   async downloadRecording(params: DownloadRecordingParams): Promise<Buffer> {
-    await this.client.login();
+    // Use replay queue to serialize all download operations on this socket
+    return this.enqueueReplayOperation(async () => {
+      await this.client.login();
 
-    const channel = this.normalizeChannel(params.channel);
-    const uid = await this.ensureUidForRecordings(channel, params.uid);
-    const fileName = params.fileName;
-    // PCAP analysis shows NVR recordings are stored as subStream
-    const streamType = params.streamType ?? "subStream";
+      const channel = this.normalizeChannel(params.channel);
+      const uid = await this.ensureUidForRecordings(channel, params.uid);
+      const fileName = params.fileName;
 
-    let replayErr: unknown;
-    try {
-      return await this.fileInfoListReplayBinaryDownload({
-        channel,
-        uid,
-        fileName,
-        streamType,
-        ...(params.timeoutMs != null ? { timeoutMs: params.timeoutMs } : {}),
-      });
-    } catch (e) {
-      replayErr = e;
-    }
-
-    let downloadErr: unknown;
-    try {
-      return await this.fileInfoListDownload({
-        channel,
-        uid,
-        fileName,
-        streamType,
-        ...(params.timeoutMs != null ? { timeoutMs: params.timeoutMs } : {}),
-      });
-    } catch (e) {
-      downloadErr = e;
-    }
-
-    // Third fallback: paged download via cmdId=14/15/16
-    // This works for TrackMix PoE and other cameras where cmdId=5/13 return empty
-    try {
-      const result = await this.fileInfoListPagedDownload({
-        channel,
-        uid,
-        fileName,
-        ...(params.timeoutMs != null ? { timeoutMs: params.timeoutMs } : {}),
-      });
-      if (result.length > 0) {
-        return result;
+      let replayErr: unknown;
+      try {
+        return await this.fileInfoListReplayBinaryDownload({
+          channel,
+          uid,
+          fileName,
+          ...(params.timeoutMs != null ? { timeoutMs: params.timeoutMs } : {}),
+        });
+      } catch (e) {
+        replayErr = e;
       }
-    } catch (e) {
-      // Fall through to error
-    }
 
-    const replayMsg =
-      replayErr instanceof Error
-        ? replayErr.message
-        : replayErr != null
-          ? String(replayErr)
-          : "";
-    const dlMsg =
-      downloadErr instanceof Error
-        ? downloadErr.message
-        : downloadErr != null
-          ? String(downloadErr)
-          : "";
-    // Native-only: do not fall back to HTTP/CGI.
-    throw new Error(
-      `Baichuan download failed (native-only). replay(cmdId=${BC_CMD_ID_FILE_INFO_LIST_REPLAY}) err=${replayMsg || "(unknown)"}; download(cmdId=${BC_CMD_ID_FILE_INFO_LIST_DOWNLOAD}) err=${dlMsg}`,
-    );
+      let downloadErr: unknown;
+      try {
+        return await this.fileInfoListDownload({
+          channel,
+          uid,
+          fileName,
+          ...(params.timeoutMs != null ? { timeoutMs: params.timeoutMs } : {}),
+        });
+      } catch (e) {
+        downloadErr = e;
+      }
+
+      // Third fallback: paged download via cmdId=14/15/16
+      // This works for TrackMix PoE and other cameras where cmdId=5/13 return empty
+      try {
+        const result = await this.fileInfoListPagedDownload({
+          channel,
+          uid,
+          fileName,
+          ...(params.timeoutMs != null ? { timeoutMs: params.timeoutMs } : {}),
+        });
+        if (result.length > 0) {
+          return result;
+        }
+      } catch (e) {
+        // Fall through to error
+      }
+
+      const replayMsg =
+        replayErr instanceof Error
+          ? replayErr.message
+          : replayErr != null
+            ? String(replayErr)
+            : "";
+      const dlMsg =
+        downloadErr instanceof Error
+          ? downloadErr.message
+          : downloadErr != null
+            ? String(downloadErr)
+            : "";
+      // Native-only: do not fall back to HTTP/CGI.
+      throw new Error(
+        `Baichuan download failed (native-only). replay(cmdId=${BC_CMD_ID_FILE_INFO_LIST_REPLAY}) err=${replayMsg || "(unknown)"}; download(cmdId=${BC_CMD_ID_FILE_INFO_LIST_DOWNLOAD}) err=${dlMsg}`,
+      );
+    });
   }
 
   /**
@@ -4936,19 +5027,22 @@ export class ReolinkBaichuanApi {
     channel?: number;
     /** Recording file name/path */
     fileName: string;
-    /** Stream type for thumbnail extraction (default: "mainStream") */
-    streamType?: RecordingReplayStreamType;
     /** Timeout in ms (default: 15000) */
     timeoutMs?: number;
     /** Path to ffmpeg binary (default: "ffmpeg") */
     ffmpegPath?: string;
   }): Promise<Buffer> {
-    return this.enqueueThumbnailOperation(async () => {
-      const channel = this.normalizeChannel(params.channel ?? 0);
-      const streamType = params.streamType ?? "mainStream";
-      const timeoutMs = params.timeoutMs ?? 15_000;
-      const ffmpegPath = params.ffmpegPath ?? "ffmpeg";
+    const channel = this.normalizeChannel(params.channel ?? 0);
+    // Auto-detect streamType from fileName
+    const streamType = this.determineStreamTypeFromFileName(params.fileName);
+    const timeoutMs = params.timeoutMs ?? 15_000;
+    const ffmpegPath = params.ffmpegPath ?? "ffmpeg";
 
+    // Use de-duplication key for this thumbnail request
+    const dedupKey = `thumbnail:${channel}:${params.fileName}`;
+
+    // Enqueue with de-duplication - if same request is in progress, returns existing promise
+    return this.enqueueReplayOperation(async () => {
       this.logger?.debug?.(
         `[getRecordingThumbnail] Extracting thumbnail via streaming: channel=${channel}, file=${params.fileName}, streamType=${streamType}`,
       );
@@ -4957,7 +5051,6 @@ export class ReolinkBaichuanApi {
       const { stream, stop } = await this.startRecordingReplayStream({
         channel,
         fileName: params.fileName,
-        streamType,
         timeoutMs,
       });
 
@@ -5097,7 +5190,7 @@ export class ReolinkBaichuanApi {
       } finally {
         await stop().catch(() => {});
       }
-    });
+    }, dedupKey);
   }
 
   /**
@@ -5176,7 +5269,6 @@ export class ReolinkBaichuanApi {
   async getRecordingVideoViaStreaming(params: {
     channel?: number;
     fileName: string;
-    streamType?: "mainStream" | "subStream";
     /** Maximum streaming duration in ms (default: 300000 = 5 min) */
     maxDurationMs?: number;
     /** Idle timeout - stop if no frames received for this duration (default: 10000ms) */
@@ -5204,7 +5296,6 @@ export class ReolinkBaichuanApi {
     const { stream, stop } = await this.startRecordingReplayStream({
       channel,
       fileName: params.fileName,
-      streamType: params.streamType ?? "mainStream",
       timeoutMs: 30_000,
     });
 
@@ -10252,7 +10343,7 @@ export class ReolinkBaichuanApi {
    *
    * Implementation detail: uses `ffmpeg` from PATH (same dependency already used by endpoints-server VOD streaming).
    */
-  async snapshotFromPlaybackJpeg(params: {
+  async getVideoclipThumbnailJpegRaw(params: {
     channel?: number;
     time: Date;
     snapType?: "main" | "sub";
@@ -10261,9 +10352,9 @@ export class ReolinkBaichuanApi {
     jpegQuality?: number;
   }): Promise<{
     jpeg: Buffer;
-    snapshot: SnapshotFromPlaybackResult;
+    snapshot: VideoclipThumbnailResult;
   }> {
-    const snapshot = await this.snapshotFromPlayback(params);
+    const snapshot = await this.getVideoclipThumbnail(params);
     const enc = String(snapshot.encoding || "").toUpperCase();
     const demux = enc.includes("265") || enc.includes("HEVC") ? "hevc" : "h264";
     const q = params.jpegQuality ?? 2;
@@ -10328,19 +10419,18 @@ export class ReolinkBaichuanApi {
    * Notes:
    * - This is video-only (audio is currently not muxed).
    * - Uses `ffmpeg` from PATH.
+   * - Operations are serialized via the replay queue.
    */
   async createRecordingReplayMp4Stream(params: {
     /** Channel number (0-based). Required. */
     channel: number;
     /** Full path to the recording file. Required. Duration is extracted from filename. */
     fileName: string;
-    /** Assumed input FPS for muxing when timestamps are missing. Default: 25. */
-    fps?: number;
   }): Promise<{
     mp4: Readable;
     stop: () => Promise<void>;
   }> {
-    const fps = params.fps ?? 25;
+    const fps = 25; // Default FPS for muxing
 
     // Extract duration from filename timestamps
     const parsed = parseRecordingFileName(params.fileName);
@@ -10356,8 +10446,13 @@ export class ReolinkBaichuanApi {
       logger: this.logger,
     };
 
-    const { stream, stop: stopReplay } =
-      await this.startRecordingReplayStream(startParams);
+    // Use streaming queue - holds the slot until release() is called
+    const { result: replayResult, release: releaseQueueSlot } =
+      await this.enqueueStreamingReplayOperation(() =>
+        this.startRecordingReplayStream(startParams),
+      );
+
+    const { stream, stop: stopReplay } = replayResult;
 
     const input = new PassThrough();
     const output = new PassThrough();
@@ -10442,6 +10537,8 @@ export class ReolinkBaichuanApi {
       } catch {
         // ignore
       }
+      // Release queue slot when stream ends
+      releaseQueueSlot();
     };
 
     const timer = setTimeout(
@@ -10507,30 +10604,24 @@ export class ReolinkBaichuanApi {
     channel: number;
     /** Full path to the recording file. Required. */
     fileName: string;
-    /** Stream type. Default: subStream (as used by NVR recordings). */
-    streamType?: "mainStream" | "subStream";
-    /** Assumed input FPS for muxing. Default: 25. */
-    fps?: number;
     /** Download timeout in ms. Default: 120000 (2 minutes). */
     timeoutMs?: number;
   }): Promise<{
     mp4: Readable;
     stop: () => Promise<void>;
   }> {
-    const fps = params.fps ?? 25;
+    const fps = 25; // Default FPS for muxing
     const timeoutMs = params.timeoutMs ?? 120_000;
 
     // Get UID for the channel (required for download)
     const channel = this.normalizeChannel(params.channel);
     const uid = await this.ensureUidForRecordings(channel);
-    const streamType = params.streamType ?? "subStream";
 
     // Download and demux the recording
     const { annexB, videoType } = await this.downloadRecordingDemuxed({
       channel,
       uid,
       fileName: params.fileName,
-      streamType,
       timeoutMs,
     });
 
@@ -10773,10 +10864,6 @@ export class ReolinkBaichuanApi {
   async standaloneDownloadRecording(params: {
     /** Full path to the recording file (from listRecordings) */
     fileName: string;
-    /** Stream type (default: subStream for faster downloads) */
-    streamType?: "mainStream" | "subStream";
-    /** FPS for MP4 muxing (default: 25) */
-    fps?: number;
     /** Timeout in ms (default: 120000) */
     timeoutMs?: number;
   }): Promise<{
@@ -10786,15 +10873,11 @@ export class ReolinkBaichuanApi {
     stop: () => Promise<void>;
   }> {
     const channel = 0; // Standalone cameras always use channel 0
-    const streamType = params.streamType ?? "subStream";
-    const fps = params.fps ?? 25;
     const timeoutMs = params.timeoutMs ?? 120_000;
 
     return await this.createRecordingDownloadMp4Stream({
       channel,
       fileName: params.fileName,
-      streamType,
-      fps,
       timeoutMs,
     });
   }
@@ -10829,12 +10912,12 @@ export class ReolinkBaichuanApi {
     snapType?: "main" | "sub";
     /** Timeout in ms (default: 30000) */
     timeoutMs?: number;
-  }): Promise<SnapshotFromPlaybackResult> {
+  }): Promise<VideoclipThumbnailResult> {
     const channel = 0; // Standalone cameras always use channel 0
     const snapType = params.snapType ?? "sub";
     const timeoutMs = params.timeoutMs ?? 30_000;
 
-    return await this.snapshotFromPlayback({
+    return await this.getVideoclipThumbnail({
       channel,
       time: params.time,
       snapType,

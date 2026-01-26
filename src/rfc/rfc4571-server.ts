@@ -1,10 +1,13 @@
-import type net from 'node:net';
-import netImpl from 'node:net';
-import type { ReolinkBaichuanApi } from '../reolink/baichuan/ReolinkBaichuanApi';
-import type { NativeVideoStreamVariant } from '../reolink/baichuan/types';
-import type { StreamProfile } from '../reolink/baichuan/types';
-import { BaichuanVideoStream } from '../baichuan/stream/BaichuanVideoStream';
-import { CompositeStream, type CompositeStreamPipOptions } from '../multifocal/compositeStream';
+import type net from "node:net";
+import netImpl from "node:net";
+import type { ReolinkBaichuanApi } from "../reolink/baichuan/ReolinkBaichuanApi";
+import type { NativeVideoStreamVariant } from "../reolink/baichuan/types";
+import type { StreamProfile } from "../reolink/baichuan/types";
+import { BaichuanVideoStream } from "../baichuan/stream/BaichuanVideoStream";
+import {
+  CompositeStream,
+  type CompositeStreamPipOptions,
+} from "../multifocal/compositeStream";
 import {
   buildRfc4571Sdp,
   buildAacAudioSpecificConfigHex,
@@ -15,7 +18,7 @@ import {
   type AudioConfig,
   type VideoParamSets,
   type VideoType,
-} from './rfc4571';
+} from "./rfc4571";
 // (no RTSP URL helpers needed here: we reuse buildVideoStreamOptions)
 
 export interface Rfc4571ApiFactoryContext {
@@ -36,9 +39,9 @@ export interface Rfc4571TcpServerOptions {
    * Optional API factory. If provided, `createRfc4571TcpServer` will call it once to obtain the base API.
    * This is useful when the caller wants to defer login/session creation until stream startup.
    */
-  getApi?: (ctx?: Rfc4571ApiFactoryContext) =>
-    | Promise<ReolinkBaichuanApi>
-    | ReolinkBaichuanApi;
+  getApi?: (
+    ctx?: Rfc4571ApiFactoryContext,
+  ) => Promise<ReolinkBaichuanApi> | ReolinkBaichuanApi;
   /** Channel number. If undefined, uses composite stream (multifocal cameras). */
   channel?: number;
   /** Stream profile. For composite streams, this selects the tele profile; wider is forced to `sub` (unless `ext`). */
@@ -80,7 +83,7 @@ export interface Rfc4571TcpServerOptions {
 
   /**
    * Optional identifier for the requested stream. Used to infer composite profile pairing
-    * (e.g. "composite-native-default-sub-sub", "composite-rtsp-default-sub-sub").
+   * (e.g. "composite-native-default-sub-sub", "composite-rtsp-default-sub-sub").
    */
   requestedId?: string;
 
@@ -107,7 +110,7 @@ export interface Rfc4571TcpServer {
   port: number;
   sdp: string;
   videoType: VideoType;
-  audio?: { codec: 'aac'; sampleRate: number; channels: number };
+  audio?: { codec: "aac"; sampleRate: number; channels: number };
   username: string;
   password: string;
 
@@ -125,22 +128,33 @@ export async function createRfc4571TcpServer(
   const parseCompositeFromRequestedId = (
     requestedId: string | undefined,
   ):
-    | { source: 'native' | 'rtsp'; widerProfile?: StreamProfile; teleProfile?: StreamProfile }
+    | {
+        source: "native" | "rtsp";
+        widerProfile?: StreamProfile;
+        teleProfile?: StreamProfile;
+      }
     | undefined => {
     if (!requestedId) return;
     const id = String(requestedId);
 
     const asProfile = (v: string | undefined): StreamProfile | undefined =>
-      v === 'main' || v === 'sub' || v === 'ext' ? (v as StreamProfile) : undefined;
+      v === "main" || v === "sub" || v === "ext"
+        ? (v as StreamProfile)
+        : undefined;
 
     // Explicit source forms:
     // - composite-native-<wider>-<tele>
     // - composite-native-<variant>-<wider>-<tele>
     // - composite-rtsp-<wider>-<tele>
     // - composite-rtsp-<variant>-<wider>-<tele>
-    if (id.startsWith('composite-native-') || id.startsWith('composite-rtsp-')) {
-      const source: 'native' | 'rtsp' = id.startsWith('composite-rtsp-') ? 'rtsp' : 'native';
-      const parts = id.split('-').filter(Boolean);
+    if (
+      id.startsWith("composite-native-") ||
+      id.startsWith("composite-rtsp-")
+    ) {
+      const source: "native" | "rtsp" = id.startsWith("composite-rtsp-")
+        ? "rtsp"
+        : "native";
+      const parts = id.split("-").filter(Boolean);
       // parts[0] === 'composite'
       // parts[1] === 'native' | 'rtsp'
       if (parts.length >= 4) {
@@ -167,14 +181,13 @@ export async function createRfc4571TcpServer(
     ...(options.variant !== undefined ? { variant: options.variant } : {}),
   };
 
-  const baseApi =
-    options.api ??
-    (await options.getApi?.(apiFactoryCtx));
+  const baseApi = options.api ?? (await options.getApi?.(apiFactoryCtx));
   if (!baseApi) {
-    throw new Error('createRfc4571TcpServer: missing api/getApi');
+    throw new Error("createRfc4571TcpServer: missing api/getApi");
   }
 
-  const resolvedCompositeApis = options.compositeApis ?? (await options.getCompositeApis?.());
+  const resolvedCompositeApis =
+    options.compositeApis ?? (await options.getCompositeApis?.());
 
   const {
     channel,
@@ -182,7 +195,7 @@ export async function createRfc4571TcpServer(
     variant,
     logger,
     expectedVideoType,
-    host = '127.0.0.1',
+    host = "127.0.0.1",
     videoPayloadType = 96,
     audioPayloadType = 97,
     keyframeTimeoutMs = 5000,
@@ -199,15 +212,18 @@ export async function createRfc4571TcpServer(
 
   const apisToClose = new Set<ReolinkBaichuanApi>();
   apisToClose.add(baseApi);
-  if (resolvedCompositeApis?.widerApi) apisToClose.add(resolvedCompositeApis.widerApi);
-  if (resolvedCompositeApis?.teleApi) apisToClose.add(resolvedCompositeApis.teleApi);
+  if (resolvedCompositeApis?.widerApi)
+    apisToClose.add(resolvedCompositeApis.widerApi);
+  if (resolvedCompositeApis?.teleApi)
+    apisToClose.add(resolvedCompositeApis.teleApi);
 
   // For composite (ffmpeg) streams, avoid over-aggressive restarts: a short burst of
   // backpressure or a long GOP on join can look like "no activity" even though the pipeline is alive.
   const uptimeRestartMs = uptimeRestartMsOpt ?? (isComposite ? 60_000 : 10_000);
-  const variantSuffix = variant && variant !== 'default' ? ` variant=${variant}` : '';
+  const variantSuffix =
+    variant && variant !== "default" ? ` variant=${variant}` : "";
   const logPrefix = isComposite
-    ? `[native-rfc4571 composite profile=${profile}${variantSuffix}${requestedId ? ` id=${requestedId}` : ''}]`
+    ? `[native-rfc4571 composite profile=${profile}${variantSuffix}${requestedId ? ` id=${requestedId}` : ""}]`
     : `[native-rfc4571 ch=${channel} profile=${profile}${variantSuffix}]`;
   const log = (message: string) => {
     try {
@@ -222,7 +238,7 @@ export async function createRfc4571TcpServer(
   };
 
   log(
-    `starting (host=${host} videoPT=${videoPayloadType} audioPT=${audioPayloadType} expectedVideoType=${expectedVideoType ?? 'n/a'} keyframeTimeoutMs=${keyframeTimeoutMs} uptimeRestartMs=${uptimeRestartMs} idleTeardownMs=${idleTeardownMs} composite=${isComposite})`,
+    `starting (host=${host} videoPT=${videoPayloadType} audioPT=${audioPayloadType} expectedVideoType=${expectedVideoType ?? "n/a"} keyframeTimeoutMs=${keyframeTimeoutMs} uptimeRestartMs=${uptimeRestartMs} idleTeardownMs=${idleTeardownMs} composite=${isComposite})`,
   );
 
   let videoStream: BaichuanVideoStream | CompositeStream;
@@ -236,7 +252,8 @@ export async function createRfc4571TcpServer(
     // `options.profile` is the *output* profile requested by the caller.
     // `requestedId` encodes *input* selection (widerProfile + teleProfile).
     const outputProfile: StreamProfile = profile;
-    let teleInputProfile: StreamProfile = requested?.teleProfile ?? outputProfile;
+    let teleInputProfile: StreamProfile =
+      requested?.teleProfile ?? outputProfile;
 
     // Default wider selection:
     // - If explicitly requested via id: obey.
@@ -245,26 +262,30 @@ export async function createRfc4571TcpServer(
     let widerMainIsH264 = false;
     try {
       const widerApiForProbe = resolvedCompositeApis?.widerApi ?? baseApi;
-      const metadata: any = await widerApiForProbe.getStreamMetadata(widerChannel);
+      const metadata: any =
+        await widerApiForProbe.getStreamMetadata(widerChannel);
       const streams: any[] = Array.isArray(metadata)
         ? metadata
         : Array.isArray(metadata?.streams)
           ? metadata.streams
           : [];
-      const main = streams.find((s: any) => s?.profile === 'main');
-      const enc = typeof main?.videoEncType === 'string' ? main.videoEncType.toLowerCase() : '';
-      widerMainIsH264 = enc.includes('264');
+      const main = streams.find((s: any) => s?.profile === "main");
+      const enc =
+        typeof main?.videoEncType === "string"
+          ? main.videoEncType.toLowerCase()
+          : "";
+      widerMainIsH264 = enc.includes("264");
     } catch {
       // ignore
     }
 
     let widerInputProfile: StreamProfile =
       requested?.widerProfile ??
-      (outputProfile === 'ext'
-        ? 'ext'
-        : (outputProfile === 'main' && widerMainIsH264)
-          ? 'main'
-          : 'sub');
+      (outputProfile === "ext"
+        ? "ext"
+        : outputProfile === "main" && widerMainIsH264
+          ? "main"
+          : "sub");
 
     if (requested?.teleProfile && requested.teleProfile !== outputProfile) {
       log(
@@ -273,8 +294,8 @@ export async function createRfc4571TcpServer(
     }
     log(
       `creating composite stream: outputProfile=${outputProfile} ` +
-      `wider(ch=${widerChannel}, profile=${widerInputProfile}), tele(ch=${teleChannel}, profile=${teleInputProfile}) ` +
-      `source=${requested?.source ?? 'native'} widerMainIsH264=${widerMainIsH264}`,
+        `wider(ch=${widerChannel}, profile=${widerInputProfile}), tele(ch=${teleChannel}, profile=${teleInputProfile}) ` +
+        `source=${requested?.source ?? "native"} widerMainIsH264=${widerMainIsH264}`,
     );
 
     const widerApi = resolvedCompositeApis?.widerApi ?? baseApi;
@@ -283,18 +304,18 @@ export async function createRfc4571TcpServer(
     // Default behavior: keep `main` untouched (may be H.265), but force H.264 inputs on `sub`.
     // Callers can still override explicitly via compositeOptions.forceH264.
     const forceH264 = compositeOptions?.forceH264;
-    const defaultForceH264 = outputProfile === 'sub';
+    const defaultForceH264 = outputProfile === "sub";
 
     // Optional: RTSP pair inputs (requested via id: composite-rtsp-...)
     let widerRtspUrl: string | undefined;
     let teleRtspUrl: string | undefined;
-    if (requested?.source === 'rtsp') {
+    if (requested?.source === "rtsp") {
       const onNvr = Boolean(compositeOptions?.onNvr);
 
       const resolveLensRtspUrl = async (params: {
         channel: number;
         lens: NativeVideoStreamVariant;
-        desiredLens: 'wide' | 'telephoto';
+        desiredLens: "wide" | "telephoto";
         profile: StreamProfile;
       }): Promise<{ urlWithAuth: string; actualProfile: StreamProfile }> => {
         const { rtspStreams } = await baseApi.buildVideoStreamOptions({
@@ -305,31 +326,42 @@ export async function createRfc4571TcpServer(
         });
 
         const candidates = rtspStreams.filter(
-          (s) => s.container === 'rtsp' && s.lens === params.desiredLens && Boolean(s.urlWithAuth),
+          (s) =>
+            s.container === "rtsp" &&
+            s.lens === params.desiredLens &&
+            Boolean(s.urlWithAuth),
         );
 
         const exact = candidates.find((s) => s.profile === params.profile);
         if (exact?.urlWithAuth) {
-          return { urlWithAuth: exact.urlWithAuth, actualProfile: exact.profile };
+          return {
+            urlWithAuth: exact.urlWithAuth,
+            actualProfile: exact.profile,
+          };
         }
 
         // Some NVR/Hub firmwares expose tele RTSP only as `main` (e.g. Preview_XX_autotrack).
         // If `sub` is requested but missing, fall back to `main`.
-        if (params.profile === 'sub') {
-          const fallbackMain = candidates.find((s) => s.profile === 'main');
+        if (params.profile === "sub") {
+          const fallbackMain = candidates.find((s) => s.profile === "main");
           if (fallbackMain?.urlWithAuth) {
-            return { urlWithAuth: fallbackMain.urlWithAuth, actualProfile: fallbackMain.profile };
+            return {
+              urlWithAuth: fallbackMain.urlWithAuth,
+              actualProfile: fallbackMain.profile,
+            };
           }
         }
 
         const available = rtspStreams
-          .filter((s) => s.container === 'rtsp' && s.lens === params.desiredLens)
+          .filter(
+            (s) => s.container === "rtsp" && s.lens === params.desiredLens,
+          )
           .map((s) => `${s.profile}:${s.id}`)
-          .join(', ');
+          .join(", ");
 
         throw new Error(
           `Requested composite RTSP inputs, but no RTSP ${params.desiredLens} stream found for channel=${params.channel} profile=${params.profile} (onNvr=${onNvr}). ` +
-            `Available: [${available || 'none'}]. ` +
+            `Available: [${available || "none"}]. ` +
             `Use composite-native-... or choose a different profile.`,
         );
       };
@@ -337,8 +369,8 @@ export async function createRfc4571TcpServer(
       // Wider lens always uses the default lens variant.
       const widerResolved = await resolveLensRtspUrl({
         channel: widerChannel,
-        lens: 'default',
-        desiredLens: 'wide',
+        lens: "default",
+        desiredLens: "wide",
         profile: widerInputProfile,
       });
 
@@ -348,14 +380,16 @@ export async function createRfc4571TcpServer(
       // Tele lens can be on a distinct channel (standalone) or share the same channel (NVR/Hub).
       const teleResolved = await resolveLensRtspUrl({
         channel: teleChannel,
-        lens: 'telephoto',
-        desiredLens: 'telephoto',
+        lens: "telephoto",
+        desiredLens: "telephoto",
         profile: teleInputProfile,
       });
 
       teleRtspUrl = teleResolved.urlWithAuth;
       if (teleResolved.actualProfile !== teleInputProfile) {
-        log(`tele RTSP profile fallback applied (requested=${teleInputProfile} actual=${teleResolved.actualProfile})`);
+        log(
+          `tele RTSP profile fallback applied (requested=${teleInputProfile} actual=${teleResolved.actualProfile})`,
+        );
       }
       teleInputProfile = teleResolved.actualProfile;
     }
@@ -369,21 +403,35 @@ export async function createRfc4571TcpServer(
       widerProfile: widerInputProfile,
       teleProfile: teleInputProfile,
       ...(widerRtspUrl && teleRtspUrl ? { widerRtspUrl, teleRtspUrl } : {}),
-      ...(compositeOptions?.rtspTransport ? { rtspTransport: compositeOptions.rtspTransport } : {}),
+      ...(compositeOptions?.rtspTransport
+        ? { rtspTransport: compositeOptions.rtspTransport }
+        : {}),
       pipPosition: compositeOptions?.pipPosition ?? "bottom-right",
       pipSize: compositeOptions?.pipSize ?? 0.25,
       // New default is percent-friendly (1%). Values > 1 are still treated as pixels.
       pipMargin: compositeOptions?.pipMargin ?? 0.01,
-      ...(compositeOptions?.onNvr !== undefined ? { onNvr: compositeOptions.onNvr } : {}),
-      ...(forceH264 !== undefined ? { forceH264 } : (defaultForceH264 ? { forceH264: true } : {})),
-      ...(compositeOptions?.assumeH264Inputs !== undefined ? { assumeH264Inputs: compositeOptions.assumeH264Inputs } : {}),
-      ...(compositeOptions?.disableTranscode !== undefined ? { disableTranscode: compositeOptions.disableTranscode } : {}),
+      ...(compositeOptions?.onNvr !== undefined
+        ? { onNvr: compositeOptions.onNvr }
+        : {}),
+      ...(forceH264 !== undefined
+        ? { forceH264 }
+        : defaultForceH264
+          ? { forceH264: true }
+          : {}),
+      ...(compositeOptions?.assumeH264Inputs !== undefined
+        ? { assumeH264Inputs: compositeOptions.assumeH264Inputs }
+        : {}),
+      ...(compositeOptions?.disableTranscode !== undefined
+        ? { disableTranscode: compositeOptions.disableTranscode }
+        : {}),
       logger,
     });
 
     isCompositeStream = true;
     await videoStream.start();
-    log('composite stream started; waiting for keyframe to extract parameter sets');
+    log(
+      "composite stream started; waiting for keyframe to extract parameter sets",
+    );
   } else {
     // Use regular BaichuanVideoStream
     const ch = channel!;
@@ -397,19 +445,28 @@ export async function createRfc4571TcpServer(
     });
 
     await videoStream.start();
-    log('baichuan stream started; waiting for keyframe to extract parameter sets');
+    log(
+      "baichuan stream started; waiting for keyframe to extract parameter sets",
+    );
   }
 
   const waitForKeyframe = async (): Promise<
-    { videoType: VideoType; accessUnit: Buffer } &
-    { profileLevelId?: string; h264?: { sps: Buffer; pps: Buffer }; h265?: { vps: Buffer; sps: Buffer; pps: Buffer } }
+    { videoType: VideoType; accessUnit: Buffer } & {
+      profileLevelId?: string;
+      h264?: { sps: Buffer; pps: Buffer };
+      h265?: { vps: Buffer; sps: Buffer; pps: Buffer };
+    }
   > => {
     if (isCompositeStream) {
       // For composite stream, wait for first video frame and extract parameter sets
       return await new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
           cleanup();
-          reject(new Error(`Timeout waiting for keyframe on composite stream profile=${profile}`));
+          reject(
+            new Error(
+              `Timeout waiting for keyframe on composite stream profile=${profile}`,
+            ),
+          );
         }, keyframeTimeoutMs);
 
         const onError = (e: unknown) => {
@@ -420,16 +477,22 @@ export async function createRfc4571TcpServer(
         const onFrame = (frame: Buffer) => {
           // Composite stream outputs H.264 frames from ffmpeg
           // Extract parameter sets from the first frame
-          const videoType: VideoType = 'H264'; // Composite stream always outputs H.264
+          const videoType: VideoType = "H264"; // Composite stream always outputs H.264
 
           try {
-            const { sps, pps, profileLevelId } = extractH264ParamSetsFromAccessUnit(frame);
+            const { sps, pps, profileLevelId } =
+              extractH264ParamSetsFromAccessUnit(frame);
             if (!sps || !pps) {
               // Not a keyframe yet, wait for next
               return;
             }
             cleanup();
-            resolve({ videoType, accessUnit: frame, ...(profileLevelId ? { profileLevelId } : {}), h264: { sps, pps } });
+            resolve({
+              videoType,
+              accessUnit: frame,
+              ...(profileLevelId ? { profileLevelId } : {}),
+              h264: { sps, pps },
+            });
           } catch (e) {
             // If extraction fails, wait for next frame
             return;
@@ -438,26 +501,46 @@ export async function createRfc4571TcpServer(
 
         const onClose = () => {
           cleanup();
-          reject(new Error(`Composite stream closed before keyframe (profile=${profile})`));
+          reject(
+            new Error(
+              `Composite stream closed before keyframe (profile=${profile})`,
+            ),
+          );
         };
 
         const cleanup = () => {
           clearTimeout(timeout);
-          (videoStream as CompositeStream).removeListener('error' as any, onError as any);
-          (videoStream as CompositeStream).removeListener('videoFrame' as any, onFrame as any);
-          (videoStream as CompositeStream).removeListener('close' as any, onClose as any);
+          (videoStream as CompositeStream).removeListener(
+            "error" as any,
+            onError as any,
+          );
+          (videoStream as CompositeStream).removeListener(
+            "videoFrame" as any,
+            onFrame as any,
+          );
+          (videoStream as CompositeStream).removeListener(
+            "close" as any,
+            onClose as any,
+          );
         };
 
-        (videoStream as CompositeStream).on('error' as any, onError as any);
-        (videoStream as CompositeStream).on('videoFrame' as any, onFrame as any);
-        (videoStream as CompositeStream).on('close' as any, onClose as any);
+        (videoStream as CompositeStream).on("error" as any, onError as any);
+        (videoStream as CompositeStream).on(
+          "videoFrame" as any,
+          onFrame as any,
+        );
+        (videoStream as CompositeStream).on("close" as any, onClose as any);
       });
     } else {
       // For regular BaichuanVideoStream
       return await new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
           cleanup();
-          reject(new Error(`Timeout waiting for keyframe on native stream channel=${channel} profile=${profile}`));
+          reject(
+            new Error(
+              `Timeout waiting for keyframe on native stream channel=${channel} profile=${profile}`,
+            ),
+          );
         }, keyframeTimeoutMs);
 
         const onError = (e: unknown) => {
@@ -470,15 +553,22 @@ export async function createRfc4571TcpServer(
           const videoType = au.videoType as VideoType;
           const accessUnit = au.data as Buffer;
 
-          if (videoType === 'H264') {
-            const { sps, pps, profileLevelId } = extractH264ParamSetsFromAccessUnit(accessUnit);
+          if (videoType === "H264") {
+            const { sps, pps, profileLevelId } =
+              extractH264ParamSetsFromAccessUnit(accessUnit);
             if (!sps || !pps) return;
             cleanup();
-            resolve({ videoType, accessUnit, ...(profileLevelId ? { profileLevelId } : {}), h264: { sps, pps } });
+            resolve({
+              videoType,
+              accessUnit,
+              ...(profileLevelId ? { profileLevelId } : {}),
+              h264: { sps, pps },
+            });
             return;
           }
 
-          const { vps, sps, pps } = extractH265ParamSetsFromAccessUnit(accessUnit);
+          const { vps, sps, pps } =
+            extractH265ParamSetsFromAccessUnit(accessUnit);
           if (!vps || !sps || !pps) return;
           cleanup();
           resolve({ videoType, accessUnit, h265: { vps, sps, pps } });
@@ -486,12 +576,21 @@ export async function createRfc4571TcpServer(
 
         const cleanup = () => {
           clearTimeout(timeout);
-          (videoStream as BaichuanVideoStream).removeListener('error' as any, onError as any);
-          (videoStream as BaichuanVideoStream).removeListener('videoAccessUnit' as any, onAu as any);
+          (videoStream as BaichuanVideoStream).removeListener(
+            "error" as any,
+            onError as any,
+          );
+          (videoStream as BaichuanVideoStream).removeListener(
+            "videoAccessUnit" as any,
+            onAu as any,
+          );
         };
 
-        (videoStream as BaichuanVideoStream).on('error' as any, onError as any);
-        (videoStream as BaichuanVideoStream).on('videoAccessUnit' as any, onAu as any);
+        (videoStream as BaichuanVideoStream).on("error" as any, onError as any);
+        (videoStream as BaichuanVideoStream).on(
+          "videoAccessUnit" as any,
+          onAu as any,
+        );
       });
     }
   };
@@ -525,7 +624,10 @@ export async function createRfc4571TcpServer(
       const graceMs = isComposite ? 5_000 : 0;
       for (const a of Array.from(apisToClose)) {
         try {
-          (a as any)?.client?.requestIdleDisconnectSoon?.("rfc4571_teardown", graceMs);
+          (a as any)?.client?.requestIdleDisconnectSoon?.(
+            "rfc4571_teardown",
+            graceMs,
+          );
         } catch {
           // ignore
         }
@@ -535,7 +637,9 @@ export async function createRfc4571TcpServer(
     throw e;
   }
   if (expectedVideoType && keyframe.videoType !== expectedVideoType) {
-    log(`expectedVideoType mismatch (expected=${expectedVideoType} actual=${keyframe.videoType})`);
+    log(
+      `expectedVideoType mismatch (expected=${expectedVideoType} actual=${keyframe.videoType})`,
+    );
   }
 
   log(`video detected: codec=${keyframe.videoType} (primed via keyframe)`);
@@ -555,22 +659,26 @@ export async function createRfc4571TcpServer(
           : [];
       // Note: composite FPS should be keyed off the wider input profile, not the tele profile.
       const requested = parseCompositeFromRequestedId(requestedId);
-      const effectiveTeleProfile: StreamProfile = requested?.teleProfile ?? profile;
+      const effectiveTeleProfile: StreamProfile =
+        requested?.teleProfile ?? profile;
       let widerMainIsH264 = false;
       try {
-        const main = streams.find((s: any) => s?.profile === 'main');
-        const enc = typeof main?.videoEncType === 'string' ? main.videoEncType.toLowerCase() : '';
-        widerMainIsH264 = enc.includes('264');
+        const main = streams.find((s: any) => s?.profile === "main");
+        const enc =
+          typeof main?.videoEncType === "string"
+            ? main.videoEncType.toLowerCase()
+            : "";
+        widerMainIsH264 = enc.includes("264");
       } catch {
         // ignore
       }
       const widerProfile: StreamProfile =
         requested?.widerProfile ??
-        (effectiveTeleProfile === 'ext'
-          ? 'ext'
-          : (effectiveTeleProfile === 'main' && widerMainIsH264)
-            ? 'main'
-            : 'sub');
+        (effectiveTeleProfile === "ext"
+          ? "ext"
+          : effectiveTeleProfile === "main" && widerMainIsH264
+            ? "main"
+            : "sub");
       const stream = streams.find((s: any) => s?.profile === widerProfile);
       const fr = Number(stream?.frameRate);
       if (Number.isFinite(fr) && fr > 0) fps = fr;
@@ -593,12 +701,21 @@ export async function createRfc4571TcpServer(
 
   // Prime audio: prefer ADTS (self-describing), but support raw AAC by using a hint/default config.
   // Note: CompositeStream may forward native audio frames (typically from wider input).
-  let audio: { sampleRate: number; channels: number; configHex: string; mode: 'adts' | 'raw' } | undefined;
+  let audio:
+    | {
+        sampleRate: number;
+        channels: number;
+        configHex: string;
+        mode: "adts" | "raw";
+      }
+    | undefined;
   const tryPrimeAudio = async (): Promise<typeof audio> => {
     return await new Promise((resolve) => {
       let sawAnyAudio = false;
       let debugLogsLeft = 3;
-      const audioPrimeTimeoutMs = isCompositeStream ? Math.min(10_000, keyframeTimeoutMs) : 5000;
+      const audioPrimeTimeoutMs = isCompositeStream
+        ? Math.min(10_000, keyframeTimeoutMs)
+        : 5000;
       const timeout = setTimeout(() => {
         cleanup();
         if (!sawAnyAudio) {
@@ -607,15 +724,27 @@ export async function createRfc4571TcpServer(
         }
 
         const hint = aacAudioHint ?? { sampleRate: 8000, channels: 1 };
-        const configHex = buildAacAudioSpecificConfigHex({ sampleRate: hint.sampleRate, channels: hint.channels });
+        const configHex = buildAacAudioSpecificConfigHex({
+          sampleRate: hint.sampleRate,
+          channels: hint.channels,
+        });
         if (!configHex) {
-          logger.warn(`Native audio frames seen but could not derive AAC config (hint sampleRate=${hint.sampleRate} channels=${hint.channels}); cannot advertise audio track.`);
+          logger.warn(
+            `Native audio frames seen but could not derive AAC config (hint sampleRate=${hint.sampleRate} channels=${hint.channels}); cannot advertise audio track.`,
+          );
           resolve(undefined);
           return;
         }
 
-        logger.warn(`Native audio frames appear to be raw AAC (no ADTS); advertising AAC using hint sampleRate=${hint.sampleRate} channels=${hint.channels}.`);
-        resolve({ sampleRate: hint.sampleRate, channels: hint.channels, configHex, mode: 'raw' });
+        logger.warn(
+          `Native audio frames appear to be raw AAC (no ADTS); advertising AAC using hint sampleRate=${hint.sampleRate} channels=${hint.channels}.`,
+        );
+        resolve({
+          sampleRate: hint.sampleRate,
+          channels: hint.channels,
+          configHex,
+          mode: "raw",
+        });
       }, audioPrimeTimeoutMs);
 
       const onAudio = (frame: Buffer) => {
@@ -623,68 +752,90 @@ export async function createRfc4571TcpServer(
         const parsed = parseAdtsHeader(frame);
         if (!parsed) {
           if (debugLogsLeft-- > 0) {
-            const head = frame.subarray(0, Math.min(16, frame.length)).toString('hex');
-            logger.warn(`Native audioFrame not ADTS: len=${frame.length} head=${head}`);
+            const head = frame
+              .subarray(0, Math.min(16, frame.length))
+              .toString("hex");
+            logger.warn(
+              `Native audioFrame not ADTS: len=${frame.length} head=${head}`,
+            );
           }
           return;
         }
         cleanup();
-        resolve({ sampleRate: parsed.sampleRate, channels: parsed.channels, configHex: parsed.configHex, mode: 'adts' });
+        resolve({
+          sampleRate: parsed.sampleRate,
+          channels: parsed.channels,
+          configHex: parsed.configHex,
+          mode: "adts",
+        });
       };
 
       const cleanup = () => {
         clearTimeout(timeout);
-        (videoStream as any)?.removeListener?.('audioFrame' as any, onAudio as any);
+        (videoStream as any)?.removeListener?.(
+          "audioFrame" as any,
+          onAudio as any,
+        );
       };
 
-      (videoStream as any)?.on?.('audioFrame' as any, onAudio as any);
+      (videoStream as any)?.on?.("audioFrame" as any, onAudio as any);
     });
   };
 
   audio = await tryPrimeAudio();
 
   if (audio) {
-    log(`audio detected: codec=aac sampleRate=${audio.sampleRate} channels=${audio.channels} mode=${audio.mode}`);
+    log(
+      `audio detected: codec=aac sampleRate=${audio.sampleRate} channels=${audio.channels} mode=${audio.mode}`,
+    );
   } else {
-    log('audio not detected/advertised (no AAC config within timeout)');
+    log("audio not detected/advertised (no AAC config within timeout)");
   }
 
   const video: VideoParamSets = {
     videoType: keyframe.videoType,
     payloadType: videoPayloadType,
-    ...(keyframe.videoType === 'H264'
+    ...(keyframe.videoType === "H264"
       ? {
-        h264: {
-          sps: keyframe.h264!.sps,
-          pps: keyframe.h264!.pps,
-          ...(keyframe.profileLevelId ? { profileLevelId: keyframe.profileLevelId } : {}),
-        },
-      }
+          h264: {
+            sps: keyframe.h264!.sps,
+            pps: keyframe.h264!.pps,
+            ...(keyframe.profileLevelId
+              ? { profileLevelId: keyframe.profileLevelId }
+              : {}),
+          },
+        }
       : {
-        h265: {
-          vps: keyframe.h265!.vps,
-          sps: keyframe.h265!.sps,
-          pps: keyframe.h265!.pps,
-        },
-      }),
+          h265: {
+            vps: keyframe.h265!.vps,
+            sps: keyframe.h265!.sps,
+            pps: keyframe.h265!.pps,
+          },
+        }),
   };
 
   const aacAudio: AudioConfig | undefined = audio
     ? {
-      codec: 'aac',
-      payloadType: audioPayloadType,
-      sampleRate: audio.sampleRate,
-      channels: audio.channels,
-      configHex: audio.configHex,
-    }
+        codec: "aac",
+        payloadType: audioPayloadType,
+        sampleRate: audio.sampleRate,
+        channels: audio.channels,
+        configHex: audio.configHex,
+      }
     : undefined;
 
   const sdp = buildRfc4571Sdp(video, aacAudio);
-  const makeMuxer = () => new Rfc4571Muxer(logger, videoPayloadType, aacAudio ? audioPayloadType : undefined, fps);
+  const makeMuxer = () =>
+    new Rfc4571Muxer(
+      logger,
+      videoPayloadType,
+      aacAudio ? audioPayloadType : undefined,
+      fps,
+    );
   let muxer = makeMuxer();
 
   log(
-    `SDP ready (video=${keyframe.videoType}/90000 pt=${videoPayloadType}${aacAudio ? `, audio=aac/${aacAudio.sampleRate}/${aacAudio.channels} pt=${audioPayloadType}` : ', audio=none'})`,
+    `SDP ready (video=${keyframe.videoType}/90000 pt=${videoPayloadType}${aacAudio ? `, audio=aac/${aacAudio.sampleRate}/${aacAudio.channels} pt=${audioPayloadType}` : ", audio=none"})`,
   );
 
   let rfcClients = 0;
@@ -714,21 +865,31 @@ export async function createRfc4571TcpServer(
   const startUptimeMonitor = () => {
     if (!uptimeRestartMs || uptimeRestartMs <= 0) return;
     if (uptimeTimer) return;
-    const tickMs = Math.max(250, Math.min(1000, Math.floor(uptimeRestartMs / 2)));
+    const tickMs = Math.max(
+      250,
+      Math.min(1000, Math.floor(uptimeRestartMs / 2)),
+    );
     uptimeTimer = setInterval(() => {
       if (tearingDown || restarting) return;
       const idleFor = Date.now() - lastActivityMs;
       if (idleFor < uptimeRestartMs) return;
-      restart(new Error(`No stream activity for ${idleFor}ms (threshold=${uptimeRestartMs}ms)`)).catch(() => { });
+      restart(
+        new Error(
+          `No stream activity for ${idleFor}ms (threshold=${uptimeRestartMs}ms)`,
+        ),
+      ).catch(() => {});
     }, tickMs);
   };
 
-  const scheduleIdleTeardown = (closeFn: (reason?: unknown) => Promise<void>) => {
+  const scheduleIdleTeardown = (
+    closeFn: (reason?: unknown) => Promise<void>,
+  ) => {
     if (!idleTeardownMs) return;
     if (idleTeardownTimer) return;
     idleTeardownTimer = setTimeout(() => {
       idleTeardownTimer = undefined;
-      if (rfcClients === 0) closeFn(new Error('No RFC4571 clients (idle)')).catch(() => { });
+      if (rfcClients === 0)
+        closeFn(new Error("No RFC4571 clients (idle)")).catch(() => {});
     }, idleTeardownMs);
   };
 
@@ -742,11 +903,21 @@ export async function createRfc4571TcpServer(
 
     cancelIdleTeardown();
 
-    const message = (reason as any)?.message || (reason as any)?.toString?.() || reason;
+    const message =
+      (reason as any)?.message || (reason as any)?.toString?.() || reason;
     const address = server.address();
-    const addrStr = address && typeof address !== 'string' ? `${address.address}:${address.port}` : 'unbound';
-    if (message) log(`uptime watchdog: restarting (addr=${addrStr} clients=${rfcClients} reason=${message})`);
-    else log(`uptime watchdog: restarting (addr=${addrStr} clients=${rfcClients})`);
+    const addrStr =
+      address && typeof address !== "string"
+        ? `${address.address}:${address.port}`
+        : "unbound";
+    if (message)
+      log(
+        `uptime watchdog: restarting (addr=${addrStr} clients=${rfcClients} reason=${message})`,
+      );
+    else
+      log(
+        `uptime watchdog: restarting (addr=${addrStr} clients=${rfcClients})`,
+      );
 
     // Drop clients first: force reconnect and clear muxer state.
     for (const s of Array.from(sockets)) {
@@ -776,7 +947,7 @@ export async function createRfc4571TcpServer(
     } catch (e) {
       // If restart fails, escalate to teardown so callers don't hang forever.
       restarting = false;
-      close(e).catch(() => { });
+      close(e).catch(() => {});
       return;
     }
 
@@ -789,7 +960,7 @@ export async function createRfc4571TcpServer(
 
     restarting = false;
     touchActivity();
-    log('uptime watchdog: restart complete');
+    log("uptime watchdog: restart complete");
 
     // If no clients are connected after restart, keep existing idle teardown behavior.
     if (rfcClients === 0) scheduleIdleTeardown(close);
@@ -801,10 +972,17 @@ export async function createRfc4571TcpServer(
 
     stopUptimeMonitor();
     cancelIdleTeardown();
-    const message = (reason as any)?.message || (reason as any)?.toString?.() || reason;
+    const message =
+      (reason as any)?.message || (reason as any)?.toString?.() || reason;
     const address = server.address();
-    const addrStr = address && typeof address !== 'string' ? `${address.address}:${address.port}` : 'unbound';
-    if (message) log(`teardown requested (addr=${addrStr} clients=${rfcClients} reason=${message})`);
+    const addrStr =
+      address && typeof address !== "string"
+        ? `${address.address}:${address.port}`
+        : "unbound";
+    if (message)
+      log(
+        `teardown requested (addr=${addrStr} clients=${rfcClients} reason=${message})`,
+      );
     else log(`teardown requested (addr=${addrStr} clients=${rfcClients})`);
 
     muxer.close();
@@ -833,12 +1011,12 @@ export async function createRfc4571TcpServer(
       // ignore
     }
 
-    log('teardown complete');
+    log("teardown complete");
   };
 
-  server.on('connection', (socket) => {
+  server.on("connection", (socket) => {
     touchActivity();
-    const remote = `${socket.remoteAddress ?? 'unknown'}:${socket.remotePort ?? 'unknown'}`;
+    const remote = `${socket.remoteAddress ?? "unknown"}:${socket.remotePort ?? "unknown"}`;
     log(`client connecting (remote=${remote} requireAuth=${requireAuth})`);
 
     const setupClient = () => {
@@ -847,7 +1025,7 @@ export async function createRfc4571TcpServer(
       sockets.add(socket);
 
       // Track RX from client (RTCP, keepalives, etc).
-      socket.on('data', () => touchActivity());
+      socket.on("data", () => touchActivity());
 
       // Track TX to client by wrapping socket.write (used by muxer).
       try {
@@ -883,7 +1061,7 @@ export async function createRfc4571TcpServer(
 
         if (!authenticated) {
           authBuffer = Buffer.concat([authBuffer, data]);
-          const authString = authBuffer.toString('utf8');
+          const authString = authBuffer.toString("utf8");
           const authMatch = authString.match(/^([^:]+):([^\n]+)\n/);
 
           if (authMatch) {
@@ -898,12 +1076,12 @@ export async function createRfc4571TcpServer(
               const remainingData = authBuffer.subarray(authLineLength);
 
               // Replace data handler
-              socket.removeListener('data', onData);
-              socket.on('data', () => touchActivity());
+              socket.removeListener("data", onData);
+              socket.on("data", () => touchActivity());
 
               // Process remaining data if any
               if (remainingData.length > 0) {
-                socket.emit('data', remainingData);
+                socket.emit("data", remainingData);
               }
             } else {
               log(`client authentication failed (remote=${remote})`);
@@ -919,7 +1097,7 @@ export async function createRfc4571TcpServer(
         }
       };
 
-      socket.on('data', onData);
+      socket.on("data", onData);
     }
 
     let counted = true;
@@ -932,114 +1110,137 @@ export async function createRfc4571TcpServer(
       if (rfcClients === 0) scheduleIdleTeardown(close);
     };
 
-    socket.once('close', dec);
-    socket.once('error', dec);
+    socket.once("close", dec);
+    socket.once("error", dec);
   });
 
   // Attach stream forwarding.
   if (isCompositeStream) {
     // Composite stream emits videoFrame (Buffer) - H.264 frames from ffmpeg in Annex-B format
-    (videoStream as CompositeStream).on('videoFrame' as any, (frame: Buffer) => {
-      touchActivity();
-      try {
-        // Composite stream always outputs H.264
-        // Detect if it's a keyframe by checking for IDR NAL unit (type 5)
-        let isKeyframe = false;
+    (videoStream as CompositeStream).on(
+      "videoFrame" as any,
+      (frame: Buffer) => {
+        touchActivity();
         try {
-          // Check for start codes and IDR NAL units
-          for (let i = 0; i < frame.length - 4; i++) {
-            if (frame[i] === 0x00 && frame[i + 1] === 0x00) {
-              let nalStart = -1;
-              if (frame[i + 2] === 0x01) {
-                nalStart = i + 3;
-              } else if (frame[i + 2] === 0x00 && frame[i + 3] === 0x01) {
-                nalStart = i + 4;
-              }
+          // Composite stream always outputs H.264
+          // Detect if it's a keyframe by checking for IDR NAL unit (type 5)
+          let isKeyframe = false;
+          try {
+            // Check for start codes and IDR NAL units
+            for (let i = 0; i < frame.length - 4; i++) {
+              if (frame[i] === 0x00 && frame[i + 1] === 0x00) {
+                let nalStart = -1;
+                if (frame[i + 2] === 0x01) {
+                  nalStart = i + 3;
+                } else if (frame[i + 2] === 0x00 && frame[i + 3] === 0x01) {
+                  nalStart = i + 4;
+                }
 
-              if (nalStart >= 0 && nalStart < frame.length) {
-                const nalType = (frame[nalStart] ?? 0) & 0x1f;
-                if (nalType === 5) {
-                  // IDR NAL unit - this is a keyframe
-                  isKeyframe = true;
-                  break;
+                if (nalStart >= 0 && nalStart < frame.length) {
+                  const nalType = (frame[nalStart] ?? 0) & 0x1f;
+                  if (nalType === 5) {
+                    // IDR NAL unit - this is a keyframe
+                    isKeyframe = true;
+                    break;
+                  }
                 }
               }
             }
+          } catch {
+            // If detection fails, assume it's not a keyframe
           }
-        } catch {
-          // If detection fails, assume it's not a keyframe
+          muxer.sendVideoAccessUnit("H264", frame, isKeyframe, undefined);
+        } catch (e) {
+          close(e).catch(() => {});
         }
-        muxer.sendVideoAccessUnit('H264', frame, isKeyframe, undefined);
-      } catch (e) {
-        close(e).catch(() => { });
-      }
-    });
+      },
+    );
 
     if (aacAudio) {
-      (videoStream as CompositeStream).on('audioFrame' as any, (frame: Buffer) => {
-        touchActivity();
-        try {
-          if (audio?.mode === 'adts') {
-            muxer.sendAudioAdtsFrame(frame);
-          } else {
-            muxer.sendAudioAacRawFrame(frame);
+      (videoStream as CompositeStream).on(
+        "audioFrame" as any,
+        (frame: Buffer) => {
+          touchActivity();
+          try {
+            if (audio?.mode === "adts") {
+              muxer.sendAudioAdtsFrame(frame);
+            } else {
+              muxer.sendAudioAacRawFrame(frame);
+            }
+          } catch (e) {
+            close(e).catch(() => {});
           }
-        } catch (e) {
-          close(e).catch(() => { });
-        }
-      });
+        },
+      );
     }
   } else {
     // BaichuanVideoStream emits videoAccessUnit with metadata
-    (videoStream as BaichuanVideoStream).on('videoAccessUnit' as any, (au: any) => {
-      touchActivity();
-      try {
-        muxer.sendVideoAccessUnit(au.videoType, au.data, au.isKeyframe, au.microseconds);
-      } catch (e) {
-        close(e).catch(() => { });
-      }
-    });
-
-    if (aacAudio) {
-      (videoStream as BaichuanVideoStream).on('audioFrame' as any, (frame: Buffer) => {
+    (videoStream as BaichuanVideoStream).on(
+      "videoAccessUnit" as any,
+      (au: any) => {
         touchActivity();
         try {
-          if (audio?.mode === 'adts') {
-            muxer.sendAudioAdtsFrame(frame);
-          } else {
-            muxer.sendAudioAacRawFrame(frame);
-          }
+          muxer.sendVideoAccessUnit(
+            au.videoType,
+            au.data,
+            au.isKeyframe,
+            au.microseconds,
+          );
         } catch (e) {
-          close(e).catch(() => { });
+          close(e).catch(() => {});
         }
-      });
+      },
+    );
+
+    if (aacAudio) {
+      (videoStream as BaichuanVideoStream).on(
+        "audioFrame" as any,
+        (frame: Buffer) => {
+          touchActivity();
+          try {
+            if (audio?.mode === "adts") {
+              muxer.sendAudioAdtsFrame(frame);
+            } else {
+              muxer.sendAudioAacRawFrame(frame);
+            }
+          } catch (e) {
+            close(e).catch(() => {});
+          }
+        },
+      );
     }
   }
 
-  videoStream.on('error' as any, (e: unknown) => {
+  videoStream.on("error" as any, (e: unknown) => {
     if (restarting) return;
-    close(e).catch(() => { });
+    close(e).catch(() => {});
   });
-  videoStream.on('close' as any, (e: unknown) => {
+  videoStream.on("close" as any, (e: unknown) => {
     if (restarting) return;
-    close(e).catch(() => { });
+    close(e).catch(() => {});
   });
 
   await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
+    server.once("error", reject);
     server.listen(0, host, () => resolve());
   });
 
   const address = server.address();
-  if (!address || typeof address === 'string') {
-    throw new Error('Failed to bind RFC TCP server');
+  if (!address || typeof address === "string") {
+    throw new Error("Failed to bind RFC TCP server");
   }
   const port = address.port;
-  if (!port) throw new Error('Failed to bind RFC TCP server');
+  if (!port) throw new Error("Failed to bind RFC TCP server");
 
   log(`listening (addr=${host}:${port})`);
 
-  const audioInfo = aacAudio ? { codec: 'aac' as const, sampleRate: aacAudio.sampleRate, channels: aacAudio.channels } : undefined;
+  const audioInfo = aacAudio
+    ? {
+        codec: "aac" as const,
+        sampleRate: aacAudio.sampleRate,
+        channels: aacAudio.channels,
+      }
+    : undefined;
 
   // If created with no clients, schedule idle teardown.
   scheduleIdleTeardown(close);
@@ -1057,4 +1258,531 @@ export async function createRfc4571TcpServer(
     videoStream,
     close,
   };
+}
+
+// =============================================================================
+// Recording Replay Server
+// =============================================================================
+
+export interface Rfc4571ReplayServerOptions {
+  /** Baichuan API session to use for replay. */
+  api: ReolinkBaichuanApi;
+  /** Channel number (defaults to 0 for standalone cameras). */
+  channel?: number;
+  /** Recording file name (e.g., "RecM03_20250101_120000_123.264"). */
+  fileName: string;
+  /** Stream type: mainStream or subStream (inferred from fileName if not specified). */
+  streamType?: "mainStream" | "subStream";
+  logger: Console;
+
+  host?: string;
+  videoPayloadType?: number;
+  audioPayloadType?: number;
+
+  /** How long to wait for an IDR/IRAP to extract parameter sets and produce SDP. */
+  keyframeTimeoutMs?: number;
+
+  /** If true (default), closes the API when replay ends or server closes. */
+  closeApiOnTeardown?: boolean;
+  username: string;
+  password: string;
+  /** If true, requires authentication before allowing stream access. Default: false. */
+  requireAuth?: boolean;
+
+  /**
+   * Optional AAC hint for when the camera sends raw AAC (no ADTS headers).
+   * Many Reolink devices use AAC-LC mono at 8000Hz.
+   */
+  aacAudioHint?: { sampleRate: number; channels: number };
+
+  /** Force NVR mode (uses id-based XML with UID) or standalone mode (name-based XML). */
+  isNvr?: boolean;
+}
+
+export interface Rfc4571ReplayServer {
+  host: string;
+  port: number;
+  sdp: string;
+  videoType: VideoType;
+  audio?: { codec: "aac"; sampleRate: number; channels: number };
+  username: string;
+  password: string;
+
+  server: net.Server;
+  videoStream: BaichuanVideoStream;
+
+  /** Called when replay naturally ends (all data sent). */
+  onReplayEnd?: () => void;
+
+  close: (reason?: unknown) => Promise<void>;
+}
+
+/**
+ * Create an RFC4571 TCP server for streaming a recording replay.
+ *
+ * This is similar to createRfc4571TcpServer but optimized for playback of recorded files:
+ * - Uses startRecordingReplayStream to get native frames
+ * - Automatically stops when replay ends
+ * - No restart logic (single playback, not continuous like live)
+ */
+export async function createRfc4571TcpServerForReplay(
+  options: Rfc4571ReplayServerOptions,
+): Promise<Rfc4571ReplayServer> {
+  const {
+    api,
+    channel = 0,
+    fileName,
+    logger,
+    host = "127.0.0.1",
+    videoPayloadType = 96,
+    audioPayloadType = 97,
+    keyframeTimeoutMs = 15_000,
+    closeApiOnTeardown = false,
+    username,
+    password,
+    requireAuth = false,
+    aacAudioHint,
+    isNvr,
+  } = options;
+
+  // Infer streamType from fileName if not provided
+  const streamType =
+    options.streamType ??
+    (fileName.includes("RecS03_") ? "subStream" : "mainStream");
+
+  const log = (msg: string, ...args: unknown[]) =>
+    logger.log(
+      `[RFC4571-Replay ch=${channel} file=${fileName}] ${msg}`,
+      ...args,
+    );
+  const warn = (msg: string, ...args: unknown[]) =>
+    logger.warn(
+      `[RFC4571-Replay ch=${channel} file=${fileName}] ${msg}`,
+      ...args,
+    );
+
+  log(`starting replay: streamType=${streamType}`);
+
+  // Start the recording replay stream
+  const replayParams: {
+    channel: number;
+    fileName: string;
+    streamType: "mainStream" | "subStream";
+    timeoutMs: number;
+    logger: Console;
+    isNvr?: boolean;
+  } = {
+    channel,
+    fileName,
+    streamType,
+    timeoutMs: keyframeTimeoutMs,
+    logger,
+  };
+  if (isNvr !== undefined) {
+    replayParams.isNvr = isNvr;
+  }
+
+  const { stream: videoStream, stop: stopReplay } =
+    await api.startRecordingReplayStream(replayParams);
+
+  // Audio detection
+  let audio:
+    | {
+        sampleRate: number;
+        channels: number;
+        configHex: string;
+        mode: "adts" | "raw";
+      }
+    | undefined;
+
+  const waitForKeyframe = async (): Promise<
+    { videoType: VideoType; accessUnit: Buffer } & {
+      profileLevelId?: string;
+      h264?: { sps: Buffer; pps: Buffer };
+      h265?: { vps: Buffer; sps: Buffer; pps: Buffer };
+    }
+  > => {
+    return await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(
+          new Error(
+            `Timeout waiting for keyframe in replay (file=${fileName})`,
+          ),
+        );
+      }, keyframeTimeoutMs);
+
+      const onError = (e: unknown) => {
+        cleanup();
+        reject(e instanceof Error ? e : new Error(String(e)));
+      };
+
+      const onAu = (au: any) => {
+        if (!au?.isKeyframe) return;
+        const videoType = au.videoType as VideoType;
+        const accessUnit = au.data as Buffer;
+
+        if (videoType === "H264") {
+          const { sps, pps, profileLevelId } =
+            extractH264ParamSetsFromAccessUnit(accessUnit);
+          if (!sps || !pps) return;
+          cleanup();
+          resolve({
+            videoType,
+            accessUnit,
+            ...(profileLevelId ? { profileLevelId } : {}),
+            h264: { sps, pps },
+          });
+          return;
+        }
+
+        const { vps, sps, pps } =
+          extractH265ParamSetsFromAccessUnit(accessUnit);
+        if (!vps || !sps || !pps) return;
+        cleanup();
+        resolve({ videoType, accessUnit, h265: { vps, sps, pps } });
+      };
+
+      // Listen for audio to detect format
+      const onAudioFrame = (frame: Buffer) => {
+        if (audio) return;
+        // Try parsing as ADTS
+        try {
+          const adts = parseAdtsHeader(frame);
+          if (adts) {
+            audio = {
+              sampleRate: adts.sampleRate,
+              channels: adts.channels,
+              configHex: adts.configHex,
+              mode: "adts",
+            };
+            log(
+              `detected audio via ADTS: sr=${audio.sampleRate} ch=${audio.channels}`,
+            );
+          }
+        } catch {
+          // Not ADTS, try raw AAC hint
+          if (aacAudioHint) {
+            const configHex = buildAacAudioSpecificConfigHex({
+              sampleRate: aacAudioHint.sampleRate,
+              channels: aacAudioHint.channels,
+            });
+            if (configHex) {
+              audio = {
+                sampleRate: aacAudioHint.sampleRate,
+                channels: aacAudioHint.channels,
+                configHex,
+                mode: "raw",
+              };
+              log(
+                `using AAC hint: sr=${audio.sampleRate} ch=${audio.channels}`,
+              );
+            }
+          }
+        }
+      };
+
+      const cleanup = () => {
+        clearTimeout(timeout);
+        videoStream.removeListener("error" as any, onError as any);
+        videoStream.removeListener("videoAccessUnit" as any, onAu as any);
+        videoStream.removeListener("audioFrame" as any, onAudioFrame as any);
+      };
+
+      videoStream.on("error" as any, onError as any);
+      videoStream.on("videoAccessUnit" as any, onAu as any);
+      videoStream.on("audioFrame" as any, onAudioFrame as any);
+    });
+  };
+
+  let keyframe: Awaited<ReturnType<typeof waitForKeyframe>>;
+  try {
+    keyframe = await waitForKeyframe();
+  } catch (e) {
+    try {
+      await stopReplay();
+    } catch {
+      // ignore
+    }
+    if (closeApiOnTeardown) {
+      try {
+        await api.close();
+      } catch {
+        // ignore
+      }
+    }
+    throw e;
+  }
+
+  log(`video detected: codec=${keyframe.videoType}`);
+
+  const video: VideoParamSets = {
+    videoType: keyframe.videoType,
+    payloadType: videoPayloadType,
+    ...(keyframe.videoType === "H264"
+      ? {
+          h264: {
+            sps: keyframe.h264!.sps,
+            pps: keyframe.h264!.pps,
+            ...(keyframe.profileLevelId
+              ? { profileLevelId: keyframe.profileLevelId }
+              : {}),
+          },
+        }
+      : {
+          h265: {
+            vps: keyframe.h265!.vps,
+            sps: keyframe.h265!.sps,
+            pps: keyframe.h265!.pps,
+          },
+        }),
+  };
+
+  const aacAudio: AudioConfig | undefined = audio
+    ? {
+        codec: "aac",
+        payloadType: audioPayloadType,
+        sampleRate: audio.sampleRate,
+        channels: audio.channels,
+        configHex: audio.configHex,
+      }
+    : undefined;
+
+  const sdp = buildRfc4571Sdp(video, aacAudio);
+  const fps = 25; // Best-effort default
+  const muxer = new Rfc4571Muxer(
+    logger,
+    videoPayloadType,
+    aacAudio ? audioPayloadType : undefined,
+    fps,
+  );
+
+  log(
+    `SDP ready (video=${keyframe.videoType}/90000 pt=${videoPayloadType}${aacAudio ? `, audio=aac/${aacAudio.sampleRate}/${aacAudio.channels} pt=${audioPayloadType}` : ", audio=none"})`,
+  );
+
+  let rfcClients = 0;
+  const sockets = new Set<net.Socket>();
+  let tearingDown = false;
+  let replayEnded = false;
+  let onReplayEndCallback: (() => void) | undefined;
+
+  const close = async (reason?: unknown): Promise<void> => {
+    if (tearingDown) return;
+    tearingDown = true;
+
+    const message =
+      (reason as any)?.message || (reason as any)?.toString?.() || reason;
+    if (message) log(`closing: ${message}`);
+    else log("closing");
+
+    try {
+      await stopReplay();
+    } catch {
+      // ignore
+    }
+
+    for (const s of sockets) {
+      try {
+        s.destroy();
+      } catch {
+        // ignore
+      }
+    }
+    sockets.clear();
+
+    try {
+      server.close();
+    } catch {
+      // ignore
+    }
+
+    if (closeApiOnTeardown) {
+      try {
+        await api.close();
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  const server = netImpl.createServer();
+
+  server.on("connection", (socket) => {
+    const remote = `${socket.remoteAddress}:${socket.remotePort}`;
+    log(`client connected: ${remote}`);
+
+    sockets.add(socket);
+    rfcClients++;
+
+    const setupClient = () => {
+      muxer.addClient(socket);
+    };
+
+    if (!requireAuth) {
+      // No authentication required, setup client immediately
+      setupClient();
+    } else {
+      // Authentication required: expect "username:password\n" as first message
+      let authenticated = false;
+      let authBuffer = Buffer.alloc(0);
+      const authTimeout = setTimeout(() => {
+        if (!authenticated) {
+          log(`client authentication timeout (remote=${remote})`);
+          socket.destroy();
+        }
+      }, 5000); // 5 second timeout
+
+      const onData = (data: Buffer) => {
+        if (!authenticated) {
+          authBuffer = Buffer.concat([authBuffer, data]);
+          const authString = authBuffer.toString("utf8");
+          const authMatch = authString.match(/^([^:]+):([^\n]+)\n/);
+
+          if (authMatch) {
+            const [, clientUsername, clientPassword] = authMatch;
+            if (clientUsername === username && clientPassword === password) {
+              authenticated = true;
+              clearTimeout(authTimeout);
+              setupClient();
+              socket.removeListener("data", onData);
+            } else {
+              log(`client authentication failed (remote=${remote})`);
+              socket.destroy();
+              return;
+            }
+          } else if (authBuffer.length > 1024) {
+            log(`client authentication buffer overflow (remote=${remote})`);
+            socket.destroy();
+            return;
+          }
+        }
+      };
+
+      socket.on("data", onData);
+    }
+
+    let counted = true;
+    const dec = () => {
+      if (!counted) return;
+      counted = false;
+      rfcClients = Math.max(0, rfcClients - 1);
+      sockets.delete(socket);
+      log(`client disconnected (remote=${remote} clients=${rfcClients})`);
+
+      // If no clients and replay ended, close server
+      if (rfcClients === 0 && replayEnded) {
+        close("replay ended and no clients").catch(() => {});
+      }
+    };
+
+    socket.once("close", dec);
+    socket.once("error", (e) => {
+      warn(`client socket error: ${remote}`, e?.message || String(e));
+      dec();
+    });
+  });
+
+  server.on("error", (e) => {
+    warn("server error", e?.message || String(e));
+    close(e).catch(() => {});
+  });
+
+  // Handle video access units
+  videoStream.on("videoAccessUnit" as any, (au: any) => {
+    if (tearingDown) return;
+    try {
+      muxer.sendVideoAccessUnit(
+        au.videoType,
+        au.data,
+        au.isKeyframe,
+        au.microseconds,
+      );
+    } catch (e) {
+      close(e).catch(() => {});
+    }
+  });
+
+  // Handle audio frames
+  if (aacAudio) {
+    videoStream.on("audioFrame" as any, (frame: Buffer) => {
+      if (tearingDown) return;
+      try {
+        if (audio?.mode === "adts") {
+          muxer.sendAudioAdtsFrame(frame);
+        } else {
+          muxer.sendAudioAacRawFrame(frame);
+        }
+      } catch (e) {
+        close(e).catch(() => {});
+      }
+    });
+  }
+
+  // Handle replay end
+  videoStream.on("end" as any, () => {
+    log("replay ended naturally");
+    replayEnded = true;
+    onReplayEndCallback?.();
+
+    // If no clients, close immediately
+    if (rfcClients === 0) {
+      close("replay ended").catch(() => {});
+    }
+  });
+
+  videoStream.on("error" as any, (e: unknown) => {
+    close(e).catch(() => {});
+  });
+
+  videoStream.on("close" as any, (e: unknown) => {
+    if (!replayEnded) {
+      close(e).catch(() => {});
+    }
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, host, () => resolve());
+  });
+
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Failed to bind RFC TCP server for replay");
+  }
+  const port = address.port;
+  if (!port) throw new Error("Failed to bind RFC TCP server for replay");
+
+  log(`listening (addr=${host}:${port})`);
+
+  const audioInfo = aacAudio
+    ? {
+        codec: "aac" as const,
+        sampleRate: aacAudio.sampleRate,
+        channels: aacAudio.channels,
+      }
+    : undefined;
+
+  const result: Rfc4571ReplayServer = {
+    host,
+    port,
+    sdp,
+    videoType: keyframe.videoType,
+    ...(audioInfo ? { audio: audioInfo } : {}),
+    username,
+    password,
+    server,
+    videoStream,
+    close,
+  };
+
+  // Allow setting onReplayEnd callback after creation
+  Object.defineProperty(result, "onReplayEnd", {
+    get: () => onReplayEndCallback,
+    set: (fn: (() => void) | undefined) => {
+      onReplayEndCallback = fn;
+    },
+  });
+
+  return result;
 }

@@ -31,6 +31,7 @@ export type { LogLevel } from "./logging/logger";
 export * from "./rfc/helpers";
 export * from "./rfc/rfc4571";
 export * from "./rfc/rfc4571-server";
+export * from "./rfc/replay-http-server";
 export * from "./baichuan/stream/BaichuanVideoStream";
 export * from "./baichuan/stream/BaichuanRtspServer";
 export * from "./baichuan/stream/BaichuanHttpStreamServer";
