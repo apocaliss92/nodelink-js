@@ -11,7 +11,7 @@ async function main() {
     const streamArg = process.argv[2] || 'sub';
     const dateArg = process.argv[3] || '2026-01-23'; // Default to Jan 23
     const streamType = streamArg === 'main' ? 'mainStream' : 'subStream';
-    
+
     console.log(`=== H.265 Camera Test ===`);
     console.log(`Stream type: ${streamType}`);
     console.log(`Date: ${dateArg}`);
@@ -85,7 +85,7 @@ async function main() {
                     console.log(`First keyframe: ${firstKeyframe.length} bytes @ ${(normalizedUs / 1000000).toFixed(3)}s`);
                 }
             }
-            
+
             lastFrame = {
                 data: Buffer.from(frame.data),
                 isKeyframe: frame.isKeyframe,

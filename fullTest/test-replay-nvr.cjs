@@ -11,7 +11,7 @@ async function main() {
     const channelArg = parseInt(process.argv[2] || '0', 10);
     const streamArg = process.argv[3] || 'sub';
     const streamType = streamArg === 'main' ? 'mainStream' : 'subStream';
-    
+
     console.log(`=== NVR Channel ${channelArg} Test ===`);
     console.log(`Stream type: ${streamType}`);
 
@@ -81,7 +81,7 @@ async function main() {
                     console.log(`First keyframe: ${firstKeyframe.length} bytes @ ${(normalizedUs / 1000000).toFixed(3)}s`);
                 }
             }
-            
+
             lastFrame = {
                 data: Buffer.from(frame.data),
                 isKeyframe: frame.isKeyframe,

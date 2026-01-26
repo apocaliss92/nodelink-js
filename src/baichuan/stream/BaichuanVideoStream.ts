@@ -35,6 +35,7 @@ import {
   getH265NalType,
   H265RtpDepacketizer,
 } from "./H265Converter";
+import { detectVideoCodecFromNal } from "./BcMediaAnnexBDecoder";
 
 const NAL_START_CODE_4B = Buffer.from([0x00, 0x00, 0x00, 0x01]);
 
@@ -409,7 +410,7 @@ export class BaichuanVideoStream extends EventEmitter<{
         // Bytes 0-1023 are encrypted, bytes 1024+ are clear (unencrypted).
         // This is a form of partial encryption for efficiency (64 AES blocks).
         const IFRAME_ENCRYPT_BOUNDARY = 1024;
-        
+
         if (raw.length > IFRAME_ENCRYPT_BOUNDARY) {
           // Partial encryption: decrypt first 1024 bytes, keep rest as-is
           const encryptedPart = raw.subarray(0, IFRAME_ENCRYPT_BOUNDARY);
@@ -420,7 +421,7 @@ export class BaichuanVideoStream extends EventEmitter<{
           const best = BaichuanVideoStream.scoreBcMediaLike(chosen);
           return best.first > 0 ? chosen.subarray(best.first) : chosen;
         }
-        
+
         // Small frame (<=1024 bytes): full decryption needed
         {
           const chosen = freshDecrypted;
@@ -849,16 +850,15 @@ export class BaichuanVideoStream extends EventEmitter<{
       }
 
       // Log detailed info for first few frames and periodically
-      if (totalFramesReceived <= 10 || totalFramesReceived % 20 === 0) {
+      if (totalFramesReceived <= 10 || totalFramesReceived % 100 === 0) {
         const remainingBuffer = this.bcMediaCodec.getRemainingBuffer();
         const typesStr = Array.from(packetTypes.entries())
           .map(([t, c]) => `${t}:${c}`)
           .join(", ");
-        if (rtspDebug) {
-          this.logger?.log(
-            `[BaichuanVideoStream] Frame #${totalFramesReceived}: dataToParse=${dataAfterXml.length} bytes, parsed ${mediaPackets.length} BcMedia packets (${typesStr || "none"}), total: ${totalMediaPackets}, remaining buffer: ${remainingBuffer.length} bytes`,
-          );
-        }
+        // ALWAYS log for H.265 debugging
+        console.log(
+          `[BaichuanVideoStream] Frame #${totalFramesReceived}: dataToParse=${dataAfterXml.length} bytes, parsed ${mediaPackets.length} BcMedia packets (${typesStr || "none"}), total: ${totalMediaPackets}, remaining buffer: ${remainingBuffer.length} bytes`,
+        );
       }
 
       // Process complete BcMedia packets.
@@ -1118,24 +1118,42 @@ export class BaichuanVideoStream extends EventEmitter<{
           return true;
         };
         if (media.type === "Iframe") {
+          // Detect actual video codec from NAL data (some cameras report wrong codec in BcMedia header)
+          let videoType = media.videoType;
+          const detectedCodec = detectVideoCodecFromNal(media.data);
+          if (detectedCodec && detectedCodec !== videoType) {
+            if (dbg.traceNativeStream) {
+              this.logger?.warn(
+                `[BaichuanVideoStream] Codec mismatch in Iframe: header says ${videoType}, NAL says ${detectedCodec} - using ${detectedCodec}`,
+              );
+            }
+            videoType = detectedCodec;
+          }
+
           // Convert to Annex-B format (different converters for H.264 and H.265)
           const annexBData =
-            media.videoType === "H265"
+            videoType === "H265"
               ? convertH265ToAnnexB(media.data)
               : convertToAnnexB(media.data);
+
           const isKeyframe = true;
 
-          maybeCacheParamSets(annexBData, "Iframe", media.videoType);
-          const outAnnex = prependParamSetsIfNeeded(
-            annexBData,
-            media.videoType,
-          );
-          if (outAnnex.length === 0) continue;
+          maybeCacheParamSets(annexBData, "Iframe", videoType);
+          const outAnnex = prependParamSetsIfNeeded(annexBData, videoType);
+
+          if (outAnnex.length === 0) {
+            if (dbg.traceNativeStream) {
+              this.logger?.warn(
+                `[BaichuanVideoStream] Iframe DROPPED: outAnnex is empty`,
+              );
+            }
+            continue;
+          }
 
           dumpNalSummary(outAnnex, "Iframe", media.microseconds);
 
           // Guard rail: do not emit invalid keyframes (prevents cascading parameter set issues)
-          if (media.videoType === "H264") {
+          if (videoType === "H264") {
             if (
               !isValidH264AnnexBAccessUnit(outAnnex) ||
               !isH264KeyframeAnnexB(outAnnex)
@@ -1147,12 +1165,12 @@ export class BaichuanVideoStream extends EventEmitter<{
               }
               continue;
             }
-          } else if (media.videoType === "H265") {
+          } else if (videoType === "H265") {
             // For H.265, validate access unit and check for keyframe (IRAP with VPS/SPS/PPS)
             if (!isValidH265AnnexBAccessUnit(outAnnex)) {
               if (dbg.traceNativeStream) {
                 this.logger?.warn(
-                  `[BaichuanVideoStream] Dropping invalid H.265 Iframe (Annex-B) len=${outAnnex.length}`,
+                  `[BaichuanVideoStream] Dropping invalid H.265 Iframe (Annex-B) len=${outAnnex.length} first16=${outAnnex.subarray(0, 16).toString("hex")}`,
                 );
               }
               continue;
@@ -1224,6 +1242,13 @@ export class BaichuanVideoStream extends EventEmitter<{
         } else if (media.type === "Pframe") {
           const chunk = media.data;
 
+          // Detect actual video codec from NAL data (some cameras report wrong codec in BcMedia header)
+          let videoType = media.videoType;
+          const detectedCodec = detectVideoCodecFromNal(chunk);
+          if (detectedCodec && detectedCodec !== videoType) {
+            videoType = detectedCodec;
+          }
+
           // P-frame: often not a complete access unit but an "RTP-like" payload (FU-A/STAP)
           // which must be depacketized with state. Do NOT run AVCC heuristics before depacketizing.
           // First try AVCC/HVCC -> AnnexB (some models send P-frames length-prefixed).
@@ -1231,14 +1256,14 @@ export class BaichuanVideoStream extends EventEmitter<{
           // Note: H.265 RTP depacketization is similar but uses different NAL unit types.
           const annexBOrRaw = hasStartCodes(chunk)
             ? chunk
-            : media.videoType === "H265"
+            : videoType === "H265"
               ? convertH265ToAnnexB(chunk)
               : convertToAnnexB(chunk);
 
           // For H.264, use the depacketizer. For H.265, we might need a similar depacketizer in the future.
           const parts = hasStartCodes(annexBOrRaw)
             ? [annexBOrRaw]
-            : media.videoType === "H265"
+            : videoType === "H265"
               ? this.depacketizerH265.push(chunk)
               : this.depacketizer.push(chunk);
 
@@ -1248,14 +1273,14 @@ export class BaichuanVideoStream extends EventEmitter<{
           }
 
           for (const p of parts) {
-            maybeCacheParamSets(p, "Pframe", media.videoType);
-            const outP0 = prependParamSetsIfNeeded(p, media.videoType);
+            maybeCacheParamSets(p, "Pframe", videoType);
+            const outP0 = prependParamSetsIfNeeded(p, videoType);
             if (outP0.length === 0) continue;
             const outP = outP0;
             dumpNalSummary(outP, "Pframe", media.microseconds);
             // Guard rail: drop only if the access unit is invalid (codec-specific)
             const isValid =
-              media.videoType === "H265"
+              videoType === "H265"
                 ? isValidH265AnnexBAccessUnit(outP)
                 : isValidH264AnnexBAccessUnit(outP);
             if (!isValid) {
@@ -1265,7 +1290,7 @@ export class BaichuanVideoStream extends EventEmitter<{
                   .subarray(0, Math.min(24, outP.length))
                   .toString("hex");
                 this.logger?.warn(
-                  `[BaichuanVideoStream] Dropping invalid Pframe (${media.videoType}): len=${outP.length} head=${head}`,
+                  `[BaichuanVideoStream] Dropping invalid Pframe (${videoType}): len=${outP.length} head=${head}`,
                 );
               }
               continue;
@@ -1274,7 +1299,7 @@ export class BaichuanVideoStream extends EventEmitter<{
             this.emit("videoAccessUnit", {
               data: outP,
               isKeyframe: false,
-              videoType: media.videoType,
+              videoType: videoType,
               microseconds: media.microseconds,
             });
             videoFramesEmitted++;
