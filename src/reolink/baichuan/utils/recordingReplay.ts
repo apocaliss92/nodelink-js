@@ -47,20 +47,29 @@ export const buildFileInfoListReplayByIdXml = (params: {
           ? "<iIframeReplay>1</iIframeReplay>"
           : "";
 
-  return `<?xml version="1.0" encoding="UTF-8" ?>
-<body>
-<FileInfoList version="1.1">
-<FileInfo>
-<channelId>${xmlCh}</channelId>
-<Id>${xmlEscape(params.id)}</Id>
-${params.uid ? `<uid>${xmlEscape(params.uid)}</uid>` : ""}
-<supportSub>${supportSub}</supportSub>
-<playSpeed>1</playSpeed>
-<streamType>${xmlEscape(st)}</streamType>
-${iframeXml}
-</FileInfo>
-</FileInfoList>
-</body>`;
+  // Build the XML without empty lines when optional fields are absent.
+  // PCAP analysis shows the app does NOT include <uid> for standalone cameras.
+  const lines = [
+    '<?xml version="1.0" encoding="UTF-8" ?>',
+    "<body>",
+    '<FileInfoList version="1.1">',
+    "<FileInfo>",
+    `<channelId>${xmlCh}</channelId>`,
+    `<Id>${xmlEscape(params.id)}</Id>`,
+  ];
+  if (params.uid) {
+    lines.push(`<uid>${xmlEscape(params.uid)}</uid>`);
+  }
+  lines.push(
+    `<supportSub>${supportSub}</supportSub>`,
+    "<playSpeed>1</playSpeed>",
+    `<streamType>${xmlEscape(st)}</streamType>`,
+  );
+  if (iframeXml) {
+    lines.push(iframeXml);
+  }
+  lines.push("</FileInfo>", "</FileInfoList>", "</body>");
+  return lines.join("\n");
 };
 
 export const buildFileInfoListReplayByNameXml = (params: {
@@ -85,23 +94,28 @@ export const buildFileInfoListReplayByNameXml = (params: {
           ? "<iIframeReplay>1</iIframeReplay>"
           : "";
 
-  // Simplified XML format matching the official Reolink app:
-  // - No <name> or <fileName> tags (app doesn't use them)
-  // - Only <Id> with the full path/filename
-  return `<?xml version="1.0" encoding="UTF-8" ?>
-<body>
-<FileInfoList version="1.1">
-<FileInfo>
-<channelId>${xmlCh}</channelId>
-<Id>${xmlEscape(params.name)}</Id>
-${params.uid ? `<uid>${xmlEscape(params.uid)}</uid>` : ""}
-<supportSub>${supportSub}</supportSub>
-<playSpeed>1</playSpeed>
-<streamType>${xmlEscape(st)}</streamType>
-${iframeXml}
-</FileInfo>
-</FileInfoList>
-</body>`;
+  // Build the XML without empty lines when optional fields are absent.
+  const lines = [
+    '<?xml version="1.0" encoding="UTF-8" ?>',
+    "<body>",
+    '<FileInfoList version="1.1">',
+    "<FileInfo>",
+    `<channelId>${xmlCh}</channelId>`,
+    `<Id>${xmlEscape(params.name)}</Id>`,
+  ];
+  if (params.uid) {
+    lines.push(`<uid>${xmlEscape(params.uid)}</uid>`);
+  }
+  lines.push(
+    `<supportSub>${supportSub}</supportSub>`,
+    "<playSpeed>1</playSpeed>",
+    `<streamType>${xmlEscape(st)}</streamType>`,
+  );
+  if (iframeXml) {
+    lines.push(iframeXml);
+  }
+  lines.push("</FileInfo>", "</FileInfoList>", "</body>");
+  return lines.join("\n");
 };
 
 export const buildFileInfoListStopXml = (params: {

@@ -3027,11 +3027,14 @@ export class BaichuanClient extends EventEmitter<{
     await this.connect();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
-    const channelId =
-      params.channelIdOverride ??
-      (params.channel == null ? this.hostChannelId : channel + 1);
-
-    const msgNum = params.msgNumOverride ?? this.nextMsgNum();
+    // PCAP analysis shows: channelId in header is a SESSION COUNTER that increments,
+    // similar to CoverPreview (cmdId=298). Some H265 cameras reject channelId=0 or
+    // channel+1 with responseCode=400 but accept a session counter value.
+    // Use a separate session counter for channelId (independent from msgNum).
+    const sessionCounter = this.nextMsgNum();
+    const channelId = params.channelIdOverride ?? sessionCounter;
+    // PCAP shows msgNum is always 0 for FileInfoListReplay (cmdId=5), like CoverPreview.
+    const msgNum = params.msgNumOverride ?? 0;
     const cmdId = params.cmdId;
 
     // PCAP: request uses empty extension (payloadOffset=0).

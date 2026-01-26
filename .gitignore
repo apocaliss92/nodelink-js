@@ -44,6 +44,7 @@ fullTest/artifacts/*
 fullTest/audio-samples/*
 .tmp/*
 pcap/*
+output/*
 firmwares/*
 downloads/*
 docs/*

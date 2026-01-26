@@ -1221,7 +1221,7 @@ export class BaichuanVideoStream extends EventEmitter<{
           this.emit("videoAccessUnit", {
             data: outAnnex,
             isKeyframe,
-            videoType: media.videoType,
+            videoType, // Use the detected/corrected videoType, not media.videoType
             microseconds: media.microseconds,
             ...(media.type === "Iframe" && "time" in media
               ? media.time !== undefined

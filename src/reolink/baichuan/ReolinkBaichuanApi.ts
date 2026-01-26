@@ -3116,7 +3116,7 @@ export class ReolinkBaichuanApi {
   /**
    * Start a recording replay stream for STANDALONE cameras (non-NVR).
    * Uses exact parameters from PCAP analysis:
-   * - channelIdOverride = 0 (header channelId)
+   * - Uses hostChannelId (header channelId) - do NOT force 0
    * - msgClass = BC_CLASS_MODERN_24 (0x6414)
    * - streamType = 0
    * - NO extensionXml
@@ -3170,13 +3170,15 @@ export class ReolinkBaichuanApi {
       await stream.start();
 
       // PCAP-verified parameters (192.168.1.170, 192.168.50.226):
-      // - channelIdOverride = 0
+      // - channelIdOverride should be a session counter (incrementing), not 0 or channel+1
+      // - Some H265 cameras reject channelId=0 with responseCode=400
       // - messageClass = BC_CLASS_MODERN_24 (0x6414)
       // - NO extensionXml
+      const sessionCounter = this.client.reserveNextMsgNum();
       const frame = await this.client.sendFrame({
         cmdId: BC_CMD_ID_FILE_INFO_LIST_REPLAY,
         channel,
-        channelIdOverride: 0,
+        channelIdOverride: sessionCounter,
         payloadXml,
         messageClass: BC_CLASS_MODERN_24,
         msgNumOverride: 0,
@@ -3312,10 +3314,13 @@ export class ReolinkBaichuanApi {
     try {
       await stream.start();
 
-      // Same logic as fileInfoListReplayBinaryDownload:
-      // NVR has headerChannelIdOverride resolved, standalone doesn't
+      // For NVR, use the resolved headerChannelId or 82.
+      // For standalone cameras, use a session counter (like CoverPreview does).
+      // PCAP analysis shows some cameras (e.g. H265) reject channelId=0 or channel+1.
       const isNvr = headerChannelIdOverride != null;
-      const channelIdOverride = isNvr ? (headerChannelIdOverride ?? 82) : 0;
+      const channelIdOverride = isNvr
+        ? (headerChannelIdOverride ?? 82)
+        : this.client.reserveNextMsgNum();
 
       const frame = await this.client.sendFrame({
         cmdId: BC_CMD_ID_FILE_INFO_LIST_REPLAY,
@@ -4722,44 +4727,56 @@ export class ReolinkBaichuanApi {
       );
 
     const channel = this.normalizeChannel(params.channel);
-    const uid = await this.ensureUidForRecordings(channel, params.uid);
     const headerChannelIdOverride =
       this.resolveHeaderChannelIdForLogicalChannel(channel);
     const ident = params.fileName;
     // Auto-detect streamType from fileName
     const streamType = this.determineStreamTypeFromFileName(params.fileName);
 
-    // Simplified: use resolved headerChannelId or 82 for NVR, 0 for standalone
+    // For NVR, use the resolved headerChannelId or 82.
+    // For standalone cameras, do NOT override channelId - let sendBinary use the
+    // host channelId (typically 250). PCAP analysis shows some cameras (e.g. H265)
+    // reject channelId=0 with responseCode=400, but accept the hostChannelId.
     const isNvr = headerChannelIdOverride != null;
-    const channelIdOverride = isNvr ? (headerChannelIdOverride ?? 82) : 0;
 
+    // PCAP Analysis (2025-06): The Reolink app does NOT include <uid> in the XML
+    // for standalone cameras. Including it causes responseCode=400 on some H265 cameras.
+    // Only get/require UID for NVR configurations where it's required.
+    let uid: string | undefined;
+    if (isNvr) {
+      uid = await this.ensureUidForRecordings(channel, params.uid);
+    }
+
+    // PCAP Analysis (2025-06): The Reolink app uses the standard FileInfoList format with
+    // <FileInfo><Id>...</Id><supportSub>0</supportSub><playSpeed>1</playSpeed><streamType>mainStream</streamType></FileInfo>
+    // For standalone cameras (non-NVR), do NOT include <uid> in the XML.
     const payloadXml = ident.includes("/")
       ? buildFileInfoListReplayByIdXml({
           channel,
           xmlChannelId: 0, // PCAP-verified: xmlChannelId=0 works
           id: ident,
-          uid,
+          ...(uid ? { uid } : {}),
           streamType,
         })
       : buildFileInfoListReplayByNameXml({
           channel,
           xmlChannelId: 0,
           name: ident,
-          uid,
+          ...(uid ? { uid } : {}),
           streamType,
         });
 
     const timeoutMs = params.timeoutMs ?? 120_000;
 
     trace(
-      `download: channel=${channel} uid=${uid || "(missing)"} ident=${ident} streamType=${streamType} channelIdOverride=${channelIdOverride} timeoutMs=${timeoutMs}`,
+      `download: channel=${channel} uid=${uid || "(missing)"} ident=${ident} streamType=${streamType} isNvr=${isNvr} timeoutMs=${timeoutMs}`,
     );
 
     try {
       return await this.client.sendBinary({
         cmdId: BC_CMD_ID_FILE_INFO_LIST_REPLAY,
         channel,
-        channelIdOverride,
+        ...(isNvr ? { channelIdOverride: headerChannelIdOverride ?? 82 } : {}),
         msgNumOverride: 0,
         messageClass: BC_CLASS_MODERN_24,
         payloadXml,
