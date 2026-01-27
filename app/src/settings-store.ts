@@ -31,7 +31,11 @@ export const SettingsSchema = z.object({
   logRetentionDays: z.number().default(14),
 
   // RTSP defaults
-  rtspDefaultPort: z.number().default(8554),
+  rtspDefaultPort: z.number().default(8555), // Default port for individual RTSP servers
+
+  // RTSP Proxy (single entry point for all streams)
+  rtspProxyEnabled: z.boolean().default(true),
+  rtspProxyPort: z.number().default(8554), // Single port for all streams via proxy
 
   // RTSP Authentication
   rtspCredentials: z.array(RtspCredentialSchema).default([]),

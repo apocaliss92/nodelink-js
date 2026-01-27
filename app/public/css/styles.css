@@ -183,6 +183,21 @@ body {
   background: var(--error);
 }
 
+/* Status dot for proxy and other components */
+.status-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.status-dot.running {
+  background: var(--success);
+  box-shadow: 0 0 8px var(--success);
+}
+.status-dot.stopped {
+  background: var(--text-secondary);
+}
+
 .camera-name {
   font-size: 18px;
   font-weight: 600;
@@ -710,4 +725,186 @@ body {
   .form-row {
     grid-template-columns: 1fr;
   }
+}
+
+/* New Streams Grid Layout */
+.streams-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.stream-item {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  transition: border-color 0.2s;
+}
+
+.stream-item.active {
+  border-color: var(--success);
+}
+
+.stream-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.stream-profile {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.stream-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+}
+
+.stream-status-dot.running {
+  background: var(--success);
+  box-shadow: 0 0 6px var(--success);
+}
+
+.stream-details {
+  margin-bottom: 10px;
+}
+
+.stream-detail-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  padding: 3px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.stream-detail-row:last-child {
+  border-bottom: none;
+}
+
+.detail-label {
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.detail-label svg {
+  opacity: 0.7;
+}
+
+.detail-value {
+  color: var(--text-primary);
+  font-family: "Consolas", "Monaco", monospace;
+}
+
+.detail-value.viewers-active {
+  color: var(--success);
+  font-weight: 600;
+}
+
+.stream-url-container {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.stream-url {
+  flex: 1;
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: rgba(0, 0, 0, 0.3);
+  padding: 6px 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Consolas", "Monaco", monospace;
+}
+
+/* Device Info Modal Styles */
+.device-info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+@media (max-width: 600px) {
+  .device-info-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.device-info-section h4 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  font-size: 13px;
+}
+
+.info-label {
+  color: var(--text-secondary);
+}
+
+.info-value {
+  color: var(--text-primary);
+  font-family: "Consolas", "Monaco", monospace;
+}
+
+.info-value.status-connected {
+  color: var(--success);
+}
+
+.info-value.status-disconnected {
+  color: var(--text-secondary);
+}
+
+.info-value.status-error {
+  color: var(--danger);
+}
+
+.streams-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.streams-table th,
+.streams-table td {
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.streams-table th {
+  color: var(--text-secondary);
+  font-weight: 500;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+}
+
+.streams-table td {
+  color: var(--text-primary);
+  font-family: "Consolas", "Monaco", monospace;
+}
+
+.streams-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.05);
 }

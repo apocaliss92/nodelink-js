@@ -13,8 +13,8 @@
         <!-- Sidebar -->
         <aside class="sidebar">
             <div class="logo">
-                <h1>📹 Reolink Manager</h1>
-                <span>Camera Control Panel</span>
+                <h1>📹 Nodelink.js</h1>
+                <!-- <span>Manager Panel</span> -->
             </div>
             <nav class="nav">
                 <a class="nav-item active" data-page="cameras">
@@ -61,15 +61,6 @@
             <div class="content">
                 <!-- Cameras Page -->
                 <div id="page-cameras" class="page active">
-                    <div class="card" style="margin-bottom:20px;">
-                        <div class="card-header">
-                            <span class="card-title">Global RTSP Controls</span>
-                            <div>
-                                <button class="btn btn-success" onclick="startAllRtsp()">▶ Start All</button>
-                                <button class="btn btn-secondary" onclick="stopAllRtsp()">⏹ Stop All</button>
-                            </div>
-                        </div>
-                    </div>
                     <div class="camera-grid" id="cameraGrid"></div>
                     <div class="empty-state" id="camerasEmpty" style="display:none;">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -159,10 +150,10 @@
                     </div>
 
                     <div class="settings-section">
-                        <h3>📺 RTSP Defaults</h3>
+                        <h3>📺 RTSP Proxy</h3>
                         <div class="form-group">
-                            <label>Default RTSP Port</label>
-                            <input type="number" class="form-control" id="settingsRtspPort" placeholder="8554"
+                            <label>Proxy Port</label>
+                            <input type="number" class="form-control" id="settingsProxyPort" placeholder="8554"
                                 style="width:200px;">
                         </div>
                         <div class="form-group">
@@ -315,16 +306,19 @@
                     <p style="font-size:48px;margin-bottom:10px;">⚠️</p>
                     <p id="previewErrorMsg">Failed to load preview</p>
                 </div>
-                <div id="previewInfo" style="margin-top:15px;text-align:center;padding:10px;width:100%;">
-                    <details style="cursor:pointer;">
-                        <summary style="color:var(--text-secondary);font-size:12px;">RTSP URL (for VLC)</summary>
-                        <div style="margin-top:10px;">
-                            <input type="text" id="previewUrl" class="form-control" readonly
-                                style="text-align:center;margin-bottom:10px;font-size:11px;">
-                            <button class="btn btn-secondary btn-sm" onclick="copyPreviewUrl()">📋 Copy URL</button>
-                        </div>
-                    </details>
-                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Device Info Modal -->
+    <div class="modal-overlay" id="deviceInfoModal">
+        <div class="modal" style="max-width:700px;">
+            <div class="modal-header">
+                <h3 id="deviceInfoTitle">Device Info</h3>
+                <button class="modal-close" onclick="closeModal('deviceInfoModal')">&times;</button>
+            </div>
+            <div id="deviceInfoContent" style="padding:20px;">
+                <!-- Populated dynamically -->
             </div>
         </div>
     </div>

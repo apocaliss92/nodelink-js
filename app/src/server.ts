@@ -14,7 +14,10 @@ import {
   stopAllRtspServers,
   getAllRtspServersInfo,
   autoConnectCameras,
+  startRtspServer,
+  getCameraInfo,
 } from "./rtsp-manager.js";
+import { startRtspProxy, stopRtspProxy } from "./rtsp-proxy.js";
 import { getSettings, loadSettings } from "./settings-store.js";
 
 // Track active MJPEG streams for cleanup
@@ -73,7 +76,15 @@ app.use(cors());
 app.use(express.json());
 
 // Serve static files for the dashboard
-app.use("/static", express.static(path.join(__dirname, "../public")));
+// In Docker: /app/dist and /app/public, so ../public works
+// In dev: /app/src and /app/public, so ../public works
+const publicPath = path.join(__dirname, "../public");
+console.log(`[Server] __dirname: ${__dirname}`);
+console.log(`[Server] publicPath: ${publicPath}`);
+app.use("/static", express.static(publicPath));
+appLogger.info(`Serving static files from: ${publicPath}`, {
+  source: "server",
+});
 
 // tRPC API endpoint
 app.use(
@@ -106,19 +117,56 @@ app.get("/api/health", (req, res) => {
 });
 
 // MJPEG streaming endpoint for browser preview
-app.get("/api/stream/:cameraId/:profile", (req, res) => {
+app.get("/api/stream/:cameraId/:profile", async (req, res) => {
   const { cameraId, profile } = req.params;
   const streamKey = `${cameraId}:${profile}`;
 
   // Get RTSP URL for this camera/profile
-  const servers = getAllRtspServersInfo();
-  const server = servers.find(
+  let servers = getAllRtspServersInfo();
+  let server = servers.find(
     (s) => s.cameraId === cameraId && s.profile === profile,
   );
 
+  // If stream not running, try to start it on-demand
   if (!server || server.status !== "running" || !server.rtspUrl) {
-    res.status(404).json({ error: "Stream not running" });
-    return;
+    appLogger.info(
+      `Stream ${cameraId}/${profile} not running, starting on-demand for preview...`,
+      { source: "mjpeg" },
+    );
+
+    // Check if camera is connected
+    const camInfo = getCameraInfo(cameraId);
+    if (!camInfo || camInfo.status !== "connected") {
+      res.status(404).json({ error: "Camera not connected" });
+      return;
+    }
+
+    try {
+      await startRtspServer(cameraId, {
+        profile: profile as "main" | "sub" | "ext",
+        channel: 0, // TODO: get from camera config
+      });
+
+      // Wait for server to start
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+
+      // Get updated server info
+      servers = getAllRtspServersInfo();
+      server = servers.find(
+        (s) => s.cameraId === cameraId && s.profile === profile,
+      );
+
+      if (!server || server.status !== "running" || !server.rtspUrl) {
+        res.status(500).json({ error: "Failed to start stream" });
+        return;
+      }
+    } catch (err) {
+      appLogger.error(`Failed to start stream on-demand: ${err}`, {
+        source: "mjpeg",
+      });
+      res.status(500).json({ error: "Failed to start stream" });
+      return;
+    }
   }
 
   const rtspUrl = server.rtspUrl;
@@ -244,12 +292,29 @@ app.delete("/api/stream/:cameraId/:profile", (req, res) => {
 
 // Main dashboard - serve static HTML file
 app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "../public/index.html"));
+  res.sendFile(path.join(publicPath, "index.html"));
+});
+
+// Favicon
+app.get("/favicon.ico", (req, res) => {
+  res.sendFile(path.join(publicPath, "favicon.ico"), (err) => {
+    if (err) res.status(204).end();
+  });
 });
 
 // Graceful shutdown
 async function shutdown() {
   appLogger.info("Shutting down server...", { source: "server" });
+
+  // Stop RTSP proxy first
+  try {
+    await stopRtspProxy();
+  } catch (error) {
+    appLogger.error(`Error stopping RTSP proxy: ${error}`, {
+      source: "server",
+    });
+  }
+
   await stopAllRtspServers();
   server.close();
   process.exit(0);
@@ -261,14 +326,18 @@ process.on("SIGTERM", shutdown);
 // Start server
 server.listen(PORT, async () => {
   appLogger.info(`Server started on port ${PORT}`, { source: "server" });
+
+  const proxyPort = settings.rtspProxyPort || 8554;
   console.log(`
 ╔═══════════════════════════════════════════════════════════╗
-║          Reolink API Tester & RTSP Manager                ║
+║            Nodelink Manager - RTSP Dashboard              ║
 ╠═══════════════════════════════════════════════════════════╣
 ║  Dashboard:  http://localhost:${String(PORT).padEnd(5)}                      ║
 ║  API Docs:   http://localhost:${String(PORT).padEnd(5)}/docs                 ║
 ║  tRPC API:   http://localhost:${String(PORT).padEnd(5)}/api/trpc             ║
 ║  WS Logs:    ws://localhost:${String(PORT).padEnd(5)}/ws/logs                ║
+╠═══════════════════════════════════════════════════════════╣
+║  RTSP Proxy: rtsp://localhost:${String(proxyPort).padEnd(5)}/<camera>/<profile> ║
 ╚═══════════════════════════════════════════════════════════╝
   `);
 
@@ -281,13 +350,32 @@ server.listen(PORT, async () => {
     });
   }
 
-  // Auto-start RTSP servers for streams with autoStart enabled
-  try {
-    await autoStartRtspServers();
-  } catch (error) {
-    appLogger.error(`Error auto-starting RTSP servers: ${error}`, {
-      source: "server",
-    });
+  // Start RTSP proxy if enabled (BEFORE auto-starting servers)
+  // When proxy is enabled, servers will be started on-demand by the proxy
+  if (settings.rtspProxyEnabled) {
+    try {
+      await startRtspProxy();
+      appLogger.info(`RTSP Proxy started on port ${proxyPort}`, {
+        source: "server",
+      });
+      appLogger.info(`RTSP servers will be started on-demand by the proxy`, {
+        source: "server",
+      });
+    } catch (error) {
+      appLogger.error(`Error starting RTSP proxy: ${error}`, {
+        source: "server",
+      });
+    }
+  } else {
+    // Auto-start RTSP servers only if proxy is NOT enabled
+    // (when proxy is enabled, servers start on-demand)
+    try {
+      await autoStartRtspServers();
+    } catch (error) {
+      appLogger.error(`Error auto-starting RTSP servers: ${error}`, {
+        source: "server",
+      });
+    }
   }
 });
 

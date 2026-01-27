@@ -92,6 +92,8 @@ export interface RtspServerInfo {
   connections: number;
   /** Unique key for this stream (cameraId:profile:channel) */
   streamKey: string;
+  /** RTSP path (e.g., /token123) */
+  path?: string;
 }
 
 export interface CameraInfo {
@@ -105,6 +107,12 @@ export interface CameraInfo {
     firmwareVersion?: string;
     serialNumber?: string;
     channelCount?: number;
+    /** For NVR/Hub: the name of the camera on the specific channel */
+    channelName?: string;
+    /** Whether this device is an NVR/Hub with multiple channels */
+    isNvr?: boolean;
+    /** For NVR/Hub: the model of the Hub itself */
+    hubModel?: string;
   };
   lastConnected?: Date;
   error?: string;
@@ -182,6 +190,33 @@ async function updateCameraInfo(cameraId: string, api: ReolinkBaichuanApi) {
   try {
     const info = await api.getInfo();
     const channelCount = await api.getChannelCount();
+    const channel = camera.rtspChannel ?? 0;
+
+    // Check if this is an NVR/Hub (multiple channels or specific device types)
+    const modelLower = (info?.type ?? "").toLowerCase();
+    const isNvr =
+      channelCount > 1 ||
+      modelLower.includes("hub") ||
+      modelLower.includes("nvr") ||
+      modelLower.includes("home hub");
+
+    // For NVR/Hub, use getInfo(channel) to get the channel-specific camera name
+    let channelName: string | undefined;
+    let channelModel: string | undefined;
+    if (isNvr && channel >= 0) {
+      try {
+        // getInfo(channel) uses cmd_id 318 which returns channel-specific device info
+        const channelInfo = await api.getInfo(channel);
+        if (channelInfo?.name) {
+          channelName = channelInfo.name;
+        }
+        if (channelInfo?.type) {
+          channelModel = channelInfo.type;
+        }
+      } catch (e) {
+        // Ignore errors, channelName will remain undefined
+      }
+    }
 
     cameraInfoCache.set(cameraId, {
       id: cameraId,
@@ -190,10 +225,13 @@ async function updateCameraInfo(cameraId: string, api: ReolinkBaichuanApi) {
       port: camera.port,
       status: "connected",
       deviceInfo: {
-        model: info?.type,
+        model: channelModel || info?.type,
         firmwareVersion: info?.firmwareVersion,
         serialNumber: info?.serialNumber,
         channelCount,
+        isNvr,
+        channelName,
+        hubModel: isNvr ? info?.type : undefined,
       },
       lastConnected: new Date(),
     });
@@ -300,12 +338,16 @@ export async function startRtspServer(
     port = await findNextAvailablePort(basePort);
   }
 
-  // Build RTSP path using token (generate new one if not saved)
+  // Build RTSP path using friendly name (camera-name/profile)
+  // This makes it easier for proxying and human readability
+  const friendlyPath = `/${sanitizeCameraName(camera.name)}/${profile}`;
+
+  // Keep token for backward compatibility in saved config
   let streamToken = savedStreamConfig?.token;
   if (!streamToken) {
     streamToken = generateStreamToken();
   }
-  const rtspPath = `/${streamToken}`;
+  const rtspPath = friendlyPath;
 
   const info: RtspServerInfo = {
     cameraId,
@@ -316,6 +358,7 @@ export async function startRtspServer(
     channel,
     connections: 0,
     streamKey,
+    path: rtspPath,
   };
 
   rtspServers.set(streamKey, { server: null as any, info });
