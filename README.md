@@ -5,6 +5,7 @@ A TypeScript library for interacting with Reolink IP cameras and NVRs using the 
 ## Credits
 
 This library is inspired by and based on the reverse engineering work done by:
+
 - **[neolink](https://github.com/thirtythreeforty/neolink)** - Rust implementation of Baichuan protocol
 - **[reolink_aio](https://github.com/starkillerOG/reolink_aio)** - Python async library for Reolink cameras
 
@@ -20,6 +21,46 @@ This library is inspired by and based on the reverse engineering work done by:
 - 🎯 **PTZ Control** - Pan, Tilt, Zoom, and Preset management
 - 🔔 **Motion & AI Events** - Real-time event notifications and subscriptions
 - 📷 **Multifocal Support** - Composite streams for dual-lens cameras (TrackMix, Duo)
+
+---
+
+## 📚 Full API Documentation
+
+For detailed method-by-method documentation, see the [documentation](./documentation/) folder:
+
+### Baichuan Protocol API
+
+| Section | Description |
+|---------|-------------|
+| [**Overview**](./documentation/baichuan-api/README.md) | API overview and quick start |
+| [Connection](./documentation/baichuan-api/connection.md) | Login, logout, ping, reboot, dedicated sessions |
+| [Device Info](./documentation/baichuan-api/device-info.md) | Device information, channels, capabilities |
+| [Streaming](./documentation/baichuan-api/streaming.md) | Live video streams, codec configuration |
+| [Recordings](./documentation/baichuan-api/recordings.md) | Search, download, replay recorded clips |
+| [PTZ Control](./documentation/baichuan-api/ptz.md) | Pan, tilt, zoom, presets |
+| [Events](./documentation/baichuan-api/events.md) | Motion, AI, doorbell event subscriptions |
+| [Intercom](./documentation/baichuan-api/intercom.md) | Two-way audio, talk sessions |
+| [Snapshots](./documentation/baichuan-api/snapshots.md) | Capture images, thumbnails |
+| [Detection](./documentation/baichuan-api/detection.md) | Motion, AI, PIR, autotracking settings |
+| [Lights](./documentation/baichuan-api/lights.md) | Spotlight, floodlight, siren control |
+| [Battery](./documentation/baichuan-api/battery.md) | Battery status, sleep/wake management |
+| [OSD](./documentation/baichuan-api/osd.md) | On-screen display configuration |
+| [Network](./documentation/baichuan-api/network.md) | Network, WiFi, storage, system settings |
+
+### CGI HTTP API
+
+| Section | Description |
+|---------|-------------|
+| [**CGI API Reference**](./documentation/cgi-api/README.md) | Complete HTTP/CGI API documentation |
+
+### Additional Features
+
+| Section | Description |
+|---------|-------------|
+| [Streaming Servers](./documentation/streaming.md) | RTSP, RFC4571, HTTP streaming servers |
+| [Network Discovery](./documentation/discovery.md) | Automatic camera discovery via UDP |
+
+---
 
 ## Installation
 
@@ -61,6 +102,8 @@ api.onMotionAlarm((event) => {
 await api.close();
 ```
 
+📖 **[View full Baichuan API documentation →](./documentation/baichuan-api/README.md)**
+
 ### CGI HTTP API
 
 The CGI API provides HTTP-based access for configuration and management:
@@ -89,6 +132,8 @@ const recordings = await cgi.searchRecordings({
 const enc = await cgi.getEnc(0);
 ```
 
+📖 **[View full CGI API documentation →](./documentation/cgi-api/README.md)**
+
 ## Streaming
 
 ### RTSP Server
@@ -96,7 +141,10 @@ const enc = await cgi.getEnc(0);
 Create a local RTSP server that restreams camera feeds:
 
 ```typescript
-import { BaichuanRtspServer, ReolinkBaichuanApi } from "@apocaliss92/reolink-baichuan-js";
+import {
+  BaichuanRtspServer,
+  ReolinkBaichuanApi,
+} from "@apocaliss92/reolink-baichuan-js";
 
 const api = new ReolinkBaichuanApi({
   host: "192.168.1.100",
@@ -122,7 +170,10 @@ await rtspServer.start();
 Low-latency TCP streaming optimized for home automation systems like Scrypted:
 
 ```typescript
-import { createRfc4571TcpServer, ReolinkBaichuanApi } from "@apocaliss92/reolink-baichuan-js";
+import {
+  createRfc4571TcpServer,
+  ReolinkBaichuanApi,
+} from "@apocaliss92/reolink-baichuan-js";
 
 const api = new ReolinkBaichuanApi({
   host: "192.168.1.100",
@@ -336,7 +387,10 @@ CAMERA_PASSWORD=your-password
 The library supports custom loggers:
 
 ```typescript
-import { ReolinkBaichuanApi, createLogger } from "@apocaliss92/reolink-baichuan-js";
+import {
+  ReolinkBaichuanApi,
+  createLogger,
+} from "@apocaliss92/reolink-baichuan-js";
 
 const logger = createLogger({ level: "debug" });
 
@@ -360,6 +414,7 @@ npm run rtsp-server
 ```
 
 Configure via environment variables:
+
 - `CAMERA_HOST` - Camera IP address
 - `CAMERA_PORT` - Baichuan port (default: 9000)
 - `CAMERA_USERNAME` - Username
@@ -369,6 +424,7 @@ Configure via environment variables:
 ## Supported Devices
 
 This library has been tested with:
+
 - Reolink IP cameras (RLC series, E1 series, Argus series)
 - Reolink NVRs (RLN series)
 - Reolink Home Hub
@@ -377,12 +433,9 @@ This library has been tested with:
 
 ## API Reference
 
-See the [TypeScript definitions](./dist/reolink-baichuan-js.d.ts) for the complete API.
+📖 **Full API documentation available in the [documentation](./documentation/) folder.**
 
-## License
-
-MIT
-
-## Contributing
-
-Contributions are welcome! Please open an issue or pull request.
+- [Baichuan Protocol API](./documentation/baichuan-api/README.md) - Binary protocol (port 9000)
+- [CGI HTTP API](./documentation/cgi-api/README.md) - HTTP REST API (port 80)
+- [Streaming Servers](./documentation/streaming.md) - RTSP, RFC4571, HTTP servers
+- [Network Discovery](./documentation/discovery.md) - UDP autodiscovery
