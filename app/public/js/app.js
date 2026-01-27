@@ -558,13 +558,13 @@ function copyToClipboard(text) {
 function showStreamUrls(cameraName, profile, rtspUrl) {
     const sanitizedName = sanitizeName(cameraName);
     const mjpegUrl = `http://${appSettings.serviceIp}:${appSettings.serverPort}/api/stream/${sanitizedName}/${profile}`;
-    
+
     // Remove any existing popover
     const existingPopover = document.getElementById('streamUrlsPopover');
     if (existingPopover) {
         existingPopover.remove();
     }
-    
+
     // Create popover
     const popover = document.createElement('div');
     popover.id = 'streamUrlsPopover';
@@ -587,15 +587,15 @@ function showStreamUrls(cameraName, profile, rtspUrl) {
             </div>
         </div>
     `;
-    
+
     document.body.appendChild(popover);
-    
+
     // Position popover near mouse/center of screen
     popover.style.position = 'fixed';
     popover.style.top = '50%';
     popover.style.left = '50%';
     popover.style.transform = 'translate(-50%, -50%)';
-    
+
     // Close on click outside
     setTimeout(() => {
         document.addEventListener('click', closeStreamUrlsPopoverOnOutsideClick);

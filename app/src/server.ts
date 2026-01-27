@@ -135,7 +135,7 @@ app.get("/api/stream/:cameraName/:profile", async (req, res) => {
   // Find camera by sanitized name
   const config = getConfig();
   const camera = config.cameras.find(
-    (c) => sanitizeCameraName(c.name) === cameraName || c.id === cameraName
+    (c) => sanitizeCameraName(c.name) === cameraName || c.id === cameraName,
   );
 
   if (!camera) {
