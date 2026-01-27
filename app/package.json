@@ -1,6 +1,6 @@
 {
   "name": "reolink-api-tester",
-  "version": "1.0.0",
+  "version": "0.1.1",
   "description": "Web UI to test Reolink API methods and manage RTSP streams",
   "type": "module",
   "scripts": {
