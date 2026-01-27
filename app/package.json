@@ -1,7 +1,7 @@
 {
-  "name": "reolink-api-tester",
+  "name": "nodelink-manager",
   "version": "0.1.6",
-  "description": "Web UI to test Reolink API methods and manage RTSP streams",
+  "description": "Web UI to manage Reolink cameras and RTSP streams",
   "type": "module",
   "scripts": {
     "build": "tsup",
@@ -9,7 +9,7 @@
     "dev": "tsx watch src/server.ts"
   },
   "dependencies": {
-    "@apocaliss92/reolink-baichuan-js": "file:..",
+    "@apocaliss92/nodelink-js": "file:..",
     "@trpc/server": "^10.45.0",
     "cors": "^2.8.5",
     "express": "^4.18.2",

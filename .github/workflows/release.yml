@@ -202,7 +202,7 @@ jobs:
         id: docker-tags
         run: |
           OWNER_LC=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
-          IMG="${{ env.REGISTRY }}/${OWNER_LC}/reolink-dashboard"
+          IMG="${{ env.REGISTRY }}/${OWNER_LC}/nodelink-manager"
           VERSION="${{ needs.build-library.outputs.version }}"
 
           echo "image=${IMG}" >> $GITHUB_OUTPUT
@@ -222,7 +222,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           labels: |
-            org.opencontainers.image.title=Reolink Dashboard
+            org.opencontainers.image.title=Nodelink Manager
             org.opencontainers.image.description=Web dashboard for Reolink cameras with RTSP streaming
             org.opencontainers.image.version=${{ needs.build-library.outputs.version }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
@@ -278,7 +278,7 @@ jobs:
           echo "### NPM" >> release_notes.md
           echo "" >> release_notes.md
           echo "\`\`\`bash" >> release_notes.md
-          echo "npm install @apocaliss92/reolink-baichuan-js@${VERSION}" >> release_notes.md
+          echo "npm install @apocaliss92/nodelink-js@${VERSION}" >> release_notes.md
           echo "\`\`\`" >> release_notes.md
           echo "" >> release_notes.md
 
@@ -286,7 +286,7 @@ jobs:
           echo "### Docker" >> release_notes.md
           echo "" >> release_notes.md
           OWNER_LC=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
-          IMG="ghcr.io/${OWNER_LC}/reolink-dashboard"
+          IMG="ghcr.io/${OWNER_LC}/nodelink-manager"
           echo "Pull the Docker image:" >> release_notes.md
           echo "" >> release_notes.md
           echo "\`\`\`bash" >> release_notes.md

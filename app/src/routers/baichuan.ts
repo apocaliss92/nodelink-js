@@ -34,7 +34,7 @@ const ConnectionWithChannel = OptionalConnectionInput.merge(ChannelInput);
 // Helper to get API from optional params
 async function getApi(
   params?: z.infer<typeof OptionalConnectionInput>,
-): Promise<import("@apocaliss92/reolink-baichuan-js").ReolinkBaichuanApi> {
+): Promise<import("@apocaliss92/nodelink-js").ReolinkBaichuanApi> {
   const creds = resolveCredentials(params);
   return getConnection(creds.host, creds.port, creds.username, creds.password);
 }

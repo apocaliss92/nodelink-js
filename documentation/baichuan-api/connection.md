@@ -19,7 +19,7 @@ Methods for establishing and managing connections to Reolink cameras via the Bai
 Creates a new `ReolinkBaichuanApi` instance.
 
 ```typescript
-import { ReolinkBaichuanApi } from "@apocaliss92/reolink-baichuan-js";
+import { ReolinkBaichuanApi } from "@apocaliss92/nodelink-js";
 
 const api = new ReolinkBaichuanApi({
   host: "192.168.1.100",

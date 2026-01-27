@@ -20,7 +20,7 @@ The `BaichuanRtspServer` creates a local RTSP server that restreams camera feeds
 import {
   BaichuanRtspServer,
   ReolinkBaichuanApi,
-} from "@apocaliss92/reolink-baichuan-js";
+} from "@apocaliss92/nodelink-js";
 
 const api = new ReolinkBaichuanApi({
   host: "192.168.1.100",
@@ -148,7 +148,7 @@ The RFC 4571 server provides low-latency TCP streaming optimized for home automa
 import {
   createRfc4571TcpServer,
   ReolinkBaichuanApi,
-} from "@apocaliss92/reolink-baichuan-js";
+} from "@apocaliss92/nodelink-js";
 
 const api = new ReolinkBaichuanApi({
   host: "192.168.1.100",
@@ -240,7 +240,7 @@ interface Rfc4571TcpServer {
 For playing back recordings:
 
 ```typescript
-import { createRfc4571TcpServerForReplay } from "@apocaliss92/reolink-baichuan-js";
+import { createRfc4571TcpServerForReplay } from "@apocaliss92/nodelink-js";
 
 const replayServer = await createRfc4571TcpServerForReplay({
   api,
@@ -266,7 +266,7 @@ The `BaichuanHttpStreamServer` provides HTTP-based streaming.
 import {
   BaichuanHttpStreamServer,
   ReolinkBaichuanApi,
-} from "@apocaliss92/reolink-baichuan-js";
+} from "@apocaliss92/nodelink-js";
 
 const api = new ReolinkBaichuanApi({
   host: "192.168.1.100",
@@ -295,7 +295,7 @@ await httpServer.start();
 For dual-lens cameras like TrackMix and Duo:
 
 ```typescript
-import { createRfc4571TcpServer } from "@apocaliss92/reolink-baichuan-js";
+import { createRfc4571TcpServer } from "@apocaliss92/nodelink-js";
 
 // Create composite stream (combines both lenses)
 const server = await createRfc4571TcpServer({

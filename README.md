@@ -1,4 +1,4 @@
-# @apocaliss92/reolink-baichuan-js
+# @apocaliss92/nodelink-js
 
 A TypeScript library for interacting with Reolink IP cameras and NVRs using the proprietary Baichuan protocol and CGI API.
 
@@ -65,7 +65,7 @@ For detailed method-by-method documentation, see the [documentation](./documenta
 ## Installation
 
 ```bash
-npm install @apocaliss92/reolink-baichuan-js
+npm install @apocaliss92/nodelink-js
 ```
 
 ## Quick Start
@@ -75,7 +75,7 @@ npm install @apocaliss92/reolink-baichuan-js
 The Baichuan API provides direct access to camera functions through the proprietary binary protocol:
 
 ```typescript
-import { ReolinkBaichuanApi } from "@apocaliss92/reolink-baichuan-js";
+import { ReolinkBaichuanApi } from "@apocaliss92/nodelink-js";
 
 const api = new ReolinkBaichuanApi({
   host: "192.168.1.100",
@@ -108,7 +108,7 @@ await api.close();
 The CGI API provides HTTP-based access for configuration and management:
 
 ```typescript
-import { ReolinkCgiApi } from "@apocaliss92/reolink-baichuan-js";
+import { ReolinkCgiApi } from "@apocaliss92/nodelink-js";
 
 const cgi = new ReolinkCgiApi({
   host: "192.168.1.100",
@@ -143,7 +143,7 @@ Create a local RTSP server that restreams camera feeds:
 import {
   BaichuanRtspServer,
   ReolinkBaichuanApi,
-} from "@apocaliss92/reolink-baichuan-js";
+} from "@apocaliss92/nodelink-js";
 
 const api = new ReolinkBaichuanApi({
   host: "192.168.1.100",
@@ -172,7 +172,7 @@ Low-latency TCP streaming optimized for home automation systems like Scrypted:
 import {
   createRfc4571TcpServer,
   ReolinkBaichuanApi,
-} from "@apocaliss92/reolink-baichuan-js";
+} from "@apocaliss92/nodelink-js";
 
 const api = new ReolinkBaichuanApi({
   host: "192.168.1.100",
@@ -199,7 +199,7 @@ const server = await createRfc4571TcpServer({
 Send and receive audio for intercom functionality:
 
 ```typescript
-import { ReolinkBaichuanApi } from "@apocaliss92/reolink-baichuan-js";
+import { ReolinkBaichuanApi } from "@apocaliss92/nodelink-js";
 
 const api = new ReolinkBaichuanApi({
   host: "192.168.1.100",
@@ -225,7 +225,7 @@ await api.stopTalk();
 Download and manage recorded video clips:
 
 ```typescript
-import { ReolinkBaichuanApi } from "@apocaliss92/reolink-baichuan-js";
+import { ReolinkBaichuanApi } from "@apocaliss92/nodelink-js";
 
 const api = new ReolinkBaichuanApi({
   host: "192.168.1.100",
@@ -256,7 +256,7 @@ stream.pipe(createWriteStream("recording.mp4"));
 Automatically discover cameras on your network:
 
 ```typescript
-import { AutodiscoveryClient } from "@apocaliss92/reolink-baichuan-js";
+import { AutodiscoveryClient } from "@apocaliss92/nodelink-js";
 
 const discovery = new AutodiscoveryClient();
 
@@ -277,7 +277,7 @@ setTimeout(() => {
 Control Pan-Tilt-Zoom cameras:
 
 ```typescript
-import { ReolinkBaichuanApi } from "@apocaliss92/reolink-baichuan-js";
+import { ReolinkBaichuanApi } from "@apocaliss92/nodelink-js";
 
 const api = new ReolinkBaichuanApi({
   host: "192.168.1.100",
@@ -307,7 +307,7 @@ await api.setZoomFocus({ channel: 0, zoom: { pos: 100 } });
 Subscribe to real-time camera events:
 
 ```typescript
-import { ReolinkBaichuanApi } from "@apocaliss92/reolink-baichuan-js";
+import { ReolinkBaichuanApi } from "@apocaliss92/nodelink-js";
 
 const api = new ReolinkBaichuanApi({
   host: "192.168.1.100",
@@ -339,7 +339,7 @@ api.onVisitor((event) => {
 Work with NVRs and their connected channels:
 
 ```typescript
-import { ReolinkBaichuanApi } from "@apocaliss92/reolink-baichuan-js";
+import { ReolinkBaichuanApi } from "@apocaliss92/nodelink-js";
 
 const api = new ReolinkBaichuanApi({
   host: "192.168.1.100",
@@ -384,7 +384,7 @@ The library supports custom loggers:
 import {
   ReolinkBaichuanApi,
   createLogger,
-} from "@apocaliss92/reolink-baichuan-js";
+} from "@apocaliss92/nodelink-js";
 
 const logger = createLogger({ level: "debug" });
 

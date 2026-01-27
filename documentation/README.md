@@ -1,6 +1,6 @@
 # Documentation
 
-Welcome to the `@apocaliss92/reolink-baichuan-js` API documentation.
+Welcome to the `@apocaliss92/nodelink-js` API documentation.
 
 This library provides two main APIs for interacting with Reolink cameras:
 
@@ -74,5 +74,5 @@ Automatically discover Reolink devices on your network using UDP broadcast.
 ## Quick Links
 
 - [Main README](../README.md)
-- [npm package](https://www.npmjs.com/package/@apocaliss92/reolink-baichuan-js)
-- [GitHub Repository](https://github.com/apocaliss92/reolink-baichuan-js)
+- [npm package](https://www.npmjs.com/package/@apocaliss92/nodelink-js)
+- [GitHub Repository](https://github.com/apocaliss92/nodelink-js)

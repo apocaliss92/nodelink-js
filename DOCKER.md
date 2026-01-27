@@ -1,6 +1,6 @@
 # Docker Deployment
 
-This guide explains how to deploy the Reolink Dashboard application using Docker.
+This guide explains how to deploy **Nodelink Manager** using Docker.
 
 ## Quick Start
 
@@ -8,24 +8,24 @@ This guide explains how to deploy the Reolink Dashboard application using Docker
 
 ```bash
 # Pull the latest image
-docker pull ghcr.io/apocaliss92/reolink-dashboard:latest
+docker pull ghcr.io/apocaliss92/nodelink-manager:latest
 
 # Or pull a specific version
-docker pull ghcr.io/apocaliss92/reolink-dashboard:0.1.0
+docker pull ghcr.io/apocaliss92/nodelink-manager:0.1.0
 
 # Run the container
 docker run -d \
-  --name reolink-dashboard \
+  --name nodelink-manager \
   --network host \
-  -v reolink-data:/data \
-  ghcr.io/apocaliss92/reolink-dashboard:latest
+  -v nodelink-data:/data \
+  ghcr.io/apocaliss92/nodelink-manager:latest
 ```
 
 ### Using Docker Compose
 
 ```bash
 # Download docker-compose.yml
-wget https://raw.githubusercontent.com/apocaliss92/reolink-baichuan-js/main/docker-compose.yml
+wget https://raw.githubusercontent.com/apocaliss92/nodelink-js/main/docker-compose.yml
 
 # Start the container
 docker-compose up -d
@@ -41,18 +41,18 @@ docker-compose down
 
 ```bash
 # Clone the repository
-git clone https://github.com/apocaliss92/reolink-baichuan-js.git
-cd reolink-baichuan-js
+git clone https://github.com/apocaliss92/nodelink-js.git
+cd nodelink-js
 
 # Build the image
-docker build -t reolink-dashboard .
+docker build -t nodelink-manager .
 
 # Run the container
 docker run -d \
-  --name reolink-dashboard \
+  --name nodelink-manager \
   --network host \
-  -v reolink-data:/data \
-  reolink-dashboard
+  -v nodelink-data:/data \
+  nodelink-manager
 ```
 
 ## Configuration
@@ -110,15 +110,15 @@ ports:
 
 ## Data Persistence
 
-Data is persisted in the `reolink-data` volume:
+Data is persisted in the `nodelink-data` volume:
 
 ```bash
 # Backup settings
-docker cp reolink-dashboard:/data/settings.json ./backup-settings.json
+docker cp nodelink-manager:/data/settings.json ./backup-settings.json
 
 # Restore settings
-docker cp ./backup-settings.json reolink-dashboard:/data/settings.json
-docker restart reolink-dashboard
+docker cp ./backup-settings.json nodelink-manager:/data/settings.json
+docker restart nodelink-manager
 ```
 
 ## Health Check
@@ -127,7 +127,7 @@ The container includes an automatic health check:
 
 ```bash
 # Check status
-docker inspect --format='{{.State.Health.Status}}' reolink-dashboard
+docker inspect --format='{{.State.Health.Status}}' nodelink-manager
 
 # Health endpoint
 curl http://localhost:3000/health
@@ -148,10 +148,10 @@ docker-compose up -d
 
 ```bash
 # Container logs
-docker-compose logs -f reolink-dashboard
+docker-compose logs -f nodelink-manager
 
 # Application logs
-docker exec reolink-dashboard cat /data/logs/app-*.log
+docker exec nodelink-manager cat /data/logs/app-*.log
 ```
 
 ### Restart
@@ -163,5 +163,5 @@ docker-compose restart
 ### Shell into Container
 
 ```bash
-docker exec -it reolink-dashboard sh
+docker exec -it nodelink-manager sh
 ```

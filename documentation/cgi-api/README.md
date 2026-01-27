@@ -5,7 +5,7 @@ The `ReolinkCgiApi` class provides HTTP-based access to Reolink cameras through 
 ## Quick Start
 
 ```typescript
-import { ReolinkCgiApi } from "@apocaliss92/reolink-baichuan-js";
+import { ReolinkCgiApi } from "@apocaliss92/nodelink-js";
 
 const cgi = new ReolinkCgiApi({
   host: "192.168.1.100",

@@ -5,7 +5,7 @@ The `ReolinkBaichuanApi` class provides direct access to Reolink cameras through
 ## Quick Start
 
 ```typescript
-import { ReolinkBaichuanApi } from "@apocaliss92/reolink-baichuan-js";
+import { ReolinkBaichuanApi } from "@apocaliss92/nodelink-js";
 
 const api = new ReolinkBaichuanApi({
   host: "192.168.1.100",
@@ -78,7 +78,7 @@ interface ReolinkBaichuanApiOptions {
 ## Error Handling
 
 ```typescript
-import { ReolinkBaichuanApi } from "@apocaliss92/reolink-baichuan-js";
+import { ReolinkBaichuanApi } from "@apocaliss92/nodelink-js";
 
 const api = new ReolinkBaichuanApi({ ... });
 
@@ -170,7 +170,7 @@ import type {
   RecordingFile,
   StreamProfile,
   // ... and more
-} from "@apocaliss92/reolink-baichuan-js";
+} from "@apocaliss92/nodelink-js";
 ```
 
 ---

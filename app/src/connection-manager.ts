@@ -1,7 +1,7 @@
 import {
   ReolinkBaichuanApi,
   BaichuanRtspServer,
-} from "@apocaliss92/reolink-baichuan-js";
+} from "@apocaliss92/nodelink-js";
 import type { CameraConfig, RtspServerConfig, ConnectionParams } from "./types";
 import {
   getCamera,

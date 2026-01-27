@@ -1,16 +1,16 @@
 version: "3.8"
 
 services:
-  reolink-dashboard:
+  nodelink-manager:
     # Use pre-built image from GHCR
-    image: ghcr.io/apocaliss92/reolink-dashboard:latest
+    image: ghcr.io/apocaliss92/nodelink-manager:latest
 
     # Or build locally (uncomment below and comment image above)
     # build:
     #   context: .
     #   dockerfile: Dockerfile
 
-    container_name: reolink-dashboard
+    container_name: nodelink-manager
     restart: unless-stopped
 
     # Network mode host for RTSP streaming
@@ -26,7 +26,7 @@ services:
 
     volumes:
       # Persist settings and logs
-      - reolink-data:/data
+      - nodelink-data:/data
 
       # Optional: mount local settings file
       # - ./app/settings.json:/data/settings.json
@@ -47,5 +47,5 @@ services:
         max-file: "3"
 
 volumes:
-  reolink-data:
+  nodelink-data:
     driver: local

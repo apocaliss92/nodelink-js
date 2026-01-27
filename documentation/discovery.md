@@ -16,7 +16,7 @@ The `AutodiscoveryClient` allows automatic discovery of Reolink cameras on the l
 ## Basic Usage
 
 ```typescript
-import { AutodiscoveryClient } from "@apocaliss92/reolink-baichuan-js";
+import { AutodiscoveryClient } from "@apocaliss92/nodelink-js";
 
 const discovery = new AutodiscoveryClient({
   logger: console,
@@ -183,7 +183,7 @@ interface DiscoveredDevice {
 ### One-Shot Discovery
 
 ```typescript
-import { AutodiscoveryClient } from "@apocaliss92/reolink-baichuan-js";
+import { AutodiscoveryClient } from "@apocaliss92/nodelink-js";
 
 async function discoverDevices() {
   const discovery = new AutodiscoveryClient({
@@ -214,7 +214,7 @@ Device: ${device.name}
 import {
   AutodiscoveryClient,
   ReolinkBaichuanApi,
-} from "@apocaliss92/reolink-baichuan-js";
+} from "@apocaliss92/nodelink-js";
 
 const discovery = new AutodiscoveryClient({
   logger: console,
@@ -260,7 +260,7 @@ process.on("SIGINT", async () => {
 ### Discovery with Network Interface
 
 ```typescript
-import { AutodiscoveryClient } from "@apocaliss92/reolink-baichuan-js";
+import { AutodiscoveryClient } from "@apocaliss92/nodelink-js";
 
 // Discover only on a specific network interface
 const discovery = new AutodiscoveryClient({
@@ -275,7 +275,7 @@ const devices = await discovery.discover();
 ### Filter by Device Type
 
 ```typescript
-import { AutodiscoveryClient } from "@apocaliss92/reolink-baichuan-js";
+import { AutodiscoveryClient } from "@apocaliss92/nodelink-js";
 
 const discovery = new AutodiscoveryClient();
 const devices = await discovery.discover();
@@ -299,7 +299,7 @@ console.log("Hubs:", hubs.length);
 ### Build Device Map
 
 ```typescript
-import { AutodiscoveryClient } from "@apocaliss92/reolink-baichuan-js";
+import { AutodiscoveryClient } from "@apocaliss92/nodelink-js";
 
 interface DeviceConfig {
   host: string;
