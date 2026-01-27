@@ -2179,7 +2179,6 @@ export class ReolinkCgiApi {
 
   /**
    * Get URL for VOD playback, download, or streaming.
-   * Supports automatic file preparation for NVR/Hub when needed.
    *
    * @param filenameOrVodFile - Filename string or VodFile object from getVideoclips
    * @param channel - Channel number (0-based)
@@ -2197,151 +2196,27 @@ export class ReolinkCgiApi {
       options?.streamType ?? options?.videoStreamType ?? "main";
     const videoStreamType = options?.videoStreamType ?? streamType;
     const seek = options?.seek ?? 0;
-    // IMPORTANT: On NVR/Hub, `cmd=Download` typically requires a prior `NvrDownload` preparation
-    // to translate the Search filename into a downloadable source.
-    const shouldPrepare =
-      options?.prepare ??
-      (requestType === "Playback" ||
-        requestType === "Download" ||
-        requestType === "NVR_DOWNLOAD");
-    let startTime = options?.startTime ?? "";
 
     // Extract filename from VodFile or use string directly
-    let filename =
+    const filename =
       typeof filenameOrVodFile === "string"
         ? filenameOrVodFile
         : filenameOrVodFile.name;
-    const vodFile =
-      typeof filenameOrVodFile === "string" ? undefined : filenameOrVodFile;
 
-    // For NVR and Playback/Download, prepare the file first if needed
-    if (
-      shouldPrepare &&
-      this.nvrDownloadPrepareSupport !== "unsupported" &&
-      (requestType === "Playback" ||
-        requestType === "Download" ||
-        requestType === "NVR_DOWNLOAD")
-    ) {
-      // Try to prepare from startTimeObj/endTimeObj first
-      if (options?.startTimeObj && options?.endTimeObj) {
-        try {
-          // Convert Date to Reolink time format
-          const startTimeReolink = this.dateToReolinkTime(options.startTimeObj);
-          const endTimeReolink = this.dateToReolinkTime(options.endTimeObj);
-
-          filename = await this.prepareNvrVodDownload(
-            channel,
-            startTimeReolink,
-            endTimeReolink,
-            streamType,
-          );
-          // Extract start time from prepared filename if not provided
-          if (!startTime) {
-            const timeMatch = filename.match(
-              /Rec\w{3}(?:_|_DST)?(\d{8})_(\d{6})_/,
-            );
-            if (timeMatch) {
-              startTime = `${timeMatch[1]}${timeMatch[2]}`;
-            }
-          }
-        } catch (error) {
-          // If preparation fails, continue with original filename
-        }
-      }
-      // Otherwise, try to prepare from VodFile if available
-      else if (vodFile && vodFile.StartTime && vodFile.EndTime) {
-        try {
-          filename = await this.prepareNvrVodDownload(
-            channel,
-            vodFile.StartTime,
-            vodFile.EndTime,
-            videoStreamType,
-          );
-        } catch (error) {
-          // If preparation fails, continue with original filename
-        }
-      }
-
-      // Otherwise, attempt to derive Start/End from the filename itself.
-      // This matches common NVR/Hub recording paths like:
-      //   .../RecM04_YYYYMMDD_HHMMSS_HHMMSS_...
-      else {
-        const m = filename.match(/Rec\w{3}(?:_|_DST)?(\d{8})_(\d{6})_(\d{6})_/);
-        if (m) {
-          try {
-            const ymd = m[1];
-            const startHms = m[2];
-            const endHms = m[3];
-            if (!ymd || !startHms || !endHms) {
-              throw new Error(
-                `Failed to parse recording time from filename: ${filename}`,
-              );
-            }
-
-            const year = Number(ymd.slice(0, 4));
-            const mon = Number(ymd.slice(4, 6));
-            const day = Number(ymd.slice(6, 8));
-
-            const startTimeReolink = {
-              year,
-              mon,
-              day,
-              hour: Number(startHms.slice(0, 2)),
-              min: Number(startHms.slice(2, 4)),
-              sec: Number(startHms.slice(4, 6)),
-            };
-
-            const endTimeReolink = {
-              year,
-              mon,
-              day,
-              hour: Number(endHms.slice(0, 2)),
-              min: Number(endHms.slice(2, 4)),
-              sec: Number(endHms.slice(4, 6)),
-            };
-
-            filename = await this.prepareNvrVodDownload(
-              channel,
-              startTimeReolink,
-              endTimeReolink,
-              streamType,
-            );
-          } catch (error) {
-            // If preparation fails, continue with original filename
-          }
-        }
-      }
-    }
-
-    const token = this.client.getToken();
-    if (
-      !token &&
-      (requestType === "Playback" ||
-        requestType === "Download" ||
-        requestType === "NVR_DOWNLOAD")
-    ) {
-      throw new Error("Not logged in. Call login() first.");
-    }
-
-    // Get base URL from client (using private method access pattern)
+    // Get base URL from client
     const clientAny = this.client as any;
     const scheme = clientAny.useHttps ? "https" : "http";
     const port = clientAny.port ?? (clientAny.useHttps ? 443 : 80);
     const host = clientAny.host;
-    const rtmpPort = 1935; // Default RTMP port
+    const rtmpPort = 1935;
 
-    // Encode filename: replace spaces with %20, but keep '/' as-is (many firmwares expect raw paths)
+    // Encode filename: replace spaces with %20, but keep '/' as-is
     const encodedFilename = filename.replaceAll(" ", "%20");
 
     // Map stream type to numeric value for FLV/RTMP
     let streamTypeNum = 0; // main
     if (videoStreamType === "sub") {
       streamTypeNum = 1;
-    } else if (
-      videoStreamType.startsWith("autotrack_") ||
-      videoStreamType.startsWith("telephoto_")
-    ) {
-      streamTypeNum = videoStreamType.includes("sub") ? 3 : 2;
     }
 
     let url: string;
@@ -2357,30 +2232,22 @@ export class ReolinkCgiApi {
       const password = encodeURIComponent(clientAny.password ?? "");
       url = `rtmp://${host}:${rtmpPort}/vod/${encodedFilename}?channel=${channel}&stream=${streamTypeNum}&user=${username}&password=${password}`;
     } else {
-      // Playback, Download, or NVR_DOWNLOAD
+      // Playback or Download - use token authentication
+      const token = this.client.getToken();
+      if (!token) {
+        throw new Error("Not logged in. Call login() first.");
+      }
       const cmd = requestType === "NVR_DOWNLOAD" ? "Download" : requestType;
 
-      // Extract time_start from filename (like reolink_aio does)
-      // Pattern: RecXXX_YYYYMMDD_HHMMSS_... or RecXXX_DST_YYYYMMDD_HHMMSS_...
-      let timeStart = "";
+      // Extract time_start from filename
       let startTimeParam = "";
       const timeMatch = filename.match(/Rec\w{3}(?:_|_DST)?(\d{8})_(\d{6})_/);
       if (timeMatch) {
-        timeStart = `${timeMatch[1]}${timeMatch[2]}`;
-        startTimeParam = `&start=${timeStart}`;
-      } else if (startTime) {
-        // Fallback: use provided startTime
-        timeStart = startTime;
-        startTimeParam = `&start=${startTime}`;
+        startTimeParam = `&start=${timeMatch[1]}${timeMatch[2]}`;
       }
 
-      // Build output filename: ha_playback_{time_start}.mp4
-      const outputFilename = `ha_playback_${timeStart || Date.now()}.mp4`;
-
-      // Construct URL: {scheme}://{host}:{port}/cgi-bin/api.cgi?cmd={cmd}&source={filename}&output={output}&start={time_start}&token={token}
-      // Note: filename spaces are replaced with %20, but '/' stays as-is
-      // Note: start parameter is NOT URL-encoded (just the raw time string)
-      url = `${scheme}://${host}:${port}/cgi-bin/api.cgi?cmd=${cmd}&source=${encodedFilename}&output=${outputFilename}${startTimeParam}&token=${encodeURIComponent(token ?? "")}`;
+      const outputFilename = `playback_${Date.now()}.mp4`;
+      url = `${scheme}://${host}:${port}/cgi-bin/api.cgi?cmd=${cmd}&source=${encodedFilename}&output=${outputFilename}${startTimeParam}&token=${encodeURIComponent(token)}`;
     }
 
     return url;
