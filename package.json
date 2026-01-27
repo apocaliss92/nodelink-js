@@ -6,7 +6,7 @@
   "author": "",
   "repository": {
     "type": "git",
-    "url": "https://github.com/apocaliss92/reolink-baichuan-js.git"
+    "url": "git+https://github.com/apocaliss92/reolink-baichuan-js.git"
   },
   "keywords": [
     "reolink",
