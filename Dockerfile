@@ -18,7 +18,7 @@ COPY api-extractor.json ./
 COPY src/ ./src/
 
 # Install dependencies and build
-RUN npm ci --ignore-scripts
+RUN npm install --ignore-scripts
 RUN npm run build:js
 
 # -----------------------------------------------------------------------------
