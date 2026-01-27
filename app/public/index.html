@@ -217,33 +217,41 @@
                 </div>
                 <div class="form-row">
                     <div class="form-group">
-                        <label>Username *</label>
-                        <input type="text" class="form-control" id="cameraUsername" required placeholder="admin">
+                        <label>Username <span id="credentialsRequired">*</span></label>
+                        <input type="text" class="form-control" id="cameraUsername" placeholder="admin">
+                        <small id="usernameHint" style="color:var(--text-secondary);font-size:11px;display:none;">Leave
+                            empty to keep current</small>
                     </div>
                     <div class="form-group">
-                        <label>Password *</label>
-                        <input type="password" class="form-control" id="cameraPassword" required>
+                        <label>Password <span id="credentialsRequired2">*</span></label>
+                        <input type="password" class="form-control" id="cameraPassword">
+                        <small id="passwordHint" style="color:var(--text-secondary);font-size:11px;display:none;">Leave
+                            empty to keep current</small>
                     </div>
                 </div>
                 <hr style="border-color:var(--border);margin:20px 0;">
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>Channel</label>
-                        <input type="number" class="form-control" id="cameraChannel" value="0" min="0" placeholder="0"
-                            style="width:100px;">
-                        <small style="color:var(--text-secondary);font-size:11px;">For NVR/Hub: select the channel
-                            number (0
-                            = first camera)</small>
-                    </div>
-                    <div class="form-group">
-                        <label>&nbsp;</label>
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="cameraDebugLogs">
-                            Enable debug logs
-                        </label>
-                        <small style="color:var(--text-secondary);font-size:11px;">Show detailed stream logs for this
-                            camera</small>
-                    </div>
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="cameraIsNvr" onchange="toggleNvrOptions()">
+                        Camera connected via NVR/Hub
+                    </label>
+                    <small style="color:var(--text-secondary);font-size:11px;">Enable if this camera is connected
+                        through a Reolink Home Hub or NVR</small>
+                </div>
+                <div class="form-group" id="nvrOptions" style="display:none;">
+                    <label>Channel</label>
+                    <input type="number" class="form-control" id="cameraChannel" value="0" min="0" placeholder="0"
+                        style="width:100px;">
+                    <small style="color:var(--text-secondary);font-size:11px;">Select the channel number (0 = first
+                        camera)</small>
+                </div>
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="cameraDebugLogs">
+                        Enable debug logs
+                    </label>
+                    <small style="color:var(--text-secondary);font-size:11px;">Show detailed stream logs for this
+                        camera</small>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" onclick="testCameraConnection()">Test

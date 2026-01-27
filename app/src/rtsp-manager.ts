@@ -738,7 +738,7 @@ export async function testCameraConnection(
   });
 
   try {
-    logger.info(
+    logger.debug(
       `Testing connection to ${host}:${port}${channel !== undefined ? ` (channel ${channel})` : ""}`,
     );
     await api.login();
@@ -746,7 +746,7 @@ export async function testCameraConnection(
     const info = await api.getInfo(channel);
     await api.close();
 
-    logger.info(`Connection test successful: ${info?.type}`);
+    logger.debug(`Connection test successful: ${JSON.stringify(info)}`);
     return { success: true, info };
   } catch (error) {
     logger.error(`Connection test failed: ${error}`);

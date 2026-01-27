@@ -85,12 +85,14 @@ export const camerasRouter = router({
       // Auto-detect name if not provided
       if (!cameraName) {
         try {
+          // Don't pass channel for auto-detect - use host device info (cmdId 80)
+          // Channel would use cmdId 318 which returns empty on standalone cameras
           const result = await testCameraConnection(
             input.host,
             input.port,
             input.username,
             input.password,
-            input.rtspChannel, // Pass channel for Hub/NVR to get correct camera info
+            // Don't pass channel here
           );
           if (result.success && result.info?.name) {
             cameraName = result.info.name;
@@ -108,6 +110,12 @@ export const camerasRouter = router({
       }
 
       const camera = addCamera({ ...input, name: cameraName ?? input.host });
+
+      // Connect to camera immediately after adding (don't await - let it happen in background)
+      getOrCreateApiConnection(camera.id).catch(() => {
+        // Ignore connection errors - the UI will show the disconnected state
+      });
+
       return camera;
     }),
 

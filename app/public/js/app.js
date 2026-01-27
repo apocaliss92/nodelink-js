@@ -117,6 +117,20 @@ function closeModal(id) {
     document.getElementById(id).classList.remove('active');
 }
 
+// Toggle NVR options visibility
+function toggleNvrOptions() {
+    const isNvr = document.getElementById('cameraIsNvr')?.checked;
+    const nvrOptions = document.getElementById('nvrOptions');
+    if (nvrOptions) {
+        nvrOptions.style.display = isNvr ? '' : 'none';
+    }
+    // Reset channel to 0 when hiding
+    if (!isNvr) {
+        const channelInput = document.getElementById('cameraChannel');
+        if (channelInput) channelInput.value = '0';
+    }
+}
+
 // Helper: sanitize name for preview
 function sanitizeName(name) {
     return name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
@@ -182,8 +196,11 @@ function renderCameras() {
         const displayName = cam.deviceInfo?.channelName || cam.name;
         const isNvr = cam.deviceInfo?.isNvr;
 
-        // Check if camera is loading (connecting or connected but streams not yet loaded)
-        const isLoading = cam.status === 'connecting' || (cam.status === 'connected' && availableStreams.length === 0 && rtspServers.length === 0);
+        // Check if camera is loading:
+        // - status is 'connecting'
+        // - OR status is 'connected' but availableStreams not yet loaded (undefined, not just empty array)
+        const isLoadingStreams = cam.status === 'connected' && !cam.availableStreams;
+        const isLoading = cam.status === 'connecting' || isLoadingStreams;
 
         // Merge available streams with running servers info
         const allStreams = [
@@ -277,11 +294,45 @@ function renderCameras() {
 }
 
 function openAddCameraModal() {
-    document.getElementById('cameraModalTitle').textContent = 'Add Camera';
-    document.getElementById('cameraForm').reset();
-    document.getElementById('cameraId').value = '';
-    document.getElementById('cameraNamePreview').textContent = '';
-    document.getElementById('cameraDebugLogs').checked = false;
+    const modalTitle = document.getElementById('cameraModalTitle');
+    const cameraForm = document.getElementById('cameraForm');
+    const cameraId = document.getElementById('cameraId');
+    const cameraNamePreview = document.getElementById('cameraNamePreview');
+    const cameraDebugLogs = document.getElementById('cameraDebugLogs');
+    const cameraUsername = document.getElementById('cameraUsername');
+    const cameraPassword = document.getElementById('cameraPassword');
+    const cameraIsNvr = document.getElementById('cameraIsNvr');
+
+    if (!modalTitle || !cameraForm) {
+        console.error('[App] Camera modal elements not found. modalTitle:', modalTitle, 'cameraForm:', cameraForm);
+        showToast('Error: Modal not found. Try refreshing the page.', 'error');
+        return;
+    }
+
+    modalTitle.textContent = 'Add Camera';
+    cameraForm.reset();
+    if (cameraId) cameraId.value = '';
+    if (cameraNamePreview) cameraNamePreview.textContent = '';
+    if (cameraDebugLogs) cameraDebugLogs.checked = false;
+
+    // Reset NVR options
+    if (cameraIsNvr) cameraIsNvr.checked = false;
+    toggleNvrOptions();
+
+    // Show required asterisks and hide hints for new camera
+    const req1 = document.getElementById('credentialsRequired');
+    const req2 = document.getElementById('credentialsRequired2');
+    const hint1 = document.getElementById('usernameHint');
+    const hint2 = document.getElementById('passwordHint');
+    if (req1) req1.style.display = '';
+    if (req2) req2.style.display = '';
+    if (hint1) hint1.style.display = 'none';
+    if (hint2) hint2.style.display = 'none';
+
+    // Set required for new camera
+    if (cameraUsername) cameraUsername.required = true;
+    if (cameraPassword) cameraPassword.required = true;
+
     openModal('addCameraModal');
 }
 
@@ -289,47 +340,120 @@ async function editCamera(id) {
     const cam = cameras.find(c => c.id === id);
     if (!cam) return;
 
-    document.getElementById('cameraModalTitle').textContent = 'Edit Camera';
-    document.getElementById('cameraId').value = id;
-    document.getElementById('cameraName').value = cam.name;
-    document.getElementById('cameraHost').value = cam.host;
-    document.getElementById('cameraPort').value = cam.port;
-    document.getElementById('cameraNamePreview').textContent = '';
+    const modalTitle = document.getElementById('cameraModalTitle');
+    if (!modalTitle) {
+        console.error('[App] Camera modal not found');
+        showToast('Error: Modal not found. Try refreshing the page.', 'error');
+        return;
+    }
+
+    modalTitle.textContent = 'Edit Camera';
+    const cameraId = document.getElementById('cameraId');
+    const cameraName = document.getElementById('cameraName');
+    const cameraHost = document.getElementById('cameraHost');
+    const cameraPort = document.getElementById('cameraPort');
+    const cameraNamePreview = document.getElementById('cameraNamePreview');
+    const cameraChannel = document.getElementById('cameraChannel');
+    const cameraDebugLogs = document.getElementById('cameraDebugLogs');
+    const cameraUsername = document.getElementById('cameraUsername');
+    const cameraPassword = document.getElementById('cameraPassword');
+    const cameraIsNvr = document.getElementById('cameraIsNvr');
+
+    if (cameraId) cameraId.value = id;
+    if (cameraName) cameraName.value = cam.name;
+    if (cameraHost) cameraHost.value = cam.host;
+    if (cameraPort) cameraPort.value = cam.port;
+    if (cameraNamePreview) cameraNamePreview.textContent = '';
+
+    // Clear credentials fields (user can leave empty to keep current)
+    if (cameraUsername) {
+        cameraUsername.value = '';
+        cameraUsername.placeholder = 'Leave empty to keep current';
+        cameraUsername.required = false;
+    }
+    if (cameraPassword) {
+        cameraPassword.value = '';
+        cameraPassword.placeholder = 'Leave empty to keep current';
+        cameraPassword.required = false;
+    }
 
     const rtspChannel = cam.rtspChannel ?? 0;
-    document.getElementById('cameraChannel').value = rtspChannel;
-    document.getElementById('cameraDebugLogs').checked = cam.debugLogs || false;
+    if (cameraChannel) cameraChannel.value = rtspChannel;
+    if (cameraDebugLogs) cameraDebugLogs.checked = cam.debugLogs || false;
+
+    // Set NVR checkbox based on whether channel > 0 or explicitly set
+    const isNvr = rtspChannel > 0;
+    if (cameraIsNvr) cameraIsNvr.checked = isNvr;
+    toggleNvrOptions();
+
+    // Hide required asterisks and show hints for edit
+    const req1 = document.getElementById('credentialsRequired');
+    const req2 = document.getElementById('credentialsRequired2');
+    const hint1 = document.getElementById('usernameHint');
+    const hint2 = document.getElementById('passwordHint');
+    if (req1) req1.style.display = 'none';
+    if (req2) req2.style.display = 'none';
+    if (hint1) hint1.style.display = '';
+    if (hint2) hint2.style.display = '';
 
     openModal('addCameraModal');
 }
 
 function initCameraForm() {
-    document.getElementById('cameraForm').addEventListener('submit', async (e) => {
+    const form = document.getElementById('cameraForm');
+    if (!form) {
+        console.error('[App] Camera form not found');
+        return;
+    }
+
+    form.addEventListener('submit', async (e) => {
         e.preventDefault();
 
-        const id = document.getElementById('cameraId').value;
-        const channel = parseInt(document.getElementById('cameraChannel').value) || 0;
-        const nameValue = document.getElementById('cameraName').value.trim();
+        const id = document.getElementById('cameraId')?.value || '';
+        const isNvr = document.getElementById('cameraIsNvr')?.checked || false;
+        const channel = isNvr ? (parseInt(document.getElementById('cameraChannel')?.value) || 0) : 0;
+        const nameValue = (document.getElementById('cameraName')?.value || '').trim();
+        const usernameValue = (document.getElementById('cameraUsername')?.value || '').trim();
+        const passwordValue = document.getElementById('cameraPassword')?.value || '';
+
+        // For new cameras, require credentials
+        if (!id && (!usernameValue || !passwordValue)) {
+            showToast('Username and password are required for new cameras', 'error');
+            return;
+        }
 
         const data = {
-            name: nameValue || undefined, // Send undefined to trigger auto-detect
-            host: document.getElementById('cameraHost').value,
-            port: parseInt(document.getElementById('cameraPort').value) || 9000,
-            username: document.getElementById('cameraUsername').value,
-            password: document.getElementById('cameraPassword').value,
+            host: document.getElementById('cameraHost')?.value || '',
+            port: parseInt(document.getElementById('cameraPort')?.value) || 9000,
             rtspChannel: channel,
-            debugLogs: document.getElementById('cameraDebugLogs').checked,
+            debugLogs: document.getElementById('cameraDebugLogs')?.checked || false,
         };
 
         try {
             if (id) {
-                // For updates, always send the name (even if empty means keep current)
-                data.name = nameValue || undefined;
+                // Update existing camera
+                // Only send name if provided (empty means keep current)
+                if (nameValue) data.name = nameValue;
+                // Only send credentials if provided (empty means keep current)
+                if (usernameValue) data.username = usernameValue;
+                if (passwordValue) data.password = passwordValue;
+
                 await api('cameras.update', 'POST', { id, ...data });
                 showToast('Camera updated');
             } else {
-                await api('cameras.add', 'POST', data);
-                showToast('Camera added');
+                // Add new camera
+                data.name = nameValue || undefined; // undefined triggers auto-detect
+                data.username = usernameValue;
+                data.password = passwordValue;
+
+                const result = await api('cameras.add', 'POST', data);
+                console.log('[App] Camera add result:', result);
+                // Show the detected name if it was auto-detected
+                if (!nameValue && result?.name) {
+                    showToast(`Camera "${result.name}" added`);
+                } else {
+                    showToast('Camera added');
+                }
             }
             closeModal('addCameraModal');
             loadCameras();
@@ -340,13 +464,14 @@ function initCameraForm() {
 }
 
 async function testCameraConnection() {
-    const channel = parseInt(document.getElementById('cameraChannel').value);
+    const isNvr = document.getElementById('cameraIsNvr')?.checked || false;
+    const channel = isNvr ? parseInt(document.getElementById('cameraChannel').value) : undefined;
     const data = {
         host: document.getElementById('cameraHost').value,
         port: parseInt(document.getElementById('cameraPort').value) || 9000,
         username: document.getElementById('cameraUsername').value,
         password: document.getElementById('cameraPassword').value,
-        channel: isNaN(channel) ? undefined : channel, // For Hub/NVR: pass channel to get correct camera info
+        channel: channel, // Only pass channel if NVR mode is enabled
     };
 
     try {
