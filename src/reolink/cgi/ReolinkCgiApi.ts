@@ -2,7 +2,7 @@ import type { DebugConfig, Logger } from "../../debug/DebugConfig";
 import { recordingsTraceLog } from "../../debug/DebugConfig";
 import { collectNvrDiagnostics } from "../../debug/DiagnosticsTools";
 import { parseRecordingFileName } from "../baichuan/recordingFileName";
-import type { RecordingFile } from "../baichuan/types";
+import type { RecordingDetectionClass, RecordingFile } from "../baichuan/types";
 import {
   ReolinkHttpClient,
   type ReolinkHttpClientOptions,
@@ -434,10 +434,11 @@ type RecordingsCacheEntry = {
 };
 
 /**
- * Parameters for listing enriched recordings from NVR/Hub.
+ * Parameters for getVideoclips() recording search (CGI API).
+ * Note: CGI API uses different parameters than Baichuan API.
  */
-export interface ListNvrRecordingsParams {
-  /** Channel number (0-based) */
+export interface CgiGetVideoclipsParams {
+  /** Channel number (0-based). Required for NVR, optional for standalone cameras. */
   channel: number;
   /** Start date/time for search */
   start: Date;
@@ -460,6 +461,11 @@ export interface ListNvrRecordingsParams {
   /** Stream URL type (only when fetchStreamUrls=true): "FLV" (default), "RTMP", "Playback" */
   streamUrlType?: "FLV" | "RTMP" | "Playback";
 }
+
+/**
+ * @deprecated Use {@link CgiGetVideoclipsParams} instead.
+ */
+export type ListNvrRecordingsParams = CgiGetVideoclipsParams;
 
 /**
  * Options for collecting NVR diagnostics.
@@ -1383,17 +1389,34 @@ export class ReolinkCgiApi {
   // --------------------
 
   /**
-   * List enriched recordings from NVR/Hub.
+   * Get videoclips (recordings) via CGI Search API.
    * This command does NOT wake up battery cameras connected to the hub.
    *
    * Always returns enriched recording files with parsed metadata, detection flags, and timestamps.
    * Note: For best results, use autoSearchByDay=true to automatically search day-by-day when Status table is available.
    *
+   * @example
+   * ```typescript
+   * // Search yesterday's recordings on channel 0
+   * const yesterday = new Date();
+   * yesterday.setDate(yesterday.getDate() - 1);
+   * yesterday.setHours(0, 0, 0, 0);
+   * const endOfDay = new Date(yesterday);
+   * endOfDay.setHours(23, 59, 59, 999);
+   *
+   * const clips = await cgiApi.getVideoclips({
+   *   channel: 0,
+   *   start: yesterday,
+   *   end: endOfDay,
+   *   streamType: "main",
+   * });
+   * ```
+   *
    * @param params - Search parameters
-   * @returns Array of enriched recording files
+   * @returns Array of enriched recording files (RecordingFile[])
    */
-  async listNvrRecordings(
-    params: ListNvrRecordingsParams,
+  async getVideoclips(
+    params: CgiGetVideoclipsParams,
   ): Promise<Array<RecordingFile>> {
     const { channel, start, end } = params;
     const streamType = params.streamType ?? "main";
@@ -1426,14 +1449,14 @@ export class ReolinkCgiApi {
     }
 
     // Log date conversion for debugging (using both general debug and recordings trace)
-    // debugLog(this.debugConfig, this.logger, "listNvrRecordings",
+    // debugLog(this.debugConfig, this.logger, "getVideoclips",
     //   `Date conversion: start=${start.toISOString()} (local: ${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')} ${String(start.getHours()).padStart(2, '0')}:${String(start.getMinutes()).padStart(2, '0')}:${String(start.getSeconds()).padStart(2, '0')}) -> ReolinkTime=${JSON.stringify(startTime)}, ` +
     //   `end=${end.toISOString()} (local: ${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-${String(end.getDate()).padStart(2, '0')} ${String(end.getHours()).padStart(2, '0')}:${String(end.getMinutes()).padStart(2, '0')}:${String(end.getSeconds()).padStart(2, '0')}) -> ReolinkTime=${JSON.stringify(endTime)}`
     // );
     recordingsTraceLog(
       this.debugConfig,
       this.logger,
-      "listNvrRecordings",
+      "getVideoclips",
       `Date conversion: start=${start.toISOString()} -> ReolinkTime=${JSON.stringify(startTime)}, end=${end.toISOString()} -> ReolinkTime=${JSON.stringify(endTime)}`,
     );
 
@@ -1453,7 +1476,7 @@ export class ReolinkCgiApi {
         recordingsTraceLog(
           this.debugConfig,
           this.logger,
-          "listNvrRecordings",
+          "getVideoclips",
           `Cache hit: returning ${cached.data.length} cached enriched recordings`,
         );
         return cached.data;
@@ -1581,7 +1604,7 @@ export class ReolinkCgiApi {
                       recordingsTraceLog(
                         this.debugConfig,
                         this.logger,
-                        "listNvrRecordings",
+                        "getVideoclips",
                         `Raw API response for day ${day}/${month}/${year}: ${JSON.stringify(
                           {
                             fileCount: files.length,
@@ -1645,7 +1668,7 @@ export class ReolinkCgiApi {
         recordingsTraceLog(
           this.debugConfig,
           this.logger,
-          "listNvrRecordings",
+          "getVideoclips",
           `Returning ${enriched.length} enriched recording files from autoSearchByDay`,
         );
 
@@ -1706,7 +1729,7 @@ export class ReolinkCgiApi {
       recordingsTraceLog(
         this.debugConfig,
         this.logger,
-        "listNvrRecordings",
+        "getVideoclips",
         `Range spans ${dayRanges.length} days, splitting into separate day queries`,
       );
 
@@ -1728,7 +1751,7 @@ export class ReolinkCgiApi {
         recordingsTraceLog(
           this.debugConfig,
           this.logger,
-          "listNvrRecordings",
+          "getVideoclips",
           `Querying day: ${range.start.year}-${range.start.mon}-${range.start.day} (${range.start.hour}:${range.start.min}:${range.start.sec} to ${range.end.hour}:${range.end.min}:${range.end.sec})`,
         );
 
@@ -1752,7 +1775,7 @@ export class ReolinkCgiApi {
           recordingsTraceLog(
             this.debugConfig,
             this.logger,
-            "listNvrRecordings",
+            "getVideoclips",
             `Raw API response (normal search): ${JSON.stringify({
               fileCount: files.length,
               sampleFile: {
@@ -1782,7 +1805,7 @@ export class ReolinkCgiApi {
     recordingsTraceLog(
       this.debugConfig,
       this.logger,
-      "listNvrRecordings",
+      "getVideoclips",
       `Collected ${allFiles.length} raw VodFiles from API search results`,
     );
     if (allFiles.length > 0) {
@@ -1794,7 +1817,7 @@ export class ReolinkCgiApi {
           recordingsTraceLog(
             this.debugConfig,
             this.logger,
-            "listNvrRecordings",
+            "getVideoclips",
             `Sample file ${i + 1}/${allFiles.length}: ${JSON.stringify({
               name: file.name,
               type: file.type,
@@ -1835,7 +1858,7 @@ export class ReolinkCgiApi {
     recordingsTraceLog(
       this.debugConfig,
       this.logger,
-      "listNvrRecordings",
+      "getVideoclips",
       `Returning ${enriched.length} enriched recording files`,
     );
 
@@ -1856,6 +1879,155 @@ export class ReolinkCgiApi {
     }
 
     return enriched;
+  }
+
+  /**
+   * @deprecated Use {@link getVideoclips} instead.
+   * Alias for backward compatibility.
+   */
+  async listNvrRecordings(
+    params: CgiGetVideoclipsParams,
+  ): Promise<Array<RecordingFile>> {
+    return this.getVideoclips(params);
+  }
+
+  /**
+   * Get a JPEG thumbnail from a VOD recording using ffmpeg.
+   *
+   * This method fetches the VOD URL (with Download type for better ffmpeg compatibility)
+   * and extracts the first valid frame using ffmpeg.
+   *
+   * @param params - Parameters for thumbnail extraction
+   * @returns JPEG buffer
+   *
+   * @example
+   * ```typescript
+   * const thumbnail = await cgiApi.getVideoclipThumbnailJpeg({
+   *   channel: 0,
+   *   filename: "/mnt/sda/...",
+   *   ffmpegPath: "/usr/bin/ffmpeg",
+   * });
+   * fs.writeFileSync("thumbnail.jpg", thumbnail);
+   * ```
+   */
+  async getVideoclipThumbnailJpeg(params: {
+    /** Channel number (0-based) */
+    channel: number;
+    /** Recording filename or VodFile object from getVideoclips() */
+    filename: string | VodFile;
+    /** Path to ffmpeg executable */
+    ffmpegPath: string;
+    /** Timeout in milliseconds (default: 30000) */
+    timeoutMs?: number;
+    /** Seek position in seconds (default: 0, extracts first frame) */
+    seekSeconds?: number;
+  }): Promise<Buffer> {
+    const {
+      channel,
+      filename,
+      ffmpegPath,
+      timeoutMs = 30000,
+      seekSeconds = 0,
+    } = params;
+
+    // Get VOD URL with FLV type (includes authentication in URL)
+    // FLV is more reliable than Download for ffmpeg since it embeds credentials
+    const vodUrl = await this.getVodUrl(filename, channel, {
+      requestType: "FLV",
+      streamType: "main",
+      prepare: true,
+      seek: seekSeconds,
+    });
+
+    recordingsTraceLog(
+      this.debugConfig,
+      this.logger,
+      "getVideoclipThumbnailJpeg",
+      `Extracting thumbnail from VOD URL (FLV): ${vodUrl.substring(0, 100)}... (seek=${seekSeconds}s)`,
+    );
+
+    // Use ffmpeg to extract first frame as JPEG
+    const { spawn } = await import("child_process");
+
+    return new Promise<Buffer>((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      let stderr = "";
+      let timedOut = false;
+
+      // ffmpeg args optimized for HTTP FLV streams:
+      // - analyzeduration/probesize: allow more time to find stream info
+      // - fflags: handle streams with gaps/errors gracefully
+      // - rw_timeout: prevent hanging on slow/broken connections
+      const ffmpeg = spawn(ffmpegPath, [
+        "-y",
+        "-analyzeduration",
+        "10000000",
+        "-probesize",
+        "10000000",
+        "-fflags",
+        "+genpts+discardcorrupt+igndts",
+        "-rw_timeout",
+        String(timeoutMs * 1000), // microseconds
+        "-i",
+        vodUrl,
+        "-vframes",
+        "1",
+        "-q:v",
+        "2",
+        "-f",
+        "image2pipe",
+        "-vcodec",
+        "mjpeg",
+        "pipe:1",
+      ]);
+
+      const timer = setTimeout(() => {
+        timedOut = true;
+        ffmpeg.kill("SIGKILL");
+        reject(new Error(`ffmpeg timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      ffmpeg.stdout.on("data", (chunk: Buffer) => {
+        chunks.push(chunk);
+      });
+
+      ffmpeg.stderr.on("data", (data: Buffer) => {
+        stderr += data.toString();
+      });
+
+      ffmpeg.on("close", (code) => {
+        clearTimeout(timer);
+        if (timedOut) return;
+
+        if (code === 0 && chunks.length > 0) {
+          const jpeg = Buffer.concat(chunks);
+          if (jpeg.length < 100) {
+            reject(
+              new Error(
+                `ffmpeg produced too small output: ${jpeg.length} bytes`,
+              ),
+            );
+            return;
+          }
+          recordingsTraceLog(
+            this.debugConfig,
+            this.logger,
+            "getVideoclipThumbnailJpeg",
+            `Successfully extracted thumbnail: ${jpeg.length} bytes`,
+          );
+          resolve(jpeg);
+        } else {
+          reject(
+            new Error(`ffmpeg exited with code ${code}: ${stderr.slice(-500)}`),
+          );
+        }
+      });
+
+      ffmpeg.on("error", (err) => {
+        clearTimeout(timer);
+        reject(new Error(`ffmpeg spawn error: ${err.message}`));
+      });
+    });
   }
 
   /**
@@ -2009,7 +2181,7 @@ export class ReolinkCgiApi {
    * Get URL for VOD playback, download, or streaming.
    * Supports automatic file preparation for NVR/Hub when needed.
    *
-   * @param filenameOrVodFile - Filename string or VodFile object from listNvrRecordings
+   * @param filenameOrVodFile - Filename string or VodFile object from getVideoclips
    * @param channel - Channel number (0-based)
    * @param options - Optional parameters
    * @returns URL string
@@ -2218,7 +2390,7 @@ export class ReolinkCgiApi {
    * Download a VOD file.
    * For NVR/Hub, use prepareNvrVodDownload first to get the filename.
    *
-   * @param filename - Filename from listNvrRecordings or prepareNvrVodDownload
+   * @param filename - Filename from getVideoclips or prepareNvrVodDownload
    * @param options - Optional download parameters
    * @returns Buffer containing the video file
    */
@@ -2717,6 +2889,24 @@ export class ReolinkCgiApi {
       })}`,
     );
 
+    // Build detectionClasses array from merged flags
+    const detectionClasses: RecordingDetectionClass[] = [];
+    if (hasPerson) detectionClasses.push("person");
+    if (hasVehicle) detectionClasses.push("vehicle");
+    if (hasAnimal) detectionClasses.push("animal");
+    if (hasFace) detectionClasses.push("face");
+    if (hasMotion) detectionClasses.push("motion");
+    if (hasSchedule) detectionClasses.push("schedule");
+    if (hasDoorbell) detectionClasses.push("doorbell");
+    if (hasPackage) detectionClasses.push("package");
+    if (hasRf) detectionClasses.push("rf");
+    if (hasOther) detectionClasses.push("other");
+
+    // Default to motion if no detection classes found
+    if (detectionClasses.length === 0) {
+      detectionClasses.push("motion");
+    }
+
     // Create RecordingFile with all available metadata
     const result: RecordingFile = {
       fileName: vodFile.name,
@@ -2725,6 +2915,7 @@ export class ReolinkCgiApi {
       startTime,
       endTime,
       recordType: vodFile.type,
+      detectionClasses,
     };
     if (parsed) {
       result.parsedFileName = parsed;

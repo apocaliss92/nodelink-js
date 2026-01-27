@@ -869,6 +869,9 @@ export interface RecordingFile {
 
   /** Parsed metadata extracted from the file name when it matches known Reolink VOD patterns. */
   parsedFileName?: ParsedRecordingFileName;
+
+  /** Detection classes for this recording (e.g. person, vehicle, animal, face, motion, doorbell, package) */
+  detectionClasses?: RecordingDetectionClass[];
 }
 
 /**

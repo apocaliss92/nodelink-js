@@ -1,9 +1,56 @@
 import { getXmlText } from "../../protocol/xml";
-import type { RecordingFile } from "./types";
+import type { RecordingDetectionClass, RecordingFile } from "./types";
 import { parseRecordingFileName } from "./recordingFileName";
 
 type TalkAbility = import("./types").TalkAbility;
 type TalkAudioConfig = import("./types").TalkAudioConfig;
+
+/**
+ * Build detectionClasses array from parsedFileName flags and/or recordType string.
+ */
+const buildDetectionClasses = (
+  parsed: ReturnType<typeof parseRecordingFileName> | undefined,
+  recordType: string | undefined,
+): RecordingDetectionClass[] => {
+  const classes: RecordingDetectionClass[] = [];
+  const flags = parsed?.flags;
+
+  // From hex-parsed flags
+  if (flags) {
+    if (flags.aiPerson) classes.push("person");
+    if (flags.aiVehicle) classes.push("vehicle");
+    if (flags.aiAnimal) classes.push("animal");
+    if (flags.aiFace) classes.push("face");
+    if (flags.motion) classes.push("motion");
+    if (flags.schedule) classes.push("schedule");
+    if (flags.doorbell) classes.push("doorbell");
+    if (flags.package) classes.push("package");
+    if (flags.rf) classes.push("rf");
+    if (flags.aiOther) classes.push("other");
+  }
+
+  // From recordType string (if flags didn't provide anything)
+  if (classes.length === 0 && recordType) {
+    const rt = recordType.toLowerCase();
+    if (rt.includes("people") || rt.includes("person")) classes.push("person");
+    if (rt.includes("vehicle")) classes.push("vehicle");
+    if (rt.includes("dog_cat") || rt.includes("animal")) classes.push("animal");
+    if (rt.includes("face")) classes.push("face");
+    if (rt.includes("md") || rt.includes("motion")) classes.push("motion");
+    if (rt.includes("sched")) classes.push("schedule");
+    if (rt.includes("visitor") || rt.includes("doorbell"))
+      classes.push("doorbell");
+    if (rt.includes("package")) classes.push("package");
+    if (rt.includes("rf")) classes.push("rf");
+  }
+
+  // Default to motion
+  if (classes.length === 0) {
+    classes.push("motion");
+  }
+
+  return classes;
+};
 
 export const getXmlTexts = <T extends string>(
   xml: string,
@@ -101,6 +148,8 @@ export const parseRecordingFilesFromXml = (xml: string): RecordingFile[] => {
       if (!item.endTime) item.endTime = parsed.end;
     }
 
+    item.detectionClasses = buildDetectionClasses(parsed, item.recordType);
+
     out.push(item);
   }
 
@@ -139,6 +188,8 @@ export const parseRecordingFilesFromXml = (xml: string): RecordingFile[] => {
       if (!item.endTime) item.endTime = parsed.end;
     }
 
+    item.detectionClasses = buildDetectionClasses(parsed, item.recordType);
+
     out.push(item);
   }
 
@@ -161,6 +212,7 @@ export const parseRecordingFilesFromXml = (xml: string): RecordingFile[] => {
         item.startTime = parsed.start;
         item.endTime = parsed.end;
       }
+      item.detectionClasses = buildDetectionClasses(parsed, undefined);
       out.push(item);
     }
   }

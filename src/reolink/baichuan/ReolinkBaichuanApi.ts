@@ -203,6 +203,7 @@ import type { CompositeStreamPipOptions } from "../../multifocal/compositeStream
 import {
   ReolinkCgiApi,
   VodFile,
+  type CgiGetVideoclipsParams,
   type GetVodUrlParams,
 } from "../cgi/ReolinkCgiApi";
 import { ReolinkHttpClient } from "../http/ReolinkHttpClient";
@@ -10080,7 +10081,7 @@ export class ReolinkBaichuanApi {
    * Get URL for VOD playback, download, or streaming.
    * Passthrough to ReolinkCgiApi.getVodUrl for NVR/Hub support.
    *
-   * @param filenameOrVodFile - Filename string or VodFile object from listNvrRecordings
+   * @param filenameOrVodFile - Filename string or VodFile object from getVideoclips
    * @param channel - Channel number (0-based)
    * @param options - Optional parameters
    * @returns URL string
@@ -10098,7 +10099,7 @@ export class ReolinkBaichuanApi {
    * Download a VOD file.
    * Passthrough to ReolinkCgiApi.downloadVod for NVR/Hub support.
    *
-   * @param filename - Filename from listNvrRecordings or prepareNvrVodDownload
+   * @param filename - Filename from getVideoclips or prepareNvrVodDownload
    * @param options - Optional download parameters
    * @returns Buffer containing the video file
    */
@@ -10113,6 +10114,50 @@ export class ReolinkBaichuanApi {
   ): Promise<Buffer> {
     await this.cgiApi.login();
     return await this.cgiApi.downloadVod(filename, options);
+  }
+
+  // ====================================================================
+  // CGI Videoclips Passthrough Methods
+  // These methods use HTTP/CGI instead of native Baichuan protocol
+  // ====================================================================
+
+  /**
+   * Search video clips using CGI API (HTTP).
+   * Alternative to native getVideoclips() that uses HTTP instead of Baichuan protocol.
+   * May be more reliable on some devices.
+   *
+   * @param params - Search parameters
+   * @returns Array of RecordingFile objects
+   */
+  async getVideoclipsCgi(
+    params: CgiGetVideoclipsParams,
+  ): Promise<RecordingFile[]> {
+    await this.cgiApi.login();
+    return await this.cgiApi.getVideoclips(params);
+  }
+
+  /**
+   * Extract thumbnail from a video clip using CGI API (HTTP + ffmpeg).
+   * Alternative to native getVideoclipThumbnailJpeg() that uses HTTP VOD instead of CoverPreview.
+   * May be more reliable on some devices.
+   *
+   * @param params - Parameters for thumbnail extraction
+   * @returns JPEG buffer
+   */
+  async getVideoclipThumbnailJpegCgi(params: {
+    /** Channel number (0-based) */
+    channel: number;
+    /** Recording filename or VodFile object */
+    filename: string | VodFile;
+    /** Path to ffmpeg executable */
+    ffmpegPath: string;
+    /** Timeout in milliseconds (default: 30000) */
+    timeoutMs?: number;
+    /** Seek position in seconds (default: 0) */
+    seekSeconds?: number;
+  }): Promise<Buffer> {
+    await this.cgiApi.login();
+    return await this.cgiApi.getVideoclipThumbnailJpeg(params);
   }
 
   /**
