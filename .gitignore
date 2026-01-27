@@ -51,3 +51,7 @@ external/*
 docs/*
 tools/stream-probe/*
 
+app/logs/*
+app/config.json
+app/settings.json
+

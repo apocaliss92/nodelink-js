@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reolink Camera Manager</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+
+<body>
+    <div class="container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="logo">
+                <h1>📹 Reolink Manager</h1>
+                <span>Camera Control Panel</span>
+            </div>
+            <nav class="nav">
+                <a class="nav-item active" data-page="cameras">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" />
+                        <circle cx="12" cy="13" r="4" />
+                    </svg>
+                    Cameras & RTSP
+                </a>
+                <a class="nav-item" data-page="logs">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+                        <polyline points="14 2 14 8 20 8" />
+                        <line x1="16" y1="13" x2="8" y2="13" />
+                        <line x1="16" y1="17" x2="8" y2="17" />
+                    </svg>
+                    Logs
+                </a>
+                <a class="nav-item" data-page="settings">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3" />
+                        <path
+                            d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z" />
+                    </svg>
+                    Settings
+                </a>
+                <a class="nav-item" data-page="docs">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M4 19.5A2.5 2.5 0 016.5 17H20" />
+                        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z" />
+                    </svg>
+                    API Docs
+                </a>
+            </nav>
+        </aside>
+
+        <!-- Main content -->
+        <main class="main">
+            <header class="header">
+                <h2 id="pageTitle">Cameras</h2>
+                <div id="headerActions"></div>
+            </header>
+
+            <div class="content">
+                <!-- Cameras Page -->
+                <div id="page-cameras" class="page active">
+                    <div class="card" style="margin-bottom:20px;">
+                        <div class="card-header">
+                            <span class="card-title">Global RTSP Controls</span>
+                            <div>
+                                <button class="btn btn-success" onclick="startAllRtsp()">▶ Start All</button>
+                                <button class="btn btn-secondary" onclick="stopAllRtsp()">⏹ Stop All</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="camera-grid" id="cameraGrid"></div>
+                    <div class="empty-state" id="camerasEmpty" style="display:none;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" />
+                            <circle cx="12" cy="13" r="4" />
+                        </svg>
+                        <h3>No Cameras Configured</h3>
+                        <p>Add your first camera to get started</p>
+                        <button class="btn btn-primary" onclick="openAddCameraModal()" style="margin-top:20px;">
+                            + Add Camera
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Logs Page -->
+                <div id="page-logs" class="page">
+                    <div class="card">
+                        <div class="log-toolbar">
+                            <div class="log-filters-row">
+                                <div class="log-level-filters">
+                                    <button class="filter-btn active" data-level="all">All</button>
+                                    <button class="filter-btn" data-level="error">Error</button>
+                                    <button class="filter-btn" data-level="warn">Warn</button>
+                                    <button class="filter-btn" data-level="info">Info</button>
+                                    <button class="filter-btn" data-level="debug">Debug</button>
+                                </div>
+                                <select class="form-control" id="sourceFilter" style="width:180px;padding:6px 10px;">
+                                    <option value="">All Sources</option>
+                                </select>
+                                <input type="text" class="form-control" id="textFilter" placeholder="Search logs..."
+                                    style="width:200px;padding:6px 10px;">
+                                <div class="log-actions">
+                                    <label class="checkbox-label" style="margin:0;">
+                                        <input type="checkbox" id="autoScroll" checked>
+                                        Auto-scroll
+                                    </label>
+                                    <button class="btn btn-secondary" onclick="copyLogs()" title="Copy visible logs">📋
+                                        Copy</button>
+                                    <button class="btn btn-secondary" onclick="clearLogs()">Clear</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="logs-container" id="logsContainer"></div>
+                    </div>
+                </div>
+
+                <!-- Settings Page -->
+                <div id="page-settings" class="page">
+                    <div class="settings-section">
+                        <h3>📁 Paths</h3>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Config File Path</label>
+                                <input type="text" class="form-control" id="settingsConfigPath"
+                                    placeholder="./config.json">
+                            </div>
+                            <div class="form-group">
+                                <label>Logs Directory</label>
+                                <input type="text" class="form-control" id="settingsLogsPath" placeholder="./logs">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="settings-section">
+                        <h3>🖥️ Server</h3>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Server Port</label>
+                                <input type="number" class="form-control" id="settingsServerPort" placeholder="3000">
+                            </div>
+                            <div class="form-group">
+                                <label>Service IP/Hostname</label>
+                                <input type="text" class="form-control" id="settingsServiceIp" placeholder="localhost">
+                                <small style="color:var(--text-secondary);font-size:11px;">Used in RTSP URLs instead of
+                                    localhost</small>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>Log Level</label>
+                            <select class="form-control" id="settingsLogLevel" style="width:200px;">
+                                <option value="error">Error</option>
+                                <option value="warn">Warning</option>
+                                <option value="info">Info</option>
+                                <option value="debug">Debug</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="settings-section">
+                        <h3>📺 RTSP Defaults</h3>
+                        <div class="form-group">
+                            <label>Default RTSP Port</label>
+                            <input type="number" class="form-control" id="settingsRtspPort" placeholder="8554"
+                                style="width:200px;">
+                        </div>
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="settingsRtspRequireAuth">
+                                Require authentication for RTSP connections
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="settings-section">
+                        <h3>🔐 RTSP Authentication Credentials</h3>
+                        <p style="color:var(--text-secondary);margin-bottom:15px;font-size:13px;">
+                            Manage username/password combinations for RTSP authentication. Multiple credentials are
+                            supported.
+                        </p>
+                        <div id="credentialsList" style="margin-bottom:15px;"></div>
+                        <button class="btn btn-primary" onclick="openAddCredentialModal()">+ Add Credential</button>
+                    </div>
+
+                    <div style="display:flex;gap:10px;">
+                        <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
+                        <button class="btn btn-secondary" onclick="loadSettingsUI()">Reset</button>
+                    </div>
+                </div>
+
+                <!-- API Docs Page -->
+                <div id="page-docs" class="page">
+                    <iframe src="/docs"
+                        style="width:100%;height:calc(100vh - 120px);border:none;border-radius:8px;background:#fff;"
+                        title="API Documentation"></iframe>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Add Camera Modal -->
+    <div class="modal-overlay" id="addCameraModal">
+        <div class="modal" style="max-width:600px;">
+            <div class="modal-header">
+                <h3 id="cameraModalTitle">Add Camera</h3>
+                <button class="modal-close" onclick="closeModal('addCameraModal')">&times;</button>
+            </div>
+            <form id="cameraForm">
+                <input type="hidden" id="cameraId">
+                <div class="form-group">
+                    <label>Camera Name</label>
+                    <input type="text" class="form-control" id="cameraName" placeholder="Living Room Camera">
+                    <small style="color:var(--text-secondary);font-size:11px;">Leave empty to auto-detect from
+                        camera</small>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>IP Address *</label>
+                        <input type="text" class="form-control" id="cameraHost" required placeholder="192.168.1.100">
+                    </div>
+                    <div class="form-group">
+                        <label>Port</label>
+                        <input type="number" class="form-control" id="cameraPort" value="9000" placeholder="9000">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Username *</label>
+                        <input type="text" class="form-control" id="cameraUsername" required placeholder="admin">
+                    </div>
+                    <div class="form-group">
+                        <label>Password *</label>
+                        <input type="password" class="form-control" id="cameraPassword" required>
+                    </div>
+                </div>
+                <hr style="border-color:var(--border);margin:20px 0;">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Channel</label>
+                        <input type="number" class="form-control" id="cameraChannel" value="0" min="0" placeholder="0"
+                            style="width:100px;">
+                        <small style="color:var(--text-secondary);font-size:11px;">For NVR/Hub: select the channel
+                            number (0
+                            = first camera)</small>
+                    </div>
+                    <div class="form-group">
+                        <label>&nbsp;</label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="cameraDebugLogs">
+                            Enable debug logs
+                        </label>
+                        <small style="color:var(--text-secondary);font-size:11px;">Show detailed stream logs for this
+                            camera</small>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" onclick="testCameraConnection()">Test
+                        Connection</button>
+                    <button type="button" class="btn btn-secondary"
+                        onclick="closeModal('addCameraModal')">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Camera</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Add Credential Modal -->
+    <div class="modal-overlay" id="addCredentialModal">
+        <div class="modal" style="max-width:400px;">
+            <div class="modal-header">
+                <h3 id="credentialModalTitle">Add Credential</h3>
+                <button class="modal-close" onclick="closeModal('addCredentialModal')">&times;</button>
+            </div>
+            <form id="credentialForm">
+                <input type="hidden" id="credentialId">
+                <div class="form-group">
+                    <label>Username *</label>
+                    <input type="text" class="form-control" id="credentialUsername" required placeholder="admin">
+                </div>
+                <div class="form-group">
+                    <label>Password *</label>
+                    <input type="password" class="form-control" id="credentialPassword" required>
+                </div>
+                <div class="form-group">
+                    <label>Description</label>
+                    <input type="text" class="form-control" id="credentialDescription" placeholder="Home Assistant">
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary"
+                        onclick="closeModal('addCredentialModal')">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Preview Modal -->
+    <div class="modal-overlay" id="previewModal">
+        <div class="modal" style="max-width:900px;max-height:90vh;">
+            <div class="modal-header">
+                <h3 id="previewModalTitle">Camera Preview</h3>
+                <button class="modal-close" onclick="closePreview()">&times;</button>
+            </div>
+            <div id="previewContainer"
+                style="background:#000;border-radius:8px;min-height:400px;display:flex;flex-direction:column;align-items:center;justify-content:center;position:relative;">
+                <div id="previewLoading" style="color:var(--text-secondary);text-align:center;">
+                    <div class="spinner" style="width:40px;height:40px;margin:0 auto 15px;"></div>
+                    <p>Loading preview...</p>
+                    <p style="font-size:12px;margin-top:10px;opacity:0.7;">This may take a few seconds</p>
+                </div>
+                <img id="previewStream" style="display:none;max-width:100%;max-height:60vh;border-radius:4px;"
+                    alt="Camera Preview">
+                <div id="previewError" style="display:none;color:#ff6b6b;text-align:center;padding:20px;">
+                    <p style="font-size:48px;margin-bottom:10px;">⚠️</p>
+                    <p id="previewErrorMsg">Failed to load preview</p>
+                </div>
+                <div id="previewInfo" style="margin-top:15px;text-align:center;padding:10px;width:100%;">
+                    <details style="cursor:pointer;">
+                        <summary style="color:var(--text-secondary);font-size:12px;">RTSP URL (for VLC)</summary>
+                        <div style="margin-top:10px;">
+                            <input type="text" id="previewUrl" class="form-control" readonly
+                                style="text-align:center;margin-bottom:10px;font-size:11px;">
+                            <button class="btn btn-secondary btn-sm" onclick="copyPreviewUrl()">📋 Copy URL</button>
+                        </div>
+                    </details>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+
+</html>

@@ -84,7 +84,6 @@ const api = new ReolinkBaichuanApi({
   password: "your-password",
 });
 
-await api.connect();
 await api.login();
 
 // Get device info
@@ -209,7 +208,6 @@ const api = new ReolinkBaichuanApi({
   password: "your-password",
 });
 
-await api.connect();
 await api.login();
 
 // Start talk session
@@ -236,7 +234,6 @@ const api = new ReolinkBaichuanApi({
   password: "your-password",
 });
 
-await api.connect();
 await api.login();
 
 // Search recordings by date
@@ -289,7 +286,6 @@ const api = new ReolinkBaichuanApi({
   password: "your-password",
 });
 
-await api.connect();
 await api.login();
 
 // Move camera
@@ -320,7 +316,6 @@ const api = new ReolinkBaichuanApi({
   password: "your-password",
 });
 
-await api.connect();
 await api.login();
 
 // Subscribe to motion events
@@ -353,7 +348,6 @@ const api = new ReolinkBaichuanApi({
   password: "your-password",
 });
 
-await api.connect();
 await api.login();
 
 // Get all channels info

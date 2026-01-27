@@ -524,8 +524,10 @@ export class BaichuanVideoStream extends EventEmitter<{
     // best-effort restart the native stream request.
     // NOTE: UDP (battery/BCUDP) can legitimately take longer to wake and begin streaming.
     // Keep this relatively high to avoid causing reconnect storms.
+    // TCP: 30s timeout (cameras may have temporary delays)
+    // UDP: 60s timeout (battery cameras take longer to wake)
     const transport = this.client.getTransport?.();
-    this.idleRestartMs = transport === "udp" ? 60_000 : 15_000;
+    this.idleRestartMs = transport === "udp" ? 60_000 : 30_000;
   }
 
   private noteMediaActivity(): void {

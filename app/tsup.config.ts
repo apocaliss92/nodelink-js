@@ -1,16 +1,16 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: ["src/index.ts", "src/cli/rtsp-server.ts"],
-  format: ["esm", "cjs"],
+  entry: ["src/server.ts"],
+  format: ["esm"],
   dts: false,
   sourcemap: true,
   clean: true,
   target: "node18",
   outDir: "dist",
-  outExtension({ format }) {
+  outExtension() {
     return {
-      js: format === "cjs" ? ".cjs" : ".js",
+      js: ".js",
     };
   },
 });
