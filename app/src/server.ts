@@ -15,9 +15,10 @@ import {
   autoConnectCameras,
   startRtspServer,
   getCameraInfo,
+  sanitizeCameraName,
 } from "./rtsp-manager.js";
 import { startRtspProxy, stopRtspProxy } from "./rtsp-proxy.js";
-import { getSettings, loadSettings } from "./settings-store.js";
+import { getSettings, loadSettings, getConfig } from "./settings-store.js";
 import {
   addMjpegClient,
   stopAllNativeMjpegStreams,
@@ -119,8 +120,9 @@ app.get("/api/health", (req, res) => {
 
 // Native MJPEG streaming endpoint for browser preview
 // Uses native Baichuan protocol directly (bypasses RTSP)
-app.get("/api/stream/:cameraId/:profile", async (req, res) => {
-  const { cameraId, profile } = req.params;
+// Path: /api/stream/:cameraName/:profile (cameraName is sanitized name like "living_room")
+app.get("/api/stream/:cameraName/:profile", async (req, res) => {
+  const { cameraName, profile } = req.params;
 
   // Validate profile
   if (profile !== "main" && profile !== "sub" && profile !== "ext") {
@@ -130,21 +132,32 @@ app.get("/api/stream/:cameraId/:profile", async (req, res) => {
     return;
   }
 
+  // Find camera by sanitized name
+  const config = getConfig();
+  const camera = config.cameras.find(
+    (c) => sanitizeCameraName(c.name) === cameraName || c.id === cameraName
+  );
+
+  if (!camera) {
+    res.status(404).json({ error: "Camera not found" });
+    return;
+  }
+
   // Check if camera is connected
-  const camInfo = getCameraInfo(cameraId);
+  const camInfo = getCameraInfo(camera.id);
   if (!camInfo || camInfo.status !== "connected") {
     res.status(404).json({ error: "Camera not connected" });
     return;
   }
 
-  appLogger.info(`Starting native MJPEG stream for ${cameraId}/${profile}`, {
+  appLogger.info(`Starting native MJPEG stream for ${camera.name}/${profile}`, {
     source: "mjpeg",
   });
 
   try {
     // Add client to native MJPEG stream
     const { clientId, cleanup } = await addMjpegClient(
-      cameraId,
+      camera.id,
       profile as "main" | "sub" | "ext",
       res,
     );

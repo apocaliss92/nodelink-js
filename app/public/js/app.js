@@ -22,7 +22,7 @@ let sourceFilter = '';
 let textFilter = '';
 let ws = null;
 let loadingOperations = new Set();
-let appSettings = { serviceIp: 'localhost', proxyPort: 8554 };
+let appSettings = { serviceIp: 'localhost', proxyPort: 8554, serverPort: 3000 };
 
 // Loading state helpers
 function setLoading(operationId, isLoading) {
@@ -240,9 +240,8 @@ function renderCameras() {
                   <span class="detail-value ${hasViewers ? 'viewers-active' : ''}">${isRunning ? (stream.connections || 0) : '—'}</span>
                 </div>
               </div>
-              <div class="stream-url-container">
-                <code class="stream-url" title="${proxyUrl}">${proxyUrl}</code>
-                <button class="btn btn-secondary icon-btn-sm" onclick="copyToClipboard('${proxyUrl}')" title="Copy URL">${icons.copy}</button>
+              <div class="stream-actions">
+                <button class="btn btn-secondary btn-sm" onclick="showStreamUrls('${cam.name}', '${stream.profile}', '${proxyUrl}')">📋 URLs</button>
                 <button class="btn btn-secondary icon-btn-sm" onclick="openPreview('${cam.id}', '${stream.profile}')" title="Preview">${icons.eye}</button>
               </div>
             </div>
@@ -553,6 +552,69 @@ function copyToClipboard(text) {
     }).catch(() => {
         showToast('Failed to copy', 'error');
     });
+}
+
+// Show Stream URLs popover
+function showStreamUrls(cameraName, profile, rtspUrl) {
+    const sanitizedName = sanitizeName(cameraName);
+    const mjpegUrl = `http://${appSettings.serviceIp}:${appSettings.serverPort}/api/stream/${sanitizedName}/${profile}`;
+    
+    // Remove any existing popover
+    const existingPopover = document.getElementById('streamUrlsPopover');
+    if (existingPopover) {
+        existingPopover.remove();
+    }
+    
+    // Create popover
+    const popover = document.createElement('div');
+    popover.id = 'streamUrlsPopover';
+    popover.className = 'stream-urls-popover';
+    popover.innerHTML = `
+        <div class="popover-header">
+            <span>Stream URLs</span>
+            <button class="popover-close" onclick="closeStreamUrlsPopover()">&times;</button>
+        </div>
+        <div class="popover-content">
+            <div class="url-row">
+                <span class="url-label">RTSP</span>
+                <code class="url-value">${rtspUrl}</code>
+                <button class="btn btn-secondary icon-btn-sm" onclick="copyToClipboard('${rtspUrl}')" title="Copy">${icons.copy}</button>
+            </div>
+            <div class="url-row">
+                <span class="url-label">MJPEG</span>
+                <code class="url-value">${mjpegUrl}</code>
+                <button class="btn btn-secondary icon-btn-sm" onclick="copyToClipboard('${mjpegUrl}')" title="Copy">${icons.copy}</button>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(popover);
+    
+    // Position popover near mouse/center of screen
+    popover.style.position = 'fixed';
+    popover.style.top = '50%';
+    popover.style.left = '50%';
+    popover.style.transform = 'translate(-50%, -50%)';
+    
+    // Close on click outside
+    setTimeout(() => {
+        document.addEventListener('click', closeStreamUrlsPopoverOnOutsideClick);
+    }, 100);
+}
+
+function closeStreamUrlsPopover() {
+    const popover = document.getElementById('streamUrlsPopover');
+    if (popover) {
+        popover.remove();
+    }
+    document.removeEventListener('click', closeStreamUrlsPopoverOnOutsideClick);
+}
+
+function closeStreamUrlsPopoverOnOutsideClick(e) {
+    const popover = document.getElementById('streamUrlsPopover');
+    if (popover && !popover.contains(e.target) && !e.target.closest('[onclick*="showStreamUrls"]')) {
+        closeStreamUrlsPopover();
+    }
 }
 
 // Device Info Modal
@@ -1056,9 +1118,11 @@ async function loadAppSettings() {
         const defaultIp = getBestEffortServerIp();
         appSettings.serviceIp = settings.serviceIp || defaultIp;
         appSettings.proxyPort = settings.rtspProxyPort || 8554;
+        appSettings.serverPort = settings.serverPort || window.location.port || 3000;
     } catch (err) {
         console.error('Failed to load app settings:', err);
         appSettings.serviceIp = getBestEffortServerIp();
+        appSettings.serverPort = window.location.port || 3000;
     }
 }
 
