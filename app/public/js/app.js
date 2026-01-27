@@ -182,6 +182,9 @@ function renderCameras() {
         const displayName = cam.deviceInfo?.channelName || cam.name;
         const isNvr = cam.deviceInfo?.isNvr;
 
+        // Check if camera is loading (connecting or connected but streams not yet loaded)
+        const isLoading = cam.status === 'connecting' || (cam.status === 'connected' && availableStreams.length === 0 && rtspServers.length === 0);
+
         // Merge available streams with running servers info
         const allStreams = [
             ...rtspServers.map(s => {
@@ -194,7 +197,13 @@ function renderCameras() {
         ];
 
         return `
-    <div class="camera-card" data-camera-id="${cam.id}">
+    <div class="camera-card ${isLoading ? 'loading' : ''}" data-camera-id="${cam.id}">
+      ${isLoading ? `
+      <div class="camera-loading-overlay">
+        <div class="camera-loading-spinner"></div>
+        <div class="camera-loading-text">${cam.status === 'connecting' ? 'Connecting...' : 'Loading streams...'}</div>
+      </div>
+      ` : ''}
       <div style="display:flex;justify-content:space-between;align-items:flex-start;">
         <div>
           <div class="camera-status ${cam.status}"></div>
@@ -242,7 +251,7 @@ function renderCameras() {
               </div>
               <div class="stream-actions">
                 <button class="btn btn-secondary btn-sm" onclick="showStreamUrls('${cam.name}', '${stream.profile}', '${proxyUrl}')">📋 URLs</button>
-                <button class="btn btn-secondary icon-btn-sm" onclick="openPreview('${cam.id}', '${stream.profile}')" title="Preview">${icons.eye}</button>
+                <button class="btn btn-secondary btn-sm" onclick="showPreviewMenu('${cam.id}', '${cam.name}', '${stream.profile}', event)">▶️ Preview</button>
               </div>
             </div>
           `}).join('') : `
@@ -356,6 +365,14 @@ async function testCameraConnection() {
 async function connectCamera(id) {
     const loadingId = 'connect-' + id;
     setLoading(loadingId, true);
+
+    // Update local state to show loading immediately
+    const camIndex = cameras.findIndex(c => c.id === id);
+    if (camIndex !== -1) {
+        cameras[camIndex].status = 'connecting';
+        renderCameras();
+    }
+
     try {
         await api('cameras.connect', 'POST', { id });
         showToast('Connected to camera');
@@ -363,6 +380,11 @@ async function connectCamera(id) {
         await refreshCamera(id);
     } catch (err) {
         showToast('Failed to connect: ' + err.message, 'error');
+        // Revert to disconnected on error
+        if (camIndex !== -1) {
+            cameras[camIndex].status = 'disconnected';
+            renderCameras();
+        }
     } finally {
         setLoading(loadingId, false);
     }
@@ -559,61 +581,257 @@ function showStreamUrls(cameraName, profile, rtspUrl) {
     const sanitizedName = sanitizeName(cameraName);
     const mjpegUrl = `http://${appSettings.serviceIp}:${appSettings.serverPort}/api/stream/${sanitizedName}/${profile}`;
 
-    // Remove any existing popover
-    const existingPopover = document.getElementById('streamUrlsPopover');
-    if (existingPopover) {
-        existingPopover.remove();
+    // Update modal title
+    document.getElementById('streamUrlsModalTitle').textContent = `Stream URLs - ${cameraName}`;
+
+    // Populate content
+    document.getElementById('streamUrlsContent').innerHTML = `
+        <div class="url-row">
+            <span class="url-label">RTSP</span>
+            <code class="url-value">${rtspUrl}</code>
+            <button class="btn btn-secondary icon-btn-sm" onclick="copyToClipboard('${rtspUrl}')" title="Copy">${icons.copy}</button>
+        </div>
+        <div class="url-row">
+            <span class="url-label">MJPEG</span>
+            <code class="url-value">${mjpegUrl}</code>
+            <button class="btn btn-secondary icon-btn-sm" onclick="copyToClipboard('${mjpegUrl}')" title="Copy">${icons.copy}</button>
+        </div>
+    `;
+
+    // Open modal
+    openModal('streamUrlsModal');
+}
+
+// ============================================================================
+// Preview Menu (MJPEG / WebRTC selection)
+// ============================================================================
+
+function showPreviewMenu(cameraId, cameraName, profile, event) {
+    event.stopPropagation();
+
+    // Remove any existing preview menu
+    closePreviewMenu();
+
+    const sanitizedName = sanitizeName(cameraName);
+
+    // Create menu
+    const menu = document.createElement('div');
+    menu.id = 'previewMenu';
+    menu.className = 'preview-menu';
+    menu.innerHTML = `
+        <div class="preview-menu-header">
+            <span>Choose Preview Type</span>
+        </div>
+        <div class="preview-menu-options">
+            <button class="preview-menu-option" onclick="openMjpegPreview('${cameraId}', '${profile}')">
+                <span class="preview-option-icon">🖼️</span>
+                <div class="preview-option-info">
+                    <span class="preview-option-title">MJPEG</span>
+                    <span class="preview-option-desc">Converted frames, compatible</span>
+                </div>
+            </button>
+            <button class="preview-menu-option" onclick="openWebRTCPreview('${sanitizedName}', '${profile}')">
+                <span class="preview-option-icon">⚡</span>
+                <div class="preview-option-info">
+                    <span class="preview-option-title">WebRTC</span>
+                    <span class="preview-option-desc">Low latency, native H.264/H.265</span>
+                </div>
+            </button>
+        </div>
+    `;
+
+    document.body.appendChild(menu);
+
+    // Position near the button
+    const rect = event.target.getBoundingClientRect();
+    menu.style.position = 'fixed';
+    menu.style.top = (rect.bottom + 5) + 'px';
+    menu.style.left = rect.left + 'px';
+
+    // Adjust if menu goes off screen
+    const menuRect = menu.getBoundingClientRect();
+    if (menuRect.right > window.innerWidth) {
+        menu.style.left = (window.innerWidth - menuRect.width - 10) + 'px';
+    }
+    if (menuRect.bottom > window.innerHeight) {
+        menu.style.top = (rect.top - menuRect.height - 5) + 'px';
     }
 
-    // Create popover
-    const popover = document.createElement('div');
-    popover.id = 'streamUrlsPopover';
-    popover.className = 'stream-urls-popover';
-    popover.innerHTML = `
-        <div class="popover-header">
-            <span>Stream URLs</span>
-            <button class="popover-close" onclick="closeStreamUrlsPopover()">&times;</button>
-        </div>
-        <div class="popover-content">
-            <div class="url-row">
-                <span class="url-label">RTSP</span>
-                <code class="url-value">${rtspUrl}</code>
-                <button class="btn btn-secondary icon-btn-sm" onclick="copyToClipboard('${rtspUrl}')" title="Copy">${icons.copy}</button>
+    // Close on click outside
+    setTimeout(() => {
+        document.addEventListener('click', closePreviewMenuOnOutsideClick);
+    }, 100);
+}
+
+function closePreviewMenu() {
+    const menu = document.getElementById('previewMenu');
+    if (menu) {
+        menu.remove();
+    }
+    document.removeEventListener('click', closePreviewMenuOnOutsideClick);
+}
+
+function closePreviewMenuOnOutsideClick(e) {
+    const menu = document.getElementById('previewMenu');
+    if (menu && !menu.contains(e.target) && !e.target.closest('[onclick*="showPreviewMenu"]')) {
+        closePreviewMenu();
+    }
+}
+
+function openMjpegPreview(cameraId, profile) {
+    closePreviewMenu();
+    openPreview(cameraId, profile);
+}
+
+// ============================================================================
+// WebRTC Preview
+// ============================================================================
+
+let activeWebRTCClient = null;
+
+function openWebRTCPreview(cameraName, profile) {
+    // Close the preview menu
+    closePreviewMenu();
+
+    // Remove any existing WebRTC modal
+    const existingModal = document.getElementById('webrtcPreviewModal');
+    if (existingModal) {
+        closeWebRTCPreview();
+    }
+
+    // Create modal
+    const modal = document.createElement('div');
+    modal.id = 'webrtcPreviewModal';
+    modal.className = 'modal-overlay';
+    modal.innerHTML = `
+        <div class="modal" style="max-width: 900px; width: 90%;">
+            <div class="modal-header">
+                <h3>🎥 WebRTC Preview - ${cameraName} (${profile})</h3>
+                <button class="modal-close" onclick="closeWebRTCPreview()">&times;</button>
             </div>
-            <div class="url-row">
-                <span class="url-label">MJPEG</span>
-                <code class="url-value">${mjpegUrl}</code>
-                <button class="btn btn-secondary icon-btn-sm" onclick="copyToClipboard('${mjpegUrl}')" title="Copy">${icons.copy}</button>
+            <div class="modal-body" style="padding: 0;">
+                <div class="webrtc-container">
+                    <video id="webrtcVideo" autoplay playsinline muted style="width: 100%; background: #000; max-height: 500px;"></video>
+                    <div class="webrtc-overlay" id="webrtcOverlay">
+                        <div class="webrtc-status" id="webrtcStatus">Connecting...</div>
+                    </div>
+                </div>
+                <div class="webrtc-controls" style="padding: 15px; display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--bg-tertiary);">
+                    <div class="webrtc-stats" id="webrtcStats" style="font-size: 12px; color: var(--text-secondary);">
+                        <span id="webrtcLatency">RTT: --</span> |
+                        <span id="webrtcFrames">Frames: 0</span> |
+                        <span id="webrtcBytes">Data: 0 KB</span>
+                    </div>
+                    <div class="webrtc-buttons">
+                        <button class="btn btn-secondary" id="webrtcIntercomBtn" onclick="toggleWebRTCIntercom()" disabled>
+                            🎤 Intercom
+                        </button>
+                        <button class="btn btn-secondary" id="webrtcMuteBtn" onclick="toggleWebRTCMute()">
+                            🔊 Unmute
+                        </button>
+                        <button class="btn btn-danger" onclick="closeWebRTCPreview()">
+                            Stop
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
     `;
 
-    document.body.appendChild(popover);
+    document.body.appendChild(modal);
+    modal.classList.add('active');
 
-    // Position popover near mouse/center of screen
-    popover.style.position = 'fixed';
-    popover.style.top = '50%';
-    popover.style.left = '50%';
-    popover.style.transform = 'translate(-50%, -50%)';
-
-    // Close on click outside
-    setTimeout(() => {
-        document.addEventListener('click', closeStreamUrlsPopoverOnOutsideClick);
-    }, 100);
+    // Start WebRTC connection
+    startWebRTCStream(cameraName, profile);
 }
 
-function closeStreamUrlsPopover() {
-    const popover = document.getElementById('streamUrlsPopover');
-    if (popover) {
-        popover.remove();
+async function startWebRTCStream(cameraName, profile) {
+    const videoElement = document.getElementById('webrtcVideo');
+    const statusElement = document.getElementById('webrtcStatus');
+    const overlayElement = document.getElementById('webrtcOverlay');
+    const intercomBtn = document.getElementById('webrtcIntercomBtn');
+
+    // Create WebRTC client
+    activeWebRTCClient = new WebRTCClient({
+        enableIntercom: true,
+        onStateChange: (state) => {
+            console.log('[WebRTC UI] State:', state);
+            if (state === 'connected') {
+                statusElement.textContent = 'Connected';
+                overlayElement.style.display = 'none';
+                intercomBtn.disabled = false;
+            } else if (state === 'connecting') {
+                statusElement.textContent = 'Connecting...';
+                overlayElement.style.display = 'flex';
+            } else if (state === 'failed') {
+                statusElement.textContent = 'Connection failed';
+                statusElement.style.color = 'var(--danger)';
+            }
+        },
+        onError: (err) => {
+            console.error('[WebRTC UI] Error:', err);
+            showToast(`WebRTC Error: ${err.message}`, 'error');
+        },
+        onStats: (stats) => {
+            document.getElementById('webrtcLatency').textContent = `RTT: ${(stats.roundTripTime * 1000).toFixed(0)}ms`;
+            document.getElementById('webrtcFrames').textContent = `Frames: ${stats.videoFrames}`;
+            document.getElementById('webrtcBytes').textContent = `Data: ${(stats.bytesReceived / 1024).toFixed(1)} KB`;
+        },
+    });
+
+    try {
+        await activeWebRTCClient.connect(cameraName, profile, videoElement);
+    } catch (err) {
+        console.error('[WebRTC UI] Connection error:', err);
+        showToast(`Failed to connect: ${err.message}`, 'error');
     }
-    document.removeEventListener('click', closeStreamUrlsPopoverOnOutsideClick);
 }
 
-function closeStreamUrlsPopoverOnOutsideClick(e) {
-    const popover = document.getElementById('streamUrlsPopover');
-    if (popover && !popover.contains(e.target) && !e.target.closest('[onclick*="showStreamUrls"]')) {
-        closeStreamUrlsPopover();
+function closeWebRTCPreview() {
+    if (activeWebRTCClient) {
+        activeWebRTCClient.disconnect();
+        activeWebRTCClient = null;
+    }
+
+    const modal = document.getElementById('webrtcPreviewModal');
+    if (modal) {
+        modal.remove();
+    }
+}
+
+let webrtcIntercomActive = false;
+
+async function toggleWebRTCIntercom() {
+    if (!activeWebRTCClient) return;
+
+    const btn = document.getElementById('webrtcIntercomBtn');
+
+    if (webrtcIntercomActive) {
+        activeWebRTCClient.stopIntercom();
+        webrtcIntercomActive = false;
+        btn.textContent = '🎤 Intercom';
+        btn.classList.remove('btn-primary');
+        btn.classList.add('btn-secondary');
+    } else {
+        const started = await activeWebRTCClient.startIntercom();
+        if (started) {
+            webrtcIntercomActive = true;
+            btn.textContent = '🎤 Intercom ON';
+            btn.classList.remove('btn-secondary');
+            btn.classList.add('btn-primary');
+        } else {
+            showToast('Failed to start intercom. Check microphone permissions.', 'error');
+        }
+    }
+}
+
+function toggleWebRTCMute() {
+    const video = document.getElementById('webrtcVideo');
+    const btn = document.getElementById('webrtcMuteBtn');
+
+    if (video) {
+        video.muted = !video.muted;
+        btn.textContent = video.muted ? '🔊 Unmute' : '🔇 Mute';
     }
 }
 

@@ -36,6 +36,7 @@ export * from "./baichuan/stream/BaichuanVideoStream";
 export * from "./baichuan/stream/BaichuanRtspServer";
 export * from "./baichuan/stream/BaichuanHttpStreamServer";
 export * from "./baichuan/stream/BaichuanMjpegServer";
+export * from "./baichuan/stream/BaichuanWebRTCServer";
 export * from "./baichuan/stream/MjpegTransformer";
 export * from "./baichuan/stream/BcMediaParser";
 export * from "./baichuan/stream/BcMediaCodec";

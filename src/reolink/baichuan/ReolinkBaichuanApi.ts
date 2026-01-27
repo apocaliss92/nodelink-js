@@ -11563,6 +11563,13 @@ ${scheduleItems}
      * Recommended: pass a unique identifier per logical device/player instance.
      */
     deviceId?: string;
+    /**
+     * Transcode H.265/HEVC to H.264/AVC for compatibility with clients that don't support H.265.
+     * When true and the source is H.265, ffmpeg will transcode to H.264 using libx264.
+     * This increases CPU usage but ensures playback on iOS Safari, older browsers, etc.
+     * Default: false (passthrough/copy).
+     */
+    transcodeH265ToH264?: boolean;
   }): Promise<{
     mp4: Readable;
     stop: () => Promise<void>;
@@ -11611,8 +11618,12 @@ ${scheduleItems}
     const startFfmpeg = (videoType: "H264" | "H265") => {
       if (ff) return;
 
+      // Check if we need to transcode H.265 to H.264
+      const needsTranscode =
+        videoType === "H265" && params.transcodeH265ToH264 === true;
+
       logger?.debug?.(
-        `[createRecordingReplayMp4Stream] Starting ffmpeg with videoType=${videoType}`,
+        `[createRecordingReplayMp4Stream] Starting ffmpeg with videoType=${videoType}, transcode=${needsTranscode}`,
       );
 
       // Initialize MPEG-TS muxer for this video type
@@ -11629,8 +11640,10 @@ ${scheduleItems}
         "mpegts",
         "-i",
         "pipe:0",
-        "-c",
-        "copy",
+        // Video codec: transcode H.265→H.264 if requested, otherwise copy
+        ...(needsTranscode
+          ? ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "23"]
+          : ["-c", "copy"]),
         "-movflags",
         "frag_keyframe+empty_moov",
         "-f",

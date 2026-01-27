@@ -286,6 +286,19 @@
         </div>
     </div>
 
+    <!-- Stream URLs Modal -->
+    <div class="modal-overlay" id="streamUrlsModal">
+        <div class="modal" style="max-width:500px;">
+            <div class="modal-header">
+                <h3 id="streamUrlsModalTitle">Stream URLs</h3>
+                <button class="modal-close" onclick="closeModal('streamUrlsModal')">&times;</button>
+            </div>
+            <div class="modal-body" style="padding:16px;">
+                <div id="streamUrlsContent"></div>
+            </div>
+        </div>
+    </div>
+
     <!-- Preview Modal -->
     <div class="modal-overlay" id="previewModal">
         <div class="modal" style="max-width:900px;max-height:90vh;">
@@ -326,6 +339,7 @@
     <!-- Toast container -->
     <div class="toast-container" id="toastContainer"></div>
 
+    <script src="/static/js/webrtc-client.js"></script>
     <script src="/static/js/app.js"></script>
 </body>
 

@@ -24,6 +24,14 @@ import {
   stopAllNativeMjpegStreams,
   getNativeMjpegStatus,
 } from "./mjpeg-native.js";
+import {
+  createWebRTCSession,
+  handleWebRTCAnswer,
+  addIceCandidate,
+  closeWebRTCSession,
+  getWebRTCStatus,
+  stopAllWebRTCSessions,
+} from "./webrtc-native.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -194,6 +202,111 @@ app.get("/api/mjpeg/status", (req, res) => {
   res.json(status);
 });
 
+// ============================================================================
+// WebRTC Endpoints
+// ============================================================================
+
+// Create WebRTC session (returns offer SDP)
+// POST /api/webrtc/session
+// Body: { cameraName: string, profile: "main" | "sub" | "ext", enableIntercom?: boolean }
+app.post("/api/webrtc/session", async (req, res) => {
+  try {
+    const { cameraName, profile, enableIntercom } = req.body;
+
+    if (!cameraName || !profile) {
+      res.status(400).json({ error: "cameraName and profile are required" });
+      return;
+    }
+
+    if (profile !== "main" && profile !== "sub" && profile !== "ext") {
+      res
+        .status(400)
+        .json({ error: "Invalid profile (must be main, sub, or ext)" });
+      return;
+    }
+
+    const { sessionId, offer } = await createWebRTCSession(
+      cameraName,
+      profile,
+      enableIntercom ?? false,
+    );
+
+    res.json({ sessionId, offer });
+  } catch (err) {
+    appLogger.error(`Failed to create WebRTC session: ${err}`, {
+      source: "webrtc",
+    });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// Handle WebRTC answer (browser response)
+// POST /api/webrtc/session/:sessionId/answer
+// Body: { sdp: string, type: "answer" }
+app.post("/api/webrtc/session/:sessionId/answer", async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const answer = req.body;
+
+    if (!answer?.sdp || answer?.type !== "answer") {
+      res.status(400).json({ error: "Invalid answer format" });
+      return;
+    }
+
+    await handleWebRTCAnswer(sessionId, answer);
+    res.json({ success: true });
+  } catch (err) {
+    appLogger.error(`Failed to handle WebRTC answer: ${err}`, {
+      source: "webrtc",
+    });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// Add ICE candidate
+// POST /api/webrtc/session/:sessionId/ice
+// Body: { candidate: string, sdpMid?: string, sdpMLineIndex?: number }
+app.post("/api/webrtc/session/:sessionId/ice", async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const candidate = req.body;
+
+    if (!candidate?.candidate) {
+      res.status(400).json({ error: "Invalid ICE candidate" });
+      return;
+    }
+
+    await addIceCandidate(sessionId, candidate);
+    res.json({ success: true });
+  } catch (err) {
+    appLogger.error(`Failed to add ICE candidate: ${err}`, {
+      source: "webrtc",
+    });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// Close WebRTC session
+// DELETE /api/webrtc/session/:sessionId
+app.delete("/api/webrtc/session/:sessionId", async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    await closeWebRTCSession(sessionId);
+    res.json({ success: true });
+  } catch (err) {
+    appLogger.error(`Failed to close WebRTC session: ${err}`, {
+      source: "webrtc",
+    });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// Get WebRTC status
+app.get("/api/webrtc/status", (req, res) => {
+  const status = getWebRTCStatus();
+  res.json(status);
+});
+
 // Main dashboard - serve static HTML file
 app.get("/", (req, res) => {
   res.sendFile(path.join(publicPath, "index.html"));
@@ -209,6 +322,15 @@ app.get("/favicon.ico", (req, res) => {
 // Graceful shutdown
 async function shutdown() {
   appLogger.info("Shutting down server...", { source: "server" });
+
+  // Stop WebRTC sessions
+  try {
+    await stopAllWebRTCSessions();
+  } catch (error) {
+    appLogger.error(`Error stopping WebRTC sessions: ${error}`, {
+      source: "server",
+    });
+  }
 
   // Stop native MJPEG streams
   try {
@@ -242,17 +364,18 @@ server.listen(PORT, async () => {
 
   const proxyPort = settings.rtspProxyPort || 8554;
   console.log(`
-╔═══════════════════════════════════════════════════════════╗
-║            Nodelink Manager - RTSP Dashboard              ║
-╠═══════════════════════════════════════════════════════════╣
-║  Dashboard:  http://localhost:${String(PORT).padEnd(5)}                      ║
-║  API Docs:   http://localhost:${String(PORT).padEnd(5)}/docs                 ║
-║  tRPC API:   http://localhost:${String(PORT).padEnd(5)}/api/trpc             ║
-║  WS Logs:    ws://localhost:${String(PORT).padEnd(5)}/ws/logs                ║
-╠═══════════════════════════════════════════════════════════╣
-║  RTSP Proxy: rtsp://localhost:${String(proxyPort).padEnd(5)}/<camera>/<profile> ║
-║  MJPEG:      http://localhost:${String(PORT).padEnd(5)}/api/stream/<cam>/<p> ║
-╚═══════════════════════════════════════════════════════════╝
+╔═══════════════════════════════════════════════════════════════╗
+║              Nodelink Manager - RTSP Dashboard                ║
+╠═══════════════════════════════════════════════════════════════╣
+║  Dashboard:  http://localhost:${String(PORT).padEnd(5)}                          ║
+║  API Docs:   http://localhost:${String(PORT).padEnd(5)}/docs                     ║
+║  tRPC API:   http://localhost:${String(PORT).padEnd(5)}/api/trpc                 ║
+║  WS Logs:    ws://localhost:${String(PORT).padEnd(5)}/ws/logs                    ║
+╠═══════════════════════════════════════════════════════════════╣
+║  RTSP:       rtsp://localhost:${String(proxyPort).padEnd(5)}/<camera>/<profile>     ║
+║  MJPEG:      http://localhost:${String(PORT).padEnd(5)}/api/stream/<cam>/<prof>  ║
+║  WebRTC:     POST /api/webrtc/session (signaling endpoint)    ║
+╚═══════════════════════════════════════════════════════════════╝
   `);
 
   // Log MJPEG endpoint info
@@ -265,6 +388,18 @@ server.listen(PORT, async () => {
   );
   appLogger.info(`MJPEG streams are started on-demand when clients connect`, {
     source: "mjpeg",
+  });
+
+  // Log WebRTC endpoint info
+  appLogger.info(`WebRTC signaling available on port ${PORT}`, {
+    source: "webrtc",
+  });
+  appLogger.info(
+    `Create session via: POST http://<host>:${PORT}/api/webrtc/session`,
+    { source: "webrtc" },
+  );
+  appLogger.info(`WebRTC sessions support bidirectional audio (intercom)`, {
+    source: "webrtc",
   });
 
   // Auto-connect to all configured cameras

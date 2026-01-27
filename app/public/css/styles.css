@@ -162,6 +162,52 @@ body {
   border-radius: 12px;
   padding: 20px;
   position: relative;
+  overflow: hidden;
+}
+
+.camera-card.loading {
+  pointer-events: none;
+}
+
+.camera-card.loading > *:not(.camera-loading-overlay) {
+  opacity: 0.3;
+  filter: blur(1px);
+}
+
+.camera-loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(15, 52, 96, 0.85);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  gap: 15px;
+}
+
+.camera-loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: camera-spin 1s linear infinite;
+}
+
+@keyframes camera-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.camera-loading-text {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 500;
 }
 
 .camera-status {
@@ -171,6 +217,23 @@ body {
   width: 12px;
   height: 12px;
   border-radius: 50%;
+}
+
+.camera-status.connecting {
+  background: var(--warning);
+  animation: pulse-connecting 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-connecting {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(255, 193, 7, 0.4);
+  }
+  50% {
+    opacity: 0.6;
+    box-shadow: 0 0 0 8px rgba(255, 193, 7, 0);
+  }
 }
 
 .camera-status.connected {
@@ -988,7 +1051,145 @@ body {
   margin-top: 8px;
 }
 
+.stream-actions .btn-sm {
+  flex: 1;
+  padding: 6px 10px;
+  font-size: 11px;
+  justify-content: center;
+}
+
 .btn-sm {
   padding: 4px 10px;
   font-size: 11px;
+}
+
+/* ============================================================================
+   Preview Menu (MJPEG / WebRTC selection)
+   ============================================================================ */
+
+.preview-menu {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  min-width: 220px;
+  z-index: 1000;
+  overflow: hidden;
+}
+
+.preview-menu-header {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.preview-menu-options {
+  padding: 6px;
+}
+
+.preview-menu-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-primary);
+  transition: background 0.15s;
+}
+
+.preview-menu-option:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.preview-option-icon {
+  font-size: 20px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+}
+
+.preview-option-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.preview-option-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.preview-option-desc {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* ============================================================================
+   WebRTC Preview Modal
+   ============================================================================ */
+
+.webrtc-container {
+  position: relative;
+  background: #000;
+}
+
+.webrtc-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+.webrtc-status {
+  color: var(--text-primary);
+  font-size: 16px;
+  padding: 20px 40px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+}
+
+.webrtc-controls {
+  background: var(--bg-secondary);
+}
+
+.webrtc-stats {
+  display: flex;
+  gap: 10px;
+}
+
+.webrtc-buttons {
+  display: flex;
+  gap: 10px;
+}
+
+#webrtcVideo {
+  display: block;
+}
+
+/* WebRTC Preview button animation */
+.webrtc-container video::-webkit-media-controls {
+  display: none !important;
+}
+
+.webrtc-container video {
+  object-fit: contain;
 }

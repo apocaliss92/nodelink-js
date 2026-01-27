@@ -1471,3 +1471,152 @@ export interface OnlineUserListConfig {
     };
   };
 }
+
+// ============================================================================
+// Videoclip Client Detection Utilities
+// ============================================================================
+
+/**
+ * Client information extracted from HTTP request headers.
+ * Used to determine optimal video delivery format.
+ */
+export type VideoclipClientInfo = {
+  userAgent: string | undefined;
+  accept: string | undefined;
+  range: string | undefined;
+  secChUa: string | undefined;
+  secChUaMobile: string | undefined;
+  secChUaPlatform: string | undefined;
+};
+
+/**
+ * Videoclip delivery mode.
+ * - `passthrough`: Copy codec as-is (H.264 or H.265)
+ * - `transcode-h264`: Transcode H.265 to H.264 for compatibility
+ */
+export type VideoclipTranscodeMode = "passthrough" | "transcode-h264";
+
+/**
+ * Result of videoclip mode decision.
+ */
+export type VideoclipModeDecision = {
+  mode: VideoclipTranscodeMode;
+  reason: string;
+  clientInfo: VideoclipClientInfo;
+};
+
+/**
+ * Extract client info from HTTP request headers.
+ */
+export function getVideoclipClientInfo(
+  headers: Record<string, string | string[] | undefined>,
+): VideoclipClientInfo {
+  const getHeader = (key: string): string | undefined => {
+    const val =
+      headers[key] ?? headers[key.toLowerCase()] ?? headers[key.toUpperCase()];
+    return Array.isArray(val) ? val[0] : val;
+  };
+
+  return {
+    userAgent: getHeader("user-agent") ?? getHeader("User-Agent"),
+    accept: getHeader("accept") ?? getHeader("Accept"),
+    range: getHeader("range") ?? getHeader("Range"),
+    secChUa: getHeader("sec-ch-ua") ?? getHeader("Sec-CH-UA"),
+    secChUaMobile:
+      getHeader("sec-ch-ua-mobile") ?? getHeader("Sec-CH-UA-Mobile"),
+    secChUaPlatform:
+      getHeader("sec-ch-ua-platform") ?? getHeader("Sec-CH-UA-Platform"),
+  };
+}
+
+/**
+ * Determine if H.265 should be transcoded to H.264 based on client capabilities.
+ *
+ * Decision logic:
+ * - iOS devices (Safari): Need transcoding (no native H.265 in <video> without HLS)
+ * - macOS Safari: Supports H.265 natively
+ * - Chrome/Edge: Limited H.265 support, safer to transcode
+ * - Firefox: No H.265 support, needs transcoding
+ * - Android: Variable support, transcode for safety
+ *
+ * @param headers HTTP request headers
+ * @param forceMode Optional override: "passthrough" or "transcode-h264"
+ * @returns Decision with mode, reason, and client info
+ */
+export function decideVideoclipTranscodeMode(
+  headers: Record<string, string | string[] | undefined>,
+  forceMode?: VideoclipTranscodeMode,
+): VideoclipModeDecision {
+  const clientInfo = getVideoclipClientInfo(headers);
+
+  // If force mode is specified, use it
+  if (forceMode) {
+    return {
+      mode: forceMode,
+      reason: `forced: ${forceMode}`,
+      clientInfo,
+    };
+  }
+
+  const ua = (clientInfo.userAgent ?? "").toLowerCase();
+  const platform = (clientInfo.secChUaPlatform ?? "")
+    .toLowerCase()
+    .replace(/"/g, "");
+
+  // iOS devices (iPhone, iPad, iPod) - no native H.265 in <video> element
+  const isIos = /iphone|ipad|ipod/.test(ua);
+  if (isIos) {
+    return {
+      mode: "transcode-h264",
+      reason: "iOS device detected - no native H.265 support in <video>",
+      clientInfo,
+    };
+  }
+
+  // Firefox - no H.265 support at all
+  const isFirefox = ua.includes("firefox");
+  if (isFirefox) {
+    return {
+      mode: "transcode-h264",
+      reason: "Firefox detected - no H.265 support",
+      clientInfo,
+    };
+  }
+
+  // Android - variable H.265 support, safer to transcode
+  const isAndroid = ua.includes("android") || platform === "android";
+  if (isAndroid) {
+    return {
+      mode: "transcode-h264",
+      reason: "Android device detected - variable H.265 support",
+      clientInfo,
+    };
+  }
+
+  // Chrome/Edge on non-Mac - limited H.265 support
+  const isChromium = ua.includes("chrome") || ua.includes("edg");
+  const isMac = ua.includes("mac os") || platform === "macos";
+  if (isChromium && !isMac) {
+    return {
+      mode: "transcode-h264",
+      reason: "Chrome/Edge on non-Mac detected - limited H.265 support",
+      clientInfo,
+    };
+  }
+
+  // macOS Safari or Chrome on Mac - good H.265 support via VideoToolbox
+  if (isMac) {
+    return {
+      mode: "passthrough",
+      reason: "macOS detected - native H.265 hardware decoding available",
+      clientInfo,
+    };
+  }
+
+  // Default: transcode for safety
+  return {
+    mode: "transcode-h264",
+    reason: "Unknown client - transcoding for compatibility",
+    clientInfo,
+  };
+}
