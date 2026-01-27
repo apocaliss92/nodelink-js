@@ -2,9 +2,14 @@ version: "3.8"
 
 services:
   reolink-dashboard:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    # Use pre-built image from GHCR
+    image: ghcr.io/apocaliss92/reolink-dashboard:latest
+
+    # Or build locally (uncomment below and comment image above)
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+
     container_name: reolink-dashboard
     restart: unless-stopped
 

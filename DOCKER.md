@@ -4,10 +4,30 @@ This guide explains how to deploy the Reolink Dashboard application using Docker
 
 ## Quick Start
 
-### Build and Run with Docker Compose (Recommended)
+### Using Pre-built Image from GHCR (Recommended)
 
 ```bash
-# Build and start the container
+# Pull the latest image
+docker pull ghcr.io/apocaliss92/reolink-dashboard:latest
+
+# Or pull a specific version
+docker pull ghcr.io/apocaliss92/reolink-dashboard:0.1.0
+
+# Run the container
+docker run -d \
+  --name reolink-dashboard \
+  --network host \
+  -v reolink-data:/data \
+  ghcr.io/apocaliss92/reolink-dashboard:latest
+```
+
+### Using Docker Compose
+
+```bash
+# Download docker-compose.yml
+wget https://raw.githubusercontent.com/apocaliss92/reolink-baichuan-js/main/docker-compose.yml
+
+# Start the container
 docker-compose up -d
 
 # View logs
@@ -17,9 +37,13 @@ docker-compose logs -f
 docker-compose down
 ```
 
-### Manual Build
+### Build Locally
 
 ```bash
+# Clone the repository
+git clone https://github.com/apocaliss92/reolink-baichuan-js.git
+cd reolink-baichuan-js
+
 # Build the image
 docker build -t reolink-dashboard .
 
@@ -35,11 +59,11 @@ docker run -d \
 
 ### Environment Variables
 
-| Variable        | Default               | Description           |
-| --------------- | --------------------- | --------------------- |
-| `NODE_ENV`      | `production`          | Node.js environment   |
-| `SETTINGS_PATH` | `/data/settings.json` | Settings file path    |
-| `LOGS_PATH`     | `/data/logs`          | Logs directory        |
+| Variable        | Default               | Description         |
+| --------------- | --------------------- | ------------------- |
+| `NODE_ENV`      | `production`          | Node.js environment |
+| `SETTINGS_PATH` | `/data/settings.json` | Settings file path  |
+| `LOGS_PATH`     | `/data/logs`          | Logs directory      |
 
 ### Volumes
 
