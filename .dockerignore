@@ -1,0 +1,61 @@
+# Dependencies
+node_modules/
+app/node_modules/
+
+# Build outputs (will be built in Docker)
+dist/
+app/dist/
+.tmp/
+
+# Development files
+.git/
+.gitignore
+.npmignore
+*.md
+!README.md
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files
+test/
+fullTest/
+pcap/
+output/
+downloads/
+firmwares/
+
+# Environment and secrets
+.env
+.env.*
+!env.template
+
+# Virtual environments
+.venv/
+.venv-apk/
+
+# Logs (will be mounted as volume)
+app/logs/
+logs/
+
+# Settings (will be mounted as volume)
+app/settings.json
+app/config.json
+
+# Documentation
+docs/
+documentation/
+_refs/
+
+# External dependencies
+external/
+
+# Examples
+examples/

@@ -30,7 +30,7 @@ let activeCredentials: ConnectionParams | null = {
   host: "192.168.1.161",
   port: 9000,
   username: "admin",
-  password: "Ruocco123",
+  password: "",
 };
 
 export function setActiveCredentials(params: ConnectionParams): void {

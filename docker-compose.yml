@@ -1,0 +1,46 @@
+version: "3.8"
+
+services:
+  reolink-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: reolink-dashboard
+    restart: unless-stopped
+
+    # Network mode host for RTSP streaming
+    # This allows the container to bind RTSP servers on specific ports
+    # and allows cameras to be discovered on the local network
+    network_mode: host
+
+    # Alternative: use bridge network with port mapping
+    # Uncomment below and comment network_mode: host if you prefer isolation
+    # ports:
+    #   - "3000:3000"           # Web UI
+    #   - "8554-8564:8554-8564" # RTSP ports range
+
+    volumes:
+      # Persist settings and logs
+      - reolink-data:/data
+
+      # Optional: mount local settings file
+      # - ./app/settings.json:/data/settings.json
+
+    environment:
+      - NODE_ENV=production
+      - SETTINGS_PATH=/data/settings.json
+      - LOGS_PATH=/data/logs
+      # Override server port if needed
+      # - SERVER_PORT=3000
+
+    # Healthcheck inherited from Dockerfile
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  reolink-data:
+    driver: local

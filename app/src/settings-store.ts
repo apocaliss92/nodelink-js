@@ -25,8 +25,8 @@ export const SettingsSchema = z.object({
   serverPort: z.number().default(3000),
   serviceIp: z.string().default("localhost"), // IP/hostname to show in RTSP URLs
 
-  // Logging
-  logsPath: z.string().default("./logs"),
+  // Logging (LOGS_PATH env var can override default)
+  logsPath: z.string().default(process.env.LOGS_PATH || "./logs"),
   logLevel: z.enum(["error", "warn", "info", "debug"]).default("info"),
   logRetentionDays: z.number().default(14),
 
