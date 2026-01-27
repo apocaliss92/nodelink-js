@@ -1,6 +1,6 @@
 {
   "name": "@apocaliss92/reolink-baichuan-js",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "TypeScript library implementing Reolink Baichuan protocol (control + streaming) with CGI and RTSP helpers. Full TypeScript support with comprehensive type definitions.",
   "license": "MIT",
   "author": "",
