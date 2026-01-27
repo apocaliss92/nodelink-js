@@ -293,6 +293,7 @@ import { discoverDeviceUidForRecordings as discoverDeviceUidForRecordingsUtil } 
 import type { FloodlightTaskState } from "./utils/whiteLed";
 import {
   applyFloodlightOnMotionToXml,
+  applyFloodlightSettingsToXml,
   applyWhiteLedBrightnessToXml,
   applyWhiteLedOnOffToXml,
   buildWhiteLedManualPayloadXml,
@@ -8474,6 +8475,48 @@ export class ReolinkBaichuanApi {
     });
   }
 
+  /**
+   * Set floodlight settings (duration, detectType, brightness) via FloodlightTask (cmdId=290).
+   *
+   * This allows configuring floodlight parameters without changing the enable state.
+   *
+   * @param channel - Channel number (0-based)
+   * @param settings - Floodlight settings to apply
+   *
+   * @example
+   * await api.setFloodlightSettings(0, {
+   *   duration: 300, // 5 minutes
+   *   detectType: 'people,vehicle',
+   *   brightness: 80,
+   * });
+   */
+  async setFloodlightSettings(
+    channel: number | undefined,
+    settings: {
+      duration?: number;
+      detectType?: string;
+      brightness?: number;
+    },
+  ): Promise<void> {
+    const ch = this.normalizeChannel(channel);
+
+    // GET current FloodlightTask XML
+    const currentXml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_WHITE_LED,
+      channel: ch,
+    });
+
+    // Apply settings
+    const modifiedXml = applyFloodlightSettingsToXml(currentXml, settings);
+
+    // SET via cmdId 290
+    await this.sendXml({
+      cmdId: BC_CMD_ID_SET_WHITE_LED_TASK,
+      channel: ch,
+      payloadXml: modifiedXml,
+    });
+  }
+
   // --------------------
   // Ability Info API
   // --------------------
@@ -11240,6 +11283,70 @@ export class ReolinkBaichuanApi {
 ${cfg.smartTrackMode != null ? `<smartTrackMode>${cfg.smartTrackMode}</smartTrackMode>` : ""}
 ${cfg.detectType ? `<detectType>${cfg.detectType}</detectType>` : ""}
 ${cfg.smartTrackType ? `<smartTrackType>${cfg.smartTrackType}</smartTrackType>` : ""}
+</AiCfg>
+</body>`;
+
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_SET_AI_CFG,
+      channel: ch,
+      payloadXml,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+    return parseXmlFragmentToJson(xml);
+  }
+
+  /**
+   * Set autotracking settings (smartTrackType, delays, etc.) via AiCfg (cmdId=300).
+   *
+   * This allows configuring autotracking parameters without changing the enable state.
+   *
+   * @param channel - Channel ID (default: 0)
+   * @param settings - Autotracking settings to apply
+   * @example
+   * ```ts
+   * await api.setAutotrackingSettings(0, {
+   *   smartTrackType: 'people,vehicle',
+   *   smartTrackObjectStopDelay: 30,
+   *   smartTrackObjectDisappearDelay: 15,
+   * });
+   * ```
+   */
+  async setAutotrackingSettings(
+    channel: number | undefined,
+    settings: {
+      smartTrackType?: string;
+      smartTrackObjectStopDelay?: number;
+      smartTrackObjectDisappearDelay?: number;
+    },
+    options?: { timeoutMs?: number },
+  ): Promise<XmlJsonValue> {
+    const ch = channel ?? 0;
+
+    // First get the current AiCfg to preserve other settings
+    const currentCfg = await this.getAiCfg(ch, options);
+    const cfg =
+      (currentCfg as any)?.body?.AiCfg ?? (currentCfg as any)?.AiCfg ?? {};
+
+    // Merge with current values
+    const smartTrackType = settings.smartTrackType ?? cfg.smartTrackType;
+    const stopDelay =
+      settings.smartTrackObjectStopDelay ?? cfg.smartTrackObjectStopDelay ?? 20;
+    const disappearDelay =
+      settings.smartTrackObjectDisappearDelay ??
+      cfg.smartTrackObjectDisappearDelay ??
+      10;
+
+    // Build the XML payload with updated settings
+    const payloadXml = `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<AiCfg version="1.1">
+<channelId>${ch}</channelId>
+<smartTrack>${cfg.smartTrack ?? 0}</smartTrack>
+${cfg.smartTrackMode != null ? `<smartTrackMode>${cfg.smartTrackMode}</smartTrackMode>` : ""}
+${cfg.detectType ? `<detectType>${cfg.detectType}</detectType>` : ""}
+${smartTrackType ? `<smartTrackType>${smartTrackType}</smartTrackType>` : ""}
+<smartTrackObjectStopDelay>${stopDelay}</smartTrackObjectStopDelay>
+<smartTrackObjectDisappearDelay>${disappearDelay}</smartTrackObjectDisappearDelay>
 </AiCfg>
 </body>`;
 

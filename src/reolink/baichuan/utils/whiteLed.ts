@@ -156,3 +156,46 @@ export const applyFloodlightOnMotionToXml = (
 
   return modifiedXml;
 };
+
+/**
+ * Apply floodlight settings (duration, detectType) to FloodlightTask XML.
+ */
+export const applyFloodlightSettingsToXml = (
+  xml: string,
+  settings: {
+    duration?: number;
+    detectType?: string;
+    brightness?: number;
+  },
+): string => {
+  let modifiedXml = xml;
+
+  if (settings.duration !== undefined) {
+    if (/<duration>[^<]*<\/duration>/i.test(modifiedXml)) {
+      modifiedXml = modifiedXml.replace(
+        /<duration>[^<]*<\/duration>/i,
+        `<duration>${settings.duration}</duration>`,
+      );
+    }
+  }
+
+  if (settings.detectType !== undefined) {
+    if (/<detectType>[^<]*<\/detectType>/i.test(modifiedXml)) {
+      modifiedXml = modifiedXml.replace(
+        /<detectType>[^<]*<\/detectType>/i,
+        `<detectType>${settings.detectType}</detectType>`,
+      );
+    }
+  }
+
+  if (settings.brightness !== undefined) {
+    if (/<brightness_cur>[^<]*<\/brightness_cur>/i.test(modifiedXml)) {
+      modifiedXml = modifiedXml.replace(
+        /<brightness_cur>[^<]*<\/brightness_cur>/i,
+        `<brightness_cur>${settings.brightness}</brightness_cur>`,
+      );
+    }
+  }
+
+  return modifiedXml;
+};
