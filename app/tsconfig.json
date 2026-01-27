@@ -9,7 +9,11 @@
         "forceConsistentCasingInFileNames": true,
         "outDir": "dist",
         "rootDir": "src",
-        "declaration": true
+        "declaration": true,
+        "typeRoots": [
+            "./src/types",
+            "./node_modules/@types"
+        ]
     },
     "include": [
         "src/**/*"

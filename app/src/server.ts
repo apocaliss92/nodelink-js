@@ -1,7 +1,6 @@
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import cors from "cors";
 import express from "express";
-import { ChildProcess, spawn } from "node:child_process";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,9 +18,11 @@ import {
 } from "./rtsp-manager.js";
 import { startRtspProxy, stopRtspProxy } from "./rtsp-proxy.js";
 import { getSettings, loadSettings } from "./settings-store.js";
-
-// Track active MJPEG streams for cleanup
-const activeMjpegStreams = new Map<string, ChildProcess>();
+import {
+  addMjpegClient,
+  stopAllNativeMjpegStreams,
+  getNativeMjpegStatus,
+} from "./mjpeg-native.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -116,178 +117,68 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
-// MJPEG streaming endpoint for browser preview
+// Native MJPEG streaming endpoint for browser preview
+// Uses native Baichuan protocol directly (bypasses RTSP)
 app.get("/api/stream/:cameraId/:profile", async (req, res) => {
   const { cameraId, profile } = req.params;
-  const streamKey = `${cameraId}:${profile}`;
 
-  // Get RTSP URL for this camera/profile
-  let servers = getAllRtspServersInfo();
-  let server = servers.find(
-    (s) => s.cameraId === cameraId && s.profile === profile,
-  );
+  // Validate profile
+  if (profile !== "main" && profile !== "sub" && profile !== "ext") {
+    res
+      .status(400)
+      .json({ error: "Invalid profile (must be main, sub, or ext)" });
+    return;
+  }
 
-  // If stream not running, try to start it on-demand
-  if (!server || server.status !== "running" || !server.rtspUrl) {
-    appLogger.info(
-      `Stream ${cameraId}/${profile} not running, starting on-demand for preview...`,
-      { source: "mjpeg" },
+  // Check if camera is connected
+  const camInfo = getCameraInfo(cameraId);
+  if (!camInfo || camInfo.status !== "connected") {
+    res.status(404).json({ error: "Camera not connected" });
+    return;
+  }
+
+  appLogger.info(`Starting native MJPEG stream for ${cameraId}/${profile}`, {
+    source: "mjpeg",
+  });
+
+  try {
+    // Add client to native MJPEG stream
+    const { clientId, cleanup } = await addMjpegClient(
+      cameraId,
+      profile as "main" | "sub" | "ext",
+      res,
     );
 
-    // Check if camera is connected
-    const camInfo = getCameraInfo(cameraId);
-    if (!camInfo || camInfo.status !== "connected") {
-      res.status(404).json({ error: "Camera not connected" });
-      return;
-    }
-
-    try {
-      await startRtspServer(cameraId, {
-        profile: profile as "main" | "sub" | "ext",
-        channel: 0, // TODO: get from camera config
-      });
-
-      // Wait for server to start
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-
-      // Get updated server info
-      servers = getAllRtspServersInfo();
-      server = servers.find(
-        (s) => s.cameraId === cameraId && s.profile === profile,
-      );
-
-      if (!server || server.status !== "running" || !server.rtspUrl) {
-        res.status(500).json({ error: "Failed to start stream" });
-        return;
-      }
-    } catch (err) {
-      appLogger.error(`Failed to start stream on-demand: ${err}`, {
+    // Handle client disconnect
+    req.on("close", () => {
+      appLogger.info(`Client ${clientId} disconnected from MJPEG stream`, {
         source: "mjpeg",
       });
+      cleanup();
+    });
+
+    res.on("error", () => {
+      cleanup();
+    });
+  } catch (err) {
+    appLogger.error(`Failed to start native MJPEG stream: ${err}`, {
+      source: "mjpeg",
+    });
+    if (!res.headersSent) {
       res.status(500).json({ error: "Failed to start stream" });
-      return;
     }
   }
-
-  const rtspUrl = server.rtspUrl;
-  appLogger.info(
-    `Starting MJPEG stream for ${cameraId}/${profile} from ${rtspUrl}`,
-    { source: "mjpeg" },
-  );
-
-  // Kill existing stream for this key if any
-  const existing = activeMjpegStreams.get(streamKey);
-  if (existing) {
-    existing.kill("SIGTERM");
-    activeMjpegStreams.delete(streamKey);
-  }
-
-  // Set response headers for MJPEG stream
-  res.setHeader("Content-Type", "multipart/x-mixed-replace; boundary=frame");
-  res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-  res.setHeader("Pragma", "no-cache");
-  res.setHeader("Connection", "close");
-
-  // Start ffmpeg to convert RTSP to MJPEG
-  const ffmpeg = spawn(
-    "ffmpeg",
-    [
-      "-rtsp_transport",
-      "tcp",
-      "-i",
-      rtspUrl,
-      "-f",
-      "mjpeg",
-      "-q:v",
-      "5", // Quality (2-31, lower is better)
-      "-r",
-      "10", // Frame rate
-      "-s",
-      "854x480", // Scale to 480p for preview
-      "-an", // No audio
-      "-",
-    ],
-    {
-      stdio: ["pipe", "pipe", "pipe"],
-    },
-  );
-
-  activeMjpegStreams.set(streamKey, ffmpeg);
-
-  let buffer = Buffer.alloc(0);
-  const SOI = Buffer.from([0xff, 0xd8]); // JPEG start marker
-  const EOI = Buffer.from([0xff, 0xd9]); // JPEG end marker
-
-  ffmpeg.stdout?.on("data", (chunk: Buffer) => {
-    buffer = Buffer.concat([buffer, chunk]);
-
-    // Find complete JPEG frames
-    let soiIndex = buffer.indexOf(SOI);
-    while (soiIndex !== -1) {
-      const eoiIndex = buffer.indexOf(EOI, soiIndex + 2);
-      if (eoiIndex === -1) break;
-
-      const frame = buffer.subarray(soiIndex, eoiIndex + 2);
-      buffer = buffer.subarray(eoiIndex + 2);
-
-      // Write MJPEG frame
-      try {
-        res.write("--frame\r\n");
-        res.write("Content-Type: image/jpeg\r\n");
-        res.write(`Content-Length: ${frame.length}\r\n\r\n`);
-        res.write(frame);
-        res.write("\r\n");
-      } catch (e) {
-        // Client disconnected
-        ffmpeg.kill("SIGTERM");
-        activeMjpegStreams.delete(streamKey);
-        return;
-      }
-
-      soiIndex = buffer.indexOf(SOI);
-    }
-  });
-
-  ffmpeg.stderr?.on("data", (data: Buffer) => {
-    const msg = data.toString();
-    if (msg.includes("Error") || msg.includes("error")) {
-      appLogger.error(`MJPEG ffmpeg error: ${msg}`, { source: "mjpeg" });
-    }
-  });
-
-  ffmpeg.on("close", (code) => {
-    appLogger.info(`MJPEG stream closed for ${streamKey} with code ${code}`, {
-      source: "mjpeg",
-    });
-    activeMjpegStreams.delete(streamKey);
-    if (!res.writableEnded) {
-      res.end();
-    }
-  });
-
-  // Handle client disconnect
-  req.on("close", () => {
-    appLogger.info(`Client disconnected from MJPEG stream ${streamKey}`, {
-      source: "mjpeg",
-    });
-    ffmpeg.kill("SIGTERM");
-    activeMjpegStreams.delete(streamKey);
-  });
 });
 
-// Stop MJPEG stream endpoint
+// Stop MJPEG stream endpoint (legacy - streams now auto-stop when no clients)
 app.delete("/api/stream/:cameraId/:profile", (req, res) => {
-  const { cameraId, profile } = req.params;
-  const streamKey = `${cameraId}:${profile}`;
+  res.json({ success: true, message: "Streams auto-stop when no clients" });
+});
 
-  const ffmpeg = activeMjpegStreams.get(streamKey);
-  if (ffmpeg) {
-    ffmpeg.kill("SIGTERM");
-    activeMjpegStreams.delete(streamKey);
-    res.json({ success: true });
-  } else {
-    res.json({ success: false, message: "No active stream" });
-  }
+// MJPEG stream status endpoint
+app.get("/api/mjpeg/status", (req, res) => {
+  const status = getNativeMjpegStatus();
+  res.json(status);
 });
 
 // Main dashboard - serve static HTML file
@@ -306,7 +197,16 @@ app.get("/favicon.ico", (req, res) => {
 async function shutdown() {
   appLogger.info("Shutting down server...", { source: "server" });
 
-  // Stop RTSP proxy first
+  // Stop native MJPEG streams
+  try {
+    await stopAllNativeMjpegStreams();
+  } catch (error) {
+    appLogger.error(`Error stopping MJPEG streams: ${error}`, {
+      source: "server",
+    });
+  }
+
+  // Stop RTSP proxy
   try {
     await stopRtspProxy();
   } catch (error) {

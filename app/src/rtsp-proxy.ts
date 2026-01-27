@@ -11,9 +11,13 @@ import {
   getAllRtspServersInfo,
   sanitizeCameraName,
   startRtspServer,
+  stopRtspServer,
 } from "./rtsp-manager.js";
 
 const logger = createSourceLogger("rtsp-proxy");
+
+/** Time to wait before stopping a backend with no clients (ms) */
+const BACKEND_IDLE_TIMEOUT_MS = 30_000;
 
 /**
  * RTSP Proxy Server - Simple TCP Pipe with Digest Authentication
@@ -47,9 +51,19 @@ export class RtspProxyServer extends EventEmitter {
   private host: string;
   private connections = new Map<
     string,
-    { client: net.Socket; backend: net.Socket | null; auth?: AuthSession }
+    {
+      client: net.Socket;
+      backend: net.Socket | null;
+      auth?: AuthSession;
+      backendKey?: string;
+    }
   >();
   private readonly realm = "RTSP Proxy";
+
+  /** Track clients per backend (key: "cameraName/profile") */
+  private backendClients = new Map<string, Set<string>>();
+  /** Track idle timers per backend */
+  private backendIdleTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(options: RtspProxyOptions) {
     super();
@@ -227,6 +241,132 @@ export class RtspProxyServer extends EventEmitter {
   }
 
   /**
+   * Get backend key for tracking
+   */
+  private getBackendKey(cameraName: string, profile: string): string {
+    return `${cameraName}/${profile}`;
+  }
+
+  /**
+   * Register a client for a backend
+   */
+  private registerBackendClient(backendKey: string, clientId: string): void {
+    // Clear any pending idle timer for this backend
+    const existingTimer = this.backendIdleTimers.get(backendKey);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      this.backendIdleTimers.delete(backendKey);
+      logger.debug(`Cleared idle timer for ${backendKey}`);
+    }
+
+    // Add client to backend's client set
+    let clients = this.backendClients.get(backendKey);
+    if (!clients) {
+      clients = new Set();
+      this.backendClients.set(backendKey, clients);
+    }
+    clients.add(clientId);
+    logger.debug(`Backend ${backendKey} now has ${clients.size} client(s)`);
+  }
+
+  /**
+   * Unregister a client from a backend
+   */
+  private unregisterBackendClient(backendKey: string, clientId: string): void {
+    const clients = this.backendClients.get(backendKey);
+    if (!clients) return;
+
+    clients.delete(clientId);
+    logger.debug(`Backend ${backendKey} now has ${clients.size} client(s)`);
+
+    // If no more clients, start idle timer
+    if (clients.size === 0) {
+      this.backendClients.delete(backendKey);
+      this.startBackendIdleTimer(backendKey);
+    }
+  }
+
+  /**
+   * Start idle timer for a backend with no clients
+   */
+  private startBackendIdleTimer(backendKey: string): void {
+    // Clear any existing timer
+    const existingTimer = this.backendIdleTimers.get(backendKey);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+
+    logger.info(
+      `Backend ${backendKey} has no clients, starting ${BACKEND_IDLE_TIMEOUT_MS / 1000}s idle timer`,
+    );
+
+    const timer = setTimeout(async () => {
+      this.backendIdleTimers.delete(backendKey);
+
+      // Double-check no clients have connected
+      const clients = this.backendClients.get(backendKey);
+      if (clients && clients.size > 0) {
+        logger.debug(
+          `Backend ${backendKey} got clients during idle period, keeping alive`,
+        );
+        return;
+      }
+
+      // Find and stop the backend server
+      const [cameraName, profile] = backendKey.split("/");
+      await this.stopBackendServer(cameraName!, profile!);
+    }, BACKEND_IDLE_TIMEOUT_MS);
+
+    // Don't prevent process exit
+    timer.unref();
+    this.backendIdleTimers.set(backendKey, timer);
+  }
+
+  /**
+   * Stop a backend RTSP server
+   */
+  private async stopBackendServer(
+    cameraName: string,
+    profile: string,
+  ): Promise<void> {
+    const normalizedProfile = profile as "main" | "sub" | "ext";
+    const config = getConfig();
+
+    // Find the camera
+    const camera = config.cameras.find((c) => {
+      const sanitized = sanitizeCameraName(c.name);
+      return sanitized === cameraName || c.id === cameraName;
+    });
+
+    if (!camera) {
+      logger.warn(`Cannot stop backend: camera not found: ${cameraName}`);
+      return;
+    }
+
+    // Find running server
+    const servers = getAllRtspServersInfo();
+    const server = servers.find(
+      (s) =>
+        s.status === "running" &&
+        s.cameraId === camera.id &&
+        s.profile === normalizedProfile,
+    );
+
+    if (!server) {
+      logger.debug(`No running backend to stop for ${cameraName}/${profile}`);
+      return;
+    }
+
+    try {
+      logger.info(`Stopping idle backend: ${cameraName}/${profile}`);
+      await stopRtspServer(server.streamKey);
+      logger.info(`Backend stopped: ${cameraName}/${profile}`);
+    } catch (error) {
+      logger.error(`Failed to stop backend ${cameraName}/${profile}: ${error}`);
+    }
+  }
+
+  /**
    * Find or start backend RTSP server
    */
   private async findOrStartBackend(
@@ -312,6 +452,7 @@ export class RtspProxyServer extends EventEmitter {
       client: clientSocket,
       backend: null,
       auth: authSession,
+      backendKey: undefined,
     });
 
     let initialBuffer = Buffer.alloc(0);
@@ -320,6 +461,10 @@ export class RtspProxyServer extends EventEmitter {
     const cleanup = () => {
       const conn = this.connections.get(clientId);
       if (conn) {
+        // Unregister from backend tracking
+        if (conn.backendKey) {
+          this.unregisterBackendClient(conn.backendKey, clientId);
+        }
         if (conn.backend) {
           conn.backend.destroy();
         }
@@ -392,6 +537,9 @@ export class RtspProxyServer extends EventEmitter {
       // Remove initial data handler
       clientSocket.removeListener("data", onInitialData);
 
+      // Track this client for the backend
+      const backendKey = this.getBackendKey(parsed.cameraName, parsed.profile);
+
       // Connect to backend
       const backendSocket = net.createConnection(
         { host: backend.host, port: backend.port },
@@ -405,7 +553,11 @@ export class RtspProxyServer extends EventEmitter {
           const conn = this.connections.get(clientId);
           if (conn) {
             conn.backend = backendSocket;
+            conn.backendKey = backendKey;
           }
+
+          // Register client for this backend (for auto-stop tracking)
+          this.registerBackendClient(backendKey, clientId);
 
           // Forward the initial buffered data
           backendSocket.write(initialBuffer);
@@ -466,6 +618,13 @@ export class RtspProxyServer extends EventEmitter {
    * Stop the proxy server
    */
   async stop(): Promise<void> {
+    // Clear all idle timers
+    for (const [key, timer] of this.backendIdleTimers) {
+      clearTimeout(timer);
+    }
+    this.backendIdleTimers.clear();
+    this.backendClients.clear();
+
     // Close all connections
     for (const [clientId, conn] of this.connections) {
       if (conn.backend) conn.backend.destroy();
