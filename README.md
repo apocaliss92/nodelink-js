@@ -433,3 +433,13 @@ This library has been tested with:
 - [CGI HTTP API](./documentation/cgi-api/README.md) - HTTP REST API (port 80)
 - [Streaming Servers](./documentation/streaming.md) - RTSP, RFC4571, HTTP servers
 - [Network Discovery](./documentation/discovery.md) - UDP autodiscovery
+
+## Disclaimer
+
+This project is **not affiliated with, endorsed by, or connected to Reolink** in any way.
+
+"Reolink" is a trademark of Reolink Innovation Inc.
+
+This is an independent, community-driven open-source project created for **interoperability purposes** — enabling users to integrate their own Reolink devices with third-party home automation systems and custom applications.
+
+No proprietary code, firmware, or copyrighted materials from Reolink are included in this project. The protocol implementation is based on publicly available reverse engineering efforts from the community.

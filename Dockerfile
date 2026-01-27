@@ -60,9 +60,14 @@ WORKDIR /app
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S nodejs -u 1001
 
-# Copy built library
+# Copy built library and install its dependencies
 COPY --from=lib-builder /lib/dist /lib/dist
 COPY --from=lib-builder /lib/package.json /lib/package.json
+COPY --from=lib-builder /lib/package-lock.json /lib/package-lock.json
+WORKDIR /lib
+ENV NODE_ENV=production
+RUN npm install --ignore-scripts
+WORKDIR /app
 
 # Copy app package.json and update library path
 COPY app/package*.json ./
