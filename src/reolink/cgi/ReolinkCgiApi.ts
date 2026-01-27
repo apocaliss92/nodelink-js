@@ -463,11 +463,6 @@ export interface CgiGetVideoclipsParams {
 }
 
 /**
- * @deprecated Use {@link CgiGetVideoclipsParams} instead.
- */
-export type ListNvrRecordingsParams = CgiGetVideoclipsParams;
-
-/**
  * Options for collecting NVR diagnostics.
  */
 export interface CollectNvrDiagnosticsOptions {
@@ -1882,16 +1877,6 @@ export class ReolinkCgiApi {
   }
 
   /**
-   * @deprecated Use {@link getVideoclips} instead.
-   * Alias for backward compatibility.
-   */
-  async listNvrRecordings(
-    params: CgiGetVideoclipsParams,
-  ): Promise<Array<RecordingFile>> {
-    return this.getVideoclips(params);
-  }
-
-  /**
    * Get a JPEG thumbnail from a VOD recording using ffmpeg.
    *
    * This method fetches the VOD URL (with Download type for better ffmpeg compatibility)
@@ -2072,7 +2057,6 @@ export class ReolinkCgiApi {
 
     const iLogicChannel = options?.iLogicChannel ?? 0;
 
-    // Build param exactly like reolink_aio does
     // Ensure time format matches exactly (year, mon, day, hour, min, sec)
     const param = {
       NvrDownload: {
@@ -2115,7 +2099,6 @@ export class ReolinkCgiApi {
     );
 
     try {
-      // Use callMany to send the request exactly as reolink_aio does
       const response = await this.callMany<{
         fileList: Array<{ fileName: string; fileSize: number }>;
       }>(body);

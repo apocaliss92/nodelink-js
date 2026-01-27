@@ -34,13 +34,11 @@ import { createDebugGateLogger } from "../../logging/logger";
 import {
   BC_CLASS_FILE_DOWNLOAD,
   BC_CLASS_MODERN_24,
-  BC_CLASS_MODERN_24_ALT,
   BC_CMD_ID_ABILITY_INFO,
   BC_CMD_ID_AUDIO_ALARM_PLAY,
   BC_CMD_ID_CHANNEL_INFO_ALL,
   BC_CMD_ID_CMD_123,
   BC_CMD_ID_CMD_209,
-  BC_CMD_ID_CMD_231,
   BC_CMD_ID_CMD_265,
   BC_CMD_ID_CMD_440,
   BC_CMD_ID_FILE_INFO_LIST_DL_VIDEO,
@@ -52,8 +50,9 @@ import {
   BC_CMD_ID_FLOODLIGHT_STATUS_LIST,
   BC_CMD_ID_GET_ABILITY_SUPPORT,
   BC_CMD_ID_GET_ACCESS_USER_LIST,
-  BC_CMD_ID_GET_ONLINE_USER_LIST,
   BC_CMD_ID_GET_AI_ALARM,
+  BC_CMD_ID_GET_AI_CFG,
+  BC_CMD_ID_SET_AI_CFG,
   BC_CMD_ID_GET_AI_DENOISE,
   BC_CMD_ID_GET_AUDIO_ALARM,
   BC_CMD_ID_GET_AUDIO_CFG,
@@ -68,6 +67,7 @@ import {
   BC_CMD_ID_GET_KIT_AP_CFG,
   BC_CMD_ID_GET_LED_STATE,
   BC_CMD_ID_GET_MOTION_ALARM,
+  BC_CMD_ID_GET_ONLINE_USER_LIST,
   BC_CMD_ID_GET_OSD_DATETIME,
   BC_CMD_ID_GET_PIR_INFO,
   BC_CMD_ID_GET_PTZ_POSITION,
@@ -75,9 +75,13 @@ import {
   BC_CMD_ID_GET_REC_ENC_CFG,
   BC_CMD_ID_GET_RECORD,
   BC_CMD_ID_GET_RECORD_CFG,
+  BC_CMD_ID_GET_SIREN_STATUS,
   BC_CMD_ID_GET_SLEEP_STATE,
   BC_CMD_ID_GET_STREAM_INFO_LIST,
+  BC_CMD_ID_GET_SUPPORT,
+  BC_CMD_ID_GET_SYSTEM_GENERAL,
   BC_CMD_ID_GET_TIMELAPSE_CFG,
+  BC_CMD_ID_GET_VIDEO_INPUT,
   BC_CMD_ID_GET_WHITE_LED,
   BC_CMD_ID_GET_WIFI,
   BC_CMD_ID_GET_WIFI_SIGNAL,
@@ -92,6 +96,7 @@ import {
   BC_CMD_ID_PUSH_SLEEP_STATUS,
   BC_CMD_ID_PUSH_VIDEO_INPUT,
   BC_CMD_ID_SET_AI_ALARM,
+  BC_CMD_ID_SET_AUDIO_TASK,
   BC_CMD_ID_SET_MOTION_ALARM,
   BC_CMD_ID_SET_PIR_INFO,
   BC_CMD_ID_SET_WHITE_LED_STATE,
@@ -148,6 +153,8 @@ import type {
   ChannelPushDataEntry,
   ChannelStreamMetadata,
   DeviceAbilities,
+  DeviceCapabilitiesCacheEntry,
+  DeviceCapabilitiesDebugInfo,
   DeviceCapabilitiesResult,
   DeviceSupportFlags,
   DownloadRecordingParams,
@@ -155,7 +162,6 @@ import type {
   DualLensChannelInfo,
   Events,
   GetRecordingVideoResult,
-  GetRecordingVideoStats,
   GetVideoclipsParams,
   LastSleepProbe,
   NativeVideoStreamVariant,
@@ -186,15 +192,36 @@ import type {
   RunMultifocalDiagnosticsConsecutivelyResult,
   SirenState,
   SleepStatus,
-  VideoclipThumbnailResult,
   StreamMetadata,
   StreamProfile,
   SupportInfo,
   TwoWayAudioConfig,
+  VideoclipThumbnailResult,
   WakeUpOptions,
   WhiteLedState,
   ZoomFocusStatus,
   ZoomFocusTriplet,
+  AudioTaskConfig,
+  FloodlightTaskConfig,
+  WhiteLedConfig,
+  PirConfig,
+  AiConfig,
+  AudioCfgConfig,
+  DayNightThresholdConfig,
+  AiDenoiseConfig,
+  RecEncConfig,
+  MotionAlarmConfig,
+  AiAlarmConfig,
+  VideoInputConfig,
+  SystemGeneralConfig,
+  SupportConfig,
+  SirenStatusConfig,
+  FtpTaskConfig,
+  EmailTaskConfig,
+  HddInfoListConfig,
+  TimelapseCfgConfig,
+  AccessUserListConfig,
+  OnlineUserListConfig,
 } from "./types";
 import { parseXmlFragmentToJson, type XmlJsonValue } from "./utils/xml";
 
@@ -208,11 +235,7 @@ import {
 } from "../cgi/ReolinkCgiApi";
 import { ReolinkHttpClient } from "../http/ReolinkHttpClient";
 import type { ReolinkDeviceInfo, ReolinkDeviceInfoTag } from "../types";
-import {
-  computeDeviceCapabilities,
-  flattenAbilitiesForChannel,
-  parseSupportXml,
-} from "./capabilities";
+import { computeDeviceCapabilities, parseSupportXml } from "./capabilities";
 import { parseAbilityInfoXml } from "./utils/abilityInfo";
 import { getAiStateViaGetAiAlarm } from "./utils/aiState";
 import { parseChannelInfoPushBlocks } from "./utils/channelInfoPush";
@@ -267,18 +290,18 @@ import { parseRecordingFileName } from "./recordingFileName";
 import { parseEventsFromGetEventsXml } from "./utils/eventsGetEvents";
 import { parsePirInfoFromXml } from "./utils/pir";
 import { discoverDeviceUidForRecordings as discoverDeviceUidForRecordingsUtil } from "./utils/uidRecordings";
+import type { FloodlightTaskState } from "./utils/whiteLed";
 import {
+  applyFloodlightOnMotionToXml,
   applyWhiteLedBrightnessToXml,
   applyWhiteLedOnOffToXml,
   buildWhiteLedManualPayloadXml,
+  parseFloodlightTaskFromXml,
   parseWhiteLedStateFromXml,
 } from "./utils/whiteLed";
 
 type TalkAbility = import("./types").TalkAbility;
-type TalkAudioConfig = import("./types").TalkAudioConfig;
-type TalkConfig = import("./types").TalkConfig;
 type TalkSession = import("./types").TalkSession;
-type TalkSessionInfo = import("./types").TalkSessionInfo;
 type SupportItem = import("./types").SupportItem;
 
 export type {
@@ -289,7 +312,7 @@ export type {
   WakeUpOptions,
 } from "./types";
 
-// Constants to identify dual lens models (based on reolink_aio/api.py)
+// Constants to identify dual lens models
 export const DUAL_LENS_DUAL_MOTION_MODELS = new Set<string>([
   "Reolink Duo PoE",
   "Reolink Duo WiFi",
@@ -314,27 +337,40 @@ export const isDualLenseModel = (model: string): boolean => {
 };
 
 /**
+ * Exact type values that indicate NVR/Hub devices.
+ * These are checked with exact case-insensitive match.
+ */
+export const NVR_HUB_EXACT_TYPES: string[] = ["NVR", "WIFI_NVR", "HOMEHUB"];
+
+/**
  * Model patterns that indicate NVR/Hub devices.
  * These devices may report channelNum=1 but actually support multiple channels.
  * Case-insensitive matching is used.
  */
 export const NVR_HUB_MODEL_PATTERNS: RegExp[] = [
-  /home\s*hub/i, // "Home Hub", "HomeHub"
+  /home\s*hub/i, // "Home Hub", "HomeHub", "Reolink Home Hub"
   /reolink\s*hub/i, // "Reolink Hub"
-  /wifi[-\s]*nvr/i, // "WIFI-NVR", "WiFi NVR"
+  /wifi[-_\s]*nvr/i, // "WIFI-NVR", "WiFi NVR", "WIFI_NVR"
   /^nvr/i, // "NVR8-xxx", "NVR16-xxx"
   /^rlk\d+-\d+/i, // "RLK8-xxx", "RLK16-xxx" (NVR kits)
   /^rlk\d+w/i, // "RLK8W-xxx" (wireless NVR kits)
 ];
 
 /**
- * Check if a model name indicates an NVR/Hub device.
+ * Check if a model/type name indicates an NVR/Hub device.
+ * Checks both exact type matches and regex patterns.
  * @param model - The device model/type string
  * @returns true if the model matches NVR/Hub patterns
  */
 export const isNvrHubModel = (model?: string): boolean => {
   if (!model) return false;
   const normalized = model.trim();
+  const upper = normalized.toUpperCase();
+
+  // Check exact type matches first
+  if (NVR_HUB_EXACT_TYPES.includes(upper)) return true;
+
+  // Check regex patterns
   return NVR_HUB_MODEL_PATTERNS.some((pattern) => pattern.test(normalized));
 };
 
@@ -395,6 +431,16 @@ export class ReolinkBaichuanApi {
     string,
     NvrChannelsSummaryCacheEntry
   >();
+
+  /**
+   * Cached device capabilities per channel.
+   * Cache is invalidated on reconnect or after TTL (5 minutes).
+   */
+  private readonly deviceCapabilitiesCache = new Map<
+    number,
+    DeviceCapabilitiesCacheEntry
+  >();
+  private static readonly CAPABILITIES_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
   /**
    * Pool of dedicated BaichuanClient instances for streaming/replay operations.
@@ -1474,18 +1520,18 @@ export class ReolinkBaichuanApi {
    */
   async isNvrDevice(): Promise<boolean> {
     const channelCount = await this.getChannelCount();
-    if (channelCount > 1) return true;
+    if (channelCount > 3) return true;
 
-    // Fallback: check device model for NVR/Hub patterns
+    // Fallback: check device type for NVR/Hub patterns
     // Some devices (e.g., Home Hub) report channelNum=1 but are actually NVR/Hub
     try {
       const info = await this.getInfo(undefined, {
         tags: ["type"],
         timeoutMs: 5000,
       });
-      if (info.type && isNvrHubModel(info.type)) {
+      if (isNvrHubModel(info.type)) {
         this.logger.debug?.(
-          `[ReolinkBaichuanApi] isNvrDevice: model "${info.type}" matches NVR/Hub pattern`,
+          `[ReolinkBaichuanApi] isNvrDevice: type="${info.type}" matches NVR/Hub pattern`,
         );
         return true;
       }
@@ -1578,6 +1624,7 @@ export class ReolinkBaichuanApi {
     //
     // - FILE_INFO_LIST_GET with 400+empty body during pagination means "no more pages".
     // - FILE_INFO_LIST_OPEN with 400+empty body often means "FileInfoList unsupported" on NVRs.
+    // - Motion alarm commands (46/47) can fail on some cameras; avoid retry loops.
     // In both cases, fail fast and let higher-level code fall back to findAlarmVideo/CGI.
     return (
       bodyLen === 0 &&
@@ -1585,7 +1632,11 @@ export class ReolinkBaichuanApi {
         params.cmdId === BC_CMD_ID_FILE_INFO_LIST_OPEN ||
         // Non-PTZ cameras commonly return 400+empty body for PTZ preset APIs.
         // Treat it as "unsupported" rather than triggering relogin loops.
-        params.cmdId === BC_CMD_ID_GET_PTZ_PRESET)
+        params.cmdId === BC_CMD_ID_GET_PTZ_PRESET ||
+        // Motion alarm commands may fail on some cameras/firmwares.
+        // Fail fast to avoid re-login loops.
+        params.cmdId === BC_CMD_ID_GET_MOTION_ALARM ||
+        params.cmdId === BC_CMD_ID_SET_MOTION_ALARM)
     );
   }
 
@@ -1602,29 +1653,12 @@ export class ReolinkBaichuanApi {
       throw new Error(emptyBody400Msg);
     }
 
-    // Retry logic for 400 errors.
+    // Retry logic for 400 errors (without re-login to avoid disconnection loops).
     // NOTE: several firmwares return responseCode=400 with empty body when the camera is sleeping,
     // waking up, or when the session has expired (not only for bad credentials).
+    // Previously we tried forcing re-login here, but that caused cascading disconnects.
+    // Now we simply backoff and retry without re-login.
     if (retry > 0) {
-      // If the body is empty, try forcing a re-login once before backing off.
-      // This helps for expired sessions while staying safe for sleeping cameras.
-      // However, avoid re-login if the socket is not connected to prevent disconnection loops
-      if (emptyBody) {
-        const isConnected = this.client.isSocketConnected();
-        if (isConnected) {
-          try {
-            this.client.loggedIn = false;
-            await this.client.login();
-          } catch {
-            // ignore; we will still back off and retry
-          }
-        } else {
-          // Socket not connected, don't try to login - wait for reconnection
-          await sleepMs(2000);
-          return await this.sendXml(params, retry - 1);
-        }
-      }
-
       await sleepMs(1500);
       return await this.sendXml(params, retry - 1);
     }
@@ -2102,8 +2136,6 @@ export class ReolinkBaichuanApi {
    * This method extracts channel information similar to CGI GetChnTypeInfo,
    * but using the Baichuan protocol. It returns typeInfo (model), firmwareVersion,
    * and boardInfo if available in the XML response.
-   *
-   * Following the Python implementation pattern from reolink_aio.
    */
   async getChannelInfo(
     channel: number,
@@ -2925,13 +2957,13 @@ export class ReolinkBaichuanApi {
   async getMotionAlarm(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<XmlJsonValue> {
+  ): Promise<MotionAlarmConfig> {
     const xml = await this.sendXml({
       cmdId: BC_CMD_ID_GET_MOTION_ALARM,
       ...(channel !== undefined ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
-    return parseXmlFragmentToJson(xml);
+    return parseXmlFragmentToJson<MotionAlarmConfig>(xml);
   }
 
   /**
@@ -3055,7 +3087,7 @@ export class ReolinkBaichuanApi {
     channel: number,
     aiType: string,
     options?: { timeoutMs?: number; channelIdOverride?: number },
-  ): Promise<XmlJsonValue> {
+  ): Promise<AiAlarmConfig> {
     const ch = this.normalizeChannel(channel);
     const payloadXml =
       `<?xml version="1.0" encoding="UTF-8" ?>` +
@@ -3079,7 +3111,7 @@ export class ReolinkBaichuanApi {
       0,
     );
 
-    return parseXmlFragmentToJson(xml);
+    return parseXmlFragmentToJson<AiAlarmConfig>(xml);
   }
 
   private normalizeAiDetectTypeForGetAiAlarm(type: string): string[] {
@@ -4198,8 +4230,6 @@ export class ReolinkBaichuanApi {
    * The returned data is a raw H.264 or H.265 I-frame. To convert it to JPEG,
    * you can use ffmpeg or a video decoder library.
    *
-   * Inspired by reolink_aio's snapshot_past functionality.
-   *
    * NOTE: Requests are queued and processed one at a time. The camera often
    * rejects concurrent CoverPreview requests, so this serialization prevents
    * unnecessary failures and retries.
@@ -4286,7 +4316,6 @@ export class ReolinkBaichuanApi {
 
     const channel = this.normalizeChannel(params.channel);
     const snapType = params.snapType ?? "sub";
-    // reolink_aio uses "{stream}Stream" format, e.g. "subStream" or "mainStream"
     const snapStreamType = snapType === "main" ? "mainStream" : "subStream";
     const timeoutMs = params.timeoutMs ?? 30_000;
     const time = params.time;
@@ -4371,13 +4400,8 @@ export class ReolinkBaichuanApi {
     );
     trace(`CoverPreview XML:\n${xml}`);
 
-    // reolink_aio calls: send_payload(cmd_id=298, body=xml)
-    // - message_class="1464" (0x6414) → BC_CLASS_MODERN_24
-    // - No extension XML
-    //
     // For NVR: use the resolved headerChannelId from push cache (like FileInfoList).
     // For standalone cameras: use session counter (let client handle it).
-    //
     // NOTE: Retry logic is handled inside sendBinaryCoverPreview.
     // PCAP analysis shows the camera often rejects first few requests with 400 before accepting.
     let payload: Buffer;
@@ -8393,6 +8417,63 @@ export class ReolinkBaichuanApi {
     }
   }
 
+  /**
+   * Get floodlight-on-motion state via FloodlightTask (cmdId=289).
+   *
+   * Returns whether the floodlight turns on automatically when motion is detected.
+   * This is controlled by the `alarmMode` field in FloodlightTask.
+   *
+   * @param channel - Channel number (0-based)
+   * @returns FloodlightTaskState with floodlightOnMotion, enabled, brightness, duration, detectType
+   *
+   * @example
+   * const state = await api.getFloodlightOnMotion(0);
+   * console.log(state.floodlightOnMotion); // true if floodlight turns on when motion detected
+   */
+  async getFloodlightOnMotion(channel?: number): Promise<FloodlightTaskState> {
+    const ch = this.normalizeChannel(channel);
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_WHITE_LED,
+      channel: ch,
+    });
+    return parseFloodlightTaskFromXml(xml);
+  }
+
+  /**
+   * Set floodlight-on-motion state via FloodlightTask (cmdId=290).
+   *
+   * Enables or disables the floodlight turning on automatically when motion is detected.
+   * This modifies both `alarmMode` and `enable` fields in FloodlightTask.
+   *
+   * @param on - true to enable floodlight on motion, false to disable
+   * @param channel - Channel number (0-based)
+   *
+   * @example
+   * // Enable floodlight on motion
+   * await api.setFloodlightOnMotion(true, 0);
+   * // Disable floodlight on motion
+   * await api.setFloodlightOnMotion(false, 0);
+   */
+  async setFloodlightOnMotion(on: boolean, channel?: number): Promise<void> {
+    const ch = this.normalizeChannel(channel);
+
+    // GET current FloodlightTask XML
+    const currentXml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_WHITE_LED,
+      channel: ch,
+    });
+
+    // Modify alarmMode and enable fields
+    const modifiedXml = applyFloodlightOnMotionToXml(currentXml, on);
+
+    // SET via cmdId 290
+    await this.sendXml({
+      cmdId: BC_CMD_ID_SET_WHITE_LED_TASK,
+      channel: ch,
+      payloadXml: modifiedXml,
+    });
+  }
+
   // --------------------
   // Ability Info API
   // --------------------
@@ -8515,6 +8596,34 @@ export class ReolinkBaichuanApi {
   }
 
   /**
+   * Probe autotracking support via AiCfg (cmd 299).
+   *
+   * Uses smartTrackMode > 0 as the indicator for autotracking capability.
+   * This is more reliable than autoPt in SupportInfo which can be a false positive
+   * (e.g., NVR channels report autoPt=1 but don't actually support autotracking).
+   *
+   * @param channel - Channel number (0-based)
+   * @param options - Optional timeout
+   * @returns true if autotracking is supported, false otherwise
+   */
+  async probeAutotrackingSupport(
+    channel: number,
+    options?: { timeoutMs?: number },
+  ): Promise<boolean> {
+    const ch = this.normalizeChannel(channel);
+    const timeoutMs = options?.timeoutMs ?? 1500;
+
+    try {
+      const xml = await this.sendXml({ cmdId: 299, channel: ch, timeoutMs });
+      const smartTrackModeRaw = getXmlText(xml, "smartTrackMode");
+      const smartTrackMode = Number(smartTrackModeRaw ?? 0);
+      return smartTrackMode > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Returns AI object-detection types for a channel via cmd 299 (AiCfg).
    *
    * Uses <detectType> as the source of truth and returns a normalized string list.
@@ -8543,318 +8652,328 @@ export class ReolinkBaichuanApi {
   }
 
   /**
-   * Compute explicit device capabilities (hasZoom/hasPan/hasTilt/hasBattery/...) for a specific channel.
+   * Get device capabilities for a specific channel.
    *
-   * This method centralizes capability parsing in the library.
+   * This method uses a simplified, deterministic approach:
+   * - SupportInfo (cmd 199) is the single source of truth for most flags
+   * - AbilityInfo (cmd 151) provides fallback for PTZ/intercom
+   * - AI detection types come from cmd 299
+   * - PTZ presets are probed only if ptzPreset > 0 in SupportInfo
+   *
+   * Results are cached for 5 minutes per channel.
+   *
+   * @param channel - Channel number (0-based). Defaults to 0.
+   * @returns Device capabilities including abilities, support info, presets, and AI objects
    */
   async getDeviceCapabilities(
     channel?: number,
-    options?: {
-      /**
-       * Enable best-effort probing that may generate additional requests.
-       * Defaults to true.
-       */
-      probe?: boolean;
-      /** Enable/disable siren probing (cmd 152/153). Defaults to true. */
-      probeSiren?: boolean;
-      /** Enable/disable floodlight probing (cmd 289). Defaults to true. */
-      probeFloodlight?: boolean;
-      /**
-       * When the camera is a dual-lens model exposed on a single channel (common behind NVR/Hub),
-       * merge lens capabilities so a flag is true if at least one lens supports it.
-       *
-       * Defaults to true.
-       */
-      mergeDualLensOnSameChannel?: boolean;
-    },
   ): Promise<DeviceCapabilitiesResult> {
-    const channelProvided = channel !== undefined && channel !== null;
     const ch = this.normalizeChannel(channel);
-    const probeCfg = {
-      probe: options?.probe ?? true,
-      probeSiren: options?.probeSiren ?? true,
-      probeFloodlight: options?.probeFloodlight ?? true,
-    };
 
-    const infoPromise: Promise<Partial<ReolinkDeviceInfo> | undefined> =
-      channelProvided
-        ? this.getInfo(ch, { tags: ["type"] })
-        : Promise.resolve(undefined);
+    // Check cache first
+    const cached = this.deviceCapabilitiesCache.get(ch);
+    if (
+      cached &&
+      Date.now() - cached.cachedAtMs <
+        ReolinkBaichuanApi.CAPABILITIES_CACHE_TTL_MS
+    ) {
+      return cached.result;
+    }
 
-    const [abilitiesResult, supportResult, infoResult] =
-      await Promise.allSettled([
-        this.getAbilityInfo() as Promise<DeviceAbilities>,
-        this.getSupportInfo(),
-        infoPromise,
-      ] as const);
+    // Fetch SupportInfo and AbilityInfo in parallel
+    const [supportResult, abilitiesResult] = await Promise.allSettled([
+      this.getSupportInfo({ timeoutMs: 5000 }),
+      this.getAbilityInfo(),
+    ]);
 
-    const abilitiesRaw =
+    const support =
+      supportResult.status === "fulfilled" ? supportResult.value : undefined;
+    const abilities =
       abilitiesResult.status === "fulfilled"
         ? abilitiesResult.value
         : undefined;
-    const supportRaw =
-      supportResult.status === "fulfilled" ? supportResult.value : undefined;
-    const model =
-      infoResult.status === "fulfilled" ? infoResult.value?.type : undefined;
 
-    // If a channel is explicitly requested, filter returned metadata to avoid confusing callers.
-    // Capabilities are always computed for `ch` (0-based).
-    const abilities: DeviceAbilities | undefined = abilitiesRaw
-      ? channelProvided
-        ? ({
-            ...(typeof abilitiesRaw.Host === "object"
-              ? { Host: abilitiesRaw.Host }
-              : {}),
-            ...(typeof abilitiesRaw[ch] === "object"
-              ? { [ch]: abilitiesRaw[ch] }
-              : {}),
-          } as DeviceAbilities)
-        : abilitiesRaw
-      : undefined;
+    // Find the best SupportItem for this channel
+    const supportItem = this.pickBestSupportItem(support, ch);
 
-    const support: SupportInfo | undefined = supportRaw
-      ? channelProvided
-        ? ({
-            ...supportRaw,
-            items: (supportRaw.items ?? []).filter((i) => i.chnID === ch),
-          } satisfies SupportInfo)
-        : supportRaw
-      : undefined;
+    // Parse capabilities from SupportInfo (single source of truth)
+    const capabilities = this.parseCapabilitiesFromSupport(
+      ch,
+      supportItem,
+      support,
+      abilities,
+    );
 
-    const computeArgs: {
-      channel: number;
-      model?: string;
-      abilities?: DeviceAbilities;
-      support?: SupportInfo;
-    } = { channel: ch };
-    if (typeof model === "string" && model) computeArgs.model = model;
-    if (abilities) computeArgs.abilities = abilities;
-    if (support) computeArgs.support = support;
-    const capabilities = computeDeviceCapabilities(computeArgs);
+    // Floodlight detection:
+    // - If lightType >= 2: hasFloodlight = true (from parseCapabilitiesFromSupport)
+    // - If ledCtrl > 0: hasFloodlight = true (NVR cameras report LED capabilities via ledCtrl bitmask)
+    // - If lightType is undefined on standalone camera: probe cmd 289
+    // - If lightType is 0 or 1 on standalone camera: hasFloodlight = false
+    const item = supportItem as Record<string, unknown> | undefined;
+    const lightType = item?.lightType as number | undefined;
+    const ledCtrl = item?.ledCtrl as number | undefined;
+    const ptzType = item?.ptzType as number | undefined;
+    const supportVolume = item?.supportVolume as number | undefined;
+    const supportPirSch = item?.supportPirSch as number | undefined;
 
-    const flat = flattenAbilitiesForChannel(abilities, ch);
+    // Track if device is NVR for debug info
+    const isNvr = await this.isNvrDevice();
+
+    // For NVR: use ledCtrl > 0 as indicator (reliable for battery cameras like Argus)
+    // For standalone: lightType >= 2 or probe if undefined
+    if (isNvr) {
+      // On NVR, ledCtrl indicates LED control capabilities for the connected camera
+      capabilities.hasFloodlight = (ledCtrl ?? 0) > 0;
+    } else if (lightType === undefined) {
+      // Standalone camera with unknown lightType: probe cmd 289
+      const probed = await this.probeFloodlightSupportByCmd289(ch, {
+        timeoutMs: 2500,
+      });
+      capabilities.hasFloodlight = probed;
+    }
+    // else: lightType is defined, parseCapabilitiesFromSupport already set hasFloodlight
+
+    // Build features from SupportInfo
+    const features = this.parseFeaturesFromSupport(support);
+
+    // Get AI detection types (cmd 299)
+    const objects = await this.getAiDetectTypes(ch, { timeoutMs: 1500 });
+
+    // Probe autotracking support via AiCfg (cmd 299)
+    // smartTrackMode > 0 indicates the device truly supports autotracking
+    // Note: autoPt in SupportInfo can be a false positive (e.g., NVR channels report autoPt=1
+    // but aiTrack.ver=0 in CGI abilities and smartTrackMode=0 in AiCfg)
+    const autotrackingProbed = await this.probeAutotrackingSupport(ch, {
+      timeoutMs: 1500,
+    });
+    capabilities.hasAutotracking = autotrackingProbed;
+
+    // Get PTZ presets if supported
+    let presets: PtzPreset[] | undefined;
+    if (capabilities.hasPresets) {
+      try {
+        presets = await this.getPtzPresets(ch);
+        // Update hasPresets based on actual results
+        capabilities.hasPresets = presets.length > 0;
+      } catch {
+        capabilities.hasPresets = false;
+      }
+    }
+
+    // Build debug info with all entities used for capability detection
+    const debug: DeviceCapabilitiesDebugInfo = {
+      channel: ch,
+      channelId1Based: ch + 1,
+      transport: this.client.getTransport?.() ?? "tcp",
+      encryptionKind: this.client.enc?.kind ?? "none",
+      loggedIn: this.client.loggedIn,
+      subscribed: this.client.subscribed,
+      abilitiesAvailable: Boolean(abilities),
+      supportAvailable: Boolean(support),
+      isNvr,
+      ...(lightType !== undefined && { lightType }),
+      ...(ledCtrl !== undefined && { ledCtrl }),
+      ...(ptzType !== undefined && { ptzType }),
+      ...(supportVolume !== undefined && { supportVolume }),
+      ...(supportPirSch !== undefined && { supportPirSch }),
+      ...(supportItem?.chnID !== undefined && {
+        supportItemChnID: supportItem.chnID,
+      }),
+      ...(abilities && {
+        abilityMergedKeyCount: Object.keys(abilities).length,
+      }),
+      ...(support?.items && { supportItemCount: support.items.length }),
+    };
+
+    const result: DeviceCapabilitiesResult = {
+      capabilities,
+      debug,
+      ...(abilities && { abilities }),
+      ...(support && { support }),
+      ...(presets && { presets }),
+      ...(objects && { objects }),
+      ...(features && { features }),
+    };
+
+    // Cache the result
+    this.deviceCapabilitiesCache.set(ch, {
+      result,
+      cachedAtMs: Date.now(),
+    });
+
+    return result;
+  }
+
+  /**
+   * Clear the device capabilities cache for a specific channel or all channels.
+   */
+  clearCapabilitiesCache(channel?: number): void {
+    if (channel !== undefined) {
+      this.deviceCapabilitiesCache.delete(channel);
+    } else {
+      this.deviceCapabilitiesCache.clear();
+    }
+  }
+
+  /**
+   * Pick the best SupportItem for a channel.
+   * Prefers items without a name (capability items) over named items (googleHome, amazonAlexa).
+   */
+  private pickBestSupportItem(
+    support: SupportInfo | undefined,
+    channel: number,
+  ): SupportItem | undefined {
+    if (!support?.items?.length) return undefined;
+
+    const candidates = support.items.filter((i) => i.chnID === channel);
+    if (!candidates.length) return undefined;
+
+    // Score items: prefer those without name and with more capability fields
+    const score = (item: SupportItem): number => {
+      const anyItem = item as Record<string, unknown>;
+      let result = 0;
+      // Prefer items without name (capability items vs named features)
+      if (anyItem.name == null) result += 100;
+      // Prefer items with more capability fields
+      const capabilityKeys = [
+        "ptzType",
+        "ptzControl",
+        "ptzPreset",
+        "ledCtrl",
+        "lightType",
+        "battery",
+        "audioVersion",
+        "motion",
+        "encCtrl",
+        "newIspCfg",
+        "remoteAbility",
+        "aitype",
+        "videoClip",
+        "snap",
+      ];
+      for (const k of capabilityKeys) {
+        if (anyItem[k] !== undefined) result += 3;
+      }
+      return result;
+    };
+
+    return candidates.sort((a, b) => score(b) - score(a))[0];
+  }
+
+  /**
+   * Parse device capabilities from SupportInfo.
+   * Uses SupportInfo as the single source of truth with AbilityInfo as fallback.
+   */
+  private parseCapabilitiesFromSupport(
+    channel: number,
+    supportItem: SupportItem | undefined,
+    support: SupportInfo | undefined,
+    abilities: DeviceAbilities | undefined,
+  ): import("./types").DeviceCapabilities {
+    const truthy = (v: unknown): boolean => {
+      if (typeof v === "number") return v > 0;
+      if (typeof v === "string") {
+        const n = Number(v);
+        return Number.isFinite(n) ? n > 0 : v.length > 0 && v !== "0";
+      }
+      return Boolean(v);
+    };
+
+    const item = supportItem as Record<string, unknown> | undefined;
+    const ptzMode = support?.ptzMode?.toLowerCase();
+
+    // PTZ: from ptzType/ptzControl in SupportItem or ptzMode from SupportInfo
+    const ptzType = item ? truthy(item.ptzType) : false;
+    const ptzControl = item ? truthy(item.ptzControl) : false;
+    const hasPtzFromItem = ptzType || ptzControl;
+    const hasPtzFromMode = ptzMode
+      ? ptzMode !== "none" && ptzMode !== "0"
+      : false;
+
+    // PTZ sub-capabilities from ptzMode
+    const hasPanTilt = ptzMode
+      ? ptzMode.includes("pt") || ptzMode === "ptz"
+      : hasPtzFromItem;
+    const hasZoom = ptzMode ? ptzMode.includes("z") : hasPtzFromItem;
+
+    // Presets: from ptzPreset in SupportItem
+    const hasPresets = item ? truthy(item.ptzPreset) : false;
+
+    // Battery: from battery in SupportItem
+    const hasBattery = item ? truthy(item.battery) : false;
+
+    // Siren: from audioVersion or audioPlay ability
+    // audioVersion > 0 indicates audio alarm support
+    const hasSiren = item ? truthy(item.audioVersion) : false;
+
+    // Floodlight: ONLY from lightType >= 2
+    // lightType: 0 = no light, 1 = IR only, 2+ = controllable floodlight
+    const lightType = item?.lightType;
+    const hasFloodlight =
+      typeof lightType === "number" ? lightType >= 2 : false;
+
+    // PIR: from rfCfg, newRfCfg, or battery presence (battery cams often have PIR)
+    const hasPir = item
+      ? truthy(item.rfCfg) || truthy(item.newRfCfg) || truthy(item.rfVersion)
+      : false;
+
+    // Doorbell: from doorbellVersion in SupportItem
+    const isDoorbell = item ? truthy(item.doorbellVersion) : false;
+
+    // Intercom: from audioTalk in SupportInfo or ipcAudioTalk in SupportItem
+    const hasIntercom =
+      truthy(support?.audioTalk) || (item ? truthy(item.ipcAudioTalk) : false);
+
+    return {
+      channel,
+      ...(ptzMode && { ptzMode }),
+      hasPan: hasPanTilt,
+      hasTilt: hasPanTilt,
+      hasZoom,
+      hasPresets,
+      hasPtz: hasPtzFromItem || hasPtzFromMode || hasPanTilt || hasZoom,
+      hasBattery,
+      hasIntercom,
+      hasSiren,
+      hasFloodlight,
+      hasPir,
+      isDoorbell,
+      // Autotracking: explicit flags only (autoPt or smartAI)
+      // Note: the heuristic (ptzControl && aitype) was too aggressive and caused false positives
+      // on cameras that have PTZ and AI detection but NOT autotracking capability.
+      hasAutotracking: item
+        ? truthy(item.autoPt) || truthy(item.smartAI)
+        : false,
+    };
+  }
+
+  /**
+   * Parse support features from SupportInfo.
+   */
+  private parseFeaturesFromSupport(
+    support: SupportInfo | undefined,
+  ): DeviceSupportFlags | undefined {
+    if (!support) return undefined;
 
     const truthy = (v: unknown): boolean => {
       if (typeof v === "number") return v > 0;
       if (typeof v === "string") {
         const n = Number(v);
-        if (Number.isFinite(n)) return n > 0;
-        return v.length > 0 && v !== "0";
+        return Number.isFinite(n) ? n > 0 : v.length > 0 && v !== "0";
       }
       return Boolean(v);
     };
 
-    const features: DeviceSupportFlags | undefined = support
-      ? {
-          rtsp: truthy(support.rtsp),
-          onvif: truthy(support.onvif),
-          wifi: truthy(support.wifi),
-          record: truthy(support.record),
-          ftp: truthy(support.ftp),
-          email: truthy(support.email),
-          pushAlarm: truthy(support.pushAlarm),
-          audioTalk: truthy(support.audioTalk),
-        }
-      : undefined;
-
-    // Best-effort siren probe.
-    // Some devices support audio alarm but do not advertise it via AbilityInfo/Support.
-    // We try a harmless request first, then fall back to sending "off".
-    if (probeCfg.probe && probeCfg.probeSiren && !capabilities.hasSiren) {
-      const tryGet = async (): Promise<boolean> => {
-        try {
-          await this.sendXml({
-            cmdId: BC_CMD_ID_GET_AUDIO_ALARM,
-            channel: ch,
-            timeoutMs: 1000,
-          });
-          return true;
-        } catch {
-          return false;
-        }
-      };
-
-      const tryOff = async (): Promise<boolean> => {
-        try {
-          const channelId = ch + 1;
-          const payloadXml = buildSirenManualXml(channelId, 0);
-          await this.sendXml({
-            cmdId: BC_CMD_ID_AUDIO_ALARM_PLAY,
-            channel: ch,
-            payloadXml,
-            timeoutMs: 1000,
-          });
-          return true;
-        } catch {
-          return false;
-        }
-      };
-
-      const ok = (await tryGet()) || (await tryOff());
-      if (ok) {
-        capabilities.hasSiren = true;
-      }
-    }
-
-    // Best-effort floodlight probe.
-    // Many firmwares expose only `ledState_rw` (status LED) in AbilityInfo, even when a real floodlight
-    // exists and is controllable via Baichuan. The most reliable signal is whether cmd 289 works.
-    // NOTE: Some firmwares/NVRs report `lightType=0` even when cmd289 returns Floodlight* payloads,
-    // so we should not treat `lightType=0` as authoritative.
-    if (probeCfg.probe && probeCfg.probeFloodlight && channelProvided) {
-      const channelSupportItems = (support?.items ?? []).filter(
-        (i) => i.chnID === ch || i.chnID === ch + 1,
-      );
-
-      const parseLightType = (item: SupportItem): number | undefined => {
-        const v = item["lightType"];
-        if (typeof v === "number") return v;
-        if (typeof v === "string") {
-          const n = Number(v);
-          return Number.isFinite(n) ? n : undefined;
-        }
-        return undefined;
-      };
-
-      const lightTypes = channelSupportItems
-        .map((i) => parseLightType(i))
-        .filter((v): v is number => Number.isFinite(v));
-
-      // If firmware explicitly says there is a light, trust that.
-      if (lightTypes.some((v) => v > 0)) {
-        capabilities.hasFloodlight = true;
-      }
-
-      // Always probe cmd 289 (even if lightType==0/unknown), as some devices/NVRs misreport it.
-      // This is additive: once true, keep it true.
-      const probed = await this.probeFloodlightSupportByCmd289(ch, {
-        timeoutMs: 2500,
-      });
-      capabilities.hasFloodlight = capabilities.hasFloodlight || probed;
-    }
-
-    // Object-detection capabilities.
-    // Always read cmd 299 (AiCfg) and use <detectType> as the single source of truth.
-    // This avoids inference/probing variability across firmwares.
-    const objects = await this.getAiDetectTypes(ch, { timeoutMs: 1500 });
-
-    let presets: PtzPreset[] | undefined;
-    // PTZ preset list (cmd 190) can return responseCode=400 with empty body on non-PTZ cameras.
-    // AbilityInfo sometimes leaks legacy/host PTZ keys and can cause false positives.
-    // If SupportInfo is available, require an explicit per-channel `ptzPreset` signal before probing.
-    const pickBestSupportItemForChannel = (
-      s: SupportInfo,
-      chn: number,
-    ): SupportItem | undefined => {
-      const items = Array.isArray(s.items) ? s.items : [];
-      const candidates = items.filter((i) => i.chnID === chn);
-      if (!candidates.length) return undefined;
-
-      const score = (item: SupportItem): number => {
-        const anyItem = item as any;
-        let result = 0;
-        if (anyItem.name == null) result += 2;
-        const capabilityKeys = [
-          "ptzType",
-          "ptzControl",
-          "ptzPreset",
-          "ledCtrl",
-          "lightType",
-          "battery",
-          "audioVersion",
-          "motion",
-          "encCtrl",
-          "newIspCfg",
-          "remoteAbility",
-        ];
-        for (const k of capabilityKeys) {
-          if (anyItem[k] !== undefined) result += 3;
-        }
-        result += Math.min(10, Math.max(0, Object.keys(anyItem).length - 1));
-        return result;
-      };
-
-      return candidates.slice().sort((a, b) => score(b) - score(a))[0];
+    return {
+      rtsp: truthy(support.rtsp),
+      onvif: truthy(support.onvif),
+      wifi: truthy(support.wifi),
+      record: truthy(support.record),
+      ftp: truthy(support.ftp),
+      email: truthy(support.email),
+      pushAlarm: truthy(support.pushAlarm),
+      audioTalk: truthy(support.audioTalk),
     };
-
-    const supportItemForPresets = support
-      ? pickBestSupportItemForChannel(support, ch)
-      : undefined;
-    const supportSaysPresets = supportItemForPresets
-      ? truthy((supportItemForPresets as any).ptzPreset)
-      : false;
-    const shouldProbePresets =
-      capabilities.hasPresets && (!support || supportSaysPresets);
-
-    if (!shouldProbePresets && capabilities.hasPresets && support) {
-      // If SupportInfo is present and doesn't explicitly advertise presets, treat it as not supported.
-      capabilities.hasPresets = false;
-    }
-
-    if (shouldProbePresets) {
-      const presetsResult = await this.getPtzPresets(ch);
-      presets = presetsResult;
-      capabilities.hasPresets = presets.length > 0;
-    }
-
-    // Dual-lens capability merge (simple): if the device is multifocal, OR capabilities across all lenses/channels.
-    // This is especially important behind NVR/Hub where wide+tele can be exposed on the same channel.
-    const mergeDualLens = options?.mergeDualLensOnSameChannel ?? true;
-    if (mergeDualLens && channelProvided) {
-      try {
-        // Best-effort NVR/Hub hint: on NVR channels are typically >= 2.
-        const dual = await this.getDualLensChannelInfo(ch, { onNvr: ch >= 2 });
-        if (
-          dual.isDualLens &&
-          Array.isArray(dual.channels) &&
-          dual.channels.length > 0
-        ) {
-          const anyPan = dual.channels.some((c) => c.hasPan);
-          const anyTilt = dual.channels.some((c) => c.hasTilt);
-          const anyZoom = dual.channels.some((c) => c.hasZoom);
-          const anyPresets = dual.channels.some((c) => c.hasPresets);
-          const anyIntercom = dual.channels.some((c) => c.hasIntercom);
-
-          capabilities.hasPan = capabilities.hasPan || anyPan;
-          capabilities.hasTilt = capabilities.hasTilt || anyTilt;
-          capabilities.hasZoom = capabilities.hasZoom || anyZoom;
-          capabilities.hasPresets = capabilities.hasPresets || anyPresets;
-          capabilities.hasIntercom = capabilities.hasIntercom || anyIntercom;
-
-          // Keep hasPtz coherent with merged PTZ sub-capabilities.
-          capabilities.hasPtz =
-            capabilities.hasPtz ||
-            capabilities.hasPan ||
-            capabilities.hasTilt ||
-            capabilities.hasZoom ||
-            capabilities.hasPresets;
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    const debug: import("./types").DeviceCapabilitiesDebugInfo = {
-      channel: ch,
-      channelId1Based: ch + 1,
-      transport: this.client.getTransport(),
-      encryptionKind: this.client.enc.kind,
-      loggedIn: this.client.loggedIn,
-      subscribed: this.client.subscribed,
-      abilitiesAvailable: Boolean(abilities),
-      supportAvailable: Boolean(support),
-    };
-
-    if (flat) debug.abilityMergedKeyCount = Object.keys(flat).length;
-    if (support?.items) debug.supportItemCount = support.items.length;
-
-    const result: DeviceCapabilitiesResult = { capabilities, debug };
-    if (abilities) result.abilities = abilities;
-    if (support) result.support = support;
-    if (presets) result.presets = presets;
-    if (objects) result.objects = objects;
-    if (features) result.features = features;
-    return result;
   }
 
   /**
@@ -8910,9 +9029,7 @@ export class ReolinkBaichuanApi {
     }
 
     try {
-      const capabilities = await this.getDeviceCapabilities(channel, {
-        mergeDualLensOnSameChannel: false,
-      });
+      const capabilities = await this.getDeviceCapabilities(channel);
       channelNum = capabilities.support?.channelNum;
       supportInfo = capabilities.support;
     } catch {
@@ -9066,9 +9183,7 @@ export class ReolinkBaichuanApi {
     for (const ch of streamChannels) {
       try {
         // Get capabilities for this channel
-        const chCapabilities = await this.getDeviceCapabilities(ch, {
-          mergeDualLensOnSameChannel: false,
-        });
+        const chCapabilities = await this.getDeviceCapabilities(ch);
         const caps = chCapabilities.capabilities;
         const chSupport = chCapabilities.support;
         const chFeatures = chCapabilities.features;
@@ -9099,8 +9214,7 @@ export class ReolinkBaichuanApi {
         } else {
           // Try to verify if RTSP is available
           try {
-            // RTSP is generally available if the device supports streaming
-            // Based on reolink_aio, RTSP is available if support.rtsp > 0
+            // RTSP is available if support.rtsp > 0
             const rtspVersion = chSupport?.rtsp;
             if (typeof rtspVersion === "number" && rtspVersion > 0) {
               availableStreams.rtsp = true;
@@ -10777,23 +10891,23 @@ export class ReolinkBaichuanApi {
   async getFtpTask(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<XmlJsonValue> {
+  ): Promise<FtpTaskConfig> {
     const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_FTP_TASK,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
-    return parseXmlFragmentToJson(xml);
+    return parseXmlFragmentToJson<FtpTaskConfig>(xml);
   }
 
   async getHddInfoList(options?: {
     timeoutMs?: number;
-  }): Promise<XmlJsonValue> {
+  }): Promise<HddInfoListConfig> {
     const xml = await this.sendXml({
       cmdId: BC_CMD_ID_GET_HDD_INFO_LIST,
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
-    return parseXmlFragmentToJson(xml);
+    return parseXmlFragmentToJson<HddInfoListConfig>(xml);
   }
 
   async getDayRecords(
@@ -10811,73 +10925,88 @@ export class ReolinkBaichuanApi {
   async getEmailTask(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<XmlJsonValue> {
+  ): Promise<EmailTaskConfig> {
     const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_EMAIL_TASK,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
-    return parseXmlFragmentToJson(xml);
+    return parseXmlFragmentToJson<EmailTaskConfig>(xml);
   }
 
-  async getAudioTask(
+  /**
+   * Get siren-on-motion state via AudioTask (cmdId=232).
+   *
+   * This is the command the Reolink app uses to get motion alarm/siren enable state.
+   * Returns AudioTask with enable=1 (siren on motion enabled) or enable=0 (disabled).
+   *
+   * Note: This is different from getMotionAlarm (cmdId=46) which controls motion detection recording.
+   * This controls whether the siren/notification sounds when motion is detected.
+   *
+   * @example
+   * ```ts
+   * const result = await api.getSirenOnMotion(0);
+   * // Returns: AudioTask with enable, typeScheduleList
+   * ```
+   */
+  async getSirenOnMotion(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<XmlJsonValue> {
+  ): Promise<AudioTaskConfig> {
     const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_AUDIO_TASK,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
-    return parseXmlFragmentToJson(xml);
+    return parseXmlFragmentToJson<AudioTaskConfig>(xml);
   }
 
   async getAudioCfg(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<XmlJsonValue> {
+  ): Promise<AudioCfgConfig> {
     const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_AUDIO_CFG,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
-    return parseXmlFragmentToJson(xml);
+    return parseXmlFragmentToJson<AudioCfgConfig>(xml);
   }
 
   async getDayNightThreshold(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<XmlJsonValue> {
+  ): Promise<DayNightThresholdConfig> {
     const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_DAY_NIGHT_THRESHOLD,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
-    return parseXmlFragmentToJson(xml);
+    return parseXmlFragmentToJson<DayNightThresholdConfig>(xml);
   }
 
   async getTimelapseCfg(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<XmlJsonValue> {
+  ): Promise<TimelapseCfgConfig> {
     const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_TIMELAPSE_CFG,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
-    return parseXmlFragmentToJson(xml);
+    return parseXmlFragmentToJson<TimelapseCfgConfig>(xml);
   }
 
   async getAiDenoise(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<XmlJsonValue> {
+  ): Promise<AiDenoiseConfig> {
     const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_AI_DENOISE,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
-    return parseXmlFragmentToJson(xml);
+    return parseXmlFragmentToJson<AiDenoiseConfig>(xml);
   }
 
   async getKitApCfg(options?: { timeoutMs?: number }): Promise<XmlJsonValue> {
@@ -10891,23 +11020,23 @@ export class ReolinkBaichuanApi {
   async getRecEncCfg(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<XmlJsonValue> {
+  ): Promise<RecEncConfig> {
     const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_REC_ENC_CFG,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
-    return parseXmlFragmentToJson(xml);
+    return parseXmlFragmentToJson<RecEncConfig>(xml);
   }
 
   async getAccessUserList(options?: {
     timeoutMs?: number;
-  }): Promise<XmlJsonValue> {
+  }): Promise<AccessUserListConfig> {
     const xml = await this.sendXml({
       cmdId: BC_CMD_ID_GET_ACCESS_USER_LIST,
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
-    return parseXmlFragmentToJson(xml);
+    return parseXmlFragmentToJson<AccessUserListConfig>(xml);
   }
 
   /**
@@ -10916,12 +11045,12 @@ export class ReolinkBaichuanApi {
    */
   async getOnlineUserList(options?: {
     timeoutMs?: number;
-  }): Promise<XmlJsonValue> {
+  }): Promise<OnlineUserListConfig> {
     const xml = await this.sendXml({
       cmdId: BC_CMD_ID_GET_ONLINE_USER_LIST,
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
-    return parseXmlFragmentToJson(xml);
+    return parseXmlFragmentToJson<OnlineUserListConfig>(xml);
   }
 
   // Placeholder cmdIds seen in PCAPs but without XML samples yet.
@@ -10950,13 +11079,252 @@ export class ReolinkBaichuanApi {
     return parseXmlFragmentToJson(xml);
   }
 
-  async getCmd231(
+  /**
+   * Get video input settings and advanced configuration.
+   *
+   * @returns VideoInput + InputAdvanceCfg - brightness, contrast, exposure, etc.
+   * @example
+   * ```ts
+   * const result = await api.getVideoInput(0);
+   * // Returns: VideoInput with bright, contrast, etc.
+   * ```
+   */
+  async getVideoInput(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<VideoInputConfig> {
+    const xml = await this.sendPcapDerivedSettingsGetXml({
+      cmdId: BC_CMD_ID_GET_VIDEO_INPUT,
+      ...(channel != null ? { channel } : {}),
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+    return parseXmlFragmentToJson<VideoInputConfig>(xml);
+  }
+
+  /**
+   * Get system general settings (time, name, language).
+   *
+   * @returns SystemGeneral + Norm - timezone, deviceName, language, etc.
+   * @example
+   * ```ts
+   * const result = await api.getSystemGeneral();
+   * // Returns: SystemGeneral with timeZone, deviceName, etc.
+   * ```
+   */
+  async getSystemGeneral(options?: {
+    timeoutMs?: number;
+  }): Promise<SystemGeneralConfig> {
+    const xml = await this.sendPcapDerivedSettingsGetXml({
+      cmdId: BC_CMD_ID_GET_SYSTEM_GENERAL,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+    return parseXmlFragmentToJson<SystemGeneralConfig>(xml);
+  }
+
+  /**
+   * Get device support/capability flags.
+   *
+   * @returns Support - ptzMode, channelNum, wifi flags, rtsp, rtmp, etc.
+   * @example
+   * ```ts
+   * const result = await api.getSupport();
+   * // Returns: Support with ptzMode, channelNum, wifi, rtsp, etc.
+   * ```
+   */
+  async getSupport(options?: { timeoutMs?: number }): Promise<SupportConfig> {
+    const xml = await this.sendPcapDerivedSettingsGetXml({
+      cmdId: BC_CMD_ID_GET_SUPPORT,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+    return parseXmlFragmentToJson<SupportConfig>(xml);
+  }
+
+  /**
+   * Get AI configuration (smart tracking, detection types).
+   *
+   * @returns AiCfg - smartTrack, detectType, trackPriorities, etc.
+   * @example
+   * ```ts
+   * const result = await api.getAiCfg(0);
+   * // Returns: AiCfg with smartTrack, detectType, etc.
+   * ```
+   */
+  async getAiCfg(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<AiConfig> {
+    const xml = await this.sendPcapDerivedSettingsGetXml({
+      cmdId: BC_CMD_ID_GET_AI_CFG,
+      ...(channel != null ? { channel } : {}),
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+    return parseXmlFragmentToJson<AiConfig>(xml);
+  }
+
+  /**
+   * Get autotracking (smart track) state.
+   *
+   * Uses cmdId=299 (AiCfg) to retrieve the autotracking configuration.
+   * The smartTrack field (0=off, 1=on) controls whether the camera automatically
+   * pans/tilts to follow detected objects.
+   *
+   * @param channel - Optional channel ID (default: 0)
+   * @returns Object with enabled (boolean) and raw AiCfg data
+   * @example
+   * ```ts
+   * const result = await api.getAutotracking(0);
+   * console.log("Autotracking enabled:", result.enabled);
+   * console.log("Tracking mode:", result.smartTrackMode);
+   * ```
+   */
+  async getAutotracking(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<{
+    enabled: boolean;
+    smartTrack: number;
+    smartTrackMode?: number | undefined;
+    smartTrackType?: string | undefined;
+    detectType?: string | undefined;
+    raw: AiConfig;
+  }> {
+    const aiCfg = await this.getAiCfg(channel, options);
+    const cfg = (aiCfg as any)?.body?.AiCfg ?? (aiCfg as any)?.AiCfg ?? aiCfg;
+    const smartTrack = Number(cfg?.smartTrack ?? 0);
+    return {
+      enabled: smartTrack === 1,
+      smartTrack,
+      smartTrackMode:
+        cfg?.smartTrackMode != null ? Number(cfg.smartTrackMode) : undefined,
+      smartTrackType: cfg?.smartTrackType ?? undefined,
+      detectType: cfg?.detectType ?? undefined,
+      raw: aiCfg,
+    };
+  }
+
+  /**
+   * Set autotracking (smart track) state via AiCfg (cmdId=300).
+   *
+   * This controls the auto pan-tilt tracking feature on PTZ cameras.
+   * When enabled, the camera will automatically track detected objects (people, pets, vehicles).
+   *
+   * @param enabled - Whether to enable (true/1) or disable (false/0) autotracking
+   * @param channel - Optional channel ID (default: 0)
+   * @example
+   * ```ts
+   * // Enable autotracking
+   * await api.setAutotracking(true, 0);
+   * // Disable autotracking
+   * await api.setAutotracking(false, 0);
+   * ```
+   */
+  async setAutotracking(
+    enabled: boolean | 0 | 1,
     channel?: number,
     options?: { timeoutMs?: number },
   ): Promise<XmlJsonValue> {
+    const ch = channel ?? 0;
+    const smartTrack = enabled ? 1 : 0;
+
+    // First get the current AiCfg to preserve other settings
+    const currentCfg = await this.getAiCfg(ch, options);
+    const cfg =
+      (currentCfg as any)?.body?.AiCfg ?? (currentCfg as any)?.AiCfg ?? {};
+
+    // Build the XML payload with the updated smartTrack value
+    const payloadXml = `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<AiCfg version="1.1">
+<channelId>${ch}</channelId>
+<smartTrack>${smartTrack}</smartTrack>
+${cfg.smartTrackMode != null ? `<smartTrackMode>${cfg.smartTrackMode}</smartTrackMode>` : ""}
+${cfg.detectType ? `<detectType>${cfg.detectType}</detectType>` : ""}
+${cfg.smartTrackType ? `<smartTrackType>${cfg.smartTrackType}</smartTrackType>` : ""}
+</AiCfg>
+</body>`;
+
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_SET_AI_CFG,
+      channel: ch,
+      payloadXml,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+    return parseXmlFragmentToJson(xml);
+  }
+
+  /**
+   * Get siren status (for cameras with siren capability).
+   *
+   * @returns SirenStatusList - status of siren alarm
+   */
+  async getSirenStatus(options?: {
+    timeoutMs?: number;
+  }): Promise<SirenStatusConfig> {
     const xml = await this.sendPcapDerivedSettingsGetXml({
-      cmdId: BC_CMD_ID_CMD_231,
-      ...(channel != null ? { channel } : {}),
+      cmdId: BC_CMD_ID_GET_SIREN_STATUS,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+    return parseXmlFragmentToJson<SirenStatusConfig>(xml);
+  }
+
+  /**
+   * Set siren-on-motion state via AudioTask (cmdId=231).
+   *
+   * This is the command the Reolink app uses to toggle siren/alarm on motion on/off.
+   * cmdId=231 sends the AudioTask configuration with enable=0/1.
+   *
+   * Note: This is different from setMotionDetection (cmdId=47) which controls motion detection recording.
+   * This controls whether the siren/notification sounds when motion is detected.
+   *
+   * @param audioTask - The siren-on-motion configuration to set (enable: 0 or 1)
+   * @param channel - Optional channel ID (default: 0)
+   * @example
+   * ```ts
+   * // Disable siren on motion
+   * await api.setSirenOnMotion({ enable: 0 }, 0);
+   * // Enable siren on motion
+   * await api.setSirenOnMotion({ enable: 1 }, 0);
+   * ```
+   */
+  async setSirenOnMotion(
+    audioTask: {
+      enable: 0 | 1;
+      typeScheduleList?: Array<{
+        type: string;
+        valueTable: string;
+      }>;
+    },
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<XmlJsonValue> {
+    const ch = channel ?? 0;
+    const scheduleList = audioTask.typeScheduleList || [
+      { type: "MD", valueTable: "1".repeat(168) },
+      { type: "people", valueTable: "1".repeat(168) },
+      { type: "dog_cat", valueTable: "1".repeat(168) },
+    ];
+    const scheduleItems = scheduleList
+      .map(
+        (item) =>
+          `<item><type>${item.type}</type><valueTable>${item.valueTable}</valueTable></item>`,
+      )
+      .join("");
+
+    const payloadXml = `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<AudioTask version="1.1">
+<channelId>${ch}</channelId>
+<enable>${audioTask.enable}</enable>
+<typeScheduleList>
+${scheduleItems}
+</typeScheduleList>
+</AudioTask>
+</body>`;
+
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_SET_AUDIO_TASK,
+      channel: ch,
+      payloadXml,
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
     return parseXmlFragmentToJson(xml);

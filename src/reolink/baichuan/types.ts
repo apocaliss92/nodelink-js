@@ -456,6 +456,11 @@ export type AiTypesCacheEntry = {
   updatedAtMs: number;
 };
 
+export type DeviceCapabilitiesCacheEntry = {
+  result: DeviceCapabilitiesResult;
+  cachedAtMs: number;
+};
+
 export type NvrChannelsSummaryCacheEntry = {
   channels: number[];
   devices: ReolinkBaichuanDeviceSummary[];
@@ -777,6 +782,8 @@ export interface DeviceCapabilities {
   hasPir: boolean;
   /** True when device reports doorbell support via support.items[].doorbellVersion. */
   isDoorbell: boolean;
+  /** True when device supports autotracking (smartTrack in AiCfg). */
+  hasAutotracking: boolean;
 }
 
 export type DeviceObjectType = string;
@@ -803,6 +810,20 @@ export interface DeviceCapabilitiesDebugInfo {
   supportAvailable: boolean;
   abilityMergedKeyCount?: number;
   supportItemCount?: number;
+  /** Whether the device is detected as NVR/Hub */
+  isNvr?: boolean;
+  /** lightType from SupportItem (0=no light, 1=IR only, >=2=floodlight) */
+  lightType?: number;
+  /** ledCtrl bitmask from SupportItem (>0 indicates LED control capability) */
+  ledCtrl?: number;
+  /** ptzType from SupportItem */
+  ptzType?: number;
+  /** supportVolume from SupportItem (indicates siren support) */
+  supportVolume?: number;
+  /** supportPirSch from SupportItem (indicates PIR support) */
+  supportPirSch?: number;
+  /** Selected SupportItem chnID */
+  supportItemChnID?: number;
 }
 
 export interface DeviceCapabilitiesResult {
@@ -1070,4 +1091,383 @@ export interface GetVideoclipsParams {
   timeoutMs?: number;
   /** Max pagination iterations. Default: 50 */
   maxIterations?: number;
+}
+
+// ============================================================================
+// Typed API Response Interfaces (extracted from XML responses)
+// These represent the actual content without the outer <body> wrapper
+// ============================================================================
+
+/**
+ * AudioTask configuration - controls siren/alarm on motion detection.
+ * Retrieved via cmdId=232 (GET) and set via cmdId=231 (SET).
+ */
+export interface AudioTaskConfig {
+  body?: {
+    AudioTask?: {
+      channelId?: number;
+      /** 0 = disabled, 1 = enabled */
+      enable?: number;
+      typeScheduleList?: {
+        item?: Array<{
+          type?: string;
+          valueTable?: string;
+        }>;
+      };
+    };
+  };
+}
+
+/**
+ * Audio configuration settings (getAudioCfg response).
+ */
+export interface AudioCfgConfig {
+  body?: {
+    AudioCfg?: {
+      channelId?: number;
+      timeout?: number;
+      audioSelect?: number;
+      volume?: number;
+      preAlarm?: number;
+      audioListId?: number;
+      visitorLoudspeaker?: number;
+    };
+  };
+}
+
+/**
+ * Day/Night threshold configuration.
+ */
+export interface DayNightThresholdConfig {
+  body?: {
+    DayNightThreshold?: {
+      channelId?: number;
+      threshold?: string;
+      stat?: string;
+      thresholdval?: {
+        min?: number;
+        max?: number;
+        cur?: number;
+      };
+    };
+  };
+}
+
+/**
+ * AI denoise configuration.
+ */
+export interface AiDenoiseConfig {
+  body?: {
+    AiDenoise?: {
+      channelId?: number;
+      enable?: number;
+      level?: number;
+    };
+  };
+}
+
+/**
+ * Recording encryption configuration.
+ */
+export interface RecEncConfig {
+  body?: {
+    RecEnc?: {
+      enable?: number;
+      pwdValid?: number;
+    };
+  };
+}
+
+/**
+ * AI configuration - includes autotracking (smartTrack) settings.
+ * Retrieved via cmdId=299 (GET) and set via cmdId=300 (SET).
+ */
+export interface AiConfig {
+  body?: {
+    AiCfg?: {
+      channelId?: number;
+      /** 0 = disabled, 1 = enabled - controls autotracking */
+      smartTrack?: number;
+      /** Tracking mode (0=normal, 1=digital, etc.) */
+      smartTrackMode?: number;
+      smartTrackModeAbility?: number;
+      /** Comma-separated detection types (e.g. "people,vehicle,dog_cat") */
+      detectType?: string;
+      /** Comma-separated tracking types */
+      smartTrackType?: string;
+      smartTrackPt?: number;
+      smartTrackObjectStopDelay?: number;
+      smartTrackObjectDisappearDelay?: number;
+      cryDetectLevel?: number;
+      cryDetectAbility?: number;
+      trackPriorities?: {
+        item?: string[];
+      };
+    };
+  };
+}
+
+/**
+ * Floodlight task configuration - controls floodlight on motion.
+ * Retrieved via cmdId=289 (GET) and set via cmdId=290 (SET).
+ */
+export interface FloodlightTaskConfig {
+  body?: {
+    FloodlightTask?: {
+      channelId?: number | undefined;
+      /** 0 = disabled, 1 = enabled - controls floodlight on motion */
+      alarmMode?: number | undefined;
+      enable?: number | undefined;
+      brightness_cur?: number | undefined;
+      duration?: number | undefined;
+      detectType?: string | undefined;
+    };
+  };
+}
+
+/**
+ * White LED state configuration.
+ */
+export interface WhiteLedConfig {
+  body?: {
+    WhiteLed?: {
+      channelId?: number | undefined;
+      /** 0 = off, 1 = on */
+      state?: number | undefined;
+      /** Brightness level */
+      bright?: number | undefined;
+      /** LED mode */
+      mode?: number | undefined;
+      /** Light state (for some camera models) */
+      LightState?: number | undefined;
+    };
+  };
+}
+
+/**
+ * PIR sensor configuration.
+ */
+export interface PirConfig {
+  body?: {
+    PirInfo?: {
+      channelId?: number | undefined;
+      /** 0 = disabled, 1 = enabled */
+      enable?: number | undefined;
+      sensitivity?: number | undefined;
+      scheduleEnable?: number | undefined;
+    };
+  };
+}
+
+// ============================================================================
+// Additional API Response Interfaces
+// ============================================================================
+
+/**
+ * Motion alarm configuration (getMotionAlarm response).
+ * cmdId=46 (GetMdAlarm)
+ */
+export interface MotionAlarmConfig {
+  body?: {
+    MdAlarm?: {
+      channelId?: number | undefined;
+      sensInfoNew?: {
+        enable?: number | undefined;
+        sensitivity?: number | undefined;
+        alarmType?: number | undefined;
+        [key: string]: unknown;
+      };
+      [key: string]: unknown;
+    };
+  };
+}
+
+/**
+ * AI alarm/detection configuration (getAiAlarmRaw response).
+ * cmdId=342 (GetAiAlarm)
+ */
+export interface AiAlarmConfig {
+  body?: {
+    AiAlarm?: {
+      channelId?: number | undefined;
+      chn?: number | undefined;
+      type?: string | undefined;
+      enabled?: number | undefined;
+      sensitivity?: number | undefined;
+      trackType?: string | undefined;
+      [key: string]: unknown;
+    };
+  };
+}
+
+/**
+ * Video input configuration.
+ * cmdId=75 (GetVideoInput)
+ */
+export interface VideoInputConfig {
+  body?: {
+    VideoInput?: {
+      channelId?: number | undefined;
+      bright?: number | undefined;
+      contrast?: number | undefined;
+      saturation?: number | undefined;
+      hue?: number | undefined;
+      irCutSwap?: number | undefined;
+      dayNight?: string | undefined;
+      [key: string]: unknown;
+    };
+    InputAdvanceCfg?: {
+      [key: string]: unknown;
+    };
+  };
+}
+
+/**
+ * System general configuration.
+ * cmdId=77 (GetSystemGeneral)
+ */
+export interface SystemGeneralConfig {
+  body?: {
+    SystemGeneral?: {
+      timeZone?: number | undefined;
+      deviceName?: string | undefined;
+      language?: string | undefined;
+      dstMode?: number | undefined;
+      [key: string]: unknown;
+    };
+    Norm?: {
+      [key: string]: unknown;
+    };
+  };
+}
+
+/**
+ * Device support/capability flags.
+ * cmdId=78 (GetSupport)
+ */
+export interface SupportConfig {
+  body?: {
+    Support?: {
+      ptzMode?: string | undefined;
+      channelNum?: number | undefined;
+      wifi?: number | undefined;
+      rtsp?: number | undefined;
+      rtmp?: number | undefined;
+      onvif?: number | undefined;
+      email?: number | undefined;
+      ftp?: number | undefined;
+      push?: number | undefined;
+      cloudStorage?: number | undefined;
+      ledCtrl?: number | undefined;
+      audioAlarm?: number | undefined;
+      [key: string]: unknown;
+    };
+  };
+}
+
+/**
+ * Siren status information.
+ * cmdId=270 (GetSirenStatus)
+ */
+export interface SirenStatusConfig {
+  body?: {
+    SirenStatusList?: {
+      channelId?: number | undefined;
+      status?: number | undefined;
+      playing?: number | undefined;
+      [key: string]: unknown;
+    };
+  };
+}
+
+/**
+ * FTP task configuration.
+ */
+export interface FtpTaskConfig {
+  body?: {
+    FtpTask?: {
+      channelId?: number | undefined;
+      enable?: number | undefined;
+      [key: string]: unknown;
+    };
+  };
+}
+
+/**
+ * Email task configuration.
+ */
+export interface EmailTaskConfig {
+  body?: {
+    EmailTask?: {
+      channelId?: number | undefined;
+      enable?: number | undefined;
+      [key: string]: unknown;
+    };
+  };
+}
+
+/**
+ * HDD info list response.
+ */
+export interface HddInfoListConfig {
+  body?: {
+    HddInfoList?: {
+      itemNum?: number | undefined;
+      item?: Array<{
+        id?: number | undefined;
+        size?: number | undefined;
+        used?: number | undefined;
+        [key: string]: unknown;
+      }>;
+      [key: string]: unknown;
+    };
+  };
+}
+
+/**
+ * Timelapse configuration.
+ */
+export interface TimelapseCfgConfig {
+  body?: {
+    TimelapseCfg?: {
+      channelId?: number | undefined;
+      enable?: number | undefined;
+      interval?: number | undefined;
+      [key: string]: unknown;
+    };
+  };
+}
+
+/**
+ * Access user list response.
+ */
+export interface AccessUserListConfig {
+  body?: {
+    AccessUserList?: {
+      itemNum?: number | undefined;
+      item?: Array<{
+        userName?: string | undefined;
+        level?: number | undefined;
+        [key: string]: unknown;
+      }>;
+      [key: string]: unknown;
+    };
+  };
+}
+
+/**
+ * Online user list response.
+ */
+export interface OnlineUserListConfig {
+  body?: {
+    OnlineUserList?: {
+      itemNum?: number | undefined;
+      item?: Array<{
+        userName?: string | undefined;
+        ip?: string | undefined;
+        [key: string]: unknown;
+      }>;
+      [key: string]: unknown;
+    };
+  };
 }

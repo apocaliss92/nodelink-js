@@ -1,5 +1,9 @@
 import { Agent } from "undici";
-import { ReolinkCmdRequest, type LoginResponseValue, type ReolinkCmdResponse } from "./types";
+import {
+  ReolinkCmdRequest,
+  type LoginResponseValue,
+  type ReolinkCmdResponse,
+} from "./types";
 
 export type ReolinkHttpClientOptions = {
   host: string;
@@ -72,11 +76,19 @@ export class ReolinkHttpClient {
     return `${scheme}://${this.host}:${port}|${this.username}`;
   }
 
-  private getSharedSession(): { token?: string; tokenExpiresAt?: number; loginInFlight?: Promise<void> } {
+  private getSharedSession(): {
+    token?: string;
+    tokenExpiresAt?: number;
+    loginInFlight?: Promise<void>;
+  } {
     const key = this.sessionKey();
     const existing = ReolinkHttpClient.sessionPool.get(key);
     if (existing) return existing;
-    const created: { token?: string; tokenExpiresAt?: number; loginInFlight?: Promise<void> } = {};
+    const created: {
+      token?: string;
+      tokenExpiresAt?: number;
+      loginInFlight?: Promise<void>;
+    } = {};
     ReolinkHttpClient.sessionPool.set(key, created);
     return created;
   }
@@ -102,7 +114,10 @@ export class ReolinkHttpClient {
     return Date.now() + 10_000 < this.tokenExpiresAt;
   }
 
-  private isSharedTokenValid(shared: { token?: string; tokenExpiresAt?: number }): boolean {
+  private isSharedTokenValid(shared: {
+    token?: string;
+    tokenExpiresAt?: number;
+  }): boolean {
     if (!shared.token || !shared.tokenExpiresAt) return false;
     return Date.now() + 10_000 < shared.tokenExpiresAt;
   }
@@ -121,7 +136,11 @@ export class ReolinkHttpClient {
       },
     ];
 
-    const rsp = await this.sendJson<LoginResponseValue>(body, { cmd: "Login" }, { includeToken: false });
+    const rsp = await this.sendJson<LoginResponseValue>(
+      body,
+      { cmd: "Login" },
+      { includeToken: false },
+    );
     const first = rsp[0];
     if (!first || first.code !== 0 || !first.value?.Token?.name) {
       throw new Error(`Login failed: ${JSON.stringify(rsp)}`);
@@ -184,24 +203,37 @@ export class ReolinkHttpClient {
 
   async call<TValue = unknown, TParam = unknown>(
     cmd: string,
-    opts?: { action?: number; param?: TParam; /** Some commands are host-level and do not require a param */ },
+    opts?: {
+      action?: number;
+      param?: TParam; /** Some commands are host-level and do not require a param */
+    },
   ): Promise<ReolinkCmdResponse<TValue>[]> {
     await this.login();
     const body: ReolinkCmdRequest<TParam>[] = [
       {
         cmd,
         action: opts?.action ?? 0,
-        ...(opts && "param" in opts && opts.param !== undefined ? { param: opts.param } : {}),
+        ...(opts && "param" in opts && opts.param !== undefined
+          ? { param: opts.param }
+          : {}),
       },
     ];
-    return await this.sendJson<TValue>(body, { cmd, token: this.token }, { includeToken: true });
+    return await this.sendJson<TValue>(
+      body,
+      { cmd, token: this.token },
+      { includeToken: true },
+    );
   }
 
-  async callMany<TValue = unknown>(cmds: ReolinkCmdRequest[]): Promise<ReolinkCmdResponse<TValue>[]> {
+  async callMany<TValue = unknown>(
+    cmds: ReolinkCmdRequest[],
+  ): Promise<ReolinkCmdResponse<TValue>[]> {
     await this.login();
-    // Extract cmd from first request for query string (like reolink_aio does)
+    // Extract cmd from first request for query string
     const cmd = cmds[0]?.cmd;
-    const query: Record<string, string | number | undefined> = { token: this.token };
+    const query: Record<string, string | number | undefined> = {
+      token: this.token,
+    };
     if (cmd) query.cmd = cmd;
     return await this.sendJson<TValue>(cmds, query, { includeToken: true });
   }
@@ -221,7 +253,8 @@ export class ReolinkHttpClient {
         headers: { "Content-Type": "application/json" },
         signal: ac.signal,
       };
-      if (this.useHttps && this.httpsAgent) init.dispatcher = this.httpsAgent as any;
+      if (this.useHttps && this.httpsAgent)
+        init.dispatcher = this.httpsAgent as any;
 
       const res = await fetch(url, init as RequestInit);
       const text = await res.text();
@@ -271,7 +304,8 @@ export class ReolinkHttpClient {
         method: "GET",
         signal: ac.signal,
       };
-      if (this.useHttps && this.httpsAgent) init.dispatcher = this.httpsAgent as any;
+      if (this.useHttps && this.httpsAgent)
+        init.dispatcher = this.httpsAgent as any;
 
       const res = await fetch(url, init as RequestInit);
       if (!res.ok) {
@@ -291,7 +325,11 @@ export class ReolinkHttpClient {
    * Uses POST with a dummy JSON body and query params.
    * Returns the raw binary payload (often mp4).
    */
-  async downloadVod(source: string, output?: string, start?: string): Promise<Buffer> {
+  async downloadVod(
+    source: string,
+    output?: string,
+    start?: string,
+  ): Promise<Buffer> {
     await this.login();
     if (!this.token) throw new Error("Missing token after login");
 
@@ -313,7 +351,8 @@ export class ReolinkHttpClient {
         headers: { "Content-Type": "application/json" },
         signal: ac.signal,
       };
-      if (this.useHttps && this.httpsAgent) init.dispatcher = this.httpsAgent as any;
+      if (this.useHttps && this.httpsAgent)
+        init.dispatcher = this.httpsAgent as any;
 
       const res = await fetch(url, init as RequestInit);
       if (!res.ok) {
@@ -327,4 +366,3 @@ export class ReolinkHttpClient {
     }
   }
 }
-

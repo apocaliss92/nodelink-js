@@ -4,7 +4,10 @@ import { spawn } from "node:child_process";
 
 import type { ReolinkBaichuanApi } from "../reolink/baichuan/ReolinkBaichuanApi";
 import type { NativeVideoStreamVariant } from "../reolink/baichuan/types";
-import type { ReolinkCgiApi, DeviceInputData } from "../reolink/cgi/ReolinkCgiApi";
+import type {
+  ReolinkCgiApi,
+  DeviceInputData,
+} from "../reolink/cgi/ReolinkCgiApi";
 import type { ReolinkHttpClientOptions } from "../reolink/http/ReolinkHttpClient";
 import { ReolinkCgiApi as ReolinkCgiApiImpl } from "../reolink/cgi/ReolinkCgiApi";
 import { join } from "node:path";
@@ -13,11 +16,24 @@ import { BaichuanVideoStream } from "../baichuan/stream/BaichuanVideoStream";
 import type { StreamProfile } from "../reolink/baichuan/types";
 import { buildRtspUrl } from "../rtsp/urls";
 import { splitAnnexBToNalPayloads } from "../baichuan/stream/H264Converter";
-import { getH265NalType, splitAnnexBToNalPayloads as splitH265AnnexBToNalPayloads } from "../baichuan/stream/H265Converter";
+import {
+  getH265NalType,
+  splitAnnexBToNalPayloads as splitH265AnnexBToNalPayloads,
+} from "../baichuan/stream/H265Converter";
 import type { Logger } from "./DebugConfig";
-import { BC_CLASS_MODERN_24, BC_CLASS_MODERN_24_ALT, BC_CMD_ID_VIDEO } from "../protocol/constants";
+import {
+  BC_CLASS_MODERN_24,
+  BC_CLASS_MODERN_24_ALT,
+  BC_CMD_ID_VIDEO,
+} from "../protocol/constants";
 import type { BaichuanFrame } from "../protocol/framing";
-import { buildChannelExtensionXml, buildPreviewStopXml, buildPreviewStopXmlV11, buildPreviewXml, buildPreviewXmlV11 } from "../protocol/xml";
+import {
+  buildChannelExtensionXml,
+  buildPreviewStopXml,
+  buildPreviewStopXmlV11,
+  buildPreviewXml,
+  buildPreviewXmlV11,
+} from "../protocol/xml";
 
 export type DiagnosticsStreamKind = "native" | "rtsp" | "rtmp";
 
@@ -34,7 +50,9 @@ function safeStringifyError(error: unknown): string {
   }
 }
 
-async function tryCall<T>(fn: () => Promise<T>): Promise<DiagnosticsCollectorResult<T>> {
+async function tryCall<T>(
+  fn: () => Promise<T>,
+): Promise<DiagnosticsCollectorResult<T>> {
   try {
     return { ok: true, value: await fn() };
   } catch (e) {
@@ -64,7 +82,10 @@ function nowIsoCompact(): string {
   return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
-function nalTypesSummary(videoType: "H264" | "H265", accessUnitAnnexB: Buffer): number[] {
+function nalTypesSummary(
+  videoType: "H264" | "H265",
+  accessUnitAnnexB: Buffer,
+): number[] {
   if (videoType === "H264") {
     const nals = splitAnnexBToNalPayloads(accessUnitAnnexB);
     return nals.map((n) => (n[0] ?? 0) & 0x1f);
@@ -75,7 +96,9 @@ function nalTypesSummary(videoType: "H264" | "H265", accessUnitAnnexB: Buffer): 
     .filter((t: number | null): t is number => typeof t === "number");
 }
 
-function normalizeProfiles(p: Array<string | undefined | null> | undefined): StreamProfile[] {
+function normalizeProfiles(
+  p: Array<string | undefined | null> | undefined,
+): StreamProfile[] {
   const out: StreamProfile[] = [];
   for (const v of p ?? []) {
     if (v === "main" || v === "sub" || v === "ext") {
@@ -100,12 +123,20 @@ export async function collectNativeDiagnostics(params: {
     collectedAt: new Date().toISOString(),
   };
 
-  const [info, ports, streamMetadata, abilities, capabilities, talkAbility, twoWayAudio] = await Promise.all([
+  const [
+    info,
+    ports,
+    streamMetadata,
+    abilities,
+    capabilities,
+    talkAbility,
+    twoWayAudio,
+  ] = await Promise.all([
     tryCall(() => api.getInfo(channel)),
     tryCall(() => api.getPorts()),
     tryCall(() => api.getStreamMetadata(channel)),
     tryCall(() => api.getAbilityInfo()),
-    tryCall(() => api.getDeviceCapabilities(channel, { probe: false })),
+    tryCall(() => api.getDeviceCapabilities(channel)),
     tryCall(() => api.getTalkAbility(channel)),
     tryCall(() => api.getTwoWayAudioConfig(channel)),
   ]);
@@ -123,8 +154,12 @@ export async function collectNativeDiagnostics(params: {
     const v: any = talkAbility.value as any;
     const recommended = {
       duplex: Array.isArray(v.duplexList) ? v.duplexList[0] : undefined,
-      audioStreamMode: Array.isArray(v.audioStreamModeList) ? v.audioStreamModeList[0] : undefined,
-      audioConfig: Array.isArray(v.audioConfigList) ? v.audioConfigList[0] : undefined,
+      audioStreamMode: Array.isArray(v.audioStreamModeList)
+        ? v.audioStreamModeList[0]
+        : undefined,
+      audioConfig: Array.isArray(v.audioConfigList)
+        ? v.audioConfigList[0]
+        : undefined,
     };
     result.intercomRecommended = recommended;
   }
@@ -145,15 +180,16 @@ export async function collectCgiDiagnostics(params: {
     collectedAt: new Date().toISOString(),
   };
 
-  const [info, netPort, ability, enc, chStatus, chnType, aiState] = await Promise.all([
-    tryCall(() => cgi.getInfo(channel)),
-    tryCall(() => cgi.GetNetPort()),
-    tryCall(() => cgi.GetAbility()),
-    tryCall(() => cgi.GetEnc(channel)),
-    tryCall(() => cgi.GetChannelstatus()),
-    tryCall(() => cgi.GetChnTypeInfo(channel)),
-    tryCall(() => cgi.GetAiState(channel)),
-  ]);
+  const [info, netPort, ability, enc, chStatus, chnType, aiState] =
+    await Promise.all([
+      tryCall(() => cgi.getInfo(channel)),
+      tryCall(() => cgi.GetNetPort()),
+      tryCall(() => cgi.GetAbility()),
+      tryCall(() => cgi.GetEnc(channel)),
+      tryCall(() => cgi.GetChannelstatus()),
+      tryCall(() => cgi.GetChnTypeInfo(channel)),
+      tryCall(() => cgi.GetAiState(channel)),
+    ]);
 
   result.info = info;
   result.netPort = netPort;
@@ -179,8 +215,12 @@ export async function createDiagnosticsBundle(params: {
   mkdirp(outDir);
 
   const [native, cgi] = await Promise.all([
-    params.native ? tryCall(() => collectNativeDiagnostics(params.native!)) : Promise.resolve(undefined),
-    params.cgi ? tryCall(() => collectCgiDiagnostics(params.cgi!)) : Promise.resolve(undefined),
+    params.native
+      ? tryCall(() => collectNativeDiagnostics(params.native!))
+      : Promise.resolve(undefined),
+    params.cgi
+      ? tryCall(() => collectCgiDiagnostics(params.cgi!))
+      : Promise.resolve(undefined),
   ]);
 
   const diagnostics = {
@@ -260,7 +300,9 @@ function spawnFfmpeg(args: string[], logPath: string): Promise<FfmpegResult> {
 
     const p = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
     p.on("error", (e) => {
-      logStream.write(`ffmpeg spawn error: ${e instanceof Error ? e.message : String(e)}\n`);
+      logStream.write(
+        `ffmpeg spawn error: ${e instanceof Error ? e.message : String(e)}\n`,
+      );
       logStream.end();
       resolve({ ok: false, error: e instanceof Error ? e.message : String(e) });
     });
@@ -295,7 +337,10 @@ type FfprobeVideoInfo = {
   pixFmt?: string;
 };
 
-function spawnFfprobeJson(args: string[], logPath: string): Promise<{ ok: true; json: any } | { ok: false; error: string }> {
+function spawnFfprobeJson(
+  args: string[],
+  logPath: string,
+): Promise<{ ok: true; json: any } | { ok: false; error: string }> {
   return new Promise((resolve) => {
     mkdirp(path.dirname(logPath));
     const logStream = fs.createWriteStream(logPath, { flags: "a" });
@@ -326,17 +371,31 @@ function spawnFfprobeJson(args: string[], logPath: string): Promise<{ ok: true; 
           const json = JSON.parse(stdout || "{}");
           resolve({ ok: true, json });
         } catch (e) {
-          resolve({ ok: false, error: `ffprobe JSON parse failed: ${e instanceof Error ? e.message : String(e)}` });
+          resolve({
+            ok: false,
+            error: `ffprobe JSON parse failed: ${e instanceof Error ? e.message : String(e)}`,
+          });
         }
         return;
       }
 
-      resolve({ ok: false, error: sanitizeFfmpegError(`ffprobe exited with code ${code}\n${stderr.slice(-2000)}`) });
+      resolve({
+        ok: false,
+        error: sanitizeFfmpegError(
+          `ffprobe exited with code ${code}\n${stderr.slice(-2000)}`,
+        ),
+      });
     });
   });
 }
 
-async function probeVideoInfo(params: { url: string; kind: "rtsp" | "rtmp"; logPath: string }): Promise<{ ok: true; info: FfprobeVideoInfo } | { ok: false; error: string }> {
+async function probeVideoInfo(params: {
+  url: string;
+  kind: "rtsp" | "rtmp";
+  logPath: string;
+}): Promise<
+  { ok: true; info: FfprobeVideoInfo } | { ok: false; error: string }
+> {
   const args = [
     "-v",
     "error",
@@ -356,11 +415,14 @@ async function probeVideoInfo(params: { url: string; kind: "rtsp" | "rtmp"; logP
   const s0 = streams[0] ?? undefined;
   const info: FfprobeVideoInfo = {
     codecName: typeof s0?.codec_name === "string" ? s0.codec_name : undefined,
-    codecLongName: typeof s0?.codec_long_name === "string" ? s0.codec_long_name : undefined,
+    codecLongName:
+      typeof s0?.codec_long_name === "string" ? s0.codec_long_name : undefined,
     width: typeof s0?.width === "number" ? s0.width : undefined,
     height: typeof s0?.height === "number" ? s0.height : undefined,
-    avgFrameRate: typeof s0?.avg_frame_rate === "string" ? s0.avg_frame_rate : undefined,
-    rFrameRate: typeof s0?.r_frame_rate === "string" ? s0.r_frame_rate : undefined,
+    avgFrameRate:
+      typeof s0?.avg_frame_rate === "string" ? s0.avg_frame_rate : undefined,
+    rFrameRate:
+      typeof s0?.r_frame_rate === "string" ? s0.r_frame_rate : undefined,
     pixFmt: typeof s0?.pix_fmt === "string" ? s0.pix_fmt : undefined,
   };
 
@@ -430,7 +492,12 @@ async function testStreamWithFfmpeg(params: {
       const s = d.toString();
       stderr += s;
       // Check for successful connection indicators
-      if (s.includes("Stream #0") || s.includes("Video:") || s.includes("Audio:") || s.includes("Duration:")) {
+      if (
+        s.includes("Stream #0") ||
+        s.includes("Video:") ||
+        s.includes("Audio:") ||
+        s.includes("Duration:")
+      ) {
         hasData = true;
       }
     });
@@ -537,21 +604,33 @@ async function tryJpegFromAnnexB(params: {
   void res;
 }
 
-export async function sampleStreams(opts: StreamSamplingOptions): Promise<void> {
+export async function sampleStreams(
+  opts: StreamSamplingOptions,
+): Promise<void> {
   const channel = opts.channel ?? 0;
   const durationMs = Math.max(250, Math.round(opts.durationSeconds * 1000));
   const snapshotIntervalSeconds = opts.snapshotIntervalSeconds ?? 2;
 
   const logger = opts.logger;
-  const log = (level: "log" | "warn" | "error", msg: string, extra?: unknown) => {
-    const fn = (logger?.[level] ?? logger?.log) as ((...args: any[]) => void) | undefined;
+  const log = (
+    level: "log" | "warn" | "error",
+    msg: string,
+    extra?: unknown,
+  ) => {
+    const fn = (logger?.[level] ?? logger?.log) as
+      | ((...args: any[]) => void)
+      | undefined;
     if (!fn) return;
     if (extra !== undefined) fn.call(logger, msg, extra);
     else fn.call(logger, msg);
   };
 
-  const profiles = normalizeProfiles(opts.selection.profiles) as StreamProfile[];
-  const selectedProfiles: StreamProfile[] = profiles.length ? profiles : ["main", "sub", "ext"];
+  const profiles = normalizeProfiles(
+    opts.selection.profiles,
+  ) as StreamProfile[];
+  const selectedProfiles: StreamProfile[] = profiles.length
+    ? profiles
+    : ["main", "sub", "ext"];
 
   const outDir = opts.outDir;
   mkdirp(outDir);
@@ -580,14 +659,30 @@ export async function sampleStreams(opts: StreamSamplingOptions): Promise<void> 
       const baseDir = path.join(outDir, tag);
       mkdirp(baseDir);
 
-      appendNdjson(eventsPath, { t: Date.now(), type: "stream_begin", kind, profile, channel });
+      appendNdjson(eventsPath, {
+        t: Date.now(),
+        type: "stream_begin",
+        kind,
+        profile,
+        channel,
+      });
       log("log", "[Diagnostics] stream begin", { kind, profile, channel });
 
       if (kind === "native") {
         const api = opts.native?.api;
         if (!api) {
-          appendNdjson(eventsPath, { t: Date.now(), type: "stream_skip", kind, profile, reason: "native api missing" });
-          log("warn", "[Diagnostics] stream skip (native api missing)", { kind, profile, channel });
+          appendNdjson(eventsPath, {
+            t: Date.now(),
+            type: "stream_skip",
+            kind,
+            profile,
+            reason: "native api missing",
+          });
+          log("warn", "[Diagnostics] stream skip (native api missing)", {
+            kind,
+            profile,
+            channel,
+          });
           continue;
         }
 
@@ -608,7 +703,10 @@ export async function sampleStreams(opts: StreamSamplingOptions): Promise<void> 
           if (frame.header.cmdId !== 3) return;
           if (frame.header.streamType !== expectedStreamType) return;
           if (rawFrames >= maxRawFrames) return;
-          const payload: Buffer = Buffer.isBuffer(frame.payload) && frame.payload.length ? frame.payload : frame.body;
+          const payload: Buffer =
+            Buffer.isBuffer(frame.payload) && frame.payload.length
+              ? frame.payload
+              : frame.body;
           if (!Buffer.isBuffer(payload) || payload.length === 0) return;
           if (rawBytes + payload.length > maxRawBytes) return;
 
@@ -638,7 +736,12 @@ export async function sampleStreams(opts: StreamSamplingOptions): Promise<void> 
 
         api.client.on("frame", onFrame);
 
-        const videoStream = new BaichuanVideoStream({ client: api.client as any, api: api as any, channel, profile });
+        const videoStream = new BaichuanVideoStream({
+          client: api.client as any,
+          api: api as any,
+          channel,
+          profile,
+        });
 
         const clipBase = path.join(baseDir, `clip_${nowIsoCompact()}`);
         const clipAnnexBPath = clipBase + ".annexb";
@@ -684,13 +787,25 @@ export async function sampleStreams(opts: StreamSamplingOptions): Promise<void> 
           });
 
           const now = Date.now();
-          if (u.isKeyframe && now - lastSnapshotAtMs >= snapshotIntervalSeconds * 1000) {
+          if (
+            u.isKeyframe &&
+            now - lastSnapshotAtMs >= snapshotIntervalSeconds * 1000
+          ) {
             lastSnapshotAtMs = now;
             const snapId = nowIsoCompact();
-            const snapAnnex = path.join(snapsDir, `snap_${snapId}.${u.videoType === "H265" ? "h265" : "h264"}`);
+            const snapAnnex = path.join(
+              snapsDir,
+              `snap_${snapId}.${u.videoType === "H265" ? "h265" : "h264"}`,
+            );
             try {
               fs.writeFileSync(snapAnnex, u.data);
-              appendNdjson(eventsPath, { t: Date.now(), type: "native_snapshot_saved", kind, profile, path: snapAnnex });
+              appendNdjson(eventsPath, {
+                t: Date.now(),
+                type: "native_snapshot_saved",
+                kind,
+                profile,
+                path: snapAnnex,
+              });
 
               // Optional: try producing a jpeg (best-effort).
               const snapJpeg = path.join(snapsDir, `snap_${snapId}.jpg`);
@@ -714,18 +829,35 @@ export async function sampleStreams(opts: StreamSamplingOptions): Promise<void> 
           } catch {
             // ignore
           }
-          appendNdjson(eventsPath, { t: Date.now(), type: "native_audio", kind, profile, bytes: buf.length });
+          appendNdjson(eventsPath, {
+            t: Date.now(),
+            type: "native_audio",
+            kind,
+            profile,
+            bytes: buf.length,
+          });
         };
 
         videoStream.on("videoAccessUnit" as any, onAU as any);
         videoStream.on("audioFrame" as any, onAudio as any);
         videoStream.on("error", (e: any) => {
-          appendNdjson(eventsPath, { t: Date.now(), type: "native_error", kind, profile, error: safeStringifyError(e) });
+          appendNdjson(eventsPath, {
+            t: Date.now(),
+            type: "native_error",
+            kind,
+            profile,
+            error: safeStringifyError(e),
+          });
         });
 
         try {
           await videoStream.start();
-          appendNdjson(eventsPath, { t: Date.now(), type: "native_started", kind, profile });
+          appendNdjson(eventsPath, {
+            t: Date.now(),
+            type: "native_started",
+            kind,
+            profile,
+          });
 
           startedAtMs = Date.now();
           while (Date.now() - startedAtMs < durationMs) {
@@ -760,13 +892,19 @@ export async function sampleStreams(opts: StreamSamplingOptions): Promise<void> 
             audioFrames,
             videoType: firstVideoType,
             firstKeyframeLatencyMs:
-              firstKeyframeAtMs == null || startedAtMs == null ? null : Math.max(0, firstKeyframeAtMs - startedAtMs),
+              firstKeyframeAtMs == null || startedAtMs == null
+                ? null
+                : Math.max(0, firstKeyframeAtMs - startedAtMs),
             rawFrames,
             rawBytes,
           };
           writeJson(clipInfoPath, clipInfo);
 
-          appendNdjson(eventsPath, { t: Date.now(), type: "native_done", ...clipInfo });
+          appendNdjson(eventsPath, {
+            t: Date.now(),
+            type: "native_done",
+            ...clipInfo,
+          });
           log("log", "[Diagnostics] stream done", clipInfo);
         }
 
@@ -775,8 +913,18 @@ export async function sampleStreams(opts: StreamSamplingOptions): Promise<void> 
 
       if (kind === "rtsp") {
         if (!opts.rtsp) {
-          appendNdjson(eventsPath, { t: Date.now(), type: "stream_skip", kind, profile, reason: "rtsp config missing" });
-          log("warn", "[Diagnostics] stream skip (rtsp config missing)", { kind, profile, channel });
+          appendNdjson(eventsPath, {
+            t: Date.now(),
+            type: "stream_skip",
+            kind,
+            profile,
+            reason: "rtsp config missing",
+          });
+          log("warn", "[Diagnostics] stream skip (rtsp config missing)", {
+            kind,
+            profile,
+            channel,
+          });
           continue;
         }
 
@@ -795,10 +943,22 @@ export async function sampleStreams(opts: StreamSamplingOptions): Promise<void> 
         mkdirp(snapsDir);
         const snapsPattern = path.join(snapsDir, "snap_%05d.jpg");
 
-        appendNdjson(eventsPath, { t: Date.now(), type: "rtsp_url", kind, profile, url });
+        appendNdjson(eventsPath, {
+          t: Date.now(),
+          type: "rtsp_url",
+          kind,
+          profile,
+          url,
+        });
 
         const [recordRes, snapsRes] = await Promise.all([
-          recordRtspOrRtmp({ kind: "rtsp", url, outputMp4: mp4Path, durationSeconds: opts.durationSeconds, logPath }),
+          recordRtspOrRtmp({
+            kind: "rtsp",
+            url,
+            outputMp4: mp4Path,
+            durationSeconds: opts.durationSeconds,
+            logPath,
+          }),
           snapshotsRtspOrRtmp({
             kind: "rtsp",
             url,
@@ -834,8 +994,18 @@ export async function sampleStreams(opts: StreamSamplingOptions): Promise<void> 
       if (kind === "rtmp") {
         const url = opts.rtmp?.urlsByProfile?.[profile];
         if (!url) {
-          appendNdjson(eventsPath, { t: Date.now(), type: "stream_skip", kind, profile, reason: "rtmp url missing" });
-          log("warn", "[Diagnostics] stream skip (rtmp url missing)", { kind, profile, channel });
+          appendNdjson(eventsPath, {
+            t: Date.now(),
+            type: "stream_skip",
+            kind,
+            profile,
+            reason: "rtmp url missing",
+          });
+          log("warn", "[Diagnostics] stream skip (rtmp url missing)", {
+            kind,
+            profile,
+            channel,
+          });
           continue;
         }
 
@@ -845,10 +1015,22 @@ export async function sampleStreams(opts: StreamSamplingOptions): Promise<void> 
         mkdirp(snapsDir);
         const snapsPattern = path.join(snapsDir, "snap_%05d.jpg");
 
-        appendNdjson(eventsPath, { t: Date.now(), type: "rtmp_url", kind, profile, url });
+        appendNdjson(eventsPath, {
+          t: Date.now(),
+          type: "rtmp_url",
+          kind,
+          profile,
+          url,
+        });
 
         const [recordRes, snapsRes] = await Promise.all([
-          recordRtspOrRtmp({ kind: "rtmp", url, outputMp4: mp4Path, durationSeconds: opts.durationSeconds, logPath }),
+          recordRtspOrRtmp({
+            kind: "rtmp",
+            url,
+            outputMp4: mp4Path,
+            durationSeconds: opts.durationSeconds,
+            logPath,
+          }),
           snapshotsRtspOrRtmp({
             kind: "rtmp",
             url,
@@ -933,7 +1115,9 @@ export async function collectNvrDiagnostics(params: {
   // 2. Get all channels
   log("\n[2/7] Discovering channels...");
   // Use channelNum fallback for multi-focal cameras
-  const channelsResult = await tryCall(() => cgi.getChannels({ useChannelNumFallback: true }));
+  const channelsResult = await tryCall(() =>
+    cgi.getChannels({ useChannelNumFallback: true }),
+  );
   result.channels = channelsResult;
   let channels: number[] = [];
   if (channelsResult.ok) {
@@ -947,11 +1131,17 @@ export async function collectNvrDiagnostics(params: {
 
   // 3. Devices Information (per-channel: type, AI, encoding)
   log("\n[3/7] Collecting devices information for all channels...");
-  const devicesInfo = await tryCall(() => cgi.getDevicesInfo({ useChannelNumFallback: true }));
+  const devicesInfo = await tryCall(() =>
+    cgi.getDevicesInfo({ useChannelNumFallback: true }),
+  );
   result.devicesInfo = devicesInfo;
   if (devicesInfo.ok) {
-    log(`✓ Devices info collected for ${Object.keys(devicesInfo.value.devicesData).length} channel(s)`);
-    for (const [channel, device] of Object.entries(devicesInfo.value.devicesData)) {
+    log(
+      `✓ Devices info collected for ${Object.keys(devicesInfo.value.devicesData).length} channel(s)`,
+    );
+    for (const [channel, device] of Object.entries(
+      devicesInfo.value.devicesData,
+    )) {
       const ch = Number(channel);
       const info = device as any;
       log(`  Channel ${ch}:`, {
@@ -970,10 +1160,14 @@ export async function collectNvrDiagnostics(params: {
 
   // 4. Events and Detection (motion, AI)
   log("\n[4/7] Collecting events and detection states for all channels...");
-  const eventsInfo = await tryCall(() => cgi.getAllChannelsEvents({ useChannelNumFallback: true }));
+  const eventsInfo = await tryCall(() =>
+    cgi.getAllChannelsEvents({ useChannelNumFallback: true }),
+  );
   result.eventsInfo = eventsInfo;
   if (eventsInfo.ok) {
-    log(`✓ Events info collected for ${Object.keys(eventsInfo.value.parsed).length} channel(s)`);
+    log(
+      `✓ Events info collected for ${Object.keys(eventsInfo.value.parsed).length} channel(s)`,
+    );
     for (const [channel, events] of Object.entries(eventsInfo.value.parsed)) {
       const ch = Number(channel);
       const evt = events as any;
@@ -988,11 +1182,17 @@ export async function collectNvrDiagnostics(params: {
 
   // 5. Battery Information
   log("\n[5/7] Collecting battery information for all channels...");
-  const batteryInfo = await tryCall(() => cgi.getAllChannelsBatteryInfo({ useChannelNumFallback: true }));
+  const batteryInfo = await tryCall(() =>
+    cgi.getAllChannelsBatteryInfo({ useChannelNumFallback: true }),
+  );
   result.batteryInfo = batteryInfo;
   if (batteryInfo.ok) {
-    log(`✓ Battery info collected for ${Object.keys(batteryInfo.value.batteryInfoData).length} channel(s)`);
-    for (const [channel, battery] of Object.entries(batteryInfo.value.batteryInfoData)) {
+    log(
+      `✓ Battery info collected for ${Object.keys(batteryInfo.value.batteryInfoData).length} channel(s)`,
+    );
+    for (const [channel, battery] of Object.entries(
+      batteryInfo.value.batteryInfoData,
+    )) {
       const ch = Number(channel);
       const bat = battery as any;
       log(`  Channel ${ch}:`, {
@@ -1014,7 +1214,8 @@ export async function collectNvrDiagnostics(params: {
       const abilities = device?.abilities;
 
       channelsMap.set(channel, {
-        hasBattery: battery?.batteryLevel !== undefined && battery.batteryLevel > 0,
+        hasBattery:
+          battery?.batteryLevel !== undefined && battery.batteryLevel > 0,
         hasPirEvents: !!(abilities as any)?.pirAlarm,
         hasFloodlight: !!(abilities as any)?.ledCtrl,
         hasPtz: !!(abilities as any)?.ptz,
@@ -1025,12 +1226,18 @@ export async function collectNvrDiagnostics(params: {
   }
 
   // 7. Status Information (OSD, Floodlight, PIR, PTZ Presets)
-  log("\n[7/7] Collecting status information (OSD, Floodlight, PIR, PTZ) for all channels...");
+  log(
+    "\n[7/7] Collecting status information (OSD, Floodlight, PIR, PTZ) for all channels...",
+  );
   const statusInfo = await tryCall(() => cgi.getStatusInfo(channelsMap));
   result.statusInfo = statusInfo;
   if (statusInfo.ok) {
-    log(`✓ Status info collected for ${Object.keys(statusInfo.value.deviceStatusData).length} channel(s)`);
-    for (const [channel, status] of Object.entries(statusInfo.value.deviceStatusData)) {
+    log(
+      `✓ Status info collected for ${Object.keys(statusInfo.value.deviceStatusData).length} channel(s)`,
+    );
+    for (const [channel, status] of Object.entries(
+      statusInfo.value.deviceStatusData,
+    )) {
       const ch = Number(channel);
       const st = status as any;
       log(`  Channel ${ch}:`, {
@@ -1100,11 +1307,15 @@ export async function collectNvrDiagnostics(params: {
     if (wifiSignal.ok) channelDetails.wifiSignal = wifiSignal.value;
 
     perChannelDetails[channel] = channelDetails;
-    log(`  Channel ${channel}: collected ${Object.keys(channelDetails).length} detail(s)`);
+    log(
+      `  Channel ${channel}: collected ${Object.keys(channelDetails).length} detail(s)`,
+    );
   }
 
   result.perChannelDetails = perChannelDetails;
-  log(`✓ Additional details collected for ${Object.keys(perChannelDetails).length} channel(s)`);
+  log(
+    `✓ Additional details collected for ${Object.keys(perChannelDetails).length} channel(s)`,
+  );
 
   // Summary
   log("\n" + "=".repeat(80));
@@ -1116,7 +1327,9 @@ export async function collectNvrDiagnostics(params: {
   log(`Events Info: ${eventsInfo.ok ? "✓" : "✗"}`);
   log(`Battery Info: ${batteryInfo.ok ? "✓" : "✗"}`);
   log(`Status Info: ${statusInfo.ok ? "✓" : "✗"}`);
-  log(`Per-Channel Details: ✓ (${Object.keys(perChannelDetails).length} channels)`);
+  log(
+    `Per-Channel Details: ✓ (${Object.keys(perChannelDetails).length} channels)`,
+  );
   log("=".repeat(80));
 
   return result;
@@ -1125,7 +1338,10 @@ export async function collectNvrDiagnostics(params: {
 /**
  * Print NVR/HUB diagnostics in a human-readable format.
  */
-export function printNvrDiagnostics(diagnostics: Record<string, unknown>, logger?: Logger): void {
+export function printNvrDiagnostics(
+  diagnostics: Record<string, unknown>,
+  logger?: Logger,
+): void {
   const log = (msg: string, data?: unknown) => {
     if (logger?.log) {
       if (data !== undefined) logger.log(msg, data);
@@ -1141,7 +1357,9 @@ export function printNvrDiagnostics(diagnostics: Record<string, unknown>, logger
   log("=".repeat(80));
 
   // NVR/HUB Info
-  const nvrInfo = diagnostics.nvrInfo as DiagnosticsCollectorResult<any> | undefined;
+  const nvrInfo = diagnostics.nvrInfo as
+    | DiagnosticsCollectorResult<any>
+    | undefined;
   if (nvrInfo?.ok) {
     log("\n📡 NVR/HUB DEVICE:");
     const devInfo = nvrInfo.value.devInfo;
@@ -1160,13 +1378,17 @@ export function printNvrDiagnostics(diagnostics: Record<string, unknown>, logger
   log(`\n📺 CHANNELS (${channels.length}):`);
 
   // Devices Info
-  const devicesInfo = diagnostics.devicesInfo as DiagnosticsCollectorResult<any> | undefined;
+  const devicesInfo = diagnostics.devicesInfo as
+    | DiagnosticsCollectorResult<any>
+    | undefined;
   if (devicesInfo?.ok) {
     for (const channel of channels) {
       const device = devicesInfo.value.devicesData?.[channel];
       if (!device) continue;
 
-      log(`\n  ┌─ Channel ${channel} ────────────────────────────────────────────────────`);
+      log(
+        `\n  ┌─ Channel ${channel} ────────────────────────────────────────────────────`,
+      );
 
       const status = device.channelStatus;
       if (status) {
@@ -1190,20 +1412,26 @@ export function printNvrDiagnostics(diagnostics: Record<string, unknown>, logger
         const encData = enc.Enc;
         log(`  │ Encoding:`);
         if (encData) {
-          log(`  │   Main Stream: ${encData.mainStream?.vType || "N/A"} ${encData.mainStream?.vSize || ""}`);
-          log(`  │   Sub Stream: ${encData.subStream?.vType || "N/A"} ${encData.subStream?.vSize || ""}`);
+          log(
+            `  │   Main Stream: ${encData.mainStream?.vType || "N/A"} ${encData.mainStream?.vSize || ""}`,
+          );
+          log(
+            `  │   Sub Stream: ${encData.subStream?.vType || "N/A"} ${encData.subStream?.vSize || ""}`,
+          );
         }
       }
 
       const ai = device.ai;
       if (ai) {
         log(`  │ AI Detection:`);
-        const aiKeys = Object.keys(ai).filter(k => k !== "channel");
+        const aiKeys = Object.keys(ai).filter((k) => k !== "channel");
         if (aiKeys.length > 0) {
           for (const key of aiKeys) {
             const state = (ai as any)[key];
             if (state?.support === 1) {
-              log(`  │   ${key}: ${state.alarm_state === 1 ? "Enabled" : "Disabled"}`);
+              log(
+                `  │   ${key}: ${state.alarm_state === 1 ? "Enabled" : "Disabled"}`,
+              );
             }
           }
         } else {
@@ -1221,18 +1449,24 @@ export function printNvrDiagnostics(diagnostics: Record<string, unknown>, logger
       }
 
       // Events
-      const eventsInfo = diagnostics.eventsInfo as DiagnosticsCollectorResult<any> | undefined;
+      const eventsInfo = diagnostics.eventsInfo as
+        | DiagnosticsCollectorResult<any>
+        | undefined;
       if (eventsInfo?.ok) {
         const events = eventsInfo.value.parsed?.[channel];
         if (events) {
           log(`  │ Events:`);
           log(`  │   Motion: ${events.motion ? "Yes" : "No"}`);
-          log(`  │   Detected Objects: ${events.objects?.join(", ") || "None"}`);
+          log(
+            `  │   Detected Objects: ${events.objects?.join(", ") || "None"}`,
+          );
         }
       }
 
       // Battery
-      const batteryInfo = diagnostics.batteryInfo as DiagnosticsCollectorResult<any> | undefined;
+      const batteryInfo = diagnostics.batteryInfo as
+        | DiagnosticsCollectorResult<any>
+        | undefined;
       if (batteryInfo?.ok) {
         const battery = batteryInfo.value.batteryInfoData?.[channel];
         if (battery) {
@@ -1243,7 +1477,9 @@ export function printNvrDiagnostics(diagnostics: Record<string, unknown>, logger
       }
 
       // Status
-      const statusInfo = diagnostics.statusInfo as DiagnosticsCollectorResult<any> | undefined;
+      const statusInfo = diagnostics.statusInfo as
+        | DiagnosticsCollectorResult<any>
+        | undefined;
       if (statusInfo?.ok) {
         const status = statusInfo.value.deviceStatusData?.[channel];
         if (status) {
@@ -1262,14 +1498,18 @@ export function printNvrDiagnostics(diagnostics: Record<string, unknown>, logger
       }
 
       // Per-channel details
-      const perChannelDetails = diagnostics.perChannelDetails as Record<number, Record<string, unknown>> | undefined;
+      const perChannelDetails = diagnostics.perChannelDetails as
+        | Record<number, Record<string, unknown>>
+        | undefined;
       if (perChannelDetails?.[channel]) {
         const details = perChannelDetails[channel];
         log(`  │ Additional Details:`);
         if (details.localLink) {
           const ll = details.localLink as any;
           log(`  │   Connection: ${ll.activeLink || "N/A"}`);
-          log(`  │   WiFi Signal: ${ll.wifiSignal !== undefined ? `${ll.wifiSignal}/4` : "N/A"}`);
+          log(
+            `  │   WiFi Signal: ${ll.wifiSignal !== undefined ? `${ll.wifiSignal}/4` : "N/A"}`,
+          );
         }
         if (details.siren) {
           const siren = details.siren as any;
@@ -1277,7 +1517,9 @@ export function printNvrDiagnostics(diagnostics: Record<string, unknown>, logger
         }
       }
 
-      log(`  └────────────────────────────────────────────────────────────────────`);
+      log(
+        `  └────────────────────────────────────────────────────────────────────`,
+      );
     }
   }
 
@@ -1287,7 +1529,7 @@ export function printNvrDiagnostics(diagnostics: Record<string, unknown>, logger
 /**
  * Test all available streams for a specific channel.
  * Tests RTSP, RTMP, and native Baichuan streams with all profiles (main, sub, ext).
- * 
+ *
  * @param params - Parameters for stream testing
  * @returns Test results for all stream types and profiles
  */
@@ -1337,21 +1579,31 @@ export async function testChannelStreams(params: {
     log(`  Raw GetEnc XML stream tags present: ${JSON.stringify(tagsPresent)}`);
 
     // Log a preview of the XML (first 2000 chars)
-    const xmlPreview = xml.length > 2000 ? xml.substring(0, 2000) + `\n... (truncated, total length: ${xml.length})` : xml;
+    const xmlPreview =
+      xml.length > 2000
+        ? xml.substring(0, 2000) +
+          `\n... (truncated, total length: ${xml.length})`
+        : xml;
     log(`  GetEnc XML preview:\n${xmlPreview}`);
 
     // Also get parsed metadata to see what streams were detected
     const metadataResult = await tryCall(() => api.getStreamMetadata(channel));
     if (metadataResult.ok) {
-      const detectedProfiles = metadataResult.value.streams.map((s) => s.profile);
-      log(`  Parsed streams from metadata: ${detectedProfiles.join(", ")} (${detectedProfiles.length} total)`);
+      const detectedProfiles = metadataResult.value.streams.map(
+        (s) => s.profile,
+      );
+      log(
+        `  Parsed streams from metadata: ${detectedProfiles.join(", ")} (${detectedProfiles.length} total)`,
+      );
       result.rawEncXml = xml;
       result.encXmlTagsPresent = tagsPresent;
       result.parsedStreamProfiles = detectedProfiles;
     }
   }
 
-  const streamOptionsResult = await tryCall(() => api.buildVideoStreamOptions({ channel }));
+  const streamOptionsResult = await tryCall(() =>
+    api.buildVideoStreamOptions({ channel }),
+  );
   if (!streamOptionsResult.ok) {
     log(`✗ Failed to get stream options: ${streamOptionsResult.error}`);
     result.error = streamOptionsResult.error;
@@ -1359,7 +1611,9 @@ export async function testChannelStreams(params: {
   }
 
   const { nativeStreams, rtspStreams, rtmpStreams } = streamOptionsResult.value;
-  log(`✓ Found ${nativeStreams.length} native, ${rtspStreams.length} RTSP, ${rtmpStreams.length} RTMP stream(s)`);
+  log(
+    `✓ Found ${nativeStreams.length} native, ${rtspStreams.length} RTSP, ${rtmpStreams.length} RTMP stream(s)`,
+  );
 
   // Log detailed breakdown of profiles found
   const nativeProfiles = nativeStreams.map((s) => s.profile).join(", ");
@@ -1405,7 +1659,9 @@ export async function testChannelStreams(params: {
         testResult.fps = stream.metadata.frameRate;
         testResult.bitRate = stream.metadata.bitRate;
         testResult.audio = stream.metadata.audio === 1;
-        log(`    ✓ Available: ${stream.metadata.width}x${stream.metadata.height} @ ${stream.metadata.frameRate}fps, ${stream.metadata.videoEncType}`);
+        log(
+          `    ✓ Available: ${stream.metadata.width}x${stream.metadata.height} @ ${stream.metadata.frameRate}fps, ${stream.metadata.videoEncType}`,
+        );
       } else {
         log(`    ✓ Available (ffmpeg test passed)`);
       }
@@ -1451,7 +1707,9 @@ export async function testChannelStreams(params: {
         testResult.fps = stream.metadata.frameRate;
         testResult.bitRate = stream.metadata.bitRate;
         testResult.audio = stream.metadata.audio === 1;
-        log(`    ✓ Available: ${stream.metadata.width}x${stream.metadata.height} @ ${stream.metadata.frameRate}fps, ${stream.metadata.videoEncType}`);
+        log(
+          `    ✓ Available: ${stream.metadata.width}x${stream.metadata.height} @ ${stream.metadata.frameRate}fps, ${stream.metadata.videoEncType}`,
+        );
       } else {
         log(`    ✓ Available (ffmpeg test passed)`);
       }
@@ -1468,8 +1726,13 @@ export async function testChannelStreams(params: {
   log(`\n[4/4] Testing native Baichuan streams...`);
   for (const stream of nativeStreams) {
     const variant = (stream.nativeVariant ?? "default") as any;
-    const key = variant === "default" ? `native_${stream.profile}` : `native_${stream.profile}_${variant}`;
-    log(`  Testing native ${stream.profile}${variant === "default" ? "" : ` (${variant})`}...`);
+    const key =
+      variant === "default"
+        ? `native_${stream.profile}`
+        : `native_${stream.profile}_${variant}`;
+    log(
+      `  Testing native ${stream.profile}${variant === "default" ? "" : ` (${variant})`}...`,
+    );
 
     const testResult: Record<string, unknown> = {
       available: false,
@@ -1480,7 +1743,11 @@ export async function testChannelStreams(params: {
 
     // Test with short session - subscribe and wait for at least one frame
     try {
-      await api.startVideoStream(channel, stream.profile, variant === "default" ? undefined : { variant });
+      await api.startVideoStream(
+        channel,
+        stream.profile,
+        variant === "default" ? undefined : { variant },
+      );
 
       // Wait for at least one video frame (max 5 seconds)
       const framePromise = new Promise<boolean>((resolve) => {
@@ -1516,7 +1783,9 @@ export async function testChannelStreams(params: {
           testResult.fps = stream.metadata.frameRate;
           testResult.bitRate = stream.metadata.bitRate;
           testResult.audio = stream.metadata.audio === 1;
-          log(`    ✓ Available: ${stream.metadata.width}x${stream.metadata.height} @ ${stream.metadata.frameRate}fps, ${stream.metadata.videoEncType}`);
+          log(
+            `    ✓ Available: ${stream.metadata.width}x${stream.metadata.height} @ ${stream.metadata.frameRate}fps, ${stream.metadata.videoEncType}`,
+          );
         } else {
           log(`    ✓ Available (frame received)`);
         }
@@ -1527,7 +1796,11 @@ export async function testChannelStreams(params: {
       }
 
       // Stop the stream
-      await api.stopVideoStream(channel, stream.profile, variant === "default" ? undefined : { variant });
+      await api.stopVideoStream(
+        channel,
+        stream.profile,
+        variant === "default" ? undefined : { variant },
+      );
     } catch (error) {
       testResult.available = false;
       testResult.error = safeStringifyError(error);
@@ -1543,12 +1816,16 @@ export async function testChannelStreams(params: {
   log("\n" + "=".repeat(80));
   log("STREAM TEST SUMMARY");
   log("=".repeat(80));
-  const available = Object.values(streamTests).filter((s: any) => s.available === true).length;
+  const available = Object.values(streamTests).filter(
+    (s: any) => s.available === true,
+  ).length;
   const total = Object.keys(streamTests).length;
   log(`Available streams: ${available}/${total}`);
   for (const [key, test] of Object.entries(streamTests)) {
     const t = test as any;
-    log(`  ${key}: ${t.available ? "✓" : "✗"} ${t.codec || "N/A"} ${t.width || ""}x${t.height || ""}`);
+    log(
+      `  ${key}: ${t.available ? "✓" : "✗"} ${t.codec || "N/A"} ${t.width || ""}x${t.height || ""}`,
+    );
   }
   log("=".repeat(80));
 
@@ -1558,7 +1835,7 @@ export async function testChannelStreams(params: {
 /**
  * Comprehensive diagnostics for multi-focal devices.
  * Tests all channels and all available streams for each channel.
- * 
+ *
  * @param params - Parameters for multi-focal diagnostics (see inline types for property descriptions)
  * @returns Complete diagnostics for all channels and streams
  */
@@ -1603,7 +1880,9 @@ export async function collectMultifocalDiagnostics(params: {
   log(`✓ Device channelNum: ${channelNum}`);
 
   if (channelNum !== 2 && channelNum !== 3) {
-    log(`⚠ Warning: channelNum is ${channelNum}, expected 2 or 3 for multi-focal device`);
+    log(
+      `⚠ Warning: channelNum is ${channelNum}, expected 2 or 3 for multi-focal device`,
+    );
     result.warning = `channelNum is ${channelNum}, expected 2 or 3`;
   }
 
@@ -1643,7 +1922,9 @@ export async function collectMultifocalDiagnostics(params: {
     const channelData = channelResults[ch];
     if (channelData?.streams) {
       const streams = channelData.streams as Record<string, any>;
-      const available = Object.values(streams).filter((s: any) => s.available === true).length;
+      const available = Object.values(streams).filter(
+        (s: any) => s.available === true,
+      ).length;
       const total = Object.keys(streams).length;
       log(`  Channel ${ch}: ${available}/${total} streams available`);
     }
@@ -1677,8 +1958,14 @@ export async function runMultifocalDiagnosticsConsecutively(
   params: RunMultifocalDiagnosticsConsecutivelyParams,
 ): Promise<{ runDir: string; resultsPath: string; streamsDir: string }> {
   const logger = params.logger;
-  const log = (level: "log" | "warn" | "error", msg: string, extra?: unknown) => {
-    const fn = (logger?.[level] ?? logger?.log) as ((...args: any[]) => void) | undefined;
+  const log = (
+    level: "log" | "warn" | "error",
+    msg: string,
+    extra?: unknown,
+  ) => {
+    const fn = (logger?.[level] ?? logger?.log) as
+      | ((...args: any[]) => void)
+      | undefined;
     if (fn) {
       if (extra !== undefined) fn.call(logger, msg, extra);
       else fn.call(logger, msg);
@@ -1700,7 +1987,10 @@ export async function runMultifocalDiagnosticsConsecutively(
   mkdirp(streamsDir);
   mkdirp(logsDir);
 
-  const redact = (s: string) => s.replaceAll(encodeURIComponent(params.password), "***").replaceAll(params.password, "***");
+  const redact = (s: string) =>
+    s
+      .replaceAll(encodeURIComponent(params.password), "***")
+      .replaceAll(params.password, "***");
 
   log("log", "[MultifocalDiagnostics] starting run", {
     outDir: params.outDir,
@@ -1774,7 +2064,12 @@ export async function runMultifocalDiagnosticsConsecutively(
     const out: Array<{ app: string; streamName: string; url: string }> = [];
     for (const app of rtmpApps) {
       for (const streamName of streams) {
-        const streamType = streamName.includes("sub") || streamName === "sub" || streamName === "mobile" ? 1 : 0;
+        const streamType =
+          streamName.includes("sub") ||
+          streamName === "sub" ||
+          streamName === "mobile"
+            ? 1
+            : 0;
         const path = `/${app}/channel${params.channel}_${streamName}.bcs`;
         const u = new URL(`rtmp://${params.host}:1935${path}`);
         u.searchParams.set("channel", params.channel.toString());
@@ -1788,23 +2083,38 @@ export async function runMultifocalDiagnosticsConsecutively(
   })();
 
   const okLine = (entry: any) => {
-    const wh = entry.width && entry.height ? `${entry.width}x${entry.height}` : "?";
+    const wh =
+      entry.width && entry.height ? `${entry.width}x${entry.height}` : "?";
     const codec = entry.codec ?? entry.codecName ?? "";
     return `${entry.kind} ${entry.id} ${wh} ${codec}`.trim();
   };
 
-  log("log", "[MultifocalDiagnostics] probing RTSP", { candidates: rtspCandidates.length });
+  log("log", "[MultifocalDiagnostics] probing RTSP", {
+    candidates: rtspCandidates.length,
+  });
   for (const pathCandidate of rtspCandidates) {
     const urlWithAuth = `rtsp://${userEnc}:${passEnc}@${params.host}:554${pathCandidate}`;
     const id = `rtsp:${pathCandidate}`;
-    const baseName = `${nowIsoCompact()}_${id}`.replace(/[^a-zA-Z0-9._-]+/g, "_");
+    const baseName = `${nowIsoCompact()}_${id}`.replace(
+      /[^a-zA-Z0-9._-]+/g,
+      "_",
+    );
     const outPath = join(streamsDir, `${baseName}.mkv`);
     const probeLog = join(logsDir, `${baseName}.ffprobe.log`);
     const recLog = join(logsDir, `${baseName}.ffmpeg.log`);
 
-    const probe = await probeVideoInfo({ url: urlWithAuth, kind: "rtsp", logPath: probeLog });
+    const probe = await probeVideoInfo({
+      url: urlWithAuth,
+      kind: "rtsp",
+      logPath: probeLog,
+    });
     if (!probe.ok) {
-      results.failed.push({ kind: "rtsp", id, url: redact(urlWithAuth), error: probe.error });
+      results.failed.push({
+        kind: "rtsp",
+        id,
+        url: redact(urlWithAuth),
+        error: probe.error,
+      });
       continue;
     }
 
@@ -1816,7 +2126,12 @@ export async function runMultifocalDiagnosticsConsecutively(
       logPath: recLog,
     });
     if (!rec.ok) {
-      results.failed.push({ kind: "rtsp", id, url: redact(urlWithAuth), error: rec.error });
+      results.failed.push({
+        kind: "rtsp",
+        id,
+        url: redact(urlWithAuth),
+        error: rec.error,
+      });
       continue;
     }
 
@@ -1839,17 +2154,31 @@ export async function runMultifocalDiagnosticsConsecutively(
     log("log", `[MultifocalDiagnostics] OK ${okLine(entry)}`);
   }
 
-  log("log", "[MultifocalDiagnostics] probing RTMP", { candidates: rtmpCandidates.length });
+  log("log", "[MultifocalDiagnostics] probing RTMP", {
+    candidates: rtmpCandidates.length,
+  });
   for (const cand of rtmpCandidates) {
     const id = `rtmp:${cand.app}:${cand.streamName}`;
-    const baseName = `${nowIsoCompact()}_${id}`.replace(/[^a-zA-Z0-9._-]+/g, "_");
+    const baseName = `${nowIsoCompact()}_${id}`.replace(
+      /[^a-zA-Z0-9._-]+/g,
+      "_",
+    );
     const outPath = join(streamsDir, `${baseName}.mkv`);
     const probeLog = join(logsDir, `${baseName}.ffprobe.log`);
     const recLog = join(logsDir, `${baseName}.ffmpeg.log`);
 
-    const probe = await probeVideoInfo({ url: cand.url, kind: "rtmp", logPath: probeLog });
+    const probe = await probeVideoInfo({
+      url: cand.url,
+      kind: "rtmp",
+      logPath: probeLog,
+    });
     if (!probe.ok) {
-      results.failed.push({ kind: "rtmp", id, url: redact(cand.url), error: probe.error });
+      results.failed.push({
+        kind: "rtmp",
+        id,
+        url: redact(cand.url),
+        error: probe.error,
+      });
       continue;
     }
 
@@ -1861,7 +2190,12 @@ export async function runMultifocalDiagnosticsConsecutively(
       logPath: recLog,
     });
     if (!rec.ok) {
-      results.failed.push({ kind: "rtmp", id, url: redact(cand.url), error: rec.error });
+      results.failed.push({
+        kind: "rtmp",
+        id,
+        url: redact(cand.url),
+        error: rec.error,
+      });
       continue;
     }
 
@@ -1896,7 +2230,10 @@ export async function runMultifocalDiagnosticsConsecutively(
 
   // Keep buildVideoStreamOptions output for reference (debugging what the API thinks).
   results.nativeStreamOptions = await tryCall(() =>
-    params.api.buildVideoStreamOptions({ channel: params.channel, onNvr: params.onNvr !== false }),
+    params.api.buildVideoStreamOptions({
+      channel: params.channel,
+      onNvr: params.onNvr !== false,
+    }),
   );
 
   const nativeModes: Array<"nvr" | "standalone"> =
@@ -1904,17 +2241,25 @@ export async function runMultifocalDiagnosticsConsecutively(
       ? ["standalone"]
       : ["nvr", "standalone"];
 
-  const uniqNums = (arr: number[]) => [...new Set(arr)].filter((n) => Number.isFinite(n) && n >= 0);
+  const uniqNums = (arr: number[]) =>
+    [...new Set(arr)].filter((n) => Number.isFinite(n) && n >= 0);
   const channelsForMode = (mode: "nvr" | "standalone"): number[] => {
     if (mode === "nvr") return [params.channel];
     // Standalone TrackMix usually uses channels 0 (wide) and 1 (tele). Keep current channel if it matches.
     return uniqNums([0, 1, params.channel].filter((n) => n === 0 || n === 1));
   };
 
-  const nativeProfiles: StreamProfile[] = params.probeFull ? ["main", "sub", "ext"] : ["main", "sub"];
-  const nativeVariants: NativeVideoStreamVariant[] = params.probeFull ? ["default", "autotrack", "telephoto"] : ["default"];
+  const nativeProfiles: StreamProfile[] = params.probeFull
+    ? ["main", "sub", "ext"]
+    : ["main", "sub"];
+  const nativeVariants: NativeVideoStreamVariant[] = params.probeFull
+    ? ["default", "autotrack", "telephoto"]
+    : ["default"];
 
-  const expectedStreamTypesFor = (profile: StreamProfile, variant: NativeVideoStreamVariant): Set<number> => {
+  const expectedStreamTypesFor = (
+    profile: StreamProfile,
+    variant: NativeVideoStreamVariant,
+  ): Set<number> => {
     if (profile === "sub") {
       return new Set([variant === "default" ? 1 : 3]);
     }
@@ -1930,13 +2275,27 @@ export async function runMultifocalDiagnosticsConsecutively(
       for (const profile of nativeProfiles) {
         for (const variant of nativeVariants) {
           if (profile === "ext" && variant !== "default") {
-            results.failed.push({ kind: "native", id: `native:${mode}:ch${chNative}:${profile}:${variant}`, error: "invalid (ext does not support variant)" });
+            results.failed.push({
+              kind: "native",
+              id: `native:${mode}:ch${chNative}:${profile}:${variant}`,
+              error: "invalid (ext does not support variant)",
+            });
             continue;
           }
 
           const id = `native:${mode}:ch${chNative}:${profile}:${variant}`;
-          const baseName = `${nowIsoCompact()}_${id}`.replace(/[^a-zA-Z0-9._-]+/g, "_");
-          const baseDir = join(streamsDir, "native", mode, `ch${chNative}`, profile, variant);
+          const baseName = `${nowIsoCompact()}_${id}`.replace(
+            /[^a-zA-Z0-9._-]+/g,
+            "_",
+          );
+          const baseDir = join(
+            streamsDir,
+            "native",
+            mode,
+            `ch${chNative}`,
+            profile,
+            variant,
+          );
           const rawDir = join(baseDir, "raw_frames");
           const snapsDir = join(baseDir, "snapshots");
           const logsBase = join(logsDir, baseName);
@@ -1944,7 +2303,15 @@ export async function runMultifocalDiagnosticsConsecutively(
           mkdirp(snapsDir);
 
           const eventsPath = join(baseDir, "events.ndjson");
-          appendNdjson(eventsPath, { t: Date.now(), type: "native_begin", id, mode, channel: chNative, profile, variant });
+          appendNdjson(eventsPath, {
+            t: Date.now(),
+            type: "native_begin",
+            id,
+            mode,
+            channel: chNative,
+            profile,
+            variant,
+          });
           log("log", "[MultifocalDiagnostics] native begin", { id });
 
           const expectedStreamTypes = expectedStreamTypesFor(profile, variant);
@@ -1961,13 +2328,17 @@ export async function runMultifocalDiagnosticsConsecutively(
             if (!expectedStreamTypes.has(frame.header.streamType)) return;
 
             // Lock to first observed channelId/msgNum for this combination.
-            if (lockedChannelId === undefined) lockedChannelId = frame.header.channelId;
+            if (lockedChannelId === undefined)
+              lockedChannelId = frame.header.channelId;
             if (lockedMsgNum === undefined) lockedMsgNum = frame.header.msgNum;
             if (frame.header.channelId !== lockedChannelId) return;
             if (frame.header.msgNum !== lockedMsgNum) return;
 
             if (rawFrames >= maxRawFrames) return;
-            const payload: Buffer = Buffer.isBuffer(frame.payload) && frame.payload.length ? frame.payload : frame.body;
+            const payload: Buffer =
+              Buffer.isBuffer(frame.payload) && frame.payload.length
+                ? frame.payload
+                : frame.body;
             if (!Buffer.isBuffer(payload) || payload.length === 0) return;
             if (rawBytes + payload.length > maxRawBytes) return;
 
@@ -1983,7 +2354,10 @@ export async function runMultifocalDiagnosticsConsecutively(
 
             if (rawFrames === 1) {
               try {
-                writeJson(join(baseDir, "first_frame_header.json"), frame.header);
+                writeJson(
+                  join(baseDir, "first_frame_header.json"),
+                  frame.header,
+                );
               } catch {
                 // ignore
               }
@@ -2038,7 +2412,8 @@ export async function runMultifocalDiagnosticsConsecutively(
               // ignore
             }
 
-            if (u.isKeyframe && firstKeyframeAtMs == null) firstKeyframeAtMs = Date.now();
+            if (u.isKeyframe && firstKeyframeAtMs == null)
+              firstKeyframeAtMs = Date.now();
 
             const nalTypes = nalTypesSummary(u.videoType, u.data);
             appendNdjson(eventsPath, {
@@ -2056,10 +2431,18 @@ export async function runMultifocalDiagnosticsConsecutively(
             if (u.isKeyframe && now - lastSnapshotAtMs >= 2_000) {
               lastSnapshotAtMs = now;
               const snapId = nowIsoCompact();
-              const snapAnnex = join(snapsDir, `snap_${snapId}.${u.videoType === "H265" ? "h265" : "h264"}`);
+              const snapAnnex = join(
+                snapsDir,
+                `snap_${snapId}.${u.videoType === "H265" ? "h265" : "h264"}`,
+              );
               try {
                 fs.writeFileSync(snapAnnex, u.data);
-                appendNdjson(eventsPath, { t: Date.now(), type: "native_snapshot_saved", id, path: snapAnnex });
+                appendNdjson(eventsPath, {
+                  t: Date.now(),
+                  type: "native_snapshot_saved",
+                  id,
+                  path: snapAnnex,
+                });
                 const snapJpeg = join(snapsDir, `snap_${snapId}.jpg`);
                 void tryJpegFromAnnexB({
                   videoType: u.videoType,
@@ -2081,27 +2464,53 @@ export async function runMultifocalDiagnosticsConsecutively(
             } catch {
               // ignore
             }
-            appendNdjson(eventsPath, { t: Date.now(), type: "native_audio", id, bytes: buf.length });
+            appendNdjson(eventsPath, {
+              t: Date.now(),
+              type: "native_audio",
+              id,
+              bytes: buf.length,
+            });
           };
 
           videoStream.on("videoAccessUnit" as any, onAU as any);
           videoStream.on("audioFrame" as any, onAudio as any);
           videoStream.on("error", (e: any) => {
-            appendNdjson(eventsPath, { t: Date.now(), type: "native_error", id, error: safeStringifyError(e) });
-            log("warn", "[MultifocalDiagnostics] native stream error", { id, error: safeStringifyError(e) });
+            appendNdjson(eventsPath, {
+              t: Date.now(),
+              type: "native_error",
+              id,
+              error: safeStringifyError(e),
+            });
+            log("warn", "[MultifocalDiagnostics] native stream error", {
+              id,
+              error: safeStringifyError(e),
+            });
           });
 
           const uniq = <T>(arr: T[]) => [...new Set(arr)];
 
-          const baseStreamName = profile === "main" ? "mainStream" : profile === "sub" ? "subStream" : "externStream";
+          const baseStreamName =
+            profile === "main"
+              ? "mainStream"
+              : profile === "sub"
+                ? "subStream"
+                : "externStream";
           const headerStreamTypeCandidates =
             profile === "sub" ? [1, 3] : profile === "main" ? [0, 2] : [0];
 
           // Candidate channelId tags (some firmwares use 0-based, others 1-based).
-          const channelIdTagCandidates = uniq([chNative, chNative + 1].filter((n) => Number.isFinite(n) && n >= 0));
+          const channelIdTagCandidates = uniq(
+            [chNative, chNative + 1].filter(
+              (n) => Number.isFinite(n) && n >= 0,
+            ),
+          );
 
-          const messageClassCandidates = params.probeFull ? [BC_CLASS_MODERN_24, BC_CLASS_MODERN_24_ALT] : [BC_CLASS_MODERN_24];
-          const extensionXmlCandidates = params.probeFull ? ["", buildChannelExtensionXml(chNative)] : [buildChannelExtensionXml(chNative)];
+          const messageClassCandidates = params.probeFull
+            ? [BC_CLASS_MODERN_24, BC_CLASS_MODERN_24_ALT]
+            : [BC_CLASS_MODERN_24];
+          const extensionXmlCandidates = params.probeFull
+            ? ["", buildChannelExtensionXml(chNative)]
+            : [buildChannelExtensionXml(chNative)];
 
           type NativeStartAttempt = {
             attemptId: string;
@@ -2121,14 +2530,21 @@ export async function runMultifocalDiagnosticsConsecutively(
             for (const streamTypeHeader of headerStreamTypeCandidates) {
               for (const extensionXml of extensionXmlCandidates) {
                 // Preview v1.0: try both with and without channelId.
-                const v10ChannelIdTags = params.probeFull ? [undefined, ...channelIdTagCandidates] : [undefined, chNative];
+                const v10ChannelIdTags = params.probeFull
+                  ? [undefined, ...channelIdTagCandidates]
+                  : [undefined, chNative];
                 for (const channelIdTag of uniq(v10ChannelIdTags)) {
-                  const handle = profile === "main" ? 0 : profile === "sub" ? 256 : 1024;
+                  const handle =
+                    profile === "main" ? 0 : profile === "sub" ? 256 : 1024;
                   attempts.push({
                     attemptId: `v10:${baseStreamName}:h${handle}:cid${channelIdTag ?? "none"}:st${streamTypeHeader}:ext${extensionXml ? "1" : "0"}:mc${messageClass}`,
                     messageClass,
                     streamTypeHeader,
-                    payloadXml: buildPreviewXml(handle, baseStreamName, channelIdTag),
+                    payloadXml: buildPreviewXml(
+                      handle,
+                      baseStreamName,
+                      channelIdTag,
+                    ),
                     payloadVersion: "v10",
                     channelIdTag,
                     handle,
@@ -2139,12 +2555,17 @@ export async function runMultifocalDiagnosticsConsecutively(
 
                 // Preview v1.1: always includes channelId; also try tele PCAP variants.
                 for (const channelIdTag of channelIdTagCandidates) {
-                  const handle = profile === "main" ? 0 : profile === "sub" ? 256 : 1024;
+                  const handle =
+                    profile === "main" ? 0 : profile === "sub" ? 256 : 1024;
                   attempts.push({
                     attemptId: `v11:${baseStreamName}:h${handle}:cid${channelIdTag}:st${streamTypeHeader}:ext${extensionXml ? "1" : "0"}:mc${messageClass}`,
                     messageClass,
                     streamTypeHeader,
-                    payloadXml: buildPreviewXmlV11({ channelId: channelIdTag, handle, streamType: baseStreamName }),
+                    payloadXml: buildPreviewXmlV11({
+                      channelId: channelIdTag,
+                      handle,
+                      streamType: baseStreamName,
+                    }),
                     payloadVersion: "v11",
                     channelIdTag,
                     handle,
@@ -2154,8 +2575,17 @@ export async function runMultifocalDiagnosticsConsecutively(
 
                   if (variant === "telephoto") {
                     const telePreviewStreamType =
-                      profile === "main" ? "externStream" : profile === "sub" ? "mobileStream" : undefined;
-                    const teleHandleBase = profile === "main" ? 1024 : profile === "sub" ? 512 : undefined;
+                      profile === "main"
+                        ? "externStream"
+                        : profile === "sub"
+                          ? "mobileStream"
+                          : undefined;
+                    const teleHandleBase =
+                      profile === "main"
+                        ? 1024
+                        : profile === "sub"
+                          ? 512
+                          : undefined;
                     if (telePreviewStreamType && teleHandleBase !== undefined) {
                       const teleHandle = teleHandleBase + channelIdTag;
                       // Empirically: Hub tele often requires header streamType=0.
@@ -2163,7 +2593,11 @@ export async function runMultifocalDiagnosticsConsecutively(
                         attemptId: `v11tele:${telePreviewStreamType}:h${teleHandle}:cid${channelIdTag}:st0:ext${extensionXml ? "1" : "0"}:mc${messageClass}`,
                         messageClass,
                         streamTypeHeader: 0,
-                        payloadXml: buildPreviewXmlV11({ channelId: channelIdTag, handle: teleHandle, streamType: telePreviewStreamType }),
+                        payloadXml: buildPreviewXmlV11({
+                          channelId: channelIdTag,
+                          handle: teleHandle,
+                          streamType: telePreviewStreamType,
+                        }),
                         payloadVersion: "v11",
                         channelIdTag,
                         handle: teleHandle,
@@ -2185,7 +2619,12 @@ export async function runMultifocalDiagnosticsConsecutively(
 
           try {
             for (const attempt of attempts) {
-              appendNdjson(eventsPath, { t: Date.now(), type: "native_attempt_begin", id, attemptId: attempt.attemptId });
+              appendNdjson(eventsPath, {
+                t: Date.now(),
+                type: "native_attempt_begin",
+                id,
+                attemptId: attempt.attemptId,
+              });
               videoAUs = 0;
               audioFrames = 0;
               firstVideoType = undefined;
@@ -2226,30 +2665,60 @@ export async function runMultifocalDiagnosticsConsecutively(
                 });
 
                 if (resp?.header?.responseCode !== 200) {
-                  throw new Error(`response_code ${resp?.header?.responseCode}`);
+                  throw new Error(
+                    `response_code ${resp?.header?.responseCode}`,
+                  );
                 }
 
                 startedAtMs = Date.now();
-                while (Date.now() - startedAtMs < Math.max(250, Math.round(params.durationSeconds * 1000))) {
+                while (
+                  Date.now() - startedAtMs <
+                  Math.max(250, Math.round(params.durationSeconds * 1000))
+                ) {
                   await sleepMs(200);
                 }
 
                 // Consider it OK only if we got at least some media.
                 if (videoAUs > 0) {
                   lastAttemptOk = attempt;
-                  appendNdjson(eventsPath, { t: Date.now(), type: "native_attempt_ok", id, attemptId: attempt.attemptId, msgNum });
+                  appendNdjson(eventsPath, {
+                    t: Date.now(),
+                    type: "native_attempt_ok",
+                    id,
+                    attemptId: attempt.attemptId,
+                    msgNum,
+                  });
                   break;
                 }
-                appendNdjson(eventsPath, { t: Date.now(), type: "native_attempt_no_media", id, attemptId: attempt.attemptId, msgNum });
+                appendNdjson(eventsPath, {
+                  t: Date.now(),
+                  type: "native_attempt_no_media",
+                  id,
+                  attemptId: attempt.attemptId,
+                  msgNum,
+                });
               } catch (e) {
-                appendNdjson(eventsPath, { t: Date.now(), type: "native_attempt_failed", id, attemptId: attempt.attemptId, error: safeStringifyError(e) });
+                appendNdjson(eventsPath, {
+                  t: Date.now(),
+                  type: "native_attempt_failed",
+                  id,
+                  attemptId: attempt.attemptId,
+                  error: safeStringifyError(e),
+                });
               } finally {
                 try {
                   // Best-effort stop: some firmwares keep streaming unless a stop is sent.
                   const stopXml =
-                    attempt.payloadVersion === "v11" && attempt.channelIdTag !== undefined
-                      ? buildPreviewStopXmlV11({ channelId: attempt.channelIdTag, handle: attempt.handle })
-                      : buildPreviewStopXml(attempt.handle, attempt.channelIdTag);
+                    attempt.payloadVersion === "v11" &&
+                    attempt.channelIdTag !== undefined
+                      ? buildPreviewStopXmlV11({
+                          channelId: attempt.channelIdTag,
+                          handle: attempt.handle,
+                        })
+                      : buildPreviewStopXml(
+                          attempt.handle,
+                          attempt.channelIdTag,
+                        );
                   await client.sendFrame({
                     cmdId: BC_CMD_ID_VIDEO,
                     channel: chNative,
@@ -2281,8 +2750,17 @@ export async function runMultifocalDiagnosticsConsecutively(
               throw new Error("no working native start attempt produced media");
             }
           } catch (e) {
-            results.failed.push({ kind: "native", id, error: safeStringifyError(e) });
-            appendNdjson(eventsPath, { t: Date.now(), type: "native_failed", id, error: safeStringifyError(e) });
+            results.failed.push({
+              kind: "native",
+              id,
+              error: safeStringifyError(e),
+            });
+            appendNdjson(eventsPath, {
+              t: Date.now(),
+              type: "native_failed",
+              id,
+              error: safeStringifyError(e),
+            });
             continue;
           } finally {
             client.removeListener("push", onPush);
@@ -2316,7 +2794,12 @@ export async function runMultifocalDiagnosticsConsecutively(
               mkvPath,
             ];
             const muxRes = await spawnFfmpeg(muxArgs, ffmpegMuxLog);
-            appendNdjson(eventsPath, { t: Date.now(), type: "native_mux", id, ok: muxRes.ok });
+            appendNdjson(eventsPath, {
+              t: Date.now(),
+              type: "native_mux",
+              id,
+              ok: muxRes.ok,
+            });
           }
 
           const info: any = {
@@ -2333,7 +2816,9 @@ export async function runMultifocalDiagnosticsConsecutively(
             audioFrames,
             videoType: firstVideoType,
             firstKeyframeLatencyMs:
-              firstKeyframeAtMs == null || startedAtMs == null ? null : Math.max(0, firstKeyframeAtMs - startedAtMs),
+              firstKeyframeAtMs == null || startedAtMs == null
+                ? null
+                : Math.max(0, firstKeyframeAtMs - startedAtMs),
             rawFrames,
             rawBytes,
             lockedChannelId,
@@ -2346,20 +2831,37 @@ export async function runMultifocalDiagnosticsConsecutively(
           // Derive resolution/codec from the saved MKV if available.
           if (info.mkvPath) {
             const p = await spawnFfprobeJson(
-              ["-v", "error", "-print_format", "json", "-show_streams", "-select_streams", "v:0", info.mkvPath],
+              [
+                "-v",
+                "error",
+                "-print_format",
+                "json",
+                "-show_streams",
+                "-select_streams",
+                "v:0",
+                info.mkvPath,
+              ],
               logsBase + ".ffprobe_file.log",
             );
             if (p.ok) {
-              const streams = Array.isArray(p.json?.streams) ? p.json.streams : [];
+              const streams = Array.isArray(p.json?.streams)
+                ? p.json.streams
+                : [];
               const s0 = streams[0] ?? undefined;
               info.width = typeof s0?.width === "number" ? s0.width : undefined;
-              info.height = typeof s0?.height === "number" ? s0.height : undefined;
-              info.codecName = typeof s0?.codec_name === "string" ? s0.codec_name : undefined;
+              info.height =
+                typeof s0?.height === "number" ? s0.height : undefined;
+              info.codecName =
+                typeof s0?.codec_name === "string" ? s0.codec_name : undefined;
             }
           }
 
           writeJson(clipInfoPath, info);
-          appendNdjson(eventsPath, { t: Date.now(), type: "native_done", ...info });
+          appendNdjson(eventsPath, {
+            t: Date.now(),
+            type: "native_done",
+            ...info,
+          });
 
           const entry = {
             kind: "native",
@@ -2367,7 +2869,13 @@ export async function runMultifocalDiagnosticsConsecutively(
             clipPath: info.mkvPath ?? clipAnnexBPath,
             width: info.width,
             height: info.height,
-            codec: info.codecName ?? (firstVideoType === "H265" ? "hevc" : firstVideoType === "H264" ? "h264" : undefined),
+            codec:
+              info.codecName ??
+              (firstVideoType === "H265"
+                ? "hevc"
+                : firstVideoType === "H264"
+                  ? "h264"
+                  : undefined),
             profile,
             nativeVariant: variant,
             mode,
@@ -2391,7 +2899,13 @@ export async function runMultifocalDiagnosticsConsecutively(
     }
   }
 
-  const okIds = (results.ok as any[]).map((x) => ({ kind: x.kind, id: x.id, clipPath: x.clipPath, width: x.width, height: x.height }));
+  const okIds = (results.ok as any[]).map((x) => ({
+    kind: x.kind,
+    id: x.id,
+    clipPath: x.clipPath,
+    width: x.width,
+    height: x.height,
+  }));
   log("log", "[MultifocalDiagnostics] summary", {
     ok: results.ok.length,
     failed: results.failed.length,
@@ -2442,11 +2956,18 @@ export interface RunAllDiagnosticsConsecutivelyParams {
 
 /**
  * Run all diagnostics consecutively: collect diagnostics bundle, sample streams, and create zip archive.
- * 
+ *
  * @param params - Configuration parameters
  * @returns Results including run directory, zip path, diagnostics path, and streams directory
  */
-export async function runAllDiagnosticsConsecutively(params: RunAllDiagnosticsConsecutivelyParams): Promise<{ runDir: string; zipPath: string; diagnosticsPath: string; streamsDir: string }> {
+export async function runAllDiagnosticsConsecutively(
+  params: RunAllDiagnosticsConsecutivelyParams,
+): Promise<{
+  runDir: string;
+  zipPath: string;
+  diagnosticsPath: string;
+  streamsDir: string;
+}> {
   const { api, logger, host, username, password } = params;
   const channel = params.channel ?? 0;
   const log = (msg: string, data?: unknown) => {
@@ -2471,19 +2992,37 @@ export async function runAllDiagnosticsConsecutively(params: RunAllDiagnosticsCo
     selection: params.selection,
   });
 
-  const cgiEnabled = params.cgi === true || (typeof params.cgi === "object" && params.cgi != null);
+  const cgiEnabled =
+    params.cgi === true ||
+    (typeof params.cgi === "object" && params.cgi != null);
   const cgiApi = cgiEnabled
     ? new ReolinkCgiApiImpl({
-      host: (typeof params.cgi === "object" ? params.cgi.host : undefined) ?? host,
-      username: (typeof params.cgi === "object" ? params.cgi.username : undefined) ?? username,
-      password: (typeof params.cgi === "object" ? params.cgi.password : undefined) ?? password,
-      ...(logger ? { logger } : {}),
-      ...(api.client.getDebugConfig?.() ? { debugConfig: api.client.getDebugConfig?.() } : {}),
-      ...(typeof params.cgi === "object" && params.cgi.port != null ? { port: params.cgi.port } : {}),
-      ...(typeof params.cgi === "object" && params.cgi.useHttps != null ? { useHttps: params.cgi.useHttps } : {}),
-      ...(typeof params.cgi === "object" && params.cgi.insecureTLS != null ? { insecureTLS: params.cgi.insecureTLS } : {}),
-      ...(typeof params.cgi === "object" && params.cgi.timeoutMs != null ? { timeoutMs: params.cgi.timeoutMs } : {}),
-    })
+        host:
+          (typeof params.cgi === "object" ? params.cgi.host : undefined) ??
+          host,
+        username:
+          (typeof params.cgi === "object" ? params.cgi.username : undefined) ??
+          username,
+        password:
+          (typeof params.cgi === "object" ? params.cgi.password : undefined) ??
+          password,
+        ...(logger ? { logger } : {}),
+        ...(api.client.getDebugConfig?.()
+          ? { debugConfig: api.client.getDebugConfig?.() }
+          : {}),
+        ...(typeof params.cgi === "object" && params.cgi.port != null
+          ? { port: params.cgi.port }
+          : {}),
+        ...(typeof params.cgi === "object" && params.cgi.useHttps != null
+          ? { useHttps: params.cgi.useHttps }
+          : {}),
+        ...(typeof params.cgi === "object" && params.cgi.insecureTLS != null
+          ? { insecureTLS: params.cgi.insecureTLS }
+          : {}),
+        ...(typeof params.cgi === "object" && params.cgi.timeoutMs != null
+          ? { timeoutMs: params.cgi.timeoutMs }
+          : {}),
+      })
     : undefined;
 
   const diagnosticsRes = await createDiagnosticsBundle({
@@ -2500,20 +3039,34 @@ export async function runAllDiagnosticsConsecutively(params: RunAllDiagnosticsCo
   });
 
   const streamsDir = join(runDir, "streams");
-  const rtspEnabled = params.rtsp === true || (typeof params.rtsp === "object" && params.rtsp != null);
+  const rtspEnabled =
+    params.rtsp === true ||
+    (typeof params.rtsp === "object" && params.rtsp != null);
   const rtspCfg: StreamSamplingOptions["rtsp"] | undefined = rtspEnabled
     ? {
-      host: (typeof params.rtsp === "object" ? params.rtsp.host : undefined) ?? host,
-      username: (typeof params.rtsp === "object" ? params.rtsp.username : undefined) ?? username,
-      password: (typeof params.rtsp === "object" ? params.rtsp.password : undefined) ?? password,
-      ...(typeof params.rtsp === "object" && params.rtsp.port != null ? { port: params.rtsp.port } : {}),
-    }
+        host:
+          (typeof params.rtsp === "object" ? params.rtsp.host : undefined) ??
+          host,
+        username:
+          (typeof params.rtsp === "object"
+            ? params.rtsp.username
+            : undefined) ?? username,
+        password:
+          (typeof params.rtsp === "object"
+            ? params.rtsp.password
+            : undefined) ?? password,
+        ...(typeof params.rtsp === "object" && params.rtsp.port != null
+          ? { port: params.rtsp.port }
+          : {}),
+      }
     : undefined;
 
   await sampleStreams({
     outDir: streamsDir,
     durationSeconds: params.durationSeconds,
-    ...(params.snapshotIntervalSeconds != null ? { snapshotIntervalSeconds: params.snapshotIntervalSeconds } : {}),
+    ...(params.snapshotIntervalSeconds != null
+      ? { snapshotIntervalSeconds: params.snapshotIntervalSeconds }
+      : {}),
     channel,
     selection: params.selection,
     ...(rtspCfg ? { rtsp: rtspCfg } : {}),
@@ -2531,5 +3084,10 @@ export async function runAllDiagnosticsConsecutively(params: RunAllDiagnosticsCo
   await zipDirectory({ sourceDir: runDir, zipPath });
   log("[Diagnostics] zip bundle created", { zipPath });
 
-  return { runDir: diagnosticsRes.outDir, zipPath, diagnosticsPath: diagnosticsRes.diagnosticsPath, streamsDir };
+  return {
+    runDir: diagnosticsRes.outDir,
+    zipPath,
+    diagnosticsPath: diagnosticsRes.diagnosticsPath,
+    streamsDir,
+  };
 }

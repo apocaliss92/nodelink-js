@@ -24,19 +24,28 @@ import { bcXor, extractNonceFromXml, determineEncryptionType, tryParseXml } from
 function extractNonceFromFrame(frame) {
     if (frame.header.cmdId !== 1) return null;
     if (frame.direction !== 'response') return null;
-    if (frame.header.responseCode !== 200 && frame.header.responseCode !== 0) return null;
+    // Login success codes: 200, 0, or Reolink-specific 56594 (0xDD12), 56338 (0xDC12)
+    const validCodes = [0, 200, 56594, 56338];
+    if (!validCodes.includes(frame.header.responseCode)) return null;
     if (frame.body.length === 0) return null;
 
     // Login response body is BC-XOR encrypted
     const channelId = frame.header.channelId;
     const decrypted = bcXor(frame.body, channelId);
 
-    // Parse extension + payload
-    const payloadOffset = frame.header.payloadOffset;
-    const extension = decrypted.subarray(0, payloadOffset);
-    const payload = decrypted.subarray(payloadOffset);
+    // For login response, the entire body is XML (no extension).
+    // payloadOffset may be garbage if header is 20 bytes, so try full body first.
+    let payloadXml = tryParseXml(decrypted);
 
-    const payloadXml = tryParseXml(payload);
+    // If that fails and payloadOffset looks valid, try using it
+    if (!payloadXml) {
+        const payloadOffset = frame.header.payloadOffset;
+        if (payloadOffset > 0 && payloadOffset < decrypted.length) {
+            const payload = decrypted.subarray(payloadOffset);
+            payloadXml = tryParseXml(payload);
+        }
+    }
+
     if (!payloadXml) return null;
 
     const nonce = extractNonceFromXml(payloadXml);

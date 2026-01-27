@@ -85,13 +85,12 @@ export function getHeaderSize(messageClass) {
 
 /**
  * BC XOR decrypt/encrypt (symmetric)
+ * The key is rotated starting from channelId offset
  */
-export function bcXor(buf, offset) {
-    const off = offset & 0xff;
+export function bcXor(buf, channelId) {
     const out = Buffer.allocUnsafe(buf.length);
     for (let i = 0; i < buf.length; i++) {
-        const key = BC_XOR_KEY[(off + i) % BC_XOR_KEY.length];
-        out[i] = buf[i] ^ key ^ off;
+        out[i] = buf[i] ^ BC_XOR_KEY[(channelId + i) % BC_XOR_KEY.length];
     }
     return out;
 }

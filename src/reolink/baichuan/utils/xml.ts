@@ -31,9 +31,7 @@ function stripXmlDeclaration(xml: string): string {
  * Baichuan often returns XML fragments (multiple top-level tags).
  * This wraps the payload into a synthetic root so it can be parsed reliably.
  */
-export function parseXmlFragmentToJson<T extends XmlJsonValue = XmlJsonValue>(
-  xml: string,
-): T {
+export function parseXmlFragmentToJson<T = XmlJsonValue>(xml: string): T {
   const payload = stripXmlDeclaration(xml);
   if (!payload) return {} as T;
 

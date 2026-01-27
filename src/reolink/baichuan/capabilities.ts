@@ -36,13 +36,18 @@ export function flattenAbilitiesForChannel(
 
   const merged: AbilityInfo = {
     ...(host && typeof host === "object" ? host : {}),
-    ...(channelAbilities && typeof channelAbilities === "object" ? channelAbilities : {}),
+    ...(channelAbilities && typeof channelAbilities === "object"
+      ? channelAbilities
+      : {}),
   };
 
   return Object.keys(merged).length ? merged : undefined;
 }
 
-export function abilitiesHasAny(abilities: AbilityInfo | undefined, re: RegExp): boolean {
+export function abilitiesHasAny(
+  abilities: AbilityInfo | undefined,
+  re: RegExp,
+): boolean {
   if (!abilities) return false;
   for (const [key, value] of Object.entries(abilities)) {
     if (!re.test(key)) continue;
@@ -71,13 +76,19 @@ export function parseSupportXml(xml: string): SupportInfo | undefined {
   };
 
   const items: SupportItem[] = [];
-  for (const itemMatch of supportXml.matchAll(/<item[^>]*>([\s\S]*?)<\/item>/gi)) {
+  for (const itemMatch of supportXml.matchAll(
+    /<item[^>]*>([\s\S]*?)<\/item>/gi,
+  )) {
     const itemXml = itemMatch[1] ?? "";
     const item: SupportItem = {
-      chnID: toNumberOrUndefined(itemXml.match(/<chnID>([^<]*)<\/chnID>/i)?.[1]) ?? 0,
+      chnID:
+        toNumberOrUndefined(itemXml.match(/<chnID>([^<]*)<\/chnID>/i)?.[1]) ??
+        0,
     };
 
-    for (const tagMatch of itemXml.matchAll(/<([A-Za-z0-9_]+)>([^<]*)<\/\1>/g)) {
+    for (const tagMatch of itemXml.matchAll(
+      /<([A-Za-z0-9_]+)>([^<]*)<\/\1>/g,
+    )) {
       const tag = tagMatch[1];
       const value = tagMatch[2];
       if (!tag) continue;
@@ -121,7 +132,10 @@ export function parseSupportXml(xml: string): SupportInfo | undefined {
   return support;
 }
 
-function getSupportItemForChannel(support: SupportInfo | undefined, channel: number): SupportItem | undefined {
+function getSupportItemForChannel(
+  support: SupportInfo | undefined,
+  channel: number,
+): SupportItem | undefined {
   if (!support?.items?.length) return undefined;
 
   // NOTE: callers always pass channel as 0-based and we only match that exact chnID.
@@ -183,16 +197,22 @@ export function computeDeviceCapabilities(params: {
   const supportItem = getSupportItemForChannel(params.support, channel);
 
   const ptzModeRaw = params.support?.ptzMode;
-  const ptzMode = typeof ptzModeRaw === "string" ? ptzModeRaw.toLowerCase() : undefined;
+  const ptzMode =
+    typeof ptzModeRaw === "string" ? ptzModeRaw.toLowerCase() : undefined;
 
   // Per-channel PTZ signals from SupportInfo item.
   // On some hub/NVR firmwares, top-level <ptzMode> reflects the host and may be "none"
   // even when specific channels are PTZ.
   const ptzTypeRaw = supportItem ? (supportItem as any).ptzType : undefined;
-  const ptzControlRaw = supportItem ? (supportItem as any).ptzControl : undefined;
-  const supportExplicitlyDefinesPtz = ptzTypeRaw !== undefined || ptzControlRaw !== undefined;
+  const ptzControlRaw = supportItem
+    ? (supportItem as any).ptzControl
+    : undefined;
+  const supportExplicitlyDefinesPtz =
+    ptzTypeRaw !== undefined || ptzControlRaw !== undefined;
   const ptzExplicitlyDisabledBySupportItem =
-    supportExplicitlyDefinesPtz && !isTruthyNumberLike(ptzTypeRaw) && !isTruthyNumberLike(ptzControlRaw);
+    supportExplicitlyDefinesPtz &&
+    !isTruthyNumberLike(ptzTypeRaw) &&
+    !isTruthyNumberLike(ptzControlRaw);
   const hasPtzFromSupportItem =
     isTruthyNumberLike(ptzTypeRaw) ||
     isTruthyNumberLike(ptzControlRaw) ||
@@ -201,35 +221,63 @@ export function computeDeviceCapabilities(params: {
   // Some battery cameras expose legacy/host PTZ abilities (e.g. preset_rw/ptzInfo_ro) even when
   // the actual channel PTZ is explicitly disabled. When support.ptzMode says "none", treat it
   // as authoritative ONLY if the channel support item does not indicate PTZ.
-  const ptzDisabledBySupport = (ptzMode === "none" || ptzMode === "0") && !hasPtzFromSupportItem;
+  const ptzDisabledBySupport =
+    (ptzMode === "none" || ptzMode === "0") && !hasPtzFromSupportItem;
 
-  const hasBatteryFromSupport = supportItem ? isTruthyNumberLike((supportItem as any).battery) : false;
+  const hasBatteryFromSupport = supportItem
+    ? isTruthyNumberLike((supportItem as any).battery)
+    : false;
   // NOTE: ledCtrl is typically the indicator/status LED control, NOT the floodlight.
   // Do not map it to floodlight capability.
   const ptzPresetRaw = supportItem ? (supportItem as any).ptzPreset : undefined;
   // If SupportInfo explicitly provides ptzPreset, treat it as authoritative.
   // This avoids false positives from AbilityInfo (some firmwares leak host/legacy preset keys).
   const supportExplicitlyDefinesPresets = ptzPresetRaw !== undefined;
-  const hasPresetsFromSupport = supportExplicitlyDefinesPresets ? isTruthyNumberLike(ptzPresetRaw) : false;
-  const presetsExplicitlyDisabledBySupport = supportExplicitlyDefinesPresets && !isTruthyNumberLike(ptzPresetRaw);
-  const doorbellVersionRaw = supportItem ? (supportItem as any).doorbellVersion : undefined;
-  const isDoorbellFromSupport = Number.isFinite(Number(doorbellVersionRaw)) ? Number(doorbellVersionRaw) > 0 : isTruthyNumberLike(doorbellVersionRaw);
-  const isDoorbellFromModel = typeof params.model === "string" && /doorbell/i.test(params.model);
+  const hasPresetsFromSupport = supportExplicitlyDefinesPresets
+    ? isTruthyNumberLike(ptzPresetRaw)
+    : false;
+  const presetsExplicitlyDisabledBySupport =
+    supportExplicitlyDefinesPresets && !isTruthyNumberLike(ptzPresetRaw);
+  const doorbellVersionRaw = supportItem
+    ? (supportItem as any).doorbellVersion
+    : undefined;
+  const isDoorbellFromSupport = Number.isFinite(Number(doorbellVersionRaw))
+    ? Number(doorbellVersionRaw) > 0
+    : isTruthyNumberLike(doorbellVersionRaw);
+  const isDoorbellFromModel =
+    typeof params.model === "string" && /doorbell/i.test(params.model);
 
   // Some firmwares expose an explicit lightType in SupportInfo items.
   // Observed values:
   // - 0: no white LED / no floodlight
-  // - >0: some form of controllable light (treat as floodlight)
+  // - 1: IR LED only (not controllable as floodlight)
+  // - 2+: white LED / spotlight / floodlight (controllable)
+  // Only treat lightType >= 2 as having a controllable floodlight.
   const lightTypeRaw = supportItem ? (supportItem as any).lightType : undefined;
-  const lightType = typeof lightTypeRaw === "number" ? lightTypeRaw : typeof lightTypeRaw === "string" ? Number(lightTypeRaw) : undefined;
+  const lightType =
+    typeof lightTypeRaw === "number"
+      ? lightTypeRaw
+      : typeof lightTypeRaw === "string"
+        ? Number(lightTypeRaw)
+        : undefined;
 
-  const hasPtzFromSupport = hasPtzFromSupportItem || (ptzMode ? ptzMode !== "none" && ptzMode !== "0" : false);
-  const hasPanTiltFromSupport = ptzMode ? ptzMode.includes("pt") || ptzMode === "pt" || ptzMode === "ptz" : false;
+  const hasPtzFromSupport =
+    hasPtzFromSupportItem ||
+    (ptzMode ? ptzMode !== "none" && ptzMode !== "0" : false);
+  const hasPanTiltFromSupport = ptzMode
+    ? ptzMode.includes("pt") || ptzMode === "pt" || ptzMode === "ptz"
+    : false;
   const hasZoomFromSupport = ptzMode ? ptzMode.includes("z") : false;
 
   const hasBatteryFromAbilities = abilitiesHasAny(flat, /battery/i);
-  const hasFloodlightFromAbilities = abilitiesHasAny(flat, /white\s*led|whiteLed|flood\s*light|floodlight/i);
-  const hasSirenFromAbilities = abilitiesHasAny(flat, /audio\s*alarm|audioAlarm|siren|pushAlarn|audioPlay/i);
+  const hasFloodlightFromAbilities = abilitiesHasAny(
+    flat,
+    /white\s*led|whiteLed|flood\s*light|floodlight/i,
+  );
+  const hasSirenFromAbilities = abilitiesHasAny(
+    flat,
+    /audio\s*alarm|audioAlarm|siren|pushAlarn|audioPlay/i,
+  );
 
   // Two-way audio (intercom/talk) capability.
   // Observed signals:
@@ -237,12 +285,18 @@ export function computeDeviceCapabilities(params: {
   // - per-channel SupportInfo item `ipcAudioTalk` (common on NVR doorbells)
   const hasIntercomFromSupport =
     isTruthyNumberLike((params.support as any)?.audioTalk) ||
-    (supportItem ? isTruthyNumberLike((supportItem as any).ipcAudioTalk) : false);
+    (supportItem
+      ? isTruthyNumberLike((supportItem as any).ipcAudioTalk)
+      : false);
 
   // AbilityInfo can contain host/legacy PTZ keys even for non-PTZ channels.
   // If SupportInfo explicitly defines ptzType/ptzControl and both are falsey, treat that as authoritative.
-  const hasPanTiltFromAbilities = ptzExplicitlyDisabledBySupportItem ? false : abilitiesHasAny(flat, /ptz/i);
-  const hasZoomFromAbilities = ptzExplicitlyDisabledBySupportItem ? false : abilitiesHasAny(flat, /zoom|zoomFocus|StartZoomFocus/i);
+  const hasPanTiltFromAbilities = ptzExplicitlyDisabledBySupportItem
+    ? false
+    : abilitiesHasAny(flat, /ptz/i);
+  const hasZoomFromAbilities = ptzExplicitlyDisabledBySupportItem
+    ? false
+    : abilitiesHasAny(flat, /zoom|zoomFocus|StartZoomFocus/i);
   const hasPresetsFromAbilities = abilitiesHasAny(flat, /preset/i);
   // PIR detection is inconsistently advertised across firmwares.
   // Observed signals:
@@ -250,7 +304,9 @@ export function computeDeviceCapabilities(params: {
   // - rfAlarm_* host ability (common on battery cams; "rf" ~ PIR/radio sensor config)
   // - mdWithPir version flag (seen in other SDKs)
   const hasPirFromAbilities =
-    abilitiesHasAny(flat, /(^|_)pir/i) || abilitiesHasAny(flat, /rfAlarm/i) || abilitiesHasAny(flat, /mdWithPir/i);
+    abilitiesHasAny(flat, /(^|_)pir/i) ||
+    abilitiesHasAny(flat, /rfAlarm/i) ||
+    abilitiesHasAny(flat, /mdWithPir/i);
 
   // Some firmwares expose rfCfg in SupportInfo items; treat it as a hint for PIR support.
   // Observed variants:
@@ -259,18 +315,36 @@ export function computeDeviceCapabilities(params: {
   // - rfVersion (present even when *Cfg is 0)
   // Additionally, many battery cams are PIR-based; treat battery>0 as a weak hint.
   const hasPirFromSupport = supportItem
-    ? (
-      isTruthyNumberLike((supportItem as any).rfCfg) ||
+    ? isTruthyNumberLike((supportItem as any).rfCfg) ||
       isTruthyNumberLike((supportItem as any).newRfCfg) ||
       isTruthyNumberLike((supportItem as any).rfVersion) ||
       isTruthyNumberLike((supportItem as any).battery)
-    )
     : false;
+
+  // Autotracking (smartTrack) support.
+  // Observed signals:
+  // - autoPt in SupportInfo item (indicates the device supports auto pan-tilt tracking)
+  // - smartAI in SupportInfo item (indicates AI-based tracking capability)
+  // NOTE: The heuristic (ptzControl > 0 && aitype > 0) was too aggressive and caused
+  // false positives on cameras that have PTZ and AI detection but NOT autotracking.
+  // NOTE: aiCfg in abilities is NOT a reliable indicator of autotracking - many cameras
+  // have AI configuration (for detection) without autotracking capability.
+  // NOTE: The actual smartTrack enable state is in AiCfg (cmdId=299), but the capability
+  // can be detected from the SupportInfo item fields.
+  const hasAutotrackingFromSupport = supportItem
+    ? isTruthyNumberLike((supportItem as any).autoPt) ||
+      isTruthyNumberLike((supportItem as any).smartAI)
+    : false;
+
+  // Fallback: check abilities for explicit smartTrack only (NOT aiCfg - too broad)
+  const hasAutotrackingFromAbilities = abilitiesHasAny(flat, /smartTrack/i);
 
   const hasPan = hasPanTiltFromSupport || hasPanTiltFromAbilities;
   const hasTilt = hasPanTiltFromSupport || hasPanTiltFromAbilities;
   const hasZoom = hasZoomFromSupport || hasZoomFromAbilities;
-  const hasPresets = presetsExplicitlyDisabledBySupport ? false : (hasPresetsFromSupport || hasPresetsFromAbilities);
+  const hasPresets = presetsExplicitlyDisabledBySupport
+    ? false
+    : hasPresetsFromSupport || hasPresetsFromAbilities;
 
   const finalHasPan = ptzDisabledBySupport ? false : hasPan;
   const finalHasTilt = ptzDisabledBySupport ? false : hasTilt;
@@ -283,13 +357,23 @@ export function computeDeviceCapabilities(params: {
     hasTilt: finalHasTilt,
     hasZoom: finalHasZoom,
     hasPresets: finalHasPresets,
-    hasPtz: ptzDisabledBySupport ? false : (hasPtzFromSupport || finalHasPan || finalHasTilt || finalHasZoom || finalHasPresets),
+    hasPtz: ptzDisabledBySupport
+      ? false
+      : hasPtzFromSupport ||
+        finalHasPan ||
+        finalHasTilt ||
+        finalHasZoom ||
+        finalHasPresets,
     hasBattery: hasBatteryFromSupport || hasBatteryFromAbilities,
     hasIntercom: hasIntercomFromSupport,
     hasSiren: hasSirenFromAbilities,
-    hasFloodlight: Number.isFinite(lightType as number) ? (lightType as number) > 0 : hasFloodlightFromAbilities,
+    // lightType >= 2 indicates controllable white LED / floodlight (1 = IR only)
+    hasFloodlight: Number.isFinite(lightType as number)
+      ? (lightType as number) >= 2
+      : hasFloodlightFromAbilities,
     hasPir: hasPirFromAbilities || hasPirFromSupport,
     isDoorbell: isDoorbellFromSupport || isDoorbellFromModel,
+    hasAutotracking: hasAutotrackingFromSupport || hasAutotrackingFromAbilities,
   };
 
   if (ptzMode !== undefined) result.ptzMode = ptzMode;

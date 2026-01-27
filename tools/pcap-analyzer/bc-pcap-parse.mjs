@@ -273,6 +273,6 @@ Options:
 }
 
 // Run if executed directly
-if (process.argv[1].includes('bc-pcap-parse')) {
+if (process.argv[1]?.includes('bc-pcap-parse')) {
     main();
 }

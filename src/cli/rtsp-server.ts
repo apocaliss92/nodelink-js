@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
  * CLI to start an RTSP server from console
- * 
+ *
  * Usage:
  *   node dist/cli/rtsp-server.cjs --host 192.168.1.100 --username admin --password pass --channel 0 --profile main
- * 
+ *
  * Options:
  *   --host <ip>           Camera IP address (required)
  *   --username <user>     Username (required)
@@ -196,7 +196,9 @@ async function main(): Promise<void> {
   const transport = options.transport ?? "auto";
 
   console.log(`[RTSP Server] Connecting to ${options.host}...`);
-  console.log(`[RTSP Server] Channel: ${channel}, Profile: ${profile}, Variant: ${variant}`);
+  console.log(
+    `[RTSP Server] Channel: ${channel}, Profile: ${profile}, Variant: ${variant}`,
+  );
 
   try {
     // Auto-detect device type if needed
@@ -210,7 +212,9 @@ async function main(): Promise<void> {
         logger: console,
       });
       detectedTransport = detection.transport;
-      console.log(`[RTSP Server] Device type: ${detection.type}, Transport: ${detectedTransport}`);
+      console.log(
+        `[RTSP Server] Device type: ${detection.type}, Transport: ${detectedTransport}`,
+      );
     } else {
       detectedTransport = transport;
     }
@@ -273,7 +277,9 @@ async function main(): Promise<void> {
       console.log(`[RTSP Server] Server ready and camera active`);
     } catch (error) {
       console.warn(`[RTSP Server] Warning: ${error}`);
-      console.log(`[RTSP Server] Server is still listening, but camera may not be ready yet`);
+      console.log(
+        `[RTSP Server] Server is still listening, but camera may not be ready yet`,
+      );
     }
   } catch (error) {
     console.error(`[RTSP Server] Error:`, error);
@@ -286,7 +292,10 @@ async function main(): Promise<void> {
 const isMainModule = (() => {
   // CommonJS check
   try {
-    if (typeof require !== "undefined" && typeof (require as any).main !== "undefined") {
+    if (
+      typeof require !== "undefined" &&
+      typeof (require as any).main !== "undefined"
+    ) {
       const mainModule = (require as any).main;
       // @ts-ignore - module may not exist in ESM
       if (typeof module !== "undefined" && mainModule === module) {
@@ -296,25 +305,37 @@ const isMainModule = (() => {
   } catch {
     // module not defined in ESM, continue to ESM check
   }
-  // ESM check - if import.meta.url exists and matches process.argv[1]
-  if (typeof import.meta !== "undefined" && import.meta.url) {
-    const filePath = process.argv[1];
-    if (filePath) {
-      try {
-        const url = new URL(import.meta.url);
-        const urlPath = decodeURIComponent(url.pathname);
-        // Normalize paths for comparison
-        const normalizedUrlPath = urlPath.replace(/\/$/, "");
-        const normalizedFilePath = filePath.replace(/\/$/, "");
-        return normalizedUrlPath === normalizedFilePath || 
-               normalizedUrlPath.endsWith(normalizedFilePath) || 
-               normalizedFilePath.endsWith(normalizedUrlPath);
-      } catch {
-        // Fallback: check if import.meta.url contains the filename
-        const filename = filePath.split("/").pop() || filePath.split("\\").pop();
-        return filename ? import.meta.url.includes(filename) : false;
+  // ESM check - use Function constructor to avoid CJS bundler warnings about import.meta
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const getImportMeta = new Function(
+      "return typeof import.meta !== 'undefined' ? import.meta : undefined",
+    );
+    const meta = getImportMeta() as { url?: string } | undefined;
+    if (meta?.url) {
+      const filePath = process.argv[1];
+      if (filePath) {
+        try {
+          const url = new URL(meta.url);
+          const urlPath = decodeURIComponent(url.pathname);
+          // Normalize paths for comparison
+          const normalizedUrlPath = urlPath.replace(/\/$/, "");
+          const normalizedFilePath = filePath.replace(/\/$/, "");
+          return (
+            normalizedUrlPath === normalizedFilePath ||
+            normalizedUrlPath.endsWith(normalizedFilePath) ||
+            normalizedFilePath.endsWith(normalizedUrlPath)
+          );
+        } catch {
+          // Fallback: check if import.meta.url contains the filename
+          const filename =
+            filePath.split("/").pop() || filePath.split("\\").pop();
+          return filename ? meta.url.includes(filename) : false;
+        }
       }
     }
+  } catch {
+    // import.meta not available (CJS environment)
   }
   return false;
 })();
@@ -325,4 +346,3 @@ if (isMainModule) {
     process.exit(1);
   });
 }
-

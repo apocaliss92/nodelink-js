@@ -6,7 +6,7 @@ export type FloodlightStatusPushEntry = {
 /**
  * Parse Baichuan cmd_id 291 (FloodlightStatusList push) into per-channel status entries.
  *
- * The observed shape (see reolink_aio) is a list where each item contains:
+ * The XML shape contains a list where each item has:
  * - <channel>0</channel>
  * - <status>0|1</status>
  *

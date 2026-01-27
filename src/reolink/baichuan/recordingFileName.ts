@@ -85,8 +85,8 @@ const FLAGS_MAPPING: Record<RecordingDevType, Record<number, FlagSpec>> = {
     1: FLAGS_HUB_V1,
     2: FLAGS_HUB_V2,
     // NOTE: Home Hub / NVR firmware may emit hub filenames with higher versions (e.g. RecM04)
-    // and longer hex payloads. reolink_aio falls back to the highest known hub mapping (v2).
-    // We rely on the same fallback behavior here by not hardcoding a guessed v4 mapping.
+    // and longer hex payloads. We fall back to the highest known hub mapping (v2)
+    // by not hardcoding a guessed v4 mapping.
   },
 };
 

@@ -103,6 +103,9 @@ export const BC_CMD_ID_SET_PIR_INFO = 213; // MSG_ID_START_PIR_ALARM - Set PIR s
 export const BC_CMD_ID_GET_MOTION_ALARM = 46; // GetMdAlarm - Get motion detection state
 export const BC_CMD_ID_SET_MOTION_ALARM = 47; // SetMdAlarm - Set motion detection
 
+// Alarm Event List (push from camera when alarm state changes)
+export const BC_CMD_ID_ALARM_EVENT_LIST = 33; // AlarmEventList push - contains motion/AI alarm status
+
 // AI Detection command IDs
 export const BC_CMD_ID_GET_AI_ALARM = 342; // GetAiAlarm - Get AI detection state
 export const BC_CMD_ID_SET_AI_ALARM = 343; // SetAiAlarm - Set AI detection
@@ -160,10 +163,22 @@ export const BC_CMD_ID_GET_REC_ENC_CFG = 507; // <RecEncCfg>
 export const BC_CMD_ID_GET_ACCESS_USER_LIST = 511; // <accessUserList>
 export const BC_CMD_ID_GET_SLEEP_STATE = 574; // <sleepState>
 
+// Additional discovered command IDs from PCAP analysis (motion_alarm.pcapng)
+export const BC_CMD_ID_GET_VIDEO_INPUT = 26; // <VideoInput> + <InputAdvanceCfg> - Video settings/exposure
+export const BC_CMD_ID_GET_SYSTEM_GENERAL = 104; // <SystemGeneral> + <Norm> - System time/name/language
+export const BC_CMD_ID_GET_SUPPORT = 199; // <Support> - Device capability flags
+export const BC_CMD_ID_GET_AI_CFG = 299; // <AiCfg> - AI tracking config
+export const BC_CMD_ID_SET_AI_CFG = 300; // <AiCfg> - Set AI tracking config (autotracking)
+export const BC_CMD_ID_GET_SIREN_STATUS = 547; // <SirenStatusList> - Siren status
+
+// AudioTask - Motion Alarm control (confirmed in PCAP analysis)
+// cmdId=232 GET returns <AudioTask><enable>1/0</enable>...</AudioTask>
+// cmdId=231 SET sends encrypted XML payload to toggle motion alarm
+export const BC_CMD_ID_SET_AUDIO_TASK = 231; // SetAudioTask - Toggle motion alarm enable/disable
+
 // Unknown / no XML samples captured in current PCAP corpus (still observed cmdIds)
 export const BC_CMD_ID_CMD_123 = 123;
 export const BC_CMD_ID_CMD_209 = 209;
-export const BC_CMD_ID_CMD_231 = 231;
 export const BC_CMD_ID_CMD_265 = 265;
 export const BC_CMD_ID_CMD_440 = 440;
 
