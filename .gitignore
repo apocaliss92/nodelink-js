@@ -47,6 +47,7 @@ pcap/*
 output/*
 firmwares/*
 downloads/*
+external/*
 docs/*
 tools/stream-probe/*
 
