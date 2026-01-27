@@ -251,8 +251,21 @@ server.listen(PORT, async () => {
 ║  WS Logs:    ws://localhost:${String(PORT).padEnd(5)}/ws/logs                ║
 ╠═══════════════════════════════════════════════════════════╣
 ║  RTSP Proxy: rtsp://localhost:${String(proxyPort).padEnd(5)}/<camera>/<profile> ║
+║  MJPEG:      http://localhost:${String(PORT).padEnd(5)}/api/stream/<cam>/<p> ║
 ╚═══════════════════════════════════════════════════════════╝
   `);
+
+  // Log MJPEG endpoint info
+  appLogger.info(`MJPEG streaming available on port ${PORT}`, {
+    source: "mjpeg",
+  });
+  appLogger.info(
+    `Access streams via: http://<host>:${PORT}/api/stream/<camera-name>/<profile>`,
+    { source: "mjpeg" },
+  );
+  appLogger.info(`MJPEG streams are started on-demand when clients connect`, {
+    source: "mjpeg",
+  });
 
   // Auto-connect to all configured cameras
   try {
