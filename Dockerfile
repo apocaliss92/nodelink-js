@@ -41,7 +41,7 @@ COPY app/public/ ./public/
 # Install dependencies (will resolve file:.. from /lib)
 # Need to update package.json to point to correct path
 RUN sed -i 's|"file:.."|"file:/lib"|g' package.json
-RUN npm ci --ignore-scripts
+RUN npm install --ignore-scripts
 
 # Build app
 RUN npm run build
