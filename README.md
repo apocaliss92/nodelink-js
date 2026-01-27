@@ -30,35 +30,35 @@ For detailed method-by-method documentation, see the [documentation](./documenta
 
 ### Baichuan Protocol API
 
-| Section | Description |
-|---------|-------------|
-| [**Overview**](./documentation/baichuan-api/README.md) | API overview and quick start |
-| [Connection](./documentation/baichuan-api/connection.md) | Login, logout, ping, reboot, dedicated sessions |
-| [Device Info](./documentation/baichuan-api/device-info.md) | Device information, channels, capabilities |
-| [Streaming](./documentation/baichuan-api/streaming.md) | Live video streams, codec configuration |
-| [Recordings](./documentation/baichuan-api/recordings.md) | Search, download, replay recorded clips |
-| [PTZ Control](./documentation/baichuan-api/ptz.md) | Pan, tilt, zoom, presets |
-| [Events](./documentation/baichuan-api/events.md) | Motion, AI, doorbell event subscriptions |
-| [Intercom](./documentation/baichuan-api/intercom.md) | Two-way audio, talk sessions |
-| [Snapshots](./documentation/baichuan-api/snapshots.md) | Capture images, thumbnails |
-| [Detection](./documentation/baichuan-api/detection.md) | Motion, AI, PIR, autotracking settings |
-| [Lights](./documentation/baichuan-api/lights.md) | Spotlight, floodlight, siren control |
-| [Battery](./documentation/baichuan-api/battery.md) | Battery status, sleep/wake management |
-| [OSD](./documentation/baichuan-api/osd.md) | On-screen display configuration |
-| [Network](./documentation/baichuan-api/network.md) | Network, WiFi, storage, system settings |
+| Section                                                    | Description                                     |
+| ---------------------------------------------------------- | ----------------------------------------------- |
+| [**Overview**](./documentation/baichuan-api/README.md)     | API overview and quick start                    |
+| [Connection](./documentation/baichuan-api/connection.md)   | Login, logout, ping, reboot, dedicated sessions |
+| [Device Info](./documentation/baichuan-api/device-info.md) | Device information, channels, capabilities      |
+| [Streaming](./documentation/baichuan-api/streaming.md)     | Live video streams, codec configuration         |
+| [Recordings](./documentation/baichuan-api/recordings.md)   | Search, download, replay recorded clips         |
+| [PTZ Control](./documentation/baichuan-api/ptz.md)         | Pan, tilt, zoom, presets                        |
+| [Events](./documentation/baichuan-api/events.md)           | Motion, AI, doorbell event subscriptions        |
+| [Intercom](./documentation/baichuan-api/intercom.md)       | Two-way audio, talk sessions                    |
+| [Snapshots](./documentation/baichuan-api/snapshots.md)     | Capture images, thumbnails                      |
+| [Detection](./documentation/baichuan-api/detection.md)     | Motion, AI, PIR, autotracking settings          |
+| [Lights](./documentation/baichuan-api/lights.md)           | Spotlight, floodlight, siren control            |
+| [Battery](./documentation/baichuan-api/battery.md)         | Battery status, sleep/wake management           |
+| [OSD](./documentation/baichuan-api/osd.md)                 | On-screen display configuration                 |
+| [Network](./documentation/baichuan-api/network.md)         | Network, WiFi, storage, system settings         |
 
 ### CGI HTTP API
 
-| Section | Description |
-|---------|-------------|
+| Section                                                    | Description                         |
+| ---------------------------------------------------------- | ----------------------------------- |
 | [**CGI API Reference**](./documentation/cgi-api/README.md) | Complete HTTP/CGI API documentation |
 
 ### Additional Features
 
-| Section | Description |
-|---------|-------------|
+| Section                                           | Description                           |
+| ------------------------------------------------- | ------------------------------------- |
 | [Streaming Servers](./documentation/streaming.md) | RTSP, RFC4571, HTTP streaming servers |
-| [Network Discovery](./documentation/discovery.md) | Automatic camera discovery via UDP |
+| [Network Discovery](./documentation/discovery.md) | Automatic camera discovery via UDP    |
 
 ---
 

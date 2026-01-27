@@ -53,21 +53,21 @@ Automatically discover Reolink devices on your network using UDP broadcast.
 
 ## Baichuan API Documentation
 
-| Section | Description |
-|---------|-------------|
-| [Connection](./baichuan-api/connection.md) | Login, logout, ping, reboot |
+| Section                                      | Description                  |
+| -------------------------------------------- | ---------------------------- |
+| [Connection](./baichuan-api/connection.md)   | Login, logout, ping, reboot  |
 | [Device Info](./baichuan-api/device-info.md) | Device information, channels |
-| [Streaming](./baichuan-api/streaming.md) | Live video streams |
-| [Recordings](./baichuan-api/recordings.md) | Search, download, replay |
-| [PTZ Control](./baichuan-api/ptz.md) | Pan, tilt, zoom, presets |
-| [Events](./baichuan-api/events.md) | Motion, AI, doorbell events |
-| [Intercom](./baichuan-api/intercom.md) | Two-way audio |
-| [Snapshots](./baichuan-api/snapshots.md) | Capture images |
-| [Detection](./baichuan-api/detection.md) | Motion, AI settings |
-| [Lights](./baichuan-api/lights.md) | Spotlight, siren |
-| [Battery](./baichuan-api/battery.md) | Battery status, sleep |
-| [OSD](./baichuan-api/osd.md) | On-screen display |
-| [Network](./baichuan-api/network.md) | Network, WiFi, storage |
+| [Streaming](./baichuan-api/streaming.md)     | Live video streams           |
+| [Recordings](./baichuan-api/recordings.md)   | Search, download, replay     |
+| [PTZ Control](./baichuan-api/ptz.md)         | Pan, tilt, zoom, presets     |
+| [Events](./baichuan-api/events.md)           | Motion, AI, doorbell events  |
+| [Intercom](./baichuan-api/intercom.md)       | Two-way audio                |
+| [Snapshots](./baichuan-api/snapshots.md)     | Capture images               |
+| [Detection](./baichuan-api/detection.md)     | Motion, AI settings          |
+| [Lights](./baichuan-api/lights.md)           | Spotlight, siren             |
+| [Battery](./baichuan-api/battery.md)         | Battery status, sleep        |
+| [OSD](./baichuan-api/osd.md)                 | On-screen display            |
+| [Network](./baichuan-api/network.md)         | Network, WiFi, storage       |
 
 ---
 

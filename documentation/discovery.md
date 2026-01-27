@@ -44,13 +44,13 @@ new AutodiscoveryClient(options?: AutodiscoveryOptions)
 
 ### Options
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `logger` | `Console` | `undefined` | Logger instance |
-| `port` | `number` | `2000` | UDP port for discovery |
-| `broadcastAddress` | `string` | `"255.255.255.255"` | Broadcast address |
-| `timeout` | `number` | `5000` | Discovery timeout (ms) |
-| `interface` | `string` | `undefined` | Network interface to use |
+| Parameter          | Type      | Default             | Description              |
+| ------------------ | --------- | ------------------- | ------------------------ |
+| `logger`           | `Console` | `undefined`         | Logger instance          |
+| `port`             | `number`  | `2000`              | UDP port for discovery   |
+| `broadcastAddress` | `string`  | `"255.255.255.255"` | Broadcast address        |
+| `timeout`          | `number`  | `5000`              | Discovery timeout (ms)   |
+| `interface`        | `string`  | `undefined`         | Network interface to use |
 
 ### TypeScript Interface
 
@@ -192,7 +192,7 @@ async function discoverDevices() {
   });
 
   const devices = await discovery.discover();
-  
+
   for (const device of devices) {
     console.log(`
 Device: ${device.name}
@@ -211,7 +211,10 @@ Device: ${device.name}
 ### Continuous Discovery
 
 ```typescript
-import { AutodiscoveryClient, ReolinkBaichuanApi } from "@apocaliss92/reolink-baichuan-js";
+import {
+  AutodiscoveryClient,
+  ReolinkBaichuanApi,
+} from "@apocaliss92/reolink-baichuan-js";
 
 const discovery = new AutodiscoveryClient({
   logger: console,
@@ -279,7 +282,7 @@ const devices = await discovery.discover();
 
 // Filter cameras only
 const cameras = devices.filter(
-  (d) => d.deviceType === "camera" || !d.deviceType
+  (d) => d.deviceType === "camera" || !d.deviceType,
 );
 
 // Filter NVRs only
@@ -341,14 +344,14 @@ The autodiscovery uses UDP broadcast packets on port 2000 (by default). The prot
 
 ### Ports Used
 
-| Port | Protocol | Description |
-|------|----------|-------------|
-| 2000 | UDP | Discovery broadcast |
-| 9000 | TCP | Baichuan protocol |
-| 80 | TCP | HTTP/CGI API |
-| 554 | TCP | RTSP |
-| 1935 | TCP | RTMP |
-| 8000 | TCP | ONVIF |
+| Port | Protocol | Description         |
+| ---- | -------- | ------------------- |
+| 2000 | UDP      | Discovery broadcast |
+| 9000 | TCP      | Baichuan protocol   |
+| 80   | TCP      | HTTP/CGI API        |
+| 554  | TCP      | RTSP                |
+| 1935 | TCP      | RTMP                |
+| 8000 | TCP      | ONVIF               |
 
 ---
 
