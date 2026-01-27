@@ -69,7 +69,8 @@ COPY app/package*.json ./
 RUN sed -i 's|"file:.."|"file:/lib"|g' package.json
 
 # Install production dependencies only
-RUN npm ci --production --ignore-scripts
+ENV NODE_ENV=production
+RUN npm ci --ignore-scripts
 
 # Copy built app
 COPY --from=app-builder /build/dist ./dist
