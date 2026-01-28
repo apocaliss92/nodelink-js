@@ -66,14 +66,6 @@ docker run -d \
 | `SETTINGS_PATH`   | `/data`      | Settings directory  |
 | `LOGS_PATH`       | `/data/logs` | Logs directory      |
 
-### Volumes
-
-| Container Path        | Description                              |
-| --------------------- | ---------------------------------------- |
-| `/data`               | Persistent directory for settings & logs |
-| `/data/settings.json` | Unified configuration file               |
-| `/data/logs`          | Application logs directory               |
-
 ### Ports
 
 | Port   | Description    |

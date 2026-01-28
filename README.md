@@ -103,14 +103,6 @@ docker-compose up -d
 | `3000` | Web UI and API |
 | `8554` | RTSP proxy     |
 
-**Volumes:**
-
-| Path                  | Description               |
-| --------------------- | ------------------------- |
-| `/data`               | Persistent data directory |
-| `/data/settings.json` | Camera and server config  |
-| `/data/logs`          | Application logs          |
-
 📖 **[Full Docker documentation →](./DOCKER.md)**
 
 ---
