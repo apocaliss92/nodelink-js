@@ -67,12 +67,16 @@ const DocsIcon = () => (
 
 export default function App() {
   const baseUrl = import.meta.env.BASE_URL;
-  
+
   return (
     <div className="layout">
       <aside className="sidebar">
         <div className="brand">
-          <img src={`${baseUrl}icon-72x72.png`} alt="NodeLink" className="brandIcon" />
+          <img
+            src={`${baseUrl}icon-72x72.png`}
+            alt="NodeLink"
+            className="brandIcon"
+          />
           <span>nodelink.js</span>
         </div>
         <nav className="nav">
