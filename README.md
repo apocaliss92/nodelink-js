@@ -1,12 +1,11 @@
 <p align="center">
-  <img src="app/client/public/icon-128x128.png" alt="nodelink.js" width="128" height="128">
+  <img src="app/client/public/icon-512x512.png" alt="nodelink.js" width="256" height="256" align="left" style="margin-right: 20px;">
+  <br><br><br>
+  <h1>nodelink.js</h1>
+  <p>A TypeScript library for interacting with Reolink IP cameras and NVRs using the proprietary Baichuan protocol and CGI API.</p>
 </p>
 
-<h1 align="center">nodelink.js</h1>
-
-<p align="center">
-  A TypeScript library for interacting with Reolink IP cameras and NVRs using the proprietary Baichuan protocol and CGI API.
-</p>
+<br clear="all">
 
 ## Credits
 
