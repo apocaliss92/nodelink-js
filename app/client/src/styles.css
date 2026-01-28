@@ -43,7 +43,7 @@ a {
 
 .layout {
   display: grid;
-  grid-template-columns: 260px 1fr;
+  grid-template-columns: 220px 1fr;
   min-height: 100vh;
 }
 
@@ -54,10 +54,19 @@ a {
 }
 
 .brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   font-weight: 700;
   letter-spacing: 0.2px;
   font-size: 16px;
   margin-bottom: 18px;
+}
+
+.brandIcon {
+  width: 64px;
+  height: 64px;
+  border-radius: 12px;
 }
 
 .nav {
@@ -67,10 +76,19 @@ a {
 }
 
 .nav a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   padding: 10px 10px;
   border-radius: 10px;
   color: var(--muted);
   border: 1px solid transparent;
+}
+
+.nav a svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
 }
 
 .nav a.active {
@@ -438,12 +456,233 @@ a {
   cursor: not-allowed;
 }
 
-@media (max-width: 860px) {
+/* =========================
+   Logs Page Styles
+   ========================= */
+
+.logsFilters {
+  margin-bottom: 12px;
+}
+
+.logsFiltersRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.logsFilterItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.logsFilterItem .input {
+  width: auto;
+  min-width: 120px;
+}
+
+.logsFilterSearch {
+  flex: 1;
+  min-width: 180px;
+}
+
+.logsFilterSearch .input {
+  width: 100%;
+}
+
+.logsFilterCheck {
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.logsContainer {
+  height: calc(100vh - 190px);
+  overflow: auto;
+}
+
+.logsTable {
+  display: table;
+}
+
+.logsList {
+  display: none;
+}
+
+.logCard {
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.logCard:last-child {
+  border-bottom: none;
+}
+
+.logCardHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+
+.logCardSource {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.logCardTime {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.logCardMessage {
+  font-size: 12px;
+  line-height: 1.4;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 768px) {
   .layout {
     grid-template-columns: 1fr;
+    grid-template-rows: 1fr auto;
+    min-height: 100vh;
+    min-height: 100dvh;
   }
+
   .sidebar {
+    order: 2;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
     border-right: none;
-    border-bottom: 1px solid var(--border);
+    border-top: 1px solid var(--border);
+    padding: 0;
+    background: rgba(11, 18, 32, 0.95);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    z-index: 100;
+    /* Safe area for iOS */
+    padding-bottom: env(safe-area-inset-bottom, 0);
+  }
+
+  .brand {
+    display: none;
+  }
+
+  .nav {
+    flex-direction: row;
+    justify-content: space-around;
+    gap: 0;
+    padding: 8px 4px;
+  }
+
+  .nav a {
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 11px;
+    flex: 1;
+    max-width: 80px;
+  }
+
+  .nav a svg {
+    width: 22px;
+    height: 22px;
+  }
+
+  .main {
+    padding: 14px 12px;
+    /* Add padding at bottom for the fixed bottom bar */
+    padding-bottom: calc(70px + env(safe-area-inset-bottom, 0));
+    order: 1;
+  }
+
+  /* Adjust cards grid for mobile */
+  .streamsGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .grid.cols2 {
+    grid-template-columns: 1fr;
+  }
+
+  /* Adjust header for mobile */
+  .header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  /* Make modals full-width on mobile */
+  .modalPanel {
+    width: 100%;
+    max-width: 100%;
+    margin: 0 8px;
+    max-height: calc(100vh - 100px);
+    overflow-y: auto;
+  }
+
+  /* Adjust table for mobile */
+  .table.compact th,
+  .table.compact td {
+    padding: 4px 6px;
+    font-size: 11px;
+  }
+
+  /* Logs page mobile styles */
+  .logsFiltersRow {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .logsFilterItem {
+    width: 100%;
+  }
+
+  .logsFilterItem .input {
+    flex: 1;
+    width: 100%;
+  }
+
+  .logsFilterSearch {
+    min-width: 0;
+  }
+
+  .logsFilterCheck {
+    justify-content: flex-start;
+  }
+
+  .logsContainer {
+    height: calc(100vh - 280px);
+    height: calc(100dvh - 280px);
+    padding: 0;
+  }
+
+  .logsTable {
+    display: none;
+  }
+
+  .logsList {
+    display: block;
+  }
+
+  .logCard {
+    padding: 10px 12px;
+  }
+
+  .logCardHeader {
+    gap: 6px;
+  }
+
+  .logCardMessage {
+    font-size: 11px;
   }
 }

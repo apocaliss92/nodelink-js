@@ -109,15 +109,14 @@ export default function LogsPage() {
         </span>
       </div>
 
-      <div className="card" style={{ marginBottom: 12 }}>
-        <div className="row">
-          <label className="row">
+      <div className="card logsFilters">
+        <div className="logsFiltersRow">
+          <label className="logsFilterItem">
             <span className="label" style={{ margin: 0 }}>
               Level
             </span>
             <select
               className="input"
-              style={{ width: 160 }}
               value={level}
               onChange={(e) => setLevel(e.target.value as any)}
             >
@@ -129,13 +128,12 @@ export default function LogsPage() {
             </select>
           </label>
 
-          <label className="row">
+          <label className="logsFilterItem">
             <span className="label" style={{ margin: 0 }}>
               Source
             </span>
             <select
               className="input"
-              style={{ width: 160 }}
               value={source}
               onChange={(e) => setSource(e.target.value)}
             >
@@ -148,15 +146,16 @@ export default function LogsPage() {
             </select>
           </label>
 
-          <input
-            className="input"
-            style={{ flex: 1, minWidth: 220 }}
-            placeholder="Search…"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-          />
+          <div className="logsFilterItem logsFilterSearch">
+            <input
+              className="input"
+              placeholder="Search…"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+            />
+          </div>
 
-          <label className="row" style={{ cursor: "pointer" }}>
+          <label className="logsFilterItem logsFilterCheck">
             <input
               type="checkbox"
               checked={autoScroll}
@@ -167,18 +166,15 @@ export default function LogsPage() {
         </div>
       </div>
 
-      <div
-        ref={boxRef}
-        className="card"
-        style={{ height: "calc(100vh - 190px)", overflow: "auto" }}
-      >
-        <table className="table compact">
+      <div ref={boxRef} className="card logsContainer">
+        {/* Desktop: table view */}
+        <table className="table compact logsTable">
           <thead>
             <tr>
-              <th style={{ width: 110 }}>Time</th>
-              <th style={{ width: 140 }}>Source</th>
-              <th style={{ width: 95 }}>Level</th>
-              <th>Rest</th>
+              <th style={{ width: 100 }}>Time</th>
+              <th style={{ width: 120 }}>Source</th>
+              <th style={{ width: 80 }}>Level</th>
+              <th>Message</th>
             </tr>
           </thead>
           <tbody>
@@ -194,6 +190,22 @@ export default function LogsPage() {
             ))}
           </tbody>
         </table>
+
+        {/* Mobile: card view */}
+        <div className="logsList">
+          {filtered.map((l, idx) => (
+            <div key={idx} className="logCard">
+              <div className="logCardHeader">
+                <span className={levelBadge(l.level)}>{l.level}</span>
+                <span className="logCardSource">{l.source ?? ""}</span>
+                <span className="logCardTime mono">
+                  {shortTime(l.timestamp)}
+                </span>
+              </div>
+              <div className="logCardMessage">{formatRest(l)}</div>
+            </div>
+          ))}
+        </div>
       </div>
     </>
   );
