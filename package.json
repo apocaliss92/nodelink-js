@@ -43,9 +43,14 @@
     "build:js": "npx tsup",
     "build:types": "rm -rf .tmp/types && npx tsc -p tsconfig.json --emitDeclarationOnly --declaration --declarationMap false --outDir .tmp/types && npx api-extractor run --local && rm -rf .tmp/types",
     "build": "npm run build:js && npm run build:types",
+    "playback-probe": "npm run build --silent && node tools/playback-probe.mjs",
     "typecheck": "npx tsc -p tsconfig.json --noEmit",
     "lint": "npx eslint .",
-    "rtsp-server": "npm run build && node dist/cli/rtsp-server.cjs"
+    "app:quickstart": "nx run nodelink-manager:start",
+    "rtsp-server": "npm run build && node dist/cli/rtsp-server.cjs",
+    "nx": "nx",
+    "nx:graph": "nx graph",
+    "nx:build": "nx run-many -t build"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
@@ -54,6 +59,8 @@
     "@types/yazl": "^2.4.6",
     "eslint": "^9.0.0",
     "globals": "^16.0.0",
+    "nx": "^20.4.6",
+    "typescript-eslint": "^8.22.0",
     "tsup": "^8.0.0",
     "typescript": "5.8.2"
   },

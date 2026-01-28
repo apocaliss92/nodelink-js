@@ -457,8 +457,15 @@ export class ReolinkBaichuanApi {
       client: BaichuanClient;
       refCount: number;
       createdAt: number;
+      lastUsedAt: number;
+      idleCloseTimer: ReturnType<typeof setTimeout> | undefined;
     }
   >();
+
+  /** Keep replay dedicated sockets warm briefly to reduce clip switch latency. */
+  // Keep replay sockets warm briefly for fast clip switches, but tear down quickly
+  // when clients stop requesting HLS segments (avoids looking like a stuck session).
+  private static readonly REPLAY_DEDICATED_KEEPALIVE_MS = 10_000;
 
   /**
    * Get a summary of currently active dedicated sessions.
@@ -866,17 +873,49 @@ export class ReolinkBaichuanApi {
   }> {
     const log = logger ?? this.logger;
 
-    // Check if there's an existing client for this session key
-    // If so, close it immediately - a socket can't do concurrent streaming
+    const isReplayKey = sessionKey.startsWith("replay:");
+
+    // Reuse idle dedicated sockets when possible (especially for replay).
+    // This avoids reconnect/login overhead on clip switches.
     const existing = this.dedicatedClients.get(sessionKey);
     if (existing) {
+      if (existing.idleCloseTimer) {
+        clearTimeout(existing.idleCloseTimer);
+        existing.idleCloseTimer = undefined;
+      }
+
+      if (existing.refCount === 0) {
+        existing.refCount = 1;
+        existing.lastUsedAt = Date.now();
+        log?.debug?.(
+          `[DedicatedClient] Reusing existing dedicated socket for sessionKey=${sessionKey}`,
+        );
+        // Best-effort: ensure logged in.
+        try {
+          if (!existing.client.loggedIn) {
+            await existing.client.login();
+          }
+        } catch {
+          // If login fails, fall through to recreate socket below.
+        }
+
+        // If still usable, return it.
+        if (existing.client.loggedIn) {
+          return {
+            client: existing.client,
+            release: () => this.releaseDedicatedClient(sessionKey, logger),
+          };
+        }
+      }
+
+      // If still in use (refCount>0) or unusable, preempt by closing and recreating.
+      // This matches the "one stream at a time" constraint for replay operations.
       log?.log?.(
-        `[DedicatedClient] Closing existing socket for sessionKey=${sessionKey} (new clip requested by same client)`,
+        `[DedicatedClient] Closing existing socket for sessionKey=${sessionKey} (preempting active session)`,
       );
       this.dedicatedClients.delete(sessionKey);
-      // Close synchronously to ensure clean state before opening new connection
       try {
-        await existing.client.close({ reason: "new stream for same device" });
+        await existing.client.close({ reason: "preempted by new session" });
         log?.log?.(
           `[DedicatedClient] Old socket closed successfully for sessionKey=${sessionKey}`,
         );
@@ -907,8 +946,10 @@ export class ReolinkBaichuanApi {
 
     this.dedicatedClients.set(sessionKey, {
       client: dedicatedClient,
-      refCount: 1, // Keep for compatibility, but not used for reuse logic
+      refCount: 1,
       createdAt: Date.now(),
+      lastUsedAt: Date.now(),
+      idleCloseTimer: undefined,
     });
 
     return {
@@ -929,7 +970,41 @@ export class ReolinkBaichuanApi {
     const entry = this.dedicatedClients.get(sessionKey);
     if (!entry) return;
 
-    // Always remove and close - no refCount logic
+    // Ref-counted release.
+    entry.refCount = Math.max(0, entry.refCount - 1);
+    entry.lastUsedAt = Date.now();
+
+    if (entry.refCount > 0) return;
+
+    const isReplayKey = sessionKey.startsWith("replay:");
+    const allowReplayKeepAlive = /^replay:[^:]+$/.test(sessionKey);
+    if (isReplayKey && allowReplayKeepAlive) {
+      // Keep replay sockets warm briefly to reduce startup latency between clips.
+      // If the socket is reused within the keepalive window, we'll cancel the timer.
+      if (entry.idleCloseTimer) return;
+
+      entry.idleCloseTimer = setTimeout(async () => {
+        const current = this.dedicatedClients.get(sessionKey);
+        if (!current) return;
+        if (current.refCount > 0) return;
+
+        this.dedicatedClients.delete(sessionKey);
+        log?.debug?.(
+          `[DedicatedClient] Closing idle replay socket for sessionKey=${sessionKey} (keepalive expired)`,
+        );
+        try {
+          await current.client.close({
+            reason: "replay idle keepalive expired",
+          });
+        } catch {
+          // ignore
+        }
+      }, ReolinkBaichuanApi.REPLAY_DEDICATED_KEEPALIVE_MS);
+
+      return;
+    }
+
+    // Non-replay sockets: close immediately.
     this.dedicatedClients.delete(sessionKey);
     log?.log?.(
       `[DedicatedClient] Closing socket for sessionKey=${sessionKey} (session ended)`,
@@ -964,6 +1039,11 @@ export class ReolinkBaichuanApi {
     const log = logger ?? this.logger;
     const entry = this.dedicatedClients.get(sessionKey);
     if (!entry) return false;
+
+    if (entry.idleCloseTimer) {
+      clearTimeout(entry.idleCloseTimer);
+      entry.idleCloseTimer = undefined;
+    }
 
     log?.log?.(
       `[DedicatedClient] Force-closing existing socket for sessionKey=${sessionKey} (new request preempting)`,
@@ -1027,6 +1107,9 @@ export class ReolinkBaichuanApi {
     await Promise.allSettled(
       entries.map(async ([key, entry]) => {
         try {
+          if (entry.idleCloseTimer) {
+            clearTimeout(entry.idleCloseTimer);
+          }
           this.logger?.debug?.(`[DedicatedClient] Cleanup: closing ${key}`);
           await entry.client.close({ reason: "API cleanup" });
         } catch {
@@ -11719,13 +11802,10 @@ ${scheduleItems}
       `[createRecordingReplayMp4Stream] Starting: channel=${params.channel}, fileName=${params.fileName}, durationMs=${durationMs}, fps=${fps}, timeoutSec=${seconds}, deviceId=${params.deviceId ?? "auto"}, useMpegTsMuxer=${useMpegTsMuxer}`,
     );
 
-    // IMPORTANT: If the same deviceId requests a new clip, force-close any existing socket
-    // BEFORE entering the queue. This immediately terminates the old stream, causing it to
-    // error and release its queue slot, so the new request can proceed without waiting.
-    if (params.deviceId) {
-      const sessionKey = `replay:${params.deviceId}`;
-      await this.forceCloseDedicatedClient(sessionKey, logger);
-    }
+    // NOTE: We intentionally do NOT force-close the dedicated replay socket here.
+    // Closing the socket adds avoidable reconnect/login latency on clip switches.
+    // If a prior replay session is still running, callers should stop it (or the
+    // higher-level session manager should enforce exclusivity) so the queue can advance.
 
     const startParams: Parameters<
       ReolinkBaichuanApi["startRecordingReplayStream"]
@@ -11737,11 +11817,23 @@ ${scheduleItems}
       ...(params.deviceId != null ? { deviceId: params.deviceId } : {}),
     };
 
-    // Use streaming queue - holds the slot until release() is called
+    // Use streaming queue - holds the slot until release() is called.
+    // Best-effort retry: if the dedicated replay client is in a bad state, force-close
+    // and retry once. This keeps the fast path (no reconnect) for normal clip switches.
     const { result: replayResult, release: releaseQueueSlot } =
-      await this.enqueueStreamingReplayOperation(() =>
-        this.startRecordingReplayStream(startParams),
-      );
+      await this.enqueueStreamingReplayOperation(async () => {
+        try {
+          return await this.startRecordingReplayStream(startParams);
+        } catch (e) {
+          if (!params.deviceId) throw e;
+          const sessionKey = `replay:${params.deviceId}`;
+          logger?.debug?.(
+            `[createRecordingReplayMp4Stream] startRecordingReplayStream failed; force-closing dedicated client and retrying once`,
+          );
+          await this.forceCloseDedicatedClient(sessionKey, logger);
+          return await this.startRecordingReplayStream(startParams);
+        }
+      });
 
     const { stream, stop: stopReplay } = replayResult;
 
@@ -12279,17 +12371,16 @@ ${scheduleItems}
     // Extract duration from filename
     const parsed = parseRecordingFileName(params.fileName);
     const durationMs = parsed?.durationMs ?? 300_000;
+    const fps =
+      parsed?.framerate && parsed.framerate > 0 ? parsed.framerate : 15;
     const seconds = Math.ceil((durationMs / 1000) * 1.1);
 
     logger?.debug?.(
       `[createRecordingReplayHlsSession] Starting: channel=${params.channel}, fileName=${params.fileName}, durationMs=${durationMs}, hlsSegmentDuration=${hlsSegmentDuration}`,
     );
 
-    // If the same deviceId requests a new session, force-close any existing socket
-    if (params.deviceId) {
-      const sessionKey = `replay:${params.deviceId}`;
-      await this.forceCloseDedicatedClient(sessionKey, logger);
-    }
+    // NOTE: Do not force-close the dedicated replay socket on every new HLS session.
+    // Reusing the logged-in connection reduces clip switch latency significantly.
 
     const startParams: Parameters<
       ReolinkBaichuanApi["startRecordingReplayStream"]
@@ -12301,11 +12392,22 @@ ${scheduleItems}
       ...(params.deviceId != null ? { deviceId: params.deviceId } : {}),
     };
 
-    // Use streaming queue
+    // Use streaming queue.
+    // Best-effort retry: if the dedicated replay client is wedged, force-close and retry once.
     const { result: replayResult, release: releaseQueueSlot } =
-      await this.enqueueStreamingReplayOperation(() =>
-        this.startRecordingReplayStream(startParams),
-      );
+      await this.enqueueStreamingReplayOperation(async () => {
+        try {
+          return await this.startRecordingReplayStream(startParams);
+        } catch (e) {
+          if (!params.deviceId) throw e;
+          const sessionKey = `replay:${params.deviceId}`;
+          logger?.debug?.(
+            `[createRecordingReplayHlsSession] startRecordingReplayStream failed; force-closing dedicated client and retrying once`,
+          );
+          await this.forceCloseDedicatedClient(sessionKey, logger);
+          return await this.startRecordingReplayStream(startParams);
+        }
+      });
 
     const { stream, stop: stopReplay } = replayResult;
 
@@ -12339,8 +12441,8 @@ ${scheduleItems}
         checkCount++;
         try {
           const stats = await fs.stat(firstSegmentPath);
-          // Segment exists and has content (at least 1KB means it's being written)
-          if (stats.size > 1024) {
+          // Segment exists and has content (small threshold for faster startup)
+          if (stats.size > 256) {
             if (segmentWatcher) {
               clearInterval(segmentWatcher);
               segmentWatcher = null;
@@ -12376,8 +12478,10 @@ ${scheduleItems}
       const needsTranscode =
         videoType === "H265" && params.transcodeH265ToH264 === true;
 
-      logger?.debug?.(
-        `[createRecordingReplayHlsSession] Starting ffmpeg HLS with videoType=${videoType}, transcode=${needsTranscode}`,
+      const gop = Math.max(1, Math.round(fps * hlsSegmentDuration));
+
+      logger?.log?.(
+        `[createRecordingReplayHlsSession] Starting ffmpeg HLS with videoType=${videoType}, transcode=${needsTranscode}, hlsTime=${hlsSegmentDuration}s, fileName=${params.fileName}`,
       );
 
       // Initialize MPEG-TS muxer
@@ -12394,7 +12498,29 @@ ${scheduleItems}
         "pipe:0",
         // Video codec
         ...(needsTranscode
-          ? ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "23"]
+          ? [
+              "-c:v",
+              "libx264",
+              "-preset",
+              "ultrafast",
+              "-tune",
+              "zerolatency",
+              "-crf",
+              "23",
+              "-pix_fmt",
+              "yuv420p",
+              // Ensure regular GOP for consistent HLS cutting.
+              "-g",
+              String(gop),
+              "-keyint_min",
+              String(gop),
+              "-sc_threshold",
+              "0",
+              // Force frequent keyframes so HLS can cut segments reliably.
+              // Without this, ffmpeg will only cut on keyframes and segments can become huge.
+              "-force_key_frames",
+              `expr:gte(t,n_forced*${hlsSegmentDuration})`,
+            ]
           : ["-c", "copy"]),
         // HLS output options
         "-f",

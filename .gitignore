@@ -4,6 +4,7 @@ dist-test
 _refs
 .DS_Store
 .env
+.nx
 
 # Local integration test config (IPs / credentials)
 test/devices.config.json

@@ -285,7 +285,7 @@ type FfmpegResult = { ok: true } | { ok: false; error: string };
 function sanitizeFfmpegError(error: string): string {
   // Replace credentials in URLs (rtsp://, rtmp://, http://, https://)
   return error.replace(
-    /([a-z]+:\/\/)([^:@\/\s]+):([^@\/\s]+)@/gi,
+    /([a-z]+:\/\/)([^:@/\s]+):([^@/\s]+)@/gi,
     (match, protocol, username, password) => {
       // Keep the protocol, but hide username and password
       return `${protocol}***:***@`;

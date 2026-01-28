@@ -1,0 +1,23 @@
+{
+  "$schema": "../node_modules/nx/schemas/project-schema.json",
+  "name": "nodelink-manager",
+  "projectType": "application",
+  "sourceRoot": "app/src",
+  "targets": {
+    "start": {
+      "executor": "nx:run-commands",
+      "outputs": ["{projectRoot}/dist"],
+      "options": {
+        "cwd": "app",
+        "command": "npm run build && npm run start"
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "app",
+        "command": "npx eslint ."
+      }
+    }
+  }
+}

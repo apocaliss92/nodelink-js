@@ -33,6 +33,27 @@
 import type { Logger } from "../../logging/logger";
 import type { ReolinkBaichuanApi } from "./ReolinkBaichuanApi";
 
+const withTimeout = async <T>(
+  p: Promise<T>,
+  ms: number,
+  label: string,
+): Promise<T> => {
+  let t: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<T>((_, reject) => {
+        t = setTimeout(
+          () => reject(new Error(`${label} timed out after ${ms}ms`)),
+          ms,
+        );
+      }),
+    ]);
+  } finally {
+    if (t) clearTimeout(t);
+  }
+};
+
 /**
  * HLS session returned by createRecordingReplayHlsSession.
  */
@@ -110,6 +131,7 @@ export class HlsSessionManager {
   private readonly logger: Logger | undefined;
   private readonly sessionTtlMs: number;
   private cleanupTimer: ReturnType<typeof setInterval> | undefined;
+  private creationLocks = new Map<string, Promise<void>>();
 
   constructor(
     private readonly api: ReolinkBaichuanApi,
@@ -121,7 +143,7 @@ export class HlsSessionManager {
     // Start cleanup interval
     const cleanupIntervalMs = options?.cleanupIntervalMs ?? 30_000;
     this.cleanupTimer = setInterval(() => {
-      this.cleanupExpiredSessions();
+      void this.cleanupExpiredSessions();
     }, cleanupIntervalMs);
   }
 
@@ -140,55 +162,156 @@ export class HlsSessionManager {
     requestUrl: string;
     /** Function to create session params if session doesn't exist */
     createSession: () => Promise<HlsSessionParams> | HlsSessionParams;
+    /**
+     * Optional prefix used to ensure only one active HLS session per logical client.
+     * When a new session is created, any other sessions whose keys start with this
+     * prefix will be stopped. This prevents replay/ffmpeg queue starvation when
+     * clients quickly switch clips.
+     */
+    exclusiveKeyPrefix?: string;
   }): Promise<HlsHttpResponse> {
-    const { sessionKey, hlsPath, requestUrl, createSession } = params;
+    const {
+      sessionKey,
+      hlsPath,
+      requestUrl,
+      createSession,
+      exclusiveKeyPrefix,
+    } = params;
 
     try {
       // Get or create session
       let entry = this.sessions.get(sessionKey);
 
-      if (!entry) {
-        this.logger?.log?.(
-          `[HlsSessionManager] Creating new session: ${sessionKey}`,
+      const isPlaylist = hlsPath === "playlist.m3u8" || hlsPath === "";
+      const isSegment = hlsPath.endsWith(".ts");
+
+      // IMPORTANT: Never create a new session from a segment request.
+      // When clients switch clips, they may continue requesting old segments for a while.
+      // If we created sessions from those late segment requests, we'd preempt the new clip
+      // and cause a deadlock/thrash (devices often allow only one replay stream at a time).
+      if (!entry && isSegment) {
+        this.logger?.debug?.(
+          `[HlsSessionManager] Segment request without session (likely stale after clip switch): ${sessionKey} ${hlsPath}`,
         );
+        return {
+          statusCode: 404,
+          headers: {
+            "Content-Type": "text/plain",
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            Pragma: "no-cache",
+            "Retry-After": "1",
+          },
+          body: "Segment not found",
+        };
+      }
 
-        const sessionParams = await createSession();
+      if (!entry) {
+        // Only create sessions on playlist requests.
+        if (!isPlaylist) {
+          return {
+            statusCode: 400,
+            headers: { "Content-Type": "text/plain" },
+            body: "Invalid HLS path",
+          };
+        }
 
-        const session = await this.api.createRecordingReplayHlsSession({
-          channel: sessionParams.channel,
-          fileName: sessionParams.fileName,
-          ...(sessionParams.isNvr !== undefined && {
-            isNvr: sessionParams.isNvr,
-          }),
-          ...(this.logger && { logger: this.logger }),
-          ...(sessionParams.deviceId && { deviceId: sessionParams.deviceId }),
-          transcodeH265ToH264: sessionParams.transcodeH265ToH264 ?? true,
-          hlsSegmentDuration: sessionParams.hlsSegmentDuration ?? 4,
+        // Serialize creation for the same logical client to avoid races during clip switches.
+        // iOS can issue multiple playlist requests back-to-back, and without a lock we may end
+        // up creating two sessions concurrently (queue starvation / device single-stream limit).
+        const lockKey = exclusiveKeyPrefix ?? sessionKey;
+        await this.withCreationLock(lockKey, async () => {
+          // Re-check under the lock.
+          entry = this.sessions.get(sessionKey);
+          if (entry) return;
+
+          if (exclusiveKeyPrefix) {
+            await this.stopOtherSessionsWithPrefix(
+              exclusiveKeyPrefix,
+              sessionKey,
+            );
+          }
+
+          this.logger?.log?.(
+            `[HlsSessionManager] Creating new session: ${sessionKey}`,
+          );
+
+          this.logger?.debug?.(
+            `[HlsSessionManager] createSession(): ${sessionKey}`,
+          );
+          const sessionParams = await createSession();
+
+          this.logger?.debug?.(
+            `[HlsSessionManager] Starting createRecordingReplayHlsSession: ${sessionKey}`,
+          );
+          const session = await withTimeout(
+            this.api.createRecordingReplayHlsSession({
+              channel: sessionParams.channel,
+              fileName: sessionParams.fileName,
+              ...(sessionParams.isNvr !== undefined && {
+                isNvr: sessionParams.isNvr,
+              }),
+              ...(this.logger && { logger: this.logger }),
+              ...(sessionParams.deviceId && {
+                deviceId: sessionParams.deviceId,
+              }),
+              transcodeH265ToH264: sessionParams.transcodeH265ToH264 ?? true,
+              hlsSegmentDuration: sessionParams.hlsSegmentDuration ?? 4,
+            }),
+            20_000,
+            "createRecordingReplayHlsSession",
+          );
+
+          // Wait for first segment to be ready.
+          // Never hang the HTTP request indefinitely: iOS will retry playlist/segments.
+          try {
+            await withTimeout(
+              session.waitForReady(),
+              12_000,
+              "hls waitForReady",
+            );
+          } catch (e) {
+            this.logger?.warn?.(
+              `[HlsSessionManager] waitForReady did not complete in time for ${sessionKey}: ${e instanceof Error ? e.message : String(e)}`,
+            );
+          }
+
+          entry = {
+            session,
+            createdAt: Date.now(),
+            lastAccessAt: Date.now(),
+          };
+          this.sessions.set(sessionKey, entry);
+
+          this.logger?.log?.(
+            `[HlsSessionManager] Session ready: ${sessionKey}`,
+          );
         });
 
-        // Wait for first segment to be ready
-        await session.waitForReady();
-
-        entry = {
-          session,
-          createdAt: Date.now(),
-          lastAccessAt: Date.now(),
-        };
-        this.sessions.set(sessionKey, entry);
-
-        this.logger?.log?.(`[HlsSessionManager] Session ready: ${sessionKey}`);
+        // Ensure the entry is available after creation.
+        entry = this.sessions.get(sessionKey);
+        if (!entry) {
+          return {
+            statusCode: 500,
+            headers: {
+              "Content-Type": "text/plain",
+              "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+              Pragma: "no-cache",
+            },
+            body: "HLS session was not created",
+          };
+        }
       }
 
       // Update last access time
       entry.lastAccessAt = Date.now();
 
       // Handle playlist request
-      if (hlsPath === "playlist.m3u8" || hlsPath === "") {
+      if (isPlaylist) {
         return this.servePlaylist(entry.session, requestUrl, sessionKey);
       }
 
       // Handle segment request
-      if (hlsPath.endsWith(".ts")) {
+      if (isSegment) {
         return this.serveSegment(entry.session, hlsPath, sessionKey);
       }
 
@@ -209,6 +332,32 @@ export class HlsSessionManager {
         headers: { "Content-Type": "text/plain" },
         body: `HLS error: ${message}`,
       };
+    }
+  }
+
+  private async withCreationLock(
+    lockKey: string,
+    fn: () => Promise<void>,
+  ): Promise<void> {
+    const prev = this.creationLocks.get(lockKey) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const chained = prev.then(
+      () => current,
+      () => current,
+    );
+    this.creationLocks.set(lockKey, chained);
+
+    await prev.catch(() => {});
+    try {
+      await fn();
+    } finally {
+      release();
+      if (this.creationLocks.get(lockKey) === chained) {
+        this.creationLocks.delete(lockKey);
+      }
     }
   }
 
@@ -276,10 +425,15 @@ export class HlsSessionManager {
       const url = new URL(requestUrl, "http://localhost");
       const basePath = url.pathname;
 
+      // Preserve original query params (auth, etc.) but drop existing hls param.
+      const baseParams = new URLSearchParams(url.searchParams);
+      baseParams.delete("hls");
+
       // Rewrite segment references in playlist
       playlist = playlist.replace(/^(segment_\d+\.ts)$/gm, (match) => {
-        // Build absolute URL: basePath?hls=segment_xxx.ts
-        return `${basePath}?hls=${match}`;
+        const params = new URLSearchParams(baseParams);
+        params.set("hls", match);
+        return `${basePath}?${params.toString()}`;
       });
     } catch {
       // If URL parsing fails, keep original playlist
@@ -293,7 +447,8 @@ export class HlsSessionManager {
       statusCode: 200,
       headers: {
         "Content-Type": "application/vnd.apple.mpegurl",
-        "Cache-Control": "no-cache",
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        Pragma: "no-cache",
       },
       body: playlist,
     };
@@ -315,7 +470,12 @@ export class HlsSessionManager {
       );
       return {
         statusCode: 404,
-        headers: { "Content-Type": "text/plain" },
+        headers: {
+          "Content-Type": "text/plain",
+          "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+          Pragma: "no-cache",
+          "Retry-After": "1",
+        },
         body: "Segment not found",
       };
     }
@@ -328,7 +488,9 @@ export class HlsSessionManager {
       statusCode: 200,
       headers: {
         "Content-Type": "video/mp2t",
-        "Cache-Control": "no-cache",
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        Pragma: "no-cache",
+        "Content-Length": String(segment.length),
       },
       body: segment,
     };
@@ -337,7 +499,7 @@ export class HlsSessionManager {
   /**
    * Cleanup expired sessions.
    */
-  private cleanupExpiredSessions(): void {
+  private async cleanupExpiredSessions(): Promise<void> {
     const now = Date.now();
     const expiredKeys: string[] = [];
 
@@ -347,16 +509,50 @@ export class HlsSessionManager {
       }
     }
 
-    for (const key of expiredKeys) {
-      const entry = this.sessions.get(key);
-      if (entry) {
-        this.logger?.debug?.(
-          `[HlsSessionManager] Cleaning up expired session: ${key}`,
+    if (!expiredKeys.length) return;
+
+    await Promise.allSettled(
+      expiredKeys.map(async (key) => {
+        const entry = this.sessions.get(key);
+        if (!entry) return;
+
+        this.logger?.log?.(
+          `[HlsSessionManager] TTL expired: stopping session ${key}`,
         );
         this.sessions.delete(key);
-        entry.session.stop().catch(() => {});
-      }
+
+        try {
+          await entry.session.stop();
+        } catch {
+          // ignore
+        }
+      }),
+    );
+  }
+
+  private async stopOtherSessionsWithPrefix(
+    prefix: string,
+    exceptKey: string,
+  ): Promise<void> {
+    const toStop: string[] = [];
+    for (const key of this.sessions.keys()) {
+      if (key !== exceptKey && key.startsWith(prefix)) toStop.push(key);
     }
+
+    if (!toStop.length) return;
+
+    this.logger?.log?.(
+      `[HlsSessionManager] Switch: stopping ${toStop.length} session(s) for prefix=${prefix}`,
+    );
+
+    await Promise.all(
+      toStop.map(async (key) => {
+        const entry = this.sessions.get(key);
+        if (!entry) return;
+        this.sessions.delete(key);
+        await entry.session.stop().catch(() => {});
+      }),
+    );
   }
 }
 

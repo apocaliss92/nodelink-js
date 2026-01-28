@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 
 import type { BaichuanClientOptions } from "../../client/BaichuanClient";
 import type { StreamProfile } from "./types";
+import { HlsSessionManager } from "./HlsSessionManager";
 import { ReolinkBaichuanApi } from "./ReolinkBaichuanApi";
 
 type NativeVariantParam = "default" | "autotrack" | "telephoto";
@@ -76,6 +77,12 @@ export function createBaichuanEndpointsServer(
     ...opts.baichuan,
   });
 
+  const hlsManager = new HlsSessionManager(api, {
+    logger: console as any,
+    sessionTtlMs: 60_000,
+    cleanupIntervalMs: 5_000,
+  });
+
   const listenHost = opts.listenHost ?? "127.0.0.1";
   const rtspListenHost = opts.rtspListenHost ?? "127.0.0.1";
 
@@ -129,6 +136,53 @@ export function createBaichuanEndpointsServer(
 
         res.setHeader("Content-Type", "application/json");
         res.end(JSON.stringify({ rtspUrl }));
+        return;
+      }
+
+      if (u.pathname === "/hls") {
+        const channel = parseIntParam(u.searchParams.get("channel"), 0);
+        const fileName = (u.searchParams.get("fileName") ?? "").trim();
+        const deviceId = (u.searchParams.get("deviceId") ?? "anon").trim();
+        const isNvr = parseBoolParam(u.searchParams.get("isNvr"), false);
+        const transcode = parseBoolParam(u.searchParams.get("transcode"), true);
+        const hlsSegmentDuration = parseIntParam(
+          u.searchParams.get("hlsSegmentDuration"),
+          2,
+        );
+        const hlsPath = (u.searchParams.get("hls") ?? "playlist.m3u8").trim();
+
+        if (!fileName) {
+          res.statusCode = 400;
+          res.end("Missing fileName");
+          return;
+        }
+
+        const sessionKey = `hls:${deviceId}:ch${channel}:${fileName}`;
+        const exclusiveKeyPrefix = `hls:${deviceId}:ch${channel}:`;
+
+        // Preserve full request URL for playlist URL rewriting.
+        const requestUrl = `http://${listenHost}:${opts.listenPort}${u.pathname}${u.search}`;
+
+        const result = await hlsManager.handleRequest({
+          sessionKey,
+          hlsPath,
+          requestUrl,
+          exclusiveKeyPrefix,
+          createSession: () => ({
+            channel,
+            fileName,
+            isNvr,
+            deviceId,
+            transcodeH265ToH264: transcode,
+            hlsSegmentDuration,
+          }),
+        });
+
+        res.statusCode = result.statusCode;
+        for (const [k, v] of Object.entries(result.headers)) {
+          res.setHeader(k, v);
+        }
+        res.end(result.body);
         return;
       }
 
