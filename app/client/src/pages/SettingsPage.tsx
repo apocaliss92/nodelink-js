@@ -2,14 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { trpcMutation, trpcQuery } from "../api";
 
 type Settings = {
-  serverPort: number;
   serviceIp: string;
   logsPath: string;
   logLevel: "error" | "warn" | "info" | "debug";
   logRetentionDays: number;
   rtspDefaultPort: number;
   rtspProxyEnabled: boolean;
-  rtspProxyPort: number;
   rtspRequireAuth: boolean;
 };
 
@@ -94,7 +92,6 @@ export default function SettingsPage() {
     try {
       await trpcMutation("settings.update", {
         logsPath: settings.logsPath,
-        serverPort: settings.serverPort,
         serviceIp: settings.serviceIp,
         logLevel: settings.logLevel,
         logRetentionDays: settings.logRetentionDays,
@@ -132,17 +129,7 @@ export default function SettingsPage() {
       ) : (
         <div className="grid cols2">
           <div className="card">
-            <div className="label">Server port</div>
-            <input
-              className="input"
-              type="number"
-              value={settings.serverPort}
-              onChange={(e) =>
-                setSettings({ ...settings, serverPort: Number(e.target.value) })
-              }
-            />
-
-            <div className="label" style={{ marginTop: 12 }}>
+            <div className="label">
               Service IP/hostname (shown in RTSP/MJPEG/WebRTC URLs)
             </div>
             <input

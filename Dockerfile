@@ -93,14 +93,14 @@ USER nodejs
 
 # Environment variables
 ENV NODE_ENV=production
+ENV PORT=3000
+ENV RTSP_PROXY_PORT=8554
 ENV SETTINGS_PATH=/data
 ENV LOGS_PATH=/data/logs
 
 # Expose ports
-# Main HTTP server
 EXPOSE 3000
-# Default RTSP port range (can be configured)
-EXPOSE 8554-8564
+EXPOSE 8554
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

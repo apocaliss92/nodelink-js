@@ -89,18 +89,19 @@ docker-compose up -d
 
 **Environment Variables:**
 
-| Variable        | Default      | Description                    |
-| --------------- | ------------ | ------------------------------ |
-| `NODE_ENV`      | `production` | Node.js environment            |
-| `SETTINGS_PATH` | `/data`      | Directory for settings.json    |
-| `LOGS_PATH`     | `/data/logs` | Directory for application logs |
+| Variable          | Default      | Description                    |
+| ----------------- | ------------ | ------------------------------ |
+| `PORT`            | `3000`       | HTTP server port               |
+| `RTSP_PROXY_PORT` | `8554`       | RTSP proxy port                |
+| `SETTINGS_PATH`   | `/data`      | Directory for settings.json    |
+| `LOGS_PATH`       | `/data/logs` | Directory for application logs |
 
 **Exposed Ports:**
 
-| Port        | Description           |
-| ----------- | --------------------- |
-| `3000`      | Web UI and API        |
-| `8554-8564` | RTSP proxy port range |
+| Port   | Description    |
+| ------ | -------------- |
+| `3000` | Web UI and API |
+| `8554` | RTSP proxy     |
 
 **Volumes:**
 

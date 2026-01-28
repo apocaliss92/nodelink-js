@@ -21,8 +21,8 @@ services:
     # Alternative: use bridge network with port mapping
     # Uncomment below and comment network_mode: host if you prefer isolation
     # ports:
-    #   - "3000:3000"           # Web UI
-    #   - "8554-8564:8554-8564" # RTSP ports range
+    #   - "3000:3000"   # Web UI and API
+    #   - "8554:8554"   # RTSP proxy
 
     volumes:
       # Persist settings and logs
@@ -32,11 +32,11 @@ services:
       # - ./app/settings.json:/data/settings.json
 
     environment:
-      - NODE_ENV=production
       - SETTINGS_PATH=/data
       - LOGS_PATH=/data/logs
-      # Override server port if needed
-      # - SERVER_PORT=3000
+      # Override ports if needed
+      # - PORT=3000
+      # - RTSP_PROXY_PORT=8554
 
     # Healthcheck inherited from Dockerfile
 

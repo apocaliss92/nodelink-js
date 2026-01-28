@@ -3,13 +3,11 @@ import { z } from "zod";
 import {
   getSettings,
   saveSettings,
-  loadSettings,
   SettingsSchema,
   getRtspCredentials,
   addRtspCredential,
   updateRtspCredential,
   deleteRtspCredential,
-  RtspCredentialSchema,
 } from "../settings-store.js";
 import { reloadLogger } from "../logger.js";
 import { updateRtspUrls } from "../rtsp-manager.js";
@@ -30,12 +28,13 @@ export const settingsRouter = router({
     .input(
       z.object({
         logsPath: z.string().optional(),
-        serverPort: z.number().optional(),
         serviceIp: z.string().optional(),
         logLevel: z.enum(["error", "warn", "info", "debug"]).optional(),
         logRetentionDays: z.number().optional(),
         rtspDefaultPort: z.number().optional(),
         rtspRequireAuth: z.boolean().optional(),
+        // serverPort is controlled by PORT env var, not configurable at runtime
+        // rtspProxyPort is controlled by RTSP_PROXY_PORT env var, not configurable at runtime
       }),
     )
     .mutation(({ input }) => {

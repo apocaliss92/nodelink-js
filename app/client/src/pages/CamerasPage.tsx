@@ -23,8 +23,6 @@ type RtspStreamConfig = {
 
 type AppSettings = {
   serviceIp: string;
-  serverPort: number;
-  rtspProxyPort: number;
 };
 
 type CameraInfo = {
@@ -752,14 +750,14 @@ export default function CamerasPage() {
     cam: CameraInfo,
     profile: StreamProfile,
   ): string | null {
-    if (!settings?.serviceIp || !settings?.rtspProxyPort) return null;
-    return `rtsp://${settings.serviceIp}:${settings.rtspProxyPort}/${cam.sanitizedName}/${profile}`;
+    if (!settings?.serviceIp || !rtspProxyStatus?.port) return null;
+    return `rtsp://${settings.serviceIp}:${rtspProxyStatus.port}/${cam.sanitizedName}/${profile}`;
   }
 
   function getPublicHttpOrigin(): string {
     const base = new URL(window.location.origin);
     if (settings?.serviceIp) base.hostname = settings.serviceIp;
-    if (settings?.serverPort) base.port = String(settings.serverPort);
+    // Use current window.location.port since server serves the app
     return base.origin;
   }
 
@@ -804,8 +802,6 @@ export default function CamerasPage() {
           ? Promise.resolve(settings)
           : trpcQuery<any>("settings.get").then((x) => ({
               serviceIp: String(x.serviceIp ?? "localhost"),
-              serverPort: Number(x.serverPort ?? 3000),
-              rtspProxyPort: Number(x.rtspProxyPort ?? 8554),
             })),
         trpcQuery<any>("rtspProxy.getStatus").catch(() => null),
         trpcQuery<any[]>("rtsp.list").catch(() => []),

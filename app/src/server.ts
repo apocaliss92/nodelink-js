@@ -41,7 +41,8 @@ const settings = getSettings();
 
 const app = express();
 const server = http.createServer(app);
-const PORT = process.env.PORT || settings.serverPort || 3000;
+const PORT = Number(process.env.PORT) || 3000;
+const RTSP_PROXY_PORT = Number(process.env.RTSP_PROXY_PORT) || 8554;
 
 // WebSocket server for real-time logs
 const wss = new WebSocketServer({ server, path: "/ws/logs" });
@@ -479,7 +480,6 @@ process.on("SIGTERM", shutdown);
 server.listen(PORT, async () => {
   appLogger.info(`Server started on port ${PORT}`, { source: "server" });
 
-  const proxyPort = settings.rtspProxyPort || 8554;
   console.log(`
 ╔═══════════════════════════════════════════════════════════════╗
 ║              Nodelink.js Manager - RTSP Dashboard                ║
@@ -489,7 +489,7 @@ server.listen(PORT, async () => {
 ║  tRPC API:   http://localhost:${String(PORT).padEnd(5)}/api/trpc                 ║
 ║  WS Logs:    ws://localhost:${String(PORT).padEnd(5)}/ws/logs                    ║
 ╠═══════════════════════════════════════════════════════════════╣
-║  RTSP:       rtsp://localhost:${String(proxyPort).padEnd(5)}/<camera>/<profile>     ║
+║  RTSP:       rtsp://localhost:${String(RTSP_PROXY_PORT).padEnd(5)}/<camera>/<profile>     ║
 ║  MJPEG:      http://localhost:${String(PORT).padEnd(5)}/api/stream/<cam>/<prof>  ║
 ║  WebRTC:     POST /api/webrtc/session (signaling endpoint)    ║
 ╚═══════════════════════════════════════════════════════════════╝
@@ -533,7 +533,7 @@ server.listen(PORT, async () => {
   if (settings.rtspProxyEnabled) {
     try {
       await startRtspProxy();
-      appLogger.info(`RTSP Proxy started on port ${proxyPort}`, {
+      appLogger.info(`RTSP Proxy started on port ${RTSP_PROXY_PORT}`, {
         source: "server",
       });
       appLogger.info(`RTSP servers will be started on-demand by the proxy`, {

@@ -21,8 +21,7 @@ export type RtspCredential = z.infer<typeof RtspCredentialSchema>;
 
 // Unified Settings schema (includes cameras and rtspServers)
 export const SettingsSchema = z.object({
-  // Server
-  serverPort: z.number().default(3000),
+  // Service IP (hostname to show in RTSP URLs - Port and RTSP Port are controlled by env vars)
   serviceIp: z.string().default("localhost"), // IP/hostname to show in RTSP URLs
 
   // Logging (LOGS_PATH env var can override default)
@@ -33,9 +32,8 @@ export const SettingsSchema = z.object({
   // RTSP defaults
   rtspDefaultPort: z.number().default(8555), // Default port for individual RTSP servers
 
-  // RTSP Proxy (single entry point for all streams)
+  // RTSP Proxy (single entry point for all streams - port controlled by RTSP_PROXY_PORT env var)
   rtspProxyEnabled: z.boolean().default(true),
-  rtspProxyPort: z.number().default(8554), // Single port for all streams via proxy
 
   // RTSP Authentication
   rtspCredentials: z.array(RtspCredentialSchema).default([]),

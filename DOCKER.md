@@ -59,11 +59,12 @@ docker run -d \
 
 ### Environment Variables
 
-| Variable        | Default      | Description         |
-| --------------- | ------------ | ------------------- |
-| `NODE_ENV`      | `production` | Node.js environment |
-| `SETTINGS_PATH` | `/data`      | Settings directory  |
-| `LOGS_PATH`     | `/data/logs` | Logs directory      |
+| Variable          | Default      | Description         |
+| ----------------- | ------------ | ------------------- |
+| `PORT`            | `3000`       | Web UI and API port |
+| `RTSP_PROXY_PORT` | `8554`       | RTSP proxy port     |
+| `SETTINGS_PATH`   | `/data`      | Settings directory  |
+| `LOGS_PATH`       | `/data/logs` | Logs directory      |
 
 ### Volumes
 
@@ -75,10 +76,10 @@ docker run -d \
 
 ### Ports
 
-| Port        | Description                    |
-| ----------- | ------------------------------ |
-| `3000`      | Web UI and API                 |
-| `8554-8564` | RTSP port range (configurable) |
+| Port   | Description    |
+| ------ | -------------- |
+| `3000` | Web UI and API |
+| `8554` | RTSP proxy     |
 
 ## Network Mode
 
