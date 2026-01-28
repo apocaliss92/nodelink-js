@@ -11570,20 +11570,33 @@ ${scheduleItems}
      * Default: false (passthrough/copy).
      */
     transcodeH265ToH264?: boolean;
+    /**
+     * Use MPEG-TS muxer to preserve frame timestamps (PTS).
+     * When true, frames are muxed into MPEG-TS before being passed to ffmpeg.
+     * This can help with variable framerate streams but may cause issues with some decoders.
+     * Default: true (MPEG-TS muxing for proper timestamp alignment).
+     */
+    useMpegTsMuxer?: boolean;
   }): Promise<{
     mp4: Readable;
     stop: () => Promise<void>;
   }> {
     const logger = params.logger ?? this.logger;
+    const useMpegTsMuxer = params.useMpegTsMuxer ?? true;
 
-    // Extract duration from filename timestamps
+    // Extract duration and framerate from filename timestamps
     const parsed = parseRecordingFileName(params.fileName);
     const durationMs = parsed?.durationMs ?? 300_000; // Fallback: 5 minutes
+    // Use framerate from filename hex flags, fallback to 15 fps (common for recordings)
+    // NOTE: When useMpegTsMuxer=true, the MPEG-TS muxer uses actual PTS/DTS timestamps
+    // from BcMedia frames, so this fps value is only used as fallback for raw mode.
+    const fps =
+      parsed?.framerate && parsed.framerate > 0 ? parsed.framerate : 15;
     // Add 10% buffer to ensure we get the complete clip
     const seconds = Math.ceil((durationMs / 1000) * 1.1);
 
     logger?.debug?.(
-      `[createRecordingReplayMp4Stream] Starting: channel=${params.channel}, fileName=${params.fileName}, durationMs=${durationMs}, timeoutSec=${seconds}, deviceId=${params.deviceId ?? "auto"}`,
+      `[createRecordingReplayMp4Stream] Starting: channel=${params.channel}, fileName=${params.fileName}, durationMs=${durationMs}, fps=${fps}, timeoutSec=${seconds}, deviceId=${params.deviceId ?? "auto"}, useMpegTsMuxer=${useMpegTsMuxer}`,
     );
 
     const startParams: Parameters<
@@ -11607,8 +11620,10 @@ ${scheduleItems}
     const input = new PassThrough();
     const output = new PassThrough();
 
-    // Use MPEG-TS muxer to preserve frame timestamps (PTS)
-    // This ensures correct playback speed regardless of variable framerate
+    // H264 Access Unit Delimiter - prepended before each frame for proper parsing
+    const H264_AUD = Buffer.from([0x00, 0x00, 0x00, 0x01, 0x09, 0xf0]);
+
+    // MPEG-TS muxer (only used if useMpegTsMuxer is true)
     let tsMuxer: MpegTsMuxer | null = null;
 
     let ff: ReturnType<typeof spawn> | null = null;
@@ -11623,33 +11638,61 @@ ${scheduleItems}
         videoType === "H265" && params.transcodeH265ToH264 === true;
 
       logger?.debug?.(
-        `[createRecordingReplayMp4Stream] Starting ffmpeg with videoType=${videoType}, transcode=${needsTranscode}`,
+        `[createRecordingReplayMp4Stream] Starting ffmpeg with videoType=${videoType}, transcode=${needsTranscode}, useMpegTsMuxer=${useMpegTsMuxer}, fps=${fps}`,
       );
 
-      // Initialize MPEG-TS muxer for this video type
-      MpegTsMuxer.resetCounters();
-      tsMuxer = new MpegTsMuxer({ videoType });
+      let args: string[];
 
-      // ffmpeg reads MPEG-TS input (which has PTS) and outputs fMP4
-      // No -r needed because timestamps come from the TS stream
-      const args = [
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-f",
-        "mpegts",
-        "-i",
-        "pipe:0",
-        // Video codec: transcode H.265→H.264 if requested, otherwise copy
-        ...(needsTranscode
-          ? ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "23"]
-          : ["-c", "copy"]),
-        "-movflags",
-        "frag_keyframe+empty_moov",
-        "-f",
-        "mp4",
-        "pipe:1",
-      ];
+      if (useMpegTsMuxer) {
+        // Initialize MPEG-TS muxer for this video type
+        MpegTsMuxer.resetCounters();
+        tsMuxer = new MpegTsMuxer({ videoType });
+
+        // ffmpeg reads MPEG-TS input (which has PTS) and outputs fMP4
+        args = [
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-f",
+          "mpegts",
+          "-i",
+          "pipe:0",
+          // Video codec: transcode H.265→H.264 if requested, otherwise copy
+          ...(needsTranscode
+            ? ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "23"]
+            : ["-c", "copy"]),
+          "-movflags",
+          "frag_keyframe+empty_moov",
+          "-f",
+          "mp4",
+          "pipe:1",
+        ];
+      } else {
+        // Raw Annex-B input (original method) with genpts and framerate
+        const inputFormat = videoType === "H265" ? "hevc" : "h264";
+        args = [
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-fflags",
+          "+genpts",
+          "-r",
+          String(fps),
+          "-f",
+          inputFormat,
+          "-i",
+          "pipe:0",
+          // Video codec: transcode H.265→H.264 if requested, otherwise copy
+          ...(needsTranscode
+            ? ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "23"]
+            : ["-c", "copy"]),
+          "-movflags",
+          "frag_keyframe+empty_moov",
+          "-f",
+          "mp4",
+          "pipe:1",
+        ];
+      }
 
       ff = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
       if (!ff.stdin || !ff.stdout || !ff.stderr) {
@@ -11750,10 +11793,15 @@ ${scheduleItems}
         if (ended) return;
         startFfmpeg(videoType);
         frameCount++;
-        // Mux frame into MPEG-TS with correct PTS timestamp
-        if (tsMuxer) {
+        if (useMpegTsMuxer && tsMuxer) {
+          // Mux frame into MPEG-TS with correct PTS timestamp
           const tsData = tsMuxer.mux(data, microseconds, isKeyframe);
           input.write(tsData);
+        } else {
+          // Write raw Annex-B NAL units directly
+          // For H.264, prepend Access Unit Delimiter for proper frame demarcation
+          if (videoType === "H264") input.write(H264_AUD);
+          input.write(data);
         }
       },
     );
@@ -11805,26 +11853,70 @@ ${scheduleItems}
   }> {
     const timeoutMs = params.timeoutMs ?? 120_000;
 
-    // Extract framerate from filename hex flags, fallback to 15 fps (common for recordings)
-    const parsed = parseRecordingFileName(params.fileName);
-    const fps =
-      parsed?.framerate && parsed.framerate > 0 ? parsed.framerate : 15;
-
     // Get UID for the channel (required for download)
     const channel = this.normalizeChannel(params.channel);
     const uid = await this.ensureUidForRecordings(channel);
 
-    // Download and demux the recording
-    const { annexB, videoType } = await this.downloadRecordingDemuxed({
+    // Download raw recording
+    const raw = await this.downloadRecording({
       channel,
       uid,
       fileName: params.fileName,
       timeoutMs,
     });
 
-    if (annexB.length === 0) {
+    if (raw.length === 0) {
       throw new Error("Downloaded recording is empty");
     }
+
+    // Demux with timestamp extraction for proper A/V sync
+    const videoFrames: { annexB: Buffer; microseconds: number }[] = [];
+    let videoType: BcMediaVideoType | null = null;
+
+    const decoder = new BcMediaAnnexBDecoder({
+      strict: false,
+      logger: this.logger,
+      onVideoAccessUnit: ({ annexB, microseconds }) => {
+        videoFrames.push({ annexB, microseconds });
+      },
+    });
+
+    decoder.push(raw);
+    const stats = decoder.getStats();
+    videoType = stats.videoType;
+
+    if (videoFrames.length === 0) {
+      throw new Error("Downloaded recording has no video frames");
+    }
+
+    // Calculate FPS from timestamps - most reliable for correct playback speed
+    let fps: number;
+    if (videoFrames.length >= 2) {
+      const firstTs = videoFrames[0]!.microseconds;
+      const lastTs = videoFrames[videoFrames.length - 1]!.microseconds;
+      const durationUs = lastTs - firstTs;
+
+      if (durationUs > 0) {
+        const durationSeconds = durationUs / 1_000_000;
+        fps = (videoFrames.length - 1) / durationSeconds;
+      } else {
+        // Fallback to info FPS if timestamps are invalid
+        const infoFps = stats.infos[0]?.fps;
+        fps = infoFps && infoFps > 0 ? infoFps : 15;
+      }
+    } else {
+      // Not enough frames, use info FPS
+      const infoFps = stats.infos[0]?.fps;
+      fps = infoFps && infoFps > 0 ? infoFps : 15;
+    }
+
+    // Round FPS to common values if close
+    if (fps > 14 && fps < 16) fps = 15;
+    else if (fps > 23 && fps < 26) fps = 25;
+    else if (fps > 29 && fps < 31) fps = 30;
+    else fps = Math.round(fps * 100) / 100;
+
+    const annexB = Buffer.concat(videoFrames.map((f) => f.annexB));
 
     const input = new PassThrough();
     const output = new PassThrough();

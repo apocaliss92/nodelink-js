@@ -774,6 +774,28 @@ export class BaichuanVideoStream extends EventEmitter<{
         dataToParse = rawCandidate.subarray(searchStart);
       }
 
+      // Extract encryptLen from extension XML if present.
+      // This tells us how many bytes are encrypted (rest is clear).
+      // Format: <encryptLen>N</encryptLen>
+      let encryptLen: number | undefined;
+      if (frame.extension && frame.extension.length > 0) {
+        try {
+          const extDec = this.client.tryDecryptXml(
+            frame.extension,
+            frame.header.channelId,
+            enc,
+          );
+          const encryptLenMatch = extDec.match(
+            /<encryptLen>(\d+)<\/encryptLen>/i,
+          );
+          if (encryptLenMatch && encryptLenMatch[1]) {
+            encryptLen = parseInt(encryptLenMatch[1], 10);
+          }
+        } catch {
+          // ignore decryption errors
+        }
+      }
+
       // If the session uses encryption, some models send an encrypted stream at the frame level.
       // If we find a BcMedia magic in the raw payload, it's not a guarantee the content is NOT encrypted
       // (it can be a false positive). So we also try stateless decryption and pick
@@ -788,6 +810,7 @@ export class BaichuanVideoStream extends EventEmitter<{
         allowResync:
           frame.payload.length === 0 ||
           (totalFramesReceived <= 10 && totalMediaPackets === 0),
+        ...(encryptLen !== undefined ? { encryptLen } : {}),
       });
 
       // If we are currently aligned (no pending buffered bytes) and we receive a tiny chunk that
@@ -948,17 +971,51 @@ export class BaichuanVideoStream extends EventEmitter<{
         const prependParamSetsIfNeeded = (
           annexB: Buffer,
           videoType: "H264" | "H265",
+          isPframe = false,
         ): Buffer => {
           if (videoType === "H264") {
             const nals = splitAnnexBToNalPayloads(annexB);
             if (nals.length === 0) return annexB;
             const types = nals.map((n) => (n[0] ?? 0) & 0x1f);
-            // If it already includes SPS/PPS, do not prepend
-            if (types.includes(7) && types.includes(8)) return annexB;
-            // If there is no VCL, there's nothing to prepend to.
+
+            // Check if there's VCL (slice data) - required for P-frames
             const hasVcl = types.some(
               (t) => t === 1 || t === 5 || t === 19 || t === 20,
             );
+
+            // For P-frames without VCL (e.g., only SPS+PPS), drop the frame
+            // This can happen with NVR replay when parameter sets are sent separately
+            if (isPframe && !hasVcl) {
+              if (dbg.traceNativeStream) {
+                this.logger?.warn(
+                  `[BaichuanVideoStream] Dropping P-frame without VCL (only param sets): types=${types.join(",")}`,
+                );
+              }
+              return Buffer.alloc(0);
+            }
+
+            // If it already includes SPS/PPS, do not prepend but mark as "prepended"
+            // to avoid prepending to subsequent P-frames
+            if (types.includes(7) && types.includes(8)) {
+              // Extract ppsId from the slice to track which PPS was used
+              let ppsIdFromSlice: number | null = null;
+              for (const nal of nals) {
+                const t = (nal[0] ?? 0) & 0x1f;
+                if (t === 1 || t === 5) {
+                  ppsIdFromSlice = parseSlicePpsIdFromNal(nal);
+                  break;
+                }
+              }
+              // Mark that we've already seen param sets, so subsequent P-frames don't get them prepended
+              if (ppsIdFromSlice != null && ppsIdFromSlice <= 255) {
+                this.lastPrependedPpsId = ppsIdFromSlice;
+              } else {
+                // Fallback: mark as -1 to indicate "some" param sets were seen
+                this.lastPrependedPpsId = -1;
+              }
+              return annexB;
+            }
+            // If there is no VCL, there's nothing to prepend to.
             if (!hasVcl) return annexB;
 
             // Determine pps_id referenced by the first slice (if present)
@@ -1018,14 +1075,26 @@ export class BaichuanVideoStream extends EventEmitter<{
             const types = nals
               .map((n) => getH265NalType(n))
               .filter((t): t is number => t !== null);
-            // If it already includes VPS/SPS/PPS, do not prepend
-            if (types.includes(32) && types.includes(33) && types.includes(34))
-              return annexB;
 
             // If there is no VCL (IRAP or non-IRAP picture), there's nothing to prepend to.
             const hasVcl = types.some(
               (t) => (t >= 0 && t <= 9) || (t >= 16 && t <= 23),
             );
+
+            // For P-frames without VCL (e.g., only VPS+SPS+PPS), drop the frame
+            if (isPframe && !hasVcl) {
+              if (dbg.traceNativeStream) {
+                this.logger?.warn(
+                  `[BaichuanVideoStream] Dropping H.265 P-frame without VCL (only param sets): types=${types.join(",")}`,
+                );
+              }
+              return Buffer.alloc(0);
+            }
+
+            // If it already includes VPS/SPS/PPS, do not prepend
+            if (types.includes(32) && types.includes(33) && types.includes(34))
+              return annexB;
+
             if (!hasVcl) return annexB;
 
             // Only prepend once to avoid duplication
@@ -1278,7 +1347,7 @@ export class BaichuanVideoStream extends EventEmitter<{
 
           for (const p of parts) {
             maybeCacheParamSets(p, "Pframe", videoType);
-            const outP0 = prependParamSetsIfNeeded(p, videoType);
+            const outP0 = prependParamSetsIfNeeded(p, videoType, true); // isPframe=true
             if (outP0.length === 0) continue;
             const outP = outP0;
             dumpNalSummary(outP, "Pframe", media.microseconds);
