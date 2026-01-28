@@ -232,7 +232,10 @@ jobs:
   # ==========================================================================
   create-release:
     needs: [build-library, publish-npm, publish-docker]
-    if: always() && needs.build-library.result == 'success'
+    if: |
+      always() && 
+      needs.build-library.result == 'success' &&
+      (needs.publish-docker.result == 'success' || needs.publish-docker.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

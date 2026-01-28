@@ -719,7 +719,7 @@ export async function startRtspProxy(): Promise<RtspProxyServer> {
     return proxyInstance;
   }
 
-  const port = Number(process.env.RTSP_PROXY_PORT) || 8554;
+  const port = Number(process.env.RTSP_PORT) || 8554;
 
   proxyInstance = new RtspProxyServer({
     port,

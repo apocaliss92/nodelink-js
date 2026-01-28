@@ -52,8 +52,8 @@ RUN npm run build
 # -----------------------------------------------------------------------------
 FROM node:20-alpine AS production
 
-# Install ffmpeg for MJPEG streaming
-RUN apk add --no-cache ffmpeg
+# Install ffmpeg for MJPEG streaming and su-exec for entrypoint
+RUN apk add --no-cache ffmpeg su-exec
 
 WORKDIR /app
 
@@ -82,19 +82,17 @@ RUN npm install --ignore-scripts
 # Copy built app (server.js and public/ with React client)
 COPY --from=app-builder /build/dist ./dist
 
-# Create directories for data persistence
+# Copy entrypoint script
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# Create data directory (will be overlaid by volume mount)
 RUN mkdir -p /data/logs && chown -R nodejs:nodejs /data
-
-# Default settings will be created on first run
-# Mount /data for persistence
-
-# Switch to non-root user
-USER nodejs
 
 # Environment variables
 ENV NODE_ENV=production
 ENV PORT=3000
-ENV RTSP_PROXY_PORT=8554
+ENV RTSP_PORT=8554
 ENV DATA_PATH=/data
 
 # Expose ports
@@ -105,5 +103,5 @@ EXPOSE 8554
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
 
-# Start the server
-CMD ["node", "dist/server.js"]
+# Use entrypoint to handle permissions and start as nodejs user
+ENTRYPOINT ["docker-entrypoint.sh"]

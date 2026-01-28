@@ -31,7 +31,7 @@ export const SettingsSchema = z.object({
   // RTSP defaults
   rtspDefaultPort: z.number().default(8555), // Default port for individual RTSP servers
 
-  // RTSP Proxy (single entry point for all streams - port controlled by RTSP_PROXY_PORT env var)
+  // RTSP Proxy (single entry point for all streams - port controlled by RTSP_PORT env var)
   rtspProxyEnabled: z.boolean().default(true),
 
   // RTSP Authentication
@@ -68,11 +68,6 @@ export function loadSettings(): Settings {
 // Save settings to file
 export function saveSettings(newSettings: Partial<Settings>): Settings {
   settings = SettingsSchema.parse({ ...settings, ...newSettings });
-
-  // Ensure directory exists
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
 
   fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
   return settings;

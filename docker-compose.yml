@@ -35,7 +35,7 @@ services:
       - DATA_PATH=/data
       # Override ports if needed
       # - PORT=3000
-      # - RTSP_PROXY_PORT=8554
+      # - RTSP_PORT=8554
 
     # Healthcheck inherited from Dockerfile
 

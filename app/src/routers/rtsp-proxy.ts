@@ -4,7 +4,7 @@ import { getRtspProxy, startRtspProxy, stopRtspProxy } from "../rtsp-proxy.js";
 import { getSettings, saveSettings } from "../settings-store.js";
 
 // Port is controlled by environment variable
-const RTSP_PROXY_PORT = Number(process.env.RTSP_PROXY_PORT) || 8554;
+const RTSP_PORT = Number(process.env.RTSP_PORT) || 8554;
 
 export const rtspProxyRouter = router({
   // Get proxy status
@@ -16,7 +16,7 @@ export const rtspProxyRouter = router({
       return {
         enabled: settings.rtspProxyEnabled,
         running: false,
-        port: RTSP_PROXY_PORT,
+        port: RTSP_PORT,
         host: "0.0.0.0",
         connections: 0,
         streams: [],
@@ -58,7 +58,7 @@ export const rtspProxyRouter = router({
     .input(
       z.object({
         enabled: z.boolean().optional(),
-        // port is controlled by RTSP_PROXY_PORT env var, not configurable at runtime
+        // port is controlled by RTSP_PORT env var, not configurable at runtime
       }),
     )
     .mutation(async ({ input }) => {
