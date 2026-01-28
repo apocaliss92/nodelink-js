@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/icon.png" alt="nodelink.js" width="128" height="128">
+  <img src="app/client/public/icon-128x128.png" alt="nodelink.js" width="128" height="128">
 </p>
 
 <h1 align="center">nodelink.js</h1>
