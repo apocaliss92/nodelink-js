@@ -10,6 +10,7 @@ export * from "./reolink/http/types";
 export * from "./reolink/types";
 export * from "./reolink/cgi/ReolinkCgiApi";
 export * from "./reolink/baichuan/ReolinkBaichuanApi";
+export * from "./reolink/baichuan/HlsSessionManager";
 export * from "./reolink/AutodiscoveryClient";
 export * from "./reolink/baichuan/types";
 export * from "./reolink/baichuan/recordingFileName";

@@ -613,8 +613,17 @@ export class ReolinkBaichuanApi {
    * Process the replay queue - executes operations one at a time.
    */
   private async processReplayQueue(): Promise<void> {
-    if (this.replayQueueProcessing) return;
+    if (this.replayQueueProcessing) {
+      this.logger?.debug?.(
+        `[ReplayQueue] Already processing, queue length: ${this.replayQueue.length}`,
+      );
+      return;
+    }
     this.replayQueueProcessing = true;
+
+    this.logger?.debug?.(
+      `[ReplayQueue] Starting queue processing, items: ${this.replayQueue.length}`,
+    );
 
     while (this.replayQueue.length > 0) {
       const item = this.replayQueue.shift();
@@ -622,19 +631,24 @@ export class ReolinkBaichuanApi {
         // Ensure minimum cooldown between replay operations
         const timeSinceLastReplay = Date.now() - this.lastReplayEndTime;
         if (timeSinceLastReplay < this.REPLAY_COOLDOWN_MS) {
-          await new Promise((r) =>
-            setTimeout(r, this.REPLAY_COOLDOWN_MS - timeSinceLastReplay),
-          );
+          const waitTime = this.REPLAY_COOLDOWN_MS - timeSinceLastReplay;
+          this.logger?.debug?.(`[ReplayQueue] Waiting ${waitTime}ms cooldown`);
+          await new Promise((r) => setTimeout(r, waitTime));
         }
 
+        this.logger?.debug?.(
+          `[ReplayQueue] Executing item, remaining: ${this.replayQueue.length}`,
+        );
         await item.execute();
 
         // Record when this operation ended
         this.lastReplayEndTime = Date.now();
+        this.logger?.debug?.(`[ReplayQueue] Item completed`);
       }
     }
 
     this.replayQueueProcessing = false;
+    this.logger?.debug?.(`[ReplayQueue] Queue processing complete`);
   }
 
   /**
@@ -716,19 +730,44 @@ export class ReolinkBaichuanApi {
     this.replayQueue.push({
       execute: () => {
         return new Promise<void>((releaseSlot) => {
+          let released = false;
+          const safeRelease = () => {
+            if (released) return;
+            released = true;
+            releaseSlot();
+          };
+
+          // Safety timeout: release slot if not released within 10 minutes
+          // This prevents queue deadlocks from stuck streams
+          const safetyTimeout = setTimeout(
+            () => {
+              if (!released) {
+                this.logger?.warn?.(
+                  "[ReplayQueue] Safety timeout: releasing queue slot after 10 minutes",
+                );
+                safeRelease();
+              }
+            },
+            10 * 60 * 1000,
+          );
+
           // Run the setup
           setup()
             .then((result) => {
               // Setup succeeded - resolve with result and release function
               resolvePromise({
                 result,
-                release: () => releaseSlot(),
+                release: () => {
+                  clearTimeout(safetyTimeout);
+                  safeRelease();
+                },
               });
             })
             .catch((e) => {
               // Setup failed - reject and release slot
+              clearTimeout(safetyTimeout);
               rejectPromise(e);
-              releaseSlot();
+              safeRelease();
             });
         });
       },
@@ -825,34 +864,46 @@ export class ReolinkBaichuanApi {
     client: BaichuanClient;
     release: () => Promise<void>;
   }> {
+    const log = logger ?? this.logger;
+
     // Check if there's an existing client for this session key
     // If so, close it immediately - a socket can't do concurrent streaming
     const existing = this.dedicatedClients.get(sessionKey);
     if (existing) {
-      logger?.debug?.(
-        `[DedicatedClient] Closing existing client for ${sessionKey} (new stream requested)`,
+      log?.log?.(
+        `[DedicatedClient] Closing existing socket for sessionKey=${sessionKey} (new clip requested by same client)`,
       );
       this.dedicatedClients.delete(sessionKey);
-      // Close asynchronously - don't block the new connection
-      existing.client
-        .close({ reason: "new stream for same device" })
-        .catch((e) => {
-          logger?.debug?.(`[DedicatedClient] Error closing old socket: ${e}`);
-        });
+      // Close synchronously to ensure clean state before opening new connection
+      try {
+        await existing.client.close({ reason: "new stream for same device" });
+        log?.log?.(
+          `[DedicatedClient] Old socket closed successfully for sessionKey=${sessionKey}`,
+        );
+      } catch (e) {
+        log?.warn?.(
+          `[DedicatedClient] Error closing old socket for sessionKey=${sessionKey}: ${e}`,
+        );
+      }
     }
 
     // Create a new dedicated client with the same credentials
-    logger?.debug?.(`[DedicatedClient] Creating new client for ${sessionKey}`);
+    log?.log?.(
+      `[DedicatedClient] Opening new dedicated socket for sessionKey=${sessionKey}`,
+    );
     const dedicatedClient = new BaichuanClient({
       host: this.host,
       username: this.username,
       password: this.password,
-      logger: logger ?? this.logger,
+      logger: log,
       debugOptions: this.client.getDebugConfig?.(),
     });
 
     // Login the dedicated client
     await dedicatedClient.login();
+    log?.log?.(
+      `[DedicatedClient] Dedicated socket logged in for sessionKey=${sessionKey}`,
+    );
 
     this.dedicatedClients.set(sessionKey, {
       client: dedicatedClient,
@@ -874,18 +925,63 @@ export class ReolinkBaichuanApi {
     sessionKey: string,
     logger?: Logger,
   ): Promise<void> {
+    const log = logger ?? this.logger;
     const entry = this.dedicatedClients.get(sessionKey);
     if (!entry) return;
 
     // Always remove and close - no refCount logic
     this.dedicatedClients.delete(sessionKey);
-    logger?.debug?.(`[DedicatedClient] Releasing and closing ${sessionKey}`);
+    log?.log?.(
+      `[DedicatedClient] Closing socket for sessionKey=${sessionKey} (session ended)`,
+    );
 
     try {
       await entry.client.close({ reason: "dedicated session ended" });
+      log?.log?.(
+        `[DedicatedClient] Socket closed successfully for sessionKey=${sessionKey}`,
+      );
     } catch (e) {
-      logger?.debug?.(`[DedicatedClient] Error closing socket: ${e}`);
+      log?.warn?.(
+        `[DedicatedClient] Error closing socket for sessionKey=${sessionKey}: ${e}`,
+      );
     }
+  }
+
+  /**
+   * Force-close a dedicated client if it exists.
+   * This is called BEFORE entering the queue to immediately terminate any existing stream
+   * for the same sessionKey. The existing stream will receive an error, release its queue slot,
+   * and the new request can then proceed.
+   *
+   * @param sessionKey - The session key to force-close (e.g., `replay:${deviceId}`)
+   * @param logger - Optional logger
+   * @returns true if a client was closed, false if no client existed
+   */
+  private async forceCloseDedicatedClient(
+    sessionKey: string,
+    logger?: Logger,
+  ): Promise<boolean> {
+    const log = logger ?? this.logger;
+    const entry = this.dedicatedClients.get(sessionKey);
+    if (!entry) return false;
+
+    log?.log?.(
+      `[DedicatedClient] Force-closing existing socket for sessionKey=${sessionKey} (new request preempting)`,
+    );
+    this.dedicatedClients.delete(sessionKey);
+
+    try {
+      await entry.client.close({ reason: "preempted by new request" });
+      log?.log?.(
+        `[DedicatedClient] Force-close complete for sessionKey=${sessionKey}`,
+      );
+    } catch (e) {
+      log?.warn?.(
+        `[DedicatedClient] Error during force-close for sessionKey=${sessionKey}: ${e}`,
+      );
+    }
+
+    return true;
   }
 
   /**
@@ -3676,7 +3772,7 @@ export class ReolinkBaichuanApi {
             channel,
             payloadXml: stopXml,
             messageClass: BC_CLASS_MODERN_24,
-            timeoutMs: 10_000,
+            timeoutMs: 2_000, // Short timeout - if socket is closed, fail fast
             internal: true,
           });
         } catch {
@@ -3872,7 +3968,7 @@ export class ReolinkBaichuanApi {
             channel,
             payloadXml: stopXml,
             messageClass: BC_CLASS_MODERN_24,
-            timeoutMs: 10_000,
+            timeoutMs: 2_000, // Short timeout - if socket is closed, fail fast
             internal: true,
           });
         } catch {
@@ -5361,14 +5457,23 @@ export class ReolinkBaichuanApi {
   }
 
   async downloadRecording(params: DownloadRecordingParams): Promise<Buffer> {
+    this.logger?.debug?.(
+      `[downloadRecording] Queuing download for: ${params.fileName}, channel=${params.channel}`,
+    );
     // Use replay queue to serialize all download operations on this socket
     return this.enqueueReplayOperation(async () => {
+      this.logger?.debug?.(
+        `[downloadRecording] Starting download for: ${params.fileName}`,
+      );
       await this.client.login();
 
       const channel = this.normalizeChannel(params.channel);
       const uid = await this.ensureUidForRecordings(channel, params.uid);
       const fileName = params.fileName;
 
+      this.logger?.debug?.(
+        `[downloadRecording] Trying fileInfoListReplayBinaryDownload for: ${fileName}`,
+      );
       let replayErr: unknown;
       try {
         return await this.fileInfoListReplayBinaryDownload({
@@ -5379,8 +5484,14 @@ export class ReolinkBaichuanApi {
         });
       } catch (e) {
         replayErr = e;
+        this.logger?.debug?.(
+          `[downloadRecording] fileInfoListReplayBinaryDownload failed: ${e instanceof Error ? e.message : String(e)}`,
+        );
       }
 
+      this.logger?.debug?.(
+        `[downloadRecording] Trying fileInfoListDownload for: ${fileName}`,
+      );
       let downloadErr: unknown;
       try {
         return await this.fileInfoListDownload({
@@ -5391,10 +5502,16 @@ export class ReolinkBaichuanApi {
         });
       } catch (e) {
         downloadErr = e;
+        this.logger?.debug?.(
+          `[downloadRecording] fileInfoListDownload failed: ${e instanceof Error ? e.message : String(e)}`,
+        );
       }
 
       // Third fallback: paged download via cmdId=14/15/16
       // This works for TrackMix PoE and other cameras where cmdId=5/13 return empty
+      this.logger?.debug?.(
+        `[downloadRecording] Trying fileInfoListPagedDownload for: ${fileName}`,
+      );
       try {
         const result = await this.fileInfoListPagedDownload({
           channel,
@@ -5406,6 +5523,9 @@ export class ReolinkBaichuanApi {
           return result;
         }
       } catch (e) {
+        this.logger?.debug?.(
+          `[downloadRecording] fileInfoListPagedDownload failed: ${e instanceof Error ? e.message : String(e)}`,
+        );
         // Fall through to error
       }
 
@@ -11599,6 +11719,14 @@ ${scheduleItems}
       `[createRecordingReplayMp4Stream] Starting: channel=${params.channel}, fileName=${params.fileName}, durationMs=${durationMs}, fps=${fps}, timeoutSec=${seconds}, deviceId=${params.deviceId ?? "auto"}, useMpegTsMuxer=${useMpegTsMuxer}`,
     );
 
+    // IMPORTANT: If the same deviceId requests a new clip, force-close any existing socket
+    // BEFORE entering the queue. This immediately terminates the old stream, causing it to
+    // error and release its queue slot, so the new request can proceed without waiting.
+    if (params.deviceId) {
+      const sessionKey = `replay:${params.deviceId}`;
+      await this.forceCloseDedicatedClient(sessionKey, logger);
+    }
+
     const startParams: Parameters<
       ReolinkBaichuanApi["startRecordingReplayStream"]
     >[0] = {
@@ -11649,6 +11777,7 @@ ${scheduleItems}
         tsMuxer = new MpegTsMuxer({ videoType });
 
         // ffmpeg reads MPEG-TS input (which has PTS) and outputs fMP4
+        // Use frag_keyframe+empty_moov+default_base_moof for iOS compatibility
         args = [
           "-hide_banner",
           "-loglevel",
@@ -11661,8 +11790,12 @@ ${scheduleItems}
           ...(needsTranscode
             ? ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "23"]
             : ["-c", "copy"]),
+          // frag_keyframe: create new fragment at each keyframe
+          // empty_moov: write ftyp/moov immediately (required for streaming)
+          // default_base_moof: required for iOS Media Source Extensions
+          // negative_cts_offsets: fixes some iOS playback issues
           "-movflags",
-          "frag_keyframe+empty_moov",
+          "frag_keyframe+empty_moov+default_base_moof+negative_cts_offsets",
           "-f",
           "mp4",
           "pipe:1",
@@ -11686,8 +11819,12 @@ ${scheduleItems}
           ...(needsTranscode
             ? ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "23"]
             : ["-c", "copy"]),
+          // frag_keyframe: create new fragment at each keyframe
+          // empty_moov: write ftyp/moov immediately (required for streaming)
+          // default_base_moof: required for iOS Media Source Extensions
+          // negative_cts_offsets: fixes some iOS playback issues
           "-movflags",
-          "frag_keyframe+empty_moov",
+          "frag_keyframe+empty_moov+default_base_moof+negative_cts_offsets",
           "-f",
           "mp4",
           "pipe:1",
@@ -11732,19 +11869,29 @@ ${scheduleItems}
     const stopAll = async (): Promise<void> => {
       if (ended) return;
       ended = true;
+
+      // IMPORTANT: Release queue slot FIRST, before any cleanup that might timeout.
+      // This allows the next queued operation to proceed immediately.
+      releaseQueueSlot();
+
       logger?.debug?.(
         `[createRecordingReplayMp4Stream] Stopping stream, frames=${frameCount}`,
       );
-      try {
-        await stopReplay();
-      } catch {
-        // ignore
-      }
-      try {
-        await stream.stop();
-      } catch {
-        // ignore
-      }
+
+      // Do cleanup in parallel, don't block on any single operation
+      const cleanupPromises: Promise<void>[] = [];
+
+      cleanupPromises.push(
+        stopReplay().catch(() => {
+          /* ignore */
+        }),
+      );
+      cleanupPromises.push(
+        stream.stop().catch(() => {
+          /* ignore */
+        }),
+      );
+
       try {
         input.end();
       } catch {
@@ -11760,8 +11907,12 @@ ${scheduleItems}
       } catch {
         // ignore
       }
-      // Release queue slot when stream ends
-      releaseQueueSlot();
+
+      // Wait for cleanup but don't block indefinitely
+      await Promise.race([
+        Promise.all(cleanupPromises),
+        new Promise((resolve) => setTimeout(resolve, 2000)), // Max 2s for cleanup
+      ]);
     };
 
     const timer = setTimeout(
@@ -11784,6 +11935,15 @@ ${scheduleItems}
         `[createRecordingReplayMp4Stream] Stream error: ${e.message}`,
       );
       output.destroy(e);
+      void stopAll();
+    });
+
+    // Ensure queue slot is released when stream closes naturally
+    stream.on("close", () => {
+      logger?.debug?.(
+        `[createRecordingReplayMp4Stream] Stream closed, frames=${frameCount}`,
+      );
+      clearTimeout(timer);
       void stopAll();
     });
 
@@ -12003,6 +12163,416 @@ ${scheduleItems}
     return {
       mp4: output,
       stop: stopAll,
+    };
+  }
+
+  /**
+   * Create an HLS (HTTP Live Streaming) session for a recording.
+   *
+   * This method creates HLS segments on-the-fly from a recording replay stream.
+   * HLS is required for iOS devices (Safari, Home app) which don't support
+   * fragmented MP4 streaming well and require Range request support.
+   *
+   * The session writes HLS segments (.ts files) and playlist (.m3u8) to a
+   * temporary directory. You must serve these files via HTTP to the client.
+   *
+   * @example
+   * ```ts
+   * const session = await api.createRecordingReplayHlsSession({
+   *   channel: 0,
+   *   fileName: "/mnt/sda/Mp4Record/2026-01-25/RecS03.mp4",
+   * });
+   *
+   * // Serve playlist
+   * app.get('/clip.m3u8', (req, res) => {
+   *   res.type('application/vnd.apple.mpegurl');
+   *   res.send(session.getPlaylist());
+   * });
+   *
+   * // Serve segments
+   * app.get('/segment/:name', (req, res) => {
+   *   const data = session.getSegment(req.params.name);
+   *   if (data) {
+   *     res.type('video/mp2t');
+   *     res.send(data);
+   *   } else {
+   *     res.status(404).end();
+   *   }
+   * });
+   *
+   * // Cleanup when done
+   * await session.stop();
+   * ```
+   */
+  async createRecordingReplayHlsSession(params: {
+    /** Channel number (0-based). Required. */
+    channel: number;
+    /** Full path to the recording file. Required. */
+    fileName: string;
+    /**
+     * Force NVR mode (uses id-based XML with UID) or standalone mode (name-based XML).
+     * If not specified, the library will detect based on device channel count.
+     */
+    isNvr?: boolean;
+    /** Optional logger override. If not provided, uses the API's logger. */
+    logger?: Logger;
+    /**
+     * External identifier for the dedicated socket session.
+     * When provided, a dedicated BaichuanClient is created/reused for this deviceId.
+     */
+    deviceId?: string;
+    /**
+     * Transcode H.265/HEVC to H.264/AVC for compatibility.
+     * Default: false (passthrough).
+     */
+    transcodeH265ToH264?: boolean;
+    /**
+     * HLS segment duration in seconds. Default: 4.
+     */
+    hlsSegmentDuration?: number;
+  }): Promise<{
+    /**
+     * Get the current HLS playlist content (.m3u8).
+     * Call this to serve the playlist to the client.
+     */
+    getPlaylist: () => string;
+    /**
+     * Get a segment file by name.
+     * Returns undefined if the segment doesn't exist yet.
+     */
+    getSegment: (name: string) => Buffer | undefined;
+    /**
+     * List all available segment names.
+     */
+    listSegments: () => string[];
+    /**
+     * Wait for the HLS session to be ready (at least one segment available).
+     */
+    waitForReady: () => Promise<void>;
+    /**
+     * Stop the HLS session and cleanup.
+     */
+    stop: () => Promise<void>;
+    /**
+     * Path to the temporary directory containing HLS files.
+     */
+    tempDir: string;
+  }> {
+    const logger = params.logger ?? this.logger;
+    const hlsSegmentDuration = params.hlsSegmentDuration ?? 4;
+
+    // Create temp directory for HLS files
+    const os = await import("os");
+    const path = await import("path");
+    const fs = await import("fs/promises");
+    const crypto = await import("crypto");
+
+    const tempDir = path.join(
+      os.tmpdir(),
+      `reolink-hls-${crypto.randomBytes(8).toString("hex")}`,
+    );
+    await fs.mkdir(tempDir, { recursive: true });
+
+    const playlistPath = path.join(tempDir, "playlist.m3u8");
+    const segmentPattern = path.join(tempDir, "segment_%03d.ts");
+
+    // Extract duration from filename
+    const parsed = parseRecordingFileName(params.fileName);
+    const durationMs = parsed?.durationMs ?? 300_000;
+    const seconds = Math.ceil((durationMs / 1000) * 1.1);
+
+    logger?.debug?.(
+      `[createRecordingReplayHlsSession] Starting: channel=${params.channel}, fileName=${params.fileName}, durationMs=${durationMs}, hlsSegmentDuration=${hlsSegmentDuration}`,
+    );
+
+    // If the same deviceId requests a new session, force-close any existing socket
+    if (params.deviceId) {
+      const sessionKey = `replay:${params.deviceId}`;
+      await this.forceCloseDedicatedClient(sessionKey, logger);
+    }
+
+    const startParams: Parameters<
+      ReolinkBaichuanApi["startRecordingReplayStream"]
+    >[0] = {
+      channel: params.channel,
+      fileName: params.fileName,
+      logger,
+      ...(params.isNvr != null ? { isNvr: params.isNvr } : {}),
+      ...(params.deviceId != null ? { deviceId: params.deviceId } : {}),
+    };
+
+    // Use streaming queue
+    const { result: replayResult, release: releaseQueueSlot } =
+      await this.enqueueStreamingReplayOperation(() =>
+        this.startRecordingReplayStream(startParams),
+      );
+
+    const { stream, stop: stopReplay } = replayResult;
+
+    const input = new PassThrough();
+    const H264_AUD = Buffer.from([0x00, 0x00, 0x00, 0x01, 0x09, 0xf0]);
+
+    // Use MPEG-TS muxer for proper timestamps
+    let tsMuxer: MpegTsMuxer | null = null;
+
+    let ff: ReturnType<typeof spawn> | null = null;
+    let ended = false;
+    let frameCount = 0;
+    let readyResolve: (() => void) | null = null;
+    let segmentWatcher: ReturnType<typeof setInterval> | null = null;
+    const readyPromise = new Promise<void>((resolve) => {
+      readyResolve = resolve;
+    });
+
+    // Segment cache
+    const segments = new Map<string, Buffer>();
+
+    // Watch for first segment to be created (more responsive than fixed timeout)
+    const startSegmentWatcher = () => {
+      if (segmentWatcher || !readyResolve) return;
+
+      const firstSegmentPath = path.join(tempDir, "segment_000.ts");
+      let checkCount = 0;
+      const maxChecks = Math.ceil((hlsSegmentDuration + 2) * 10); // Check for segment duration + 2 seconds
+
+      segmentWatcher = setInterval(async () => {
+        checkCount++;
+        try {
+          const stats = await fs.stat(firstSegmentPath);
+          // Segment exists and has content (at least 1KB means it's being written)
+          if (stats.size > 1024) {
+            if (segmentWatcher) {
+              clearInterval(segmentWatcher);
+              segmentWatcher = null;
+            }
+            logger?.debug?.(
+              `[createRecordingReplayHlsSession] First segment ready after ${checkCount * 100}ms, size=${stats.size}`,
+            );
+            readyResolve?.();
+            readyResolve = null;
+          }
+        } catch {
+          // File doesn't exist yet, keep waiting
+        }
+
+        // Fallback timeout
+        if (checkCount >= maxChecks && readyResolve) {
+          if (segmentWatcher) {
+            clearInterval(segmentWatcher);
+            segmentWatcher = null;
+          }
+          logger?.debug?.(
+            `[createRecordingReplayHlsSession] Segment watcher timeout, resolving anyway`,
+          );
+          readyResolve?.();
+          readyResolve = null;
+        }
+      }, 100); // Check every 100ms
+    };
+
+    const startFfmpeg = (videoType: "H264" | "H265") => {
+      if (ff) return;
+
+      const needsTranscode =
+        videoType === "H265" && params.transcodeH265ToH264 === true;
+
+      logger?.debug?.(
+        `[createRecordingReplayHlsSession] Starting ffmpeg HLS with videoType=${videoType}, transcode=${needsTranscode}`,
+      );
+
+      // Initialize MPEG-TS muxer
+      MpegTsMuxer.resetCounters();
+      tsMuxer = new MpegTsMuxer({ videoType });
+
+      const args = [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "mpegts",
+        "-i",
+        "pipe:0",
+        // Video codec
+        ...(needsTranscode
+          ? ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "23"]
+          : ["-c", "copy"]),
+        // HLS output options
+        "-f",
+        "hls",
+        "-hls_time",
+        String(hlsSegmentDuration),
+        "-hls_list_size",
+        "0", // Keep all segments in playlist
+        "-hls_playlist_type",
+        "event", // Growing playlist (not VOD until end)
+        "-hls_segment_filename",
+        segmentPattern,
+        "-hls_flags",
+        "independent_segments+temp_file",
+        playlistPath,
+      ];
+
+      ff = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
+      if (!ff.stdin || !ff.stderr) {
+        throw new Error("ffmpeg stdio streams not available");
+      }
+      input.pipe(ff.stdin);
+
+      ff.stdin.on("error", () => {});
+      ff.stderr.on("error", () => {});
+      input.on("error", () => {});
+
+      let stderr = "";
+      ff.stderr.on("data", (d) => (stderr += String(d)));
+
+      ff.on("close", (code) => {
+        if (ended) return;
+        ended = true;
+        if ((code ?? 0) !== 0 && stderr.trim()) {
+          logger?.error?.(
+            `[createRecordingReplayHlsSession] ffmpeg exited with code ${code}: ${stderr}`,
+          );
+        } else {
+          logger?.debug?.(
+            `[createRecordingReplayHlsSession] ffmpeg closed normally, frames=${frameCount}`,
+          );
+        }
+      });
+    };
+
+    const stopAll = async (): Promise<void> => {
+      if (ended) return;
+      ended = true;
+
+      // Release queue slot first
+      releaseQueueSlot();
+
+      // Clear segment watcher if running
+      if (segmentWatcher) {
+        clearInterval(segmentWatcher);
+        segmentWatcher = null;
+      }
+
+      logger?.debug?.(
+        `[createRecordingReplayHlsSession] Stopping, frames=${frameCount}`,
+      );
+
+      const cleanupPromises: Promise<void>[] = [];
+      cleanupPromises.push(stopReplay().catch(() => {}));
+      cleanupPromises.push(stream.stop().catch(() => {}));
+
+      try {
+        input.end();
+      } catch {}
+      try {
+        ff?.kill("SIGKILL");
+      } catch {}
+
+      await Promise.race([
+        Promise.all(cleanupPromises),
+        new Promise((resolve) => setTimeout(resolve, 2000)),
+      ]);
+
+      // Cleanup temp directory after a delay
+      setTimeout(async () => {
+        try {
+          const files = await fs.readdir(tempDir);
+          for (const file of files) {
+            await fs.unlink(path.join(tempDir, file)).catch(() => {});
+          }
+          await fs.rmdir(tempDir).catch(() => {});
+        } catch {}
+      }, 60_000); // Keep files for 1 minute after stop
+    };
+
+    const timer = setTimeout(
+      () => {
+        logger?.debug?.(
+          `[createRecordingReplayHlsSession] Timeout reached (${seconds}s), stopping`,
+        );
+        void stopAll();
+      },
+      Math.max(1, seconds) * 1000,
+    );
+
+    stream.on("error", (e) => {
+      logger?.error?.(
+        `[createRecordingReplayHlsSession] Stream error: ${e.message}`,
+      );
+      clearTimeout(timer);
+      void stopAll();
+    });
+
+    stream.on("close", () => {
+      logger?.debug?.(
+        `[createRecordingReplayHlsSession] Stream closed, frames=${frameCount}`,
+      );
+      clearTimeout(timer);
+      // Don't call stopAll() immediately - just signal that input is done
+      // so ffmpeg can finish processing the buffered data
+      try {
+        input.end(); // Signal EOF to ffmpeg
+      } catch {}
+      // Note: ffmpeg will close on its own when done processing
+    });
+
+    stream.on(
+      "videoAccessUnit",
+      ({ data, videoType, isKeyframe, microseconds }) => {
+        if (ended) return;
+        startFfmpeg(videoType);
+        frameCount++;
+        if (tsMuxer) {
+          const tsData = tsMuxer.mux(data, microseconds, isKeyframe);
+          input.write(tsData);
+        }
+
+        // Start watching for first segment after first frame
+        if (frameCount === 1) {
+          startSegmentWatcher();
+        }
+      },
+    );
+
+    return {
+      getPlaylist: () => {
+        try {
+          const { readFileSync } = require("fs");
+          return readFileSync(playlistPath, "utf8");
+        } catch {
+          // Return minimal playlist if not ready yet
+          return "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n";
+        }
+      },
+      getSegment: (name: string) => {
+        // Check cache first
+        if (segments.has(name)) {
+          return segments.get(name);
+        }
+        // Read from disk
+        try {
+          const { readFileSync } = require("fs");
+          const segmentPath = path.join(tempDir, name);
+          const data = readFileSync(segmentPath);
+          segments.set(name, data);
+          return data;
+        } catch {
+          return undefined;
+        }
+      },
+      listSegments: () => {
+        try {
+          const { readdirSync } = require("fs");
+          return (readdirSync(tempDir) as string[]).filter((f: string) =>
+            f.endsWith(".ts"),
+          );
+        } catch {
+          return [];
+        }
+      },
+      waitForReady: () => readyPromise,
+      stop: stopAll,
+      tempDir,
     };
   }
 
