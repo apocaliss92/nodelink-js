@@ -865,6 +865,8 @@ export interface ParsedRecordingFileName {
   durationMs: number;
   /** Frame rate extracted from filename hex flags (if available) */
   framerate?: number;
+  /** File size in bytes extracted from filename (last hex field before extension) */
+  sizeBytes?: number;
   flags?: RecordingVodFlags;
   rawFlags?: Record<string, number>;
   animalTypeRaw?: string;

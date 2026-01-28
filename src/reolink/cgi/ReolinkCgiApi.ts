@@ -412,7 +412,8 @@ export type VodFile = {
     sec: number;
   };
   name: string;
-  size: number;
+  /** File size in bytes - API may return as string or number */
+  size: number | string;
 };
 
 export type VodSearchResult = {
@@ -2758,15 +2759,26 @@ export class ReolinkCgiApi {
     }
 
     // Create RecordingFile with all available metadata
+    // Note: vodFile.size might come as a string from JSON, ensure it's a number
+    const sizeBytes =
+      typeof vodFile.size === "string"
+        ? parseInt(vodFile.size, 10)
+        : vodFile.size;
+
     const result: RecordingFile = {
       fileName: vodFile.name,
       id: vodFile.name,
-      sizeBytes: vodFile.size,
       startTime,
       endTime,
       recordType: vodFile.type,
       detectionClasses,
     };
+
+    // Only add sizeBytes if it's a valid number (due to exactOptionalPropertyTypes)
+    if (Number.isFinite(sizeBytes)) {
+      result.sizeBytes = sizeBytes;
+    }
+
     if (parsed) {
       result.parsedFileName = parsed;
     }

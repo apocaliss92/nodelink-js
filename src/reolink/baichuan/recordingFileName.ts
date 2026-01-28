@@ -282,6 +282,7 @@ export function parseRecordingFileName(
   let widthRaw: string | undefined;
   let heightRaw: string | undefined;
   let hexValue = "";
+  let sizeHex: string | undefined;
 
   if (parts.length === 6) {
     // RecM01_20201222_075939_080140_<HEX>_<SIZE>
@@ -289,6 +290,7 @@ export function parseRecordingFileName(
     startTime = parts[2] ?? "";
     endTime = parts[3] ?? "";
     hexValue = parts[4] ?? "";
+    sizeHex = parts[5];
   } else if (parts.length === 7) {
     // RecS07_20250219_111146_111238_0_<HEX>_<SIZE>
     startDate = parts[1] ?? "";
@@ -296,6 +298,7 @@ export function parseRecordingFileName(
     endTime = parts[3] ?? "";
     animalTypeRaw = parts[4];
     hexValue = parts[5] ?? "";
+    sizeHex = parts[6];
   } else if (parts.length === 9) {
     // RecM02_DST20240827_090302_090334_0_800_800_<HEX>_<SIZE>
     devType = "hub";
@@ -306,6 +309,7 @@ export function parseRecordingFileName(
     widthRaw = parts[5];
     heightRaw = parts[6];
     hexValue = parts[7] ?? "";
+    sizeHex = parts[8];
   } else {
     return undefined;
   }
@@ -343,6 +347,14 @@ export function parseRecordingFileName(
   if (animalTypeRaw != null) parsed.animalTypeRaw = animalTypeRaw;
   if (widthRaw != null) parsed.widthRaw = widthRaw;
   if (heightRaw != null) parsed.heightRaw = heightRaw;
+
+  // Parse file size from hex (last field before extension)
+  if (sizeHex && /^[0-9a-fA-F]+$/.test(sizeHex)) {
+    const sizeBytes = parseInt(sizeHex, 16);
+    if (Number.isFinite(sizeBytes) && sizeBytes > 0) {
+      parsed.sizeBytes = sizeBytes;
+    }
+  }
 
   return parsed;
 }

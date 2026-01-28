@@ -142,10 +142,22 @@ export const parseRecordingFilesFromXml = (xml: string): RecordingFile[] => {
     if (endDt) item.endTime = endDt;
 
     const parsed = parseRecordingFileName(item.name ?? item.fileName);
-    if (parsed) {
-      item.parsedFileName = parsed;
-      if (!item.startTime) item.startTime = parsed.start;
-      if (!item.endTime) item.endTime = parsed.end;
+    // Also try parsing the full fileName path if it has the real filename with size info
+    const parsedFromPath =
+      item.fileName !== item.name
+        ? parseRecordingFileName(item.fileName)
+        : undefined;
+    // Use the parsed result that has sizeBytes, preferring parsedFromPath
+    const bestParsed =
+      parsedFromPath?.sizeBytes != null ? parsedFromPath : parsed;
+    if (bestParsed) {
+      item.parsedFileName = bestParsed;
+      if (!item.startTime) item.startTime = bestParsed.start;
+      if (!item.endTime) item.endTime = bestParsed.end;
+      // Use sizeBytes from parsed filename if not already set from XML
+      if (item.sizeBytes == null && bestParsed.sizeBytes != null) {
+        item.sizeBytes = bestParsed.sizeBytes;
+      }
     }
 
     item.detectionClasses = buildDetectionClasses(parsed, item.recordType);
@@ -186,6 +198,10 @@ export const parseRecordingFilesFromXml = (xml: string): RecordingFile[] => {
       item.parsedFileName = parsed;
       if (!item.startTime) item.startTime = parsed.start;
       if (!item.endTime) item.endTime = parsed.end;
+      // Use sizeBytes from parsed filename if not already set from XML
+      if (item.sizeBytes == null && parsed.sizeBytes != null) {
+        item.sizeBytes = parsed.sizeBytes;
+      }
     }
 
     item.detectionClasses = buildDetectionClasses(parsed, item.recordType);
