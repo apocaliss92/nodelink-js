@@ -95,8 +95,7 @@ USER nodejs
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV RTSP_PROXY_PORT=8554
-ENV SETTINGS_PATH=/data
-ENV LOGS_PATH=/data/logs
+ENV DATA_PATH=/data
 
 # Expose ports
 EXPOSE 3000

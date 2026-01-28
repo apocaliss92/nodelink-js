@@ -32,8 +32,7 @@ services:
       # - ./app/settings.json:/data/settings.json
 
     environment:
-      - SETTINGS_PATH=/data
-      - LOGS_PATH=/data/logs
+      - DATA_PATH=/data
       # Override ports if needed
       # - PORT=3000
       # - RTSP_PROXY_PORT=8554

@@ -27,20 +27,18 @@ export const settingsRouter = router({
     .meta({ description: "Update application settings" })
     .input(
       z.object({
-        logsPath: z.string().optional(),
         serviceIp: z.string().optional(),
         logLevel: z.enum(["error", "warn", "info", "debug"]).optional(),
         logRetentionDays: z.number().optional(),
         rtspDefaultPort: z.number().optional(),
         rtspRequireAuth: z.boolean().optional(),
-        // serverPort is controlled by PORT env var, not configurable at runtime
-        // rtspProxyPort is controlled by RTSP_PROXY_PORT env var, not configurable at runtime
+        // Paths are controlled by DATA_PATH env var, not configurable at runtime
       }),
     )
     .mutation(({ input }) => {
       const settings = saveSettings(input);
       // Reload logger if log settings changed
-      if (input.logLevel || input.logsPath) {
+      if (input.logLevel) {
         reloadLogger();
       }
       // Update RTSP URLs if serviceIp or auth changed
@@ -67,11 +65,11 @@ export const settingsRouter = router({
   getPaths: publicProcedure
     .meta({ description: "Get resolved paths information" })
     .query(() => {
-      const settings = getSettings();
-      const settingsDir = process.env.SETTINGS_PATH || ".";
+      const dataDir = process.env.DATA_PATH || ".";
       return {
-        logsPath: path.resolve(settings.logsPath),
-        settingsPath: path.resolve(path.join(settingsDir, "settings.json")),
+        dataPath: path.resolve(dataDir),
+        logsPath: path.resolve(path.join(dataDir, "logs")),
+        settingsPath: path.resolve(path.join(dataDir, "settings.json")),
         cwd: process.cwd(),
       };
     }),
@@ -80,12 +78,12 @@ export const settingsRouter = router({
   checkPaths: publicProcedure
     .meta({ description: "Check if configured paths exist" })
     .query(() => {
-      const settings = getSettings();
-      const settingsDir = process.env.SETTINGS_PATH || ".";
+      const dataDir = process.env.DATA_PATH || ".";
       return {
-        logsExists: fs.existsSync(path.resolve(settings.logsPath)),
+        dataExists: fs.existsSync(path.resolve(dataDir)),
+        logsExists: fs.existsSync(path.resolve(path.join(dataDir, "logs"))),
         settingsExists: fs.existsSync(
-          path.resolve(path.join(settingsDir, "settings.json")),
+          path.resolve(path.join(dataDir, "settings.json")),
         ),
       };
     }),

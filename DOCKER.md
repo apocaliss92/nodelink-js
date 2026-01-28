@@ -59,12 +59,11 @@ docker run -d \
 
 ### Environment Variables
 
-| Variable          | Default      | Description         |
-| ----------------- | ------------ | ------------------- |
-| `PORT`            | `3000`       | Web UI and API port |
-| `RTSP_PROXY_PORT` | `8554`       | RTSP proxy port     |
-| `SETTINGS_PATH`   | `/data`      | Settings directory  |
-| `LOGS_PATH`       | `/data/logs` | Logs directory      |
+| Variable          | Default | Description                          |
+| ----------------- | ------- | ------------------------------------ |
+| `PORT`            | `3000`  | Web UI and API port                  |
+| `RTSP_PROXY_PORT` | `8554`  | RTSP proxy port                      |
+| `DATA_PATH`       | `/data` | Directory for settings.json and logs |
 
 ### Ports
 

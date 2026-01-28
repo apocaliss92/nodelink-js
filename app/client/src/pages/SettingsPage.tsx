@@ -3,7 +3,6 @@ import { trpcMutation, trpcQuery } from "../api";
 
 type Settings = {
   serviceIp: string;
-  logsPath: string;
   logLevel: "error" | "warn" | "info" | "debug";
   logRetentionDays: number;
   rtspDefaultPort: number;
@@ -91,7 +90,6 @@ export default function SettingsPage() {
     setError(null);
     try {
       await trpcMutation("settings.update", {
-        logsPath: settings.logsPath,
         serviceIp: settings.serviceIp,
         logLevel: settings.logLevel,
         logRetentionDays: settings.logRetentionDays,
@@ -137,17 +135,6 @@ export default function SettingsPage() {
               value={settings.serviceIp}
               onChange={(e) =>
                 setSettings({ ...settings, serviceIp: e.target.value })
-              }
-            />
-
-            <div className="label" style={{ marginTop: 12 }}>
-              Logs path
-            </div>
-            <input
-              className="input"
-              value={settings.logsPath}
-              onChange={(e) =>
-                setSettings({ ...settings, logsPath: e.target.value })
               }
             />
           </div>

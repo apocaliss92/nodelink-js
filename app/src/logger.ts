@@ -41,7 +41,8 @@ const jsonFormat = winston.format.combine(
 // Create the logger instance
 function createLogger() {
   const settings = getSettings();
-  const logsDir = settings.logsPath || path.join(process.cwd(), "logs");
+  const dataDir = process.env.DATA_PATH || ".";
+  const logsDir = path.join(dataDir, "logs");
 
   // Ensure logs directory exists
   if (!fs.existsSync(logsDir)) {

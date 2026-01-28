@@ -24,8 +24,7 @@ export const SettingsSchema = z.object({
   // Service IP (hostname to show in RTSP URLs - Port and RTSP Port are controlled by env vars)
   serviceIp: z.string().default("localhost"), // IP/hostname to show in RTSP URLs
 
-  // Logging (LOGS_PATH env var can override default)
-  logsPath: z.string().default(process.env.LOGS_PATH || "./logs"),
+  // Logging
   logLevel: z.enum(["error", "warn", "info", "debug"]).default("info"),
   logRetentionDays: z.number().default(14),
 
@@ -46,8 +45,8 @@ export const SettingsSchema = z.object({
 
 export type Settings = z.infer<typeof SettingsSchema>;
 
-const SETTINGS_DIR = process.env.SETTINGS_PATH || ".";
-const SETTINGS_FILE = path.join(SETTINGS_DIR, "settings.json");
+const DATA_DIR = process.env.DATA_PATH || ".";
+const SETTINGS_FILE = path.join(DATA_DIR, "settings.json");
 
 let settings: Settings = SettingsSchema.parse({});
 
@@ -71,9 +70,8 @@ export function saveSettings(newSettings: Partial<Settings>): Settings {
   settings = SettingsSchema.parse({ ...settings, ...newSettings });
 
   // Ensure directory exists
-  const dir = path.dirname(SETTINGS_FILE);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
   }
 
   fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
