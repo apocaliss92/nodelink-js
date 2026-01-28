@@ -69,11 +69,10 @@ export const settingsRouter = router({
     .meta({ description: "Get resolved paths information" })
     .query(() => {
       const settings = getSettings();
+      const settingsDir = process.env.SETTINGS_PATH || ".";
       return {
         logsPath: path.resolve(settings.logsPath),
-        settingsPath: path.resolve(
-          process.env.SETTINGS_PATH || "./settings.json",
-        ),
+        settingsPath: path.resolve(path.join(settingsDir, "settings.json")),
         cwd: process.cwd(),
       };
     }),
@@ -83,10 +82,11 @@ export const settingsRouter = router({
     .meta({ description: "Check if configured paths exist" })
     .query(() => {
       const settings = getSettings();
+      const settingsDir = process.env.SETTINGS_PATH || ".";
       return {
         logsExists: fs.existsSync(path.resolve(settings.logsPath)),
         settingsExists: fs.existsSync(
-          path.resolve(process.env.SETTINGS_PATH || "./settings.json"),
+          path.resolve(path.join(settingsDir, "settings.json")),
         ),
       };
     }),

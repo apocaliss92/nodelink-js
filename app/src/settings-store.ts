@@ -48,7 +48,8 @@ export const SettingsSchema = z.object({
 
 export type Settings = z.infer<typeof SettingsSchema>;
 
-const SETTINGS_FILE = process.env.SETTINGS_PATH || "./settings.json";
+const SETTINGS_DIR = process.env.SETTINGS_PATH || ".";
+const SETTINGS_FILE = path.join(SETTINGS_DIR, "settings.json");
 
 let settings: Settings = SettingsSchema.parse({});
 

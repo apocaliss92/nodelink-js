@@ -59,11 +59,11 @@ docker run -d \
 
 ### Environment Variables
 
-| Variable        | Default               | Description         |
-| --------------- | --------------------- | ------------------- |
-| `NODE_ENV`      | `production`          | Node.js environment |
-| `SETTINGS_PATH` | `/data/settings.json` | Settings file path  |
-| `LOGS_PATH`     | `/data/logs`          | Logs directory      |
+| Variable        | Default      | Description         |
+| --------------- | ------------ | ------------------- |
+| `NODE_ENV`      | `production` | Node.js environment |
+| `SETTINGS_PATH` | `/data`      | Settings directory  |
+| `LOGS_PATH`     | `/data/logs` | Logs directory      |
 
 ### Volumes
 

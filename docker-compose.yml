@@ -33,7 +33,7 @@ services:
 
     environment:
       - NODE_ENV=production
-      - SETTINGS_PATH=/data/settings.json
+      - SETTINGS_PATH=/data
       - LOGS_PATH=/data/logs
       # Override server port if needed
       # - SERVER_PORT=3000

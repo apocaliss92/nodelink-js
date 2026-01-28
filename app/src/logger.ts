@@ -1,6 +1,7 @@
 import winston from "winston";
 import DailyRotateFile from "winston-daily-rotate-file";
 import path from "node:path";
+import fs from "node:fs";
 import { EventEmitter } from "node:events";
 import { getSettings } from "./settings-store";
 
@@ -41,6 +42,11 @@ const jsonFormat = winston.format.combine(
 function createLogger() {
   const settings = getSettings();
   const logsDir = settings.logsPath || path.join(process.cwd(), "logs");
+
+  // Ensure logs directory exists
+  if (!fs.existsSync(logsDir)) {
+    fs.mkdirSync(logsDir, { recursive: true });
+  }
 
   const transports: winston.transport[] = [
     // Console transport

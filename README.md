@@ -30,6 +30,90 @@ This library is inspired by and based on the reverse engineering work done by:
 
 ---
 
+## 🖥️ Manager UI (Web Dashboard)
+
+The library includes a **complete web-based management interface** for easy camera configuration and streaming control without writing code.
+
+<p align="center">
+  <b>Features:</b>
+</p>
+
+- 🎛️ **Camera Management** - Add, configure, and monitor multiple cameras
+- 📹 **Live Streaming** - Preview streams via MJPEG, WebRTC, or RTSP
+- 📊 **Real-time Logs** - Monitor camera events and system logs
+- ⚙️ **Settings** - Configure RTSP proxy, ports, and auto-start options
+- 📱 **PWA Support** - Install as a Progressive Web App on mobile devices
+- 🌐 **Responsive Design** - Works on desktop, tablet, and mobile
+
+### Quick Start (Development)
+
+```bash
+cd app
+npm install
+npm run dev
+```
+
+- Web UI: http://localhost:5173
+- API Server: http://localhost:3000
+
+### Production Build
+
+```bash
+cd app
+npm run build
+npm start
+```
+
+Open http://localhost:3000 in your browser.
+
+### Docker Deployment (Recommended)
+
+The easiest way to run the Manager UI is with Docker:
+
+```bash
+# Using pre-built image
+docker pull ghcr.io/apocaliss92/nodelink-manager:latest
+
+docker run -d \
+  --name nodelink-manager \
+  --network host \
+  -v nodelink-data:/data \
+  ghcr.io/apocaliss92/nodelink-manager:latest
+```
+
+Or with Docker Compose:
+
+```bash
+docker-compose up -d
+```
+
+**Environment Variables:**
+
+| Variable        | Default      | Description                    |
+| --------------- | ------------ | ------------------------------ |
+| `NODE_ENV`      | `production` | Node.js environment            |
+| `SETTINGS_PATH` | `/data`      | Directory for settings.json    |
+| `LOGS_PATH`     | `/data/logs` | Directory for application logs |
+
+**Exposed Ports:**
+
+| Port        | Description           |
+| ----------- | --------------------- |
+| `3000`      | Web UI and API        |
+| `8554-8564` | RTSP proxy port range |
+
+**Volumes:**
+
+| Path                  | Description               |
+| --------------------- | ------------------------- |
+| `/data`               | Persistent data directory |
+| `/data/settings.json` | Camera and server config  |
+| `/data/logs`          | Application logs          |
+
+📖 **[Full Docker documentation →](./DOCKER.md)**
+
+---
+
 ## 📚 Full API Documentation
 
 For detailed method-by-method documentation, see the [documentation](./documentation/) folder:

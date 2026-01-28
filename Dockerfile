@@ -93,7 +93,7 @@ USER nodejs
 
 # Environment variables
 ENV NODE_ENV=production
-ENV SETTINGS_PATH=/data/settings.json
+ENV SETTINGS_PATH=/data
 ENV LOGS_PATH=/data/logs
 
 # Expose ports
