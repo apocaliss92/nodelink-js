@@ -51,6 +51,7 @@ docs/*
 tools/stream-probe/*
 
 app/logs/*
+logs/*
 app/config.json
 app/settings.json
 

@@ -4,8 +4,17 @@
   "projectType": "application",
   "sourceRoot": "app/src",
   "targets": {
+    "dev": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["nodelink-js:build"],
+      "options": {
+        "cwd": "app",
+        "command": "npm run dev"
+      }
+    },
     "start": {
       "executor": "nx:run-commands",
+      "dependsOn": ["nodelink-js:build"],
       "outputs": ["{projectRoot}/dist"],
       "options": {
         "cwd": "app",

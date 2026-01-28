@@ -15,14 +15,16 @@ A simple web UI to test all Reolink API methods and manage RTSP streams.
 # Install dependencies
 npm install
 
-# Start development server (with hot reload)
+# Dev (React + Vite + API server)
+# - React UI: http://localhost:5173
+# - API server: http://localhost:3000
 npm run dev
 
 # Or start production server
 npm run build && npm start
 ```
 
-Open http://localhost:3000 to access the tRPC Panel UI.
+In production mode, open http://localhost:3000.
 
 ## API Endpoints
 

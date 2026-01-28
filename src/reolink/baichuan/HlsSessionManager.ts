@@ -150,7 +150,7 @@ export class HlsSessionManager {
   /**
    * Handle an HLS request and return the HTTP response.
    *
-   * @param params Request parameters
+   * @param params - Request parameters
    * @returns HTTP response ready to be sent
    */
   async handleRequest(params: {
@@ -559,7 +559,7 @@ export class HlsSessionManager {
 /**
  * Detect if the request is from an iOS device that needs HLS.
  *
- * @param userAgent The User-Agent header from the request
+ * @param userAgent - The User-Agent header from the request
  * @returns Object with iOS detection results
  */
 export function detectIosClient(userAgent: string | undefined): {
@@ -582,7 +582,7 @@ export function detectIosClient(userAgent: string | undefined): {
 /**
  * Build the HLS redirect URL from the original request URL.
  *
- * @param originalUrl The original request URL
+ * @param originalUrl - The original request URL
  * @returns The URL with ?hls=playlist.m3u8 appended
  */
 export function buildHlsRedirectUrl(originalUrl: string): string {

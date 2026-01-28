@@ -21,6 +21,9 @@ export const CameraConfigSchema = z.object({
   username: z.string(),
   password: z.string(),
   channels: z.number().default(1),
+  // Explicitly mark this camera as a channel on an NVR/Hub
+  // (so the UI can show the channel even if it's 0)
+  isNvr: z.boolean().default(false),
   // Debug logging for this camera
   debugLogs: z.boolean().default(false),
   // RTSP streams configuration (multiple streams per camera)

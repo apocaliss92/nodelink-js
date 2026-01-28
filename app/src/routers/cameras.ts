@@ -34,6 +34,7 @@ export const camerasRouter = router({
           rtspServers: getCameraRtspServers(cam.id),
           sanitizedName: sanitizeCameraName(cam.name),
           rtspChannel: camConfig?.rtspChannel ?? 0,
+          isNvr: camConfig?.isNvr ?? false,
           debugLogs: camConfig?.debugLogs ?? false,
           rtspStreams: camConfig?.rtspStreams ?? [], // Include stream configs with autoStart
         };
@@ -54,6 +55,7 @@ export const camerasRouter = router({
         rtspServers: getCameraRtspServers(input.id),
         sanitizedName: sanitizeCameraName(cam.name),
         rtspChannel: camConfig?.rtspChannel ?? 0,
+        isNvr: camConfig?.isNvr ?? false,
         debugLogs: camConfig?.debugLogs ?? false,
         rtspStreams: camConfig?.rtspStreams ?? [], // Include stream configs with autoStart
       };
@@ -70,6 +72,7 @@ export const camerasRouter = router({
         username: z.string(),
         password: z.string(),
         channels: z.number().default(1),
+        isNvr: z.boolean().default(false),
         debugLogs: z.boolean().default(false),
         rtspStreams: z.array(RtspStreamConfigSchema).default([]),
         // Legacy support
@@ -131,6 +134,7 @@ export const camerasRouter = router({
         username: z.string().optional(),
         password: z.string().optional(),
         channels: z.number().optional(),
+        isNvr: z.boolean().optional(),
         debugLogs: z.boolean().optional(),
         rtspStreams: z.array(RtspStreamConfigSchema).optional(),
         // Legacy support

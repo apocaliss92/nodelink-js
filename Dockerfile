@@ -35,8 +35,9 @@ COPY --from=lib-builder /lib /lib
 COPY app/package*.json ./
 COPY app/tsconfig.json ./
 COPY app/tsup.config.ts ./
+COPY app/vite.config.ts ./
 COPY app/src/ ./src/
-COPY app/public/ ./public/
+COPY app/client/ ./client/
 
 # Install dependencies (will resolve file:.. from /lib)
 # Need to update package.json to point to correct path
@@ -78,9 +79,8 @@ RUN sed -i 's|"file:.."|"file:/lib"|g' package.json
 ENV NODE_ENV=production
 RUN npm install --ignore-scripts
 
-# Copy built app
+# Copy built app (server.js and public/ with React client)
 COPY --from=app-builder /build/dist ./dist
-COPY --from=app-builder /build/public ./public
 
 # Create directories for data persistence
 RUN mkdir -p /data/logs && chown -R nodejs:nodejs /data

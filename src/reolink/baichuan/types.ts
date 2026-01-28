@@ -1541,8 +1541,8 @@ export function getVideoclipClientInfo(
  * - Firefox: No H.265 support, needs transcoding
  * - Android: Variable support, transcode for safety
  *
- * @param headers HTTP request headers
- * @param forceMode Optional override: "passthrough" or "transcode-h264"
+ * @param headers - HTTP request headers
+ * @param forceMode - Optional override: "passthrough" or "transcode-h264"
  * @returns Decision with mode, reason, and client info
  */
 export function decideVideoclipTranscodeMode(

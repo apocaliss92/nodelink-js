@@ -8687,11 +8687,13 @@ export class ReolinkBaichuanApi {
    * @param settings - Floodlight settings to apply
    *
    * @example
+   * ```typescript
    * await api.setFloodlightSettings(0, {
    *   duration: 300, // 5 minutes
    *   detectType: 'people,vehicle',
    *   brightness: 80,
    * });
+   * ```
    */
   async setFloodlightSettings(
     channel: number | undefined,

@@ -1,6 +1,6 @@
 # Docker Deployment
 
-This guide explains how to deploy **Nodelink Manager** using Docker.
+This guide explains how to deploy **Nodelink.js Manager** using Docker.
 
 ## Quick Start
 

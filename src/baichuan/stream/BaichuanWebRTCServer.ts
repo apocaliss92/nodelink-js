@@ -37,6 +37,11 @@ import type { ReolinkBaichuanApi } from "../../reolink/baichuan/ReolinkBaichuanA
 import type { NativeVideoStreamVariant } from "../../reolink/baichuan/types";
 import { createNativeStream, Intercom } from "../../rfc/helpers";
 import { detectVideoCodecFromNal } from "./BcMediaAnnexBDecoder";
+import {
+  convertToAnnexB as convertH264ToAnnexB,
+  isH264KeyframeAnnexB,
+  splitAnnexBToNalPayloads as splitH264AnnexBToNalPayloads,
+} from "./H264Converter";
 
 // ============================================================================
 // Types
@@ -106,6 +111,14 @@ interface WebRTCSession {
   intercom: Intercom | null;
   dataChannel: any; // RTCDataChannel for intercom
   videoCodec: "H264" | "H265" | null;
+  // H.264 parameter sets cache
+  lastH264Sps?: Buffer | null;
+  lastH264Pps?: Buffer | null;
+  // H.265 parameter sets cache
+  lastH265Vps?: Buffer | null;
+  lastH265Sps?: Buffer | null;
+  lastH265Pps?: Buffer | null;
+  hasReceivedKeyframe?: boolean; // Track if we've received an IDR frame
   createdAt: Date;
   state: "connecting" | "connected" | "disconnected" | "failed";
   stats: {
@@ -314,12 +327,21 @@ export class BaichuanWebRTCServer extends EventEmitter {
     this.sessions.set(sessionId, session);
 
     // Add video track (H.264 - will be used only for H.264 streams)
-    const videoTrack = new MediaStreamTrack({ kind: "video" });
-    peerConnection.addTrack(videoTrack);
+    // Generate a random SSRC for the video track
+    const videoSsrc = (Math.random() * 0xffffffff) >>> 0;
+    const videoTrack = new MediaStreamTrack({ kind: "video", ssrc: videoSsrc });
+    const videoSender = peerConnection.addTrack(videoTrack);
     session.videoTrack = videoTrack;
 
+    // Log SSRC for debugging
+    this.log(
+      "info",
+      `Video track created: ssrc=${videoTrack.ssrc}, sender params=${JSON.stringify(videoSender?.getParameters?.() ?? {})}`,
+    );
+
     // Add audio track (Opus for WebRTC)
-    const audioTrack = new MediaStreamTrack({ kind: "audio" });
+    const audioSsrc = (Math.random() * 0xffffffff) >>> 0;
+    const audioTrack = new MediaStreamTrack({ kind: "audio", ssrc: audioSsrc });
     peerConnection.addTrack(audioTrack);
     session.audioTrack = audioTrack;
 
@@ -373,16 +395,17 @@ export class BaichuanWebRTCServer extends EventEmitter {
 
     // Handle ICE connection state changes
     peerConnection.iceConnectionStateChange.subscribe((state: string) => {
-      this.log("debug", `ICE connection state for ${sessionId}: ${state}`);
+      this.log("info", `ICE connection state for ${sessionId}: ${state}`);
       if (state === "connected") {
         session.state = "connected";
         this.emit("session-connected", { sessionId });
-      } else if (state === "disconnected" || state === "failed") {
+      } else if (state === "failed") {
         session.state = state as any;
         this.closeSession(sessionId).catch((err) => {
           this.log("error", `Error closing session on ICE ${state}: ${err}`);
         });
       }
+      // Note: "disconnected" is often transient on LAN, don't immediately close
     });
 
     // Handle peer connection state changes
@@ -660,7 +683,8 @@ export class BaichuanWebRTCServer extends EventEmitter {
           if (frame.data) {
             // Detect codec on first video frame
             if (!session.videoCodec && frame.videoType) {
-              session.videoCodec = frame.videoType;
+              const detected = detectVideoCodecFromNal(frame.data);
+              session.videoCodec = (detected ?? frame.videoType) as any;
               this.log("info", `Detected video codec: ${session.videoCodec}`);
 
               // Send codec info to client via data channel
@@ -691,26 +715,57 @@ export class BaichuanWebRTCServer extends EventEmitter {
             lastTimeMicros = frame.microseconds || 0;
 
             if (session.videoCodec === "H264") {
-              // H.264 → send via RTP media track
-              await this.sendH264Frame(
+              // H.264 → send via DataChannel (WebCodecs will decode in browser)
+              // Check if connection is ready
+              const connState = session.peerConnection.connectionState;
+              const iceState = session.peerConnection.iceConnectionState;
+
+              // Accept various "connected" states - werift may use different values
+              const isConnected =
+                connState === "connected" ||
+                iceState === "connected" ||
+                iceState === "completed";
+
+              if (!isConnected) {
+                // Wait for connection, but don't block forever - drop frames until connected
+                if (frameNumber < 10) {
+                  this.log(
+                    "debug",
+                    `Waiting for connection, dropping H.264 frame ${frameNumber}`,
+                  );
+                }
+                frameNumber++;
+                continue;
+              }
+
+              // H.264 → send via RTP media track (standard WebRTC)
+              const packetsSent = await this.sendH264Frame(
                 session,
                 werift,
                 frame.data,
                 sequenceNumber,
                 timestamp,
               );
-              sequenceNumber =
-                (sequenceNumber + Math.ceil(frame.data.length / 1200)) & 0xffff;
-              packetsSentSinceLastLog++;
+              sequenceNumber = (sequenceNumber + packetsSent) & 0xffff;
+              packetsSentSinceLastLog += packetsSent;
+              frameNumber++;
+              session.stats.videoFrames++;
+              session.stats.bytesSent += frame.data.length;
             } else if (session.videoCodec === "H265") {
               // H.265 → send via DataChannel (WebCodecs will decode in browser)
-              await this.sendH265Frame(session, frame, frameNumber);
-              packetsSentSinceLastLog++;
+              const sent = await this.sendVideoFrameViaDataChannel(
+                session,
+                frame,
+                frameNumber,
+                "H265",
+              );
+              if (sent) {
+                packetsSentSinceLastLog++;
+                frameNumber++;
+                session.stats.videoFrames++;
+                session.stats.bytesSent += frame.data.length;
+              }
             }
-
-            frameNumber++;
-            session.stats.videoFrames++;
-            session.stats.bytesSent += frame.data.length;
 
             // Log progress every 5 seconds
             const now = Date.now();
@@ -737,6 +792,7 @@ export class BaichuanWebRTCServer extends EventEmitter {
 
   /**
    * Send H.264 frame via RTP media track
+   * Returns the number of RTP packets sent
    */
   private async sendH264Frame(
     session: WebRTCSession,
@@ -744,14 +800,103 @@ export class BaichuanWebRTCServer extends EventEmitter {
     frameData: Buffer,
     sequenceNumber: number,
     timestamp: number,
-  ): Promise<void> {
-    const nalUnits = parseAnnexBNalUnits(frameData);
+  ): Promise<number> {
+    // Frame data may be length-prefixed; normalize to Annex-B.
+    const annexB = convertH264ToAnnexB(frameData);
+    const nalUnits = splitH264AnnexBToNalPayloads(annexB);
 
-    for (let i = 0; i < nalUnits.length; i++) {
-      const nalUnit = nalUnits[i]!;
+    // Categorize NAL units
+    let hasSps = false;
+    let hasPps = false;
+    let hasIdr = false;
+    const nalTypes: number[] = [];
+
+    for (const nal of nalUnits) {
+      const t = (nal[0] ?? 0) & 0x1f;
+      nalTypes.push(t);
+      if (t === 7) {
+        hasSps = true;
+        session.lastH264Sps = nal;
+      }
+      if (t === 8) {
+        hasPps = true;
+        session.lastH264Pps = nal;
+      }
+      if (t === 5) hasIdr = true;
+    }
+
+    // Log NAL types for first few frames to debug
+    if (session.stats.videoFrames < 10) {
+      this.log(
+        "debug",
+        `H.264 frame NAL types: [${nalTypes.join(",")}] (5=IDR, 7=SPS, 8=PPS, 1=P-slice)`,
+      );
+    }
+
+    // A keyframe is an IDR frame (type 5). SPS/PPS may come separately.
+    const isKeyframe = hasIdr;
+    let nalList = nalUnits;
+
+    // If this is an IDR but missing SPS/PPS, prepend cached ones
+    if (hasIdr && (!hasSps || !hasPps)) {
+      const prepend: Buffer[] = [];
+      if (!hasSps && session.lastH264Sps) {
+        prepend.push(session.lastH264Sps);
+        this.log("debug", `Prepending cached SPS to IDR frame`);
+      }
+      if (!hasPps && session.lastH264Pps) {
+        prepend.push(session.lastH264Pps);
+        this.log("debug", `Prepending cached PPS to IDR frame`);
+      }
+      if (prepend.length > 0) {
+        nalList = [...prepend, ...nalUnits];
+      } else if (!session.lastH264Sps || !session.lastH264Pps) {
+        // IDR without SPS/PPS and no cache - decoder can't use this
+        this.log(
+          "warn",
+          `IDR frame without SPS/PPS and no cached parameters - frame may not decode`,
+        );
+      }
+    }
+
+    // Wait for first keyframe before sending any frames
+    if (!session.hasReceivedKeyframe) {
+      if (hasIdr && session.lastH264Sps && session.lastH264Pps) {
+        session.hasReceivedKeyframe = true;
+        this.log(
+          "info",
+          `First H.264 keyframe received with SPS/PPS - starting video stream`,
+        );
+        // Continue to send this keyframe below
+      } else if (hasIdr) {
+        this.log(
+          "debug",
+          `IDR received but waiting for SPS/PPS before starting stream`,
+        );
+        return 0;
+      } else {
+        // P-frame before first keyframe - drop it
+        if (session.stats.videoFrames < 5) {
+          this.log(
+            "debug",
+            `Dropping P-frame ${session.stats.videoFrames} while waiting for keyframe`,
+          );
+        }
+        return 0;
+      }
+    }
+
+    let totalPacketsSent = 0;
+    let currentSeqNum = sequenceNumber;
+
+    // Get SSRC from video track
+    const ssrc = session.videoTrack.ssrc || 0;
+
+    for (let i = 0; i < nalList.length; i++) {
+      const nalUnit = nalList[i]!;
       if (nalUnit.length === 0) continue;
 
-      const isLastNalu = i === nalUnits.length - 1;
+      const isLastNalu = i === nalList.length - 1;
       const nalType = getH264NalType(nalUnit);
 
       // Skip AUD (Access Unit Delimiter) NAL units
@@ -761,15 +906,280 @@ export class BaichuanWebRTCServer extends EventEmitter {
       const rtpPackets = this.createH264RtpPackets(
         werift,
         nalUnit,
-        sequenceNumber,
+        currentSeqNum,
         timestamp,
         isLastNalu,
+        ssrc,
       );
 
-      for (const rtpPacket of rtpPackets) {
-        session.videoTrack.writeRtp(rtpPacket);
-        sequenceNumber = (sequenceNumber + 1) & 0xffff;
+      // Log NAL processing for first few frames
+      if (session.stats.videoFrames < 3) {
+        this.log(
+          "info",
+          `NAL ${i}: type=${nalType}, size=${nalUnit.length}, rtpPackets=${rtpPackets.length}`,
+        );
       }
+
+      for (const rtpPacket of rtpPackets) {
+        try {
+          session.videoTrack.writeRtp(rtpPacket);
+          currentSeqNum = (currentSeqNum + 1) & 0xffff;
+          totalPacketsSent++;
+        } catch (err) {
+          this.log(
+            "error",
+            `Error writing RTP packet for session ${session.id}: ${err}`,
+          );
+          // Continue trying to send more packets
+        }
+      }
+    }
+
+    // Log first few frames for debugging
+    if (session.stats.videoFrames < 3) {
+      this.log(
+        "info",
+        `H.264 frame sent: nalCount=${nalList.length} packets=${totalPacketsSent} seq=${sequenceNumber}->${currentSeqNum} ts=${timestamp} keyframe=${isKeyframe}`,
+      );
+    }
+
+    return totalPacketsSent;
+  }
+
+  /**
+   * Send video frame via DataChannel (works for both H.264 and H.265)
+   * Format: 12-byte header + Annex-B data
+   * Header: [frameNum (4)] [timestamp (4)] [flags (1)] [keyframe (1)] [reserved (2)]
+   * Flags: 0x01 = H.265, 0x02 = H.264
+   */
+  private async sendVideoFrameViaDataChannel(
+    session: WebRTCSession,
+    frame: any,
+    frameNumber: number,
+    codec: "H264" | "H265",
+  ): Promise<boolean> {
+    if (!session.videoDataChannel) {
+      if (frameNumber === 0) {
+        this.log("warn", `No video data channel for session ${session.id}`);
+      }
+      return false;
+    }
+
+    if (session.videoDataChannel.readyState !== "open") {
+      if (frameNumber === 0) {
+        this.log(
+          "warn",
+          `Video data channel not open for session ${session.id}: ${session.videoDataChannel.readyState}`,
+        );
+      }
+      return false;
+    }
+
+    // Parse NAL units to detect keyframe and cache SPS/PPS
+    const nalUnits = parseAnnexBNalUnits(frame.data);
+    let isKeyframe = frame.isKeyframe === true;
+    let hasIdr = false;
+    let hasSps = false;
+    let hasPps = false;
+    let hasVps = false;
+    const nalTypes: number[] = [];
+
+    for (const nalUnit of nalUnits) {
+      if (nalUnit.length === 0) continue;
+
+      if (codec === "H265") {
+        const nalType = getH265NalType(nalUnit);
+        nalTypes.push(nalType);
+        // VPS=32, SPS=33, PPS=34, IDR_W_RADL=19, IDR_N_LP=20
+        if (nalType === 32) {
+          hasVps = true;
+          session.lastH265Vps = nalUnit;
+        }
+        if (nalType === 33) {
+          hasSps = true;
+          session.lastH265Sps = nalUnit;
+        }
+        if (nalType === 34) {
+          hasPps = true;
+          session.lastH265Pps = nalUnit;
+        }
+        if (nalType === 19 || nalType === 20) {
+          hasIdr = true;
+          isKeyframe = true;
+        }
+      } else {
+        // H.264
+        const nalType = getH264NalType(nalUnit);
+        nalTypes.push(nalType);
+        // SPS=7, PPS=8, IDR=5
+        if (nalType === 7) {
+          hasSps = true;
+          session.lastH264Sps = nalUnit;
+        }
+        if (nalType === 8) {
+          hasPps = true;
+          session.lastH264Pps = nalUnit;
+        }
+        if (nalType === 5) {
+          hasIdr = true;
+          isKeyframe = true;
+        }
+      }
+    }
+
+    // Log NAL types for first few frames
+    if (frameNumber < 5) {
+      this.log(
+        "debug",
+        `${codec} frame ${frameNumber} NAL types: [${nalTypes.join(",")}] hasIdr=${hasIdr} hasSps=${hasSps} hasPps=${hasPps}`,
+      );
+    }
+
+    // Wait for first keyframe before sending any frames
+    if (!session.hasReceivedKeyframe) {
+      if (codec === "H264") {
+        // For H.264, we need SPS+PPS+IDR
+        if (hasIdr && session.lastH264Sps && session.lastH264Pps) {
+          session.hasReceivedKeyframe = true;
+          this.log(
+            "info",
+            `First H.264 keyframe received with SPS/PPS - starting video stream`,
+          );
+        } else if (hasSps || hasPps) {
+          // Got parameter sets, wait for IDR
+          this.log("debug", `Received H.264 parameter sets, waiting for IDR`);
+          return false;
+        } else if (hasIdr) {
+          // IDR without SPS/PPS - can't use yet
+          this.log("debug", `IDR received but waiting for SPS/PPS`);
+          return false;
+        } else {
+          // P-frame - drop it
+          if (frameNumber < 10) {
+            this.log(
+              "debug",
+              `Dropping H.264 P-frame ${frameNumber} while waiting for keyframe`,
+            );
+          }
+          return false;
+        }
+      } else {
+        // For H.265, we need VPS+SPS+PPS+IDR
+        if (
+          hasIdr &&
+          session.lastH265Vps &&
+          session.lastH265Sps &&
+          session.lastH265Pps
+        ) {
+          session.hasReceivedKeyframe = true;
+          this.log(
+            "info",
+            `First H.265 keyframe received with VPS/SPS/PPS - starting video stream`,
+          );
+        } else if (hasVps || hasSps || hasPps) {
+          this.log("debug", `Received H.265 parameter sets, waiting for IDR`);
+          return false;
+        } else if (hasIdr) {
+          this.log("debug", `H.265 IDR received but waiting for VPS/SPS/PPS`);
+          return false;
+        } else {
+          if (frameNumber < 10) {
+            this.log(
+              "debug",
+              `Dropping H.265 P-frame ${frameNumber} while waiting for keyframe`,
+            );
+          }
+          return false;
+        }
+      }
+    }
+
+    // Build the frame data, prepending cached parameter sets if needed for IDR
+    let frameData = frame.data;
+
+    if (hasIdr) {
+      if (codec === "H264" && (!hasSps || !hasPps)) {
+        // Prepend cached SPS/PPS to IDR
+        const parts: Buffer[] = [];
+        if (!hasSps && session.lastH264Sps) {
+          parts.push(Buffer.from([0x00, 0x00, 0x00, 0x01]));
+          parts.push(session.lastH264Sps);
+        }
+        if (!hasPps && session.lastH264Pps) {
+          parts.push(Buffer.from([0x00, 0x00, 0x00, 0x01]));
+          parts.push(session.lastH264Pps);
+        }
+        if (parts.length > 0) {
+          frameData = Buffer.concat([...parts, frame.data]);
+          this.log("debug", `Prepended cached SPS/PPS to H.264 IDR frame`);
+        }
+      } else if (codec === "H265" && (!hasVps || !hasSps || !hasPps)) {
+        // Prepend cached VPS/SPS/PPS to IDR
+        const parts: Buffer[] = [];
+        if (!hasVps && session.lastH265Vps) {
+          parts.push(Buffer.from([0x00, 0x00, 0x00, 0x01]));
+          parts.push(session.lastH265Vps);
+        }
+        if (!hasSps && session.lastH265Sps) {
+          parts.push(Buffer.from([0x00, 0x00, 0x00, 0x01]));
+          parts.push(session.lastH265Sps);
+        }
+        if (!hasPps && session.lastH265Pps) {
+          parts.push(Buffer.from([0x00, 0x00, 0x00, 0x01]));
+          parts.push(session.lastH265Pps);
+        }
+        if (parts.length > 0) {
+          frameData = Buffer.concat([...parts, frame.data]);
+          this.log("debug", `Prepended cached VPS/SPS/PPS to H.265 IDR frame`);
+        }
+      }
+    }
+
+    // Create header (12 bytes)
+    const header = Buffer.alloc(12);
+    header.writeUInt32BE(frameNumber, 0); // Frame number
+    header.writeUInt32BE(frame.microseconds ? frame.microseconds / 1000 : 0, 4); // Timestamp in ms
+    header.writeUInt8(codec === "H265" ? 0x01 : 0x02, 8); // Flags: 0x01 = H.265, 0x02 = H.264
+    header.writeUInt8(isKeyframe ? 1 : 0, 9); // Keyframe flag
+    header.writeUInt16BE(0, 10); // Reserved
+
+    // Combine header + raw Annex-B data
+    const packet = Buffer.concat([header, frameData]);
+
+    // Log first few frames
+    if (frameNumber < 3) {
+      this.log(
+        "info",
+        `Sending ${codec} frame ${frameNumber}: ${packet.length} bytes, keyframe=${isKeyframe}`,
+      );
+    }
+
+    // Send via DataChannel (may need to chunk for large frames)
+    const MAX_CHUNK_SIZE = 16000; // Safe size for DataChannel
+
+    try {
+      if (packet.length <= MAX_CHUNK_SIZE) {
+        session.videoDataChannel.send(packet);
+      } else {
+        // Chunk large frames
+        const totalChunks = Math.ceil(packet.length / MAX_CHUNK_SIZE);
+        for (let i = 0; i < totalChunks; i++) {
+          const start = i * MAX_CHUNK_SIZE;
+          const end = Math.min(start + MAX_CHUNK_SIZE, packet.length);
+          const chunk = packet.subarray(start, end);
+
+          // Prepend chunk header: [chunk index (1)] [total chunks (1)] [data...]
+          const chunkHeader = Buffer.alloc(2);
+          chunkHeader.writeUInt8(i, 0);
+          chunkHeader.writeUInt8(totalChunks, 1);
+
+          session.videoDataChannel.send(Buffer.concat([chunkHeader, chunk]));
+        }
+      }
+      return true;
+    } catch (err) {
+      this.log("error", `Error sending ${codec} frame ${frameNumber}: ${err}`);
+      return false;
     }
   }
 
@@ -879,6 +1289,7 @@ export class BaichuanWebRTCServer extends EventEmitter {
     sequenceNumber: number,
     timestamp: number,
     marker: boolean,
+    ssrc: number,
   ): any[] {
     const { RtpPacket, RtpHeader } = werift;
     const MTU = 1200; // Safe MTU for RTP payload
@@ -892,6 +1303,7 @@ export class BaichuanWebRTCServer extends EventEmitter {
       header.sequenceNumber = sequenceNumber;
       header.timestamp = timestamp;
       header.marker = marker;
+      header.ssrc = ssrc;
 
       packets.push(new RtpPacket(header, nalUnit));
     } else {
@@ -927,6 +1339,7 @@ export class BaichuanWebRTCServer extends EventEmitter {
         header.sequenceNumber = (sequenceNumber + packets.length) & 0xffff;
         header.timestamp = timestamp;
         header.marker = isLast && marker;
+        header.ssrc = ssrc;
 
         packets.push(new RtpPacket(header, fuPayload));
 

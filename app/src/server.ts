@@ -2,6 +2,7 @@ import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import cors from "cors";
 import express from "express";
 import http from "node:http";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { renderTrpcPanel } from "trpc-panel";
@@ -11,9 +12,7 @@ import { appRouter } from "./router.js";
 import {
   autoStartRtspServers,
   stopAllRtspServers,
-  getAllRtspServersInfo,
   autoConnectCameras,
-  startRtspServer,
   getCameraInfo,
   sanitizeCameraName,
 } from "./rtsp-manager.js";
@@ -24,6 +23,7 @@ import {
   stopAllNativeMjpegStreams,
   getNativeMjpegStatus,
 } from "./mjpeg-native.js";
+import { getHlsStatus, readHlsAsset, stopAllHlsStreams } from "./hls-native.js";
 import {
   createWebRTCSession,
   handleWebRTCAnswer,
@@ -71,7 +71,7 @@ wss.on("connection", (ws) => {
           JSON.stringify({ type: "history", logs: olderLogs, append: true }),
         );
       }
-    } catch (e) {
+    } catch {
       // Ignore invalid messages
     }
   });
@@ -86,15 +86,27 @@ app.use(cors());
 app.use(express.json());
 
 // Serve static files for the dashboard
-// In Docker: /app/dist and /app/public, so ../public works
-// In dev: /app/src and /app/public, so ../public works
-const publicPath = path.join(__dirname, "../public");
+// Prefer built frontend assets (dist/public) if present.
+// - Dev: you can use Vite (`npm run dev`) which serves the React UI separately.
+// - Prod/start: `npm run build` generates dist/public.
+const distPublicPath = path.resolve(__dirname, "public");
+const hasBuiltUi = fs.existsSync(path.join(distPublicPath, "index.html"));
+const publicPath = distPublicPath;
+
+console.log(`[Server] cwd: ${process.cwd()}`);
 console.log(`[Server] __dirname: ${__dirname}`);
 console.log(`[Server] publicPath: ${publicPath}`);
-app.use("/static", express.static(publicPath));
-appLogger.info(`Serving static files from: ${publicPath}`, {
-  source: "server",
-});
+if (hasBuiltUi) {
+  app.use("/static", express.static(publicPath));
+  appLogger.info(`Serving static files from: ${publicPath}`, {
+    source: "server",
+  });
+} else {
+  appLogger.warn(
+    `Built UI not found at ${path.join(publicPath, "index.html")}. Use "npm run dev" (open http://localhost:5173) or run "npm run build" before "npm start".`,
+    { source: "server" },
+  );
+}
 
 // tRPC API endpoint
 app.use(
@@ -200,6 +212,50 @@ app.delete("/api/stream/:cameraId/:profile", (req, res) => {
 app.get("/api/mjpeg/status", (req, res) => {
   const status = getNativeMjpegStatus();
   res.json(status);
+});
+
+// ============================================================================
+// HLS Endpoints (live preview)
+// ============================================================================
+
+// HLS status endpoint
+app.get("/api/hls/status", (req, res) => {
+  res.json(getHlsStatus());
+});
+
+// HLS playlist/segments
+// Base URL: /api/hls/:cameraName/:profile/playlist.m3u8
+// Segments: /api/hls/:cameraName/:profile/segment_00001.ts
+app.get("/api/hls/:cameraName/:profile/:asset", async (req, res) => {
+  try {
+    const { cameraName, profile, asset } = req.params;
+
+    if (profile !== "main" && profile !== "sub" && profile !== "ext") {
+      res
+        .status(400)
+        .json({ error: "Invalid profile (must be main, sub, or ext)" });
+      return;
+    }
+
+    const clientKey =
+      req.headers["x-forwarded-for"]?.toString().split(",")[0]?.trim() ||
+      req.socket.remoteAddress ||
+      "unknown";
+
+    const result = await readHlsAsset({
+      cameraNameOrId: cameraName,
+      profile: profile as "main" | "sub" | "ext",
+      asset,
+      clientKey,
+    });
+
+    res.status(result.status);
+    for (const [k, v] of Object.entries(result.headers)) res.setHeader(k, v);
+    res.end(result.body);
+  } catch (err) {
+    appLogger.error(`Failed to serve HLS: ${err}`, { source: "hls" });
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 // ============================================================================
@@ -309,6 +365,39 @@ app.get("/api/webrtc/status", (req, res) => {
 
 // Main dashboard - serve static HTML file
 app.get("/", (req, res) => {
+  if (!hasBuiltUi) {
+    res.status(200).send(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nodelink Manager</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; padding: 24px; }
+      code { background: rgba(0,0,0,0.06); padding: 2px 6px; border-radius: 6px; }
+      .card { max-width: 860px; border: 1px solid rgba(0,0,0,0.12); border-radius: 12px; padding: 18px; }
+      a { color: inherit; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h2>UI not built</h2>
+      <p>The React dashboard is not built yet.</p>
+      <p>
+        Dev: run <code>npm run dev</code> and open <a href="http://localhost:5173">http://localhost:5173</a>.
+      </p>
+      <p>
+        Prod: run <code>npm run build</code> then <code>npm start</code>.
+      </p>
+      <p>
+        API docs: <a href="/docs">/docs</a>
+      </p>
+    </div>
+  </body>
+</html>`);
+    return;
+  }
+
   res.sendFile(path.join(publicPath, "index.html"));
 });
 
@@ -317,6 +406,25 @@ app.get("/favicon.ico", (req, res) => {
   res.sendFile(path.join(publicPath, "favicon.ico"), (err) => {
     if (err) res.status(204).end();
   });
+});
+
+// SPA fallback (React router)
+app.get("*", (req, res, next) => {
+  if (req.method !== "GET") return next();
+  if (
+    req.path.startsWith("/api") ||
+    req.path.startsWith("/docs") ||
+    req.path.startsWith("/static") ||
+    req.path.startsWith("/ws")
+  ) {
+    return next();
+  }
+
+  if (!hasBuiltUi) {
+    return res.redirect("/");
+  }
+
+  res.sendFile(path.join(publicPath, "index.html"));
 });
 
 // Graceful shutdown
@@ -337,6 +445,15 @@ async function shutdown() {
     await stopAllNativeMjpegStreams();
   } catch (error) {
     appLogger.error(`Error stopping MJPEG streams: ${error}`, {
+      source: "server",
+    });
+  }
+
+  // Stop HLS streams
+  try {
+    await stopAllHlsStreams();
+  } catch (error) {
+    appLogger.error(`Error stopping HLS streams: ${error}`, {
       source: "server",
     });
   }
@@ -365,7 +482,7 @@ server.listen(PORT, async () => {
   const proxyPort = settings.rtspProxyPort || 8554;
   console.log(`
 ╔═══════════════════════════════════════════════════════════════╗
-║              Nodelink Manager - RTSP Dashboard                ║
+║              Nodelink.js Manager - RTSP Dashboard                ║
 ╠═══════════════════════════════════════════════════════════════╣
 ║  Dashboard:  http://localhost:${String(PORT).padEnd(5)}                          ║
 ║  API Docs:   http://localhost:${String(PORT).padEnd(5)}/docs                     ║

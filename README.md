@@ -1,6 +1,12 @@
-# @apocaliss92/nodelink-js
+<p align="center">
+  <img src="assets/icon.png" alt="nodelink.js" width="128" height="128">
+</p>
 
-A TypeScript library for interacting with Reolink IP cameras and NVRs using the proprietary Baichuan protocol and CGI API.
+<h1 align="center">nodelink.js</h1>
+
+<p align="center">
+  A TypeScript library for interacting with Reolink IP cameras and NVRs using the proprietary Baichuan protocol and CGI API.
+</p>
 
 ## Credits
 
@@ -381,10 +387,7 @@ CAMERA_PASSWORD=your-password
 The library supports custom loggers:
 
 ```typescript
-import {
-  ReolinkBaichuanApi,
-  createLogger,
-} from "@apocaliss92/nodelink-js";
+import { ReolinkBaichuanApi, createLogger } from "@apocaliss92/nodelink-js";
 
 const logger = createLogger({ level: "debug" });
 
