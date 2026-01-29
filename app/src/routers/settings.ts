@@ -28,6 +28,7 @@ export const settingsRouter = router({
     .input(
       z.object({
         serviceIp: z.string().optional(),
+        hostPort: z.number().int().min(1).max(65535).optional(),
         logLevel: z.enum(["error", "warn", "info", "debug"]).optional(),
         logRetentionDays: z.number().optional(),
         rtspDefaultPort: z.number().optional(),

@@ -51,7 +51,7 @@ wss.on("connection", (ws) => {
   appLogger.debug("WebSocket client connected", { source: "server" });
 
   // Send historical logs on connect
-  const historicalLogs = getRecentLogs(500);
+  const historicalLogs = getRecentLogs(500).slice().reverse();
   ws.send(JSON.stringify({ type: "history", logs: historicalLogs }));
 
   const onLog = (entry: LogEntry) => {
@@ -67,7 +67,7 @@ wss.on("connection", (ws) => {
       const msg = JSON.parse(data.toString());
       // Handle request for more logs (infinite scroll)
       if (msg.type === "loadMore" && typeof msg.before === "number") {
-        const olderLogs = getRecentLogs(100, msg.before);
+        const olderLogs = getRecentLogs(100, msg.before).slice().reverse();
         ws.send(
           JSON.stringify({ type: "history", logs: olderLogs, append: true }),
         );
@@ -141,8 +141,12 @@ app.get("/api/health", (req, res) => {
 
 // Native MJPEG streaming endpoint for browser preview
 // Uses native Baichuan protocol directly (bypasses RTSP)
-// Path: /api/stream/:cameraName/:profile (cameraName is sanitized name like "living_room")
-app.get("/api/stream/:cameraName/:profile", async (req, res) => {
+// Path: /api/mpeg/:cameraName/:profile (cameraName is sanitized name like "living_room")
+// Legacy alias: /api/stream/:cameraName/:profile
+const handleMjpegStream = async (
+  req: express.Request,
+  res: express.Response,
+) => {
   const { cameraName, profile } = req.params;
 
   // Validate profile
@@ -202,12 +206,18 @@ app.get("/api/stream/:cameraName/:profile", async (req, res) => {
       res.status(500).json({ error: "Failed to start stream" });
     }
   }
-});
+};
+
+app.get("/api/mpeg/:cameraName/:profile", handleMjpegStream);
+app.get("/api/stream/:cameraName/:profile", handleMjpegStream);
 
 // Stop MJPEG stream endpoint (legacy - streams now auto-stop when no clients)
-app.delete("/api/stream/:cameraId/:profile", (req, res) => {
+const handleMjpegStop = (req: express.Request, res: express.Response) => {
   res.json({ success: true, message: "Streams auto-stop when no clients" });
-});
+};
+
+app.delete("/api/mpeg/:cameraId/:profile", handleMjpegStop);
+app.delete("/api/stream/:cameraId/:profile", handleMjpegStop);
 
 // MJPEG stream status endpoint
 app.get("/api/mjpeg/status", (req, res) => {
@@ -490,7 +500,7 @@ server.listen(PORT, async () => {
 ║  WS Logs:    ws://localhost:${String(PORT).padEnd(5)}/ws/logs                    ║
 ╠═══════════════════════════════════════════════════════════════╣
 ║  RTSP:       rtsp://localhost:${String(RTSP_PORT).padEnd(5)}/<camera>/<profile>     ║
-║  MJPEG:      http://localhost:${String(PORT).padEnd(5)}/api/stream/<cam>/<prof>  ║
+║  MJPEG:      http://localhost:${String(PORT).padEnd(5)}/api/mpeg/<cam>/<prof>    ║
 ║  WebRTC:     POST /api/webrtc/session (signaling endpoint)    ║
 ╚═══════════════════════════════════════════════════════════════╝
   `);
@@ -500,7 +510,7 @@ server.listen(PORT, async () => {
     source: "mjpeg",
   });
   appLogger.info(
-    `Access streams via: http://<host>:${PORT}/api/stream/<camera-name>/<profile>`,
+    `Access streams via: http://<host>:${PORT}/api/mpeg/<camera-name>/<profile> (legacy: /api/stream/...)`,
     { source: "mjpeg" },
   );
   appLogger.info(`MJPEG streams are started on-demand when clients connect`, {

@@ -21,10 +21,6 @@ type RtspStreamConfig = {
   token?: string;
 };
 
-type AppSettings = {
-  serviceIp: string;
-};
-
 type CameraInfo = {
   id: string;
   name: string;
@@ -63,7 +59,6 @@ type PreviewModalState =
       title: string;
       cameraName: string;
       profile: StreamProfile;
-      baseOrigin: string;
       mjpegUrl?: string;
       hlsUrl?: string;
     }
@@ -174,11 +169,9 @@ function HlsInlinePlayer({ url }: { url: string }) {
 }
 
 function WebRTCInlinePlayer({
-  baseOrigin,
   cameraName,
   profile,
 }: {
-  baseOrigin: string;
   cameraName: string;
   profile: StreamProfile;
 }) {
@@ -456,7 +449,7 @@ function WebRTCInlinePlayer({
 
         pc.onicecandidate = (ev) => {
           if (!ev.candidate || !sessionId || closed) return;
-          void fetch(`${baseOrigin}/api/webrtc/session/${sessionId}/ice`, {
+          void fetch(`/api/webrtc/session/${sessionId}/ice`, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify(ev.candidate),
@@ -469,7 +462,7 @@ function WebRTCInlinePlayer({
         pc.addTransceiver("video", { direction: "recvonly" });
         pc.addTransceiver("audio", { direction: "recvonly" });
 
-        const createRes = await fetch(`${baseOrigin}/api/webrtc/session`, {
+        const createRes = await fetch(`/api/webrtc/session`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ cameraName, profile, enableIntercom: false }),
@@ -501,7 +494,7 @@ function WebRTCInlinePlayer({
         if (closed) return;
 
         const answerRes = await fetch(
-          `${baseOrigin}/api/webrtc/session/${sessionId}/answer`,
+          `/api/webrtc/session/${sessionId}/answer`,
           {
             method: "POST",
             headers: { "content-type": "application/json" },
@@ -538,14 +531,14 @@ function WebRTCInlinePlayer({
         // ignore
       }
       if (sessionId) {
-        void fetch(`${baseOrigin}/api/webrtc/session/${sessionId}`, {
+        void fetch(`/api/webrtc/session/${sessionId}`, {
           method: "DELETE",
         }).catch(() => {
           // ignore
         });
       }
     };
-  }, [baseOrigin, cameraName, profile]);
+  }, [cameraName, profile]);
 
   return (
     <>
@@ -658,7 +651,6 @@ export default function CamerasPage() {
   const [cameras, setCameras] = useState<CameraInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [settings, setSettings] = useState<AppSettings | null>(null);
 
   const [rtspServers, setRtspServers] = useState<
     Array<{
@@ -750,23 +742,25 @@ export default function CamerasPage() {
     cam: CameraInfo,
     profile: StreamProfile,
   ): string | null {
-    if (!settings?.serviceIp || !rtspProxyStatus?.port) return null;
-    return `rtsp://${settings.serviceIp}:${rtspProxyStatus.port}/${cam.sanitizedName}/${profile}`;
+    if (!rtspProxyStatus?.port) return null;
+    return `rtsp://${window.location.hostname}:${rtspProxyStatus.port}/${cam.sanitizedName}/${profile}`;
   }
 
-  function getPublicHttpOrigin(): string {
-    const base = new URL(window.location.origin);
-    if (settings?.serviceIp) base.hostname = settings.serviceIp;
-    // Use current window.location.port since server serves the app
-    return base.origin;
+  function getHttpOrigin(): string {
+    // Zero-config: use the current origin (works with Docker port mapping).
+    return window.location.origin;
   }
 
   function getMjpegUrl(cam: CameraInfo, profile: StreamProfile): string {
-    return `${getPublicHttpOrigin()}/api/stream/${cam.sanitizedName}/${profile}`;
+    return `${getHttpOrigin()}/api/mpeg/${cam.sanitizedName}/${profile}`;
+  }
+
+  function getMjpegPreviewUrl(cam: CameraInfo, profile: StreamProfile): string {
+    return `${getHttpOrigin()}/api/mpeg/${cam.sanitizedName}/${profile}`;
   }
 
   function getHlsUrl(cam: CameraInfo, profile: StreamProfile): string {
-    return `${getPublicHttpOrigin()}/api/hls/${cam.sanitizedName}/${profile}/playlist.m3u8`;
+    return `${getHttpOrigin()}/api/hls/${cam.sanitizedName}/${profile}/playlist.m3u8`;
   }
 
   async function copyToClipboard(text: string) {
@@ -796,13 +790,8 @@ export default function CamerasPage() {
       setError(null);
     }
     try {
-      const [list, s, proxy, rtspList, mjpeg, webrtc, hls] = await Promise.all([
+      const [list, proxy, rtspList, mjpeg, webrtc, hls] = await Promise.all([
         trpcQuery<CameraInfo[]>("cameras.list"),
-        settings
-          ? Promise.resolve(settings)
-          : trpcQuery<any>("settings.get").then((x) => ({
-              serviceIp: String(x.serviceIp ?? "localhost"),
-            })),
         trpcQuery<any>("rtspProxy.getStatus").catch(() => null),
         trpcQuery<any[]>("rtsp.list").catch(() => []),
         fetch("/api/mjpeg/status")
@@ -816,7 +805,6 @@ export default function CamerasPage() {
           .catch(() => []),
       ]);
       updateIfChanged(setCameras, list);
-      if (!settings) setSettings(s);
 
       updateIfChanged(
         setRtspServers,
@@ -1370,7 +1358,6 @@ export default function CamerasPage() {
             ) : previewModal.kind === "webrtc" ? (
               <div style={{ marginTop: 12 }}>
                 <WebRTCInlinePlayer
-                  baseOrigin={previewModal.baseOrigin}
                   cameraName={previewModal.cameraName}
                   profile={previewModal.profile}
                 />
@@ -1514,8 +1501,8 @@ export default function CamerasPage() {
                       const k = streamKey(c.id, s.profile, s.channel);
                       const rtspUrl = getRtspProxyUrl(c, s.profile);
                       const mjpegUrl = getMjpegUrl(c, s.profile);
+                      const mjpegPreviewUrl = getMjpegPreviewUrl(c, s.profile);
                       const hlsUrl = getHlsUrl(c, s.profile);
-                      const baseOrigin = getPublicHttpOrigin();
                       const streamName = `${s.profile.toUpperCase()}${c.isNvr ? ` (ch ${s.channel})` : s.channel ? ` (ch ${s.channel})` : ""}`;
 
                       const metaRight = `${s.codec ?? "—"} · ${s.resolution ?? "—"}`;
@@ -1550,8 +1537,7 @@ export default function CamerasPage() {
                               title: `${c.name} ${streamName}`,
                               cameraName: c.sanitizedName,
                               profile: s.profile,
-                              mjpegUrl,
-                              baseOrigin,
+                              mjpegUrl: mjpegPreviewUrl,
                             }),
                         },
                         {
@@ -1563,8 +1549,7 @@ export default function CamerasPage() {
                               title: `${c.name} ${streamName}`,
                               cameraName: c.sanitizedName,
                               profile: s.profile,
-                              mjpegUrl,
-                              baseOrigin,
+                              mjpegUrl: mjpegPreviewUrl,
                             }),
                         },
                         // HLS disabled for now - needs more work

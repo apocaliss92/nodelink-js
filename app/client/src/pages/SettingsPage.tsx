@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import { trpcMutation, trpcQuery } from "../api";
 
 type Settings = {
-  serviceIp: string;
   logLevel: "error" | "warn" | "info" | "debug";
   logRetentionDays: number;
   rtspDefaultPort: number;
@@ -90,7 +89,6 @@ export default function SettingsPage() {
     setError(null);
     try {
       await trpcMutation("settings.update", {
-        serviceIp: settings.serviceIp,
         logLevel: settings.logLevel,
         logRetentionDays: settings.logRetentionDays,
         rtspDefaultPort: settings.rtspDefaultPort,
@@ -126,19 +124,6 @@ export default function SettingsPage() {
         <div className="card">Loading…</div>
       ) : (
         <div className="grid cols2">
-          <div className="card">
-            <div className="label">
-              Service IP/hostname (shown in RTSP/MJPEG/WebRTC URLs)
-            </div>
-            <input
-              className="input"
-              value={settings.serviceIp}
-              onChange={(e) =>
-                setSettings({ ...settings, serviceIp: e.target.value })
-              }
-            />
-          </div>
-
           <div className="card">
             <div className="label">Log level</div>
             <select

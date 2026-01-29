@@ -19,11 +19,34 @@ function levelBadge(level: LogEntry["level"]) {
   return "badge";
 }
 
-function shortTime(ts?: string): string {
+function formatLocalTime(ts?: string): string {
   if (!ts) return "";
-  // ISO: 2026-01-28T12:34:56.789Z
-  if (ts.includes("T") && ts.length >= 23) return ts.slice(11, 23);
-  return ts;
+
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return ts;
+
+  const now = new Date();
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+
+  const opts: Intl.DateTimeFormatOptions = sameDay
+    ? {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      }
+    : {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      };
+
+  return new Intl.DateTimeFormat(undefined, opts).format(d);
 }
 
 function formatRest(l: LogEntry): string {
@@ -55,15 +78,18 @@ export default function LogsPage() {
         const msg = JSON.parse(String(ev.data)) as WsMsg;
         if (msg.type === "history") {
           setLogs((prev) => {
-            if (msg.append) return [...msg.logs, ...prev];
+            // Newest-first ordering:
+            // - initial history replaces
+            // - older history appends at the end
+            if (msg.append) return [...prev, ...msg.logs];
             return msg.logs;
           });
           return;
         }
         if (msg.type === "log") {
           setLogs((prev) => {
-            const next = [...prev, msg];
-            return next.length > 1500 ? next.slice(next.length - 1500) : next;
+            const next = [msg, ...prev];
+            return next.length > 1500 ? next.slice(0, 1500) : next;
           });
         }
       } catch {
@@ -78,7 +104,8 @@ export default function LogsPage() {
     if (!autoScroll) return;
     const box = boxRef.current;
     if (!box) return;
-    box.scrollTop = box.scrollHeight;
+    // Newest-first: keep view pinned to the top.
+    box.scrollTop = 0;
   }, [logs, autoScroll]);
 
   const sources = useMemo(() => {
@@ -180,7 +207,7 @@ export default function LogsPage() {
           <tbody>
             {filtered.map((l, idx) => (
               <tr key={idx}>
-                <td className="mono">{shortTime(l.timestamp)}</td>
+                <td className="mono">{formatLocalTime(l.timestamp)}</td>
                 <td className="mono">{l.source ?? ""}</td>
                 <td>
                   <span className={levelBadge(l.level)}>{l.level}</span>
@@ -199,7 +226,7 @@ export default function LogsPage() {
                 <span className={levelBadge(l.level)}>{l.level}</span>
                 <span className="logCardSource">{l.source ?? ""}</span>
                 <span className="logCardTime mono">
-                  {shortTime(l.timestamp)}
+                  {formatLocalTime(l.timestamp)}
                 </span>
               </div>
               <div className="logCardMessage">{formatRest(l)}</div>

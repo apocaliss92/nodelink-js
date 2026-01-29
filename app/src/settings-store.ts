@@ -24,6 +24,10 @@ export const SettingsSchema = z.object({
   // Service IP (hostname to show in RTSP URLs - Port and RTSP Port are controlled by env vars)
   serviceIp: z.string().default("localhost"), // IP/hostname to show in RTSP URLs
 
+  // HTTP Port exposed on the host (used to build public MJPEG/WebRTC/HLS URLs).
+  // Useful with Docker port mappings (e.g. container 3000 -> host 3412).
+  hostPort: z.number().int().min(1).max(65535).optional(),
+
   // Logging
   logLevel: z.enum(["error", "warn", "info", "debug"]).default("info"),
   logRetentionDays: z.number().default(14),

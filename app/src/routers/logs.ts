@@ -36,7 +36,8 @@ export const logsRouter = router({
         logs = logs.filter((log) => log.source === input.source);
       }
 
-      return logs;
+      // Newest-first
+      return logs.slice().reverse();
     }),
 
   // Clear log buffer
@@ -118,7 +119,7 @@ export const logsRouter = router({
       });
 
       return {
-        logs: parsedLogs,
+        logs: parsedLogs.reverse(),
         totalLines: allLines.length,
         hasMore: start > 0,
       };
