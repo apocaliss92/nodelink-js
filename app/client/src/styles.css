@@ -139,6 +139,16 @@ a {
   grid-template-columns: 1fr 1fr;
 }
 
+.emptyState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  text-align: center;
+  min-height: 400px;
+}
+
 .row {
   display: flex;
   align-items: center;
@@ -181,6 +191,13 @@ a {
 .btn.primary {
   background: rgba(124, 58, 237, 0.28);
   border-color: rgba(124, 58, 237, 0.55);
+}
+
+.btn.primary.large {
+  padding: 14px 28px;
+  font-size: 16px;
+  font-weight: 600;
+  border-radius: 12px;
 }
 
 .btn.master {

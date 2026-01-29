@@ -1384,242 +1384,276 @@ export default function CamerasPage() {
         </div>
       ) : null}
 
-      <div className="grid">
-        {cameras.map((c) => (
-          <div key={c.id} className="card">
-            <div className="row" style={{ justifyContent: "space-between" }}>
-              <div className="row" style={{ alignItems: "flex-start" }}>
-                <div>
-                  <div style={{ fontWeight: 750, lineHeight: 1.1 }}>
-                    {c.name}
+      {!loading && cameras.length === 0 ? (
+        <div className="emptyState">
+          <svg
+            width="80"
+            height="80"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            style={{ opacity: 0.4, marginBottom: 16 }}
+          >
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+            <circle cx="12" cy="13" r="4" />
+          </svg>
+          <h2 style={{ margin: 0, fontWeight: 600, fontSize: 20 }}>
+            No cameras configured
+          </h2>
+          <p style={{ color: "var(--muted)", margin: "8px 0 24px" }}>
+            Add your first camera to start streaming
+          </p>
+          <button
+            className="btn primary large"
+            onClick={() => setAddOpen(true)}
+          >
+            + Add Camera
+          </button>
+        </div>
+      ) : (
+        <div className="grid">
+          {cameras.map((c) => (
+            <div key={c.id} className="card">
+              <div className="row" style={{ justifyContent: "space-between" }}>
+                <div className="row" style={{ alignItems: "flex-start" }}>
+                  <div>
+                    <div style={{ fontWeight: 750, lineHeight: 1.1 }}>
+                      {c.name}
+                    </div>
+                    <div className="subtitle">
+                      {c.deviceInfo?.model
+                        ? c.deviceInfo.model
+                        : c.isNvr
+                          ? "NVR/Hub"
+                          : ""}
+                    </div>
                   </div>
-                  <div className="subtitle">
-                    {c.deviceInfo?.model
-                      ? c.deviceInfo.model
-                      : c.isNvr
-                        ? "NVR/Hub"
-                        : ""}
-                  </div>
-                </div>
-                <span className={statusBadge(c.status)}>{c.status}</span>
-                <span className="badge mono">
-                  {c.host}:{c.port}
-                </span>
-                {c.isNvr ? (
-                  <span className="badge mono">ch {c.rtspChannel}</span>
-                ) : null}
-                {c.error ? <span className="badge err">{c.error}</span> : null}
-              </div>
-              <div className="row">
-                {c.status !== "connected" ? (
-                  <button className="btn" onClick={() => connect(c.id)}>
-                    Connect
-                  </button>
-                ) : (
-                  <button className="btn" onClick={() => disconnect(c.id)}>
-                    Disconnect
-                  </button>
-                )}
-                <button
-                  className={`btn autostart ${
-                    (c.rtspStreams?.length ?? 0) > 0 &&
-                    c.rtspStreams.every((s) => s.autoStart !== false)
-                      ? "on"
-                      : "off"
-                  }`}
-                  disabled={
-                    c.status !== "connected" ||
-                    Boolean(savingAutoStart[c.id]) ||
-                    Boolean(streamsLoadingByCamera[c.id])
-                  }
-                  onClick={() => {
-                    const allAuto =
-                      (c.rtspStreams?.length ?? 0) > 0 &&
-                      c.rtspStreams.every((s) => s.autoStart !== false);
-                    void setAutoStartForCamera(c, !allAuto);
-                  }}
-                  title="Toggle auto-start (used on server startup when proxy is disabled)"
-                >
-                  Auto-start:{" "}
-                  {(c.rtspStreams?.length ?? 0) > 0 &&
-                  c.rtspStreams.every((s) => s.autoStart !== false)
-                    ? "ON"
-                    : "OFF"}
-                  {streamsLoadingByCamera[c.id] ? (
-                    <span className="spinner" aria-hidden="true" />
+                  <span className={statusBadge(c.status)}>{c.status}</span>
+                  <span className="badge mono">
+                    {c.host}:{c.port}
+                  </span>
+                  {c.isNvr ? (
+                    <span className="badge mono">ch {c.rtspChannel}</span>
                   ) : null}
-                </button>
-                <button
-                  className="btn danger"
-                  onClick={() => deleteCamera(c.id)}
-                >
-                  Delete
-                </button>
+                  {c.error ? (
+                    <span className="badge err">{c.error}</span>
+                  ) : null}
+                </div>
+                <div className="row">
+                  {c.status !== "connected" ? (
+                    <button className="btn" onClick={() => connect(c.id)}>
+                      Connect
+                    </button>
+                  ) : (
+                    <button className="btn" onClick={() => disconnect(c.id)}>
+                      Disconnect
+                    </button>
+                  )}
+                  <button
+                    className={`btn autostart ${
+                      (c.rtspStreams?.length ?? 0) > 0 &&
+                      c.rtspStreams.every((s) => s.autoStart !== false)
+                        ? "on"
+                        : "off"
+                    }`}
+                    disabled={
+                      c.status !== "connected" ||
+                      Boolean(savingAutoStart[c.id]) ||
+                      Boolean(streamsLoadingByCamera[c.id])
+                    }
+                    onClick={() => {
+                      const allAuto =
+                        (c.rtspStreams?.length ?? 0) > 0 &&
+                        c.rtspStreams.every((s) => s.autoStart !== false);
+                      void setAutoStartForCamera(c, !allAuto);
+                    }}
+                    title="Toggle auto-start (used on server startup when proxy is disabled)"
+                  >
+                    Auto-start:{" "}
+                    {(c.rtspStreams?.length ?? 0) > 0 &&
+                    c.rtspStreams.every((s) => s.autoStart !== false)
+                      ? "ON"
+                      : "OFF"}
+                    {streamsLoadingByCamera[c.id] ? (
+                      <span className="spinner" aria-hidden="true" />
+                    ) : null}
+                  </button>
+                  <button
+                    className="btn danger"
+                    onClick={() => deleteCamera(c.id)}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+
+              <div style={{ marginTop: 12 }}>
+                <div className="label">Available streams</div>
+                {c.status !== "connected" ? (
+                  <div style={{ color: "var(--muted)", fontSize: 13 }}>
+                    Connect the camera to discover streams.
+                  </div>
+                ) : streamsLoadingByCamera[c.id] ? (
+                  <div
+                    className="row"
+                    style={{ color: "var(--muted)", fontSize: 13 }}
+                  >
+                    <span className="spinner" aria-hidden="true" />
+                    <span>Discovering streams…</span>
+                  </div>
+                ) : (streamsByCamera[c.id]?.length ?? 0) === 0 ? (
+                  <div style={{ color: "var(--muted)", fontSize: 13 }}>
+                    No streams discovered yet.
+                  </div>
+                ) : (
+                  <div className="streamsGrid">
+                    {(streamsByCamera[c.id] ?? []).map((s) => {
+                      const k = streamKey(c.id, s.profile, s.channel);
+                      const rtspUrl = getRtspProxyUrl(c, s.profile);
+                      const mjpegUrl = getMjpegUrl(c, s.profile);
+                      const hlsUrl = getHlsUrl(c, s.profile);
+                      const baseOrigin = getPublicHttpOrigin();
+                      const streamName = `${s.profile.toUpperCase()}${c.isNvr ? ` (ch ${s.channel})` : s.channel ? ` (ch ${s.channel})` : ""}`;
+
+                      const metaRight = `${s.codec ?? "—"} · ${s.resolution ?? "—"}`;
+
+                      const urlItems: DropdownItem[] = [
+                        {
+                          label: "Copy RTSP",
+                          disabled: !rtspUrl,
+                          onClick: () => {
+                            if (!rtspUrl) return;
+                            void copyToClipboard(rtspUrl);
+                          },
+                        },
+                        {
+                          label: "Copy MJPEG URL",
+                          onClick: () => void copyToClipboard(mjpegUrl),
+                        },
+                        // HLS disabled for now - needs more work
+                        // {
+                        //   label: "Copy HLS URL",
+                        //   onClick: () => void copyToClipboard(hlsUrl),
+                        // },
+                      ];
+
+                      const previewItems: DropdownItem[] = [
+                        {
+                          label: "WebRTC",
+                          onClick: () =>
+                            setPreviewModal({
+                              open: true,
+                              kind: "webrtc",
+                              title: `${c.name} ${streamName}`,
+                              cameraName: c.sanitizedName,
+                              profile: s.profile,
+                              mjpegUrl,
+                              baseOrigin,
+                            }),
+                        },
+                        {
+                          label: "MJPEG",
+                          onClick: () =>
+                            setPreviewModal({
+                              open: true,
+                              kind: "mjpeg",
+                              title: `${c.name} ${streamName}`,
+                              cameraName: c.sanitizedName,
+                              profile: s.profile,
+                              mjpegUrl,
+                              baseOrigin,
+                            }),
+                        },
+                        // HLS disabled for now - needs more work
+                        // {
+                        //   label: "HLS",
+                        //   onClick: () =>
+                        //     setPreviewModal({
+                        //       open: true,
+                        //       kind: "hls",
+                        //       title: `${c.name} ${streamName}`,
+                        //       cameraName: c.sanitizedName,
+                        //       profile: s.profile,
+                        //       hlsUrl,
+                        //       baseOrigin,
+                        //     }),
+                        // },
+                      ];
+
+                      return (
+                        <div key={k} className="streamCard">
+                          <div className="streamSingleRow">
+                            <div className="streamName" title={streamName}>
+                              {streamName}
+                            </div>
+                            <div className="streamRightMeta" title={metaRight}>
+                              {metaRight}
+                            </div>
+                          </div>
+
+                          <div className="streamViewersRow">
+                            {(() => {
+                              const rtsp = rtspServers.find(
+                                (x) =>
+                                  x.cameraId === c.id &&
+                                  x.profile === s.profile &&
+                                  Number(x.channel ?? 0) === Number(s.channel),
+                              );
+                              const rtspViewers =
+                                rtsp?.status === "running"
+                                  ? Number(rtsp.connections ?? 0)
+                                  : 0;
+                              const mjpegViewers = Number(
+                                mjpegStatus.find(
+                                  (x) =>
+                                    x.cameraId === c.id &&
+                                    x.profile === s.profile,
+                                )?.clients ?? 0,
+                              );
+                              const webrtcViewers = webrtcStatus.filter(
+                                (x) =>
+                                  x.cameraId === c.id &&
+                                  x.profile === s.profile,
+                              ).length;
+
+                              const hlsViewers = Number(
+                                hlsStatus.find(
+                                  (x) =>
+                                    x.cameraId === c.id &&
+                                    x.profile === s.profile,
+                                )?.clients ?? 0,
+                              );
+
+                              return (
+                                <span>
+                                  Viewers: RTSP {rtspViewers} · MJPEG{" "}
+                                  {mjpegViewers} · WebRTC {webrtcViewers} · HLS{" "}
+                                  {hlsViewers}
+                                </span>
+                              );
+                            })()}
+                          </div>
+
+                          <div className="streamActionsRow">
+                            <DropdownButton label="URLs" items={urlItems} />
+                            <DropdownButton
+                              label="Preview"
+                              items={previewItems}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </div>
-
-            <div style={{ marginTop: 12 }}>
-              <div className="label">Available streams</div>
-              {c.status !== "connected" ? (
-                <div style={{ color: "var(--muted)", fontSize: 13 }}>
-                  Connect the camera to discover streams.
-                </div>
-              ) : streamsLoadingByCamera[c.id] ? (
-                <div
-                  className="row"
-                  style={{ color: "var(--muted)", fontSize: 13 }}
-                >
-                  <span className="spinner" aria-hidden="true" />
-                  <span>Discovering streams…</span>
-                </div>
-              ) : (streamsByCamera[c.id]?.length ?? 0) === 0 ? (
-                <div style={{ color: "var(--muted)", fontSize: 13 }}>
-                  No streams discovered yet.
-                </div>
-              ) : (
-                <div className="streamsGrid">
-                  {(streamsByCamera[c.id] ?? []).map((s) => {
-                    const k = streamKey(c.id, s.profile, s.channel);
-                    const rtspUrl = getRtspProxyUrl(c, s.profile);
-                    const mjpegUrl = getMjpegUrl(c, s.profile);
-                    const hlsUrl = getHlsUrl(c, s.profile);
-                    const baseOrigin = getPublicHttpOrigin();
-                    const streamName = `${s.profile.toUpperCase()}${c.isNvr ? ` (ch ${s.channel})` : s.channel ? ` (ch ${s.channel})` : ""}`;
-
-                    const metaRight = `${s.codec ?? "—"} · ${s.resolution ?? "—"}`;
-
-                    const urlItems: DropdownItem[] = [
-                      {
-                        label: "Copy RTSP",
-                        disabled: !rtspUrl,
-                        onClick: () => {
-                          if (!rtspUrl) return;
-                          void copyToClipboard(rtspUrl);
-                        },
-                      },
-                      {
-                        label: "Copy MJPEG URL",
-                        onClick: () => void copyToClipboard(mjpegUrl),
-                      },
-                      // HLS disabled for now - needs more work
-                      // {
-                      //   label: "Copy HLS URL",
-                      //   onClick: () => void copyToClipboard(hlsUrl),
-                      // },
-                    ];
-
-                    const previewItems: DropdownItem[] = [
-                      {
-                        label: "WebRTC",
-                        onClick: () =>
-                          setPreviewModal({
-                            open: true,
-                            kind: "webrtc",
-                            title: `${c.name} ${streamName}`,
-                            cameraName: c.sanitizedName,
-                            profile: s.profile,
-                            mjpegUrl,
-                            baseOrigin,
-                          }),
-                      },
-                      {
-                        label: "MJPEG",
-                        onClick: () =>
-                          setPreviewModal({
-                            open: true,
-                            kind: "mjpeg",
-                            title: `${c.name} ${streamName}`,
-                            cameraName: c.sanitizedName,
-                            profile: s.profile,
-                            mjpegUrl,
-                            baseOrigin,
-                          }),
-                      },
-                      // HLS disabled for now - needs more work
-                      // {
-                      //   label: "HLS",
-                      //   onClick: () =>
-                      //     setPreviewModal({
-                      //       open: true,
-                      //       kind: "hls",
-                      //       title: `${c.name} ${streamName}`,
-                      //       cameraName: c.sanitizedName,
-                      //       profile: s.profile,
-                      //       hlsUrl,
-                      //       baseOrigin,
-                      //     }),
-                      // },
-                    ];
-
-                    return (
-                      <div key={k} className="streamCard">
-                        <div className="streamSingleRow">
-                          <div className="streamName" title={streamName}>
-                            {streamName}
-                          </div>
-                          <div className="streamRightMeta" title={metaRight}>
-                            {metaRight}
-                          </div>
-                        </div>
-
-                        <div className="streamViewersRow">
-                          {(() => {
-                            const rtsp = rtspServers.find(
-                              (x) =>
-                                x.cameraId === c.id &&
-                                x.profile === s.profile &&
-                                Number(x.channel ?? 0) === Number(s.channel),
-                            );
-                            const rtspViewers =
-                              rtsp?.status === "running"
-                                ? Number(rtsp.connections ?? 0)
-                                : 0;
-                            const mjpegViewers = Number(
-                              mjpegStatus.find(
-                                (x) =>
-                                  x.cameraId === c.id &&
-                                  x.profile === s.profile,
-                              )?.clients ?? 0,
-                            );
-                            const webrtcViewers = webrtcStatus.filter(
-                              (x) =>
-                                x.cameraId === c.id && x.profile === s.profile,
-                            ).length;
-
-                            const hlsViewers = Number(
-                              hlsStatus.find(
-                                (x) =>
-                                  x.cameraId === c.id &&
-                                  x.profile === s.profile,
-                              )?.clients ?? 0,
-                            );
-
-                            return (
-                              <span>
-                                Viewers: RTSP {rtspViewers} · MJPEG{" "}
-                                {mjpegViewers} · WebRTC {webrtcViewers} · HLS{" "}
-                                {hlsViewers}
-                              </span>
-                            );
-                          })()}
-                        </div>
-
-                        <div className="streamActionsRow">
-                          <DropdownButton label="URLs" items={urlItems} />
-                          <DropdownButton
-                            label="Preview"
-                            items={previewItems}
-                          />
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </>
   );
 }
