@@ -636,7 +636,6 @@ type AddCameraInput = {
   port?: number;
   username: string;
   password: string;
-  debugLogs?: boolean;
   isNvr: boolean;
   nvrChannel: number;
 };
@@ -705,7 +704,6 @@ export default function CamerasPage() {
     username: "",
     password: "",
     name: "",
-    debugLogs: false,
     isNvr: false,
     nvrChannel: 0,
   });
@@ -1018,6 +1016,15 @@ export default function CamerasPage() {
     await refresh();
   }
 
+  async function setCameraDebug(id: string, enabled: boolean) {
+    await trpcMutation("cameras.setDebug", {
+      id,
+      enabled,
+      reconnect: true,
+    });
+    await refresh();
+  }
+
   async function setAutoStartForCamera(camera: CameraInfo, autoStart: boolean) {
     const available = streamsByCamera[camera.id] ?? [];
     setSavingAutoStart((m) => ({ ...m, [camera.id]: true }));
@@ -1098,7 +1105,6 @@ export default function CamerasPage() {
         password: adding.password,
         channels: 1,
         isNvr: adding.isNvr,
-        debugLogs: Boolean(adding.debugLogs),
         rtspChannel: adding.isNvr ? Number(adding.nvrChannel || 0) : 0,
       });
       setAdding({
@@ -1107,7 +1113,6 @@ export default function CamerasPage() {
         username: "",
         password: "",
         name: "",
-        debugLogs: false,
         isNvr: false,
         nvrChannel: 0,
       });
@@ -1294,17 +1299,6 @@ export default function CamerasPage() {
                 )}
               </div>
 
-              <label className="row" style={{ cursor: "pointer" }}>
-                <input
-                  type="checkbox"
-                  checked={Boolean(adding.debugLogs)}
-                  onChange={(e) =>
-                    setAdding({ ...adding, debugLogs: e.target.checked })
-                  }
-                />
-                <span>Debug logs</span>
-              </label>
-
               <div className="row" style={{ justifyContent: "flex-end" }}>
                 <button
                   className="btn primary"
@@ -1439,6 +1433,19 @@ export default function CamerasPage() {
                       Disconnect
                     </button>
                   )}
+
+                  <button
+                    className={`btn autostart ${c.debugLogs ? "on" : "off"}`}
+                    title={
+                      c.debugLogs
+                        ? "Disable debug + reconnect"
+                        : "Enable debug (general + debugRtsp + traceNativeStream + traceTalk) + reconnect"
+                    }
+                    onClick={() => void setCameraDebug(c.id, !c.debugLogs)}
+                  >
+                    Debug: {c.debugLogs ? "ON" : "OFF"}
+                  </button>
+
                   <button
                     className={`btn autostart ${
                       (c.rtspStreams?.length ?? 0) > 0 &&

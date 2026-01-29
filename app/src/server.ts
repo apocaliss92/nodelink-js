@@ -94,9 +94,9 @@ const distPublicPath = path.resolve(__dirname, "public");
 const hasBuiltUi = fs.existsSync(path.join(distPublicPath, "index.html"));
 const publicPath = distPublicPath;
 
-console.log(`[Server] cwd: ${process.cwd()}`);
-console.log(`[Server] __dirname: ${__dirname}`);
-console.log(`[Server] publicPath: ${publicPath}`);
+appLogger.debug(`cwd: ${process.cwd()}`, { source: "server" });
+appLogger.debug(`__dirname: ${__dirname}`, { source: "server" });
+appLogger.debug(`publicPath: ${publicPath}`, { source: "server" });
 if (hasBuiltUi) {
   app.use("/static", express.static(publicPath));
   appLogger.info(`Serving static files from: ${publicPath}`, {
@@ -104,7 +104,7 @@ if (hasBuiltUi) {
   });
 } else {
   appLogger.warn(
-    `Built UI not found at ${path.join(publicPath, "index.html")}. Use "npm run dev" (open http://localhost:5173) or run "npm run build" before "npm start".`,
+    `Built UI not found at ${path.join(publicPath, "index.html")}. Run "npm run build" before "npm start", or run "npm run dev" to use the separate UI dev server. Server is running on http://localhost:${PORT}.`,
     { source: "server" },
   );
 }
@@ -395,13 +395,16 @@ app.get("/", (req, res) => {
       <h2>UI not built</h2>
       <p>The React dashboard is not built yet.</p>
       <p>
-        Dev: run <code>npm run dev</code> and open <a href="http://localhost:5173">http://localhost:5173</a>.
+        Dev: run <code>npm run dev</code> to start the separate UI dev server.
       </p>
       <p>
         Prod: run <code>npm run build</code> then <code>npm start</code>.
       </p>
       <p>
         API docs: <a href="/docs">/docs</a>
+      </p>
+      <p>
+        Server: <a href="http://localhost:${PORT}">http://localhost:${PORT}</a>
       </p>
     </div>
   </body>
@@ -490,20 +493,21 @@ process.on("SIGTERM", shutdown);
 server.listen(PORT, async () => {
   appLogger.info(`Server started on port ${PORT}`, { source: "server" });
 
-  console.log(`
-╔═══════════════════════════════════════════════════════════════╗
-║              Nodelink.js Manager - RTSP Dashboard                ║
-╠═══════════════════════════════════════════════════════════════╣
-║  Dashboard:  http://localhost:${String(PORT).padEnd(5)}                          ║
-║  API Docs:   http://localhost:${String(PORT).padEnd(5)}/docs                     ║
-║  tRPC API:   http://localhost:${String(PORT).padEnd(5)}/api/trpc                 ║
-║  WS Logs:    ws://localhost:${String(PORT).padEnd(5)}/ws/logs                    ║
-╠═══════════════════════════════════════════════════════════════╣
-║  RTSP:       rtsp://localhost:${String(RTSP_PORT).padEnd(5)}/<camera>/<profile>     ║
-║  MJPEG:      http://localhost:${String(PORT).padEnd(5)}/api/mpeg/<cam>/<prof>    ║
-║  WebRTC:     POST /api/webrtc/session (signaling endpoint)    ║
-╚═══════════════════════════════════════════════════════════════╝
-  `);
+  appLogger.info(
+    `\n╔═══════════════════════════════════════════════════════════════╗\n` +
+      `║              Nodelink.js Manager - RTSP Dashboard                ║\n` +
+      `╠═══════════════════════════════════════════════════════════════╣\n` +
+      `║  Dashboard:  http://localhost:${String(PORT).padEnd(5)}                          ║\n` +
+      `║  API Docs:   http://localhost:${String(PORT).padEnd(5)}/docs                     ║\n` +
+      `║  tRPC API:   http://localhost:${String(PORT).padEnd(5)}/api/trpc                 ║\n` +
+      `║  WS Logs:    ws://localhost:${String(PORT).padEnd(5)}/ws/logs                    ║\n` +
+      `╠═══════════════════════════════════════════════════════════════╣\n` +
+      `║  RTSP:       rtsp://localhost:${String(RTSP_PORT).padEnd(5)}/<camera>/<profile>     ║\n` +
+      `║  MJPEG:      http://localhost:${String(PORT).padEnd(5)}/api/mpeg/<cam>/<prof>    ║\n` +
+      `║  WebRTC:     POST /api/webrtc/session (signaling endpoint)    ║\n` +
+      `╚═══════════════════════════════════════════════════════════════╝\n`,
+    { source: "server" },
+  );
 
   // Log MJPEG endpoint info
   appLogger.info(`MJPEG streaming available on port ${PORT}`, {

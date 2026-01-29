@@ -215,6 +215,30 @@ export const camerasRouter = router({
       return { success: true };
     }),
 
+  // Toggle debug logs for a camera and optionally reconnect to apply immediately
+  setDebug: publicProcedure
+    .meta({
+      description: "Enable/disable per-camera debug and optionally reconnect",
+    })
+    .input(
+      z.object({
+        id: z.string(),
+        enabled: z.boolean(),
+        reconnect: z.boolean().default(true),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      updateCamera(input.id, { debugLogs: input.enabled });
+
+      if (input.reconnect) {
+        await stopAllCameraStreams(input.id);
+        await closeApiConnection(input.id);
+        await getOrCreateApiConnection(input.id);
+      }
+
+      return { success: true };
+    }),
+
   // Get device info for a connected camera
   getDeviceInfo: publicProcedure
     .meta({ description: "Get device information from a camera" })

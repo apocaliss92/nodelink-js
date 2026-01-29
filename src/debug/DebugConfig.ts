@@ -56,25 +56,32 @@ export function normalizeDebugOptions(opts?: DebugOptions): DebugConfig {
   const traceEvents = opts?.traceEvents === true;
 
   const dumpEnabled = opts?.dump?.enabled === true;
-  const dumpDir = (opts?.dump?.dir && opts.dump.dir.trim()) || path.join(process.cwd(), "test", "frames-debug");
+  const dumpDir =
+    (opts?.dump?.dir && opts.dump.dir.trim()) ||
+    path.join(process.cwd(), "test", "frames-debug");
   const dumpBcMedia = opts?.dump?.bcmedia ?? dumpEnabled;
   const dumpNals = opts?.dump?.nals ?? dumpEnabled;
 
   return {
-      general,
-      debugRtsp,
-      traceNativeStream,
-      traceRecordings,
-      traceTalk,
-      traceEvents,
-      dumpEnabled,
-      dumpDir,
-      dumpBcMedia,
-      dumpNals,
+    general,
+    debugRtsp,
+    traceNativeStream,
+    traceRecordings,
+    traceTalk,
+    traceEvents,
+    dumpEnabled,
+    dumpDir,
+    dumpBcMedia,
+    dumpNals,
   };
 }
 
-export function recordingsTraceLog(cfg: DebugConfig | undefined, logger: Logger | undefined, tag: string, message: string): void {
+export function recordingsTraceLog(
+  cfg: DebugConfig | undefined,
+  logger: Logger | undefined,
+  tag: string,
+  message: string,
+): void {
   if (!cfg?.traceRecordings || !logger) return;
   logger.log(`[${tag}] ${message}`);
 }
@@ -84,44 +91,82 @@ export function ensureDumpDir(cfg: DebugConfig): void {
   fs.mkdirSync(cfg.dumpDir, { recursive: true });
 }
 
-export function debugLog(cfg: DebugConfig, logger: Logger, tag: string, message: string): void {
+export function debugLog(
+  cfg: DebugConfig,
+  logger: Logger,
+  tag: string,
+  message: string,
+): void {
   if (!cfg.general) return;
   logger.debug(`[${tag}] ${message}`);
 }
 
-export function debugWarn(cfg: DebugConfig, logger: Logger, tag: string, message: string): void {
+export function debugWarn(
+  cfg: DebugConfig,
+  logger: Logger,
+  tag: string,
+  message: string,
+): void {
   if (!cfg.general) return;
   logger.warn(`[${tag}] ${message}`);
 }
 
-export function traceLog(cfg: DebugConfig, logger: Logger, tag: string, message: string): void {
+export function traceLog(
+  cfg: DebugConfig,
+  logger: Logger,
+  tag: string,
+  message: string,
+): void {
   if (!cfg.traceNativeStream) return;
   logger.debug(`[${tag}] ${message}`);
 }
 
-export function talkTraceLog(cfg: DebugConfig, logger: Logger, tag: string, message: string): void {
+export function talkTraceLog(
+  cfg: DebugConfig,
+  logger: Logger,
+  tag: string,
+  message: string,
+): void {
   if (!cfg.traceTalk) return;
   logger.debug(`[${tag}] ${message}`);
 }
 
-export function talkTraceWarn(cfg: DebugConfig, logger: Logger, tag: string, message: string): void {
+export function talkTraceWarn(
+  cfg: DebugConfig,
+  logger: Logger,
+  tag: string,
+  message: string,
+): void {
   if (!cfg.traceTalk) return;
   logger.warn(`[${tag}] ${message}`);
 }
 
-export function eventTraceLog(cfg: DebugConfig, logger: Logger, tag: string, message: string): void {
+export function eventTraceLog(
+  cfg: DebugConfig,
+  logger: Logger,
+  tag: string,
+  message: string,
+): void {
   if (!cfg.traceEvents) return;
   logger.debug(`[${tag}] ${message}`);
 }
 
-export function rtspLog(cfg: DebugConfig, logger: Logger, tag: string, message: string): void {
+export function rtspLog(
+  cfg: DebugConfig,
+  logger: Logger,
+  tag: string,
+  message: string,
+): void {
   if (!cfg.debugRtsp) return;
   logger.info(`[${tag}] ${message}`);
 }
 
-export function rtspWarn(cfg: DebugConfig, logger: Logger, tag: string, message: string): void {
+export function rtspWarn(
+  cfg: DebugConfig,
+  logger: Logger,
+  tag: string,
+  message: string,
+): void {
   if (!cfg.debugRtsp) return;
   logger.warn(`[${tag}] ${message}`);
 }
-
-

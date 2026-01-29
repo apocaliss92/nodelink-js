@@ -32,9 +32,6 @@ export const SettingsSchema = z.object({
   logLevel: z.enum(["error", "warn", "info", "debug"]).default("info"),
   logRetentionDays: z.number().default(14),
 
-  // RTSP defaults
-  rtspDefaultPort: z.number().default(8555), // Default port for individual RTSP servers
-
   // RTSP Proxy (single entry point for all streams - port controlled by RTSP_PORT env var)
   rtspProxyEnabled: z.boolean().default(true),
 

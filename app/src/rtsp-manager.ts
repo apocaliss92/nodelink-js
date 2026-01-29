@@ -75,7 +75,7 @@ export async function findNextAvailablePort(
 // Get suggested port for a new stream
 export async function getSuggestedPort(): Promise<number> {
   const settings = getSettings();
-  const basePort = settings.rtspDefaultPort || 8554;
+  const basePort = Number(process.env.RTSP_PORT) || 8554;
   return findNextAvailablePort(basePort);
 }
 
@@ -150,11 +150,21 @@ export async function getOrCreateApiConnection(
 
   const logger = createSourceLogger(`camera:${camera.name}`);
 
+  const debugOptions = camera.debugLogs
+    ? {
+        general: true,
+        debugRtsp: true,
+        traceNativeStream: true,
+        traceTalk: true,
+      }
+    : undefined;
+
   const api = new ReolinkBaichuanApi({
     host: camera.host,
     port: camera.port,
     username: camera.username,
     password: camera.password,
+    debugOptions,
     logger: {
       log: (msg: unknown) => logger.info(String(msg)),
       info: (msg: string) => logger.info(msg),
@@ -334,7 +344,7 @@ export async function startRtspServer(
     port = savedStreamConfig.port;
     logger.info(`Reusing saved port ${port} for stream`);
   } else {
-    const basePort = camera.rtspPort || settings.rtspDefaultPort || 8554;
+    const basePort = camera.rtspPort || Number(process.env.RTSP_PORT) || 8554;
     port = await findNextAvailablePort(basePort);
   }
 
@@ -594,7 +604,8 @@ export async function startAllCameraStreams(
         results.push(info);
       } catch (error) {
         // Continue with other streams even if one fails
-        console.error(`Failed to start stream ${stream.profile}: ${error}`);
+        const logger = createSourceLogger("rtsp-manager");
+        logger.error(`Failed to start stream ${stream.profile}: ${error}`);
       }
     }
   }

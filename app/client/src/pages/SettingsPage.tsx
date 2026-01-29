@@ -4,9 +4,14 @@ import { trpcMutation, trpcQuery } from "../api";
 type Settings = {
   logLevel: "error" | "warn" | "info" | "debug";
   logRetentionDays: number;
-  rtspDefaultPort: number;
   rtspProxyEnabled: boolean;
   rtspRequireAuth: boolean;
+};
+
+type RuntimeInfo = {
+  httpPort: number;
+  rtspPort: number;
+  dataPath: string;
 };
 
 type RtspCredential = {
@@ -20,6 +25,7 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
 
   const [creds, setCreds] = useState<RtspCredential[]>([]);
   const [credDraft, setCredDraft] = useState<{
@@ -28,6 +34,7 @@ export default function SettingsPage() {
     description: string;
   }>({ username: "", password: "", description: "" });
   const [savingCred, setSavingCred] = useState(false);
+  const [addCredOpen, setAddCredOpen] = useState(false);
 
   const dirty = useMemo(() => settings !== null, [settings]);
 
@@ -36,6 +43,9 @@ export default function SettingsPage() {
       try {
         const s = await trpcQuery<Settings>("settings.get");
         setSettings(s);
+
+        const r = await trpcQuery<RuntimeInfo>("settings.getRuntime");
+        setRuntime(r);
 
         const list = await trpcQuery<RtspCredential[]>(
           "settings.listCredentials",
@@ -63,6 +73,7 @@ export default function SettingsPage() {
       });
       setCredDraft({ username: "", password: "", description: "" });
       await refreshCreds();
+      setAddCredOpen(false);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -91,7 +102,6 @@ export default function SettingsPage() {
       await trpcMutation("settings.update", {
         logLevel: settings.logLevel,
         logRetentionDays: settings.logRetentionDays,
-        rtspDefaultPort: settings.rtspDefaultPort,
         rtspRequireAuth: settings.rtspRequireAuth,
       });
     } catch (e) {
@@ -123,54 +133,76 @@ export default function SettingsPage() {
       {!settings ? (
         <div className="card">Loading…</div>
       ) : (
-        <div className="grid cols2">
+        <div className="grid">
           <div className="card">
-            <div className="label">Log level</div>
-            <select
-              className="input"
-              value={settings.logLevel}
-              onChange={(e) =>
-                setSettings({
-                  ...settings,
-                  logLevel: e.target.value as Settings["logLevel"],
-                })
-              }
-            >
-              <option value="error">error</option>
-              <option value="warn">warn</option>
-              <option value="info">info</option>
-              <option value="debug">debug</option>
-            </select>
-
-            <div className="label" style={{ marginTop: 12 }}>
-              Log retention days
+            <div className="label">Runtime (read-only)</div>
+            <div className="grid cols2" style={{ marginTop: 10 }}>
+              <div>
+                <div className="label">HTTP port</div>
+                <input
+                  className="input"
+                  readOnly
+                  value={runtime ? String(runtime.httpPort) : ""}
+                />
+              </div>
+              <div>
+                <div className="label">RTSP port</div>
+                <input
+                  className="input"
+                  readOnly
+                  value={runtime ? String(runtime.rtspPort) : ""}
+                />
+              </div>
             </div>
-            <input
-              className="input"
-              type="number"
-              value={settings.logRetentionDays}
-              onChange={(e) =>
-                setSettings({
-                  ...settings,
-                  logRetentionDays: Number(e.target.value),
-                })
-              }
-            />
 
-            <div className="label" style={{ marginTop: 12 }}>
-              Default RTSP port
+            <div style={{ marginTop: 12 }}>
+              <div className="label">Data folder</div>
+              <input
+                className="input"
+                readOnly
+                value={runtime ? runtime.dataPath : ""}
+              />
             </div>
-            <input
-              className="input"
-              type="number"
-              value={settings.rtspDefaultPort}
-              onChange={(e) =>
-                setSettings({
-                  ...settings,
-                  rtspDefaultPort: Number(e.target.value),
-                })
-              }
-            />
+          </div>
+
+          <div className="card">
+            <div className="label">Logging</div>
+
+            <div className="grid cols2" style={{ marginTop: 10 }}>
+              <div>
+                <div className="label">Log level</div>
+                <select
+                  className="input"
+                  value={settings.logLevel}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      logLevel: e.target.value as Settings["logLevel"],
+                    })
+                  }
+                >
+                  <option value="error">error</option>
+                  <option value="warn">warn</option>
+                  <option value="info">info</option>
+                  <option value="debug">debug</option>
+                </select>
+              </div>
+
+              <div>
+                <div className="label">Log retention days</div>
+                <input
+                  className="input"
+                  type="number"
+                  value={settings.logRetentionDays}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      logRetentionDays: Number(e.target.value),
+                    })
+                  }
+                />
+              </div>
+            </div>
 
             <div className="row" style={{ marginTop: 12 }}>
               <label className="row" style={{ cursor: "pointer" }}>
@@ -194,107 +226,157 @@ export default function SettingsPage() {
                 Digest auth users accepted by the RTSP proxy.
               </div>
 
-              <div className="grid" style={{ marginTop: 10 }}>
-                <div className="grid cols2">
-                  <div>
-                    <div className="label">Username</div>
-                    <input
-                      className="input"
-                      value={credDraft.username}
-                      onChange={(e) =>
-                        setCredDraft({
-                          ...credDraft,
-                          username: e.target.value,
-                        })
-                      }
-                    />
-                  </div>
-                  <div>
-                    <div className="label">Password</div>
-                    <input
-                      className="input"
-                      type="password"
-                      value={credDraft.password}
-                      onChange={(e) =>
-                        setCredDraft({
-                          ...credDraft,
-                          password: e.target.value,
-                        })
-                      }
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <div className="label">Description (optional)</div>
-                  <input
-                    className="input"
-                    value={credDraft.description}
-                    onChange={(e) =>
-                      setCredDraft({
-                        ...credDraft,
-                        description: e.target.value,
-                      })
-                    }
-                  />
-                </div>
-
-                <div className="row" style={{ justifyContent: "flex-end" }}>
-                  <button
-                    className="btn"
-                    disabled={savingCred}
-                    onClick={() => void refreshCreds()}
-                  >
-                    Refresh users
-                  </button>
-                  <button
-                    className="btn primary"
-                    disabled={
-                      savingCred || !credDraft.username || !credDraft.password
-                    }
-                    onClick={() => void addCredential()}
-                  >
-                    {savingCred ? "Working…" : "Add user"}
-                  </button>
-                </div>
-
-                {creds.length === 0 ? (
-                  <div style={{ color: "var(--muted)", fontSize: 13 }}>
-                    No RTSP users configured.
-                  </div>
-                ) : (
-                  <table className="table" style={{ marginTop: 6 }}>
-                    <thead>
-                      <tr>
-                        <th style={{ width: 220 }}>Username</th>
-                        <th>Description</th>
-                        <th style={{ width: 110 }} />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {creds.map((c) => (
-                        <tr key={c.id}>
-                          <td className="mono">{c.username}</td>
-                          <td>{c.description ?? ""}</td>
-                          <td style={{ textAlign: "right" }}>
-                            <button
-                              className="btn danger"
-                              disabled={savingCred}
-                              onClick={() => void deleteCredential(c.id)}
-                            >
-                              Delete
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
+              <div
+                className="row"
+                style={{ marginTop: 10, justifyContent: "flex-end" }}
+              >
+                <button
+                  className="btn"
+                  disabled={savingCred}
+                  onClick={() => void refreshCreds()}
+                >
+                  Refresh users
+                </button>
+                <button
+                  className="btn primary"
+                  disabled={savingCred}
+                  onClick={() => {
+                    setCredDraft({
+                      username: "",
+                      password: "",
+                      description: "",
+                    });
+                    setAddCredOpen(true);
+                  }}
+                >
+                  Add user
+                </button>
               </div>
+
+              {creds.length === 0 ? (
+                <div
+                  style={{ color: "var(--muted)", fontSize: 13, marginTop: 10 }}
+                >
+                  No RTSP users configured.
+                </div>
+              ) : (
+                <table className="table" style={{ marginTop: 10 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ width: 220 }}>Username</th>
+                      <th>Description</th>
+                      <th style={{ width: 110 }} />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {creds.map((c) => (
+                      <tr key={c.id}>
+                        <td className="mono">{c.username}</td>
+                        <td>{c.description ?? ""}</td>
+                        <td style={{ textAlign: "right" }}>
+                          <button
+                            className="btn danger"
+                            disabled={savingCred}
+                            onClick={() => void deleteCredential(c.id)}
+                          >
+                            Delete
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
           </div>
         </div>
       )}
+
+      {addCredOpen ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="modalOverlay"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setAddCredOpen(false);
+          }}
+        >
+          <div className="modalPanel" style={{ width: "min(720px, 100%)" }}>
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <div>
+                <div style={{ fontWeight: 800 }}>Add RTSP user</div>
+                <div className="subtitle">
+                  Digest auth user for the RTSP proxy.
+                </div>
+              </div>
+              <button className="btn" onClick={() => setAddCredOpen(false)}>
+                Close
+              </button>
+            </div>
+
+            <div className="grid" style={{ marginTop: 10 }}>
+              <div className="grid cols2">
+                <div>
+                  <div className="label">Username</div>
+                  <input
+                    className="input"
+                    value={credDraft.username}
+                    onChange={(e) =>
+                      setCredDraft({
+                        ...credDraft,
+                        username: e.target.value,
+                      })
+                    }
+                  />
+                </div>
+                <div>
+                  <div className="label">Password</div>
+                  <input
+                    className="input"
+                    type="password"
+                    value={credDraft.password}
+                    onChange={(e) =>
+                      setCredDraft({
+                        ...credDraft,
+                        password: e.target.value,
+                      })
+                    }
+                  />
+                </div>
+              </div>
+
+              <div>
+                <div className="label">Description (optional)</div>
+                <input
+                  className="input"
+                  value={credDraft.description}
+                  onChange={(e) =>
+                    setCredDraft({
+                      ...credDraft,
+                      description: e.target.value,
+                    })
+                  }
+                />
+              </div>
+
+              <div className="row" style={{ justifyContent: "flex-end" }}>
+                <button className="btn" onClick={() => setAddCredOpen(false)}>
+                  Cancel
+                </button>
+                <button
+                  className="btn primary"
+                  disabled={
+                    savingCred || !credDraft.username || !credDraft.password
+                  }
+                  onClick={() => void addCredential()}
+                >
+                  {savingCred ? "Working…" : "Add user"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }

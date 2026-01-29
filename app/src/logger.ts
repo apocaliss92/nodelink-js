@@ -43,6 +43,8 @@ function createLogger() {
   const dataDir = process.env.DATA_PATH || ".";
   const logsDir = path.join(dataDir, "logs");
 
+  const retentionDays = Math.max(1, Number(settings.logRetentionDays || 14));
+
   const transports: winston.transport[] = [
     // Console transport
     new winston.transports.Console({
@@ -55,7 +57,7 @@ function createLogger() {
       filename: "app-%DATE%.log",
       datePattern: "YYYY-MM-DD",
       maxSize: "20m",
-      maxFiles: "14d",
+      maxFiles: `${retentionDays}d`,
       format: jsonFormat,
     }),
 
@@ -65,7 +67,7 @@ function createLogger() {
       filename: "error-%DATE%.log",
       datePattern: "YYYY-MM-DD",
       maxSize: "20m",
-      maxFiles: "30d",
+      maxFiles: `${retentionDays}d`,
       level: "error",
       format: jsonFormat,
     }),
@@ -91,6 +93,22 @@ function addLogEntry(entry: LogEntry) {
     logBuffer.shift();
   }
   logEmitter.emit("log", entry);
+}
+
+function shouldEmit(level: LogEntry["level"]): boolean {
+  const settings = getSettings();
+  const min = settings.logLevel || "info";
+
+  const prio: Record<string, number> = {
+    error: 0,
+    warn: 1,
+    info: 2,
+    debug: 3,
+  };
+
+  const lvl = prio[level] ?? prio.info;
+  const minLvl = prio[min] ?? prio.info;
+  return lvl <= minLvl;
 }
 
 // Get recent logs with optional pagination (for infinite scroll)
@@ -127,7 +145,9 @@ export function log(
     meta: meta ? { ...meta, source: undefined } : undefined,
   };
 
-  addLogEntry(entry);
+  if (shouldEmit(level)) {
+    addLogEntry(entry);
+  }
   logger.log(level, message, meta);
 }
 

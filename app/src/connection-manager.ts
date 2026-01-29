@@ -3,11 +3,15 @@ import {
   BaichuanRtspServer,
 } from "@apocaliss92/nodelink-js";
 import type { CameraConfig, RtspServerConfig, ConnectionParams } from "./types";
+import { createSourceLogger } from "./logger.js";
 import {
   getCamera,
   getRtspServers,
   updateRtspServer,
 } from "./settings-store.js";
+
+const logger = createSourceLogger("connection-manager");
+const rtspLogger = createSourceLogger("rtsp-manager");
 
 interface ActiveConnection {
   api: ReolinkBaichuanApi;
@@ -35,9 +39,7 @@ let activeCredentials: ConnectionParams | null = {
 
 export function setActiveCredentials(params: ConnectionParams): void {
   activeCredentials = params;
-  console.log(
-    `[ConnectionManager] Active credentials set for ${params.host}:${params.port}`,
-  );
+  logger.info(`Active credentials set for ${params.host}:${params.port}`);
 }
 
 export function getActiveCredentials(): ConnectionParams | null {
@@ -46,7 +48,7 @@ export function getActiveCredentials(): ConnectionParams | null {
 
 export function clearActiveCredentials(): void {
   activeCredentials = null;
-  console.log("[ConnectionManager] Active credentials cleared");
+  logger.info("Active credentials cleared");
 }
 
 export function resolveCredentials(
@@ -83,7 +85,7 @@ setInterval(() => {
     if (now - conn.lastUsed > CONNECTION_TIMEOUT) {
       conn.api.close().catch(() => {});
       connectionCache.delete(key);
-      console.log(`[ConnectionManager] Closed inactive connection: ${key}`);
+      logger.debug(`Closed inactive connection: ${key}`);
     }
   }
 }, 60 * 1000);
@@ -112,7 +114,7 @@ export async function getConnection(
   await api.login();
 
   connectionCache.set(key, { api, lastUsed: Date.now() });
-  console.log(`[ConnectionManager] New connection established: ${key}`);
+  logger.info(`New connection established: ${key}`);
 
   return api;
 }
@@ -142,14 +144,14 @@ export async function closeConnection(
   if (cached) {
     await cached.api.close();
     connectionCache.delete(key);
-    console.log(`[ConnectionManager] Closed connection: ${key}`);
+    logger.debug(`Closed connection: ${key}`);
   }
 }
 
 export async function closeAllConnections(): Promise<void> {
   for (const [key, conn] of connectionCache.entries()) {
     await conn.api.close().catch(() => {});
-    console.log(`[ConnectionManager] Closed connection: ${key}`);
+    logger.debug(`Closed connection: ${key}`);
   }
   connectionCache.clear();
 }
@@ -179,12 +181,22 @@ export async function startRtspServer(serverId: string): Promise<string> {
     camera.password,
   );
 
+  const streamLogger = createSourceLogger(
+    `rtsp:${camera.name}:${serverConfig.profile}`,
+  );
+
   const rtspServer = new BaichuanRtspServer({
     api,
     profile: serverConfig.profile as "main" | "sub" | "ext",
     channel: serverConfig.channel,
     listenPort: serverConfig.port,
-    logger: console,
+    logger: {
+      log: (msg: unknown) => streamLogger.info(String(msg)),
+      info: (msg: string) => streamLogger.info(msg),
+      warn: (msg: string) => streamLogger.warn(msg),
+      error: (msg: string) => streamLogger.error(msg),
+      debug: (msg: string) => streamLogger.debug(msg),
+    },
   });
 
   await rtspServer.start();
@@ -201,8 +213,8 @@ export async function startRtspServer(serverId: string): Promise<string> {
 
   updateRtspServer(serverId, { enabled: true });
 
-  console.log(
-    `[RtspManager] Started RTSP server ${serverId} on port ${serverConfig.port}`,
+  rtspLogger.info(
+    `Started RTSP server ${serverId} on port ${serverConfig.port}`,
   );
 
   return rtspUrl;
@@ -218,13 +230,13 @@ export async function stopRtspServer(serverId: string): Promise<void> {
   activeRtspServers.delete(serverId);
   updateRtspServer(serverId, { enabled: false });
 
-  console.log(`[RtspManager] Stopped RTSP server ${serverId}`);
+  rtspLogger.info(`Stopped RTSP server ${serverId}`);
 }
 
 export async function stopAllRtspServers(): Promise<void> {
   for (const [id, active] of activeRtspServers.entries()) {
     await active.server.stop().catch(() => {});
-    console.log(`[RtspManager] Stopped RTSP server ${id}`);
+    rtspLogger.info(`Stopped RTSP server ${id}`);
   }
   activeRtspServers.clear();
 }
@@ -254,7 +266,7 @@ export async function autoStartRtspServers(): Promise<void> {
     try {
       await startRtspServer(server.id);
     } catch (error) {
-      console.error(`[RtspManager] Failed to auto-start ${server.id}:`, error);
+      rtspLogger.error(`Failed to auto-start ${server.id}: ${error}`);
     }
   }
 }

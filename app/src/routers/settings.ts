@@ -22,6 +22,18 @@ export const settingsRouter = router({
       return getSettings();
     }),
 
+  // Runtime info (read-only)
+  getRuntime: publicProcedure
+    .meta({ description: "Get runtime information (ports, env-derived paths)" })
+    .query(() => {
+      const dataDir = process.env.DATA_PATH || ".";
+      return {
+        httpPort: Number(process.env.PORT) || 3000,
+        rtspPort: Number(process.env.RTSP_PORT) || 8554,
+        dataPath: path.resolve(dataDir),
+      };
+    }),
+
   // Update settings
   update: publicProcedure
     .meta({ description: "Update application settings" })
@@ -31,7 +43,6 @@ export const settingsRouter = router({
         hostPort: z.number().int().min(1).max(65535).optional(),
         logLevel: z.enum(["error", "warn", "info", "debug"]).optional(),
         logRetentionDays: z.number().optional(),
-        rtspDefaultPort: z.number().optional(),
         rtspRequireAuth: z.boolean().optional(),
         // Paths are controlled by DATA_PATH env var, not configurable at runtime
       }),
@@ -39,7 +50,10 @@ export const settingsRouter = router({
     .mutation(({ input }) => {
       const settings = saveSettings(input);
       // Reload logger if log settings changed
-      if (input.logLevel) {
+      if (
+        input.logLevel !== undefined ||
+        input.logRetentionDays !== undefined
+      ) {
         reloadLogger();
       }
       // Update RTSP URLs if serviceIp or auth changed
