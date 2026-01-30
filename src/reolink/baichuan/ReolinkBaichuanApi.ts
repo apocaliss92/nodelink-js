@@ -1575,19 +1575,45 @@ export class ReolinkBaichuanApi {
    * Log active sessions on the device at startup for debugging purposes.
    */
   private async logActiveSessionsOnStartup(): Promise<void> {
+    const localSessionCount = this.dedicatedClients.size;
     try {
       const ourIp = this.client.getLocalAddress?.();
       const onlineUsers = await this.getOnlineUserList({ timeoutMs: 5000 });
-      const allItems = onlineUsers.body?.OnlineUserList?.item ?? [];
+
+      // Support both legacy (item) and current (OnlineUser) formats
+      const legacyItems = onlineUsers.body?.OnlineUserList?.item ?? [];
+      const currentItems = onlineUsers.body?.OnlineUserList?.OnlineUser ?? [];
+
+      // Normalize to common format
+      const allItems =
+        currentItems.length > 0
+          ? currentItems.map((u) => ({
+              ip: u.ipAddress,
+              userName: u.userName,
+              level: u.userLevel,
+              sessionId: u.sessionId,
+            }))
+          : legacyItems.map((u) => ({
+              ip: u.ip,
+              userName: u.userName,
+              level: u.level,
+              sessionId: undefined as number | undefined,
+            }));
+
       const ourSessions = ourIp
         ? allItems.filter((item) => item.ip === ourIp)
         : allItems;
 
+      // Warn if device reports 0 but we have local sessions
+      const deviceReportsZero = allItems.length === 0 && localSessionCount > 0;
+
       this.logger.log?.(
-        `[ReolinkBaichuanApi] Startup session check: ${ourSessions.length} session(s) from our IP (${ourIp ?? "unknown"}), ${allItems.length} total on device`,
+        `[ReolinkBaichuanApi] Startup session check: ${ourSessions.length} device session(s) from our IP (${ourIp ?? "unknown"}), ${allItems.length} total on device, ${localSessionCount} local${deviceReportsZero ? " [device may not support OnlineUserList]" : ""}`,
         {
           host: this.host,
           ourIp,
+          localSessionCount,
+          deviceReportsZero,
           ourSessions: ourSessions.map((s) => ({
             user: s.userName,
             ip: s.ip,
@@ -1640,20 +1666,66 @@ export class ReolinkBaichuanApi {
     let sessionCount: number;
     let sessionItems: unknown[] = [];
     let ourSessionCount = 0;
+    let usedLocalFallback = false;
     try {
       const onlineUsers = await this.getOnlineUserList({ timeoutMs: 5000 });
-      const allItems = onlineUsers.body?.OnlineUserList?.item ?? [];
+
+      // Support both legacy (item) and current (OnlineUser) formats
+      const legacyItems = onlineUsers.body?.OnlineUserList?.item ?? [];
+      const currentItems = onlineUsers.body?.OnlineUserList?.OnlineUser ?? [];
+
+      // Normalize to common format: use OnlineUser if available, fallback to item
+      const allItems =
+        currentItems.length > 0
+          ? currentItems.map((u) => ({
+              ip: u.ipAddress,
+              name: u.userName,
+              level: u.userLevel,
+              sessionId: u.sessionId,
+            }))
+          : legacyItems.map((u) => ({
+              ip: u.ip,
+              name: u.userName,
+              level: u.level,
+            }));
       sessionItems = allItems;
+
+      // Log all sessions reported by camera for debugging
+      this.logger.debug?.(
+        `[ReolinkBaichuanApi] Session guard: camera reports ${allItems.length} sessions, ourIp=${ourIp ?? "unknown"}`,
+        {
+          ourIp,
+          sessions: allItems,
+        },
+      );
 
       if (ourIp) {
         // Filter sessions to only count those from our IP
         const ourSessions = allItems.filter((item) => item.ip === ourIp);
         ourSessionCount = ourSessions.length;
         sessionCount = ourSessionCount;
+
+        // Log filtered results
+        if (allItems.length > 0) {
+          this.logger.debug?.(
+            `[ReolinkBaichuanApi] Session guard: ${ourSessionCount}/${allItems.length} sessions match ourIp=${ourIp}`,
+          );
+        }
       } else {
         // Can't determine our IP, use total count
         sessionCount = onlineUsers.body?.OnlineUserList?.itemNum ?? 0;
         ourSessionCount = sessionCount;
+      }
+
+      // If device reports 0 sessions but we have local sessions, the device
+      // may not support OnlineUserList properly - fall back to local count
+      if (sessionCount === 0 && ourDedicatedSessions > 0) {
+        sessionCount = ourDedicatedSessions;
+        ourSessionCount = ourDedicatedSessions;
+        usedLocalFallback = true;
+        this.logger.debug?.(
+          `[ReolinkBaichuanApi] Session guard: camera reports 0 sessions but we have ${ourDedicatedSessions} local dedicated sessions, using local fallback`,
+        );
       }
     } catch (e) {
       // If we can't query the device, fall back to local count
@@ -1663,6 +1735,7 @@ export class ReolinkBaichuanApi {
       );
       sessionCount = this.dedicatedClients.size;
       ourSessionCount = sessionCount;
+      usedLocalFallback = true;
     }
 
     if (sessionCount < threshold) return;
@@ -1672,12 +1745,13 @@ export class ReolinkBaichuanApi {
     const thresholdIsDefault = this.maxDedicatedSessionsBeforeReboot == null;
     (this.logger.warn ?? this.logger.log).call(
       this.logger,
-      `[ReolinkBaichuanApi] Too many sessions from our IP (${ourIp ?? "unknown"}) on device host=${this.host} (${sessionCount} >= ${threshold}${thresholdIsDefault ? " [dynamic]" : ""}); rebooting device`,
+      `[ReolinkBaichuanApi] Too many sessions from our IP (${ourIp ?? "unknown"}) on device host=${this.host} (${sessionCount} >= ${threshold}${thresholdIsDefault ? " [dynamic]" : ""}${usedLocalFallback ? " [local fallback]" : ""}); rebooting device`,
       {
         host: this.host,
         ourIp,
         ourSessionCount,
         threshold,
+        usedLocalFallback,
         thresholdFormula: thresholdIsDefault
           ? `(1 + ${ourDedicatedSessions}) * 2`
           : "explicit",
@@ -11773,6 +11847,15 @@ export class ReolinkBaichuanApi {
     };
 
     collect(sessions);
+
+    // Log raw data to console for debugging
+    const onlineUserList = sessions.body?.OnlineUserList;
+    const legacyItems = onlineUserList?.item ?? [];
+    const currentItems = onlineUserList?.OnlineUser ?? [];
+    this.logger.log?.(
+      `[ReolinkBaichuanApi] getOnlineUserSessionsForUi: legacyItems=${legacyItems.length}, currentItems=${currentItems.length}`,
+      { legacyItems, currentItems },
+    );
 
     let count = 0;
     for (const entry of collected) {

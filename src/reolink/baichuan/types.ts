@@ -1464,9 +1464,23 @@ export interface OnlineUserListConfig {
   body?: {
     OnlineUserList?: {
       itemNum?: number | undefined;
+      /** Legacy format (some firmware versions) */
       item?: Array<{
         userName?: string | undefined;
         ip?: string | undefined;
+        level?: number | undefined;
+        [key: string]: unknown;
+      }>;
+      /** Current format (OnlineUser array) */
+      OnlineUser?: Array<{
+        userId?: number | undefined;
+        sessionId?: number | undefined;
+        userName?: string | undefined;
+        userLevel?: number | undefined;
+        ipAddress?: string | undefined;
+        macAddress?: string | undefined;
+        enableOutoffLine?: number | undefined;
+        isOnline?: number | undefined;
         [key: string]: unknown;
       }>;
       [key: string]: unknown;
