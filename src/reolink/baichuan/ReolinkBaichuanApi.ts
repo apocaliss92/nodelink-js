@@ -397,10 +397,20 @@ export class ReolinkBaichuanApi {
    */
   private _channelCount: number | undefined;
 
-  private rebootAfterDisconnectionsPerMinute: number | undefined;
+  /** Maximum dedicated sessions allowed before triggering a reboot (default: 7). */
+  private maxDedicatedSessionsBeforeReboot: number | undefined;
+  private sessionGuardRebootInFlight: Promise<void> | undefined;
+  private sessionGuardLastRebootAtMs: number | undefined;
+
+  /** Reboot if too many voluntary disconnections per minute (default: 15). */
+  private rebootAfterDisconnectionsPerMinute: number = 15;
   private readonly disconnectStormVoluntaryAtMs: number[] = [];
   private disconnectStormRebootInFlight: Promise<void> | undefined;
   private disconnectStormLastRebootAtMs: number | undefined;
+
+  /** Periodic session check interval (every 60 seconds). */
+  private sessionGuardIntervalTimer: NodeJS.Timeout | undefined;
+
   private readonly simpleEventListeners = new Set<
     (event: ReolinkSimpleEvent) => void | Promise<void>
   >();
@@ -470,7 +480,7 @@ export class ReolinkBaichuanApi {
   /**
    * Cooldown tracking to prevent session spam when login repeatedly fails.
    * Key: host address (since camera session limits are per-device, not per-sessionKey)
-   * Value: { failureCount, lastFailureAt, cooldownUntil }
+   * Value: object with failureCount, lastFailureAt, cooldownUntil
    */
   private readonly dedicatedClientCooldowns = new Map<
     string,
@@ -933,7 +943,7 @@ export class ReolinkBaichuanApi {
         ReolinkBaichuanApi.DEDICATED_CLIENT_FAILURE_WINDOW_MS
       ) {
         this.dedicatedClientCooldowns.delete(this.host);
-        log?.log?.(
+        log?.debug?.(
           `[DedicatedClient] Cooldown reset for host=${this.host} (no failures for ${ReolinkBaichuanApi.DEDICATED_CLIENT_FAILURE_WINDOW_MS}ms)`,
         );
       } else if (now < cooldownEntry.cooldownUntil) {
@@ -959,7 +969,7 @@ export class ReolinkBaichuanApi {
       if (existing.refCount === 0) {
         existing.refCount = 1;
         existing.lastUsedAt = Date.now();
-        log?.log?.(
+        log?.debug?.(
           `[DedicatedClient] Reusing existing dedicated socket for sessionKey=${sessionKey}`,
         );
         // Best-effort: ensure logged in.
@@ -982,13 +992,13 @@ export class ReolinkBaichuanApi {
 
       // If still in use (refCount>0) or unusable, preempt by closing and recreating.
       // This matches the "one stream at a time" constraint for replay operations.
-      log?.log?.(
+      log?.debug?.(
         `[DedicatedClient] Closing existing socket for sessionKey=${sessionKey} (preempting active session)`,
       );
       this.dedicatedClients.delete(sessionKey);
       try {
         await existing.client.close({ reason: "preempted by new session" });
-        log?.log?.(
+        log?.debug?.(
           `[DedicatedClient] Old socket closed successfully for sessionKey=${sessionKey}`,
         );
       } catch (e) {
@@ -999,9 +1009,6 @@ export class ReolinkBaichuanApi {
     }
 
     // Create a new dedicated client with the same credentials
-    log?.log?.(
-      `[DedicatedClient] Opening new dedicated socket for sessionKey=${sessionKey}`,
-    );
     const dedicatedClient = new BaichuanClient({
       host: this.host,
       username: this.username,
@@ -1015,7 +1022,7 @@ export class ReolinkBaichuanApi {
       await dedicatedClient.login();
       // Success: clear any cooldown state
       if (this.dedicatedClientCooldowns.has(this.host)) {
-        log?.log?.(
+        log?.debug?.(
           `[DedicatedClient] Clearing cooldown for host=${this.host} after successful login`,
         );
         this.dedicatedClientCooldowns.delete(this.host);
@@ -1069,7 +1076,7 @@ export class ReolinkBaichuanApi {
     }
 
     log?.log?.(
-      `[DedicatedClient] Dedicated socket logged in for sessionKey=${sessionKey}`,
+      `[DedicatedClient] Opened dedicated socket for sessionKey=${sessionKey}`,
     );
 
     this.dedicatedClients.set(sessionKey, {
@@ -1079,6 +1086,9 @@ export class ReolinkBaichuanApi {
       lastUsedAt: Date.now(),
       idleCloseTimer: undefined,
     });
+
+    // Check if we have too many sessions and need to reboot
+    void this.maybeRebootOnTooManySessions();
 
     return {
       client: dedicatedClient,
@@ -1117,7 +1127,7 @@ export class ReolinkBaichuanApi {
         if (current.refCount > 0) return;
 
         this.dedicatedClients.delete(sessionKey);
-        log?.log?.(
+        log?.debug?.(
           `[DedicatedClient] Closing idle replay socket for sessionKey=${sessionKey} (keepalive expired)`,
         );
         try {
@@ -1134,14 +1144,11 @@ export class ReolinkBaichuanApi {
 
     // Non-replay sockets: close immediately.
     this.dedicatedClients.delete(sessionKey);
-    log?.log?.(
-      `[DedicatedClient] Closing socket for sessionKey=${sessionKey} (session ended)`,
-    );
 
     try {
       await entry.client.close({ reason: "dedicated session ended" });
       log?.log?.(
-        `[DedicatedClient] Socket closed successfully for sessionKey=${sessionKey}`,
+        `[DedicatedClient] Closed socket for sessionKey=${sessionKey}`,
       );
     } catch (e) {
       log?.warn?.(
@@ -1173,7 +1180,7 @@ export class ReolinkBaichuanApi {
       entry.idleCloseTimer = undefined;
     }
 
-    log?.log?.(
+    log?.debug?.(
       `[DedicatedClient] Force-closing existing socket for sessionKey=${sessionKey} (new request preempting)`,
     );
     this.dedicatedClients.delete(sessionKey);
@@ -1181,7 +1188,7 @@ export class ReolinkBaichuanApi {
     try {
       await entry.client.close({ reason: "preempted by new request" });
       log?.log?.(
-        `[DedicatedClient] Force-close complete for sessionKey=${sessionKey}`,
+        `[DedicatedClient] Force-closed socket for sessionKey=${sessionKey}`,
       );
     } catch (e) {
       log?.warn?.(
@@ -1284,10 +1291,14 @@ export class ReolinkBaichuanApi {
   constructor(
     opts: BaichuanClientOptions & {
       /**
-       * Reboot the device if there are too many *voluntary* disconnects within 60 seconds.
-       *
-       * The count is based on `BaichuanClient.close({ reason: ... })` / idle disconnects.
-       * Remote/firmware-initiated closes are ignored.
+       * Reboot the device if the number of sessions from our IP reaches this threshold.
+       * Default: dynamic, calculated as `(1 + ourDedicatedSessions) * 2`.
+       * Set to a specific number to override the dynamic default.
+       */
+      maxDedicatedSessionsBeforeReboot?: number;
+      /**
+       * Reboot the device if there are too many voluntary disconnects within 60 seconds.
+       * Default: 15. Set to 0 or negative to disable.
        */
       rebootAfterDisconnectionsPerMinute?: number;
       /** If true, avoid using HTTP/CGI fallbacks and discovery paths (native Baichuan only). */
@@ -1376,9 +1387,25 @@ export class ReolinkBaichuanApi {
       }
     });
 
-    const v = opts.rebootAfterDisconnectionsPerMinute;
-    if (typeof v === "number" && Number.isFinite(v) && v > 0) {
-      this.rebootAfterDisconnectionsPerMinute = Math.floor(v);
+    // Session guard: reboot if too many dedicated sessions are open
+    const maxSessions = opts.maxDedicatedSessionsBeforeReboot;
+    if (
+      typeof maxSessions === "number" &&
+      Number.isFinite(maxSessions) &&
+      maxSessions > 0
+    ) {
+      this.maxDedicatedSessionsBeforeReboot = Math.floor(maxSessions);
+    }
+
+    // Disconnect storm guard: reboot if too many voluntary disconnections per minute
+    const disconnectThreshold = opts.rebootAfterDisconnectionsPerMinute;
+    if (
+      typeof disconnectThreshold === "number" &&
+      Number.isFinite(disconnectThreshold)
+    ) {
+      this.rebootAfterDisconnectionsPerMinute = Math.floor(disconnectThreshold);
+    }
+    if (this.rebootAfterDisconnectionsPerMinute > 0) {
       this.client.on("close", () => {
         try {
           void this.maybeRebootOnDisconnectStorm();
@@ -1387,6 +1414,15 @@ export class ReolinkBaichuanApi {
         }
       });
     }
+
+    // Start periodic session guard after first push (indicates we are connected)
+    this.client.once("push", () => {
+      void this.logActiveSessionsOnStartup();
+      // Check sessions every 60 seconds
+      this.sessionGuardIntervalTimer = setInterval(() => {
+        void this.maybeRebootOnTooManySessions();
+      }, 60_000);
+    });
   }
 
   /**
@@ -1535,9 +1571,163 @@ export class ReolinkBaichuanApi {
     });
   }
 
+  /**
+   * Log active sessions on the device at startup for debugging purposes.
+   */
+  private async logActiveSessionsOnStartup(): Promise<void> {
+    try {
+      const ourIp = this.client.getLocalAddress?.();
+      const onlineUsers = await this.getOnlineUserList({ timeoutMs: 5000 });
+      const allItems = onlineUsers.body?.OnlineUserList?.item ?? [];
+      const ourSessions = ourIp
+        ? allItems.filter((item) => item.ip === ourIp)
+        : allItems;
+
+      this.logger.log?.(
+        `[ReolinkBaichuanApi] Startup session check: ${ourSessions.length} session(s) from our IP (${ourIp ?? "unknown"}), ${allItems.length} total on device`,
+        {
+          host: this.host,
+          ourIp,
+          ourSessions: ourSessions.map((s) => ({
+            user: s.userName,
+            ip: s.ip,
+            sessionId: s.sessionId,
+          })),
+          allSessions: allItems.map((s) => ({
+            user: s.userName,
+            ip: s.ip,
+            sessionId: s.sessionId,
+          })),
+        },
+      );
+    } catch (e) {
+      this.logger.debug?.(
+        "[ReolinkBaichuanApi] Could not query sessions at startup",
+        e,
+      );
+    }
+  }
+
+  /**
+   * Check if too many sessions are open on the device and trigger a reboot if needed.
+   * Called when acquiring a new dedicated client.
+   * Uses the native Baichuan API to get the actual session count from the device.
+   * Only counts sessions from our own IP address.
+   */
+  private async maybeRebootOnTooManySessions(): Promise<void> {
+    // Calculate threshold: use explicit value or default to (1 + ourDedicatedSessions) * 2
+    const ourDedicatedSessions = this.dedicatedClients.size;
+    const threshold =
+      this.maxDedicatedSessionsBeforeReboot ?? (1 + ourDedicatedSessions) * 2;
+
+    // Already rebooting?
+    if (this.sessionGuardRebootInFlight) return;
+
+    // Cooldown: don't reboot more than once every 10 minutes
+    const cooldownMs = 10 * 60_000;
+    const now = Date.now();
+    if (
+      this.sessionGuardLastRebootAtMs != null &&
+      now - this.sessionGuardLastRebootAtMs < cooldownMs
+    ) {
+      return;
+    }
+
+    // Get our local IP address (the IP the camera sees us as)
+    const ourIp = this.client.getLocalAddress?.();
+
+    // Query the device for actual online sessions
+    let sessionCount: number;
+    let sessionItems: unknown[] = [];
+    let ourSessionCount = 0;
+    try {
+      const onlineUsers = await this.getOnlineUserList({ timeoutMs: 5000 });
+      const allItems = onlineUsers.body?.OnlineUserList?.item ?? [];
+      sessionItems = allItems;
+
+      if (ourIp) {
+        // Filter sessions to only count those from our IP
+        const ourSessions = allItems.filter((item) => item.ip === ourIp);
+        ourSessionCount = ourSessions.length;
+        sessionCount = ourSessionCount;
+      } else {
+        // Can't determine our IP, use total count
+        sessionCount = onlineUsers.body?.OnlineUserList?.itemNum ?? 0;
+        ourSessionCount = sessionCount;
+      }
+    } catch (e) {
+      // If we can't query the device, fall back to local count
+      this.logger.debug?.(
+        "[ReolinkBaichuanApi] Session guard: failed to query online users, using local count",
+        e,
+      );
+      sessionCount = this.dedicatedClients.size;
+      ourSessionCount = sessionCount;
+    }
+
+    if (sessionCount < threshold) return;
+
+    this.sessionGuardLastRebootAtMs = now;
+    const localSessions = Array.from(this.dedicatedClients.keys());
+    const thresholdIsDefault = this.maxDedicatedSessionsBeforeReboot == null;
+    (this.logger.warn ?? this.logger.log).call(
+      this.logger,
+      `[ReolinkBaichuanApi] Too many sessions from our IP (${ourIp ?? "unknown"}) on device host=${this.host} (${sessionCount} >= ${threshold}${thresholdIsDefault ? " [dynamic]" : ""}); rebooting device`,
+      {
+        host: this.host,
+        ourIp,
+        ourSessionCount,
+        threshold,
+        thresholdFormula: thresholdIsDefault
+          ? `(1 + ${ourDedicatedSessions}) * 2`
+          : "explicit",
+        localDedicatedSessions: localSessions,
+        allDeviceSessions: sessionItems,
+      },
+    );
+
+    this.sessionGuardRebootInFlight = this.rebootFromSessionGuard()
+      .catch((e) => {
+        (this.logger.warn ?? this.logger.error).call(
+          this.logger,
+          "[ReolinkBaichuanApi] Session guard reboot failed",
+          e,
+        );
+      })
+      .finally(() => {
+        this.sessionGuardRebootInFlight = undefined;
+      });
+  }
+
+  private async rebootFromSessionGuard(): Promise<void> {
+    // Try Baichuan first, then CGI as fallback
+    try {
+      await this.reboot();
+      return;
+    } catch (e) {
+      this.logger.debug?.(
+        "[ReolinkBaichuanApi] Baichuan reboot failed, trying CGI",
+        e,
+      );
+    }
+
+    try {
+      await this.cgiApi.login();
+      await this.cgiApi.Reboot();
+    } catch (e) {
+      throw e instanceof Error
+        ? e
+        : new Error(String(e ?? "session guard reboot failed"));
+    }
+  }
+
+  /**
+   * Check if there are too many voluntary disconnections and trigger a reboot if needed.
+   * Called on every socket close event.
+   */
   private async maybeRebootOnDisconnectStorm(): Promise<void> {
     const threshold = this.rebootAfterDisconnectionsPerMinute;
-    if (threshold == null) return;
+    if (threshold <= 0) return;
 
     const info = this.client.getLastDisconnectInfo?.();
     if (!info?.voluntary) return;
@@ -1545,6 +1735,8 @@ export class ReolinkBaichuanApi {
     const now = Date.now();
     const windowMs = 60_000;
     const cutoff = now - windowMs;
+
+    // Remove old entries outside the window
     while (
       this.disconnectStormVoluntaryAtMs.length &&
       this.disconnectStormVoluntaryAtMs[0]! < cutoff
@@ -1555,71 +1747,44 @@ export class ReolinkBaichuanApi {
 
     if (this.disconnectStormVoluntaryAtMs.length < threshold) return;
 
+    // Already rebooting?
     if (this.disconnectStormRebootInFlight) return;
+
+    // Cooldown: don't reboot more than once every 10 minutes
     const cooldownMs = 10 * 60_000;
     if (
       this.disconnectStormLastRebootAtMs != null &&
       now - this.disconnectStormLastRebootAtMs < cooldownMs
-    )
+    ) {
       return;
+    }
 
     this.disconnectStormLastRebootAtMs = now;
-    (this.logger.warn ?? this.logger.error).call(
+    (this.logger.warn ?? this.logger.log).call(
       this.logger,
-      "[ReolinkBaichuanApi] disconnect storm detected; rebooting device",
+      `[ReolinkBaichuanApi] Disconnect storm detected for host=${this.host} (${this.disconnectStormVoluntaryAtMs.length} voluntary disconnects in 60s >= ${threshold}); rebooting device`,
       {
+        host: this.host,
         transport: info.transport,
         reason: info.reason,
         voluntaryDisconnectsInWindow: this.disconnectStormVoluntaryAtMs.length,
-        windowMs,
         threshold,
+        windowMs,
         cooldownMs,
-        method: "auto",
       },
     );
 
-    this.disconnectStormRebootInFlight = this.rebootFromDisconnectStorm("auto")
+    this.disconnectStormRebootInFlight = this.rebootFromSessionGuard()
       .catch((e) => {
         (this.logger.warn ?? this.logger.error).call(
           this.logger,
-          "[ReolinkBaichuanApi] disconnect-storm reboot failed",
+          "[ReolinkBaichuanApi] Disconnect storm reboot failed",
           e,
         );
       })
       .finally(() => {
         this.disconnectStormRebootInFlight = undefined;
       });
-  }
-
-  private async rebootFromDisconnectStorm(
-    method: "auto" | "baichuan" | "cgi",
-  ): Promise<void> {
-    let lastErr: unknown;
-
-    if (method === "auto" || method === "baichuan") {
-      try {
-        await this.reboot();
-        return;
-      } catch (e) {
-        lastErr = e;
-        if (method === "baichuan") throw e;
-      }
-    }
-
-    if (method === "auto" || method === "cgi") {
-      try {
-        await this.cgiApi.login();
-        await this.cgiApi.Reboot();
-        return;
-      } catch (e) {
-        lastErr = e;
-        if (method === "cgi") throw e;
-      }
-    }
-
-    throw lastErr instanceof Error
-      ? lastErr
-      : new Error(String(lastErr ?? "disconnect-storm reboot failed"));
   }
 
   /**
@@ -1856,12 +2021,51 @@ export class ReolinkBaichuanApi {
     await this.client.login(maxEncryption);
   }
 
+  /**
+   * Stop all active video streams on the main API client.
+   * Called automatically during close() to ensure clean session termination.
+   */
+  async stopAllActiveStreams(): Promise<void> {
+    const activeStreams = Array.from(this.activeVideoMsgNums.keys());
+    if (activeStreams.length === 0) {
+      return;
+    }
+
+    this.logger?.debug?.(
+      `[ReolinkBaichuanApi] Stopping ${activeStreams.length} active stream(s) before close`,
+    );
+
+    // Parse keys (format: "channel:profile:variant") and stop each stream
+    await Promise.allSettled(
+      activeStreams.map(async (key) => {
+        const [ch, profile, variant] = key.split(":");
+        try {
+          await this.stopVideoStream(Number(ch), profile as StreamProfile, {
+            variant: variant as NativeVideoStreamVariant,
+          });
+        } catch (e) {
+          // Ignore errors - we're shutting down anyway
+          this.logger?.debug?.(
+            `[ReolinkBaichuanApi] Error stopping stream ${key}: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      }),
+    );
+  }
+
   async close(options?: { reason?: string }): Promise<void> {
+    // Stop periodic session guard
+    if (this.sessionGuardIntervalTimer) {
+      clearInterval(this.sessionGuardIntervalTimer);
+      this.sessionGuardIntervalTimer = undefined;
+    }
     // Stop state polling before closing
     this.stopStatePolling();
     this.stopUdpSleepInference();
     // Stop all RTSP servers before closing the client
     await this.cleanup();
+    // Stop all active video streams on the main client before logout/close
+    await this.stopAllActiveStreams();
     // Cleanup dedicated clients used for streaming/replay
     await this.cleanupDedicatedClients();
     await this.client.close(

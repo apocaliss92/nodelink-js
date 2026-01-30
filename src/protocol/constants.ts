@@ -33,6 +33,16 @@ export function bcHeaderHasPayloadOffset(messageClass: number): boolean {
 }
 
 /**
+ * Baichuan command IDs for login/logout.
+ *
+ * Values:
+ * - MSG_ID_LOGIN = 1: Login request/response
+ * - MSG_ID_LOGOUT = 2: Logout request/response
+ */
+export const BC_CMD_ID_LOGIN = 1; // MSG_ID_LOGIN - Login request/response
+export const BC_CMD_ID_LOGOUT = 2; // MSG_ID_LOGOUT - Logout request/response (PCAP-confirmed)
+
+/**
  * Baichuan command IDs for video streaming.
  *
  * Values:

@@ -27,6 +27,7 @@ import {
   BC_CMD_ID_FIND_REC_VIDEO_CLOSE,
   BC_CMD_ID_FIND_REC_VIDEO_GET,
   BC_CMD_ID_FIND_REC_VIDEO_OPEN,
+  BC_CMD_ID_LOGOUT,
   BC_CMD_ID_PING,
   BC_CMD_ID_TALK,
   BC_CMD_ID_TALK_ABILITY,
@@ -53,6 +54,7 @@ import {
   buildBinaryExtensionXml,
   buildChannelExtensionXml,
   buildLoginXml,
+  buildLogoutXml,
   getXmlText,
 } from "../protocol/xml";
 import type { ReolinkEvent } from "../reolink/baichuan/types";
@@ -284,7 +286,7 @@ export class BaichuanClient extends EventEmitter<{
   ]);
 
   enc: EncryptionProtocol = { kind: "none" }; // Public to allow ReolinkBaichuanApi to access for audio decryption
-  private nonce?: string;
+  private nonce: string | undefined;
 
   // Video stream subscriptions: map of cmdId -> Set of msgNum that are subscribed
   private videoSubscriptions = new Map<number, Set<number>>();
@@ -841,6 +843,20 @@ export class BaichuanClient extends EventEmitter<{
   }
 
   /**
+   * Get the local IP address of the socket connection.
+   * This is the IP address that the camera sees as the client IP.
+   */
+  getLocalAddress(): string | undefined {
+    if (this.transport === "tcp" && this.tcpSocket) {
+      return this.tcpSocket.localAddress;
+    }
+    if (this.transport === "udp" && this.udpSocket) {
+      return (this.udpSocket as any).localAddress?.();
+    }
+    return undefined;
+  }
+
+  /**
    * Check if the socket is connected and ready for operations.
    * For TCP: checks if socket exists and is not destroyed.
    * For UDP: checks if socket exists.
@@ -1381,7 +1397,73 @@ export class BaichuanClient extends EventEmitter<{
     this.kickIdleDisconnectTimer();
   }
 
-  async close(options?: { reason?: string }): Promise<void> {
+  /**
+   * Send a logout command to the camera to gracefully end the session.
+   *
+   * This notifies the camera that we're done, preventing "hung" sessions
+   * that would otherwise wait for a timeout on the camera side.
+   *
+   * PCAP-confirmed: cmdId=2 with encrypted XML body.
+   * Call this before close() for clean session termination.
+   *
+   * @returns true if logout was sent and acknowledged, false if failed or not logged in
+   */
+  async logout(): Promise<boolean> {
+    // Skip if not logged in or socket not connected
+    if (!this.loggedIn || !this.isSocketConnected()) {
+      this.logDebug("logout_skip", {
+        loggedIn: this.loggedIn,
+        socketConnected: this.isSocketConnected(),
+      });
+      return false;
+    }
+
+    try {
+      this.logDebug("logout_start", { host: this.opts.host });
+
+      const logoutXml = buildLogoutXml();
+      const effectiveHostChannelId = this.hostChannelId;
+
+      // Send logout command (cmdId=2)
+      const response = await this.sendFrame({
+        cmdId: BC_CMD_ID_LOGOUT,
+        payloadXml: logoutXml,
+        extensionXml: "",
+        messageClass: BC_CLASS_MODERN_24,
+        channelIdOverride: effectiveHostChannelId,
+        timeoutMs: 5_000, // Short timeout - camera should respond quickly
+      });
+
+      // Camera responds with responseCode 200 on success (like other commands)
+      const responseCode = response.header.responseCode;
+      const success = responseCode === 200;
+
+      this.logDebug("logout_response", {
+        responseCode,
+        success,
+      });
+
+      // Mark as logged out regardless of response
+      this.loggedIn = false;
+      this.nonce = undefined;
+
+      return success;
+    } catch (e) {
+      // Logout failed - this is acceptable, we'll close the socket anyway
+      this.logDebug("logout_error", {
+        error: e instanceof Error ? e.message : String(e),
+      });
+      // Still mark as logged out so we don't try again
+      this.loggedIn = false;
+      this.nonce = undefined;
+      return false;
+    }
+  }
+
+  async close(options?: {
+    reason?: string;
+    skipLogout?: boolean;
+  }): Promise<void> {
     const hasSocket = Boolean(
       (this.tcpSocket && !this.tcpSocket.destroyed) || this.udpSocket,
     );
@@ -1403,7 +1485,7 @@ export class BaichuanClient extends EventEmitter<{
       const shortUid = this.opts.uid
         ? this.opts.uid.substring(0, 5)
         : undefined;
-      this.logFixed("closing", {
+      this.logDebug("closing", {
         transport,
         host,
         ...(transport === "tcp" ? { port } : {}),
@@ -1432,6 +1514,21 @@ export class BaichuanClient extends EventEmitter<{
       }
     } catch {
       // ignore
+    }
+
+    // Try to gracefully logout before closing the socket.
+    // This notifies the camera that we're done, preventing "hung" sessions.
+    // We skip logout if explicitly disabled via option (e.g., for error-recovery closes).
+    const skipLogout = options?.skipLogout ?? false;
+    if (!skipLogout && this.loggedIn && this.isSocketConnected()) {
+      try {
+        await this.logout();
+      } catch (e) {
+        // Ignore logout errors - we'll close the socket anyway
+        this.logDebug("close_logout_error", {
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
     }
 
     this.stopKeepAlive();

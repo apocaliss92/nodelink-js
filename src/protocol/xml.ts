@@ -1,6 +1,8 @@
 export function xmlEscape(text: string | undefined | null): string {
   if (text === undefined || text === null || typeof text !== "string") {
-    const error = new Error(`xmlEscape: expected string but got ${typeof text}: ${text}`);
+    const error = new Error(
+      `xmlEscape: expected string but got ${typeof text}: ${text}`,
+    );
     throw error;
   }
   return text
@@ -11,7 +13,10 @@ export function xmlEscape(text: string | undefined | null): string {
     .replaceAll("'", "&apos;");
 }
 
-export function buildLoginXml(userNameHash: string, passwordHash: string): string {
+export function buildLoginXml(
+  userNameHash: string,
+  passwordHash: string,
+): string {
   return `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <LoginUser version="1.1">
@@ -26,7 +31,21 @@ export function buildLoginXml(userNameHash: string, passwordHash: string): strin
 </body>`;
 }
 
-export function buildChannelExtensionXml(channelId: number | string | undefined | null): string {
+/**
+ * Build Logout XML for session termination.
+ * PCAP-observed: cmdId=2 with encrypted XML body containing Logout element.
+ */
+export function buildLogoutXml(): string {
+  return `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<Logout version="1.1">
+</Logout>
+</body>`;
+}
+
+export function buildChannelExtensionXml(
+  channelId: number | string | undefined | null,
+): string {
   if (channelId === undefined || channelId === null) {
     return `<?xml version="1.0" encoding="UTF-8" ?><Extension version="1.1"></Extension>`;
   }
@@ -36,7 +55,9 @@ export function buildChannelExtensionXml(channelId: number | string | undefined 
 </Extension>`;
 }
 
-export function buildBinaryExtensionXml(channelId: number | string | undefined | null): string {
+export function buildBinaryExtensionXml(
+  channelId: number | string | undefined | null,
+): string {
   if (channelId === undefined || channelId === null) {
     return `<?xml version="1.0" encoding="UTF-8" ?><Extension version="1.1"><binaryData>1</binaryData></Extension>`;
   }
@@ -50,18 +71,25 @@ export function buildBinaryExtensionXml(channelId: number | string | undefined |
 /**
  * Build Preview XML for video stream request.
  * Uses Preview element with handle and stream_type.
- * 
+ *
  * @param handle - Handle value: 0 for main, 256 for sub, 1024 for extern
  * @param streamType - Stream type name: "mainStream", "subStream", or "externStream"
  * @param channelId - Channel ID (optional, not used in working format)
  * @returns XML string for Preview element
  */
-export function buildPreviewXml(handle: number, streamType: string | undefined | null, channelId?: number): string {
+export function buildPreviewXml(
+  handle: number,
+  streamType: string | undefined | null,
+  channelId?: number,
+): string {
   // Preview includes channelId + handle + streamType.
   if (!streamType || typeof streamType !== "string") {
-    throw new Error(`buildPreviewXml: streamType is required (string) but got: ${typeof streamType} = ${streamType}`);
+    throw new Error(
+      `buildPreviewXml: streamType is required (string) but got: ${typeof streamType} = ${streamType}`,
+    );
   }
-  const channelIdXml = channelId !== undefined ? `<channelId>${channelId}</channelId>\n` : "";
+  const channelIdXml =
+    channelId !== undefined ? `<channelId>${channelId}</channelId>\n` : "";
   return `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <Preview version="1.0">
@@ -77,15 +105,25 @@ ${channelIdXml}<handle>${handle}</handle>
  * This format is observed in Reolink client traffic to NVR/Hub where the Preview element uses
  * version="1.1" and always includes channelId + handle + streamType.
  */
-export function buildPreviewXmlV11(params: { channelId: number; handle: number; streamType: string }): string {
+export function buildPreviewXmlV11(params: {
+  channelId: number;
+  handle: number;
+  streamType: string;
+}): string {
   if (!Number.isFinite(params.channelId)) {
-    throw new Error(`buildPreviewXmlV11: channelId must be finite, got: ${params.channelId}`);
+    throw new Error(
+      `buildPreviewXmlV11: channelId must be finite, got: ${params.channelId}`,
+    );
   }
   if (!Number.isFinite(params.handle)) {
-    throw new Error(`buildPreviewXmlV11: handle must be finite, got: ${params.handle}`);
+    throw new Error(
+      `buildPreviewXmlV11: handle must be finite, got: ${params.handle}`,
+    );
   }
   if (!params.streamType || typeof params.streamType !== "string") {
-    throw new Error(`buildPreviewXmlV11: streamType is required (string) but got: ${typeof params.streamType} = ${params.streamType}`);
+    throw new Error(
+      `buildPreviewXmlV11: streamType is required (string) but got: ${typeof params.streamType} = ${params.streamType}`,
+    );
   }
   return `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
@@ -100,13 +138,17 @@ export function buildPreviewXmlV11(params: { channelId: number; handle: number; 
 /**
  * Build Preview XML for video stream stop request.
  * Uses Preview element without stream_type.
- * 
+ *
  * @param handle - Handle value: 0 for main, 256 for sub, 1024 for extern
  * @param channelId - Channel ID (optional, not used in working format)
  * @returns XML string for Preview element (stop)
  */
-export function buildPreviewStopXml(handle: number, channelId?: number): string {
-  const channelIdXml = channelId !== undefined ? `<channelId>${channelId}</channelId>\n` : "";
+export function buildPreviewStopXml(
+  handle: number,
+  channelId?: number,
+): string {
+  const channelIdXml =
+    channelId !== undefined ? `<channelId>${channelId}</channelId>\n` : "";
   return `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <Preview version="1.0">
@@ -121,12 +163,19 @@ ${channelIdXml}<handle>${handle}</handle>
  * This format is observed/needed on some Hub/NVR firmwares where the VIDEO start
  * request uses Preview version="1.1" with explicit channelId and handle.
  */
-export function buildPreviewStopXmlV11(params: { channelId: number; handle: number }): string {
+export function buildPreviewStopXmlV11(params: {
+  channelId: number;
+  handle: number;
+}): string {
   if (!Number.isFinite(params.channelId)) {
-    throw new Error(`buildPreviewStopXmlV11: channelId must be finite, got: ${params.channelId}`);
+    throw new Error(
+      `buildPreviewStopXmlV11: channelId must be finite, got: ${params.channelId}`,
+    );
   }
   if (!Number.isFinite(params.handle)) {
-    throw new Error(`buildPreviewStopXmlV11: handle must be finite, got: ${params.handle}`);
+    throw new Error(
+      `buildPreviewStopXmlV11: handle must be finite, got: ${params.handle}`,
+    );
   }
   return `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
@@ -149,13 +198,17 @@ export function getXmlText(xml: string, tagName: string): string | undefined {
 
 /**
  * Build PTZ Control XML for pan/tilt/zoom commands.
- * 
+ *
  * @param channelId - Channel ID (1-based)
  * @param command - PTZ command: "up", "down", "left", "right", "stop"
  * @param speed - Movement speed (0.0 to 1.0, typically converted to 1-10)
  * @returns XML string for PtzControl element
  */
-export function buildPtzControlXml(channelId: number, command: string, speed: number): string {
+export function buildPtzControlXml(
+  channelId: number,
+  command: string,
+  speed: number,
+): string {
   // PtzControl structure: channel_id, speed, command
   // Version is "1.1"
   return `<?xml version="1.0" encoding="UTF-8" ?>
@@ -170,15 +223,25 @@ export function buildPtzControlXml(channelId: number, command: string, speed: nu
 
 /**
  * Build PTZ Preset XML for setting or moving to preset.
- * 
+ *
  * @param channelId - Channel ID (1-based)
  * @param presetId - Preset ID (1-255)
  * @param command - "setPos" to save current position, "toPos" to move to preset
  * @param name - Preset name (optional, required for setPos)
  * @returns XML string for PtzPreset element
  */
-export function buildPtzPresetXml(channelId: number, presetId: number, command: "setPos" | "toPos", name?: string): string {
-  return buildPtzPresetXmlV2(channelId, presetId, command, name === undefined ? undefined : { name });
+export function buildPtzPresetXml(
+  channelId: number,
+  presetId: number,
+  command: "setPos" | "toPos",
+  name?: string,
+): string {
+  return buildPtzPresetXmlV2(
+    channelId,
+    presetId,
+    command,
+    name === undefined ? undefined : { name },
+  );
 }
 
 export function buildPtzPresetXmlV2(
@@ -190,7 +253,7 @@ export function buildPtzPresetXmlV2(
     name?: string;
     /** Best-effort enable/disable support. Some firmwares include this in the preset list response. */
     enable?: 0 | 1;
-  }
+  },
 ): string {
   let nameXml = "";
   const name = options?.name;
@@ -227,7 +290,10 @@ ${enableXml}
  * @param channelId - Channel ID (0/1-based depending on camera; should match header/extension)
  * @param movePos - Absolute zoom position (typically 1000 == 1.0x)
  */
-export function buildStartZoomFocusXml(channelId: number, movePos: number): string {
+export function buildStartZoomFocusXml(
+  channelId: number,
+  movePos: number,
+): string {
   return `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <StartZoomFocus version="1.1">
@@ -240,13 +306,17 @@ export function buildStartZoomFocusXml(channelId: number, movePos: number): stri
 
 /**
  * Build Siren/Audio Alarm XML for manual control.
- * 
+ *
  * @param channelId - Channel ID (1-based, optional for hub-level)
  * @param enable - Enable/disable siren (1 or 0)
  * @returns XML string for audioPlayInfo element
  */
-export function buildSirenManualXml(channelId: number | undefined, enable: number): string {
-  const channelXml = channelId !== undefined ? `<channelId>${channelId}</channelId>` : "";
+export function buildSirenManualXml(
+  channelId: number | undefined,
+  enable: number,
+): string {
+  const channelXml =
+    channelId !== undefined ? `<channelId>${channelId}</channelId>` : "";
   return `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <audioPlayInfo version="1.1">
@@ -261,13 +331,17 @@ ${channelXml}
 
 /**
  * Build Siren/Audio Alarm XML for times-based control.
- * 
+ *
  * @param channelId - Channel ID (1-based, optional for hub-level)
  * @param times - Number of times to play
  * @returns XML string for audioPlayInfo element
  */
-export function buildSirenTimesXml(channelId: number | undefined, times: number): string {
-  const channelXml = channelId !== undefined ? `<channelId>${channelId}</channelId>` : "";
+export function buildSirenTimesXml(
+  channelId: number | undefined,
+  times: number,
+): string {
+  const channelXml =
+    channelId !== undefined ? `<channelId>${channelId}</channelId>` : "";
   return `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <audioPlayInfo version="1.1">
@@ -289,7 +363,11 @@ ${channelXml}
  * - status: 1 = on, 0 = off
  * - duration is in seconds
  */
-export function buildFloodlightManualXml(channelId: number, status: number, durationSeconds = 180): string {
+export function buildFloodlightManualXml(
+  channelId: number,
+  status: number,
+  durationSeconds = 180,
+): string {
   return `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <FloodlightManual version="1.1">
@@ -304,14 +382,17 @@ export function buildFloodlightManualXml(channelId: number, status: number, dura
  * Back-compat alias: historically this project called floodlight control "WhiteLed".
  * In practice, many cameras expect FloodlightManual payload for cmd 288.
  */
-export function buildWhiteLedStateXml(channelId: number, state: number): string {
+export function buildWhiteLedStateXml(
+  channelId: number,
+  state: number,
+): string {
   return buildFloodlightManualXml(channelId, state ? 1 : 0);
 }
 
 /**
  * Build AbilityInfo extension XML for requesting device capabilities.
  * Requests all available tokens: "system, streaming, PTZ, IO, security, replay, disk, network, alarm, record, video, image"
- * 
+ *
  * @param username - Username for the request
  * @returns XML string for Extension element with AbilityInfo request
  */
@@ -323,4 +404,3 @@ export function buildAbilityInfoExtensionXml(username: string): string {
 <token>system, streaming, PTZ, IO, security, replay, disk, network, alarm, record, video, image</token>
 </Extension>`;
 }
-
