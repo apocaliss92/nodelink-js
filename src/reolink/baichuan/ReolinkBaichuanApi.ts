@@ -468,6 +468,29 @@ export class ReolinkBaichuanApi {
   private static readonly REPLAY_DEDICATED_KEEPALIVE_MS = 10_000;
 
   /**
+   * Cooldown tracking to prevent session spam when login repeatedly fails.
+   * Key: host address (since camera session limits are per-device, not per-sessionKey)
+   * Value: { failureCount, lastFailureAt, cooldownUntil }
+   */
+  private readonly dedicatedClientCooldowns = new Map<
+    string,
+    {
+      failureCount: number;
+      lastFailureAt: number;
+      cooldownUntil: number;
+    }
+  >();
+
+  /** Base cooldown duration (ms) for dedicated client failures. */
+  private static readonly DEDICATED_CLIENT_BASE_COOLDOWN_MS = 5_000;
+  /** Max cooldown duration (ms) - caps exponential backoff. */
+  private static readonly DEDICATED_CLIENT_MAX_COOLDOWN_MS = 120_000;
+  /** Failure count threshold before entering cooldown. */
+  private static readonly DEDICATED_CLIENT_FAILURE_THRESHOLD = 2;
+  /** Time window (ms) to reset failure count if no failures occur. */
+  private static readonly DEDICATED_CLIENT_FAILURE_WINDOW_MS = 60_000;
+
+  /**
    * Get a summary of currently active dedicated sessions.
    * Useful for debugging/logging to see how many sockets are open.
    */
@@ -475,6 +498,31 @@ export class ReolinkBaichuanApi {
     return {
       count: this.dedicatedClients.size,
       keys: Array.from(this.dedicatedClients.keys()),
+    };
+  }
+
+  /**
+   * Get cooldown status for dedicated client connections.
+   * Useful for debugging when connections are being rate-limited.
+   */
+  getDedicatedClientCooldownStatus(): {
+    host: string;
+    inCooldown: boolean;
+    failureCount: number;
+    cooldownRemainingMs: number;
+    cooldownUntil: Date | null;
+  } | null {
+    const entry = this.dedicatedClientCooldowns.get(this.host);
+    if (!entry) return null;
+
+    const now = Date.now();
+    const inCooldown = now < entry.cooldownUntil;
+    return {
+      host: this.host,
+      inCooldown,
+      failureCount: entry.failureCount,
+      cooldownRemainingMs: inCooldown ? entry.cooldownUntil - now : 0,
+      cooldownUntil: inCooldown ? new Date(entry.cooldownUntil) : null,
     };
   }
 
@@ -875,6 +923,30 @@ export class ReolinkBaichuanApi {
 
     const isReplayKey = sessionKey.startsWith("replay:");
 
+    // ─── Cooldown check: prevent session spam when login repeatedly fails ───
+    const cooldownEntry = this.dedicatedClientCooldowns.get(this.host);
+    const now = Date.now();
+    if (cooldownEntry) {
+      // Reset failure count if enough time has passed since last failure
+      if (
+        now - cooldownEntry.lastFailureAt >
+        ReolinkBaichuanApi.DEDICATED_CLIENT_FAILURE_WINDOW_MS
+      ) {
+        this.dedicatedClientCooldowns.delete(this.host);
+        log?.log?.(
+          `[DedicatedClient] Cooldown reset for host=${this.host} (no failures for ${ReolinkBaichuanApi.DEDICATED_CLIENT_FAILURE_WINDOW_MS}ms)`,
+        );
+      } else if (now < cooldownEntry.cooldownUntil) {
+        // Still in cooldown - reject immediately
+        const remainingMs = cooldownEntry.cooldownUntil - now;
+        const error = new Error(
+          `[DedicatedClient] Host ${this.host} is in cooldown for ${Math.ceil(remainingMs / 1000)}s due to repeated login failures (${cooldownEntry.failureCount} failures). sessionKey=${sessionKey}`,
+        );
+        log?.warn?.(error.message);
+        throw error;
+      }
+    }
+
     // Reuse idle dedicated sockets when possible (especially for replay).
     // This avoids reconnect/login overhead on clip switches.
     const existing = this.dedicatedClients.get(sessionKey);
@@ -938,8 +1010,64 @@ export class ReolinkBaichuanApi {
       debugOptions: this.client.getDebugConfig?.(),
     });
 
-    // Login the dedicated client
-    await dedicatedClient.login();
+    // Login the dedicated client with failure tracking
+    try {
+      await dedicatedClient.login();
+      // Success: clear any cooldown state
+      if (this.dedicatedClientCooldowns.has(this.host)) {
+        log?.log?.(
+          `[DedicatedClient] Clearing cooldown for host=${this.host} after successful login`,
+        );
+        this.dedicatedClientCooldowns.delete(this.host);
+      }
+    } catch (loginError) {
+      // Record the failure and calculate cooldown
+      const prevCooldown = this.dedicatedClientCooldowns.get(this.host);
+      const failureCount = (prevCooldown?.failureCount ?? 0) + 1;
+      const now = Date.now();
+
+      // Calculate exponential backoff cooldown (only if threshold exceeded)
+      let cooldownUntil = now;
+      if (
+        failureCount >= ReolinkBaichuanApi.DEDICATED_CLIENT_FAILURE_THRESHOLD
+      ) {
+        const backoffMs = Math.min(
+          ReolinkBaichuanApi.DEDICATED_CLIENT_BASE_COOLDOWN_MS *
+            Math.pow(
+              2,
+              failureCount -
+                ReolinkBaichuanApi.DEDICATED_CLIENT_FAILURE_THRESHOLD,
+            ),
+          ReolinkBaichuanApi.DEDICATED_CLIENT_MAX_COOLDOWN_MS,
+        );
+        cooldownUntil = now + backoffMs;
+        log?.warn?.(
+          `[DedicatedClient] Login failed for host=${this.host} (failure #${failureCount}). ` +
+            `Entering cooldown for ${Math.ceil(backoffMs / 1000)}s. sessionKey=${sessionKey}`,
+        );
+      } else {
+        log?.warn?.(
+          `[DedicatedClient] Login failed for host=${this.host} (failure #${failureCount}/${ReolinkBaichuanApi.DEDICATED_CLIENT_FAILURE_THRESHOLD} before cooldown). sessionKey=${sessionKey}`,
+        );
+      }
+
+      this.dedicatedClientCooldowns.set(this.host, {
+        failureCount,
+        lastFailureAt: now,
+        cooldownUntil,
+      });
+
+      // Clean up the failed client
+      try {
+        await dedicatedClient.close({ reason: "login_failed_with_cooldown" });
+      } catch {
+        // Ignore close errors
+      }
+
+      // Rethrow the original error
+      throw loginError;
+    }
+
     log?.log?.(
       `[DedicatedClient] Dedicated socket logged in for sessionKey=${sessionKey}`,
     );
@@ -11375,7 +11503,9 @@ export class ReolinkBaichuanApi {
             const k = keyFor(item, group);
             if (!seen.has(k)) {
               seen.add(k);
-              collected.push(group ? { session: item, group } : { session: item });
+              collected.push(
+                group ? { session: item, group } : { session: item },
+              );
             }
           } else if (item && typeof item === "object") {
             collect(item, group);
