@@ -6,7 +6,7 @@
 # -----------------------------------------------------------------------------
 # Stage 1: Build the main library
 # -----------------------------------------------------------------------------
-FROM node:20-alpine AS lib-builder
+FROM node:22-alpine AS lib-builder
 
 WORKDIR /lib
 
@@ -24,7 +24,7 @@ RUN npm run build:js
 # -----------------------------------------------------------------------------
 # Stage 2: Build the app
 # -----------------------------------------------------------------------------
-FROM node:20-alpine AS app-builder
+FROM node:22-alpine AS app-builder
 
 WORKDIR /build
 
@@ -50,7 +50,7 @@ RUN npm run build
 # -----------------------------------------------------------------------------
 # Stage 3: Production runtime
 # -----------------------------------------------------------------------------
-FROM node:20-alpine AS production
+FROM node:22-alpine AS production
 
 # Install ffmpeg for MJPEG streaming and su-exec for entrypoint
 RUN apk add --no-cache ffmpeg su-exec

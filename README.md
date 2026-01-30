@@ -45,6 +45,29 @@ The library includes a **complete web-based management interface** for easy came
 - 📱 **PWA Support** - Install as a Progressive Web App on mobile devices
 - 🌐 **Responsive Design** - Works on desktop, tablet, and mobile
 
+### External Requirements
+
+To run the Manager UI outside Docker, you need:
+
+- **Node.js**: **>= 22** (the Docker image currently uses Node 22).
+
+Some features also rely on external binaries that must be available on the host when running outside Docker:
+
+- **FFmpeg** (`ffmpeg`) is required for **native streaming helpers** (e.g. MJPEG/HLS pipelines).
+- **FFprobe** (`ffprobe`) is optional but strongly recommended for troubleshooting and diagnostics.
+
+Install examples:
+
+```bash
+# macOS
+brew install ffmpeg
+
+# Debian/Ubuntu
+sudo apt-get update && sudo apt-get install -y ffmpeg
+```
+
+If you use the Docker image, FFmpeg is already included (see Docker Deployment below).
+
 ### Quick Start (Development)
 
 ```bash

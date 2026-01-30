@@ -153,6 +153,19 @@ export class BaichuanClient extends EventEmitter<{
     { activeStreamClients: number }
   >();
 
+  /**
+   * Global (process-wide) CoverPreview serialization.
+   *
+   * Why:
+   * - CoverPreview uses fixed msgNum=0 and some firmwares correlate requests loosely.
+   * - Concurrent CoverPreview attempts can cause cross-talk (400 rejects / timeouts)
+   *   and may leave device-side sessions in a bad state.
+   */
+  private static readonly coverPreviewQueueTail = new Map<
+    string,
+    Promise<void>
+  >();
+
   private readonly opts: BaichuanClientOptions;
   private readonly debugCfg: DebugConfig;
   private readonly logger: Logger;
@@ -535,6 +548,37 @@ export class BaichuanClient extends EventEmitter<{
     return `${host}|${uid}|${channel}`;
   }
 
+  private getCoverPreviewQueueKey(): string {
+    // CoverPreview is effectively host-scoped; include UID when available to avoid collisions.
+    const host = (this.opts.host ?? "").trim();
+    const uid = (this.opts.uid ?? "").trim().toUpperCase();
+    return `coverpreview|${host}|${uid}`;
+  }
+
+  private async withSerializedCoverPreview<T>(
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const key = this.getCoverPreviewQueueKey();
+    const prevTail =
+      BaichuanClient.coverPreviewQueueTail.get(key) ?? Promise.resolve();
+
+    const run = prevTail.catch(() => undefined).then(fn);
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    BaichuanClient.coverPreviewQueueTail.set(key, tail);
+
+    try {
+      return await run;
+    } finally {
+      // Cleanup tail if nobody queued behind us.
+      if (BaichuanClient.coverPreviewQueueTail.get(key) === tail) {
+        BaichuanClient.coverPreviewQueueTail.delete(key);
+      }
+    }
+  }
+
   private recomputeGlobalStreamingContribution(): void {
     const shouldContribute = this.hasActiveVideoSubscriptionsInternal();
     if (shouldContribute === this.contributesToGlobalStreamingRegistry) return;
@@ -571,6 +615,93 @@ export class BaichuanClient extends EventEmitter<{
     if (this.debugCfg.general) {
       this.logger.debug(`[BaichuanClient] ${event}`, data);
       this.emit("debug", event, data);
+    }
+  }
+
+  private getTcpSocketDebugSnapshot(sock: net.Socket | undefined):
+    | {
+        readyState?: string;
+        destroyed: boolean;
+        connecting?: boolean;
+        pending?: boolean;
+        localAddress?: string;
+        localFamily?: string;
+        localPort?: number;
+        remoteAddress?: string;
+        remoteFamily?: string;
+        remotePort?: number;
+        bytesRead: number;
+        bytesWritten: number;
+        readableLength?: number;
+        writableLength?: number;
+        timeoutMs?: number;
+      }
+    | undefined {
+    if (!sock) return undefined;
+    const s: any = sock as any;
+    const snap: any = {
+      destroyed: sock.destroyed,
+      bytesRead: sock.bytesRead,
+      bytesWritten: sock.bytesWritten,
+    };
+
+    if (typeof s.readyState === "string") snap.readyState = s.readyState;
+    if (typeof s.connecting === "boolean") snap.connecting = s.connecting;
+    if (typeof s.pending === "boolean") snap.pending = s.pending;
+
+    if (sock.localAddress != null) snap.localAddress = sock.localAddress;
+    if (sock.localFamily != null) snap.localFamily = sock.localFamily;
+    if (sock.localPort != null) snap.localPort = sock.localPort;
+    if (sock.remoteAddress != null) snap.remoteAddress = sock.remoteAddress;
+    if (sock.remoteFamily != null) snap.remoteFamily = sock.remoteFamily;
+    if (sock.remotePort != null) snap.remotePort = sock.remotePort;
+
+    if (typeof s.readableLength === "number")
+      snap.readableLength = s.readableLength;
+    if (typeof s.writableLength === "number")
+      snap.writableLength = s.writableLength;
+    if (typeof s.timeout === "number") snap.timeoutMs = s.timeout;
+
+    return snap;
+  }
+
+  private logSocketState(
+    reason: string,
+    extra?: Record<string, unknown>,
+  ): void {
+    try {
+      const transport = this.transport;
+      const sid = this.socketSessionId;
+      const host = this.opts.host;
+      const port = this.opts.port ?? BC_TCP_DEFAULT_PORT;
+      const shortUid = this.opts.uid
+        ? this.opts.uid.substring(0, 5)
+        : undefined;
+
+      this.logDebug("socket_state", {
+        reason,
+        transport,
+        host,
+        ...(transport === "tcp" ? { port } : {}),
+        ...(sid ? { sid } : {}),
+        ...(shortUid ? { uid: shortUid } : {}),
+        socketClosed: this.socketClosed,
+        socketConnected: this.isSocketConnected(),
+        loggedIn: this.loggedIn,
+        subscribed: this.subscribed,
+        pending: this.pending.size,
+        permits: this.permits.size,
+        videoSubscriptions: this.videoSubscriptions.size,
+        lastRxAtMs: this.lastRxAtMs,
+        lastTxAtMs: this.lastTxAtMs,
+        lastRxCmdId: this.lastRxInfo?.cmdId,
+        lastTxCmdId: this.lastTxInfo?.cmdId,
+        tcp: this.getTcpSocketDebugSnapshot(this.tcpSocket),
+        udpConnected: this.udpSocket?.isConnected?.(),
+        ...extra,
+      });
+    } catch {
+      // best-effort
     }
   }
 
@@ -911,7 +1042,7 @@ export class BaichuanClient extends EventEmitter<{
     if (waitMs <= 0) return;
     const sid = this.socketSessionId;
     const shortUid = this.opts.uid ? this.opts.uid.substring(0, 5) : undefined;
-    this.logFixed("udp_reconnect_cooldown", {
+    this.logDebug("udp_reconnect_cooldown", {
       transport: "udp",
       host: this.opts.host,
       sid,
@@ -944,7 +1075,9 @@ export class BaichuanClient extends EventEmitter<{
       const frames = this.parser.push(chunk);
       for (const f of frames) this.handleFrame(f);
     });
-    sock.on("close", () => {
+    sock.on("close", (hadError) => {
+      // Snapshot state before mutating internal refs.
+      this.logSocketState("tcp_close_event", { hadError: Boolean(hadError) });
       const sid = this.socketSessionId;
       // Ensure socket is completely destroyed and listeners are removed
       if (sock === this.tcpSocket) {
@@ -1008,7 +1141,15 @@ export class BaichuanClient extends EventEmitter<{
         });
       }
     });
-    sock.on("error", (err) => this.emit("error", err));
+    sock.on("error", (err) => {
+      this.logSocketState("tcp_error", {
+        error: {
+          message: err?.message ?? String(err),
+          code: (err as any)?.code,
+        },
+      });
+      this.emit("error", err);
+    });
 
     await new Promise<void>((resolve, reject) => {
       sock.once("connect", () => resolve());
@@ -1039,6 +1180,7 @@ export class BaichuanClient extends EventEmitter<{
         `${peer ? ` peer=${peer}` : ""}`,
     );
 
+    this.logSocketState("tcp_connected");
     this.startKeepAlive();
     this.kickIdleDisconnectTimer();
   }
@@ -1082,6 +1224,9 @@ export class BaichuanClient extends EventEmitter<{
       for (const f of frames) this.handleFrame(f);
     });
     sock.on("close", () => {
+      this.logSocketState("udp_close_event", {
+        udpConnected: sock.isConnected?.(),
+      });
       const sid = this.socketSessionId;
       // Ensure socket is completely cleaned up
       if (sock === this.udpSocket) {
@@ -1151,6 +1296,10 @@ export class BaichuanClient extends EventEmitter<{
       // If the camera terminates the BCUDP session (D2C_DISC), the stream will close.
       // Make sure we don't keep a stale handle around.
       if (err?.message?.includes("D2C_DISC")) {
+        this.logSocketState("udp_error_d2c_disc", {
+          message: err.message,
+          udpConnected: sock.isConnected?.(),
+        });
         const now = Date.now();
         const sid = this.socketSessionId;
         const shortUid = this.opts.uid
@@ -1186,7 +1335,7 @@ export class BaichuanClient extends EventEmitter<{
           this.udpReconnectCooldownUntilMs,
           now + nextBackoffMs,
         );
-        this.logFixed("d2c_disc_backoff", {
+        this.logDebug("d2c_disc_backoff", {
           transport: "udp",
           host: this.opts.host,
           sid,
@@ -1223,6 +1372,11 @@ export class BaichuanClient extends EventEmitter<{
       "connected",
       `transport=udp host=${this.opts.host}${sid ? ` sid=${sid}` : ""}${udpRemoteHost ? ` remote=${udpRemoteHost}` : ""} uid=${shortUid} udpDiscoveryMethod=${udpDiscoveryMethod}`,
     );
+    this.logSocketState("udp_connected", {
+      udpConnected: sock.isConnected?.(),
+      udpRemoteHost,
+      udpDiscoveryMethod,
+    });
     this.startKeepAlive();
     this.kickIdleDisconnectTimer();
   }
@@ -1265,13 +1419,15 @@ export class BaichuanClient extends EventEmitter<{
         videoSubscriptions: this.videoSubscriptions.size,
       });
 
+      this.logSocketState("close_called", { reason });
+
       // Optional: emit a trimmed stack trace to locate the caller.
       // Enable via env var to avoid noisy logs in production.
       if ((process.env.BAICHUAN_LOG_CLOSE_STACK ?? "").trim() === "1") {
         const stack = new Error("BaichuanClient.close() stack").stack;
         if (stack) {
           const lines = stack.split("\n").slice(0, 10).join("\n");
-          this.logFixed("closing_stack", lines);
+          this.logDebug("closing_stack", lines);
         }
       }
     } catch {
@@ -3560,36 +3716,40 @@ export class BaichuanClient extends EventEmitter<{
     /** Delay between retries in ms (default: 1000). */
     retryDelayMs?: number;
   }): Promise<Buffer> {
-    const maxRetries = params.maxRetries ?? 5;
-    const retryDelayMs = params.retryDelayMs ?? 1000;
+    return await this.withSerializedCoverPreview(async () => {
+      const maxRetries = params.maxRetries ?? 5;
+      const retryDelayMs = params.retryDelayMs ?? 1000;
 
-    let lastError: Error | undefined;
+      let lastError: Error | undefined;
 
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      try {
-        return await this._sendBinaryCoverPreviewOnce(params);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        lastError = e instanceof Error ? e : new Error(msg);
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+          return await this._sendBinaryCoverPreviewOnce(params);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          lastError = e instanceof Error ? e : new Error(msg);
 
-        // Check if it's a 400 rejection that might be recoverable with retry
-        const is400Rejection =
-          msg.includes("rejected") &&
-          (msg.includes("responseCode=400") || msg.includes("resp_code=400"));
+          // Check if it's a 400 rejection that might be recoverable with retry.
+          const is400Rejection =
+            msg.includes("rejected") &&
+            (msg.includes("responseCode=400") || msg.includes("resp_code=400"));
 
-        if (is400Rejection && attempt < maxRetries - 1) {
-          console.log(
-            `[CoverPreview] Attempt ${attempt + 1} got 400, retrying in ${retryDelayMs}ms...`,
-          );
-          await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
-          continue;
+          if (is400Rejection && attempt < maxRetries - 1) {
+            this.logDebug("coverpreview_retry_400", {
+              attempt: attempt + 1,
+              maxRetries,
+              retryDelayMs,
+            });
+            await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+            continue;
+          }
+
+          throw lastError;
         }
-
-        throw lastError;
       }
-    }
 
-    throw lastError ?? new Error("CoverPreview failed after all retries");
+      throw lastError ?? new Error("CoverPreview failed after all retries");
+    });
   }
 
   /**
@@ -3748,8 +3908,17 @@ export class BaichuanClient extends EventEmitter<{
       let timeout: NodeJS.Timeout | undefined;
       let done = false;
 
+      const onClose = () => {
+        fail(
+          new Error(
+            `Baichuan socket closed while waiting CoverPreview cmdId=${cmdId} msgNum=${msgNum}`,
+          ),
+        );
+      };
+
       const cleanup = () => {
         this.off("frame", onFrame);
+        this.off("close", onClose);
         if (timeout) clearTimeout(timeout);
       };
 
@@ -3947,6 +4116,7 @@ export class BaichuanClient extends EventEmitter<{
 
       // Attach listener BEFORE sending request
       this.on("frame", onFrame);
+      this.on("close", onClose);
 
       try {
         this.logDebug("tx", {

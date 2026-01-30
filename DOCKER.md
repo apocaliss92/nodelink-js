@@ -2,6 +2,14 @@
 
 This guide explains how to deploy **Nodelink.js Manager** using Docker.
 
+## External Dependencies
+
+The Docker image **already includes FFmpeg** (installed in the runtime stage), so you don't need to install it on the host when using Docker.
+
+The image is based on **node:22-alpine**.
+
+If you run the app directly on your machine (without Docker), make sure `ffmpeg` is installed and available in `PATH`.
+
 ## Quick Start
 
 ### Using Pre-built Image from GHCR (Recommended)

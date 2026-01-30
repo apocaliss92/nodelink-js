@@ -132,6 +132,226 @@ export interface Rfc4571TcpServer {
 export async function createRfc4571TcpServer(
   options: Rfc4571TcpServerOptions,
 ): Promise<Rfc4571TcpServer> {
+  const sharedProcessId =
+    typeof process !== "undefined" && typeof process.pid === "number"
+      ? process.pid
+      : "n/a";
+  const sharedInstanceId = (() => {
+    try {
+      const g = globalThis as any;
+      const k = "__nodelink_rfc4571_shared_instance_id__";
+      if (!g[k]) {
+        g[k] = Math.random().toString(16).slice(2);
+      }
+      return String(g[k]);
+    } catch {
+      return "n/a";
+    }
+  })();
+
+  const sharedLog = (message: string) => {
+    try {
+      const logger: any = options.logger;
+      const prefix = `[native-rfc4571 shared pid=${sharedProcessId} inst=${sharedInstanceId}]`;
+      // Scrypted frequently suppresses debug logs; prefer info/log so traces are visible.
+      if (logger?.info) logger.info(`${prefix} ${message}`);
+      else if (logger?.log) logger.log(`${prefix} ${message}`);
+      else if (logger?.debug) logger.debug(`${prefix} ${message}`);
+    } catch {
+      // ignore
+    }
+  };
+
+  // For dedicated sockets (deviceId), idleTeardownMs MUST NOT be 0.
+  // If the RFC4571 server never tears down, the dedicated Baichuan session is never
+  // released and the device accumulates active sessions over time.
+  const normalizeDedicatedIdleTeardownMs = (ms: number | undefined): number => {
+    if (typeof ms === "number" && Number.isFinite(ms) && ms > 0) return ms;
+    return 15_000;
+  };
+
+  // When deviceId is provided, callers may request the *same* native stream multiple
+  // times using different external identifiers. That can lead to duplicate RFC4571
+  // servers and therefore duplicate dedicated Baichuan sessions.
+  //
+  // To prevent this, we share a single RFC4571 server per stable stream identity.
+  // Each caller gets a ref-counted handle; the underlying server is closed only when
+  // all handles are released.
+  const sharedKey = buildSharedRfc4571Key(options);
+  if (!sharedKey) {
+    sharedLog(
+      "disabled (no deviceId); using unshared RFC4571 server for this request",
+    );
+    return await createRfc4571TcpServerInternal(options);
+  }
+
+  sharedLog(
+    `request key=${formatSharedKeyForLog(sharedKey)} (requestedId=${options.requestedId ?? "n/a"})`,
+  );
+
+  const existing = sharedRfc4571Servers.get(sharedKey);
+  if (existing && existing.server.server.listening) {
+    sharedLog(
+      `reuse existing host=${existing.server.host} port=${existing.server.port} refCount=${existing.refCount}`,
+    );
+    return acquireSharedRfc4571Handle(sharedKey, existing, sharedLog);
+  }
+  if (existing) {
+    // Stale entry.
+    sharedLog(
+      `stale entry found; dropping (listening=${existing.server.server.listening})`,
+    );
+    sharedRfc4571Servers.delete(sharedKey);
+  }
+
+  const inFlight = sharedRfc4571Creates.get(sharedKey);
+  if (inFlight) {
+    sharedLog("awaiting in-flight create");
+    await inFlight;
+    const created = sharedRfc4571Servers.get(sharedKey);
+    if (created) {
+      sharedLog(
+        `acquiring after in-flight create host=${created.server.host} port=${created.server.port} refCount=${created.refCount}`,
+      );
+      return acquireSharedRfc4571Handle(sharedKey, created, sharedLog);
+    }
+    // Fallback: avoid deadlocks.
+    sharedLog(
+      "in-flight create completed but no entry found; falling back to unshared",
+    );
+    return await createRfc4571TcpServerInternal(options);
+  }
+
+  const createPromise = (async () => {
+    const idleTeardownMs = normalizeDedicatedIdleTeardownMs(
+      options.idleTeardownMs,
+    );
+    sharedLog(
+      `creating new shared RFC4571 server (idleTeardownMs=${idleTeardownMs})`,
+    );
+    const server = await createRfc4571TcpServerInternal({
+      ...options,
+      // Force a sane idle teardown for dedicated sessions so sockets are released.
+      idleTeardownMs,
+    });
+
+    const entry: SharedRfc4571Entry = {
+      server,
+      refCount: 0,
+    };
+    sharedRfc4571Servers.set(sharedKey, entry);
+    sharedLog(`created host=${server.host} port=${server.port}`);
+
+    // Best-effort cleanup if the underlying server tears down itself (errors, watchdog).
+    server.server.once("close", () => {
+      const current = sharedRfc4571Servers.get(sharedKey);
+      if (current?.server === server) {
+        sharedLog("underlying server closed; evicting shared cache entry");
+        sharedRfc4571Servers.delete(sharedKey);
+      }
+    });
+  })().finally(() => {
+    sharedRfc4571Creates.delete(sharedKey);
+  });
+
+  sharedRfc4571Creates.set(sharedKey, createPromise);
+  await createPromise;
+
+  const created = sharedRfc4571Servers.get(sharedKey);
+  if (created) return acquireSharedRfc4571Handle(sharedKey, created, sharedLog);
+  return await createRfc4571TcpServerInternal(options);
+}
+
+interface SharedRfc4571Entry {
+  server: Rfc4571TcpServer;
+  refCount: number;
+}
+
+const sharedRfc4571Servers = new Map<string, SharedRfc4571Entry>();
+const sharedRfc4571Creates = new Map<string, Promise<void>>();
+
+const buildSharedRfc4571Key = (
+  options: Rfc4571TcpServerOptions,
+): string | undefined => {
+  // Only share when deviceId is provided (dedicated sockets).
+  if (!options.deviceId) return;
+
+  // This key intentionally ignores external identifiers like requestedId.
+  // It captures the stream identity that maps to a single Baichuan live stream.
+  const channelKey =
+    options.channel === undefined ? "composite" : String(options.channel);
+  const variantKey = options.variant ?? "default";
+
+  // IMPORTANT: Do NOT include RFC4571 client auth credentials in the key.
+  // Callers may generate a new username/password on each request. If we include them,
+  // the key becomes unstable and sharing never happens.
+  // The shared server will return its own username/password to the caller.
+  const requireAuth = Boolean(options.requireAuth);
+
+  // Include payload types because they affect SDP.
+  const videoPayloadType = options.videoPayloadType ?? 96;
+  const audioPayloadType = options.audioPayloadType ?? 97;
+
+  return [
+    "rfc4571",
+    `device:${options.deviceId}`,
+    `ch:${channelKey}`,
+    `profile:${options.profile}`,
+    `variant:${variantKey}`,
+    `auth:${requireAuth ? "1" : "0"}`,
+    `vpt:${videoPayloadType}`,
+    `apt:${audioPayloadType}`,
+  ].join("|");
+};
+
+const formatSharedKeyForLog = (key: string): string => {
+  // Redact any unexpected secrets if the format changes in the future.
+  // Current key format doesn't include passwords, but keep this defensive.
+  return key.replace(/\|pass:[^|]*/g, "|pass:<redacted>");
+};
+
+const acquireSharedRfc4571Handle = (
+  key: string,
+  entry: SharedRfc4571Entry,
+  sharedLog?: (message: string) => void,
+): Rfc4571TcpServer => {
+  entry.refCount++;
+  sharedLog?.(`acquire handle key=${key} refCount=${entry.refCount}`);
+
+  let released = false;
+  const serverRef = entry.server;
+
+  const close = async (reason?: unknown): Promise<void> => {
+    if (released) return;
+    released = true;
+
+    const current = sharedRfc4571Servers.get(key);
+    // If the server was already replaced/removed, do not interfere.
+    if (!current || current.server !== serverRef) return;
+
+    current.refCount = Math.max(0, current.refCount - 1);
+    sharedLog?.(
+      `release handle key=${key} refCount=${current.refCount} reason=${String(
+        (reason as any)?.message ?? reason ?? "n/a",
+      )}`,
+    );
+    if (current.refCount > 0) return;
+
+    sharedRfc4571Servers.delete(key);
+    sharedLog?.("refCount reached 0; closing underlying server");
+    await serverRef.close(reason ?? "shared handle released");
+  };
+
+  // Provide a handle that shares the underlying server but has an independent close().
+  return {
+    ...serverRef,
+    close,
+  };
+};
+
+async function createRfc4571TcpServerInternal(
+  options: Rfc4571TcpServerOptions,
+): Promise<Rfc4571TcpServer> {
   const isComposite = options.channel === undefined;
 
   const parseCompositeFromRequestedId = (

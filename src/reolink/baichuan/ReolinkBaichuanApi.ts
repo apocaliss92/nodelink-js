@@ -887,7 +887,7 @@ export class ReolinkBaichuanApi {
       if (existing.refCount === 0) {
         existing.refCount = 1;
         existing.lastUsedAt = Date.now();
-        log?.debug?.(
+        log?.log?.(
           `[DedicatedClient] Reusing existing dedicated socket for sessionKey=${sessionKey}`,
         );
         // Best-effort: ensure logged in.
@@ -989,7 +989,7 @@ export class ReolinkBaichuanApi {
         if (current.refCount > 0) return;
 
         this.dedicatedClients.delete(sessionKey);
-        log?.debug?.(
+        log?.log?.(
           `[DedicatedClient] Closing idle replay socket for sessionKey=${sessionKey} (keepalive expired)`,
         );
         try {
@@ -11299,6 +11299,153 @@ export class ReolinkBaichuanApi {
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
     return parseXmlFragmentToJson<OnlineUserListConfig>(xml);
+  }
+
+  /**
+   * Build the UI-friendly user sessions strings directly in the library.
+   * This is intended for hosts (like Scrypted plugins) that want a stable, consistent
+   * sessions view without re-implementing parsing/formatting logic.
+   */
+  async getOnlineUserSessionsForUi(options?: {
+    timeoutMs?: number;
+  }): Promise<string[]> {
+    const sessions = await this.getOnlineUserList(options);
+
+    let socketSessionId: string | undefined;
+    try {
+      socketSessionId = (this.client as any)?.getSocketSessionId?.();
+    } catch {
+      // ignore
+    }
+
+    const out: string[] = [];
+    out.push(`Last updated: ${new Date().toLocaleString()}`);
+    if (socketSessionId) {
+      out.push(`Current socket session ID: ${socketSessionId}`);
+    }
+
+    try {
+      const summary = this.getDedicatedSessionsSummary();
+      out.push(`Internal dedicated sessions (active): ${summary.count}`);
+      for (const key of summary.keys) {
+        out.push(`  - ${key}`);
+      }
+    } catch {
+      // ignore
+    }
+
+    out.push("");
+
+    const looksLikeUserSession = (value: any): boolean => {
+      if (!value || typeof value !== "object") return false;
+      const hasUser =
+        value.userName !== undefined ||
+        value.user !== undefined ||
+        value.username !== undefined;
+      const hasIp = value.ip !== undefined || value.ipAddress !== undefined;
+      const hasPort = value.port !== undefined;
+      const hasSessionId = value.sessionId !== undefined;
+      const hasId = value.id !== undefined;
+
+      return (
+        (hasUser && (hasIp || hasPort)) ||
+        (hasSessionId && (hasUser || hasIp || hasPort)) ||
+        (hasId && (hasUser || hasIp || hasPort))
+      );
+    };
+
+    const seen = new Set<string>();
+    const keyFor = (session: any, group?: string): string => {
+      const user = session?.userName ?? session?.user ?? session?.username;
+      const ip = session?.ip ?? session?.ipAddress;
+      const port = session?.port;
+      const sessionId = session?.sessionId;
+      const id = session?.id;
+      return `${group ?? ""}|u:${String(user ?? "")}@${String(ip ?? "")}:${String(
+        port ?? "",
+      )}|sid:${String(sessionId ?? "")}|id:${String(id ?? "")}`;
+    };
+
+    const collected: Array<{ session: any; group?: string }> = [];
+    const collect = (data: any, group?: string): void => {
+      if (!data) return;
+      if (Array.isArray(data)) {
+        for (const item of data) {
+          if (looksLikeUserSession(item)) {
+            const k = keyFor(item, group);
+            if (!seen.has(k)) {
+              seen.add(k);
+              collected.push(group ? { session: item, group } : { session: item });
+            }
+          } else if (item && typeof item === "object") {
+            collect(item, group);
+          }
+        }
+        return;
+      }
+      if (typeof data !== "object") return;
+
+      let foundNested = false;
+      for (const [k, v] of Object.entries(data)) {
+        if (Array.isArray(v)) {
+          foundNested = true;
+          collect(v, k);
+        } else if (v && typeof v === "object") {
+          foundNested = true;
+          collect(v, group);
+        }
+      }
+
+      if (!foundNested && looksLikeUserSession(data)) {
+        const k = keyFor(data, group);
+        if (!seen.has(k)) {
+          seen.add(k);
+          collected.push(group ? { session: data, group } : { session: data });
+        }
+      }
+    };
+
+    const format = (session: any, index: number, group?: string): string => {
+      const parts: string[] = [];
+      if (group) parts.push(`[${group}]`);
+      parts.push(`Session ${index}:`);
+
+      if (session.userName !== undefined)
+        parts.push(`User: ${session.userName}`);
+      if (session.user !== undefined) parts.push(`User: ${session.user}`);
+      if (session.ip !== undefined) parts.push(`IP: ${session.ip}`);
+      if (session.ipAddress !== undefined)
+        parts.push(`IP: ${session.ipAddress}`);
+      if (session.port !== undefined) parts.push(`Port: ${session.port}`);
+      if (session.sessionId !== undefined)
+        parts.push(`Session ID: ${session.sessionId}`);
+      if (session.id !== undefined) parts.push(`ID: ${session.id}`);
+      if (session.loginTime !== undefined)
+        parts.push(`Login Time: ${session.loginTime}`);
+      if (session.time !== undefined) parts.push(`Time: ${session.time}`);
+      if (session.status !== undefined) parts.push(`Status: ${session.status}`);
+
+      if (parts.length === (group ? 2 : 1)) {
+        if (session && typeof session === "object") {
+          const allFields = Object.entries(session)
+            .filter(([, v]) => v === null || typeof v !== "object")
+            .map(([k, v]) => `${k}: ${v}`)
+            .join(", ");
+          if (allFields) parts.push(allFields);
+        }
+      }
+
+      return parts.join(" | ");
+    };
+
+    collect(sessions);
+
+    let count = 0;
+    for (const entry of collected) {
+      out.push(format(entry.session, ++count, entry.group));
+    }
+    if (count === 0) out.push("No active sessions found");
+    return out;
   }
 
   // Placeholder cmdIds seen in PCAPs but without XML samples yet.
