@@ -118,6 +118,11 @@ function sha256Hex(input: string): string {
   return crypto.createHash("sha256").update(input).digest("hex");
 }
 
+function isSameUser(a: unknown, b: AuthUser): boolean {
+  const au = a as any;
+  return au?.username === b.username && au?.kind === b.kind;
+}
+
 export function createAuthToken(user: AuthUser): string {
   const token = crypto.randomBytes(32).toString("base64url");
   const tokenHashHex = sha256Hex(token);
@@ -150,21 +155,63 @@ export function createPersonalAuthToken(user: AuthUser): string {
     createdAt: now,
   };
 
+  const personalTokenEntry = {
+    id: crypto.randomUUID(),
+    user: { username: user.username, kind: user.kind },
+    token,
+    createdAt: now,
+  };
+
   const current = ((settings as any).authTokens ?? []) as Array<any>;
-  const next = current
+  const nextAuthTokens = current
     .filter((t) => {
-      if (t?.type !== "personal") return true;
       const tu = t?.user;
-      return !(
-        tu?.username === user.username &&
-        tu?.kind === user.kind &&
-        tu?.role === user.role
-      );
+      // Enforce a single valid token per user: generating a personal token
+      // revokes any previous token (session or personal) for the same user.
+      return !(tu?.username === user.username && tu?.kind === user.kind);
     })
     .concat(entry);
 
-  saveSettings({ authTokens: next } as any);
+  const currentPersonal = ((settings as any).personalTokens ??
+    []) as Array<any>;
+  const nextPersonalTokens = currentPersonal
+    .filter((t) => !isSameUser(t?.user, user))
+    .concat(personalTokenEntry);
+
+  saveSettings({
+    authTokens: nextAuthTokens,
+    personalTokens: nextPersonalTokens,
+  } as any);
   return token;
+}
+
+export function getPersonalAuthTokenForUser(user: AuthUser): string | null {
+  const settings = getSettings();
+
+  const currentPersonal = ((settings as any).personalTokens ??
+    []) as Array<any>;
+  const stored = currentPersonal.find((t) => isSameUser(t?.user, user));
+  const token = typeof stored?.token === "string" ? stored.token : null;
+  if (!token) return null;
+
+  // Ensure the stored token is actually valid (matches authTokens).
+  const tokenHashHex = sha256Hex(token);
+  const tokens = ((settings as any).authTokens ?? []) as Array<any>;
+  const valid = tokens.some(
+    (t) =>
+      t?.tokenHashHex === tokenHashHex &&
+      t?.user?.username === user.username &&
+      t?.user?.kind === user.kind,
+  );
+
+  if (valid) return token;
+
+  // Cleanup stale cleartext token entry.
+  const nextPersonalTokens = currentPersonal.filter(
+    (t) => !isSameUser(t?.user, user),
+  );
+  saveSettings({ personalTokens: nextPersonalTokens } as any);
+  return null;
 }
 
 export function revokeAuthToken(token: string): boolean {

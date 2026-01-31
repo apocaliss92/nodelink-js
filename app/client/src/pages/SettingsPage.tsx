@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { trpcMutation, trpcQuery } from "../api";
 import { useAuth } from "../auth";
-import { getStoredAuthToken } from "../authToken";
+import { getStoredAuthToken, setStoredAuthToken } from "../authToken";
 
 type Settings = {
   logLevel: "error" | "warn" | "info" | "debug";
@@ -24,7 +24,7 @@ type DashboardUser = {
 };
 
 export default function SettingsPage() {
-  const { state: authState } = useAuth();
+  const { state: authState, refresh: refreshAuth } = useAuth();
 
   const [settings, setSettings] = useState<Settings | null>(null);
   const [saving, setSaving] = useState(false);
@@ -44,6 +44,48 @@ export default function SettingsPage() {
   const [creatingPersonalToken, setCreatingPersonalToken] = useState(false);
 
   const dirty = useMemo(() => settings !== null, [settings]);
+
+  useEffect(() => {
+    // Fast path: show whatever is currently stored.
+    setPersonalToken(getStoredAuthToken());
+  }, []);
+
+  useEffect(() => {
+    if (!authState.enabled || !authState.user) return;
+
+    (async () => {
+      try {
+        const token = getStoredAuthToken();
+        if (!token) return;
+
+        const res = await fetch("/api/auth/personal-token", {
+          method: "GET",
+          headers: {
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+        });
+
+        if (res.status === 404) {
+          setPersonalToken(null);
+          return;
+        }
+
+        if (!res.ok) {
+          // Don't hard-fail the whole page, just ignore.
+          return;
+        }
+
+        const data = (await res.json()) as { token: string };
+        if (data?.token) {
+          setPersonalToken(data.token);
+          setStoredAuthToken(data.token);
+          await refreshAuth();
+        }
+      } catch {
+        // ignore
+      }
+    })();
+  }, [authState.enabled, authState.user, refreshAuth]);
 
   useEffect(() => {
     (async () => {
@@ -163,7 +205,11 @@ export default function SettingsPage() {
       }
 
       const data = (await res.json()) as { token: string };
+      // Store it as the active token immediately; the server revokes previous
+      // tokens for this user when generating a new personal token.
+      setStoredAuthToken(data.token);
       setPersonalToken(data.token);
+      await refreshAuth();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -307,9 +353,6 @@ export default function SettingsPage() {
 
                 {personalToken ? (
                   <div style={{ marginTop: 10 }}>
-                    <div style={{ color: "var(--muted)", fontSize: 12 }}>
-                      Copy and store it now: it won’t be shown again.
-                    </div>
                     <div className="row" style={{ marginTop: 8 }}>
                       <input
                         className="input mono"

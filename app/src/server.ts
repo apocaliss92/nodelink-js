@@ -16,8 +16,8 @@ import {
   getAuthConfig,
   getAuthTokenFromRequest,
   getUserFromRequest,
-  createAuthToken,
   createPersonalAuthToken,
+  getPersonalAuthTokenForUser,
   revokeAuthToken,
   verifyCredentials,
 } from "./auth.js";
@@ -158,7 +158,7 @@ app.post("/api/auth/login", (req, res) => {
     return;
   }
 
-  const token = createAuthToken(user);
+  const token = createPersonalAuthToken(user);
   res.json({ user, token });
 });
 
@@ -178,6 +178,23 @@ app.post("/api/auth/personal-token", requireAuth, (req, res) => {
   }
 
   const token = createPersonalAuthToken(user);
+  res.json({ token });
+});
+
+// Return the stored personal token for the current user (if any).
+app.get("/api/auth/personal-token", requireAuth, (req, res) => {
+  const user = getUserFromRequest(req);
+  if (!user) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+
+  const token = getPersonalAuthTokenForUser(user);
+  if (!token) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+
   res.json({ token });
 });
 

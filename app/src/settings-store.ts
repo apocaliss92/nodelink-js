@@ -54,6 +54,20 @@ export const AuthTokenSchema = z.object({
 
 export type AuthToken = z.infer<typeof AuthTokenSchema>;
 
+export const PersonalTokenSchema = z.object({
+  id: z.string(),
+  user: z.object({
+    username: z.string().min(1),
+    kind: z.enum(["env-admin", "settings"]),
+  }),
+  // Stored in cleartext so the UI can show it after a reload.
+  // Treat settings.json as sensitive.
+  token: z.string().min(1),
+  createdAt: z.number(),
+});
+
+export type PersonalToken = z.infer<typeof PersonalTokenSchema>;
+
 // Unified Settings schema (includes cameras and rtspServers)
 export const SettingsSchema = z.object({
   // Service IP (hostname to show in RTSP URLs - Port and RTSP Port are controlled by env vars)
@@ -82,6 +96,10 @@ export const SettingsSchema = z.object({
 
   // Persistent auth tokens (hashed). Never expose these via API.
   authTokens: z.array(AuthTokenSchema).default([]),
+
+  // Personal tokens stored in cleartext for UI display.
+  // Never expose these via settings APIs.
+  personalTokens: z.array(PersonalTokenSchema).default([]),
 });
 
 export type Settings = z.infer<typeof SettingsSchema>;
