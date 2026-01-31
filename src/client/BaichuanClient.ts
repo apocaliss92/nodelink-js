@@ -203,8 +203,20 @@ export class BaichuanClient extends EventEmitter<{
         transport: "tcp" | "udp";
         voluntary: boolean;
         reason: string;
+        /** Error code if the disconnect was caused by a socket error (e.g. "ECONNRESET"). */
+        errorCode?: string;
       }
     | undefined;
+
+  /** Tracks the most recent socket error code for inclusion in lastDisconnectInfo. */
+  private lastSocketErrorCode: string | undefined;
+
+  /**
+   * Promise lock to prevent parallel TCP connections.
+   * When multiple callers race to connect, only the first one creates a socket;
+   * others wait on the same promise.
+   */
+  private tcpConnectPromise: Promise<void> | undefined;
 
   private msgNum = 0;
   loggedIn = false; // Public to allow ReolinkBaichuanApi to check login status
@@ -494,6 +506,8 @@ export class BaichuanClient extends EventEmitter<{
         transport: "tcp" | "udp";
         voluntary: boolean;
         reason: string;
+        /** Error code if the disconnect was caused by a socket error (e.g. "ECONNRESET"). */
+        errorCode?: string;
       }
     | undefined {
     return this.lastDisconnectInfo;
@@ -1069,10 +1083,49 @@ export class BaichuanClient extends EventEmitter<{
   }
 
   private async connectTcp(): Promise<void> {
+    // If another caller is already connecting, wait for that promise first
+    if (this.tcpConnectPromise) {
+      this.logDebug(
+        "tcp_connect_waiting",
+        "Waiting for existing connection promise",
+      );
+      await this.tcpConnectPromise;
+      return;
+    }
+
+    // Fast path: socket already exists and is connected
+    // Note: We check this AFTER the promise check to avoid race conditions
+    // where a socket exists but isn't fully connected yet
     if (this.tcpSocket && !this.tcpSocket.destroyed) {
       this.transport = "tcp";
       return;
     }
+
+    // Log that we are starting a NEW connection
+    this.logDebug("tcp_connect_new", {
+      hasSocket: !!this.tcpSocket,
+      destroyed: this.tcpSocket?.destroyed,
+    });
+
+    // Create the connection promise and store it BEFORE any async work
+    this.tcpConnectPromise = this.doConnectTcp();
+    try {
+      await this.tcpConnectPromise;
+    } finally {
+      this.tcpConnectPromise = undefined;
+    }
+  }
+
+  /**
+   * Internal TCP connection logic. Only called from connectTcp() with promise lock.
+   */
+  private async doConnectTcp(): Promise<void> {
+    // Double-check in case socket was created while we were waiting
+    if (this.tcpSocket && !this.tcpSocket.destroyed) {
+      this.transport = "tcp";
+      return;
+    }
+
     const port = this.opts.port ?? BC_TCP_DEFAULT_PORT;
     const sock = net.createConnection({ host: this.opts.host, port });
     this.tcpSocket = sock;
@@ -1113,11 +1166,14 @@ export class BaichuanClient extends EventEmitter<{
 
       const pending = this.pendingCloseInfo;
       this.pendingCloseInfo = undefined;
+      const errorCode = this.lastSocketErrorCode;
+      this.lastSocketErrorCode = undefined;
       this.lastDisconnectInfo = {
         atMs: Date.now(),
         transport: "tcp",
         voluntary: pending != null,
         reason: pending?.reason ?? "socket_closed",
+        ...(errorCode != null && { errorCode }),
       };
 
       const tcpDisconnectParts: string[] = [
@@ -1158,10 +1214,12 @@ export class BaichuanClient extends EventEmitter<{
       }
     });
     sock.on("error", (err) => {
+      const code = (err as any)?.code;
+      this.lastSocketErrorCode = code;
       this.logSocketState("tcp_error", {
         error: {
           message: err?.message ?? String(err),
-          code: (err as any)?.code,
+          code,
         },
       });
       this.emit("error", err);
@@ -1259,11 +1317,14 @@ export class BaichuanClient extends EventEmitter<{
 
       const pending = this.pendingCloseInfo;
       this.pendingCloseInfo = undefined;
+      const errorCode = this.lastSocketErrorCode;
+      this.lastSocketErrorCode = undefined;
       this.lastDisconnectInfo = {
         atMs: Date.now(),
         transport: "udp",
         voluntary: pending != null,
         reason: pending?.reason ?? "socket_closed",
+        ...(errorCode != null && { errorCode }),
       };
 
       const udpDisconnectParts: string[] = [

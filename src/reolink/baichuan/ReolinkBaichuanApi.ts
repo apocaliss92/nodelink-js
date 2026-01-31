@@ -376,7 +376,6 @@ export const isNvrHubModel = (model?: string): boolean => {
 };
 
 export class ReolinkBaichuanApi {
-  readonly client: BaichuanClient;
   readonly logger: Logger;
   private readonly httpClient: ReolinkHttpClient;
   private readonly cgiApi: ReolinkCgiApi;
@@ -384,6 +383,56 @@ export class ReolinkBaichuanApi {
   private readonly host: string;
   private readonly username: string;
   private readonly password: string;
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // SOCKET POOL - Tag-based socket management
+  // ─────────────────────────────────────────────────────────────────────────────
+  /**
+   * Socket pool with tag-based allocation strategy.
+   * Tags determine which sockets are shared vs dedicated:
+   *
+   * For standalone camera (channelCount=1):
+   * - "general" - commands, events, ext stream (all share one socket)
+   * - "streaming" - main + sub streams (share one socket)
+   * - "replay:XXX" - dedicated per replay session
+   *
+   * For NVR (channelCount>1):
+   * - "general" - commands, events (shared socket)
+   * - "streaming:chN" - main + sub for channel N (one socket per channel)
+   * - "replay:XXX" - dedicated per replay session
+   */
+  private readonly socketPool = new Map<
+    string,
+    {
+      client: BaichuanClient;
+      /** Promise for socket that is being created (login in progress) */
+      pendingPromise?: Promise<BaichuanClient>;
+      /** Number of active consumers of this socket */
+      refCount: number;
+      createdAt: number;
+      lastUsedAt: number;
+      /** Timer to auto-close idle sockets (mainly for replay) */
+      idleCloseTimer: ReturnType<typeof setTimeout> | undefined;
+    }
+  >();
+
+  /** BaichuanClientOptions to use when creating new sockets */
+  private readonly clientOptions: BaichuanClientOptions;
+
+  /**
+   * Get the primary "general" socket. This is the default socket for commands and events.
+   * Lazily created on first access if not already initialized.
+   *
+   * This getter maintains backward compatibility with existing code that uses `this.client`.
+   */
+  get client(): BaichuanClient {
+    const entry = this.socketPool.get("general");
+    if (!entry) {
+      // Should never happen after constructor completes, but handle gracefully
+      throw new Error("[ReolinkBaichuanApi] General socket not initialized");
+    }
+    return entry.client;
+  }
   /**
    * Cached camera UID. May be initially undefined if not provided in the constructor.
    * Will be lazily populated on demand when needed (e.g. for recordings).
@@ -397,16 +446,37 @@ export class ReolinkBaichuanApi {
    */
   private _channelCount: number | undefined;
 
+  /**
+   * Cached NVR/Hub detection result.
+   * - true = NVR/Hub with multiple channels
+   * - false = standalone camera
+   * Set via setIsNvr() from the plugin or auto-detected via isNvrDevice().
+   */
+  private _isNvr: boolean | undefined;
+
   /** Maximum dedicated sessions allowed before triggering a reboot (default: 7). */
   private maxDedicatedSessionsBeforeReboot: number | undefined;
   private sessionGuardRebootInFlight: Promise<void> | undefined;
   private sessionGuardLastRebootAtMs: number | undefined;
+  /** Track last known session count and IDs for change detection. */
+  private lastKnownSessionCount: number | undefined;
+  private lastKnownSessionIds: Set<number> = new Set();
 
   /** Reboot if too many voluntary disconnections per minute (default: 15). */
   private rebootAfterDisconnectionsPerMinute: number = 15;
   private readonly disconnectStormVoluntaryAtMs: number[] = [];
   private disconnectStormRebootInFlight: Promise<void> | undefined;
   private disconnectStormLastRebootAtMs: number | undefined;
+
+  /**
+   * ECONNRESET storm guard: reboot if too many consecutive ECONNRESET errors.
+   * Default threshold: 10 consecutive ECONNRESET within 60 seconds.
+   */
+  private rebootAfterConsecutiveEconnreset: number = 10;
+  private consecutiveEconnresetCount: number = 0;
+  private consecutiveEconnresetFirstAtMs: number | undefined;
+  private econnresetStormRebootInFlight: Promise<void> | undefined;
+  private econnresetStormLastRebootAtMs: number | undefined;
 
   /** Periodic session check interval (every 60 seconds). */
   private sessionGuardIntervalTimer: NodeJS.Timeout | undefined;
@@ -453,36 +523,19 @@ export class ReolinkBaichuanApi {
   >();
   private static readonly CAPABILITIES_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
-  /**
-   * Pool of dedicated BaichuanClient instances for streaming/replay operations.
-   * Each replay/stream operation gets its own dedicated socket to avoid interference
-   * when switching between clips or concurrent operations.
-   *
-   * Key: unique session ID (e.g., "replay:channel:fileName")
-   * Value: client, refCount, createdAt
-   */
-  private readonly dedicatedClients = new Map<
-    string,
-    {
-      client: BaichuanClient;
-      refCount: number;
-      createdAt: number;
-      lastUsedAt: number;
-      idleCloseTimer: ReturnType<typeof setTimeout> | undefined;
-    }
-  >();
+  // ─────────────────────────────────────────────────────────────────────────────
+  // SOCKET POOL CONSTANTS
+  // ─────────────────────────────────────────────────────────────────────────────
 
-  /** Keep replay dedicated sockets warm briefly to reduce clip switch latency. */
-  // Keep replay sockets warm briefly for fast clip switches, but tear down quickly
-  // when clients stop requesting HLS segments (avoids looking like a stuck session).
-  private static readonly REPLAY_DEDICATED_KEEPALIVE_MS = 10_000;
+  /** Keep replay/streaming sockets warm briefly to reduce clip switch latency. */
+  private static readonly SOCKET_POOL_KEEPALIVE_MS = 10_000;
 
   /**
    * Cooldown tracking to prevent session spam when login repeatedly fails.
    * Key: host address (since camera session limits are per-device, not per-sessionKey)
    * Value: object with failureCount, lastFailureAt, cooldownUntil
    */
-  private readonly dedicatedClientCooldowns = new Map<
+  private readonly socketPoolCooldowns = new Map<
     string,
     {
       failureCount: number;
@@ -491,38 +544,49 @@ export class ReolinkBaichuanApi {
     }
   >();
 
-  /** Base cooldown duration (ms) for dedicated client failures. */
-  private static readonly DEDICATED_CLIENT_BASE_COOLDOWN_MS = 5_000;
+  /** Base cooldown duration (ms) for socket failures. */
+  private static readonly SOCKET_POOL_BASE_COOLDOWN_MS = 5_000;
   /** Max cooldown duration (ms) - caps exponential backoff. */
-  private static readonly DEDICATED_CLIENT_MAX_COOLDOWN_MS = 120_000;
+  private static readonly SOCKET_POOL_MAX_COOLDOWN_MS = 120_000;
   /** Failure count threshold before entering cooldown. */
-  private static readonly DEDICATED_CLIENT_FAILURE_THRESHOLD = 2;
+  private static readonly SOCKET_POOL_FAILURE_THRESHOLD = 2;
   /** Time window (ms) to reset failure count if no failures occur. */
-  private static readonly DEDICATED_CLIENT_FAILURE_WINDOW_MS = 60_000;
+  private static readonly SOCKET_POOL_FAILURE_WINDOW_MS = 60_000;
 
   /**
-   * Get a summary of currently active dedicated sessions.
+   * Get a summary of currently active sockets in the pool.
    * Useful for debugging/logging to see how many sockets are open.
    */
-  getDedicatedSessionsSummary(): { count: number; keys: string[] } {
+  getSocketPoolSummary(): { count: number; tags: string[] } {
     return {
-      count: this.dedicatedClients.size,
-      keys: Array.from(this.dedicatedClients.keys()),
+      count: this.socketPool.size,
+      tags: Array.from(this.socketPool.keys()),
     };
   }
 
   /**
-   * Get cooldown status for dedicated client connections.
+   * @deprecated Use getSocketPoolSummary() instead.
+   */
+  getDedicatedSessionsSummary(): { count: number; keys: string[] } {
+    const summary = this.getSocketPoolSummary();
+    return {
+      count: summary.count,
+      keys: summary.tags,
+    };
+  }
+
+  /**
+   * Get cooldown status for socket pool connections.
    * Useful for debugging when connections are being rate-limited.
    */
-  getDedicatedClientCooldownStatus(): {
+  getSocketPoolCooldownStatus(): {
     host: string;
     inCooldown: boolean;
     failureCount: number;
     cooldownRemainingMs: number;
     cooldownUntil: Date | null;
   } | null {
-    const entry = this.dedicatedClientCooldowns.get(this.host);
+    const entry = this.socketPoolCooldowns.get(this.host);
     if (!entry) return null;
 
     const now = Date.now();
@@ -534,6 +598,15 @@ export class ReolinkBaichuanApi {
       cooldownRemainingMs: inCooldown ? entry.cooldownUntil - now : 0,
       cooldownUntil: inCooldown ? new Date(entry.cooldownUntil) : null,
     };
+  }
+
+  /**
+   * @deprecated Use getSocketPoolCooldownStatus() instead.
+   */
+  getDedicatedClientCooldownStatus(): ReturnType<
+    ReolinkBaichuanApi["getSocketPoolCooldownStatus"]
+  > {
+    return this.getSocketPoolCooldownStatus();
   }
 
   /**
@@ -657,6 +730,12 @@ export class ReolinkBaichuanApi {
   }> = [];
   private replayQueueProcessing = false;
 
+  /**
+   * Abort controller for the currently active replay stream.
+   * When a new clip is requested, we signal the current one to stop.
+   */
+  private activeReplayAbortController: AbortController | null = null;
+
   /** Minimum delay between replay operations to give camera time to reset */
   private readonly REPLAY_COOLDOWN_MS = 500;
   private lastReplayEndTime = 0;
@@ -777,19 +856,35 @@ export class ReolinkBaichuanApi {
    * continues producing data after the initial setup.
    *
    * @param setup - Function that sets up the stream. Called when it's this operation's turn.
-   * @returns Promise that resolves when setup is complete, with the result and a release function.
+   *                 Receives an AbortSignal that will be triggered if a new clip is requested.
+   * @returns Promise that resolves when setup is complete, with the result, release function, and abort signal.
    */
   private enqueueStreamingReplayOperation<T>(
-    setup: () => Promise<T>,
-  ): Promise<{ result: T; release: () => void }> {
-    let resolvePromise: (value: { result: T; release: () => void }) => void;
+    setup: (abortSignal: AbortSignal) => Promise<T>,
+  ): Promise<{ result: T; release: () => void; abortSignal: AbortSignal }> {
+    // Signal the currently active replay stream to stop (if any)
+    if (this.activeReplayAbortController) {
+      this.logger?.debug?.(
+        "[ReplayQueue] Signaling current replay stream to abort for new clip",
+      );
+      this.activeReplayAbortController.abort();
+      this.activeReplayAbortController = null;
+    }
+
+    let resolvePromise: (value: {
+      result: T;
+      release: () => void;
+      abortSignal: AbortSignal;
+    }) => void;
     let rejectPromise: (error: unknown) => void;
-    const promise = new Promise<{ result: T; release: () => void }>(
-      (resolve, reject) => {
-        resolvePromise = resolve;
-        rejectPromise = reject;
-      },
-    );
+    const promise = new Promise<{
+      result: T;
+      release: () => void;
+      abortSignal: AbortSignal;
+    }>((resolve, reject) => {
+      resolvePromise = resolve;
+      rejectPromise = reject;
+    });
 
     // Add to queue
     this.replayQueue.push({
@@ -799,8 +894,19 @@ export class ReolinkBaichuanApi {
           const safeRelease = () => {
             if (released) return;
             released = true;
+            // Clear the active abort controller when this stream ends
+            if (
+              this.activeReplayAbortController &&
+              this.activeReplayAbortController === abortController
+            ) {
+              this.activeReplayAbortController = null;
+            }
             releaseSlot();
           };
+
+          // Create abort controller for this stream
+          const abortController = new AbortController();
+          this.activeReplayAbortController = abortController;
 
           // Safety timeout: release slot if not released within 10 minutes
           // This prevents queue deadlocks from stuck streams
@@ -810,6 +916,7 @@ export class ReolinkBaichuanApi {
                 this.logger?.warn?.(
                   "[ReplayQueue] Safety timeout: releasing queue slot after 10 minutes",
                 );
+                abortController.abort();
                 safeRelease();
               }
             },
@@ -817,15 +924,16 @@ export class ReolinkBaichuanApi {
           );
 
           // Run the setup
-          setup()
+          setup(abortController.signal)
             .then((result) => {
-              // Setup succeeded - resolve with result and release function
+              // Setup succeeded - resolve with result, release function, and abort signal
               resolvePromise({
                 result,
                 release: () => {
                   clearTimeout(safetyTimeout);
                   safeRelease();
                 },
+                abortSignal: abortController.signal,
               });
             })
             .catch((e) => {
@@ -911,268 +1019,386 @@ export class ReolinkBaichuanApi {
 
   private recordingsCacheTtlMs = 20 * 60 * 1000;
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // SOCKET POOL MANAGEMENT
+  // ─────────────────────────────────────────────────────────────────────────────
+
   /**
-   * Create or reuse a dedicated BaichuanClient for streaming/replay operations.
-   * Each streaming session gets its own socket to avoid interference when switching clips.
+   * Determine the socket tag for a given sessionKey.
+   * This implements the tag-based allocation strategy:
    *
-   * @param sessionKey - Unique key for this session (e.g., `replay:\$\{deviceId\}`)
-   * @returns The dedicated client and a release function to call when done
+   * - "general" - commands, events
+   * - "streaming:ch{N}" - main + sub for channel N (closed when no streams)
+   * - "streaming:ch{N}:ext" - ext for channel N (closed when no streams)
+   * - "replay:deviceId:ch{N}" - dedicated per device+channel for replay
    *
-   * IMPORTANT: A socket cannot do concurrent streaming. If a client already exists
-   * for this sessionKey (same device switching clips), we close the old socket
-   * immediately and create a new one. This ensures clean state for each clip.
+   * Always uses per-channel tagging for streams (works for both standalone and NVR).
+   * Replay uses per-device+channel sockets to allow multiple users to watch
+   * different clips simultaneously without interfering with each other.
+   *
+   * @param sessionKey - The session key (e.g., "live:device:ch0:main", "replay:device:ch1:file")
+   * @returns The socket pool tag to use
    */
-  private async acquireDedicatedClient(
-    sessionKey: string,
+  private resolveSocketTag(sessionKey: string): string {
+    // Replay keys: replay:deviceId:ch{N}:filename or replay:deviceId
+    // Use dedicated socket per device+channel to allow concurrent replay from multiple users
+    const replayMatch = sessionKey.match(/^replay:([^:]+)(?::ch(\d+))?/);
+    if (replayMatch) {
+      const deviceId = replayMatch[1];
+      const channel = replayMatch[2] ?? "0";
+      return `replay:${deviceId}:ch${channel}`;
+    }
+
+    // Parse live stream keys: live:deviceId:ch{N}:{profile}
+    const liveMatch = sessionKey.match(/^live:[^:]+:ch(\d+):(\w+)$/);
+    if (liveMatch && liveMatch[1] && liveMatch[2]) {
+      const channel = parseInt(liveMatch[1], 10);
+      const profile = liveMatch[2].toLowerCase();
+
+      // ext on channel 0 goes to general socket
+      // ext on other channels needs its own socket
+      if (profile === "ext") {
+        if (channel === 0) {
+          return "general";
+        }
+        return `streaming:ch${channel}:ext`;
+      }
+      // main/sub share socket per channel
+      return `streaming:ch${channel}`;
+    }
+
+    // Unknown keys go to general socket
+    return "general";
+  }
+
+  /**
+   * Acquire a socket from the pool by tag.
+   * Creates a new socket if needed, or reuses an existing one.
+   *
+   * @param tag - The socket pool tag (from resolveSocketTag)
+   * @param logger - Optional logger for debug output
+   * @returns The socket and a release function
+   */
+  private async acquirePooledSocket(
+    tag: string,
     logger?: Logger,
   ): Promise<{
     client: BaichuanClient;
     release: () => Promise<void>;
   }> {
     const log = logger ?? this.logger;
-
-    const isReplayKey = sessionKey.startsWith("replay:");
+    const now = Date.now();
 
     // ─── Cooldown check: prevent session spam when login repeatedly fails ───
-    const cooldownEntry = this.dedicatedClientCooldowns.get(this.host);
-    const now = Date.now();
+    const cooldownEntry = this.socketPoolCooldowns.get(this.host);
     if (cooldownEntry) {
       // Reset failure count if enough time has passed since last failure
       if (
         now - cooldownEntry.lastFailureAt >
-        ReolinkBaichuanApi.DEDICATED_CLIENT_FAILURE_WINDOW_MS
+        ReolinkBaichuanApi.SOCKET_POOL_FAILURE_WINDOW_MS
       ) {
-        this.dedicatedClientCooldowns.delete(this.host);
+        this.socketPoolCooldowns.delete(this.host);
         log?.debug?.(
-          `[DedicatedClient] Cooldown reset for host=${this.host} (no failures for ${ReolinkBaichuanApi.DEDICATED_CLIENT_FAILURE_WINDOW_MS}ms)`,
+          `[SocketPool] Cooldown reset for host=${this.host} (no failures for ${ReolinkBaichuanApi.SOCKET_POOL_FAILURE_WINDOW_MS}ms)`,
         );
       } else if (now < cooldownEntry.cooldownUntil) {
         // Still in cooldown - reject immediately
         const remainingMs = cooldownEntry.cooldownUntil - now;
         const error = new Error(
-          `[DedicatedClient] Host ${this.host} is in cooldown for ${Math.ceil(remainingMs / 1000)}s due to repeated login failures (${cooldownEntry.failureCount} failures). sessionKey=${sessionKey}`,
+          `[SocketPool] Host ${this.host} is in cooldown for ${Math.ceil(remainingMs / 1000)}s due to repeated login failures. tag=${tag}`,
         );
         log?.warn?.(error.message);
         throw error;
       }
     }
 
-    // Reuse idle dedicated sockets when possible (especially for replay).
-    // This avoids reconnect/login overhead on clip switches.
-    const existing = this.dedicatedClients.get(sessionKey);
+    // Check for existing socket with this tag
+    const existing = this.socketPool.get(tag);
     if (existing) {
+      // Cancel any pending idle close timer
       if (existing.idleCloseTimer) {
         clearTimeout(existing.idleCloseTimer);
         existing.idleCloseTimer = undefined;
       }
 
-      if (existing.refCount === 0) {
-        existing.refCount = 1;
+      // If socket is being created, wait for it
+      if (existing.pendingPromise) {
+        const client = await existing.pendingPromise;
+        existing.refCount++;
         existing.lastUsedAt = Date.now();
         log?.debug?.(
-          `[DedicatedClient] Reusing existing dedicated socket for sessionKey=${sessionKey}`,
+          `[SocketPool] Waited for pending socket creation for tag=${tag} (refCount=${existing.refCount})`,
         );
-        // Best-effort: ensure logged in.
+        return {
+          client,
+          release: () => this.releasePooledSocket(tag, logger),
+        };
+      }
+
+      // Try to reuse existing socket
+      if (existing.refCount === 0) {
+        // Socket is idle, try to reuse it
+        existing.refCount = 1;
+        existing.lastUsedAt = Date.now();
+        log?.debug?.(`[SocketPool] Reusing idle socket for tag=${tag}`);
+
+        // Best-effort: ensure logged in
         try {
           if (!existing.client.loggedIn) {
             await existing.client.login();
           }
         } catch {
-          // If login fails, fall through to recreate socket below.
+          // If login fails, fall through to recreate socket
         }
 
-        // If still usable, return it.
+        // If still usable, return it
         if (existing.client.loggedIn) {
           return {
             client: existing.client,
-            release: () => this.releaseDedicatedClient(sessionKey, logger),
+            release: () => this.releasePooledSocket(tag, logger),
+          };
+        }
+      } else {
+        // Socket is in use - for replay tags, we need to preempt
+        if (tag.startsWith("replay:")) {
+          log?.debug?.(
+            `[SocketPool] Preempting active replay socket for tag=${tag}`,
+          );
+          // Fall through to recreate
+        } else {
+          // For shared sockets (general, streaming), just reuse
+          existing.refCount++;
+          existing.lastUsedAt = Date.now();
+          log?.debug?.(
+            `[SocketPool] Reusing active socket for tag=${tag} (refCount=${existing.refCount})`,
+          );
+          return {
+            client: existing.client,
+            release: () => this.releasePooledSocket(tag, logger),
           };
         }
       }
 
-      // If still in use (refCount>0) or unusable, preempt by closing and recreating.
-      // This matches the "one stream at a time" constraint for replay operations.
+      // Close the existing unusable/preempted socket
       log?.debug?.(
-        `[DedicatedClient] Closing existing socket for sessionKey=${sessionKey} (preempting active session)`,
+        `[SocketPool] Closing existing socket for tag=${tag} (recreating)`,
       );
-      this.dedicatedClients.delete(sessionKey);
+      this.socketPool.delete(tag);
       try {
-        await existing.client.close({ reason: "preempted by new session" });
-        log?.debug?.(
-          `[DedicatedClient] Old socket closed successfully for sessionKey=${sessionKey}`,
-        );
+        await existing.client.close({
+          reason: "socket pool recreation",
+          skipLogout: true,
+        });
       } catch (e) {
         log?.warn?.(
-          `[DedicatedClient] Error closing old socket for sessionKey=${sessionKey}: ${e}`,
+          `[SocketPool] Error closing old socket for tag=${tag}: ${e}`,
         );
       }
     }
 
-    // Create a new dedicated client with the same credentials
-    const dedicatedClient = new BaichuanClient({
-      host: this.host,
-      username: this.username,
-      password: this.password,
-      logger: log,
-      debugOptions: this.client.getDebugConfig?.(),
-    });
+    // Create a new socket
+    log?.log?.(`[SocketPool] Creating new socket for tag=${tag}`);
 
-    // Login the dedicated client with failure tracking
-    try {
-      await dedicatedClient.login();
-      // Success: clear any cooldown state
-      if (this.dedicatedClientCooldowns.has(this.host)) {
-        log?.debug?.(
-          `[DedicatedClient] Clearing cooldown for host=${this.host} after successful login`,
-        );
-        this.dedicatedClientCooldowns.delete(this.host);
-      }
-    } catch (loginError) {
-      // Record the failure and calculate cooldown
-      const prevCooldown = this.dedicatedClientCooldowns.get(this.host);
-      const failureCount = (prevCooldown?.failureCount ?? 0) + 1;
-      const now = Date.now();
-
-      // Calculate exponential backoff cooldown (only if threshold exceeded)
-      let cooldownUntil = now;
-      if (
-        failureCount >= ReolinkBaichuanApi.DEDICATED_CLIENT_FAILURE_THRESHOLD
-      ) {
-        const backoffMs = Math.min(
-          ReolinkBaichuanApi.DEDICATED_CLIENT_BASE_COOLDOWN_MS *
-            Math.pow(
-              2,
-              failureCount -
-                ReolinkBaichuanApi.DEDICATED_CLIENT_FAILURE_THRESHOLD,
-            ),
-          ReolinkBaichuanApi.DEDICATED_CLIENT_MAX_COOLDOWN_MS,
-        );
-        cooldownUntil = now + backoffMs;
-        log?.warn?.(
-          `[DedicatedClient] Login failed for host=${this.host} (failure #${failureCount}). ` +
-            `Entering cooldown for ${Math.ceil(backoffMs / 1000)}s. sessionKey=${sessionKey}`,
-        );
-      } else {
-        log?.warn?.(
-          `[DedicatedClient] Login failed for host=${this.host} (failure #${failureCount}/${ReolinkBaichuanApi.DEDICATED_CLIENT_FAILURE_THRESHOLD} before cooldown). sessionKey=${sessionKey}`,
-        );
-      }
-
-      this.dedicatedClientCooldowns.set(this.host, {
-        failureCount,
-        lastFailureAt: now,
-        cooldownUntil,
-      });
-
-      // Clean up the failed client
-      try {
-        await dedicatedClient.close({ reason: "login_failed_with_cooldown" });
-      } catch {
-        // Ignore close errors
-      }
-
-      // Rethrow the original error
-      throw loginError;
-    }
-
-    log?.log?.(
-      `[DedicatedClient] Opened dedicated socket for sessionKey=${sessionKey}`,
-    );
-
-    this.dedicatedClients.set(sessionKey, {
-      client: dedicatedClient,
-      refCount: 1,
-      createdAt: Date.now(),
-      lastUsedAt: Date.now(),
+    const entry: {
+      client: BaichuanClient;
+      pendingPromise?: Promise<BaichuanClient>;
+      refCount: number;
+      createdAt: number;
+      lastUsedAt: number;
+      idleCloseTimer: ReturnType<typeof setTimeout> | undefined;
+    } = {
+      client: undefined as unknown as BaichuanClient, // Will be set after login
+      refCount: 0,
+      createdAt: now,
+      lastUsedAt: now,
       idleCloseTimer: undefined,
-    });
+    };
 
-    // Check if we have too many sessions and need to reboot
-    void this.maybeRebootOnTooManySessions();
+    // Create the socket with a pending promise
+    entry.pendingPromise = (async () => {
+      try {
+        // Create with logger from the caller if provided
+        const clientOpts = log
+          ? { ...this.clientOptions, logger: log }
+          : this.clientOptions;
+        const newClient = new BaichuanClient(clientOpts);
 
+        await newClient.login();
+
+        // Success: clear any cooldown state
+        if (this.socketPoolCooldowns.has(this.host)) {
+          log?.debug?.(
+            `[SocketPool] Clearing cooldown for host=${this.host} after successful login`,
+          );
+          this.socketPoolCooldowns.delete(this.host);
+        }
+
+        entry.client = newClient;
+        entry.refCount = 1;
+        entry.lastUsedAt = Date.now();
+        delete entry.pendingPromise;
+
+        log?.log?.(`[SocketPool] Socket connected for tag=${tag}`);
+
+        // Check session count after creating new socket
+        void this.maybeRebootOnTooManySessions();
+
+        return newClient;
+      } catch (loginError) {
+        // Record the failure and calculate cooldown
+        const prevCooldown = this.socketPoolCooldowns.get(this.host);
+        const failureCount = (prevCooldown?.failureCount ?? 0) + 1;
+        const now = Date.now();
+
+        // Calculate exponential backoff cooldown
+        let cooldownUntil = now;
+        if (failureCount >= ReolinkBaichuanApi.SOCKET_POOL_FAILURE_THRESHOLD) {
+          const backoffMs = Math.min(
+            ReolinkBaichuanApi.SOCKET_POOL_BASE_COOLDOWN_MS *
+              Math.pow(
+                2,
+                failureCount - ReolinkBaichuanApi.SOCKET_POOL_FAILURE_THRESHOLD,
+              ),
+            ReolinkBaichuanApi.SOCKET_POOL_MAX_COOLDOWN_MS,
+          );
+          cooldownUntil = now + backoffMs;
+          log?.warn?.(
+            `[SocketPool] Login failed for host=${this.host} (failure #${failureCount}). ` +
+              `Entering cooldown for ${Math.ceil(backoffMs / 1000)}s. tag=${tag}`,
+          );
+        } else {
+          log?.warn?.(
+            `[SocketPool] Login failed for host=${this.host} (failure #${failureCount}/${ReolinkBaichuanApi.SOCKET_POOL_FAILURE_THRESHOLD} before cooldown). tag=${tag}`,
+          );
+        }
+
+        this.socketPoolCooldowns.set(this.host, {
+          failureCount,
+          lastFailureAt: now,
+          cooldownUntil,
+        });
+
+        // Remove the failed entry from pool
+        this.socketPool.delete(tag);
+
+        throw loginError;
+      }
+    })();
+
+    this.socketPool.set(tag, entry);
+
+    const client = await entry.pendingPromise;
     return {
-      client: dedicatedClient,
-      release: () => this.releaseDedicatedClient(sessionKey, logger),
+      client,
+      release: () => this.releasePooledSocket(tag, logger),
     };
   }
 
   /**
-   * Release a dedicated client. Always closes the socket immediately.
-   * This ensures clean teardown at the end of each clip.
+   * Release a socket back to the pool.
+   * For shared sockets (general, streaming), just decrements refCount.
+   * For replay sockets, schedules idle close.
    */
-  private async releaseDedicatedClient(
-    sessionKey: string,
+  private async releasePooledSocket(
+    tag: string,
     logger?: Logger,
   ): Promise<void> {
     const log = logger ?? this.logger;
-    const entry = this.dedicatedClients.get(sessionKey);
+    const entry = this.socketPool.get(tag);
     if (!entry) return;
 
-    // Ref-counted release.
     entry.refCount = Math.max(0, entry.refCount - 1);
     entry.lastUsedAt = Date.now();
 
+    log?.debug?.(
+      `[SocketPool] Released socket for tag=${tag} (refCount=${entry.refCount})`,
+    );
+
     if (entry.refCount > 0) return;
 
-    const isReplayKey = sessionKey.startsWith("replay:");
-    const allowReplayKeepAlive = /^replay:[^:]+$/.test(sessionKey);
-    if (isReplayKey && allowReplayKeepAlive) {
-      // Keep replay sockets warm briefly to reduce startup latency between clips.
-      // If the socket is reused within the keepalive window, we'll cancel the timer.
-      if (entry.idleCloseTimer) return;
+    // Determine socket type for cleanup behavior
+    const isReplayTag = tag.startsWith("replay:");
+    const isStreamingTag = tag.startsWith("streaming:");
+    const isGeneralTag = tag === "general";
+
+    if (isGeneralTag) {
+      // General socket stays open - it's used for commands/events
+      // Will be cleaned up when API closes
+      return;
+    }
+
+    if (isStreamingTag) {
+      // Streaming sockets close when no streams are active
+      // Use a short delay to handle quick stream restarts
+      if (entry.idleCloseTimer) return; // Already scheduled
 
       entry.idleCloseTimer = setTimeout(async () => {
-        const current = this.dedicatedClients.get(sessionKey);
+        const current = this.socketPool.get(tag);
         if (!current) return;
         if (current.refCount > 0) return;
 
-        this.dedicatedClients.delete(sessionKey);
-        log?.debug?.(
-          `[DedicatedClient] Closing idle replay socket for sessionKey=${sessionKey} (keepalive expired)`,
-        );
+        this.socketPool.delete(tag);
+        log?.log?.(`[SocketPool] Closing idle streaming socket for tag=${tag}`);
         try {
           await current.client.close({
-            reason: "replay idle keepalive expired",
+            reason: "streaming idle close",
+            skipLogout: true,
           });
         } catch {
           // ignore
         }
-      }, ReolinkBaichuanApi.REPLAY_DEDICATED_KEEPALIVE_MS);
-
+      }, 5000); // 5 second grace period for stream restarts
       return;
     }
 
-    // Non-replay sockets: close immediately.
-    this.dedicatedClients.delete(sessionKey);
+    if (isReplayTag) {
+      // Keep replay sockets warm briefly to reduce startup latency between clips
+      if (entry.idleCloseTimer) return; // Already scheduled
 
+      entry.idleCloseTimer = setTimeout(async () => {
+        const current = this.socketPool.get(tag);
+        if (!current) return;
+        if (current.refCount > 0) return;
+
+        this.socketPool.delete(tag);
+        log?.debug?.(
+          `[SocketPool] Closing idle replay socket for tag=${tag} (keepalive expired)`,
+        );
+        try {
+          await current.client.close({
+            reason: "replay idle keepalive expired",
+            skipLogout: true,
+          });
+        } catch {
+          // ignore
+        }
+      }, ReolinkBaichuanApi.SOCKET_POOL_KEEPALIVE_MS);
+      return;
+    }
+
+    // Unknown tags: close immediately
+    this.socketPool.delete(tag);
     try {
-      await entry.client.close({ reason: "dedicated session ended" });
-      log?.log?.(
-        `[DedicatedClient] Closed socket for sessionKey=${sessionKey}`,
-      );
+      await entry.client.close({
+        reason: "socket pool release",
+        skipLogout: true,
+      });
+      log?.log?.(`[SocketPool] Closed socket for tag=${tag}`);
     } catch (e) {
-      log?.warn?.(
-        `[DedicatedClient] Error closing socket for sessionKey=${sessionKey}: ${e}`,
-      );
+      log?.warn?.(`[SocketPool] Error closing socket for tag=${tag}: ${e}`);
     }
   }
 
   /**
-   * Force-close a dedicated client if it exists.
-   * This is called BEFORE entering the queue to immediately terminate any existing stream
-   * for the same sessionKey. The existing stream will receive an error, release its queue slot,
-   * and the new request can then proceed.
-   *
-   * @param sessionKey - The session key to force-close (e.g., `replay:${deviceId}`)
-   * @param logger - Optional logger
-   * @returns true if a client was closed, false if no client existed
+   * Force-close a socket by tag.
+   * Used to preempt existing connections before acquiring a new one.
    */
-  private async forceCloseDedicatedClient(
-    sessionKey: string,
+  private async forceClosePooledSocket(
+    tag: string,
     logger?: Logger,
   ): Promise<boolean> {
     const log = logger ?? this.logger;
-    const entry = this.dedicatedClients.get(sessionKey);
+    const entry = this.socketPool.get(tag);
     if (!entry) return false;
 
     if (entry.idleCloseTimer) {
@@ -1180,24 +1406,47 @@ export class ReolinkBaichuanApi {
       entry.idleCloseTimer = undefined;
     }
 
-    log?.debug?.(
-      `[DedicatedClient] Force-closing existing socket for sessionKey=${sessionKey} (new request preempting)`,
-    );
-    this.dedicatedClients.delete(sessionKey);
+    log?.debug?.(`[SocketPool] Force-closing socket for tag=${tag}`);
+    this.socketPool.delete(tag);
 
     try {
-      await entry.client.close({ reason: "preempted by new request" });
-      log?.log?.(
-        `[DedicatedClient] Force-closed socket for sessionKey=${sessionKey}`,
-      );
+      await entry.client.close({
+        reason: "force closed",
+        skipLogout: true,
+      });
+      log?.log?.(`[SocketPool] Force-closed socket for tag=${tag}`);
     } catch (e) {
-      log?.warn?.(
-        `[DedicatedClient] Error during force-close for sessionKey=${sessionKey}: ${e}`,
-      );
+      log?.warn?.(`[SocketPool] Error during force-close for tag=${tag}: ${e}`);
     }
 
     return true;
   }
+
+  /**
+   * Cleanup all sockets in the pool. Called during API close.
+   */
+  private async cleanupSocketPool(): Promise<void> {
+    const entries = Array.from(this.socketPool.entries());
+    this.socketPool.clear();
+
+    await Promise.allSettled(
+      entries.map(async ([tag, entry]) => {
+        try {
+          if (entry.idleCloseTimer) {
+            clearTimeout(entry.idleCloseTimer);
+          }
+          this.logger?.debug?.(`[SocketPool] Cleanup: closing tag=${tag}`);
+          await entry.client.close({ reason: "API cleanup", skipLogout: true });
+        } catch {
+          // ignore
+        }
+      }),
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // PUBLIC SESSION API (backward compatible)
+  // ─────────────────────────────────────────────────────────────────────────────
 
   /**
    * Create a dedicated Baichuan client session for streaming.
@@ -1207,10 +1456,11 @@ export class ReolinkBaichuanApi {
    * @param logger - Optional logger for debug output
    * @returns Object with `client` (the dedicated BaichuanClient) and `release` function to call when done
    *
-   * The dedicated client is automatically cleaned up when:
-   * 1. `release()` is called explicitly
-   * 2. A new session is created with the same sessionKey (old one is closed first)
-   * 3. The API is closed via `close()`
+   * Session keys are automatically mapped to socket pool tags:
+   * - `live:device:ch0:ext` → "general" socket (shared with commands/events)
+   * - `live:device:ch0:main` → "streaming" socket (standalone) or "streaming:ch0" (NVR)
+   * - `live:device:ch0:sub` → "streaming" socket (standalone) or "streaming:ch0" (NVR)
+   * - `replay:device:...` → dedicated per-replay socket
    *
    * @example
    * ```typescript
@@ -1229,29 +1479,31 @@ export class ReolinkBaichuanApi {
     client: BaichuanClient;
     release: () => Promise<void>;
   }> {
-    return await this.acquireDedicatedClient(sessionKey, logger);
+    const tag = this.resolveSocketTag(sessionKey);
+    const log = logger ?? this.logger;
+    log?.debug?.(
+      `[SocketPool] createDedicatedSession sessionKey=${sessionKey} → tag=${tag}`,
+    );
+    return await this.acquirePooledSocket(tag, logger);
   }
 
   /**
-   * Cleanup all dedicated clients. Called during API close.
+   * @deprecated Use forceClosePooledSocket via createDedicatedSession instead.
+   * Force-close a dedicated client if it exists.
+   */
+  private async forceCloseDedicatedClient(
+    sessionKey: string,
+    logger?: Logger,
+  ): Promise<boolean> {
+    const tag = this.resolveSocketTag(sessionKey);
+    return await this.forceClosePooledSocket(tag, logger);
+  }
+
+  /**
+   * @deprecated Cleanup handled by cleanupSocketPool now.
    */
   private async cleanupDedicatedClients(): Promise<void> {
-    const entries = Array.from(this.dedicatedClients.entries());
-    this.dedicatedClients.clear();
-
-    await Promise.allSettled(
-      entries.map(async ([key, entry]) => {
-        try {
-          if (entry.idleCloseTimer) {
-            clearTimeout(entry.idleCloseTimer);
-          }
-          this.logger?.debug?.(`[DedicatedClient] Cleanup: closing ${key}`);
-          await entry.client.close({ reason: "API cleanup" });
-        } catch {
-          // ignore
-        }
-      }),
-    );
+    // No-op: handled by cleanupSocketPool
   }
 
   private dispatchSimpleEvent(evt: ReolinkSimpleEvent): void {
@@ -1301,6 +1553,12 @@ export class ReolinkBaichuanApi {
        * Default: 15. Set to 0 or negative to disable.
        */
       rebootAfterDisconnectionsPerMinute?: number;
+      /**
+       * Reboot the device if there are too many consecutive ECONNRESET errors within 60 seconds.
+       * This guards against camera saturation where the device refuses all new connections.
+       * Default: 10. Set to 0 or negative to disable.
+       */
+      rebootAfterConsecutiveEconnreset?: number;
       /** If true, avoid using HTTP/CGI fallbacks and discovery paths (native Baichuan only). */
       nativeOnly?: boolean;
     },
@@ -1316,7 +1574,28 @@ export class ReolinkBaichuanApi {
         dbg.traceEvents ||
         dbg.debugRtsp,
     );
-    this.client = new BaichuanClient(opts);
+
+    // Store client options for creating new sockets in the pool
+    // Only include optional fields if they're defined to satisfy exactOptionalPropertyTypes
+    this.clientOptions = {
+      host: opts.host,
+      username: opts.username,
+      password: opts.password,
+      ...(opts.logger ? { logger: opts.logger } : {}),
+      ...(opts.debugOptions ? { debugOptions: opts.debugOptions } : {}),
+      ...(opts.uid ? { uid: opts.uid } : {}),
+    };
+
+    // Create the "general" socket in the pool (primary socket for commands/events)
+    const generalClient = new BaichuanClient(opts);
+    this.socketPool.set("general", {
+      client: generalClient,
+      refCount: 1, // Always keep general socket "in use"
+      createdAt: Date.now(),
+      lastUsedAt: Date.now(),
+      idleCloseTimer: undefined,
+    });
+
     this.host = opts.host;
     this.username = opts.username;
     this.password = opts.password;
@@ -1333,7 +1612,7 @@ export class ReolinkBaichuanApi {
       username: opts.username,
       password: opts.password,
       logger: this.logger,
-      debugConfig: this.client.getDebugConfig?.(),
+      debugConfig: generalClient.getDebugConfig?.(),
     });
 
     // Dispatch parsed events in a minimal, stable shape.
@@ -1409,6 +1688,24 @@ export class ReolinkBaichuanApi {
       this.client.on("close", () => {
         try {
           void this.maybeRebootOnDisconnectStorm();
+        } catch {
+          // never throw from close handler
+        }
+      });
+    }
+
+    // ECONNRESET storm guard: reboot if too many consecutive ECONNRESET errors
+    const econnresetThreshold = opts.rebootAfterConsecutiveEconnreset;
+    if (
+      typeof econnresetThreshold === "number" &&
+      Number.isFinite(econnresetThreshold)
+    ) {
+      this.rebootAfterConsecutiveEconnreset = Math.floor(econnresetThreshold);
+    }
+    if (this.rebootAfterConsecutiveEconnreset > 0) {
+      this.client.on("close", () => {
+        try {
+          void this.maybeRebootOnEconnresetStorm();
         } catch {
           // never throw from close handler
         }
@@ -1575,14 +1872,25 @@ export class ReolinkBaichuanApi {
    * Log active sessions on the device at startup for debugging purposes.
    */
   private async logActiveSessionsOnStartup(): Promise<void> {
-    const localSessionCount = this.dedicatedClients.size;
+    const localSessionCount = this.socketPool.size;
     try {
       const ourIp = this.client.getLocalAddress?.();
       const onlineUsers = await this.getOnlineUserList({ timeoutMs: 5000 });
 
       // Support both legacy (item) and current (OnlineUser) formats
-      const legacyItems = onlineUsers.body?.OnlineUserList?.item ?? [];
-      const currentItems = onlineUsers.body?.OnlineUserList?.OnlineUser ?? [];
+      // Note: XML parsing may return a single object instead of array when there's only 1 item
+      const rawLegacy = onlineUsers.body?.OnlineUserList?.item;
+      const rawCurrent = onlineUsers.body?.OnlineUserList?.OnlineUser;
+      const legacyItems = Array.isArray(rawLegacy)
+        ? rawLegacy
+        : rawLegacy
+          ? [rawLegacy]
+          : [];
+      const currentItems = Array.isArray(rawCurrent)
+        ? rawCurrent
+        : rawCurrent
+          ? [rawCurrent]
+          : [];
 
       // Normalize to common format
       const allItems =
@@ -1641,10 +1949,8 @@ export class ReolinkBaichuanApi {
    * Only counts sessions from our own IP address.
    */
   private async maybeRebootOnTooManySessions(): Promise<void> {
-    // Calculate threshold: use explicit value or default to (1 + ourDedicatedSessions) * 2
-    const ourDedicatedSessions = this.dedicatedClients.size;
-    const threshold =
-      this.maxDedicatedSessionsBeforeReboot ?? (1 + ourDedicatedSessions) * 2;
+    // Calculate threshold: use explicit value or default to 10 sessions
+    const threshold = this.maxDedicatedSessionsBeforeReboot ?? 10;
 
     // Already rebooting?
     if (this.sessionGuardRebootInFlight) return;
@@ -1663,6 +1969,7 @@ export class ReolinkBaichuanApi {
     const ourIp = this.client.getLocalAddress?.();
 
     // Query the device for actual online sessions
+    const ourDedicatedSessions = this.socketPool.size;
     let sessionCount: number;
     let sessionItems: unknown[] = [];
     let ourSessionCount = 0;
@@ -1671,8 +1978,19 @@ export class ReolinkBaichuanApi {
       const onlineUsers = await this.getOnlineUserList({ timeoutMs: 5000 });
 
       // Support both legacy (item) and current (OnlineUser) formats
-      const legacyItems = onlineUsers.body?.OnlineUserList?.item ?? [];
-      const currentItems = onlineUsers.body?.OnlineUserList?.OnlineUser ?? [];
+      // Note: XML parsing may return a single object instead of array when there's only 1 item
+      const rawLegacy = onlineUsers.body?.OnlineUserList?.item;
+      const rawCurrent = onlineUsers.body?.OnlineUserList?.OnlineUser;
+      const legacyItems = Array.isArray(rawLegacy)
+        ? rawLegacy
+        : rawLegacy
+          ? [rawLegacy]
+          : [];
+      const currentItems = Array.isArray(rawCurrent)
+        ? rawCurrent
+        : rawCurrent
+          ? [rawCurrent]
+          : [];
 
       // Normalize to common format: use OnlineUser if available, fallback to item
       const allItems =
@@ -1687,6 +2005,7 @@ export class ReolinkBaichuanApi {
               ip: u.ip,
               name: u.userName,
               level: u.level,
+              sessionId: (u as { sessionId?: number }).sessionId,
             }));
       sessionItems = allItems;
 
@@ -1704,6 +2023,35 @@ export class ReolinkBaichuanApi {
         const ourSessions = allItems.filter((item) => item.ip === ourIp);
         ourSessionCount = ourSessions.length;
         sessionCount = ourSessionCount;
+
+        // Track session changes - detect new sessions appearing
+        const currentSessionIds = new Set(
+          ourSessions.map((s) => s.sessionId).filter((id) => id != null),
+        );
+        if (this.lastKnownSessionCount !== undefined) {
+          const newIds = [...currentSessionIds].filter(
+            (id) => !this.lastKnownSessionIds.has(id),
+          );
+          const removedIds = [...this.lastKnownSessionIds].filter(
+            (id) => !currentSessionIds.has(id),
+          );
+          if (newIds.length > 0 || removedIds.length > 0) {
+            this.logger.log?.(
+              `[ReolinkBaichuanApi] Session change detected: ${this.lastKnownSessionCount} -> ${ourSessionCount} sessions`,
+              {
+                newSessionIds: newIds,
+                removedSessionIds: removedIds,
+                currentSessions: ourSessions.map((s) => ({
+                  id: s.sessionId,
+                  ip: s.ip,
+                })),
+                localDedicatedSessions: Array.from(this.socketPool.keys()),
+              },
+            );
+          }
+        }
+        this.lastKnownSessionCount = ourSessionCount;
+        this.lastKnownSessionIds = currentSessionIds;
 
         // Log filtered results
         if (allItems.length > 0) {
@@ -1733,7 +2081,7 @@ export class ReolinkBaichuanApi {
         "[ReolinkBaichuanApi] Session guard: failed to query online users, using local count",
         e,
       );
-      sessionCount = this.dedicatedClients.size;
+      sessionCount = this.socketPool.size;
       ourSessionCount = sessionCount;
       usedLocalFallback = true;
     }
@@ -1741,20 +2089,18 @@ export class ReolinkBaichuanApi {
     if (sessionCount < threshold) return;
 
     this.sessionGuardLastRebootAtMs = now;
-    const localSessions = Array.from(this.dedicatedClients.keys());
+    const localSessions = Array.from(this.socketPool.keys());
     const thresholdIsDefault = this.maxDedicatedSessionsBeforeReboot == null;
     (this.logger.warn ?? this.logger.log).call(
       this.logger,
-      `[ReolinkBaichuanApi] Too many sessions from our IP (${ourIp ?? "unknown"}) on device host=${this.host} (${sessionCount} >= ${threshold}${thresholdIsDefault ? " [dynamic]" : ""}${usedLocalFallback ? " [local fallback]" : ""}); rebooting device`,
+      `[ReolinkBaichuanApi] Too many sessions from our IP (${ourIp ?? "unknown"}) on device host=${this.host} (${sessionCount} >= ${threshold}${thresholdIsDefault ? " [default]" : ""}${usedLocalFallback ? " [local fallback]" : ""}); rebooting device`,
       {
         host: this.host,
         ourIp,
         ourSessionCount,
         threshold,
         usedLocalFallback,
-        thresholdFormula: thresholdIsDefault
-          ? `(1 + ${ourDedicatedSessions}) * 2`
-          : "explicit",
+        thresholdFormula: thresholdIsDefault ? "default (10)" : "explicit",
         localDedicatedSessions: localSessions,
         allDeviceSessions: sessionItems,
       },
@@ -1858,6 +2204,86 @@ export class ReolinkBaichuanApi {
       })
       .finally(() => {
         this.disconnectStormRebootInFlight = undefined;
+      });
+  }
+
+  /**
+   * Check if there are too many consecutive ECONNRESET errors and trigger a reboot if needed.
+   * This guards against camera saturation where the device refuses all new connections.
+   * Called on every socket close event.
+   */
+  private async maybeRebootOnEconnresetStorm(): Promise<void> {
+    const threshold = this.rebootAfterConsecutiveEconnreset;
+    if (threshold <= 0) return;
+
+    const info = this.client.getLastDisconnectInfo?.();
+    const isEconnreset = info?.errorCode === "ECONNRESET";
+
+    if (!isEconnreset) {
+      // Not an ECONNRESET - reset the consecutive counter
+      this.consecutiveEconnresetCount = 0;
+      this.consecutiveEconnresetFirstAtMs = undefined;
+      return;
+    }
+
+    const now = Date.now();
+    const windowMs = 60_000;
+
+    // If this is the first ECONNRESET in a new window, start tracking
+    if (this.consecutiveEconnresetFirstAtMs == null) {
+      this.consecutiveEconnresetFirstAtMs = now;
+    }
+
+    // If the window has expired, reset the counter
+    if (now - this.consecutiveEconnresetFirstAtMs > windowMs) {
+      this.consecutiveEconnresetCount = 1;
+      this.consecutiveEconnresetFirstAtMs = now;
+    } else {
+      this.consecutiveEconnresetCount++;
+    }
+
+    if (this.consecutiveEconnresetCount < threshold) return;
+
+    // Already rebooting?
+    if (this.econnresetStormRebootInFlight) return;
+
+    // Cooldown: don't reboot more than once every 10 minutes
+    const cooldownMs = 10 * 60_000;
+    if (
+      this.econnresetStormLastRebootAtMs != null &&
+      now - this.econnresetStormLastRebootAtMs < cooldownMs
+    ) {
+      return;
+    }
+
+    this.econnresetStormLastRebootAtMs = now;
+    (this.logger.warn ?? this.logger.log).call(
+      this.logger,
+      `[ReolinkBaichuanApi] ECONNRESET storm detected for host=${this.host} (${this.consecutiveEconnresetCount} consecutive ECONNRESET in 60s >= ${threshold}); rebooting device`,
+      {
+        host: this.host,
+        consecutiveEconnreset: this.consecutiveEconnresetCount,
+        threshold,
+        windowMs,
+        cooldownMs,
+      },
+    );
+
+    // Reset counter after triggering reboot
+    this.consecutiveEconnresetCount = 0;
+    this.consecutiveEconnresetFirstAtMs = undefined;
+
+    // Use standard reboot (tries Baichuan first, then CGI as fallback)
+    this.econnresetStormRebootInFlight = this.rebootFromSessionGuard()
+      .catch((e) => {
+        (this.logger.warn ?? this.logger.error).call(
+          this.logger,
+          "[ReolinkBaichuanApi] ECONNRESET storm reboot failed",
+          e,
+        );
+      })
+      .finally(() => {
+        this.econnresetStormRebootInFlight = undefined;
       });
   }
 
@@ -2062,12 +2488,21 @@ export class ReolinkBaichuanApi {
   /**
    * Determines if this device is an NVR/Hub (multiple channels) vs a standalone camera.
    * Checks:
-   * 1. Channel count > 1 (typical NVR detection)
-   * 2. Device model matches NVR/Hub patterns (for devices like Home Hub that report channelNum=1)
+   * 1. Cached value from setIsNvr()
+   * 2. Channel count > 3 (typical NVR detection)
+   * 3. Device model matches NVR/Hub patterns (for devices like Home Hub that report channelNum=1)
    */
   async isNvrDevice(): Promise<boolean> {
+    // Return cached value if available
+    if (this._isNvr !== undefined) {
+      return this._isNvr;
+    }
+
     const channelCount = await this.getChannelCount();
-    if (channelCount > 3) return true;
+    if (channelCount > 3) {
+      this._isNvr = true;
+      return true;
+    }
 
     // Fallback: check device type for NVR/Hub patterns
     // Some devices (e.g., Home Hub) report channelNum=1 but are actually NVR/Hub
@@ -2080,13 +2515,25 @@ export class ReolinkBaichuanApi {
         this.logger.debug?.(
           `[ReolinkBaichuanApi] isNvrDevice: type="${info.type}" matches NVR/Hub pattern`,
         );
+        this._isNvr = true;
         return true;
       }
     } catch {
       // Ignore errors - model check is best-effort
     }
 
+    this._isNvr = false;
     return false;
+  }
+
+  /**
+   * Set the NVR/Hub flag explicitly.
+   * Call this early (before streaming) to ensure correct socket pooling.
+   * @param isNvr - true if this is an NVR/Hub, false for standalone camera
+   */
+  setIsNvr(isNvr: boolean): void {
+    this._isNvr = isNvr;
+    this.logger.debug?.(`[ReolinkBaichuanApi] setIsNvr: ${isNvr}`);
   }
 
   async login(
@@ -2140,11 +2587,8 @@ export class ReolinkBaichuanApi {
     await this.cleanup();
     // Stop all active video streams on the main client before logout/close
     await this.stopAllActiveStreams();
-    // Cleanup dedicated clients used for streaming/replay
-    await this.cleanupDedicatedClients();
-    await this.client.close(
-      options?.reason ? { reason: options.reason } : undefined,
-    );
+    // Cleanup all sockets in the pool (including "general")
+    await this.cleanupSocketPool();
   }
 
   /**
@@ -2447,14 +2891,17 @@ export class ReolinkBaichuanApi {
       `[DedicatedTalk] Creating session: ${sessionKey} (idleTimeout=${idleTimeoutMs}ms)`,
     );
 
-    // Create dedicated socket session
-    const { client: dedicatedClient, release } =
-      await this.acquireDedicatedClient(sessionKey, logger);
+    // Create dedicated socket session via the socket pool
+    const tag = this.resolveSocketTag(sessionKey);
+    const { client: dedicatedClient, release } = await this.acquirePooledSocket(
+      tag,
+      logger,
+    );
 
     // Log sessions summary
-    const summary = this.getDedicatedSessionsSummary();
+    const summary = this.getSocketPoolSummary();
     logger?.info?.(
-      `[DedicatedTalk] Session created [sessions: ${summary.count} active${summary.count > 0 ? ` (${summary.keys.join(", ")})` : ""}]`,
+      `[DedicatedTalk] Session created [sessions: ${summary.count} active${summary.count > 0 ? ` (${summary.tags.join(", ")})` : ""}]`,
     );
 
     try {
@@ -4151,14 +4598,19 @@ export class ReolinkBaichuanApi {
     const streamType = params.streamType;
     const logger = params.logger ?? this.logger;
 
-    // Create a dedicated client for this replay session
-    // This avoids interference when switching between clips
-    // Use external deviceId if provided, otherwise generate a unique key
+    // Replay uses dedicated socket per device+channel to allow concurrent replay
+    // Session key format: replay:deviceId:ch{N} for proper socket pooling
     const sessionKey = params.deviceId
-      ? `replay:${params.deviceId}`
-      : `replay:standalone:${channel}:${Date.now()}`;
+      ? `replay:${params.deviceId}:ch${channel}`
+      : `replay:standalone:ch${channel}:${Date.now()}`;
+    const tag = this.resolveSocketTag(sessionKey);
+
+    logger?.debug?.(
+      `[startRecordingReplayStreamStandalone] sessionKey=${sessionKey} -> tag=${tag}`,
+    );
+
     const { client: dedicatedClient, release: releaseDedicatedClient } =
-      await this.acquireDedicatedClient(sessionKey, logger);
+      await this.acquirePooledSocket(tag, logger);
 
     // Get UID for the recording (like download does)
     const uid = await this.ensureUidForRecordings(channel, undefined);
@@ -4335,14 +4787,14 @@ export class ReolinkBaichuanApi {
     const streamType = params.streamType;
     const logger = params.logger ?? this.logger;
 
-    // Create a dedicated client for this replay session
-    // This avoids interference when switching between clips
-    // Use external deviceId if provided, otherwise generate a unique key
+    // Replay uses dedicated socket per device+channel to allow concurrent replay
+    // Session key format: replay:deviceId:ch{N} for proper socket pooling
     const sessionKey = params.deviceId
-      ? `replay:${params.deviceId}`
-      : `replay:nvr:${channel}:${Date.now()}`;
+      ? `replay:${params.deviceId}:ch${channel}`
+      : `replay:nvr:ch${channel}:${Date.now()}`;
+    const tag = this.resolveSocketTag(sessionKey);
     const { client: dedicatedClient, release: releaseDedicatedClient } =
-      await this.acquireDedicatedClient(sessionKey, logger);
+      await this.acquirePooledSocket(tag, logger);
 
     // NVR needs UID for channel mapping
     let uid: string | undefined;
@@ -6774,6 +7226,9 @@ export class ReolinkBaichuanApi {
    * After subscribing, events will be emitted via client.on("event", ...)
    */
   async subscribeEvents(): Promise<void> {
+    this.logger.debug?.(
+      "[ReolinkBaichuanApi] subscribeEvents() called - checking session count before",
+    );
     await this.client.login();
     // NOTE: Some battery firmwares reject the old "channelId=251 Extension" approach with responseCode=421.
     // Send MSG_ID 31 with *empty* body and channel_id set to the camera channel (0-based).
@@ -11849,12 +12304,28 @@ export class ReolinkBaichuanApi {
     collect(sessions);
 
     // Log raw data to console for debugging
+    // Note: XML parsing may return a single object instead of array when there's only 1 item
     const onlineUserList = sessions.body?.OnlineUserList;
-    const legacyItems = onlineUserList?.item ?? [];
-    const currentItems = onlineUserList?.OnlineUser ?? [];
+    const rawCurrent = onlineUserList?.OnlineUser;
+    const rawLegacy = onlineUserList?.item;
+    const currentItems = Array.isArray(rawCurrent)
+      ? rawCurrent
+      : rawCurrent
+        ? [rawCurrent]
+        : [];
+    const legacyItems = Array.isArray(rawLegacy)
+      ? rawLegacy
+      : rawLegacy
+        ? [rawLegacy]
+        : [];
+    const sessionIds = currentItems
+      .map((s) => `${s.sessionId}@${s.ipAddress}`)
+      .join(", ");
+    const legacyIds = legacyItems
+      .map((s) => `${s.sessionId}@${s.ip}`)
+      .join(", ");
     this.logger.log?.(
-      `[ReolinkBaichuanApi] getOnlineUserSessionsForUi: legacyItems=${legacyItems.length}, currentItems=${currentItems.length}`,
-      { legacyItems, currentItems },
+      `[ReolinkBaichuanApi] getOnlineUserSessionsForUi: legacyItems=${legacyItems.length}, currentItems=${currentItems.length} [${sessionIds || legacyIds || "none"}]`,
     );
 
     let count = 0;
@@ -12368,10 +12839,9 @@ ${scheduleItems}
       `[createRecordingReplayMp4Stream] Starting: channel=${params.channel}, fileName=${params.fileName}, durationMs=${durationMs}, fps=${fps}, timeoutSec=${seconds}, deviceId=${params.deviceId ?? "auto"}, useMpegTsMuxer=${useMpegTsMuxer}`,
     );
 
-    // NOTE: We intentionally do NOT force-close the dedicated replay socket here.
-    // Closing the socket adds avoidable reconnect/login latency on clip switches.
-    // If a prior replay session is still running, callers should stop it (or the
-    // higher-level session manager should enforce exclusivity) so the queue can advance.
+    // NOTE: Replay streams now use the "general" socket (same as commands/events).
+    // We do NOT force-close the socket on clip switches - instead, the streaming queue
+    // serializes access and the previous stream is stopped cleanly before the new one starts.
 
     const startParams: Parameters<
       ReolinkBaichuanApi["startRecordingReplayStream"]
@@ -12384,22 +12854,15 @@ ${scheduleItems}
     };
 
     // Use streaming queue - holds the slot until release() is called.
-    // Best-effort retry: if the dedicated replay client is in a bad state, force-close
-    // and retry once. This keeps the fast path (no reconnect) for normal clip switches.
-    const { result: replayResult, release: releaseQueueSlot } =
-      await this.enqueueStreamingReplayOperation(async () => {
-        try {
-          return await this.startRecordingReplayStream(startParams);
-        } catch (e) {
-          if (!params.deviceId) throw e;
-          const sessionKey = `replay:${params.deviceId}`;
-          logger?.debug?.(
-            `[createRecordingReplayMp4Stream] startRecordingReplayStream failed; force-closing dedicated client and retrying once`,
-          );
-          await this.forceCloseDedicatedClient(sessionKey, logger);
-          return await this.startRecordingReplayStream(startParams);
-        }
-      });
+    // This serializes replay operations to avoid conflicts on the shared socket.
+    // The abort signal is triggered when a new clip is requested, causing this stream to stop.
+    const {
+      result: replayResult,
+      release: releaseQueueSlot,
+      abortSignal,
+    } = await this.enqueueStreamingReplayOperation(async () => {
+      return await this.startRecordingReplayStream(startParams);
+    });
 
     const { stream, stop: stopReplay } = replayResult;
 
@@ -12582,6 +13045,23 @@ ${scheduleItems}
       },
       Math.max(1, seconds) * 1000,
     );
+
+    // Listen for abort signal (triggered when a new clip is requested)
+    // This allows quick clip switching without waiting for the current clip to finish
+    if (abortSignal) {
+      abortSignal.addEventListener(
+        "abort",
+        () => {
+          if (!ended) {
+            logger?.debug?.(
+              `[createRecordingReplayMp4Stream] Abort signal received, stopping for new clip`,
+            );
+            void stopAll();
+          }
+        },
+        { once: true },
+      );
+    }
 
     output.on("close", () => {
       clearTimeout(timer);
@@ -12945,8 +13425,9 @@ ${scheduleItems}
       `[createRecordingReplayHlsSession] Starting: channel=${params.channel}, fileName=${params.fileName}, durationMs=${durationMs}, hlsSegmentDuration=${hlsSegmentDuration}`,
     );
 
-    // NOTE: Do not force-close the dedicated replay socket on every new HLS session.
-    // Reusing the logged-in connection reduces clip switch latency significantly.
+    // NOTE: Replay streams now use the "general" socket (same as commands/events).
+    // We do NOT force-close the socket on clip switches - instead, the streaming queue
+    // serializes access and the previous stream is stopped cleanly before the new one starts.
 
     const startParams: Parameters<
       ReolinkBaichuanApi["startRecordingReplayStream"]
@@ -12958,22 +13439,16 @@ ${scheduleItems}
       ...(params.deviceId != null ? { deviceId: params.deviceId } : {}),
     };
 
-    // Use streaming queue.
-    // Best-effort retry: if the dedicated replay client is wedged, force-close and retry once.
-    const { result: replayResult, release: releaseQueueSlot } =
-      await this.enqueueStreamingReplayOperation(async () => {
-        try {
-          return await this.startRecordingReplayStream(startParams);
-        } catch (e) {
-          if (!params.deviceId) throw e;
-          const sessionKey = `replay:${params.deviceId}`;
-          logger?.debug?.(
-            `[createRecordingReplayHlsSession] startRecordingReplayStream failed; force-closing dedicated client and retrying once`,
-          );
-          await this.forceCloseDedicatedClient(sessionKey, logger);
-          return await this.startRecordingReplayStream(startParams);
-        }
-      });
+    // Use streaming queue - holds the slot until release() is called.
+    // This serializes replay operations to avoid conflicts on the shared socket.
+    // The abort signal is triggered when a new clip is requested, causing this stream to stop.
+    const {
+      result: replayResult,
+      release: releaseQueueSlot,
+      abortSignal,
+    } = await this.enqueueStreamingReplayOperation(async () => {
+      return await this.startRecordingReplayStream(startParams);
+    });
 
     const { stream, stop: stopReplay } = replayResult;
 
@@ -13186,6 +13661,23 @@ ${scheduleItems}
       },
       Math.max(1, seconds) * 1000,
     );
+
+    // Listen for abort signal (triggered when a new clip is requested)
+    // This allows quick clip switching without waiting for the current clip to finish
+    if (abortSignal) {
+      abortSignal.addEventListener(
+        "abort",
+        () => {
+          if (!ended) {
+            logger?.debug?.(
+              `[createRecordingReplayHlsSession] Abort signal received, stopping for new clip`,
+            );
+            void stopAll();
+          }
+        },
+        { once: true },
+      );
+    }
 
     stream.on("error", (e) => {
       logger?.error?.(
