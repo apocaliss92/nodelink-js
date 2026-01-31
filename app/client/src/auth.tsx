@@ -15,7 +15,7 @@ import {
 
 export type AuthUser = {
   username: string;
-  kind: "env-admin" | "settings";
+  kind: "env-admin" | "settings" | "trusted-proxy";
   role: "admin" | "user";
 };
 

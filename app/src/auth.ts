@@ -5,7 +5,7 @@ import { verifyPassword } from "./password.js";
 
 export type AuthUser = {
   username: string;
-  kind: "env-admin" | "settings";
+  kind: "env-admin" | "settings" | "trusted-proxy";
   role: "admin" | "user";
 };
 
@@ -35,6 +35,87 @@ function parseBoolEnv(value: string | undefined): boolean | null {
   if (v === "1" || v === "true" || v === "yes" || v === "on") return true;
   if (v === "0" || v === "false" || v === "no" || v === "off") return false;
   return null;
+}
+
+function normalizeRemoteIp(ip: string): string {
+  // Handle IPv4-mapped IPv6 like ::ffff:127.0.0.1
+  if (ip.startsWith("::ffff:")) return ip.slice("::ffff:".length);
+  return ip;
+}
+
+function parseCommaList(value: string | undefined): string[] {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+type TrustedProxyConfig = {
+  enabled: boolean;
+  allowedIps: string[];
+  usernameHeader: string;
+  groupsHeader: string;
+  adminGroup: string;
+};
+
+function getTrustedProxyConfig(): TrustedProxyConfig {
+  const enabled = parseBoolEnv(process.env.TRUST_PROXY_AUTH) === true;
+
+  // Default to loopback only if allowlist not provided.
+  const allowedIpsRaw = parseCommaList(process.env.TRUST_PROXY_IPS);
+  const allowedIps =
+    allowedIpsRaw.length > 0 ? allowedIpsRaw : ["127.0.0.1", "::1"];
+
+  return {
+    enabled,
+    allowedIps,
+    usernameHeader: (
+      process.env.TRUST_PROXY_USERNAME_HEADER || "x-authentik-username"
+    )
+      .trim()
+      .toLowerCase(),
+    groupsHeader: (
+      process.env.TRUST_PROXY_GROUPS_HEADER || "x-authentik-groups"
+    )
+      .trim()
+      .toLowerCase(),
+    adminGroup: (process.env.TRUST_PROXY_ADMIN_GROUP || "admin").trim(),
+  };
+}
+
+function getHeaderValue(
+  req: http.IncomingMessage,
+  headerNameLower: string,
+): string | null {
+  const v = req.headers[headerNameLower];
+  if (typeof v === "string") return v.trim() || null;
+  if (Array.isArray(v)) return (v[0] ?? "").trim() || null;
+  return null;
+}
+
+function getUserFromTrustedProxy(req: http.IncomingMessage): AuthUser | null {
+  const cfg = getTrustedProxyConfig();
+  if (!cfg.enabled) return null;
+
+  const remote = req.socket?.remoteAddress;
+  if (!remote) return null;
+  const remoteNorm = normalizeRemoteIp(remote);
+  if (!cfg.allowedIps.includes(remoteNorm)) return null;
+
+  const username = getHeaderValue(req, cfg.usernameHeader);
+  if (!username) return null;
+
+  const groupsRaw = getHeaderValue(req, cfg.groupsHeader);
+  const groups = groupsRaw
+    ? groupsRaw
+        .split(/[,;]+/g)
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : [];
+
+  const role = groups.includes(cfg.adminGroup) ? "admin" : "user";
+  return { username, kind: "trusted-proxy", role };
 }
 
 export function getAuthConfig(): AuthConfig {
@@ -321,6 +402,9 @@ export function getSessionFromRequest(req: http.IncomingMessage): {
 export function getUserFromRequest(req: http.IncomingMessage): AuthUser | null {
   const { user } = getSessionFromRequest(req);
   if (user) return user;
+
+  const trusted = getUserFromTrustedProxy(req);
+  if (trusted) return trusted;
 
   const token = getAuthTokenFromRequest(req);
   if (token) {

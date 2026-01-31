@@ -46,7 +46,7 @@ export const AuthTokenSchema = z.object({
   type: z.enum(["session", "personal"]).optional().default("session"),
   user: z.object({
     username: z.string().min(1),
-    kind: z.enum(["env-admin", "settings"]),
+    kind: z.enum(["env-admin", "settings", "trusted-proxy"]),
     role: z.enum(["admin", "user"]),
   }),
   createdAt: z.number(),
@@ -58,7 +58,7 @@ export const PersonalTokenSchema = z.object({
   id: z.string(),
   user: z.object({
     username: z.string().min(1),
-    kind: z.enum(["env-admin", "settings"]),
+    kind: z.enum(["env-admin", "settings", "trusted-proxy"]),
   }),
   // Stored in cleartext so the UI can show it after a reload.
   // Treat settings.json as sensitive.

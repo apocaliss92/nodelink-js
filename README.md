@@ -49,12 +49,7 @@ The library includes a **complete web-based management interface** for easy came
 
 To run the Manager UI outside Docker, you need:
 
-- **Node.js**: **>= 22** (the Docker image currently uses Node 22).
-
 Some features also rely on external binaries that must be available on the host when running outside Docker:
-
-- **FFmpeg** (`ffmpeg`) is required for **native streaming helpers** (e.g. MJPEG/HLS pipelines).
-- **FFprobe** (`ffprobe`) is optional but strongly recommended for troubleshooting and diagnostics.
 
 Install examples:
 
@@ -76,8 +71,73 @@ npm install
 npm run dev
 ```
 
-- Web UI: http://localhost:5173
-- API Server: http://localhost:3000
+## Trusted Proxy Authentication (NGINX + Authentik)
+
+If you want to hide the UI behind SSO (e.g. Authentik), you can delegate authentication to a reverse proxy and let this app **trust** specific headers **only** when requests come from an allowlisted proxy IP.
+
+### Server configuration
+
+Set these env vars for the app:
+
+- `AUTH_ENABLED=1`
+- `TRUST_PROXY_AUTH=1`
+- `TRUST_PROXY_IPS=127.0.0.1,::1` (comma-separated allowlist; use the _real_ proxy/container IPs)
+- `TRUST_PROXY_USERNAME_HEADER=x-authentik-username`
+- `TRUST_PROXY_GROUPS_HEADER=x-authentik-groups`
+- `TRUST_PROXY_ADMIN_GROUP=admin` (if present in groups header → user becomes `admin`)
+
+Security notes:
+
+- **Never expose the app directly to the Internet** when `TRUST_PROXY_AUTH=1`.
+- Always put it behind your reverse proxy and restrict inbound traffic to the proxy only.
+- The app will ignore trusted headers unless the TCP peer IP matches `TRUST_PROXY_IPS`.
+
+### NGINX example (Authentik outpost)
+
+This example assumes:
+
+- Authentik outpost is available at `http://authentik-outpost:9000`.
+- The app is at `http://nodelink-manager:3000`.
+
+```nginx
+# Authentik integration (auth_request)
+location = /outpost.goauthentik.io/auth/nginx {
+  internal;
+  proxy_pass http://authentik-outpost:9000/outpost.goauthentik.io/auth/nginx;
+  proxy_pass_request_body off;
+  proxy_set_header Content-Length "";
+  proxy_set_header X-Original-URL $scheme://$http_host$request_uri;
+  proxy_set_header X-Original-Method $request_method;
+  proxy_set_header X-Original-Host $http_host;
+}
+
+location / {
+  auth_request /outpost.goauthentik.io/auth/nginx;
+  error_page 401 = @ak_unauthorized;
+
+  # Pull identity from Authentik response
+  auth_request_set $ak_username $upstream_http_x_authentik_username;
+  auth_request_set $ak_groups   $upstream_http_x_authentik_groups;
+
+  proxy_pass http://nodelink-manager:3000;
+
+  # Forward identity headers to the app
+  proxy_set_header X-Authentik-Username $ak_username;
+  proxy_set_header X-Authentik-Groups $ak_groups;
+
+  # Good hygiene
+  proxy_set_header Host $host;
+  proxy_set_header X-Real-IP $remote_addr;
+  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  proxy_set_header X-Forwarded-Proto $scheme;
+}
+
+location @ak_unauthorized {
+  return 302 /outpost.goauthentik.io/start?rd=$scheme://$http_host$request_uri;
+}
+```
+
+If you run NGINX and the app on the same Docker network, set `TRUST_PROXY_IPS` to the **NGINX container IP** (or keep it `127.0.0.1,::1` only if NGINX is on the same host network namespace).
 
 ### Production Build
 

@@ -15,9 +15,9 @@ export default function LoginPage() {
   const configHint = useMemo(() => {
     if (!state.config) return null;
     if (state.config.hasAdminPassword) {
-      return `Admin user is '${state.config.adminUsername}' (usable also via HTTP Basic).`;
+      return `Admin user is '${state.config.adminUsername}'`;
     }
-    return "You can sign in with a configured dashboard user (also via HTTP Basic).";
+    return "You can sign in with a configured dashboard user.";
   }, [state.config]);
 
   async function onSubmit(e: React.FormEvent) {
