@@ -23,6 +23,8 @@ on:
         type: boolean
         default: true
   push:
+    branches:
+      - "main"
     tags:
       - "v*.*.*"
 
@@ -39,10 +41,17 @@ jobs:
   # Job 1: Version bump and library build
   # ==========================================================================
   build-library:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(join(github.event.commits.*.message, ' '), '[publish]'))
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
+      affected_lib: ${{ steps.affected.outputs.affected_lib }}
+      affected_projects: ${{ steps.affected.outputs.affected_projects }}
+      base_ref: ${{ steps.affected.outputs.base_ref }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -100,6 +109,52 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Nx affected since last release
+        id: affected
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CURRENT_REF="${GITHUB_REF}"
+          CURRENT_TAG=""
+          if [[ "${CURRENT_REF}" == refs/tags/* ]]; then
+            CURRENT_TAG="${CURRENT_REF#refs/tags/}"
+          fi
+
+          # Find latest and previous release tags by semver (vX.Y.Z).
+          TAGS=$(git tag -l 'v*.*.*' --sort=-v:refname || true)
+          LATEST_TAG=$(echo "$TAGS" | head -n 1 || true)
+          if [[ -n "$CURRENT_TAG" ]]; then
+            PREV_TAG=$(echo "$TAGS" | grep -vx "$CURRENT_TAG" | head -n 1 || true)
+            BASE_REF="${PREV_TAG:-}"
+            HEAD_REF="$CURRENT_TAG"
+          else
+            BASE_REF="${LATEST_TAG:-}"
+            HEAD_REF="HEAD"
+          fi
+
+          # Fallback base when there are no tags yet.
+          if [[ -z "$BASE_REF" ]]; then
+            BASE_REF=$(git rev-list --max-parents=0 HEAD | tail -n 1)
+          fi
+
+          echo "Base ref: $BASE_REF"
+          echo "Head ref: $HEAD_REF"
+
+          AFFECTED=$(npx nx print-affected --base="$BASE_REF" --head="$HEAD_REF" --select=projects || true)
+          # Normalize separators (comma/space/newline) to newlines.
+          AFFECTED_NL=$(echo "$AFFECTED" | tr ', ' '\n\n' | sed '/^$/d' | sort -u)
+          echo "Affected projects:" && echo "$AFFECTED_NL" || true
+
+          AFFECTED_LIB=false
+          if echo "$AFFECTED_NL" | grep -qx "nodelink-js"; then
+            AFFECTED_LIB=true
+          fi
+
+          echo "affected_projects=$AFFECTED" >> $GITHUB_OUTPUT
+          echo "affected_lib=$AFFECTED_LIB" >> $GITHUB_OUTPUT
+          echo "base_ref=$BASE_REF" >> $GITHUB_OUTPUT
+
       - name: Build library
         run: npm run build
 
@@ -148,8 +203,11 @@ jobs:
   publish-npm:
     needs: build-library
     if: |
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_npm == 'true') ||
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+      needs.build-library.outputs.affected_lib == 'true' && (
+        (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_npm == 'true') ||
+        (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
+        (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(join(github.event.commits.*.message, ' '), '[publish]'))
+      )
     runs-on: ubuntu-latest
     steps:
       - name: Download library artifact
@@ -235,6 +293,7 @@ jobs:
     if: |
       always() && 
       needs.build-library.result == 'success' &&
+      (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))) &&
       (needs.publish-docker.result == 'success' || needs.publish-docker.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
@@ -278,12 +337,19 @@ jobs:
           # Add installation section
           echo "## Installation" >> release_notes.md
           echo "" >> release_notes.md
-          echo "### NPM" >> release_notes.md
-          echo "" >> release_notes.md
-          echo "\`\`\`bash" >> release_notes.md
-          echo "npm install @apocaliss92/nodelink-js@${VERSION}" >> release_notes.md
-          echo "\`\`\`" >> release_notes.md
-          echo "" >> release_notes.md
+          if [ "${{ needs.publish-npm.result }}" = "success" ]; then
+            echo "### NPM" >> release_notes.md
+            echo "" >> release_notes.md
+            echo "\`\`\`bash" >> release_notes.md
+            echo "npm install @apocaliss92/nodelink-js@${VERSION}" >> release_notes.md
+            echo "\`\`\`" >> release_notes.md
+            echo "" >> release_notes.md
+          else
+            echo "### NPM" >> release_notes.md
+            echo "" >> release_notes.md
+            echo "_Skipped (no affected changes since last release)._" >> release_notes.md
+            echo "" >> release_notes.md
+          fi
 
           # Add Docker section
           echo "### Docker" >> release_notes.md
