@@ -78,7 +78,7 @@ export default function SettingsPage() {
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [metricsError, setMetricsError] = useState<string | null>(null);
   const [metricsLoading, setMetricsLoading] = useState(false);
-  const [metricsAutoRefresh, setMetricsAutoRefresh] = useState(false);
+  const [metricsAutoRefresh, setMetricsAutoRefresh] = useState(true);
 
   const dirty = useMemo(() => settings !== null, [settings]);
 
@@ -173,8 +173,10 @@ export default function SettingsPage() {
     })();
   }, [authState.user?.role]);
 
+  const isAuthEnabled = authState.enabled === true;
+
   const canViewMetrics =
-    authState.enabled === true && authState.user?.role === "admin";
+    isAuthEnabled === false || authState.user?.role === "admin";
 
   const fetchMetricsOnce = useCallback(async () => {
     if (!canViewMetrics) return;
@@ -424,7 +426,7 @@ export default function SettingsPage() {
 
           <div className="card">
             <div className="label">Resource usage</div>
-            {authState.user?.role !== "admin" ? (
+            {!canViewMetrics ? (
               <div style={{ color: "var(--muted)", fontSize: 12 }}>
                 Only admins can view metrics.
               </div>
@@ -590,23 +592,26 @@ export default function SettingsPage() {
               </div>
             </div>
 
-            <div className="row" style={{ marginTop: 12 }}>
-              <label className="row" style={{ cursor: "pointer" }}>
-                <input
-                  type="checkbox"
-                  checked={settings.rtspRequireAuth}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      rtspRequireAuth: e.target.checked,
-                    })
-                  }
-                />
-                <span>
-                  Require auth for RTSP connections (uses the Users list below)
-                </span>
-              </label>
-            </div>
+            {isAuthEnabled ? (
+              <div className="row" style={{ marginTop: 12 }}>
+                <label className="row" style={{ cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={settings.rtspRequireAuth}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        rtspRequireAuth: e.target.checked,
+                      })
+                    }
+                  />
+                  <span>
+                    Require auth for RTSP connections (uses the Users list
+                    below)
+                  </span>
+                </label>
+              </div>
+            ) : null}
 
             {authState.enabled && authState.user ? (
               <div style={{ marginTop: 18 }}>
@@ -656,101 +661,103 @@ export default function SettingsPage() {
               </div>
             ) : null}
 
-            {authState.user?.role === "admin" ? (
-              <div style={{ marginTop: 18 }}>
-                <div className="label">Users</div>
-                <div style={{ color: "var(--muted)", fontSize: 12 }}>
-                  Users that can access this web dashboard and authenticate to
-                  the RTSP proxy (Digest).
-                </div>
-
-                <div
-                  className="row"
-                  style={{ marginTop: 10, justifyContent: "flex-end" }}
-                >
-                  <button
-                    className="btn"
-                    disabled={savingDashUsers}
-                    onClick={() => void refreshDashboardUsers()}
-                  >
-                    Refresh users
-                  </button>
-                  <button
-                    className="btn primary"
-                    disabled={savingDashUsers}
-                    onClick={() => {
-                      setDashUserDraft({
-                        username: "",
-                        password: "",
-                        role: "user",
-                      });
-                      setAddDashUserOpen(true);
-                    }}
-                  >
-                    Add user
-                  </button>
-                </div>
-
-                {dashUsers.length === 0 ? (
-                  <div
-                    style={{
-                      color: "var(--muted)",
-                      fontSize: 13,
-                      marginTop: 10,
-                    }}
-                  >
-                    No dashboard users configured.
+            {isAuthEnabled ? (
+              authState.user?.role === "admin" ? (
+                <div style={{ marginTop: 18 }}>
+                  <div className="label">Users</div>
+                  <div style={{ color: "var(--muted)", fontSize: 12 }}>
+                    Users that can access this web dashboard and authenticate to
+                    the RTSP proxy (Digest).
                   </div>
-                ) : (
-                  <table className="table" style={{ marginTop: 10 }}>
-                    <thead>
-                      <tr>
-                        <th style={{ width: 220 }}>Username</th>
-                        <th style={{ width: 110 }}>Role</th>
-                        <th />
-                        <th style={{ width: 220 }} />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {dashUsers.map((u) => (
-                        <tr key={u.username}>
-                          <td className="mono">{u.username}</td>
-                          <td>{u.role}</td>
-                          <td />
-                          <td style={{ textAlign: "right" }}>
-                            <button
-                              className="btn"
-                              disabled={savingDashUsers}
-                              onClick={() =>
-                                void resetDashboardUserPassword(u.username)
-                              }
-                            >
-                              Reset password
-                            </button>
-                            <button
-                              className="btn danger"
-                              disabled={savingDashUsers}
-                              onClick={() =>
-                                void deleteDashboardUser(u.username)
-                              }
-                            >
-                              Delete
-                            </button>
-                          </td>
+
+                  <div
+                    className="row"
+                    style={{ marginTop: 10, justifyContent: "flex-end" }}
+                  >
+                    <button
+                      className="btn"
+                      disabled={savingDashUsers}
+                      onClick={() => void refreshDashboardUsers()}
+                    >
+                      Refresh users
+                    </button>
+                    <button
+                      className="btn primary"
+                      disabled={savingDashUsers}
+                      onClick={() => {
+                        setDashUserDraft({
+                          username: "",
+                          password: "",
+                          role: "user",
+                        });
+                        setAddDashUserOpen(true);
+                      }}
+                    >
+                      Add user
+                    </button>
+                  </div>
+
+                  {dashUsers.length === 0 ? (
+                    <div
+                      style={{
+                        color: "var(--muted)",
+                        fontSize: 13,
+                        marginTop: 10,
+                      }}
+                    >
+                      No dashboard users configured.
+                    </div>
+                  ) : (
+                    <table className="table" style={{ marginTop: 10 }}>
+                      <thead>
+                        <tr>
+                          <th style={{ width: 220 }}>Username</th>
+                          <th style={{ width: 110 }}>Role</th>
+                          <th />
+                          <th style={{ width: 220 }} />
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
-            ) : (
-              <div style={{ marginTop: 18 }}>
-                <div className="label">Users</div>
-                <div style={{ color: "var(--muted)", fontSize: 12 }}>
-                  Only admins can manage dashboard users.
+                      </thead>
+                      <tbody>
+                        {dashUsers.map((u) => (
+                          <tr key={u.username}>
+                            <td className="mono">{u.username}</td>
+                            <td>{u.role}</td>
+                            <td />
+                            <td style={{ textAlign: "right" }}>
+                              <button
+                                className="btn"
+                                disabled={savingDashUsers}
+                                onClick={() =>
+                                  void resetDashboardUserPassword(u.username)
+                                }
+                              >
+                                Reset password
+                              </button>
+                              <button
+                                className="btn danger"
+                                disabled={savingDashUsers}
+                                onClick={() =>
+                                  void deleteDashboardUser(u.username)
+                                }
+                              >
+                                Delete
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
                 </div>
-              </div>
-            )}
+              ) : (
+                <div style={{ marginTop: 18 }}>
+                  <div className="label">Users</div>
+                  <div style={{ color: "var(--muted)", fontSize: 12 }}>
+                    Only admins can manage dashboard users.
+                  </div>
+                </div>
+              )
+            ) : null}
           </div>
         </div>
       )}

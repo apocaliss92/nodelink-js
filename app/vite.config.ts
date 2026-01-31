@@ -22,13 +22,6 @@ export default defineConfig(({ mode }) => {
           target: "http://localhost:3000",
           changeOrigin: true,
         },
-        "/docs": {
-          target: "http://localhost:3000",
-          // Keep original Host (localhost:5173) so /docs generates correct
-          // absolute URLs for the tRPC panel (it should call back into Vite,
-          // which then proxies /api/* to the server).
-          changeOrigin: false,
-        },
         "/panel": {
           target: "http://localhost:3000",
           changeOrigin: false,

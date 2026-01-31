@@ -124,7 +124,7 @@ const requireAuth: express.RequestHandler = (req, res, next) => {
   if (!user) {
     // Accept HTTP Basic if provided, but do NOT trigger browser credential prompts.
     // For docs (loaded via iframe) redirect the user to the UI login screen.
-    if (req.baseUrl === "/docs") {
+    if (req.baseUrl === "/panel") {
       res.redirect(302, "/login");
       return;
     }
@@ -270,8 +270,8 @@ app.use(
   }),
 );
 
-// tRPC Panel UI (Docs section)
-app.use("/docs", requireAuth, (req, res) => {
+// tRPC Panel UI (backend-only). The React app uses /docs and embeds this in an iframe.
+app.use("/panel", requireAuth, (req, res) => {
   const forwardedProto = (
     req.headers["x-forwarded-proto"] as string | undefined
   )
@@ -292,11 +292,6 @@ app.use("/docs", requireAuth, (req, res) => {
   );
 });
 
-// Legacy panel route redirect
-app.use("/panel", (req, res) => {
-  res.redirect("/docs");
-});
-
 // Health check
 app.get("/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
@@ -307,14 +302,16 @@ app.get("/api/health", (req, res) => {
 
 // Resource usage metrics (admin only)
 app.get("/api/metrics", (req, res) => {
-  const user = getUserFromRequest(req);
-  if (!user) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
-  if (user.role !== "admin") {
-    res.status(403).json({ error: "Forbidden" });
-    return;
+  if (getAuthConfig().enabled) {
+    const user = getUserFromRequest(req);
+    if (!user) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    if (user.role !== "admin") {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
   }
 
   const nowCpu = process.cpuUsage();
@@ -634,7 +631,7 @@ app.get("/", (req, res) => {
         Prod: run <code>npm run build</code> then <code>npm start</code>.
       </p>
       <p>
-        API docs: <a href="/docs">/docs</a>
+        API docs: <a href="/panel">/panel</a>
       </p>
       <p>
         Server: <a href="http://localhost:${PORT}">http://localhost:${PORT}</a>
@@ -660,7 +657,7 @@ app.get("*", (req, res, next) => {
   if (req.method !== "GET") return next();
   if (
     req.path.startsWith("/api") ||
-    req.path.startsWith("/docs") ||
+    req.path.startsWith("/panel") ||
     req.path.startsWith("/static") ||
     req.path.startsWith("/ws")
   ) {
