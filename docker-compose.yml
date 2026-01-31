@@ -3,7 +3,7 @@ version: "3.8"
 services:
   nodelink-manager:
     # Use pre-built image from GHCR
-    image: ghcr.io/apocaliss92/nodelink-manager:latest
+    image: ghcr.io/apocaliss92/nodelink-js-manager:latest
 
     # Or build locally (uncomment below and comment image above)
     # build:

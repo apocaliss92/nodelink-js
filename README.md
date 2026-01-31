@@ -95,13 +95,13 @@ The easiest way to run the Manager UI is with Docker:
 
 ```bash
 # Using pre-built image
-docker pull ghcr.io/apocaliss92/nodelink-manager:latest
+docker pull ghcr.io/apocaliss92/nodelink-js-manager:latest
 
 docker run -d \
   --name nodelink-manager \
   --network host \
   -v nodelink-data:/data \
-  ghcr.io/apocaliss92/nodelink-manager:latest
+  ghcr.io/apocaliss92/nodelink-js-manager:latest
 ```
 
 Or with Docker Compose:

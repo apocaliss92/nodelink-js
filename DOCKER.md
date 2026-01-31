@@ -16,17 +16,17 @@ If you run the app directly on your machine (without Docker), make sure `ffmpeg`
 
 ```bash
 # Pull the latest image
-docker pull ghcr.io/apocaliss92/nodelink-manager:latest
+docker pull ghcr.io/apocaliss92/nodelink-js-manager:latest
 
 # Or pull a specific version
-docker pull ghcr.io/apocaliss92/nodelink-manager:0.1.0
+docker pull ghcr.io/apocaliss92/nodelink-js-manager:0.1.0
 
 # Run the container
 docker run -d \
   --name nodelink-manager \
   --network host \
   -v nodelink-data:/data \
-  ghcr.io/apocaliss92/nodelink-manager:latest
+  ghcr.io/apocaliss92/nodelink-js-manager:latest
 ```
 
 ### Using Docker Compose
