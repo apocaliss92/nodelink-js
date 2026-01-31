@@ -3716,6 +3716,7 @@ export class ReolinkBaichuanApi {
     const ch = this.normalizeChannel(channel);
     const xml = await this.getEncXml(ch);
     const dbg = this.client.getDebugConfig?.();
+
     return parseChannelStreamMetadataFromGetEncXml({
       channel: ch,
       xml,
@@ -10670,6 +10671,7 @@ export class ReolinkBaichuanApi {
         nativeStreams,
         rtmpStreams,
         rtspStreams,
+        rawEncXml: undefined,
       };
 
       return cacheOrFallback(result);
@@ -10807,6 +10809,7 @@ export class ReolinkBaichuanApi {
         nativeStreams,
         rtmpStreams,
         rtspStreams,
+        rawEncXml: widerMetadata?.rawXml,
       };
     }
 
@@ -11189,6 +11192,7 @@ export class ReolinkBaichuanApi {
       nativeStreams,
       rtmpStreams,
       rtspStreams,
+      rawEncXml: streamMetadata?.rawXml,
     };
 
     return cacheOrFallback(result);

@@ -558,6 +558,8 @@ export type ReolinkVideoStreamOptionsResult = {
   nativeStreams: ReolinkSupportedStream[];
   rtspStreams: ReolinkSupportedStream[];
   rtmpStreams: ReolinkSupportedStream[];
+  /** Raw XML response from GetEnc (cmd_id 56) for debugging stream availability */
+  rawEncXml?: string | undefined;
 };
 
 export type VideoStreamOptionsCacheEntry = ReolinkVideoStreamOptionsResult;
@@ -579,6 +581,8 @@ export interface ChannelStreamMetadata {
   channel: number;
   streams: StreamMetadata[];
   audioEnabled: boolean; // Overall audio enabled (AND of all streams)
+  /** Raw XML response from GetEnc (cmd_id 56) for debugging */
+  rawXml?: string;
 }
 
 export interface MotionEvent {

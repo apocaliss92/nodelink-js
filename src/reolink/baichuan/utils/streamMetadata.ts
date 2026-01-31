@@ -1,6 +1,10 @@
 import { getXmlText } from "../../../protocol/xml";
 import type { Logger } from "../../../debug/DebugConfig";
-import type { ChannelStreamMetadata, StreamMetadata, VideoCodec } from "../types";
+import type {
+  ChannelStreamMetadata,
+  StreamMetadata,
+  VideoCodec,
+} from "../types";
 
 const videoCodecMap: Record<number, VideoCodec> = {
   0: "H.264",
@@ -10,10 +14,17 @@ const videoCodecMap: Record<number, VideoCodec> = {
 };
 
 const isEnabledFromText = (enableText: string | undefined): boolean => {
-  return enableText === undefined || enableText === "1" || enableText === "true";
+  return (
+    enableText === undefined || enableText === "1" || enableText === "true"
+  );
 };
 
-const isPlausibleStream = (s: { width: number; height: number; frameRate: number; bitRate: number }): boolean => {
+const isPlausibleStream = (s: {
+  width: number;
+  height: number;
+  frameRate: number;
+  bitRate: number;
+}): boolean => {
   return s.width > 0 && s.height > 0 && (s.frameRate > 0 || s.bitRate > 0);
 };
 
@@ -28,7 +39,10 @@ const logDebugStreamBlock = (params: {
   if (!traceNativeStream) return;
 
   if (!blockXml) {
-    (logger.warn ?? logger.log).call(logger, `[ReolinkBaichuanApi] getStreamMetadata(traceNativeStream): channel=${channel} tag=<${tag}> missing`);
+    (logger.warn ?? logger.log).call(
+      logger,
+      `[ReolinkBaichuanApi] getStreamMetadata(traceNativeStream): channel=${channel} tag=<${tag}> missing`,
+    );
     return;
   }
 
@@ -37,7 +51,8 @@ const logDebugStreamBlock = (params: {
   const heightText = getXmlText(raw, "height") ?? getXmlText(raw, "Height");
   const frameText = getXmlText(raw, "frame") ?? getXmlText(raw, "Frame");
   const bitRateText = getXmlText(raw, "bitRate") ?? getXmlText(raw, "BitRate");
-  const videoEncTypeText = getXmlText(raw, "videoEncType") ?? getXmlText(raw, "VideoEncType");
+  const videoEncTypeText =
+    getXmlText(raw, "videoEncType") ?? getXmlText(raw, "VideoEncType");
   const audioText = getXmlText(raw, "audio") ?? getXmlText(raw, "Audio");
   const enableText = getXmlText(raw, "enable") ?? getXmlText(raw, "Enable");
 
@@ -47,10 +62,15 @@ const logDebugStreamBlock = (params: {
   const bitRate = Number(bitRateText ?? "0");
   const audio = Number(audioText ?? "0");
   const isEnabled = isEnabledFromText(enableText);
-  const plausible = isEnabled && isPlausibleStream({ width, height, frameRate, bitRate });
+  const plausible =
+    isEnabled && isPlausibleStream({ width, height, frameRate, bitRate });
 
   const previewMax = 1400;
-  const xmlPreview = raw.length <= previewMax ? raw : raw.slice(0, previewMax) + `\n...truncated (+${raw.length - previewMax} chars)`;
+  const xmlPreview =
+    raw.length <= previewMax
+      ? raw
+      : raw.slice(0, previewMax) +
+        `\n...truncated (+${raw.length - previewMax} chars)`;
 
   (logger.warn ?? logger.log).call(
     logger,
@@ -78,14 +98,16 @@ const buildStream = (params: {
   const enabled = getXmlText(streamXml, "enable");
   const isEnabled = isEnabledFromText(enabled);
 
-  if (!isEnabled || !isPlausibleStream({ width, height, frameRate, bitRate })) return undefined;
+  if (!isEnabled || !isPlausibleStream({ width, height, frameRate, bitRate }))
+    return undefined;
 
   return {
     profile,
     audio,
     width,
     height,
-    videoEncType: videoCodecMap[videoEncTypeInt] ?? `Unknown(${videoEncTypeInt})`,
+    videoEncType:
+      videoCodecMap[videoEncTypeInt] ?? `Unknown(${videoEncTypeInt})`,
     videoEncTypeInt,
     frameRate,
     bitRate,
@@ -107,7 +129,11 @@ export const parseChannelStreamMetadataFromGetEncXml = (params: {
 
   if (traceNativeStream) {
     const headMax = 1600;
-    const xmlHead = xml.length <= headMax ? xml : xml.slice(0, headMax) + `\n...truncated (+${xml.length - headMax} chars)`;
+    const xmlHead =
+      xml.length <= headMax
+        ? xml
+        : xml.slice(0, headMax) +
+          `\n...truncated (+${xml.length - headMax} chars)`;
     const tagsPresent = {
       mainStream: /<mainStream\b/.test(xml),
       subStream: /<subStream\b/.test(xml),
@@ -125,7 +151,13 @@ export const parseChannelStreamMetadataFromGetEncXml = (params: {
   const mainMatch = xml.match(/<mainStream[^>]*>([\s\S]*?)<\/mainStream>/);
   if (mainMatch) {
     const mainXml = mainMatch[1] ?? "";
-    logDebugStreamBlock({ logger, traceNativeStream, channel, tag: "mainStream", blockXml: mainXml });
+    logDebugStreamBlock({
+      logger,
+      traceNativeStream,
+      channel,
+      tag: "mainStream",
+      blockXml: mainXml,
+    });
     const s = buildStream({ profile: "main", streamXml: mainXml });
     if (s) {
       streams.push(s);
@@ -136,7 +168,13 @@ export const parseChannelStreamMetadataFromGetEncXml = (params: {
   const subMatch = xml.match(/<subStream[^>]*>([\s\S]*?)<\/subStream>/);
   if (subMatch) {
     const subXml = subMatch[1] ?? "";
-    logDebugStreamBlock({ logger, traceNativeStream, channel, tag: "subStream", blockXml: subXml });
+    logDebugStreamBlock({
+      logger,
+      traceNativeStream,
+      channel,
+      tag: "subStream",
+      blockXml: subXml,
+    });
     const s = buildStream({ profile: "sub", streamXml: subXml });
     if (s) {
       streams.push(s);
@@ -144,13 +182,28 @@ export const parseChannelStreamMetadataFromGetEncXml = (params: {
     }
   }
 
-  const extLikeTags = ["extStream", "thirdStream", "externStream", "extraStream"];
+  const extLikeTags = [
+    "extStream",
+    "thirdStream",
+    "externStream",
+    "extraStream",
+  ];
+  let extTagFound: string | undefined;
   for (const tag of extLikeTags) {
-    const extMatch = xml.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`));
+    const extMatch = xml.match(
+      new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`),
+    );
     if (!extMatch) continue;
 
+    extTagFound = tag;
     const extXml = extMatch[1] ?? "";
-    logDebugStreamBlock({ logger, traceNativeStream, channel, tag, blockXml: extXml });
+    logDebugStreamBlock({
+      logger,
+      traceNativeStream,
+      channel,
+      tag,
+      blockXml: extXml,
+    });
     const s = buildStream({ profile: "ext", streamXml: extXml });
     if (s) {
       streams.push(s);
@@ -164,5 +217,6 @@ export const parseChannelStreamMetadataFromGetEncXml = (params: {
     channel,
     streams,
     audioEnabled,
+    rawXml: xml,
   };
 };
