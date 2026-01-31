@@ -651,6 +651,10 @@ export default function CamerasPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [connectingByCamera, setConnectingByCamera] = useState<
+    Record<string, boolean>
+  >({});
+
   const [rtspServers, setRtspServers] = useState<
     Array<{
       cameraId: string;
@@ -690,6 +694,12 @@ export default function CamerasPage() {
   const [streamsLoadingByCamera, setStreamsLoadingByCamera] = useState<
     Record<string, boolean>
   >({});
+
+  const [streamsDiscoveryAttemptsByCamera, setStreamsDiscoveryAttemptsByCamera] =
+    useState<Record<string, number>>({});
+
+  const MAX_STREAM_DISCOVERY_ATTEMPTS = 12;
+  const STREAM_DISCOVERY_RETRY_MS = 3000;
 
   const [previewModal, setPreviewModal] = useState<PreviewModalState>({
     open: false,
@@ -782,7 +792,7 @@ export default function CamerasPage() {
     }
   }
 
-  async function refresh(silent = false) {
+  async function refresh(silent = false): Promise<CameraInfo[] | null> {
     if (!silent) {
       setLoading(true);
       setError(null);
@@ -857,8 +867,11 @@ export default function CamerasPage() {
           return newVal;
         });
       }
+
+      return list;
     } catch (e) {
       if (!silent) setError(String(e));
+      return null;
     } finally {
       if (!silent) setLoading(false);
     }
@@ -939,7 +952,7 @@ export default function CamerasPage() {
   }
 
   useEffect(() => {
-    refresh();
+    void refresh();
     // Auto-refresh every 5 seconds (silent to avoid UI flicker)
     const t = window.setInterval(() => {
       void refresh(true);
@@ -986,13 +999,17 @@ export default function CamerasPage() {
     void loadStreams();
   }, [cameras]);
 
-  async function connect(id: string) {
-    await trpcMutation("cameras.connect", { id });
-    await refresh();
-    // Fetch available streams for the newly connected camera
+  async function discoverStreams(
+    id: string,
+    cameraSnapshot?: CameraInfo[] | null,
+  ) {
+    if (streamsLoadingByCamera[id]) return;
+    const attempts = streamsDiscoveryAttemptsByCamera[id] ?? 0;
+    if (attempts >= MAX_STREAM_DISCOVERY_ATTEMPTS) return;
+
     setStreamsLoadingByCamera((m) => ({ ...m, [id]: true }));
     try {
-      const cam = cameras.find((c) => c.id === id);
+      const cam = (cameraSnapshot ?? cameras).find((c) => c.id === id);
       const res = await trpcQuery<{ nativeStreams: AvailableStream[] }>(
         "cameras.getAvailableStreams",
         {
@@ -1000,14 +1017,56 @@ export default function CamerasPage() {
           channel: cam?.isNvr ? (cam.rtspChannel ?? 0) : undefined,
         },
       );
-      setStreamsByCamera((prev) => ({
-        ...prev,
-        [id]: res.nativeStreams ?? [],
+
+      const discovered = res.nativeStreams ?? [];
+      setStreamsByCamera((prev) => ({ ...prev, [id]: discovered }));
+      setStreamsDiscoveryAttemptsByCamera((m) => ({
+        ...m,
+        [id]: discovered.length > 0 ? MAX_STREAM_DISCOVERY_ATTEMPTS : attempts + 1,
       }));
     } catch {
-      setStreamsByCamera((prev) => ({ ...prev, [id]: [] }));
+      setStreamsDiscoveryAttemptsByCamera((m) => ({ ...m, [id]: attempts + 1 }));
     } finally {
       setStreamsLoadingByCamera((m) => ({ ...m, [id]: false }));
+    }
+  }
+
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      const connected = cameras.filter((c) => c.status === "connected");
+      for (const cam of connected) {
+        const streams = streamsByCamera[cam.id];
+        const attempts = streamsDiscoveryAttemptsByCamera[cam.id] ?? 0;
+        if ((streams?.length ?? 0) > 0) continue;
+        if (attempts >= MAX_STREAM_DISCOVERY_ATTEMPTS) continue;
+        if (streamsLoadingByCamera[cam.id]) continue;
+        void discoverStreams(cam.id);
+      }
+    }, STREAM_DISCOVERY_RETRY_MS);
+
+    return () => window.clearInterval(t);
+  }, [
+    cameras,
+    streamsByCamera,
+    streamsLoadingByCamera,
+    streamsDiscoveryAttemptsByCamera,
+  ]);
+
+  async function connect(id: string) {
+    setConnectingByCamera((m) => ({ ...m, [id]: true }));
+    setStreamsDiscoveryAttemptsByCamera((m) => ({ ...m, [id]: 0 }));
+    setStreamsByCamera((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+
+    try {
+      await trpcMutation("cameras.connect", { id });
+      const list = await refresh(true);
+      await discoverStreams(id, list);
+    } finally {
+      setConnectingByCamera((m) => ({ ...m, [id]: false }));
     }
   }
 
@@ -1425,8 +1484,19 @@ export default function CamerasPage() {
                 </div>
                 <div className="row">
                   {c.status !== "connected" ? (
-                    <button className="btn" onClick={() => connect(c.id)}>
-                      Connect
+                    <button
+                      className="btn"
+                      disabled={Boolean(connectingByCamera[c.id])}
+                      onClick={() => void connect(c.id)}
+                    >
+                      {connectingByCamera[c.id] ? (
+                        <span
+                          className="spinner"
+                          aria-hidden="true"
+                          style={{ marginLeft: 0, marginRight: 8 }}
+                        />
+                      ) : null}
+                      {connectingByCamera[c.id] ? "Connecting…" : "Connect"}
                     </button>
                   ) : (
                     <button className="btn" onClick={() => disconnect(c.id)}>
@@ -1499,9 +1569,25 @@ export default function CamerasPage() {
                     <span>Discovering streams…</span>
                   </div>
                 ) : (streamsByCamera[c.id]?.length ?? 0) === 0 ? (
-                  <div style={{ color: "var(--muted)", fontSize: 13 }}>
-                    No streams discovered yet.
-                  </div>
+                  (streamsDiscoveryAttemptsByCamera[c.id] ?? 0) > 0 &&
+                  (streamsDiscoveryAttemptsByCamera[c.id] ?? 0) <
+                    MAX_STREAM_DISCOVERY_ATTEMPTS ? (
+                    <div
+                      className="row"
+                      style={{ color: "var(--muted)", fontSize: 13 }}
+                    >
+                      <span
+                        className="spinner"
+                        aria-hidden="true"
+                        style={{ marginLeft: 0, marginRight: 8 }}
+                      />
+                      <span>Waiting for streams…</span>
+                    </div>
+                  ) : (
+                    <div style={{ color: "var(--muted)", fontSize: 13 }}>
+                      No streams discovered yet.
+                    </div>
+                  )
                 ) : (
                   <div className="streamsGrid">
                     {(streamsByCamera[c.id] ?? []).map((s) => {
