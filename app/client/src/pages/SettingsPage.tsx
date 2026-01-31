@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { trpcMutation, trpcQuery } from "../api";
 import { useAuth } from "../auth";
 import { getStoredAuthToken, setStoredAuthToken } from "../authToken";
@@ -14,6 +14,7 @@ type RuntimeInfo = {
   httpPort: number;
   rtspPort: number;
   dataPath: string;
+  appVersion?: string | null;
 };
 
 type DashboardUser = {
@@ -21,6 +22,37 @@ type DashboardUser = {
   role: "admin" | "user";
   createdAt?: number;
   updatedAt?: number;
+};
+
+type Metrics = {
+  timestamp: string;
+  process: {
+    pid: number;
+    nodeVersion: string;
+    uptimeSeconds: number;
+    memory: {
+      rss: number;
+      heapUsed: number;
+      heapTotal: number;
+      external: number;
+      arrayBuffers: number;
+    };
+    cpu: {
+      percent: number | null;
+      userUs: number;
+      systemUs: number;
+      windowMs: number;
+    };
+    eventLoop: {
+      utilization: number;
+    };
+  };
+  system: {
+    cpuCount: number | null;
+    loadAvg: number[];
+    totalMem: number;
+    freeMem: number;
+  };
 };
 
 export default function SettingsPage() {
@@ -43,6 +75,11 @@ export default function SettingsPage() {
   const [personalToken, setPersonalToken] = useState<string | null>(null);
   const [creatingPersonalToken, setCreatingPersonalToken] = useState(false);
 
+  const [metrics, setMetrics] = useState<Metrics | null>(null);
+  const [metricsError, setMetricsError] = useState<string | null>(null);
+  const [metricsLoading, setMetricsLoading] = useState(false);
+  const [metricsAutoRefresh, setMetricsAutoRefresh] = useState(false);
+
   const dirty = useMemo(() => settings !== null, [settings]);
 
   useEffect(() => {
@@ -53,17 +90,23 @@ export default function SettingsPage() {
   useEffect(() => {
     if (!authState.enabled || !authState.user) return;
 
+    let cancelled = false;
+
     (async () => {
       try {
-        const token = getStoredAuthToken();
-        if (!token) return;
+        const currentToken = getStoredAuthToken();
+        if (!currentToken) return;
 
         const res = await fetch("/api/auth/personal-token", {
           method: "GET",
           headers: {
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            ...(currentToken
+              ? { Authorization: `Bearer ${currentToken}` }
+              : {}),
           },
         });
+
+        if (cancelled) return;
 
         if (res.status === 404) {
           setPersonalToken(null);
@@ -77,15 +120,33 @@ export default function SettingsPage() {
 
         const data = (await res.json()) as { token: string };
         if (data?.token) {
-          setPersonalToken(data.token);
-          setStoredAuthToken(data.token);
-          await refreshAuth();
+          // Avoid infinite refresh loops:
+          // Only update storage / refresh auth if the token actually changed.
+          if (data.token !== currentToken) {
+            setPersonalToken(data.token);
+            setStoredAuthToken(data.token);
+            await refreshAuth();
+          } else {
+            // Keep UI in sync without forcing a refresh.
+            setPersonalToken((prev) =>
+              prev === data.token ? prev : data.token,
+            );
+          }
         }
       } catch {
         // ignore
       }
     })();
-  }, [authState.enabled, authState.user, refreshAuth]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    authState.enabled,
+    authState.user?.username,
+    authState.user?.kind,
+    refreshAuth,
+  ]);
 
   useEffect(() => {
     (async () => {
@@ -111,6 +172,87 @@ export default function SettingsPage() {
       }
     })();
   }, [authState.user?.role]);
+
+  const canViewMetrics =
+    authState.enabled === true && authState.user?.role === "admin";
+
+  const fetchMetricsOnce = useCallback(async () => {
+    if (!canViewMetrics) return;
+    setMetricsLoading(true);
+    try {
+      const token = getStoredAuthToken();
+      const res = await fetch("/api/metrics", {
+        method: "GET",
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+
+      if (res.status === 403) {
+        setMetricsError("Forbidden");
+        return;
+      }
+
+      if (!res.ok) {
+        setMetricsError(`HTTP ${res.status}`);
+        return;
+      }
+
+      const data = (await res.json()) as Metrics;
+      setMetrics(data);
+      setMetricsError(null);
+    } catch (e) {
+      setMetricsError(String(e));
+    } finally {
+      setMetricsLoading(false);
+    }
+  }, [canViewMetrics]);
+
+  useEffect(() => {
+    if (!canViewMetrics) return;
+    void fetchMetricsOnce();
+  }, [canViewMetrics, fetchMetricsOnce]);
+
+  useEffect(() => {
+    if (!canViewMetrics) return;
+    if (!metricsAutoRefresh) return;
+
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      if (cancelled) return;
+      if (document.visibilityState === "hidden") return;
+      void fetchMetricsOnce();
+    }, 5000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [canViewMetrics, fetchMetricsOnce, metricsAutoRefresh]);
+
+  function formatBytes(bytes: number): string {
+    if (!Number.isFinite(bytes)) return "";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let n = bytes;
+    let i = 0;
+    while (n >= 1024 && i < units.length - 1) {
+      n /= 1024;
+      i += 1;
+    }
+    const digits = i === 0 ? 0 : i === 1 ? 1 : 2;
+    return `${n.toFixed(digits)} ${units[i]}`;
+  }
+
+  function formatSeconds(seconds: number): string {
+    if (!Number.isFinite(seconds)) return "";
+    const s = Math.max(0, Math.floor(seconds));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    if (h > 0) return `${h}h ${m}m ${sec}s`;
+    if (m > 0) return `${m}m ${sec}s`;
+    return `${sec}s`;
+  }
 
   async function refreshDashboardUsers() {
     const list = await trpcQuery<DashboardUser[]>(
@@ -262,6 +404,15 @@ export default function SettingsPage() {
             </div>
 
             <div style={{ marginTop: 12 }}>
+              <div className="label">App version</div>
+              <input
+                className="input"
+                readOnly
+                value={runtime?.appVersion ? String(runtime.appVersion) : ""}
+              />
+            </div>
+
+            <div style={{ marginTop: 12 }}>
               <div className="label">Data folder</div>
               <input
                 className="input"
@@ -269,6 +420,135 @@ export default function SettingsPage() {
                 value={runtime ? runtime.dataPath : ""}
               />
             </div>
+          </div>
+
+          <div className="card">
+            <div className="label">Resource usage</div>
+            {authState.user?.role !== "admin" ? (
+              <div style={{ color: "var(--muted)", fontSize: 12 }}>
+                Only admins can view metrics.
+              </div>
+            ) : (
+              <>
+                <div className="row" style={{ marginTop: 10 }}>
+                  <label className="row" style={{ cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={metricsAutoRefresh}
+                      onChange={(e) => setMetricsAutoRefresh(e.target.checked)}
+                    />
+                    <span>Auto refresh</span>
+                  </label>
+
+                  <div style={{ flex: 1 }} />
+
+                  <button
+                    className="btn"
+                    disabled={metricsLoading}
+                    onClick={() => void fetchMetricsOnce()}
+                  >
+                    {metricsLoading ? "Refreshing…" : "Refresh"}
+                  </button>
+                </div>
+
+                {!metrics ? (
+                  <div
+                    style={{
+                      color: "var(--muted)",
+                      fontSize: 12,
+                      marginTop: 10,
+                    }}
+                  >
+                    {metricsError ? `Error: ${metricsError}` : "No data yet."}
+                  </div>
+                ) : null}
+
+                {metrics ? (
+                  <div className="grid cols2" style={{ marginTop: 10 }}>
+                    <div>
+                      <div className="label">Uptime</div>
+                      <input
+                        className="input"
+                        readOnly
+                        value={formatSeconds(metrics.process.uptimeSeconds)}
+                      />
+                    </div>
+                    <div>
+                      <div className="label">CPU</div>
+                      <input
+                        className="input"
+                        readOnly
+                        value={
+                          metrics.process.cpu.percent === null
+                            ? "(warming up…)"
+                            : `${metrics.process.cpu.percent.toFixed(1)}%`
+                        }
+                      />
+                    </div>
+
+                    <div>
+                      <div className="label">RSS</div>
+                      <input
+                        className="input"
+                        readOnly
+                        value={formatBytes(metrics.process.memory.rss)}
+                      />
+                    </div>
+                    <div>
+                      <div className="label">Heap used</div>
+                      <input
+                        className="input"
+                        readOnly
+                        value={`${formatBytes(metrics.process.memory.heapUsed)} / ${formatBytes(metrics.process.memory.heapTotal)}`}
+                      />
+                    </div>
+
+                    <div>
+                      <div className="label">Event loop utilization</div>
+                      <input
+                        className="input"
+                        readOnly
+                        value={`${(metrics.process.eventLoop.utilization * 100).toFixed(1)}%`}
+                      />
+                    </div>
+                    <div>
+                      <div className="label">Host memory</div>
+                      <input
+                        className="input"
+                        readOnly
+                        value={`${formatBytes(metrics.system.totalMem - metrics.system.freeMem)} / ${formatBytes(metrics.system.totalMem)}`}
+                      />
+                    </div>
+
+                    <div>
+                      <div className="label">Load avg</div>
+                      <input
+                        className="input"
+                        readOnly
+                        value={metrics.system.loadAvg
+                          .slice(0, 3)
+                          .map((n) => n.toFixed(2))
+                          .join(" ")}
+                      />
+                    </div>
+                    <div>
+                      <div className="label">Node</div>
+                      <input
+                        className="input mono"
+                        readOnly
+                        value={`${metrics.process.nodeVersion} (pid ${metrics.process.pid})`}
+                      />
+                    </div>
+
+                    <div style={{ gridColumn: "1 / -1" }}>
+                      <div style={{ color: "var(--muted)", fontSize: 12 }}>
+                        Updated: {new Date(metrics.timestamp).toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </>
+            )}
           </div>
 
           <div className="card">

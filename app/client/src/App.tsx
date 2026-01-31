@@ -1,4 +1,4 @@
-import { type ReactNode } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import {
   NavLink,
   Route,
@@ -13,6 +13,7 @@ import SettingsPage from "./pages/SettingsPage";
 import DocsPage from "./pages/DocsPage";
 import WebRTCPreviewPage from "./pages/WebRTCPreviewPage";
 import LoginPage from "./pages/LoginPage";
+import { trpcQuery } from "./api";
 
 // Simple SVG icons as components
 const CameraIcon = () => (
@@ -88,6 +89,24 @@ function RequireAuth({ children }: { children: ReactNode }) {
 function AppInner() {
   const baseUrl = import.meta.env.BASE_URL;
   const { state, logout } = useAuth();
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const runtime = await trpcQuery<{ appVersion?: string | null }>(
+          "settings.getRuntime",
+        );
+        if (!cancelled) setAppVersion(runtime?.appVersion ?? null);
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // If auth is enabled and user is not signed in, show only login route.
   if (state.enabled && state.checked && !state.user) {
@@ -131,26 +150,40 @@ function AppInner() {
           </NavLink>
         </nav>
 
-        {state.enabled && state.user ? (
-          <div
-            className="sidebarFooter"
-            style={{ marginTop: "auto", paddingTop: 16 }}
-          >
-            <div style={{ color: "var(--muted)", fontSize: 12 }}>
-              Signed in as
-            </div>
-            <div className="mono" style={{ marginTop: 4 }}>
-              {state.user.username}
-            </div>
-            <button
-              className="btn"
-              style={{ width: "100%", marginTop: 10 }}
-              onClick={() => void logout()}
+        <div
+          className="sidebarFooter"
+          style={{ marginTop: "auto", paddingTop: 16 }}
+        >
+          {state.enabled && state.user ? (
+            <>
+              <div style={{ color: "var(--muted)", fontSize: 12 }}>
+                Signed in as
+              </div>
+              <div className="mono" style={{ marginTop: 4 }}>
+                {state.user.username}
+              </div>
+              <button
+                className="btn"
+                style={{ width: "100%", marginTop: 10 }}
+                onClick={() => void logout()}
+              >
+                Sign out
+              </button>
+            </>
+          ) : null}
+
+          {appVersion ? (
+            <div
+              style={{
+                color: "var(--muted)",
+                fontSize: 12,
+                marginTop: state.enabled && state.user ? 12 : 0,
+              }}
             >
-              Sign out
-            </button>
-          </div>
-        ) : null}
+              Version: <span className="mono">v{appVersion}</span>
+            </div>
+          ) : null}
+        </div>
       </aside>
 
       <main className="main">

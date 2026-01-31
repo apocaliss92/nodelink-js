@@ -6,7 +6,9 @@ import cors from "cors";
 import express from "express";
 import http from "node:http";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { renderTrpcPanel } from "trpc-panel";
 import { WebSocket, WebSocketServer } from "ws";
@@ -20,6 +22,8 @@ import {
   getPersonalAuthTokenForUser,
   revokeAuthToken,
   verifyCredentials,
+  setAuthTokenCookie,
+  clearAuthTokenCookie,
 } from "./auth.js";
 import {
   autoStartRtspServers,
@@ -55,6 +59,10 @@ const app = express();
 const server = http.createServer(app);
 const PORT = Number(process.env.PORT) || 3000;
 const RTSP_PORT = Number(process.env.RTSP_PORT) || 8554;
+
+let lastCpuUsage = process.cpuUsage();
+let lastHrTime = process.hrtime.bigint();
+let lastElu = performance.eventLoopUtilization();
 
 // WebSocket server for real-time logs
 const wss = new WebSocketServer({ server, path: "/ws/logs" });
@@ -132,12 +140,34 @@ app.get("/api/auth/config", (req, res) => {
   res.json(getAuthConfig());
 });
 
+function isSecureRequest(req: express.Request): boolean {
+  const xfProto = req.headers["x-forwarded-proto"];
+  const proto =
+    typeof xfProto === "string"
+      ? xfProto.split(",")[0]?.trim().toLowerCase()
+      : Array.isArray(xfProto)
+        ? (xfProto[0] ?? "").trim().toLowerCase()
+        : "";
+
+  if (proto === "https") return true;
+  // TLS terminated directly on this server.
+  return (req.socket as any)?.encrypted === true;
+}
+
 app.get("/api/auth/me", (req, res) => {
   const user = getUserFromRequest(req);
   if (!user) {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
+
+  // If the client authenticates via Bearer (e.g. token stored in localStorage),
+  // also mirror it into a HttpOnly cookie so the /docs (tRPC panel) can call
+  // /api/trpc without custom headers.
+  const token = getAuthTokenFromRequest(req);
+  if (token)
+    setAuthTokenCookie(res, token, { isSecureRequest: isSecureRequest(req) });
+
   res.json({ user });
 });
 
@@ -159,12 +189,14 @@ app.post("/api/auth/login", (req, res) => {
   }
 
   const token = createPersonalAuthToken(user);
+  setAuthTokenCookie(res, token, { isSecureRequest: isSecureRequest(req) });
   res.json({ user, token });
 });
 
 app.post("/api/auth/logout", (req, res) => {
   const token = getAuthTokenFromRequest(req);
   if (token) revokeAuthToken(token);
+  clearAuthTokenCookie(res, { isSecureRequest: isSecureRequest(req) });
   res.json({ ok: true });
 });
 
@@ -178,6 +210,7 @@ app.post("/api/auth/personal-token", requireAuth, (req, res) => {
   }
 
   const token = createPersonalAuthToken(user);
+  setAuthTokenCookie(res, token, { isSecureRequest: isSecureRequest(req) });
   res.json({ token });
 });
 
@@ -239,9 +272,22 @@ app.use(
 
 // tRPC Panel UI (Docs section)
 app.use("/docs", requireAuth, (req, res) => {
+  const forwardedProto = (
+    req.headers["x-forwarded-proto"] as string | undefined
+  )
+    ?.split(",")[0]
+    ?.trim();
+  const forwardedHost = (req.headers["x-forwarded-host"] as string | undefined)
+    ?.split(",")[0]
+    ?.trim();
+  const host = forwardedHost || req.headers.host;
+  const proto = forwardedProto || "http";
+
+  const url = host ? `${proto}://${host}/api/trpc` : `/api/trpc`;
+
   res.send(
     renderTrpcPanel(appRouter, {
-      url: `http://localhost:${PORT}/api/trpc`,
+      url,
     }),
   );
 });
@@ -257,6 +303,73 @@ app.get("/health", (req, res) => {
 });
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
+// Resource usage metrics (admin only)
+app.get("/api/metrics", (req, res) => {
+  const user = getUserFromRequest(req);
+  if (!user) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  if (user.role !== "admin") {
+    res.status(403).json({ error: "Forbidden" });
+    return;
+  }
+
+  const nowCpu = process.cpuUsage();
+  const nowHr = process.hrtime.bigint();
+  const nowElu = performance.eventLoopUtilization();
+
+  const deltaUserUs = nowCpu.user - lastCpuUsage.user;
+  const deltaSystemUs = nowCpu.system - lastCpuUsage.system;
+  const deltaWallMs = Number(nowHr - lastHrTime) / 1e6;
+
+  // Percent of a single core over the sampling window.
+  const cpuPercent =
+    deltaWallMs > 0
+      ? ((deltaUserUs + deltaSystemUs) / 1000 / deltaWallMs) * 100
+      : null;
+
+  const deltaElu = performance.eventLoopUtilization(nowElu, lastElu);
+
+  lastCpuUsage = nowCpu;
+  lastHrTime = nowHr;
+  lastElu = nowElu;
+
+  const mem = process.memoryUsage();
+  const cpuCount = os.cpus()?.length ?? null;
+
+  res.json({
+    timestamp: new Date().toISOString(),
+    process: {
+      pid: process.pid,
+      nodeVersion: process.version,
+      uptimeSeconds: process.uptime(),
+      memory: {
+        rss: mem.rss,
+        heapUsed: mem.heapUsed,
+        heapTotal: mem.heapTotal,
+        external: mem.external,
+        arrayBuffers: mem.arrayBuffers,
+      },
+      cpu: {
+        percent: cpuPercent,
+        userUs: deltaUserUs,
+        systemUs: deltaSystemUs,
+        windowMs: deltaWallMs,
+      },
+      eventLoop: {
+        utilization: deltaElu.utilization,
+      },
+    },
+    system: {
+      cpuCount,
+      loadAvg: os.loadavg(),
+      totalMem: os.totalmem(),
+      freeMem: os.freemem(),
+    },
+  });
 });
 
 // Native MJPEG streaming endpoint for browser preview

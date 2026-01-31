@@ -18,6 +18,7 @@ export type AuthConfig = {
 export type AuthTokenType = "session" | "personal";
 
 const SESSION_COOKIE_NAME = "nodelink_sid";
+const AUTH_TOKEN_COOKIE_NAME = "nodelink_token";
 
 const sessions = new Map<string, AuthUser>();
 
@@ -325,9 +326,12 @@ function getUserFromToken(token: string): AuthUser | null {
 export function getAuthTokenFromRequest(
   req: http.IncomingMessage,
 ): string | null {
+  const cookies = parseCookies(req.headers.cookie);
+  const cookieToken = cookies[AUTH_TOKEN_COOKIE_NAME];
   return (
     parseBearerAuthHeader(req.headers.authorization) ??
-    getTokenFromUrlQuery(req.url)
+    getTokenFromUrlQuery(req.url) ??
+    (cookieToken && cookieToken.trim() ? cookieToken.trim() : null)
   );
 }
 
@@ -420,6 +424,7 @@ export function getUserFromRequest(req: http.IncomingMessage): AuthUser | null {
 export function setSessionCookie(
   res: { setHeader: (name: string, value: string | string[]) => void },
   sid: string,
+  opts?: { isSecureRequest?: boolean },
 ) {
   const cookie = [
     `${SESSION_COOKIE_NAME}=${encodeURIComponent(sid)}`,
@@ -428,20 +433,22 @@ export function setSessionCookie(
     "SameSite=Lax",
   ];
 
-  // In production behind TLS, allow enabling Secure via env.
-  if (
-    process.env.COOKIE_SECURE === "1" ||
-    process.env.NODELINK_COOKIE_SECURE === "1"
-  ) {
-    cookie.push("Secure");
-  }
+  const secureEnv =
+    process.env.COOKIE_SECURE ?? process.env.NODELINK_COOKIE_SECURE;
+  const isSecureRequest = opts?.isSecureRequest === true;
+  const shouldSecure =
+    secureEnv === "1" ? true : secureEnv === "0" ? false : isSecureRequest;
+  if (shouldSecure) cookie.push("Secure");
 
   res.setHeader("Set-Cookie", cookie.join("; "));
 }
 
-export function clearSessionCookie(res: {
-  setHeader: (name: string, value: string | string[]) => void;
-}) {
+export function clearSessionCookie(
+  res: {
+    setHeader: (name: string, value: string | string[]) => void;
+  },
+  opts?: { isSecureRequest?: boolean },
+) {
   const cookie = [
     `${SESSION_COOKIE_NAME}=`,
     "Path=/",
@@ -449,11 +456,55 @@ export function clearSessionCookie(res: {
     "SameSite=Lax",
     "Max-Age=0",
   ];
-  if (
-    process.env.COOKIE_SECURE === "1" ||
-    process.env.NODELINK_COOKIE_SECURE === "1"
-  ) {
-    cookie.push("Secure");
-  }
+  const secureEnv =
+    process.env.COOKIE_SECURE ?? process.env.NODELINK_COOKIE_SECURE;
+  const isSecureRequest = opts?.isSecureRequest === true;
+  const shouldSecure =
+    secureEnv === "1" ? true : secureEnv === "0" ? false : isSecureRequest;
+  if (shouldSecure) cookie.push("Secure");
+  res.setHeader("Set-Cookie", cookie.join("; "));
+}
+
+export function setAuthTokenCookie(
+  res: { setHeader: (name: string, value: string | string[]) => void },
+  token: string,
+  opts?: { isSecureRequest?: boolean },
+) {
+  const cookie = [
+    `${AUTH_TOKEN_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+  ];
+
+  const secureEnv =
+    process.env.COOKIE_SECURE ?? process.env.NODELINK_COOKIE_SECURE;
+  const isSecureRequest = opts?.isSecureRequest === true;
+  const shouldSecure =
+    secureEnv === "1" ? true : secureEnv === "0" ? false : isSecureRequest;
+  if (shouldSecure) cookie.push("Secure");
+
+  res.setHeader("Set-Cookie", cookie.join("; "));
+}
+
+export function clearAuthTokenCookie(
+  res: {
+    setHeader: (name: string, value: string | string[]) => void;
+  },
+  opts?: { isSecureRequest?: boolean },
+) {
+  const cookie = [
+    `${AUTH_TOKEN_COOKIE_NAME}=`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    "Max-Age=0",
+  ];
+  const secureEnv =
+    process.env.COOKIE_SECURE ?? process.env.NODELINK_COOKIE_SECURE;
+  const isSecureRequest = opts?.isSecureRequest === true;
+  const shouldSecure =
+    secureEnv === "1" ? true : secureEnv === "0" ? false : isSecureRequest;
+  if (shouldSecure) cookie.push("Secure");
   res.setHeader("Set-Cookie", cookie.join("; "));
 }
