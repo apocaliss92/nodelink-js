@@ -60,6 +60,167 @@ const server = http.createServer(app);
 const PORT = Number(process.env.PORT) || 3000;
 const RTSP_PORT = Number(process.env.RTSP_PORT) || 8554;
 
+type UpdateCheckResult = {
+  currentVersion: string | null;
+  latestVersion: string | null;
+  latestTag: string | null;
+  releaseUrl: string | null;
+  updateAvailable: boolean;
+  checkedAt: string;
+  error?: string;
+};
+
+let updatesCache:
+  | {
+      expiresAtMs: number;
+      etag?: string;
+      value?: UpdateCheckResult;
+    }
+  | undefined;
+
+function parseSemver(
+  v: string,
+): { major: number; minor: number; patch: number } | null {
+  const m = String(v)
+    .trim()
+    .replace(/^v/i, "")
+    .match(/^(\d+)\.(\d+)\.(\d+)/);
+  if (!m) return null;
+  return {
+    major: Number(m[1]),
+    minor: Number(m[2]),
+    patch: Number(m[3]),
+  };
+}
+
+function compareSemver(a: string, b: string): number {
+  const pa = parseSemver(a);
+  const pb = parseSemver(b);
+  if (!pa || !pb) return String(a).localeCompare(String(b));
+  if (pa.major !== pb.major) return pa.major - pb.major;
+  if (pa.minor !== pb.minor) return pa.minor - pb.minor;
+  return pa.patch - pb.patch;
+}
+
+function readLocalAppVersion(): string | null {
+  if (process.env.APP_VERSION && process.env.APP_VERSION.trim()) {
+    return process.env.APP_VERSION.trim();
+  }
+
+  const candidates = [
+    path.resolve(process.cwd(), "package.json"),
+    path.resolve(process.cwd(), "app/package.json"),
+    path.resolve(process.cwd(), "../package.json"),
+  ];
+
+  for (const p of candidates) {
+    try {
+      if (!fs.existsSync(p)) continue;
+      const raw = fs.readFileSync(p, "utf8");
+      const parsed = JSON.parse(raw) as { name?: string; version?: string };
+      if (
+        parsed?.name === "nodelink-manager" &&
+        typeof parsed.version === "string"
+      ) {
+        return parsed.version;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  for (const p of candidates) {
+    try {
+      if (!fs.existsSync(p)) continue;
+      const raw = fs.readFileSync(p, "utf8");
+      const parsed = JSON.parse(raw) as { version?: string };
+      if (typeof parsed.version === "string") return parsed.version;
+    } catch {
+      // ignore
+    }
+  }
+
+  return null;
+}
+
+function inferGithubRepoSlug(): string | null {
+  const explicit =
+    process.env.GITHUB_REPO ||
+    process.env.UPDATE_REPO ||
+    process.env.GITHUB_REPOSITORY;
+  if (explicit && explicit.trim()) return explicit.trim();
+
+  const candidates = [
+    path.resolve(process.cwd(), "package.json"),
+    path.resolve(process.cwd(), "../package.json"),
+  ];
+
+  for (const p of candidates) {
+    try {
+      if (!fs.existsSync(p)) continue;
+      const raw = fs.readFileSync(p, "utf8");
+      const parsed = JSON.parse(raw) as {
+        repository?: { url?: string } | string;
+      };
+      const repoUrl =
+        typeof parsed.repository === "string"
+          ? parsed.repository
+          : parsed.repository?.url;
+      if (!repoUrl) continue;
+
+      // Examples:
+      // - git+https://github.com/owner/repo.git
+      // - https://github.com/owner/repo
+      // - git@github.com:owner/repo.git
+      const cleaned = String(repoUrl)
+        .replace(/^git\+/, "")
+        .replace(/\.git$/i, "");
+
+      const httpsMatch = cleaned.match(/github\.com\/(.+\/[^/]+)$/i);
+      if (httpsMatch?.[1]) return httpsMatch[1];
+
+      const sshMatch = cleaned.match(/github\.com[:/](.+\/[^/]+)$/i);
+      if (sshMatch?.[1]) return sshMatch[1];
+    } catch {
+      // ignore
+    }
+  }
+
+  return null;
+}
+
+async function fetchLatestGithubRelease(
+  repo: string,
+  etag?: string,
+): Promise<{
+  status: number;
+  etag?: string;
+  json?: any;
+}> {
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "nodelink-manager",
+  };
+
+  if (etag) headers["If-None-Match"] = etag;
+
+  const token = process.env.GITHUB_API_TOKEN || process.env.GITHUB_TOKEN;
+  if (token && token.trim()) headers.Authorization = `Bearer ${token.trim()}`;
+
+  const res = await fetch(
+    `https://api.github.com/repos/${repo}/releases/latest`,
+    {
+      headers,
+    },
+  );
+
+  const newEtag = res.headers.get("etag") ?? undefined;
+  if (res.status === 304) return { status: 304, etag: newEtag };
+  if (!res.ok) return { status: res.status, etag: newEtag };
+  const json = await res.json();
+  return { status: res.status, etag: newEtag, json };
+}
+
 let lastCpuUsage = process.cpuUsage();
 let lastHrTime = process.hrtime.bigint();
 let lastElu = performance.eventLoopUtilization();
@@ -298,6 +459,119 @@ app.get("/health", (req, res) => {
 });
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
+// Update check (GitHub Releases)
+app.get("/api/updates", async (req, res) => {
+  const force = String(req.query.force ?? "").trim() === "1";
+  const ttlMs = Number(process.env.UPDATE_CHECK_TTL_MS) || 6 * 60 * 60 * 1000;
+  const nowMs = Date.now();
+
+  if (!force && updatesCache?.value && updatesCache.expiresAtMs > nowMs) {
+    res.json(updatesCache.value);
+    return;
+  }
+
+  const currentVersion = readLocalAppVersion();
+  const repo = inferGithubRepoSlug();
+  if (!repo) {
+    const result: UpdateCheckResult = {
+      currentVersion,
+      latestVersion: null,
+      latestTag: null,
+      releaseUrl: null,
+      updateAvailable: false,
+      checkedAt: new Date().toISOString(),
+      error: "GitHub repo not configured (set UPDATE_REPO=owner/repo)",
+    };
+    updatesCache = {
+      value: result,
+      expiresAtMs: nowMs + Math.min(ttlMs, 60_000),
+    };
+    res.json(result);
+    return;
+  }
+
+  try {
+    const r = await fetchLatestGithubRelease(repo, updatesCache?.etag);
+
+    if (r.status === 304 && updatesCache?.value) {
+      updatesCache = {
+        ...updatesCache,
+        etag: r.etag ?? updatesCache.etag,
+        expiresAtMs: nowMs + ttlMs,
+      };
+      res.json(updatesCache.value);
+      return;
+    }
+
+    if (r.status < 200 || r.status >= 300 || !r.json) {
+      const result: UpdateCheckResult = {
+        currentVersion,
+        latestVersion: updatesCache?.value?.latestVersion ?? null,
+        latestTag: updatesCache?.value?.latestTag ?? null,
+        releaseUrl: updatesCache?.value?.releaseUrl ?? null,
+        updateAvailable: updatesCache?.value?.updateAvailable ?? false,
+        checkedAt: new Date().toISOString(),
+        error: `GitHub API error (HTTP ${r.status})`,
+      };
+
+      updatesCache = {
+        value: result,
+        etag: r.etag ?? updatesCache?.etag,
+        expiresAtMs: nowMs + Math.min(ttlMs, 60_000),
+      };
+      res.json(result);
+      return;
+    }
+
+    const latestTag =
+      typeof r.json.tag_name === "string" ? r.json.tag_name : null;
+    const latestVersion = latestTag
+      ? latestTag.replace(/^v/i, "")
+      : typeof r.json.name === "string"
+        ? String(r.json.name).trim().replace(/^v/i, "")
+        : null;
+    const releaseUrl =
+      typeof r.json.html_url === "string" ? r.json.html_url : null;
+
+    const updateAvailable =
+      !!(currentVersion && latestVersion) &&
+      compareSemver(latestVersion, currentVersion) > 0;
+
+    const result: UpdateCheckResult = {
+      currentVersion,
+      latestVersion,
+      latestTag,
+      releaseUrl,
+      updateAvailable,
+      checkedAt: new Date().toISOString(),
+    };
+
+    updatesCache = {
+      value: result,
+      etag: r.etag,
+      expiresAtMs: nowMs + ttlMs,
+    };
+
+    res.json(result);
+  } catch (e) {
+    const result: UpdateCheckResult = {
+      currentVersion,
+      latestVersion: updatesCache?.value?.latestVersion ?? null,
+      latestTag: updatesCache?.value?.latestTag ?? null,
+      releaseUrl: updatesCache?.value?.releaseUrl ?? null,
+      updateAvailable: updatesCache?.value?.updateAvailable ?? false,
+      checkedAt: new Date().toISOString(),
+      error: String(e),
+    };
+    updatesCache = {
+      value: result,
+      etag: updatesCache?.etag,
+      expiresAtMs: nowMs + Math.min(ttlMs, 60_000),
+    };
+    res.json(result);
+  }
 });
 
 // Resource usage metrics (admin only)

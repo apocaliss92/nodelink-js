@@ -44,3 +44,45 @@ export function trpcQuery<T>(path: string, input?: unknown): Promise<T> {
 export function trpcMutation<T>(path: string, input?: unknown): Promise<T> {
   return trpcCall<T>(path, "POST", input);
 }
+
+async function apiGetJson<T>(path: string): Promise<T> {
+  const url = new URL(path, window.location.origin);
+  const token = getStoredAuthToken();
+
+  const res = await fetch(url.toString(), {
+    method: "GET",
+    credentials: "include",
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+
+  if (res.status === 401) {
+    window.dispatchEvent(new CustomEvent("nodelink:unauthorized"));
+    throw new Error("UNAUTHORIZED");
+  }
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`HTTP ${res.status}${text ? `: ${text}` : ""}`);
+  }
+
+  return (await res.json()) as T;
+}
+
+export type UpdateInfo = {
+  currentVersion: string | null;
+  latestVersion: string | null;
+  latestTag: string | null;
+  releaseUrl: string | null;
+  updateAvailable: boolean;
+  checkedAt: string;
+  error?: string;
+};
+
+export function fetchUpdates(opts?: { force?: boolean }): Promise<UpdateInfo> {
+  const force = opts?.force === true;
+  return apiGetJson<UpdateInfo>(
+    force ? "/api/updates?force=1" : "/api/updates",
+  );
+}

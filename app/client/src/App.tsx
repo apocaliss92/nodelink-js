@@ -13,7 +13,7 @@ import SettingsPage from "./pages/SettingsPage";
 import DocsPage from "./pages/DocsPage";
 import WebRTCPreviewPage from "./pages/WebRTCPreviewPage";
 import LoginPage from "./pages/LoginPage";
-import { trpcQuery } from "./api";
+import { fetchUpdates, trpcQuery, type UpdateInfo } from "./api";
 
 // Simple SVG icons as components
 const CameraIcon = () => (
@@ -90,6 +90,7 @@ function AppInner() {
   const baseUrl = import.meta.env.BASE_URL;
   const { state, logout } = useAuth();
   const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -99,6 +100,13 @@ function AppInner() {
           "settings.getRuntime",
         );
         if (!cancelled) setAppVersion(runtime?.appVersion ?? null);
+      } catch {
+        // ignore
+      }
+
+      try {
+        const info = await fetchUpdates();
+        if (!cancelled) setUpdateInfo(info);
       } catch {
         // ignore
       }
@@ -183,10 +191,63 @@ function AppInner() {
               Version: <span className="mono">v{appVersion}</span>
             </div>
           ) : null}
+
+          {appVersion && updateInfo ? (
+            <div style={{ color: "var(--muted)", fontSize: 12, marginTop: 6 }}>
+              {updateInfo.updateAvailable && updateInfo.latestVersion ? (
+                <>
+                  Update:{" "}
+                  <a
+                    href={updateInfo.releaseUrl ?? "#"}
+                    target={updateInfo.releaseUrl ? "_blank" : undefined}
+                    rel={updateInfo.releaseUrl ? "noreferrer" : undefined}
+                    style={{ textDecoration: "underline" }}
+                  >
+                    v{updateInfo.latestVersion} available
+                  </a>
+                </>
+              ) : updateInfo.error ? (
+                <>Update: unavailable</>
+              ) : (
+                <>Update: up to date</>
+              )}
+            </div>
+          ) : null}
         </div>
       </aside>
 
       <main className="main">
+        {updateInfo?.updateAvailable && updateInfo.latestVersion ? (
+          <div
+            className="card"
+            style={{
+              borderColor: "rgba(245, 158, 11, 0.55)",
+              background: "rgba(245, 158, 11, 0.08)",
+              marginBottom: 12,
+            }}
+          >
+            <div style={{ fontWeight: 800 }}>Update available</div>
+            <div style={{ color: "var(--muted)", fontSize: 12, marginTop: 6 }}>
+              Current: <span className="mono">v{appVersion ?? "?"}</span> ·
+              Latest: <span className="mono">v{updateInfo.latestVersion}</span>
+              {updateInfo.releaseUrl ? (
+                <>
+                  {" "}
+                  ·{" "}
+                  <a
+                    href={updateInfo.releaseUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ textDecoration: "underline" }}
+                  >
+                    View release
+                  </a>
+                </>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
         {state.enabled && state.user ? (
           <button
             className="mobileAvatar"

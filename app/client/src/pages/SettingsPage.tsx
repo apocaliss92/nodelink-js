@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { trpcMutation, trpcQuery } from "../api";
+import { fetchUpdates, trpcMutation, trpcQuery, type UpdateInfo } from "../api";
 import { useAuth } from "../auth";
 import { getStoredAuthToken, setStoredAuthToken } from "../authToken";
 
@@ -79,6 +79,8 @@ export default function SettingsPage() {
   const [metricsError, setMetricsError] = useState<string | null>(null);
   const [metricsLoading, setMetricsLoading] = useState(false);
   const [metricsAutoRefresh, setMetricsAutoRefresh] = useState(true);
+
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
 
   const dirty = useMemo(() => settings !== null, [settings]);
 
@@ -172,6 +174,21 @@ export default function SettingsPage() {
       }
     })();
   }, [authState.user?.role]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const info = await fetchUpdates();
+        if (!cancelled) setUpdateInfo(info);
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [authState.enabled, authState.user?.username]);
 
   const isAuthEnabled = authState.enabled === true;
 
@@ -412,6 +429,29 @@ export default function SettingsPage() {
                 readOnly
                 value={runtime?.appVersion ? String(runtime.appVersion) : ""}
               />
+              <div
+                style={{ color: "var(--muted)", fontSize: 12, marginTop: 6 }}
+              >
+                {updateInfo?.updateAvailable && updateInfo.latestVersion ? (
+                  <>
+                    Update available:{" "}
+                    <a
+                      href={updateInfo.releaseUrl ?? "#"}
+                      target={updateInfo.releaseUrl ? "_blank" : undefined}
+                      rel={updateInfo.releaseUrl ? "noreferrer" : undefined}
+                      style={{ textDecoration: "underline" }}
+                    >
+                      v{updateInfo.latestVersion}
+                    </a>
+                  </>
+                ) : updateInfo?.error ? (
+                  <>Update check unavailable</>
+                ) : updateInfo ? (
+                  <>Up to date</>
+                ) : (
+                  <>Checking updates…</>
+                )}
+              </div>
             </div>
 
             <div style={{ marginTop: 12 }}>
