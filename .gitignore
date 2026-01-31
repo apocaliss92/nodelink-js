@@ -5,6 +5,7 @@ _refs
 .DS_Store
 .env
 .nx
+log.txt
 
 # Local integration test config (IPs / credentials)
 test/devices.config.json
