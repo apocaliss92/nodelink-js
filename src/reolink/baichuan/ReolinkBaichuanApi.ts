@@ -2149,7 +2149,11 @@ export class ReolinkBaichuanApi {
     const threshold = this.rebootAfterDisconnectionsPerMinute;
     if (threshold <= 0) return;
 
-    const info = this.client.getLastDisconnectInfo?.();
+    // Check if client is available (may not be during autodetect or early close)
+    const entry = this.socketPool.get("general");
+    if (!entry) return;
+
+    const info = entry.client.getLastDisconnectInfo?.();
     if (!info?.voluntary) return;
 
     const now = Date.now();
@@ -2216,7 +2220,11 @@ export class ReolinkBaichuanApi {
     const threshold = this.rebootAfterConsecutiveEconnreset;
     if (threshold <= 0) return;
 
-    const info = this.client.getLastDisconnectInfo?.();
+    // Check if client is available (may not be during autodetect or early close)
+    const entry = this.socketPool.get("general");
+    if (!entry) return;
+
+    const info = entry.client.getLastDisconnectInfo?.();
     const isEconnreset = info?.errorCode === "ECONNRESET";
 
     if (!isEconnreset) {

@@ -1295,13 +1295,19 @@ export class BaichuanClient extends EventEmitter<{
       this.udpSocket = undefined;
     }
     if (!this.opts.uid) {
-      throw new Error(
-        "Baichuan UDP requested but `options.uid` is not set (required for BCUDP discovery).",
-      );
+      // local-direct can work without UID if we have a direct host
+      const isLocalDirect = this.opts.udpDiscoveryMethod === "local-direct";
+      const hasDirectHost = !!this.opts.host?.trim();
+      if (!isLocalDirect || !hasDirectHost) {
+        throw new Error(
+          "Baichuan UDP requested but `options.uid` is not set (required for BCUDP discovery unless using local-direct with a direct host).",
+        );
+      }
     }
     const sock = new BcUdpStream({
       mode: "uid",
-      uid: this.opts.uid,
+      // UID may be empty for local-direct with directHost
+      uid: this.opts.uid ?? "",
       // If the camera IP/hostname is known, allow local-direct to try unicast before broadcast.
       ...(this.opts.host?.trim() ? { directHost: this.opts.host.trim() } : {}),
       ...(this.opts.udpDiscoveryMethod
