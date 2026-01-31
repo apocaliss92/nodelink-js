@@ -1,4 +1,4 @@
-import { router, publicProcedure } from "../trpc.js";
+import { adminProcedure, router, publicProcedure } from "../trpc.js";
 import { z } from "zod";
 import {
   getSettings,
@@ -8,6 +8,10 @@ import {
   addRtspCredential,
   updateRtspCredential,
   deleteRtspCredential,
+  addDashboardUser,
+  deleteDashboardUser,
+  listDashboardUsers,
+  setDashboardUserPassword,
 } from "../settings-store.js";
 import { reloadLogger } from "../logger.js";
 import { updateRtspUrls } from "../rtsp-manager.js";
@@ -19,7 +23,23 @@ export const settingsRouter = router({
   get: publicProcedure
     .meta({ description: "Get current application settings" })
     .query(() => {
-      return getSettings();
+      const settings = getSettings();
+
+      return {
+        ...settings,
+        rtspCredentials: settings.rtspCredentials.map((c) => ({
+          ...c,
+          password: "********",
+        })),
+        dashboardUsers: settings.dashboardUsers.map(
+          ({ username, role, createdAt, updatedAt }) => ({
+            username,
+            role,
+            createdAt,
+            updatedAt,
+          }),
+        ),
+      };
     }),
 
   // Runtime info (read-only)
@@ -169,6 +189,47 @@ export const settingsRouter = router({
       if (!result) {
         throw new Error(`Credential not found: ${input.id}`);
       }
+      return { success: true };
+    }),
+
+  // --- Dashboard Users Management (admin only) ---
+
+  listDashboardUsers: adminProcedure
+    .meta({ description: "List dashboard users (admin only)" })
+    .query(() => {
+      return listDashboardUsers();
+    }),
+
+  addDashboardUser: adminProcedure
+    .meta({ description: "Add a dashboard user (admin only)" })
+    .input(
+      z.object({
+        username: z.string().min(1),
+        password: z.string().min(1),
+        role: z.enum(["admin", "user"]).optional(),
+      }),
+    )
+    .mutation(({ input }) => {
+      return addDashboardUser(input);
+    }),
+
+  deleteDashboardUser: adminProcedure
+    .meta({ description: "Delete a dashboard user (admin only)" })
+    .input(z.object({ username: z.string().min(1) }))
+    .mutation(({ input }) => {
+      const ok = deleteDashboardUser(input.username);
+      if (!ok) throw new Error(`User not found: ${input.username}`);
+      return { success: true };
+    }),
+
+  setDashboardUserPassword: adminProcedure
+    .meta({ description: "Set dashboard user password (admin only)" })
+    .input(
+      z.object({ username: z.string().min(1), password: z.string().min(1) }),
+    )
+    .mutation(({ input }) => {
+      const ok = setDashboardUserPassword(input);
+      if (!ok) throw new Error(`User not found: ${input.username}`);
       return { success: true };
     }),
 });

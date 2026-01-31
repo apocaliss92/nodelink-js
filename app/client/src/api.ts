@@ -12,9 +12,15 @@ export async function trpcCall<T>(
 
   const res = await fetch(url.toString(), {
     method,
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: method === "POST" ? JSON.stringify(input ?? {}) : undefined,
   });
+
+  if (res.status === 401) {
+    window.dispatchEvent(new CustomEvent("nodelink:unauthorized"));
+    throw new Error("UNAUTHORIZED");
+  }
 
   const data = await res.json();
   if (data?.error) {

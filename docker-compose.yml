@@ -33,6 +33,9 @@ services:
 
     environment:
       - DATA_PATH=/data
+      # Authentication (optional)
+      # - AUTH_ENABLED=1
+      # - ADMIN_PASSWORD=change-me
       # Override ports if needed
       # - PORT=3000
       # - RTSP_PORT=8554

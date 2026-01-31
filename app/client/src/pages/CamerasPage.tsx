@@ -1001,13 +1001,15 @@ export default function CamerasPage() {
     void loadStreams();
   }, [cameras]);
 
-  async function discoverStreams(
+  function delay(ms: number) {
+    return new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+  }
+
+  async function discoverStreamsOnce(
     id: string,
     cameraSnapshot?: CameraInfo[] | null,
-  ) {
-    if (streamsLoadingByCamera[id]) return;
-    const attempts = streamsDiscoveryAttemptsByCamera[id] ?? 0;
-    if (attempts >= MAX_STREAM_DISCOVERY_ATTEMPTS) return;
+  ): Promise<AvailableStream[] | null> {
+    if (streamsLoadingByCamera[id]) return null;
 
     setStreamsLoadingByCamera((m) => ({ ...m, [id]: true }));
     try {
@@ -1022,16 +1024,10 @@ export default function CamerasPage() {
 
       const discovered = res.nativeStreams ?? [];
       setStreamsByCamera((prev) => ({ ...prev, [id]: discovered }));
-      setStreamsDiscoveryAttemptsByCamera((m) => ({
-        ...m,
-        [id]:
-          discovered.length > 0 ? MAX_STREAM_DISCOVERY_ATTEMPTS : attempts + 1,
-      }));
+      return discovered;
     } catch {
-      setStreamsDiscoveryAttemptsByCamera((m) => ({
-        ...m,
-        [id]: attempts + 1,
-      }));
+      setStreamsByCamera((prev) => ({ ...prev, [id]: [] }));
+      return [];
     } finally {
       setStreamsLoadingByCamera((m) => ({ ...m, [id]: false }));
     }
@@ -1046,7 +1042,12 @@ export default function CamerasPage() {
         if ((streams?.length ?? 0) > 0) continue;
         if (attempts >= MAX_STREAM_DISCOVERY_ATTEMPTS) continue;
         if (streamsLoadingByCamera[cam.id]) continue;
-        void discoverStreams(cam.id);
+
+        setStreamsDiscoveryAttemptsByCamera((m) => ({
+          ...m,
+          [cam.id]: attempts + 1,
+        }));
+        void discoverStreamsOnce(cam.id);
       }
     }, STREAM_DISCOVERY_RETRY_MS);
 
@@ -1058,7 +1059,7 @@ export default function CamerasPage() {
     streamsDiscoveryAttemptsByCamera,
   ]);
 
-  async function connect(id: string) {
+  async function connect(id: string, action?: () => Promise<void>) {
     setConnectingByCamera((m) => ({ ...m, [id]: true }));
     setStreamsDiscoveryAttemptsByCamera((m) => ({ ...m, [id]: 0 }));
     setStreamsByCamera((prev) => {
@@ -1068,9 +1069,35 @@ export default function CamerasPage() {
     });
 
     try {
-      await trpcMutation("cameras.connect", { id });
-      const list = await refresh(true);
-      await discoverStreams(id, list);
+      if (action) {
+        await action();
+      } else {
+        await trpcMutation("cameras.connect", { id });
+      }
+
+      let cameraSnapshot = await refresh(true);
+      for (
+        let attempt = 0;
+        attempt < MAX_STREAM_DISCOVERY_ATTEMPTS;
+        attempt++
+      ) {
+        setStreamsDiscoveryAttemptsByCamera((m) => ({
+          ...m,
+          [id]: attempt + 1,
+        }));
+
+        const streams = await discoverStreamsOnce(id, cameraSnapshot);
+        if ((streams?.length ?? 0) > 0) {
+          setStreamsDiscoveryAttemptsByCamera((m) => ({
+            ...m,
+            [id]: MAX_STREAM_DISCOVERY_ATTEMPTS,
+          }));
+          break;
+        }
+
+        await delay(STREAM_DISCOVERY_RETRY_MS);
+        cameraSnapshot = await refresh(true);
+      }
     } finally {
       setConnectingByCamera((m) => ({ ...m, [id]: false }));
     }
@@ -1082,12 +1109,13 @@ export default function CamerasPage() {
   }
 
   async function setCameraDebug(id: string, enabled: boolean) {
-    await trpcMutation("cameras.setDebug", {
-      id,
-      enabled,
-      reconnect: true,
-    });
-    await refresh();
+    await connect(id, () =>
+      trpcMutation("cameras.setDebug", {
+        id,
+        enabled,
+        reconnect: true,
+      }),
+    );
   }
 
   async function setAutoStartForCamera(camera: CameraInfo, autoStart: boolean) {
@@ -1489,7 +1517,7 @@ export default function CamerasPage() {
                   ) : null}
                 </div>
                 <div className="row">
-                  {c.status !== "connected" ? (
+                  {connectingByCamera[c.id] || c.status !== "connected" ? (
                     <button
                       className="btn"
                       disabled={Boolean(connectingByCamera[c.id])}
@@ -1505,13 +1533,18 @@ export default function CamerasPage() {
                       {connectingByCamera[c.id] ? "Connecting…" : "Connect"}
                     </button>
                   ) : (
-                    <button className="btn" onClick={() => disconnect(c.id)}>
+                    <button
+                      className="btn"
+                      disabled={Boolean(connectingByCamera[c.id])}
+                      onClick={() => void disconnect(c.id)}
+                    >
                       Disconnect
                     </button>
                   )}
 
                   <button
                     className={`btn autostart ${c.debugLogs ? "on" : "off"}`}
+                    disabled={Boolean(connectingByCamera[c.id])}
                     title={
                       c.debugLogs
                         ? "Disable debug + reconnect"
@@ -1530,6 +1563,7 @@ export default function CamerasPage() {
                         : "off"
                     }`}
                     disabled={
+                      Boolean(connectingByCamera[c.id]) ||
                       c.status !== "connected" ||
                       Boolean(savingAutoStart[c.id]) ||
                       Boolean(streamsLoadingByCamera[c.id])
@@ -1553,6 +1587,7 @@ export default function CamerasPage() {
                   </button>
                   <button
                     className="btn danger"
+                    disabled={Boolean(connectingByCamera[c.id])}
                     onClick={() => deleteCamera(c.id)}
                   >
                     Delete
@@ -1561,12 +1596,9 @@ export default function CamerasPage() {
               </div>
 
               <div style={{ marginTop: 12 }}>
-                <div className="label">Available streams</div>
-                {c.status !== "connected" ? (
-                  <div style={{ color: "var(--muted)", fontSize: 13 }}>
-                    Connect the camera to discover streams.
-                  </div>
-                ) : streamsLoadingByCamera[c.id] ? (
+                {c.status !== "connected" ? null : streamsLoadingByCamera[
+                    c.id
+                  ] ? (
                   <div
                     className="row"
                     style={{ color: "var(--muted)", fontSize: 13 }}

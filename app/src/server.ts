@@ -1,3 +1,6 @@
+// Load local environment variables from app/.env (if present)
+import "dotenv/config";
+
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import cors from "cors";
 import express from "express";
@@ -9,6 +12,16 @@ import { renderTrpcPanel } from "trpc-panel";
 import { WebSocket, WebSocketServer } from "ws";
 import { appLogger, logEmitter, LogEntry, getRecentLogs } from "./logger.js";
 import { appRouter } from "./router.js";
+import {
+  clearSessionCookie,
+  createSession,
+  destroySession,
+  getAuthConfig,
+  getSessionFromRequest,
+  getUserFromRequest,
+  setSessionCookie,
+  verifyCredentials,
+} from "./auth.js";
 import {
   autoStartRtspServers,
   stopAllRtspServers,
@@ -47,7 +60,15 @@ const RTSP_PORT = Number(process.env.RTSP_PORT) || 8554;
 // WebSocket server for real-time logs
 const wss = new WebSocketServer({ server, path: "/ws/logs" });
 
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, req) => {
+  if (getAuthConfig().enabled) {
+    const user = getUserFromRequest(req);
+    if (!user) {
+      ws.close(1008, "Unauthorized");
+      return;
+    }
+  }
+
   appLogger.debug("WebSocket client connected", { source: "server" });
 
   // Send historical logs on connect
@@ -86,6 +107,73 @@ wss.on("connection", (ws) => {
 app.use(cors());
 app.use(express.json());
 
+const requireAuth: express.RequestHandler = (req, res, next) => {
+  if (!getAuthConfig().enabled) return next();
+
+  // Allow health endpoints to remain unauthenticated for container health checks
+  if (req.path === "/health") return next();
+
+  const user = getUserFromRequest(req);
+  if (!user) {
+    // Accept HTTP Basic if provided, but do NOT trigger browser credential prompts.
+    // For docs (loaded via iframe) redirect the user to the UI login screen.
+    if (req.baseUrl === "/docs") {
+      res.redirect(302, "/login");
+      return;
+    }
+
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  return next();
+};
+
+// Auth endpoints (session cookie based) - must be before /api auth guard
+app.get("/api/auth/config", (req, res) => {
+  res.json(getAuthConfig());
+});
+
+app.get("/api/auth/me", (req, res) => {
+  const user = getUserFromRequest(req);
+  if (!user) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  res.json({ user });
+});
+
+app.post("/api/auth/login", (req, res) => {
+  const { username, password } = (req.body ?? {}) as {
+    username?: string;
+    password?: string;
+  };
+
+  if (!username || !password) {
+    res.status(400).json({ error: "username and password required" });
+    return;
+  }
+
+  const user = verifyCredentials({ username, password });
+  if (!user) {
+    res.status(401).json({ error: "Invalid credentials" });
+    return;
+  }
+
+  const sid = createSession(user);
+  setSessionCookie(res, sid);
+  res.json({ user });
+});
+
+app.post("/api/auth/logout", (req, res) => {
+  const { sid } = getSessionFromRequest(req);
+  if (sid) destroySession(sid);
+  clearSessionCookie(res);
+  res.json({ ok: true });
+});
+
+// Protect all other /api routes
+app.use("/api", requireAuth);
+
 // Serve static files for the dashboard
 // Prefer built frontend assets (dist/public) if present.
 // - Dev: you can use Vite (`npm run dev`) which serves the React UI separately.
@@ -114,11 +202,16 @@ app.use(
   "/api/trpc",
   createExpressMiddleware({
     router: appRouter,
+    createContext: ({ req, res }) => ({
+      req,
+      res,
+      authUser: getUserFromRequest(req),
+    }),
   }),
 );
 
 // tRPC Panel UI (Docs section)
-app.use("/docs", (req, res) => {
+app.use("/docs", requireAuth, (req, res) => {
   res.send(
     renderTrpcPanel(appRouter, {
       url: `http://localhost:${PORT}/api/trpc`,
@@ -514,7 +607,7 @@ server.listen(PORT, async () => {
     source: "mjpeg",
   });
   appLogger.info(
-    `Access streams via: http://<host>:${PORT}/api/mpeg/<camera-name>/<profile> (legacy: /api/stream/...)`,
+    `Access streams via: http://<host>:${PORT}/api/mpeg/<camera-name>/<profile>`,
     { source: "mjpeg" },
   );
   appLogger.info(`MJPEG streams are started on-demand when clients connect`, {

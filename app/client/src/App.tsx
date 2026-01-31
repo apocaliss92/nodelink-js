@@ -1,9 +1,18 @@
-import { NavLink, Route, Routes, Navigate } from "react-router-dom";
+import { type ReactNode } from "react";
+import {
+  NavLink,
+  Route,
+  Routes,
+  Navigate,
+  useLocation,
+} from "react-router-dom";
+import { AuthProvider, useAuth } from "./auth";
 import CamerasPage from "./pages/CamerasPage";
 import LogsPage from "./pages/LogsPage";
 import SettingsPage from "./pages/SettingsPage";
 import DocsPage from "./pages/DocsPage";
 import WebRTCPreviewPage from "./pages/WebRTCPreviewPage";
+import LoginPage from "./pages/LoginPage";
 
 // Simple SVG icons as components
 const CameraIcon = () => (
@@ -65,8 +74,32 @@ const DocsIcon = () => (
   </svg>
 );
 
-export default function App() {
+function RequireAuth({ children }: { children: ReactNode }) {
+  const { state } = useAuth();
+  const location = useLocation();
+  if (!state.enabled) return <>{children}</>;
+  if (!state.checked) return <div className="card">Loading…</div>;
+  if (!state.user) {
+    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  }
+  return <>{children}</>;
+}
+
+function AppInner() {
   const baseUrl = import.meta.env.BASE_URL;
+  const { state, logout } = useAuth();
+
+  // If auth is enabled and user is not signed in, show only login route.
+  if (state.enabled && state.checked && !state.user) {
+    return (
+      <main className="main" style={{ padding: 20 }}>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="*" element={<Navigate to="/login" replace />} />
+        </Routes>
+      </main>
+    );
+  }
 
   return (
     <div className="layout">
@@ -97,21 +130,80 @@ export default function App() {
             <span>Docs</span>
           </NavLink>
         </nav>
+
+        {state.enabled && state.user ? (
+          <div style={{ marginTop: "auto", paddingTop: 16 }}>
+            <div style={{ color: "var(--muted)", fontSize: 12 }}>
+              Signed in as
+            </div>
+            <div className="mono" style={{ marginTop: 4 }}>
+              {state.user.username}
+            </div>
+            <button
+              className="btn"
+              style={{ width: "100%", marginTop: 10 }}
+              onClick={() => void logout()}
+            >
+              Sign out
+            </button>
+          </div>
+        ) : null}
       </aside>
 
       <main className="main">
         <Routes>
           <Route
             path="/preview/webrtc/:cameraName/:profile"
-            element={<WebRTCPreviewPage />}
+            element={
+              <RequireAuth>
+                <WebRTCPreviewPage />
+              </RequireAuth>
+            }
           />
-          <Route path="/" element={<CamerasPage />} />
-          <Route path="/logs" element={<LogsPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/docs" element={<DocsPage />} />
+          <Route
+            path="/"
+            element={
+              <RequireAuth>
+                <CamerasPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/logs"
+            element={
+              <RequireAuth>
+                <LogsPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/settings"
+            element={
+              <RequireAuth>
+                <SettingsPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/docs"
+            element={
+              <RequireAuth>
+                <DocsPage />
+              </RequireAuth>
+            }
+          />
+          <Route path="/login" element={<LoginPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppInner />
+    </AuthProvider>
   );
 }

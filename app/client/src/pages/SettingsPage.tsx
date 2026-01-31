@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { trpcMutation, trpcQuery } from "../api";
+import { useAuth } from "../auth";
 
 type Settings = {
   logLevel: "error" | "warn" | "info" | "debug";
@@ -21,7 +22,16 @@ type RtspCredential = {
   description?: string;
 };
 
+type DashboardUser = {
+  username: string;
+  role: "admin" | "user";
+  createdAt?: number;
+  updatedAt?: number;
+};
+
 export default function SettingsPage() {
+  const { state: authState } = useAuth();
+
   const [settings, setSettings] = useState<Settings | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -35,6 +45,15 @@ export default function SettingsPage() {
   }>({ username: "", password: "", description: "" });
   const [savingCred, setSavingCred] = useState(false);
   const [addCredOpen, setAddCredOpen] = useState(false);
+
+  const [dashUsers, setDashUsers] = useState<DashboardUser[]>([]);
+  const [savingDashUsers, setSavingDashUsers] = useState(false);
+  const [addDashUserOpen, setAddDashUserOpen] = useState(false);
+  const [dashUserDraft, setDashUserDraft] = useState<{
+    username: string;
+    password: string;
+    role: "admin" | "user";
+  }>({ username: "", password: "", role: "user" });
 
   const dirty = useMemo(() => settings !== null, [settings]);
 
@@ -51,15 +70,33 @@ export default function SettingsPage() {
           "settings.listCredentials",
         );
         setCreds(list);
+
+        if (authState.user?.role === "admin") {
+          try {
+            const u = await trpcQuery<DashboardUser[]>(
+              "settings.listDashboardUsers",
+            );
+            setDashUsers(u);
+          } catch {
+            // Ignore if server refuses (not admin) or not available
+          }
+        }
       } catch (e) {
         setError(String(e));
       }
     })();
-  }, []);
+  }, [authState.user?.role]);
 
   async function refreshCreds() {
     const list = await trpcQuery<RtspCredential[]>("settings.listCredentials");
     setCreds(list);
+  }
+
+  async function refreshDashboardUsers() {
+    const list = await trpcQuery<DashboardUser[]>(
+      "settings.listDashboardUsers",
+    );
+    setDashUsers(list);
   }
 
   async function addCredential() {
@@ -91,6 +128,55 @@ export default function SettingsPage() {
       setError(String(e));
     } finally {
       setSavingCred(false);
+    }
+  }
+
+  async function addDashboardUser() {
+    if (!dashUserDraft.username || !dashUserDraft.password) return;
+    setSavingDashUsers(true);
+    try {
+      await trpcMutation("settings.addDashboardUser", {
+        username: dashUserDraft.username,
+        password: dashUserDraft.password,
+        role: dashUserDraft.role,
+      });
+      setDashUserDraft({ username: "", password: "", role: "user" });
+      await refreshDashboardUsers();
+      setAddDashUserOpen(false);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSavingDashUsers(false);
+    }
+  }
+
+  async function deleteDashboardUser(username: string) {
+    if (!confirm(`Delete dashboard user '${username}'?`)) return;
+    setSavingDashUsers(true);
+    try {
+      await trpcMutation("settings.deleteDashboardUser", { username });
+      await refreshDashboardUsers();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSavingDashUsers(false);
+    }
+  }
+
+  async function resetDashboardUserPassword(username: string) {
+    const newPassword = prompt(`New password for '${username}':`);
+    if (!newPassword) return;
+    setSavingDashUsers(true);
+    try {
+      await trpcMutation("settings.setDashboardUserPassword", {
+        username,
+        password: newPassword,
+      });
+      await refreshDashboardUsers();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSavingDashUsers(false);
     }
   }
 
@@ -288,6 +374,101 @@ export default function SettingsPage() {
                 </table>
               )}
             </div>
+
+            {authState.user?.role === "admin" ? (
+              <div style={{ marginTop: 18 }}>
+                <div className="label">Dashboard users</div>
+                <div style={{ color: "var(--muted)", fontSize: 12 }}>
+                  Users that can access this web dashboard.
+                </div>
+
+                <div
+                  className="row"
+                  style={{ marginTop: 10, justifyContent: "flex-end" }}
+                >
+                  <button
+                    className="btn"
+                    disabled={savingDashUsers}
+                    onClick={() => void refreshDashboardUsers()}
+                  >
+                    Refresh users
+                  </button>
+                  <button
+                    className="btn primary"
+                    disabled={savingDashUsers}
+                    onClick={() => {
+                      setDashUserDraft({
+                        username: "",
+                        password: "",
+                        role: "user",
+                      });
+                      setAddDashUserOpen(true);
+                    }}
+                  >
+                    Add user
+                  </button>
+                </div>
+
+                {dashUsers.length === 0 ? (
+                  <div
+                    style={{
+                      color: "var(--muted)",
+                      fontSize: 13,
+                      marginTop: 10,
+                    }}
+                  >
+                    No dashboard users configured.
+                  </div>
+                ) : (
+                  <table className="table" style={{ marginTop: 10 }}>
+                    <thead>
+                      <tr>
+                        <th style={{ width: 220 }}>Username</th>
+                        <th style={{ width: 110 }}>Role</th>
+                        <th />
+                        <th style={{ width: 220 }} />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {dashUsers.map((u) => (
+                        <tr key={u.username}>
+                          <td className="mono">{u.username}</td>
+                          <td>{u.role}</td>
+                          <td />
+                          <td style={{ textAlign: "right" }}>
+                            <button
+                              className="btn"
+                              disabled={savingDashUsers}
+                              onClick={() =>
+                                void resetDashboardUserPassword(u.username)
+                              }
+                            >
+                              Reset password
+                            </button>
+                            <button
+                              className="btn danger"
+                              disabled={savingDashUsers}
+                              onClick={() =>
+                                void deleteDashboardUser(u.username)
+                              }
+                            >
+                              Delete
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            ) : (
+              <div style={{ marginTop: 18 }}>
+                <div className="label">Dashboard users</div>
+                <div style={{ color: "var(--muted)", fontSize: 12 }}>
+                  Only admins can manage dashboard users.
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -371,6 +552,100 @@ export default function SettingsPage() {
                   onClick={() => void addCredential()}
                 >
                   {savingCred ? "Working…" : "Add user"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {addDashUserOpen ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="modalOverlay"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setAddDashUserOpen(false);
+          }}
+        >
+          <div className="modalPanel" style={{ width: "min(720px, 100%)" }}>
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <div>
+                <div style={{ fontWeight: 800 }}>Add dashboard user</div>
+                <div className="subtitle">
+                  User/password used to access the web dashboard.
+                </div>
+              </div>
+              <button className="btn" onClick={() => setAddDashUserOpen(false)}>
+                Close
+              </button>
+            </div>
+
+            <div className="grid" style={{ marginTop: 10 }}>
+              <div className="grid cols2">
+                <div>
+                  <div className="label">Username</div>
+                  <input
+                    className="input"
+                    value={dashUserDraft.username}
+                    onChange={(e) =>
+                      setDashUserDraft({
+                        ...dashUserDraft,
+                        username: e.target.value,
+                      })
+                    }
+                  />
+                </div>
+                <div>
+                  <div className="label">Password</div>
+                  <input
+                    className="input"
+                    type="password"
+                    value={dashUserDraft.password}
+                    onChange={(e) =>
+                      setDashUserDraft({
+                        ...dashUserDraft,
+                        password: e.target.value,
+                      })
+                    }
+                  />
+                </div>
+              </div>
+
+              <div>
+                <div className="label">Role</div>
+                <select
+                  className="input"
+                  value={dashUserDraft.role}
+                  onChange={(e) =>
+                    setDashUserDraft({
+                      ...dashUserDraft,
+                      role: e.target.value as DashboardUser["role"],
+                    })
+                  }
+                >
+                  <option value="user">user</option>
+                  <option value="admin">admin</option>
+                </select>
+              </div>
+
+              <div className="row" style={{ justifyContent: "flex-end" }}>
+                <button
+                  className="btn"
+                  onClick={() => setAddDashUserOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn primary"
+                  disabled={
+                    savingDashUsers ||
+                    !dashUserDraft.username ||
+                    !dashUserDraft.password
+                  }
+                  onClick={() => void addDashboardUser()}
+                >
+                  {savingDashUsers ? "Working…" : "Add user"}
                 </button>
               </div>
             </div>

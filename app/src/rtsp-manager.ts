@@ -680,9 +680,23 @@ export async function autoConnectCameras() {
   const config = getConfig();
   const logger = createSourceLogger("rtsp-manager");
 
-  logger.info(`Auto-connecting to ${config.cameras.length} cameras`);
+  const camerasToConnect = config.cameras.filter((camera) => {
+    const hasAutoStartStream =
+      (camera.rtspStreams ?? []).some(
+        (s) => s.enabled !== false && s.autoStart !== false,
+      ) || false;
 
-  for (const camera of config.cameras) {
+    // Legacy support
+    const hasLegacyAutoStart = camera.rtspEnabled === true;
+
+    return hasAutoStartStream || hasLegacyAutoStart;
+  });
+
+  logger.info(
+    `Auto-connecting to ${camerasToConnect.length} cameras (autoStart-enabled only)`,
+  );
+
+  for (const camera of camerasToConnect) {
     try {
       logger.info(
         `Connecting to camera: ${camera.name} (${camera.host}:${camera.port})`,

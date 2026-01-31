@@ -8,6 +8,7 @@ import {
   type CameraConfig,
   type RtspServerConfig,
 } from "./types.js";
+import { hashPassword } from "./password.js";
 
 // RTSP Credential schema
 export const RtspCredentialSchema = z.object({
@@ -18,6 +19,17 @@ export const RtspCredentialSchema = z.object({
 });
 
 export type RtspCredential = z.infer<typeof RtspCredentialSchema>;
+
+export const DashboardUserSchema = z.object({
+  username: z.string().min(1),
+  role: z.enum(["admin", "user"]).default("user"),
+  passwordSalt: z.string().min(1),
+  passwordHash: z.string().min(1),
+  createdAt: z.number().optional(),
+  updatedAt: z.number().optional(),
+});
+
+export type DashboardUser = z.infer<typeof DashboardUserSchema>;
 
 // Unified Settings schema (includes cameras and rtspServers)
 export const SettingsSchema = z.object({
@@ -42,6 +54,9 @@ export const SettingsSchema = z.object({
   // Cameras and RTSP servers (previously in config.json)
   cameras: z.array(CameraConfigSchema).default([]),
   rtspServers: z.array(RtspServerConfigSchema).default([]),
+
+  // Dashboard/web UI authentication users
+  dashboardUsers: z.array(DashboardUserSchema).default([]),
 });
 
 export type Settings = z.infer<typeof SettingsSchema>;
@@ -217,6 +232,90 @@ export function deleteRtspServer(id: string): boolean {
   settings.rtspServers = [
     ...settings.rtspServers.slice(0, index),
     ...settings.rtspServers.slice(index + 1),
+  ];
+  saveSettings(settings);
+  return true;
+}
+
+// ==================== Dashboard Users ====================
+
+export function listDashboardUsers(): Array<
+  Pick<DashboardUser, "username" | "role" | "createdAt" | "updatedAt">
+> {
+  return settings.dashboardUsers.map(
+    ({ username, role, createdAt, updatedAt }) => ({
+      username,
+      role,
+      createdAt,
+      updatedAt,
+    }),
+  );
+}
+
+export function addDashboardUser(input: {
+  username: string;
+  password: string;
+  role?: "admin" | "user";
+}): Pick<DashboardUser, "username" | "role" | "createdAt" | "updatedAt"> {
+  const username = input.username.trim();
+  if (!username) throw new Error("Username is required");
+  if (!input.password) throw new Error("Password is required");
+  if (settings.dashboardUsers.some((u) => u.username === username)) {
+    throw new Error("User already exists");
+  }
+
+  const now = Date.now();
+  const { saltBase64, hashBase64 } = hashPassword(input.password);
+  const user: DashboardUser = {
+    username,
+    role: input.role ?? "user",
+    passwordSalt: saltBase64,
+    passwordHash: hashBase64,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  settings.dashboardUsers = [...settings.dashboardUsers, user];
+  saveSettings(settings);
+  return {
+    username: user.username,
+    role: user.role,
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt,
+  };
+}
+
+export function deleteDashboardUser(username: string): boolean {
+  const idx = settings.dashboardUsers.findIndex((u) => u.username === username);
+  if (idx === -1) return false;
+  settings.dashboardUsers = [
+    ...settings.dashboardUsers.slice(0, idx),
+    ...settings.dashboardUsers.slice(idx + 1),
+  ];
+  saveSettings(settings);
+  return true;
+}
+
+export function setDashboardUserPassword(input: {
+  username: string;
+  password: string;
+}): boolean {
+  const idx = settings.dashboardUsers.findIndex(
+    (u) => u.username === input.username,
+  );
+  if (idx === -1) return false;
+  const now = Date.now();
+  const { saltBase64, hashBase64 } = hashPassword(input.password);
+  const current = settings.dashboardUsers[idx]!;
+  settings.dashboardUsers = [
+    ...settings.dashboardUsers.slice(0, idx),
+    {
+      ...current,
+      passwordSalt: saltBase64,
+      passwordHash: hashBase64,
+      updatedAt: now,
+    },
+    ...settings.dashboardUsers.slice(idx + 1),
   ];
   saveSettings(settings);
   return true;

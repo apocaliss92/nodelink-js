@@ -118,6 +118,13 @@ docker-compose up -d
 | `RTSP_PORT` | `8554`  | RTSP proxy port                      |
 | `DATA_PATH` | `/data` | Directory for settings.json and logs |
 
+**Dashboard authentication (optional):**
+
+| Variable         | Default | Description                                                                                                             |
+| ---------------- | ------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `AUTH_ENABLED`   | (unset) | Enable auth when set to `1/true` (or disable with `0/false`). If unset, auth auto-enables when `ADMIN_PASSWORD` is set. |
+| `ADMIN_PASSWORD` | (unset) | Sets the `admin` password. This credential works for both the web login form and HTTP Basic auth.                       |
+
 📖 **[Full Docker documentation →](./DOCKER.md)**
 
 ---
