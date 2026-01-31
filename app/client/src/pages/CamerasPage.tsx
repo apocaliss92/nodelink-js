@@ -695,8 +695,10 @@ export default function CamerasPage() {
     Record<string, boolean>
   >({});
 
-  const [streamsDiscoveryAttemptsByCamera, setStreamsDiscoveryAttemptsByCamera] =
-    useState<Record<string, number>>({});
+  const [
+    streamsDiscoveryAttemptsByCamera,
+    setStreamsDiscoveryAttemptsByCamera,
+  ] = useState<Record<string, number>>({});
 
   const MAX_STREAM_DISCOVERY_ATTEMPTS = 12;
   const STREAM_DISCOVERY_RETRY_MS = 3000;
@@ -1022,10 +1024,14 @@ export default function CamerasPage() {
       setStreamsByCamera((prev) => ({ ...prev, [id]: discovered }));
       setStreamsDiscoveryAttemptsByCamera((m) => ({
         ...m,
-        [id]: discovered.length > 0 ? MAX_STREAM_DISCOVERY_ATTEMPTS : attempts + 1,
+        [id]:
+          discovered.length > 0 ? MAX_STREAM_DISCOVERY_ATTEMPTS : attempts + 1,
       }));
     } catch {
-      setStreamsDiscoveryAttemptsByCamera((m) => ({ ...m, [id]: attempts + 1 }));
+      setStreamsDiscoveryAttemptsByCamera((m) => ({
+        ...m,
+        [id]: attempts + 1,
+      }));
     } finally {
       setStreamsLoadingByCamera((m) => ({ ...m, [id]: false }));
     }
