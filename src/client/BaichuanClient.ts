@@ -392,6 +392,26 @@ export class BaichuanClient extends EventEmitter<{
     return this.opts.idleDisconnect === true;
   }
 
+  /**
+   * Enable or disable idle disconnect dynamically.
+   *
+   * This is useful when the battery status is discovered after connection
+   * (e.g., during autodetect). Call with `true` for battery cameras to
+   * preserve battery life by disconnecting when idle.
+   *
+   * @param enabled - true to enable idle disconnect, false to disable
+   */
+  setIdleDisconnect(enabled: boolean): void {
+    (this.opts as { idleDisconnect?: boolean }).idleDisconnect = enabled;
+    if (enabled) {
+      // Start the idle disconnect timer if we're already connected
+      this.kickIdleDisconnectTimer();
+    } else {
+      // Clear any existing timer
+      this.clearIdleDisconnectTimer();
+    }
+  }
+
   private clearIdleDisconnectTimer(): void {
     if (!this.idleDisconnectTimer) return;
     clearTimeout(this.idleDisconnectTimer);

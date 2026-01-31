@@ -1,7 +1,10 @@
 import type { BaichuanClientOptions } from "../client/BaichuanClient";
 import type { Logger } from "../debug/DebugConfig";
 import { BC_CLASS_MODERN_20, BC_CLASS_MODERN_24 } from "../protocol/constants";
-import { DUAL_LENS_MODELS, isDualLenseModel, ReolinkBaichuanApi } from "./baichuan/ReolinkBaichuanApi";
+import {
+  isDualLenseModel,
+  ReolinkBaichuanApi,
+} from "./baichuan/ReolinkBaichuanApi";
 import { discoverViaUdpBroadcast, discoverViaUdpDirect } from "./discovery";
 import type { ReolinkDeviceInfo } from "./types";
 
@@ -35,12 +38,25 @@ export type AutoDetectInputs = {
   udpDiscoveryMethod?: BaichuanClientOptions["udpDiscoveryMethod"];
 };
 
-export type DeviceType = "camera" | "battery-cam" | "nvr" | "multifocal";
+/**
+ * Device types detected by autodetect.
+ * - camera: Regular TCP camera
+ * - udp-camera: UDP camera without battery (e.g., Elite Floodlight WiFi)
+ * - battery-cam: Battery-powered camera (UDP)
+ * - nvr: NVR/Hub with multiple channels
+ * - multifocal: Multi-focal/dual-lens camera
+ */
+export type DeviceType =
+  | "camera"
+  | "udp-camera"
+  | "battery-cam"
+  | "nvr"
+  | "multifocal";
 
 export type AutoDetectResult = {
   type: DeviceType;
   transport: BaichuanTransport;
-  uid: string;
+  /** UID of the device. May be empty for local-direct UDP connections. */ uid: string;
   /** If `transport === "udp"`, the UDP discovery method that succeeded. */
   udpDiscoveryMethod?: BaichuanClientOptions["udpDiscoveryMethod"];
   deviceInfo?: Partial<ReolinkDeviceInfo>;
@@ -55,6 +71,11 @@ export type AutoDetectResult = {
     activeLink?: string;
   };
   channelNum?: number;
+  /**
+   * Whether the device has a battery.
+   * Use this to determine if idle disconnect should be enabled to preserve battery.
+   */
+  hasBattery?: boolean;
   api: ReolinkBaichuanApi; // The API instance that was successfully used for detection
 };
 
@@ -88,7 +109,10 @@ async function resolveHostToIp(host: string): Promise<string | undefined> {
   }
 }
 
-async function discoverUidForHost(host: string, logger?: Logger): Promise<string | undefined> {
+async function discoverUidForHost(
+  host: string,
+  logger?: Logger,
+): Promise<string | undefined> {
   try {
     const ip = await resolveHostToIp(host);
     const directTarget = ip ?? host;
@@ -103,7 +127,9 @@ async function discoverUidForHost(host: string, logger?: Logger): Promise<string
       const directMatch = directDevices.find((d) => d.host === directTarget);
       const directUid = normalizeUid(directMatch?.uid);
       if (directUid) {
-        logger?.log?.(`[AutoDetect] UID discovered via UDP direct: ${maskUid(directUid)}`);
+        logger?.log?.(
+          `[AutoDetect] UID discovered via UDP direct: ${maskUid(directUid)}`,
+        );
         return directUid;
       }
     } catch {
@@ -120,7 +146,9 @@ async function discoverUidForHost(host: string, logger?: Logger): Promise<string
     const match = devices.find((d) => d.host === ip || d.host === host);
     const uid = normalizeUid(match?.uid);
     if (uid) {
-      logger?.log?.(`[AutoDetect] UID discovered via UDP broadcast: ${maskUid(uid)}`);
+      logger?.log?.(
+        `[AutoDetect] UID discovered via UDP broadcast: ${maskUid(uid)}`,
+      );
       return uid;
     }
   } catch {
@@ -161,7 +189,10 @@ export function isTcpFailureThatShouldFallbackToUdp(e: unknown): boolean {
 /**
  * Simple ping check to verify IP is reachable.
  */
-async function pingHost(host: string, timeoutMs: number = 3000): Promise<boolean> {
+async function pingHost(
+  host: string,
+  timeoutMs: number = 3000,
+): Promise<boolean> {
   return new Promise((resolve) => {
     const { exec } = require("child_process");
     const platform = process.platform;
@@ -169,10 +200,10 @@ async function pingHost(host: string, timeoutMs: number = 3000): Promise<boolean
       platform === "win32"
         ? `ping -n 1 -w ${timeoutMs} ${host}`
         : platform === "darwin"
-          // macOS: -W is in milliseconds (Linux: seconds)
-          ? `ping -c 1 -W ${timeoutMs} ${host}`
-          // Linux/BSD-ish: -W is in seconds on most distros
-          : `ping -c 1 -W ${Math.max(1, Math.floor(timeoutMs / 1000))} ${host}`;
+          ? // macOS: -W is in milliseconds (Linux: seconds)
+            `ping -c 1 -W ${timeoutMs} ${host}`
+          : // Linux/BSD-ish: -W is in seconds on most distros
+            `ping -c 1 -W ${Math.max(1, Math.floor(timeoutMs / 1000))} ${host}`;
 
     exec(pingCmd, (error: any) => {
       resolve(!error);
@@ -205,16 +236,26 @@ function createBaichuanApi(
   }
 
   const uid = normalizeUid(inputs.uid);
-  if (!uid) {
-    throw new Error("UID is required for battery cameras (BCUDP)");
+
+  // UID is required for most UDP methods, but local-direct can work without it
+  // (it connects directly to the device IP without P2P discovery)
+  const isLocalDirect = inputs.udpDiscoveryMethod === "local-direct";
+  if (!uid && !isLocalDirect) {
+    throw new Error(
+      "UID is required for UDP cameras (BCUDP) unless using local-direct discovery",
+    );
   }
 
   const api = new ReolinkBaichuanApi({
     ...base,
     transport: "udp",
-    uid,
-    ...(inputs.udpDiscoveryMethod ? { udpDiscoveryMethod: inputs.udpDiscoveryMethod } : {}),
-    idleDisconnect: true,
+    // UID is optional for local-direct, required for other methods
+    ...(uid ? { uid } : {}),
+    ...(inputs.udpDiscoveryMethod
+      ? { udpDiscoveryMethod: inputs.udpDiscoveryMethod }
+      : {}),
+    // NOTE: idleDisconnect is NOT enabled here - it will be enabled dynamically
+    // after detecting if the device has a battery (via setIdleDisconnect)
   });
   attachErrorHandler(api, transport, inputs);
   return api;
@@ -223,11 +264,16 @@ function createBaichuanApi(
 /**
  * Attach error handler to BaichuanClient to prevent uncaught exceptions.
  */
-function attachErrorHandler(api: ReolinkBaichuanApi, transport: BaichuanTransport, inputs: AutoDetectInputs): void {
+function attachErrorHandler(
+  api: ReolinkBaichuanApi,
+  transport: BaichuanTransport,
+  inputs: AutoDetectInputs,
+): void {
   try {
     api.client.on("error", (err: unknown) => {
       if (!inputs.logger) return;
-      const msg = (err as any)?.message || (err as any)?.toString?.() || String(err);
+      const msg =
+        (err as any)?.message || (err as any)?.toString?.() || String(err);
       // Only log if it's not a recoverable error to avoid spam
       if (
         typeof msg === "string" &&
@@ -239,7 +285,9 @@ function attachErrorHandler(api: ReolinkBaichuanApi, transport: BaichuanTranspor
         // "Not running" is common for UDP/battery cameras when sleeping or during initialization
         return;
       }
-      inputs.logger?.log?.(`[BaichuanClient] error (${transport}) ${inputs.host}: ${msg}`);
+      inputs.logger?.log?.(
+        `[BaichuanClient] error (${transport}) ${inputs.host}: ${msg}`,
+      );
     });
 
     // Handle 'close' event to prevent unhandled rejections from pending promises
@@ -258,19 +306,30 @@ function attachErrorHandler(api: ReolinkBaichuanApi, transport: BaichuanTranspor
  * - TCP success: Check if NVR (multiple channels) or regular camera
  * - TCP failure: Try UDP (always battery camera)
  */
-export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<AutoDetectResult> {
+export async function autoDetectDeviceType(
+  inputs: AutoDetectInputs,
+): Promise<AutoDetectResult> {
   const { host, uid, logger } = inputs;
 
   const mode: AutoDetectMode = (inputs.mode ?? "auto") as AutoDetectMode;
   const maxRetriesRaw = inputs.maxRetries;
-  const maxRetries = Math.max(1, Math.min(10, typeof maxRetriesRaw === "number" && Number.isFinite(maxRetriesRaw) ? Math.floor(maxRetriesRaw) : 1));
+  const maxRetries = Math.max(
+    1,
+    Math.min(
+      10,
+      typeof maxRetriesRaw === "number" && Number.isFinite(maxRetriesRaw)
+        ? Math.floor(maxRetriesRaw)
+        : 1,
+    ),
+  );
 
   const fmtErr = (e: unknown): string => {
     const m = (e as any)?.message || (e as any)?.toString?.() || String(e);
     return typeof m === "string" ? m : String(m);
   };
 
-  const sleepMs = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+  const sleepMs = (ms: number) =>
+    new Promise<void>((resolve) => setTimeout(resolve, ms));
 
   const shouldRetryTcp = (e: unknown): boolean => {
     const msg = fmtErr(e);
@@ -314,13 +373,17 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
         lastErr = e;
         const msg = fmtErr(e);
         const retryable = attempt < max && shouldRetry(e);
-        logger?.log?.(`[AutoDetect] ${label} attempt ${attempt}/${max} failed: ${msg}${retryable ? " (will retry)" : ""}`);
+        logger?.log?.(
+          `[AutoDetect] ${label} attempt ${attempt}/${max} failed: ${msg}${retryable ? " (will retry)" : ""}`,
+        );
         if (!retryable) throw e;
         // Small backoff to avoid tight reconnect loops.
         await sleepMs(350);
       }
     }
-    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr ?? `${label} failed`));
+    throw lastErr instanceof Error
+      ? lastErr
+      : new Error(String(lastErr ?? `${label} failed`));
   };
 
   // Best-effort: discover UID if not provided (useful for BCUDP/battery cams).
@@ -333,17 +396,23 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
   logger?.log?.(`[AutoDetect] Pinging ${host}...`);
   const isReachable = await pingHost(host);
   if (!isReachable) {
-    logger?.log?.(`[AutoDetect] Host ${host} is not reachable via ping, but continuing with connection attempt...`);
+    logger?.log?.(
+      `[AutoDetect] Host ${host} is not reachable via ping, but continuing with connection attempt...`,
+    );
   } else {
     logger?.log?.(`[AutoDetect] Host ${host} is reachable`);
   }
 
   // Forced UDP mode: skip TCP entirely.
   if (mode === "udp") {
-    logger?.log?.(`[AutoDetect] Forced mode=udp, skipping TCP and starting UDP discovery/login...`);
+    logger?.log?.(
+      `[AutoDetect] Forced mode=udp, skipping TCP and starting UDP discovery/login...`,
+    );
     let normalizedUid = effectiveUid;
     if (!normalizedUid) {
-      logger?.log?.(`[AutoDetect] UID not provided; attempting UDP discovery for UID...`);
+      logger?.log?.(
+        `[AutoDetect] UID not provided; attempting UDP discovery for UID...`,
+      );
       const discovered = await discoverUidForHost(host, logger);
       const normalizedDiscovered = normalizeUid(discovered);
       if (!normalizedDiscovered) {
@@ -354,10 +423,11 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
       normalizedUid = normalizedDiscovered;
     }
 
-    const methodsToTry: Array<NonNullable<BaichuanClientOptions["udpDiscoveryMethod"]>> =
-      inputs.udpDiscoveryMethod
-        ? [inputs.udpDiscoveryMethod]
-        : ["local-direct", "local-broadcast", "remote", "relay", "map"];
+    const methodsToTry: Array<
+      NonNullable<BaichuanClientOptions["udpDiscoveryMethod"]>
+    > = inputs.udpDiscoveryMethod
+      ? [inputs.udpDiscoveryMethod]
+      : ["local-direct", "local-broadcast", "remote", "relay", "map"];
 
     const udpErrors: string[] = [];
     for (const m of methodsToTry) {
@@ -367,13 +437,18 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
           `UDP(${m})`,
           maxRetries,
           async (attempt) => {
-            const api = createBaichuanApi({ ...inputs, uid: normalizedUid, udpDiscoveryMethod: m }, "udp");
+            const api = createBaichuanApi(
+              { ...inputs, uid: normalizedUid, udpDiscoveryMethod: m },
+              "udp",
+            );
             try {
               await api.login();
               return api;
             } catch (e) {
               try {
-                await api.close({ reason: `autodetect:udp_failed:${m}:attempt_${attempt}` });
+                await api.close({
+                  reason: `autodetect:udp_failed:${m}:attempt_${attempt}`,
+                });
               } catch {
                 // ignore
               }
@@ -386,20 +461,35 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
         // Reuse the same detection logic used by the fallback path.
         const deviceInfo = await udpApi.getInfo();
         const capabilities = await udpApi.getDeviceCapabilities();
-        const hostNetworkInfo = await udpApi.getNetworkInfo(undefined, { timeoutMs: 1200 }).catch(() => undefined);
+        const hostNetworkInfo = await udpApi
+          .getNetworkInfo(undefined, { timeoutMs: 1200 })
+          .catch(() => undefined);
         const channelNum = capabilities?.support?.channelNum ?? 1;
         const model = deviceInfo.type?.trim();
 
         const normalizedModel = model ? model.trim() : undefined;
-        const isMultifocalByModel = normalizedModel ? isDualLenseModel(normalizedModel) : false;
-        const channelNumValue = typeof channelNum === "string" ? Number.parseInt(channelNum, 10) : channelNum;
-        const hasDualLensChannelCount = (channelNumValue === 2 || channelNumValue === 3) && Number.isFinite(channelNumValue);
+        const isMultifocalByModel = normalizedModel
+          ? isDualLenseModel(normalizedModel)
+          : false;
+        const channelNumValue =
+          typeof channelNum === "string"
+            ? Number.parseInt(channelNum, 10)
+            : channelNum;
+        const hasDualLensChannelCount =
+          (channelNumValue === 2 || channelNumValue === 3) &&
+          Number.isFinite(channelNumValue);
         const isMultifocal = isMultifocalByModel || hasDualLensChannelCount;
 
+        // Check if this is actually a battery camera by looking at capabilities
+        // UDP transport does NOT always mean battery camera (e.g., Elite Floodlight WiFi uses UDP but is AC-powered)
+        const hasBattery = capabilities?.capabilities?.hasBattery === true;
+
         if (isMultifocal) {
-          const detectionMethod = isMultifocalByModel ? "model match" : "channelNum fallback";
+          const detectionMethod = isMultifocalByModel
+            ? "model match"
+            : "channelNum fallback";
           logger?.log?.(
-            `[AutoDetect] UDP (${m}) connection successful. Detected multi-focal device (${detectionMethod}: model=${normalizedModel ?? "unknown"}, channelNum=${channelNum}).`,
+            `[AutoDetect] UDP (${m}) connection successful. Detected multi-focal device (${detectionMethod}: model=${normalizedModel ?? "unknown"}, channelNum=${channelNum}, hasBattery=${hasBattery}).`,
           );
           return {
             type: "multifocal",
@@ -413,9 +503,13 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
           };
         }
 
-        logger?.log?.(`[AutoDetect] UDP (${m}) connection successful. Detected battery camera.`);
+        // Determine device type based on capabilities, not transport
+        const deviceType: DeviceType = hasBattery ? "battery-cam" : "camera";
+        logger?.log?.(
+          `[AutoDetect] UDP (${m}) connection successful. Detected ${deviceType} (hasBattery=${hasBattery}, model=${normalizedModel ?? "unknown"}).`,
+        );
         return {
-          type: "battery-cam",
+          type: deviceType,
           transport: "udp",
           uid: normalizedUid,
           udpDiscoveryMethod: m,
@@ -432,7 +526,9 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
       }
     }
 
-    throw new Error(`Forced UDP autodetect failed for all methods. ${udpErrors.join(" | ")}`);
+    throw new Error(
+      `Forced UDP autodetect failed for all methods. ${udpErrors.join(" | ")}`,
+    );
   }
 
   // Try TCP first
@@ -450,7 +546,9 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
           return api;
         } catch (e) {
           try {
-            await api.close({ reason: `autodetect:tcp_failed:attempt_${attempt}` });
+            await api.close({
+              reason: `autodetect:tcp_failed:attempt_${attempt}`,
+            });
           } catch {
             // ignore
           }
@@ -462,7 +560,10 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
 
     // Get device info to check device type
     const api = tcpApi;
-    if (!api) throw new Error("AutoDetect internal error: TCP API not initialized after successful login");
+    if (!api)
+      throw new Error(
+        "AutoDetect internal error: TCP API not initialized after successful login",
+      );
 
     // Some older firmwares are picky about message class or do not support the full
     // post-login capability probe sequence. Treat post-login command failures as a degraded
@@ -480,11 +581,15 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
         } catch (e) {
           const msg = fmtErr(e);
           lastMsg = msg;
-          logger?.log?.(`[AutoDetect] TCP probe ${label} failed (${v.variant}): ${msg}`);
+          logger?.log?.(
+            `[AutoDetect] TCP probe ${label} failed (${v.variant}): ${msg}`,
+          );
         }
       }
       if (lastMsg) {
-        logger?.log?.(`[AutoDetect] TCP probe ${label} failed (all variants): ${lastMsg}`);
+        logger?.log?.(
+          `[AutoDetect] TCP probe ${label} failed (all variants): ${lastMsg}`,
+        );
       }
       return undefined;
     };
@@ -496,28 +601,71 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
     const infoProbe = await runProbeVariants<Partial<ReolinkDeviceInfo>>(
       "getInfo",
       [
-        { variant: "cmd80 class=0x6414", op: () => api.getInfo(undefined, { timeoutMs: 2500, messageClass: BC_CLASS_MODERN_24 }) },
-        { variant: "cmd80 class=0x6614", op: () => api.getInfo(undefined, { timeoutMs: 3000, messageClass: BC_CLASS_MODERN_20 }) },
-        { variant: "cmd318(ch0) class=0x6414", op: () => api.getInfo(0, { timeoutMs: 3000, messageClass: BC_CLASS_MODERN_24 }) },
-        { variant: "cmd318(ch0) class=0x6614", op: () => api.getInfo(0, { timeoutMs: 3500, messageClass: BC_CLASS_MODERN_20 }) },
+        {
+          variant: "cmd80 class=0x6414",
+          op: () =>
+            api.getInfo(undefined, {
+              timeoutMs: 2500,
+              messageClass: BC_CLASS_MODERN_24,
+            }),
+        },
+        {
+          variant: "cmd80 class=0x6614",
+          op: () =>
+            api.getInfo(undefined, {
+              timeoutMs: 3000,
+              messageClass: BC_CLASS_MODERN_20,
+            }),
+        },
+        {
+          variant: "cmd318(ch0) class=0x6414",
+          op: () =>
+            api.getInfo(0, {
+              timeoutMs: 3000,
+              messageClass: BC_CLASS_MODERN_24,
+            }),
+        },
+        {
+          variant: "cmd318(ch0) class=0x6614",
+          op: () =>
+            api.getInfo(0, {
+              timeoutMs: 3500,
+              messageClass: BC_CLASS_MODERN_20,
+            }),
+        },
       ],
     );
 
     // Support probes (cmd 199). Some firmwares may not support it or are slow.
-    const supportProbe = await runProbeVariants<any>(
-      "getSupportInfo",
-      [
-        { variant: "cmd199 class=0x6414", op: () => api.getSupportInfo({ timeoutMs: 2500, messageClass: BC_CLASS_MODERN_24 }) },
-        { variant: "cmd199 class=0x6614", op: () => api.getSupportInfo({ timeoutMs: 3500, messageClass: BC_CLASS_MODERN_20 }) },
-      ],
-    );
+    const supportProbe = await runProbeVariants<any>("getSupportInfo", [
+      {
+        variant: "cmd199 class=0x6414",
+        op: () =>
+          api.getSupportInfo({
+            timeoutMs: 2500,
+            messageClass: BC_CLASS_MODERN_24,
+          }),
+      },
+      {
+        variant: "cmd199 class=0x6614",
+        op: () =>
+          api.getSupportInfo({
+            timeoutMs: 3500,
+            messageClass: BC_CLASS_MODERN_20,
+          }),
+      },
+    ]);
 
     const deviceInfo = infoProbe?.value;
     const support = supportProbe?.value;
 
     const channelNumRaw = support?.channelNum;
-    const channelNum = typeof channelNumRaw === "string" ? Number.parseInt(channelNumRaw, 10) : channelNumRaw;
-    const effectiveChannelNum = Number.isFinite(channelNum) && channelNum != null ? channelNum : 1;
+    const channelNum =
+      typeof channelNumRaw === "string"
+        ? Number.parseInt(channelNumRaw, 10)
+        : channelNumRaw;
+    const effectiveChannelNum =
+      Number.isFinite(channelNum) && channelNum != null ? channelNum : 1;
     const model = deviceInfo?.type?.trim();
 
     logger?.log?.(
@@ -526,19 +674,27 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
 
     // Check if it's a multi-focal device using the dual lens model map or channelNum fallback
     const normalizedModel = model ? model.trim() : undefined;
-    const isMultifocalByModel = normalizedModel ? isDualLenseModel(normalizedModel) : false;
+    const isMultifocalByModel = normalizedModel
+      ? isDualLenseModel(normalizedModel)
+      : false;
 
     // Also check if channelNum suggests dual lens (2-3 channels)
     // Handle both number and string types for channelNum
     const channelNumValue = effectiveChannelNum;
-    const hasDualLensChannelCount = (channelNumValue === 2 || channelNumValue === 3) && Number.isFinite(channelNumValue);
+    const hasDualLensChannelCount =
+      (channelNumValue === 2 || channelNumValue === 3) &&
+      Number.isFinite(channelNumValue);
 
     // Consider it dual lens if model matches OR if channelNum suggests it
     const isMultifocal = isMultifocalByModel || hasDualLensChannelCount;
 
     if (isMultifocal) {
-      const detectionMethod = isMultifocalByModel ? "model match" : "channelNum fallback";
-      logger?.log?.(`[AutoDetect] Detected multi-focal device (${detectionMethod}: model=${normalizedModel ?? "unknown"}, channelNum=${channelNum})`);
+      const detectionMethod = isMultifocalByModel
+        ? "model match"
+        : "channelNum fallback";
+      logger?.log?.(
+        `[AutoDetect] Detected multi-focal device (${detectionMethod}: model=${normalizedModel ?? "unknown"}, channelNum=${channelNum})`,
+      );
       // Don't close the API, return it for continued use
       return {
         type: "multifocal",
@@ -553,7 +709,9 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
 
     // If channelNum > 1, it's likely an NVR
     if (effectiveChannelNum > 1) {
-      logger?.log?.(`[AutoDetect] Detected NVR (${effectiveChannelNum} channels)`);
+      logger?.log?.(
+        `[AutoDetect] Detected NVR (${effectiveChannelNum} channels)`,
+      );
       // Don't close the API, return it for continued use
       return {
         type: "nvr",
@@ -598,83 +756,121 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
       throw tcpError;
     }
 
-    logger?.log?.(`[AutoDetect] TCP failed, trying UDP (battery camera)...`);
+    logger?.log?.(`[AutoDetect] TCP failed, trying UDP...`);
     let normalizedUid = effectiveUid;
     if (!normalizedUid) {
-      logger?.log?.(`[AutoDetect] UID not provided; attempting UDP broadcast discovery for UID...`);
+      logger?.log?.(
+        `[AutoDetect] UID not provided; attempting UDP broadcast discovery for UID...`,
+      );
       const discovered = await discoverUidForHost(host, logger);
-      if (!discovered) {
-        throw new Error(
-          `TCP connection failed and device likely requires UDP/BCUDP. UID is required for battery cameras (ip=${host}).`
-        );
+      if (discovered) {
+        const normalizedDiscovered = normalizeUid(discovered);
+        if (normalizedDiscovered) {
+          normalizedUid = normalizedDiscovered;
+          logger?.log?.(
+            `[AutoDetect] UID discovered via broadcast: ${normalizedUid}`,
+          );
+        }
       }
-      // Continue with discovered UID.
-      const normalizedDiscovered = normalizeUid(discovered);
-      if (!normalizedDiscovered) {
-        throw new Error(
-          `TCP connection failed and device likely requires UDP/BCUDP, but UID discovery returned an empty UID (ip=${host}).`
+      if (!normalizedUid) {
+        logger?.log?.(
+          `[AutoDetect] UID discovery failed; will try local-direct without UID first.`,
         );
+        // Don't throw here - local-direct can work without UID
+        // Other methods will fail if UID is required
       }
-      normalizedUid = normalizedDiscovered;
     }
 
     try {
       const detectOverUdpApi = async (
         udpApi: ReolinkBaichuanApi,
-        udpDiscoveryMethod: NonNullable<BaichuanClientOptions["udpDiscoveryMethod"]>,
+        udpDiscoveryMethod: NonNullable<
+          BaichuanClientOptions["udpDiscoveryMethod"]
+        >,
       ): Promise<AutoDetectResult> => {
         const deviceInfo = await udpApi.getInfo();
         const capabilities = await udpApi.getDeviceCapabilities();
-        const hostNetworkInfo = await udpApi.getNetworkInfo(undefined, { timeoutMs: 1200 }).catch(() => undefined);
+        const hostNetworkInfo = await udpApi
+          .getNetworkInfo(undefined, { timeoutMs: 1200 })
+          .catch(() => undefined);
         const channelNum = capabilities?.support?.channelNum ?? 1;
         const model = deviceInfo.type?.trim();
 
         // Check if it's a multi-focal device using the dual lens model map or channelNum fallback
         // Multi-focal devices can also be UDP (battery multi-focal cameras)
         const normalizedModel = model ? model.trim() : undefined;
-        const isMultifocalByModel = normalizedModel ? isDualLenseModel(normalizedModel) : false;
+        const isMultifocalByModel = normalizedModel
+          ? isDualLenseModel(normalizedModel)
+          : false;
 
         // Also check if channelNum suggests dual lens (2-3 channels)
         // Handle both number and string types for channelNum
-        const channelNumValue = typeof channelNum === "string" ? Number.parseInt(channelNum, 10) : channelNum;
-        const hasDualLensChannelCount = (channelNumValue === 2 || channelNumValue === 3) && Number.isFinite(channelNumValue);
+        const channelNumValue =
+          typeof channelNum === "string"
+            ? Number.parseInt(channelNum, 10)
+            : channelNum;
+        const hasDualLensChannelCount =
+          (channelNumValue === 2 || channelNumValue === 3) &&
+          Number.isFinite(channelNumValue);
 
         // Consider it dual lens if model matches OR if channelNum suggests it
         const isMultifocal = isMultifocalByModel || hasDualLensChannelCount;
 
+        // Check if this is actually a battery camera by looking at capabilities
+        // UDP transport does NOT always mean battery camera (e.g., Elite Floodlight WiFi uses UDP but is AC-powered)
+        const hasBattery = capabilities?.capabilities?.hasBattery === true;
+
+        // Enable idle disconnect dynamically based on battery status
+        // This preserves battery life for battery cameras while keeping
+        // AC-powered UDP cameras (like Elite Floodlight WiFi) always connected
+        udpApi.setIdleDisconnect(hasBattery);
+
         if (isMultifocal) {
-          const detectionMethod = isMultifocalByModel ? "model match" : "channelNum fallback";
+          const detectionMethod = isMultifocalByModel
+            ? "model match"
+            : "channelNum fallback";
           logger?.log?.(
-            `[AutoDetect] UDP (${udpDiscoveryMethod}) connection successful. Detected multi-focal device (${detectionMethod}: model=${normalizedModel ?? "unknown"}, channelNum=${channelNum}).`,
+            `[AutoDetect] UDP (${udpDiscoveryMethod}) connection successful. Detected multi-focal device (${detectionMethod}: model=${normalizedModel ?? "unknown"}, channelNum=${channelNum}, hasBattery=${hasBattery}).`,
           );
           return {
             type: "multifocal",
             transport: "udp",
-            uid: normalizedUid,
+            uid: normalizedUid ?? "",
             udpDiscoveryMethod,
             deviceInfo,
             ...(hostNetworkInfo ? { hostNetworkInfo } : {}),
             channelNum,
+            hasBattery,
             api: udpApi,
           };
         }
 
-        // Regular battery camera
-        logger?.log?.(`[AutoDetect] UDP (${udpDiscoveryMethod}) connection successful. Detected battery camera.`);
+        // Determine device type based on capabilities, not transport
+        // UDP transport does NOT always mean battery camera (e.g., Elite Floodlight WiFi uses UDP but is AC-powered)
+        // - battery-cam: Has battery, use idleDisconnect to preserve battery
+        // - udp-camera: No battery (AC-powered), no idleDisconnect needed
+        const deviceType: DeviceType = hasBattery
+          ? "battery-cam"
+          : "udp-camera";
+        logger?.log?.(
+          `[AutoDetect] UDP (${udpDiscoveryMethod}) connection successful. Detected ${deviceType} (hasBattery=${hasBattery}, model=${normalizedModel ?? "unknown"}).`,
+        );
         return {
-          type: "battery-cam",
+          type: deviceType,
           transport: "udp",
-          uid: normalizedUid,
+          uid: normalizedUid ?? "",
           udpDiscoveryMethod,
           deviceInfo,
           ...(hostNetworkInfo ? { hostNetworkInfo } : {}),
           channelNum: 1,
+          hasBattery,
           api: udpApi,
         };
       };
 
-      const methodsToTry: Array<NonNullable<BaichuanClientOptions["udpDiscoveryMethod"]>> =
-        ["local-direct", "local-broadcast", "remote", "relay", "map"];
+      const methodsToTry: Array<
+        NonNullable<BaichuanClientOptions["udpDiscoveryMethod"]>
+      > = ["local-direct", "local-broadcast", "remote", "relay", "map"];
 
       const udpErrors: string[] = [];
       for (const m of methodsToTry) {
@@ -684,13 +880,23 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
             `UDP(${m})`,
             maxRetries,
             async (attempt) => {
-              const api = createBaichuanApi({ ...inputs, uid: normalizedUid, udpDiscoveryMethod: m }, "udp");
+              // Build inputs for createBaichuanApi, only including uid if we have one
+              const apiInputs: AutoDetectInputs = {
+                ...inputs,
+                udpDiscoveryMethod: m,
+              };
+              if (normalizedUid) {
+                apiInputs.uid = normalizedUid;
+              }
+              const api = createBaichuanApi(apiInputs, "udp");
               try {
                 await api.login();
                 return api;
               } catch (e) {
                 try {
-                  await api.close({ reason: `autodetect:udp_failed:${m}:attempt_${attempt}` });
+                  await api.close({
+                    reason: `autodetect:udp_failed:${m}:attempt_${attempt}`,
+                  });
                 } catch {
                   // ignore
                 }
@@ -701,7 +907,8 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
           );
           return await detectOverUdpApi(udpApi, m);
         } catch (e) {
-          const msg = (e as any)?.message || (e as any)?.toString?.() || String(e);
+          const msg =
+            (e as any)?.message || (e as any)?.toString?.() || String(e);
           udpErrors.push(`${m}: ${msg}`);
           try {
             // ignore (api already closed in retry wrapper)
@@ -712,15 +919,16 @@ export async function autoDetectDeviceType(inputs: AutoDetectInputs): Promise<Au
         }
       }
 
-      throw new Error(`UDP discovery failed for all methods. ${udpErrors.join(" | ")}`);
+      throw new Error(
+        `UDP discovery failed for all methods. ${udpErrors.join(" | ")}`,
+      );
     } catch (udpError) {
       logger?.log?.(
-        `[AutoDetect] Both TCP and UDP failed. TCP error: ${tcpError}, UDP error: ${udpError}`
+        `[AutoDetect] Both TCP and UDP failed. TCP error: ${tcpError}, UDP error: ${udpError}`,
       );
       throw new Error(
-        `Failed to connect via both TCP and UDP. TCP: ${(tcpError as any)?.message || tcpError}, UDP: ${(udpError as any)?.message || udpError}`
+        `Failed to connect via both TCP and UDP. TCP: ${(tcpError as any)?.message || tcpError}, UDP: ${(udpError as any)?.message || udpError}`,
       );
     }
   }
 }
-

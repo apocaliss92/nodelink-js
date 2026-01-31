@@ -2536,6 +2536,20 @@ export class ReolinkBaichuanApi {
     this.logger.debug?.(`[ReolinkBaichuanApi] setIsNvr: ${isNvr}`);
   }
 
+  /**
+   * Enable or disable idle disconnect dynamically.
+   *
+   * This is useful when the battery status is discovered after connection
+   * (e.g., during autodetect). Call with `true` for battery cameras to
+   * preserve battery life by disconnecting when idle.
+   *
+   * @param enabled - true to enable idle disconnect, false to disable
+   */
+  setIdleDisconnect(enabled: boolean): void {
+    this.client.setIdleDisconnect(enabled);
+    this.logger.debug?.(`[ReolinkBaichuanApi] setIdleDisconnect: ${enabled}`);
+  }
+
   async login(
     maxEncryption?: import("../../client/BaichuanClient.js").MaxEncryption,
   ): Promise<void> {
