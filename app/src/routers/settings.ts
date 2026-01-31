@@ -4,10 +4,6 @@ import {
   getSettings,
   saveSettings,
   SettingsSchema,
-  getRtspCredentials,
-  addRtspCredential,
-  updateRtspCredential,
-  deleteRtspCredential,
   addDashboardUser,
   deleteDashboardUser,
   listDashboardUsers,
@@ -25,12 +21,11 @@ export const settingsRouter = router({
     .query(() => {
       const settings = getSettings();
 
+      // Never expose authTokens.
+      const { authTokens: _authTokens, ...rest } = settings;
+
       return {
-        ...settings,
-        rtspCredentials: settings.rtspCredentials.map((c) => ({
-          ...c,
-          password: "********",
-        })),
+        ...rest,
         dashboardUsers: settings.dashboardUsers.map(
           ({ username, role, createdAt, updatedAt }) => ({
             username,
@@ -83,7 +78,19 @@ export const settingsRouter = router({
       ) {
         updateRtspUrls();
       }
-      return settings;
+
+      const { authTokens: _authTokens, ...rest } = settings;
+      return {
+        ...rest,
+        dashboardUsers: settings.dashboardUsers.map(
+          ({ username, role, createdAt, updatedAt }) => ({
+            username,
+            role,
+            createdAt,
+            updatedAt,
+          }),
+        ),
+      };
     }),
 
   // Reset settings to defaults
@@ -93,7 +100,18 @@ export const settingsRouter = router({
       const defaults = SettingsSchema.parse({});
       saveSettings(defaults);
       reloadLogger();
-      return defaults;
+      const { authTokens: _authTokens, ...rest } = defaults;
+      return {
+        ...rest,
+        dashboardUsers: defaults.dashboardUsers.map(
+          ({ username, role, createdAt, updatedAt }) => ({
+            username,
+            role,
+            createdAt,
+            updatedAt,
+          }),
+        ),
+      };
     }),
 
   // Get paths info
@@ -123,85 +141,16 @@ export const settingsRouter = router({
       };
     }),
 
-  // --- RTSP Credentials Management ---
-
-  // List all RTSP credentials
-  listCredentials: publicProcedure
-    .meta({ description: "List all RTSP credentials (passwords hidden)" })
-    .query(() => {
-      const credentials = getRtspCredentials();
-      // Hide passwords in the response
-      return credentials.map((c) => ({
-        ...c,
-        password: "********",
-      }));
-    }),
-
-  // Get credential by ID (with password)
-  getCredential: publicProcedure
-    .meta({ description: "Get RTSP credential by ID (includes password)" })
-    .input(z.object({ id: z.string() }))
-    .query(({ input }) => {
-      const credentials = getRtspCredentials();
-      return credentials.find((c) => c.id === input.id) ?? null;
-    }),
-
-  // Add new RTSP credential
-  addCredential: publicProcedure
-    .meta({ description: "Add a new RTSP credential" })
-    .input(
-      z.object({
-        username: z.string().min(1),
-        password: z.string().min(1),
-        description: z.string().optional(),
-      }),
-    )
-    .mutation(({ input }) => {
-      return addRtspCredential(input);
-    }),
-
-  // Update RTSP credential
-  updateCredential: publicProcedure
-    .meta({ description: "Update an existing RTSP credential" })
-    .input(
-      z.object({
-        id: z.string(),
-        username: z.string().min(1).optional(),
-        password: z.string().min(1).optional(),
-        description: z.string().optional(),
-      }),
-    )
-    .mutation(({ input }) => {
-      const { id, ...updates } = input;
-      const result = updateRtspCredential(id, updates);
-      if (!result) {
-        throw new Error(`Credential not found: ${id}`);
-      }
-      return result;
-    }),
-
-  // Delete RTSP credential
-  deleteCredential: publicProcedure
-    .meta({ description: "Delete an RTSP credential" })
-    .input(z.object({ id: z.string() }))
-    .mutation(({ input }) => {
-      const result = deleteRtspCredential(input.id);
-      if (!result) {
-        throw new Error(`Credential not found: ${input.id}`);
-      }
-      return { success: true };
-    }),
-
-  // --- Dashboard Users Management (admin only) ---
+  // --- Users Management (admin only) ---
 
   listDashboardUsers: adminProcedure
-    .meta({ description: "List dashboard users (admin only)" })
+    .meta({ description: "List users (admin only)" })
     .query(() => {
       return listDashboardUsers();
     }),
 
   addDashboardUser: adminProcedure
-    .meta({ description: "Add a dashboard user (admin only)" })
+    .meta({ description: "Add a user (admin only)" })
     .input(
       z.object({
         username: z.string().min(1),
@@ -214,7 +163,7 @@ export const settingsRouter = router({
     }),
 
   deleteDashboardUser: adminProcedure
-    .meta({ description: "Delete a dashboard user (admin only)" })
+    .meta({ description: "Delete a user (admin only)" })
     .input(z.object({ username: z.string().min(1) }))
     .mutation(({ input }) => {
       const ok = deleteDashboardUser(input.username);
@@ -223,7 +172,7 @@ export const settingsRouter = router({
     }),
 
   setDashboardUserPassword: adminProcedure
-    .meta({ description: "Set dashboard user password (admin only)" })
+    .meta({ description: "Set user password (admin only)" })
     .input(
       z.object({ username: z.string().min(1), password: z.string().min(1) }),
     )

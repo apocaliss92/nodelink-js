@@ -132,7 +132,10 @@ function AppInner() {
         </nav>
 
         {state.enabled && state.user ? (
-          <div style={{ marginTop: "auto", paddingTop: 16 }}>
+          <div
+            className="sidebarFooter"
+            style={{ marginTop: "auto", paddingTop: 16 }}
+          >
             <div style={{ color: "var(--muted)", fontSize: 12 }}>
               Signed in as
             </div>
@@ -151,6 +154,22 @@ function AppInner() {
       </aside>
 
       <main className="main">
+        {state.enabled && state.user ? (
+          <button
+            className="mobileAvatar"
+            type="button"
+            aria-label="Sign out"
+            title={`Sign out (${state.user.username})`}
+            onClick={() => void logout()}
+          >
+            <span className="mobileAvatarInner">
+              {String(state.user.username ?? "?")
+                .trim()
+                .slice(0, 1)
+                .toUpperCase()}
+            </span>
+          </button>
+        ) : null}
         <Routes>
           <Route
             path="/preview/webrtc/:cameraName/:profile"

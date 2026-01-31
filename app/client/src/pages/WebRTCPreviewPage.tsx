@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
+import { getStoredAuthToken } from "../authToken";
 
 type StreamProfile = "main" | "sub" | "ext";
 
@@ -7,6 +8,13 @@ type CreateSessionResponse = {
   sessionId: string;
   offer: { type: "offer"; sdp: string };
 };
+
+function apiFetch(input: RequestInfo | URL, init?: RequestInit) {
+  const token = getStoredAuthToken();
+  const headers = new Headers(init?.headers ?? undefined);
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  return fetch(input, { ...init, headers });
+}
 
 export default function WebRTCPreviewPage() {
   const { cameraName, profile } = useParams();
@@ -49,7 +57,7 @@ export default function WebRTCPreviewPage() {
 
         pc.onicecandidate = (ev) => {
           if (!ev.candidate || !sessionId || closed) return;
-          void fetch(`/api/webrtc/session/${sessionId}/ice`, {
+          void apiFetch(`/api/webrtc/session/${sessionId}/ice`, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify(ev.candidate),
@@ -62,7 +70,7 @@ export default function WebRTCPreviewPage() {
         pc.addTransceiver("video", { direction: "recvonly" });
         pc.addTransceiver("audio", { direction: "recvonly" });
 
-        const createRes = await fetch("/api/webrtc/session", {
+        const createRes = await apiFetch("/api/webrtc/session", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
@@ -86,7 +94,7 @@ export default function WebRTCPreviewPage() {
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
 
-        const answerRes = await fetch(
+        const answerRes = await apiFetch(
           `/api/webrtc/session/${sessionId}/answer`,
           {
             method: "POST",
@@ -118,7 +126,7 @@ export default function WebRTCPreviewPage() {
         // ignore
       }
       if (sessionId) {
-        void fetch(`/api/webrtc/session/${sessionId}`, {
+        void apiFetch(`/api/webrtc/session/${sessionId}`, {
           method: "DELETE",
         }).catch(() => {
           // ignore

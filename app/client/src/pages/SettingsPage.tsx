@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { trpcMutation, trpcQuery } from "../api";
 import { useAuth } from "../auth";
+import { getStoredAuthToken } from "../authToken";
 
 type Settings = {
   logLevel: "error" | "warn" | "info" | "debug";
@@ -13,13 +14,6 @@ type RuntimeInfo = {
   httpPort: number;
   rtspPort: number;
   dataPath: string;
-};
-
-type RtspCredential = {
-  id: string;
-  username: string;
-  password: string;
-  description?: string;
 };
 
 type DashboardUser = {
@@ -37,15 +31,6 @@ export default function SettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
 
-  const [creds, setCreds] = useState<RtspCredential[]>([]);
-  const [credDraft, setCredDraft] = useState<{
-    username: string;
-    password: string;
-    description: string;
-  }>({ username: "", password: "", description: "" });
-  const [savingCred, setSavingCred] = useState(false);
-  const [addCredOpen, setAddCredOpen] = useState(false);
-
   const [dashUsers, setDashUsers] = useState<DashboardUser[]>([]);
   const [savingDashUsers, setSavingDashUsers] = useState(false);
   const [addDashUserOpen, setAddDashUserOpen] = useState(false);
@@ -54,6 +39,9 @@ export default function SettingsPage() {
     password: string;
     role: "admin" | "user";
   }>({ username: "", password: "", role: "user" });
+
+  const [personalToken, setPersonalToken] = useState<string | null>(null);
+  const [creatingPersonalToken, setCreatingPersonalToken] = useState(false);
 
   const dirty = useMemo(() => settings !== null, [settings]);
 
@@ -65,11 +53,6 @@ export default function SettingsPage() {
 
         const r = await trpcQuery<RuntimeInfo>("settings.getRuntime");
         setRuntime(r);
-
-        const list = await trpcQuery<RtspCredential[]>(
-          "settings.listCredentials",
-        );
-        setCreds(list);
 
         if (authState.user?.role === "admin") {
           try {
@@ -87,48 +70,11 @@ export default function SettingsPage() {
     })();
   }, [authState.user?.role]);
 
-  async function refreshCreds() {
-    const list = await trpcQuery<RtspCredential[]>("settings.listCredentials");
-    setCreds(list);
-  }
-
   async function refreshDashboardUsers() {
     const list = await trpcQuery<DashboardUser[]>(
       "settings.listDashboardUsers",
     );
     setDashUsers(list);
-  }
-
-  async function addCredential() {
-    if (!credDraft.username || !credDraft.password) return;
-    setSavingCred(true);
-    try {
-      await trpcMutation("settings.addCredential", {
-        username: credDraft.username,
-        password: credDraft.password,
-        description: credDraft.description || undefined,
-      });
-      setCredDraft({ username: "", password: "", description: "" });
-      await refreshCreds();
-      setAddCredOpen(false);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setSavingCred(false);
-    }
-  }
-
-  async function deleteCredential(id: string) {
-    if (!confirm("Delete RTSP user?")) return;
-    setSavingCred(true);
-    try {
-      await trpcMutation("settings.deleteCredential", { id });
-      await refreshCreds();
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setSavingCred(false);
-    }
   }
 
   async function addDashboardUser() {
@@ -194,6 +140,34 @@ export default function SettingsPage() {
       setError(String(e));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function createPersonalToken() {
+    setCreatingPersonalToken(true);
+    setError(null);
+    try {
+      const token = getStoredAuthToken();
+      const res = await fetch("/api/auth/personal-token", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: "{}",
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`HTTP ${res.status}${text ? `: ${text}` : ""}`);
+      }
+
+      const data = (await res.json()) as { token: string };
+      setPersonalToken(data.token);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setCreatingPersonalToken(false);
     }
   }
 
@@ -302,84 +276,69 @@ export default function SettingsPage() {
                     })
                   }
                 />
-                <span>Require auth for RTSP connections</span>
+                <span>
+                  Require auth for RTSP connections (uses the Users list below)
+                </span>
               </label>
             </div>
 
-            <div style={{ marginTop: 14 }}>
-              <div className="label">RTSP users</div>
-              <div style={{ color: "var(--muted)", fontSize: 12 }}>
-                Digest auth users accepted by the RTSP proxy.
-              </div>
-
-              <div
-                className="row"
-                style={{ marginTop: 10, justifyContent: "flex-end" }}
-              >
-                <button
-                  className="btn"
-                  disabled={savingCred}
-                  onClick={() => void refreshCreds()}
-                >
-                  Refresh users
-                </button>
-                <button
-                  className="btn primary"
-                  disabled={savingCred}
-                  onClick={() => {
-                    setCredDraft({
-                      username: "",
-                      password: "",
-                      description: "",
-                    });
-                    setAddCredOpen(true);
-                  }}
-                >
-                  Add user
-                </button>
-              </div>
-
-              {creds.length === 0 ? (
-                <div
-                  style={{ color: "var(--muted)", fontSize: 13, marginTop: 10 }}
-                >
-                  No RTSP users configured.
+            {authState.enabled && authState.user ? (
+              <div style={{ marginTop: 18 }}>
+                <div className="label">Personal token</div>
+                <div style={{ color: "var(--muted)", fontSize: 12 }}>
+                  Generate a long-lived token for streaming endpoints (MJPEG/HLS
+                  via <span className="mono">?token=</span>, WebRTC via
+                  <span className="mono"> Authorization: Bearer</span>). This
+                  token does not expire.
                 </div>
-              ) : (
-                <table className="table" style={{ marginTop: 10 }}>
-                  <thead>
-                    <tr>
-                      <th style={{ width: 220 }}>Username</th>
-                      <th>Description</th>
-                      <th style={{ width: 110 }} />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {creds.map((c) => (
-                      <tr key={c.id}>
-                        <td className="mono">{c.username}</td>
-                        <td>{c.description ?? ""}</td>
-                        <td style={{ textAlign: "right" }}>
-                          <button
-                            className="btn danger"
-                            disabled={savingCred}
-                            onClick={() => void deleteCredential(c.id)}
-                          >
-                            Delete
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
+
+                <div
+                  className="row"
+                  style={{ marginTop: 10, justifyContent: "flex-end" }}
+                >
+                  <button
+                    className="btn primary"
+                    disabled={creatingPersonalToken}
+                    onClick={() => void createPersonalToken()}
+                  >
+                    Generate personal token
+                  </button>
+                </div>
+
+                {personalToken ? (
+                  <div style={{ marginTop: 10 }}>
+                    <div style={{ color: "var(--muted)", fontSize: 12 }}>
+                      Copy and store it now: it won’t be shown again.
+                    </div>
+                    <div className="row" style={{ marginTop: 8 }}>
+                      <input
+                        className="input mono"
+                        readOnly
+                        value={personalToken}
+                        style={{ flex: 1, minWidth: 0 }}
+                      />
+                      <button
+                        className="btn"
+                        onClick={() =>
+                          void navigator.clipboard
+                            .writeText(personalToken)
+                            .catch(() => {})
+                        }
+                      >
+                        Copy
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
 
             {authState.user?.role === "admin" ? (
               <div style={{ marginTop: 18 }}>
-                <div className="label">Dashboard users</div>
+                <div className="label">Users</div>
                 <div style={{ color: "var(--muted)", fontSize: 12 }}>
-                  Users that can access this web dashboard.
+                  Users that can access this web dashboard and authenticate to
+                  the RTSP proxy (Digest).
                 </div>
 
                 <div
@@ -463,7 +422,7 @@ export default function SettingsPage() {
               </div>
             ) : (
               <div style={{ marginTop: 18 }}>
-                <div className="label">Dashboard users</div>
+                <div className="label">Users</div>
                 <div style={{ color: "var(--muted)", fontSize: 12 }}>
                   Only admins can manage dashboard users.
                 </div>
@@ -472,92 +431,6 @@ export default function SettingsPage() {
           </div>
         </div>
       )}
-
-      {addCredOpen ? (
-        <div
-          role="dialog"
-          aria-modal="true"
-          className="modalOverlay"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setAddCredOpen(false);
-          }}
-        >
-          <div className="modalPanel" style={{ width: "min(720px, 100%)" }}>
-            <div className="row" style={{ justifyContent: "space-between" }}>
-              <div>
-                <div style={{ fontWeight: 800 }}>Add RTSP user</div>
-                <div className="subtitle">
-                  Digest auth user for the RTSP proxy.
-                </div>
-              </div>
-              <button className="btn" onClick={() => setAddCredOpen(false)}>
-                Close
-              </button>
-            </div>
-
-            <div className="grid" style={{ marginTop: 10 }}>
-              <div className="grid cols2">
-                <div>
-                  <div className="label">Username</div>
-                  <input
-                    className="input"
-                    value={credDraft.username}
-                    onChange={(e) =>
-                      setCredDraft({
-                        ...credDraft,
-                        username: e.target.value,
-                      })
-                    }
-                  />
-                </div>
-                <div>
-                  <div className="label">Password</div>
-                  <input
-                    className="input"
-                    type="password"
-                    value={credDraft.password}
-                    onChange={(e) =>
-                      setCredDraft({
-                        ...credDraft,
-                        password: e.target.value,
-                      })
-                    }
-                  />
-                </div>
-              </div>
-
-              <div>
-                <div className="label">Description (optional)</div>
-                <input
-                  className="input"
-                  value={credDraft.description}
-                  onChange={(e) =>
-                    setCredDraft({
-                      ...credDraft,
-                      description: e.target.value,
-                    })
-                  }
-                />
-              </div>
-
-              <div className="row" style={{ justifyContent: "flex-end" }}>
-                <button className="btn" onClick={() => setAddCredOpen(false)}>
-                  Cancel
-                </button>
-                <button
-                  className="btn primary"
-                  disabled={
-                    savingCred || !credDraft.username || !credDraft.password
-                  }
-                  onClick={() => void addCredential()}
-                >
-                  {savingCred ? "Working…" : "Add user"}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
 
       {addDashUserOpen ? (
         <div

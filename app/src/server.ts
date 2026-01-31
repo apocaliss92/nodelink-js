@@ -13,13 +13,12 @@ import { WebSocket, WebSocketServer } from "ws";
 import { appLogger, logEmitter, LogEntry, getRecentLogs } from "./logger.js";
 import { appRouter } from "./router.js";
 import {
-  clearSessionCookie,
-  createSession,
-  destroySession,
   getAuthConfig,
-  getSessionFromRequest,
+  getAuthTokenFromRequest,
   getUserFromRequest,
-  setSessionCookie,
+  createAuthToken,
+  createPersonalAuthToken,
+  revokeAuthToken,
   verifyCredentials,
 } from "./auth.js";
 import {
@@ -159,16 +158,27 @@ app.post("/api/auth/login", (req, res) => {
     return;
   }
 
-  const sid = createSession(user);
-  setSessionCookie(res, sid);
-  res.json({ user });
+  const token = createAuthToken(user);
+  res.json({ user, token });
 });
 
 app.post("/api/auth/logout", (req, res) => {
-  const { sid } = getSessionFromRequest(req);
-  if (sid) destroySession(sid);
-  clearSessionCookie(res);
+  const token = getAuthTokenFromRequest(req);
+  if (token) revokeAuthToken(token);
   res.json({ ok: true });
+});
+
+// Generate a long-lived personal token for the currently authenticated user.
+// This does NOT revoke session tokens.
+app.post("/api/auth/personal-token", requireAuth, (req, res) => {
+  const user = getUserFromRequest(req);
+  if (!user) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+
+  const token = createPersonalAuthToken(user);
+  res.json({ token });
 });
 
 // Protect all other /api routes

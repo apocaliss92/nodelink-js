@@ -1,7 +1,7 @@
 import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   CameraConfigSchema,
   RtspServerConfigSchema,
@@ -10,26 +10,49 @@ import {
 } from "./types.js";
 import { hashPassword } from "./password.js";
 
-// RTSP Credential schema
-export const RtspCredentialSchema = z.object({
-  id: z.string(),
-  username: z.string(),
-  password: z.string(),
-  description: z.string().optional(),
-});
+export const RTSP_DIGEST_REALM = "RTSP Proxy";
 
-export type RtspCredential = z.infer<typeof RtspCredentialSchema>;
+function computeRtspDigestHa1Hex(input: {
+  username: string;
+  password: string;
+  realm?: string;
+}): string {
+  const realm = input.realm ?? RTSP_DIGEST_REALM;
+  return createHash("md5")
+    .update(`${input.username}:${realm}:${input.password}`)
+    .digest("hex");
+}
 
 export const DashboardUserSchema = z.object({
   username: z.string().min(1),
   role: z.enum(["admin", "user"]).default("user"),
   passwordSalt: z.string().min(1),
   passwordHash: z.string().min(1),
+  // Precomputed digest HA1 for RTSP proxy Digest authentication.
+  // HA1 = MD5(username:realm:password)
+  rtspDigestHa1: z.string().optional(),
   createdAt: z.number().optional(),
   updatedAt: z.number().optional(),
 });
 
 export type DashboardUser = z.infer<typeof DashboardUserSchema>;
+
+export const AuthTokenSchema = z.object({
+  id: z.string(),
+  tokenHashHex: z.string().min(1),
+  // Token type:
+  // - session: created by web login, can have multiple
+  // - personal: long-lived personal token (unique per user)
+  type: z.enum(["session", "personal"]).optional().default("session"),
+  user: z.object({
+    username: z.string().min(1),
+    kind: z.enum(["env-admin", "settings"]),
+    role: z.enum(["admin", "user"]),
+  }),
+  createdAt: z.number(),
+});
+
+export type AuthToken = z.infer<typeof AuthTokenSchema>;
 
 // Unified Settings schema (includes cameras and rtspServers)
 export const SettingsSchema = z.object({
@@ -48,7 +71,6 @@ export const SettingsSchema = z.object({
   rtspProxyEnabled: z.boolean().default(true),
 
   // RTSP Authentication
-  rtspCredentials: z.array(RtspCredentialSchema).default([]),
   rtspRequireAuth: z.boolean().default(false),
 
   // Cameras and RTSP servers (previously in config.json)
@@ -57,6 +79,9 @@ export const SettingsSchema = z.object({
 
   // Dashboard/web UI authentication users
   dashboardUsers: z.array(DashboardUserSchema).default([]),
+
+  // Persistent auth tokens (hashed). Never expose these via API.
+  authTokens: z.array(AuthTokenSchema).default([]),
 });
 
 export type Settings = z.infer<typeof SettingsSchema>;
@@ -95,49 +120,7 @@ export function getSettings(): Settings {
 }
 
 // ==================== RTSP Credentials ====================
-
-export function getRtspCredentials(): RtspCredential[] {
-  return settings.rtspCredentials;
-}
-
-export function addRtspCredential(
-  credential: Omit<RtspCredential, "id">,
-): RtspCredential {
-  const id = `cred_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-  const newCredential: RtspCredential = { ...credential, id };
-  settings.rtspCredentials = [...settings.rtspCredentials, newCredential];
-  saveSettings(settings);
-  return newCredential;
-}
-
-export function updateRtspCredential(
-  id: string,
-  updates: Partial<Omit<RtspCredential, "id">>,
-): RtspCredential | null {
-  const index = settings.rtspCredentials.findIndex((c) => c.id === id);
-  if (index === -1) return null;
-
-  const updated = { ...settings.rtspCredentials[index]!, ...updates };
-  settings.rtspCredentials = [
-    ...settings.rtspCredentials.slice(0, index),
-    updated,
-    ...settings.rtspCredentials.slice(index + 1),
-  ];
-  saveSettings(settings);
-  return updated;
-}
-
-export function deleteRtspCredential(id: string): boolean {
-  const index = settings.rtspCredentials.findIndex((c) => c.id === id);
-  if (index === -1) return false;
-
-  settings.rtspCredentials = [
-    ...settings.rtspCredentials.slice(0, index),
-    ...settings.rtspCredentials.slice(index + 1),
-  ];
-  saveSettings(settings);
-  return true;
-}
+// RTSP credentials are now the same as dashboardUsers.
 
 // ==================== Cameras ====================
 
@@ -271,6 +254,10 @@ export function addDashboardUser(input: {
     role: input.role ?? "user",
     passwordSalt: saltBase64,
     passwordHash: hashBase64,
+    rtspDigestHa1: computeRtspDigestHa1Hex({
+      username,
+      password: input.password,
+    }),
     createdAt: now,
     updatedAt: now,
   };
@@ -313,6 +300,10 @@ export function setDashboardUserPassword(input: {
       ...current,
       passwordSalt: saltBase64,
       passwordHash: hashBase64,
+      rtspDigestHa1: computeRtspDigestHa1Hex({
+        username: input.username,
+        password: input.password,
+      }),
       updatedAt: now,
     },
     ...settings.dashboardUsers.slice(idx + 1),

@@ -7,6 +7,11 @@ import {
   useMemo,
   useState,
 } from "react";
+import {
+  clearStoredAuthToken,
+  getStoredAuthToken,
+  setStoredAuthToken,
+} from "./authToken";
 
 export type AuthUser = {
   username: string;
@@ -38,11 +43,13 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const url = new URL(path, window.location.origin);
+  const token = getStoredAuthToken();
   const res = await fetch(url.toString(), {
     ...init,
     credentials: "include",
     headers: {
       "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(init?.headers ?? {}),
     },
   });
@@ -80,6 +87,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           config,
         });
       } catch {
+        // Invalid/expired token.
+        clearStoredAuthToken();
         setState({ checked: true, enabled: true, user: null, config });
       }
     } catch {
@@ -89,10 +98,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = useCallback(async (username: string, password: string) => {
-    const result = await fetchJson<{ user: AuthUser }>("/api/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ username, password }),
-    });
+    const result = await fetchJson<{ user: AuthUser; token: string }>(
+      "/api/auth/login",
+      {
+        method: "POST",
+        body: JSON.stringify({ username, password }),
+      },
+    );
+
+    setStoredAuthToken(result.token);
+
     setState((s) => ({
       ...s,
       checked: true,
@@ -103,6 +118,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(async () => {
     await fetchJson("/api/auth/logout", { method: "POST", body: "{}" });
+    clearStoredAuthToken();
     await refresh();
   }, [refresh]);
 

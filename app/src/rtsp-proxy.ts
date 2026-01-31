@@ -2,11 +2,7 @@ import * as net from "net";
 import * as crypto from "crypto";
 import { EventEmitter } from "events";
 import { createSourceLogger } from "./logger.js";
-import {
-  getSettings,
-  getConfig,
-  getRtspCredentials,
-} from "./settings-store.js";
+import { getSettings, getConfig, RTSP_DIGEST_REALM } from "./settings-store.js";
 import {
   getAllRtspServersInfo,
   sanitizeCameraName,
@@ -58,7 +54,7 @@ export class RtspProxyServer extends EventEmitter {
       backendKey?: string;
     }
   >();
-  private readonly realm = "RTSP Proxy";
+  private readonly realm = RTSP_DIGEST_REALM;
 
   /** Track clients per backend (key: "cameraName/profile") */
   private backendClients = new Map<string, Set<string>>();
@@ -152,11 +148,23 @@ export class RtspProxyServer extends EventEmitter {
       return { valid: false };
     }
 
-    // Find credential
-    const credentials = getRtspCredentials();
-    const credential = credentials.find((c) => c.username === username);
-    if (!credential) {
-      logger.debug(`Unknown user: ${username}`);
+    // Find user in the unified list (dashboard users)
+    const users = getSettings().dashboardUsers;
+    const user = users.find((u) => u.username === username);
+
+    // Also accept the env-admin user (same as HTTP auth) if configured.
+    // This allows RTSP auth to reuse the server admin password without creating a stored user.
+    const envAdminPassword = process.env.ADMIN_PASSWORD;
+    const envAdminUsername = "admin";
+
+    const ha1Hex = user?.rtspDigestHa1
+      ? user.rtspDigestHa1
+      : envAdminPassword && username === envAdminUsername
+        ? this.md5(`${username}:${session.realm}:${envAdminPassword}`)
+        : null;
+
+    if (!ha1Hex) {
+      logger.debug(`Unknown user (or not RTSP-enabled): ${username}`);
       return { valid: false };
     }
 
@@ -165,9 +173,8 @@ export class RtspProxyServer extends EventEmitter {
     // HA2 = MD5(method:uri)
     // response = MD5(HA1:nonce:HA2)
     const method = this.extractMethod(data);
-    const ha1 = this.md5(`${username}:${session.realm}:${credential.password}`);
     const ha2 = this.md5(`${method}:${uri}`);
-    const expectedResponse = this.md5(`${ha1}:${session.nonce}:${ha2}`);
+    const expectedResponse = this.md5(`${ha1Hex}:${session.nonce}:${ha2}`);
 
     if (response === expectedResponse) {
       return { valid: true, username };
@@ -200,7 +207,12 @@ export class RtspProxyServer extends EventEmitter {
    */
   private isAuthRequired(): boolean {
     const settings = getSettings();
-    return settings.rtspRequireAuth && getRtspCredentials().length > 0;
+    const users = settings.dashboardUsers;
+    const hasEnvAdmin = Boolean(process.env.ADMIN_PASSWORD);
+    return (
+      settings.rtspRequireAuth &&
+      (hasEnvAdmin || users.some((u) => Boolean(u.rtspDigestHa1)))
+    );
   }
 
   /**

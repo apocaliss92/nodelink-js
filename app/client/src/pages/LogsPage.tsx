@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { getStoredAuthToken } from "../authToken";
 
 type LogEntry = {
   timestamp?: string;
@@ -67,7 +68,10 @@ export default function LogsPage() {
 
   useEffect(() => {
     const proto = window.location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${window.location.host}/ws/logs`);
+    const token = getStoredAuthToken();
+    const base = `${proto}://${window.location.host}/ws/logs`;
+    const url = token ? `${base}?token=${encodeURIComponent(token)}` : base;
+    const ws = new WebSocket(url);
 
     ws.onopen = () => setConnected(true);
     ws.onclose = () => setConnected(false);

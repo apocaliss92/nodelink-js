@@ -125,6 +125,95 @@ docker-compose up -d
 | `AUTH_ENABLED`   | (unset) | Enable auth when set to `1/true` (or disable with `0/false`). If unset, auth auto-enables when `ADMIN_PASSWORD` is set. |
 | `ADMIN_PASSWORD` | (unset) | Sets the `admin` password. This credential works for both the web login form and HTTP Basic auth.                       |
 
+### Streaming Authentication (RTSP / MJPEG / HLS / WebRTC)
+
+When authentication is enabled (see `AUTH_ENABLED` / `ADMIN_PASSWORD`), **all streaming endpoints are protected**.
+
+#### Step-by-step
+
+1. **Login to the Manager UI** (or use the API login) to obtain an auth token.
+2. (Recommended) **Generate a long-lived personal token** from **Settings → Personal token**.
+3. Use the correct auth mechanism depending on the streaming protocol:
+
+- RTSP: **Digest** with username/password
+- MJPEG/HLS: token in query string `?token=...`
+- WebRTC signaling + status endpoints: `Authorization: Bearer ...`
+- WebSocket logs: `?token=...` in the WS URL
+
+There are two auth mechanisms depending on the protocol:
+
+1. **RTSP (RTSP proxy): Digest auth with username/password**
+
+- URL format: `rtsp://<host>:<RTSP_PORT>/<camera>/<main|sub|ext>`
+- Credentials: the same **Users** list used by the dashboard.
+- Digest realm: `RTSP Proxy`
+- You can toggle whether auth is required via the Manager UI setting **“Require auth for RTSP connections”**.
+
+Examples:
+
+```bash
+# ffmpeg (Digest)
+ffmpeg -rtsp_transport tcp -i "rtsp://USERNAME:PASSWORD@HOST:8554/camera/main" -f null -
+
+# VLC (it will prompt for credentials, or use URL user:pass)
+vlc "rtsp://USERNAME:PASSWORD@HOST:8554/camera/main"
+```
+
+2. **HTTP-based streaming (MJPEG / HLS): token in query string**
+
+Browsers cannot reliably attach custom headers (like `Authorization`) to media tags (`<img>`, `<video>`), so MJPEG/HLS streams must be accessed with the auth token in the URL query string:
+
+- MJPEG: `/api/mpeg/<camera>/<profile>?token=...`
+- HLS playlist: `/api/hls/<camera>/<profile>/playlist.m3u8?token=...` (and segment requests will inherit the query param)
+
+Examples:
+
+```text
+MJPEG:
+  http://HOST:3000/api/mpeg/camera/main?token=YOUR_TOKEN
+
+HLS:
+  http://HOST:3000/api/hls/camera/main/playlist.m3u8?token=YOUR_TOKEN
+```
+
+Security note: query tokens may end up in logs/history. Treat them like passwords.
+
+3. **WebRTC control endpoints: Bearer token in Authorization header**
+
+WebRTC signaling uses JSON endpoints (create session, send ICE candidates, send answer) and supports standard Bearer auth:
+
+```bash
+# 1) Login to obtain a token
+curl -sS -X POST http://HOST:3000/api/auth/login \
+  -H 'content-type: application/json' \
+  -d '{"username":"admin","password":"YOUR_PASSWORD"}'
+
+# 2) Use the returned token for WebRTC signaling
+curl -sS http://HOST:3000/api/webrtc/status \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+You can also generate a personal token via API (requires an existing valid token):
+
+```bash
+curl -sS -X POST http://HOST:3000/api/auth/personal-token \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{}'
+```
+
+4. **WebSocket logs: token in query string**
+
+The browser WebSocket handshake cannot reliably attach custom headers, so use:
+
+```text
+ws://HOST:3000/ws/logs?token=YOUR_TOKEN
+```
+
+If authentication is disabled, these endpoints work without credentials.
+
+Tip: a personal token is ideal for integrations (Home Assistant, scripts, etc.) because it does not expire.
+
 📖 **[Full Docker documentation →](./DOCKER.md)**
 
 ---

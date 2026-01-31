@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import type http from "node:http";
-import { getSettings } from "./settings-store.js";
+import { getSettings, saveSettings } from "./settings-store.js";
 import { verifyPassword } from "./password.js";
 
 export type AuthUser = {
@@ -14,6 +14,8 @@ export type AuthConfig = {
   adminUsername: string;
   hasAdminPassword: boolean;
 };
+
+export type AuthTokenType = "session" | "personal";
 
 const SESSION_COOKIE_NAME = "nodelink_sid";
 
@@ -90,6 +92,117 @@ function parseBasicAuthHeader(
   }
 }
 
+function parseBearerAuthHeader(
+  authorization: string | undefined,
+): string | null {
+  if (!authorization) return null;
+  const [scheme, token] = authorization.split(" ");
+  if (!scheme || scheme.toLowerCase() !== "bearer") return null;
+  if (!token) return null;
+  const t = token.trim();
+  return t ? t : null;
+}
+
+function getTokenFromUrlQuery(urlRaw: string | undefined): string | null {
+  if (!urlRaw) return null;
+  try {
+    const u = new URL(urlRaw, "http://localhost");
+    const token = u.searchParams.get("token");
+    return token && token.trim() ? token : null;
+  } catch {
+    return null;
+  }
+}
+
+function sha256Hex(input: string): string {
+  return crypto.createHash("sha256").update(input).digest("hex");
+}
+
+export function createAuthToken(user: AuthUser): string {
+  const token = crypto.randomBytes(32).toString("base64url");
+  const tokenHashHex = sha256Hex(token);
+  const settings = getSettings();
+  const now = Date.now();
+  const entry = {
+    id: crypto.randomUUID(),
+    tokenHashHex,
+    type: "session" as AuthTokenType,
+    user,
+    createdAt: now,
+  };
+
+  const current = ((settings as any).authTokens ?? []) as any[];
+  const next = [...current, entry];
+  saveSettings({ authTokens: next } as any);
+  return token;
+}
+
+export function createPersonalAuthToken(user: AuthUser): string {
+  const token = crypto.randomBytes(32).toString("base64url");
+  const tokenHashHex = sha256Hex(token);
+  const settings = getSettings();
+  const now = Date.now();
+  const entry = {
+    id: crypto.randomUUID(),
+    tokenHashHex,
+    type: "personal" as AuthTokenType,
+    user,
+    createdAt: now,
+  };
+
+  const current = ((settings as any).authTokens ?? []) as Array<any>;
+  const next = current
+    .filter((t) => {
+      if (t?.type !== "personal") return true;
+      const tu = t?.user;
+      return !(
+        tu?.username === user.username &&
+        tu?.kind === user.kind &&
+        tu?.role === user.role
+      );
+    })
+    .concat(entry);
+
+  saveSettings({ authTokens: next } as any);
+  return token;
+}
+
+export function revokeAuthToken(token: string): boolean {
+  const settings = getSettings();
+  const tokenHashHex = sha256Hex(token);
+  const current = ((settings as any).authTokens ?? []) as Array<{
+    tokenHashHex: string;
+  }>;
+  const next = current.filter(
+    (t) => !timingSafeEqualString(t.tokenHashHex, tokenHashHex),
+  );
+  if (next.length === current.length) return false;
+  saveSettings({ authTokens: next } as any);
+  return true;
+}
+
+function getUserFromToken(token: string): AuthUser | null {
+  const settings = getSettings();
+  const tokenHashHex = sha256Hex(token);
+  const tokens = ((settings as any).authTokens ?? []) as Array<{
+    tokenHashHex: string;
+    user: AuthUser;
+  }>;
+  for (const t of tokens) {
+    if (timingSafeEqualString(t.tokenHashHex, tokenHashHex)) return t.user;
+  }
+  return null;
+}
+
+export function getAuthTokenFromRequest(
+  req: http.IncomingMessage,
+): string | null {
+  return (
+    parseBearerAuthHeader(req.headers.authorization) ??
+    getTokenFromUrlQuery(req.url)
+  );
+}
+
 function timingSafeEqualString(a: string, b: string): boolean {
   const aBuf = Buffer.from(a);
   const bBuf = Buffer.from(b);
@@ -161,6 +274,12 @@ export function getSessionFromRequest(req: http.IncomingMessage): {
 export function getUserFromRequest(req: http.IncomingMessage): AuthUser | null {
   const { user } = getSessionFromRequest(req);
   if (user) return user;
+
+  const token = getAuthTokenFromRequest(req);
+  if (token) {
+    const u = getUserFromToken(token);
+    if (u) return u;
+  }
 
   const basic = parseBasicAuthHeader(req.headers.authorization);
   if (!basic) return null;

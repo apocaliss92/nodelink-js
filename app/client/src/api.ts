@@ -1,5 +1,7 @@
 export type TrpcMethod = "GET" | "POST";
 
+import { getStoredAuthToken } from "./authToken";
+
 export async function trpcCall<T>(
   path: string,
   method: TrpcMethod,
@@ -13,7 +15,12 @@ export async function trpcCall<T>(
   const res = await fetch(url.toString(), {
     method,
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(getStoredAuthToken()
+        ? { Authorization: `Bearer ${getStoredAuthToken()}` }
+        : {}),
+    },
     body: method === "POST" ? JSON.stringify(input ?? {}) : undefined,
   });
 

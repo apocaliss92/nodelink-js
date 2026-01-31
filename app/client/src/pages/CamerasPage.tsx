@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
 import { trpcMutation, trpcQuery } from "../api";
+import { getStoredAuthToken } from "../authToken";
 
 type StreamProfile = "main" | "sub" | "ext";
 
@@ -63,6 +64,13 @@ type PreviewModalState =
       hlsUrl?: string;
     }
   | { open: false };
+
+function apiFetch(input: RequestInfo | URL, init?: RequestInit) {
+  const token = getStoredAuthToken();
+  const headers = new Headers(init?.headers ?? undefined);
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  return fetch(input, { ...init, headers });
+}
 
 function HlsInlinePlayer({ url }: { url: string }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -449,7 +457,7 @@ function WebRTCInlinePlayer({
 
         pc.onicecandidate = (ev) => {
           if (!ev.candidate || !sessionId || closed) return;
-          void fetch(`/api/webrtc/session/${sessionId}/ice`, {
+          void apiFetch(`/api/webrtc/session/${sessionId}/ice`, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify(ev.candidate),
@@ -462,7 +470,7 @@ function WebRTCInlinePlayer({
         pc.addTransceiver("video", { direction: "recvonly" });
         pc.addTransceiver("audio", { direction: "recvonly" });
 
-        const createRes = await fetch(`/api/webrtc/session`, {
+        const createRes = await apiFetch(`/api/webrtc/session`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ cameraName, profile, enableIntercom: false }),
@@ -493,7 +501,7 @@ function WebRTCInlinePlayer({
         await pc.setLocalDescription(answer);
         if (closed) return;
 
-        const answerRes = await fetch(
+        const answerRes = await apiFetch(
           `/api/webrtc/session/${sessionId}/answer`,
           {
             method: "POST",
@@ -531,7 +539,7 @@ function WebRTCInlinePlayer({
         // ignore
       }
       if (sessionId) {
-        void fetch(`/api/webrtc/session/${sessionId}`, {
+        void apiFetch(`/api/webrtc/session/${sessionId}`, {
           method: "DELETE",
         }).catch(() => {
           // ignore
@@ -761,16 +769,30 @@ export default function CamerasPage() {
     return window.location.origin;
   }
 
+  function withAuthTokenQuery(url: string): string {
+    const token = getStoredAuthToken();
+    if (!token) return url;
+    const u = new URL(url, window.location.origin);
+    u.searchParams.set("token", token);
+    return u.toString();
+  }
+
   function getMjpegUrl(cam: CameraInfo, profile: StreamProfile): string {
-    return `${getHttpOrigin()}/api/mpeg/${cam.sanitizedName}/${profile}`;
+    return withAuthTokenQuery(
+      `${getHttpOrigin()}/api/mpeg/${cam.sanitizedName}/${profile}`,
+    );
   }
 
   function getMjpegPreviewUrl(cam: CameraInfo, profile: StreamProfile): string {
-    return `${getHttpOrigin()}/api/mpeg/${cam.sanitizedName}/${profile}`;
+    return withAuthTokenQuery(
+      `${getHttpOrigin()}/api/mpeg/${cam.sanitizedName}/${profile}`,
+    );
   }
 
   function getHlsUrl(cam: CameraInfo, profile: StreamProfile): string {
-    return `${getHttpOrigin()}/api/hls/${cam.sanitizedName}/${profile}/playlist.m3u8`;
+    return withAuthTokenQuery(
+      `${getHttpOrigin()}/api/hls/${cam.sanitizedName}/${profile}/playlist.m3u8`,
+    );
   }
 
   async function copyToClipboard(text: string) {
@@ -804,13 +826,13 @@ export default function CamerasPage() {
         trpcQuery<CameraInfo[]>("cameras.list"),
         trpcQuery<any>("rtspProxy.getStatus").catch(() => null),
         trpcQuery<any[]>("rtsp.list").catch(() => []),
-        fetch("/api/mjpeg/status")
+        apiFetch("/api/mjpeg/status")
           .then((r) => (r.ok ? r.json() : []))
           .catch(() => []),
-        fetch("/api/webrtc/status")
+        apiFetch("/api/webrtc/status")
           .then((r) => (r.ok ? r.json() : { sessions: [] }))
           .catch(() => ({ sessions: [] })),
-        fetch("/api/hls/status")
+        apiFetch("/api/hls/status")
           .then((r) => (r.ok ? r.json() : []))
           .catch(() => []),
       ]);
@@ -884,13 +906,13 @@ export default function CamerasPage() {
       const [proxy, rtspList, mjpeg, webrtc, hls] = await Promise.all([
         trpcQuery<any>("rtspProxy.getStatus").catch(() => null),
         trpcQuery<any[]>("rtsp.list").catch(() => []),
-        fetch("/api/mjpeg/status")
+        apiFetch("/api/mjpeg/status")
           .then((r) => (r.ok ? r.json() : []))
           .catch(() => []),
-        fetch("/api/webrtc/status")
+        apiFetch("/api/webrtc/status")
           .then((r) => (r.ok ? r.json() : { sessions: [] }))
           .catch(() => ({ sessions: [] })),
-        fetch("/api/hls/status")
+        apiFetch("/api/hls/status")
           .then((r) => (r.ok ? r.json() : []))
           .catch(() => []),
       ]);
