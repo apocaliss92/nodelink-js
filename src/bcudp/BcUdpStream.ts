@@ -4,9 +4,35 @@ import { EventEmitter } from "node:events";
 import { type AddressInfo } from "node:net";
 import { networkInterfaces } from "node:os";
 import { setInterval as setIntervalNode } from "node:timers";
-import { BCUDP_DATA_HEADER_SIZE, BCUDP_DEFAULT_MTU, BCUDP_DISCOVERY_PORT_LOCAL_UID, BCUDP_DISCOVERY_PORT_LOCAL_ANY } from "./constants";
-import { decodeBcUdpPacket, encodeAckPacket, encodeDataPacket, encodeDiscoveryPacket } from "./packets";
-import { buildC2dA, buildC2dC, buildC2dHb, buildC2dT, buildC2mQ, buildC2rC, buildC2rCfm, parseD2cCfm, parseD2cCr, parseD2cDisc, parseD2cHb, parseD2cT, parseM2cQr, parseR2cCr, type IpPort } from "./xml";
+import {
+  BCUDP_DATA_HEADER_SIZE,
+  BCUDP_DEFAULT_MTU,
+  BCUDP_DISCOVERY_PORT_LOCAL_UID,
+  BCUDP_DISCOVERY_PORT_LOCAL_ANY,
+} from "./constants";
+import {
+  decodeBcUdpPacket,
+  encodeAckPacket,
+  encodeDataPacket,
+  encodeDiscoveryPacket,
+} from "./packets";
+import {
+  buildC2dA,
+  buildC2dC,
+  buildC2dHb,
+  buildC2dT,
+  buildC2mQ,
+  buildC2rC,
+  buildC2rCfm,
+  parseD2cCfm,
+  parseD2cCr,
+  parseD2cDisc,
+  parseD2cHb,
+  parseD2cT,
+  parseM2cQr,
+  parseR2cCr,
+  type IpPort,
+} from "./xml";
 
 class AckLatency {
   private currentValues: number[] = [];
@@ -47,48 +73,51 @@ class AckLatency {
 
 export type BcUdpStreamOptions =
   | {
-    /** Local discovery via UID (typical for battery cameras). */
-    mode: "uid";
-    uid: string;
+      /** Local discovery via UID (typical for battery cameras). */
+      mode: "uid";
+      uid: string;
 
-    /**
-     * Optional direct discovery target.
-     *
-     * When provided, discovery will first try sending UID discovery packets directly to this host
-     * (unicast) before falling back to LAN broadcast.
-     *
-     * Useful when the camera IP is already known and you want to avoid relying solely on broadcast.
-     */
-    directHost?: string;
+      /**
+       * Optional direct discovery target.
+       *
+       * When provided, discovery will first try sending UID discovery packets directly to this host
+       * (unicast) before falling back to LAN broadcast.
+       *
+       * Useful when the camera IP is already known and you want to avoid relying solely on broadcast.
+       */
+      directHost?: string;
 
-    /**
-     * Discovery method for UID-based connection.
-     * - `local-broadcast`: UDP broadcast to LAN (no Reolink servers)
-     * - `local`: legacy alias for `local-broadcast`
-     * - `local-broadcast`: legacy alias for `local-broadcast`
-     * - `remote`: use Reolink servers to learn addresses, then try direct device connection
-     * - `map`: device-initiated via public (dmap) address
-     * - `relay`: fully relayed via Reolink servers
-     */
-    discoveryMethod?: BcUdpDiscoveryMethod;
-  }
+      /**
+       * Discovery method for UID-based connection.
+       * - `local-broadcast`: UDP broadcast to LAN (no Reolink servers)
+       * - `local`: legacy alias for `local-broadcast`
+       * - `local-broadcast`: legacy alias for `local-broadcast`
+       * - `remote`: use Reolink servers to learn addresses, then try direct device connection
+       * - `map`: device-initiated via public (dmap) address
+       * - `relay`: fully relayed via Reolink servers
+       */
+      discoveryMethod?: BcUdpDiscoveryMethod;
+    }
   | {
-    /** Direct connection with already-known parameters. */
-    mode: "direct";
-    host: string;
-    port: number;
-    clientId: number;
-    cameraId: number;
-  };
+      /** Direct connection with already-known parameters. */
+      mode: "direct";
+      host: string;
+      port: number;
+      clientId: number;
+      cameraId: number;
+    };
 
 export type BcUdpDiscoveryMethod =
   | "local-broadcast"
   | "local-direct"
   | "remote"
   | "map"
-  | "relay"
+  | "relay";
 
-type BcUdpP2pDiscoveryMethod = Exclude<BcUdpDiscoveryMethod, "local-broadcast" | "local-direct">;
+type BcUdpP2pDiscoveryMethod = Exclude<
+  BcUdpDiscoveryMethod,
+  "local-broadcast" | "local-direct"
+>;
 
 type SockAddr = { host: string; port: number };
 
@@ -206,7 +235,9 @@ export class BcUdpStream extends EventEmitter<{
     sock.on("error", (e) => this.emit("error", e));
     sock.on("close", () => this.emit("close"));
 
-    await new Promise<void>((resolve) => sock.bind(0, "0.0.0.0", () => resolve()));
+    await new Promise<void>((resolve) =>
+      sock.bind(0, "0.0.0.0", () => resolve()),
+    );
 
     if (this.opts.mode === "direct") {
       this.remote = { host: this.opts.host, port: this.opts.port };
@@ -220,9 +251,11 @@ export class BcUdpStream extends EventEmitter<{
   }
 
   private async discoveryUid(sock: dgram.Socket): Promise<void> {
-    if (this.opts.mode !== "uid") throw new Error("Internal: discoveryUid called for non-uid mode");
+    if (this.opts.mode !== "uid")
+      throw new Error("Internal: discoveryUid called for non-uid mode");
 
-    const method: BcUdpDiscoveryMethod = this.opts.discoveryMethod ?? "local-direct";
+    const method: BcUdpDiscoveryMethod =
+      this.opts.discoveryMethod ?? "local-direct";
 
     if (method === "local-broadcast" || method === "local-direct") {
       await this.discoveryUidLocal(sock, { localMode: method });
@@ -247,15 +280,21 @@ export class BcUdpStream extends EventEmitter<{
         }
       }
     }
-    throw new Error("No non-loopback IPv4 address found (required for P2P discovery)");
+    throw new Error(
+      "No non-loopback IPv4 address found (required for P2P discovery)",
+    );
   }
 
-  private async discoveryUidP2p(sock: dgram.Socket, method: BcUdpP2pDiscoveryMethod): Promise<void> {
-    if (this.opts.mode !== "uid") throw new Error("Internal: discoveryUidP2p called for non-uid mode");
+  private async discoveryUidP2p(
+    sock: dgram.Socket,
+    method: BcUdpP2pDiscoveryMethod,
+  ): Promise<void> {
+    if (this.opts.mode !== "uid")
+      throw new Error("Internal: discoveryUidP2p called for non-uid mode");
 
     const addr = sock.address();
     const localPort = typeof addr === "string" ? 0 : (addr as AddressInfo).port;
-    const cid = (Math.floor(Math.random() * 0x7fffffff) | 0) || 82000;
+    const cid = Math.floor(Math.random() * 0x7fffffff) | 0 || 82000;
 
     const lookup = await this.p2pUidLookup(sock, this.opts.uid);
     const reg = await this.p2pRegister(sock, {
@@ -266,10 +305,14 @@ export class BcUdpStream extends EventEmitter<{
       reg: lookup.reg,
     });
 
-    const conn: "local" | "map" | "relay" = method === "remote" ? "local" : method;
-    const connected = await this.p2pConnect(sock, { ...reg, uid: this.opts.uid, cid }, method);
+    const conn: "local" | "map" | "relay" =
+      method === "remote" ? "local" : method;
+    const connected = await this.p2pConnect(
+      sock,
+      { ...reg, uid: this.opts.uid, cid },
+      method,
+    );
 
-    // Confirm to register server (best-effort like neolink: send a few times).
     await this.p2pConfirm(sock, reg.reg, {
       sid: reg.sid,
       conn,
@@ -284,20 +327,26 @@ export class BcUdpStream extends EventEmitter<{
     this.remote = { host: connected.rhost, port: connected.rport };
   }
 
-  private async p2pUidLookup(sock: dgram.Socket, uid: string): Promise<{ reg: IpPort; relay: IpPort }> {
+  private async p2pUidLookup(
+    sock: dgram.Socket,
+    uid: string,
+  ): Promise<{ reg: IpPort; relay: IpPort }> {
     const resolved: string[] = [];
     for (const host of P2P_RELAY_HOSTNAMES) {
       try {
         const answers = await dns.lookup(host, { family: 4, all: true });
         for (const a of answers) {
-          if (a.address && !resolved.includes(a.address)) resolved.push(a.address);
+          if (a.address && !resolved.includes(a.address))
+            resolved.push(a.address);
         }
       } catch {
         // ignore DNS failures per-host
       }
     }
     if (resolved.length === 0) {
-      throw new Error("P2P UID lookup failed: no p2p.reolink.com addresses resolved");
+      throw new Error(
+        "P2P UID lookup failed: no p2p.reolink.com addresses resolved",
+      );
     }
 
     const start = Date.now();
@@ -306,7 +355,12 @@ export class BcUdpStream extends EventEmitter<{
       const remaining = P2P_MAX_WAIT_MS - (Date.now() - start);
       if (remaining <= 0) break;
       try {
-        const res = await this.p2pUidLookupOne(sock, uid, { host: ip, port: P2P_LOOKUP_PORT }, Math.min(remaining, 3_000));
+        const res = await this.p2pUidLookupOne(
+          sock,
+          uid,
+          { host: ip, port: P2P_LOOKUP_PORT },
+          Math.min(remaining, 3_000),
+        );
         return res;
       } catch (e) {
         lastErr = e instanceof Error ? e : new Error(String(e));
@@ -335,7 +389,7 @@ export class BcUdpStream extends EventEmitter<{
         try {
           const p = decodeBcUdpPacket(msg);
           if (p.kind !== "discovery") return;
-          if ((p.tid >>> 0) !== (tid >>> 0)) return;
+          if (p.tid >>> 0 !== tid >>> 0) return;
           const qr = parseM2cQr(p.xml);
           if (!qr?.reg || !qr?.relay) return;
           cleanup();
@@ -367,8 +421,20 @@ export class BcUdpStream extends EventEmitter<{
 
   private async p2pRegister(
     sock: dgram.Socket,
-    params: { uid: string; cid: number; localPort: number; reg: IpPort; relay: IpPort },
-  ): Promise<{ reg: SockAddr; dev?: SockAddr; dmap?: SockAddr; relay?: SockAddr; sid: number }> {
+    params: {
+      uid: string;
+      cid: number;
+      localPort: number;
+      reg: IpPort;
+      relay: IpPort;
+    },
+  ): Promise<{
+    reg: SockAddr;
+    dev?: SockAddr;
+    dmap?: SockAddr;
+    relay?: SockAddr;
+    sid: number;
+  }> {
     const localIp = this.getLocalIPv4();
     const tid = (Math.floor(Math.random() * 0x7fffffff) | 0) >>> 0;
     const xml = buildC2rC({
@@ -382,7 +448,12 @@ export class BcUdpStream extends EventEmitter<{
     const pkt = encodeDiscoveryPacket(tid, xml);
     const regDest: SockAddr = { host: params.reg.ip, port: params.reg.port };
 
-    const parsed = await new Promise<{ sid: number; dev?: SockAddr; dmap?: SockAddr; relay?: SockAddr }>((resolve, reject) => {
+    const parsed = await new Promise<{
+      sid: number;
+      dev?: SockAddr;
+      dmap?: SockAddr;
+      relay?: SockAddr;
+    }>((resolve, reject) => {
       const timeout = setTimeout(() => {
         cleanup();
         reject(new Error(`P2P register timeout after ${P2P_MAX_WAIT_MS}ms`));
@@ -392,7 +463,7 @@ export class BcUdpStream extends EventEmitter<{
         try {
           const p = decodeBcUdpPacket(msg);
           if (p.kind !== "discovery") return;
-          if ((p.tid >>> 0) !== (tid >>> 0)) return;
+          if (p.tid >>> 0 !== tid >>> 0) return;
 
           const r = parseR2cCr(p.xml);
           if (!r) return;
@@ -457,39 +528,93 @@ export class BcUdpStream extends EventEmitter<{
 
   private async p2pConnect(
     sock: dgram.Socket,
-    reg: { reg: SockAddr; dev?: SockAddr; dmap?: SockAddr; relay?: SockAddr; sid: number; uid: string; cid: number },
+    reg: {
+      reg: SockAddr;
+      dev?: SockAddr;
+      dmap?: SockAddr;
+      relay?: SockAddr;
+      sid: number;
+      uid: string;
+      cid: number;
+    },
     method: BcUdpP2pDiscoveryMethod,
   ): Promise<{ did: number; rhost: string; rport: number; tid: number }> {
     if (method === "remote") {
-      const tasks: Array<Promise<{ did: number; rhost: string; rport: number; tid: number }>> = [];
-      if (reg.dev) tasks.push(this.p2pClientInitiated(sock, { sid: reg.sid, cid: reg.cid, conn: "local", dest: reg.dev }));
-      if (reg.dmap) tasks.push(this.p2pDeviceInitiated(sock, { sid: reg.sid, cid: reg.cid, conn: "local", expectFrom: reg.dmap }));
-      if (tasks.length === 0) throw new Error("P2P remote discovery: missing dev/dmap addresses");
+      const tasks: Array<
+        Promise<{ did: number; rhost: string; rport: number; tid: number }>
+      > = [];
+      if (reg.dev)
+        tasks.push(
+          this.p2pClientInitiated(sock, {
+            sid: reg.sid,
+            cid: reg.cid,
+            conn: "local",
+            dest: reg.dev,
+          }),
+        );
+      if (reg.dmap)
+        tasks.push(
+          this.p2pDeviceInitiated(sock, {
+            sid: reg.sid,
+            cid: reg.cid,
+            conn: "local",
+            expectFrom: reg.dmap,
+          }),
+        );
+      if (tasks.length === 0)
+        throw new Error("P2P remote discovery: missing dev/dmap addresses");
       return await Promise.race(tasks);
     }
 
     if (method === "map") {
       if (!reg.dmap) throw new Error("P2P map discovery: missing dmap address");
-      return await this.p2pDeviceInitiated(sock, { sid: reg.sid, cid: reg.cid, conn: "map", expectFrom: reg.dmap });
+      return await this.p2pDeviceInitiated(sock, {
+        sid: reg.sid,
+        cid: reg.cid,
+        conn: "map",
+        expectFrom: reg.dmap,
+      });
     }
 
     // relay
-    if (!reg.relay) throw new Error("P2P relay discovery: missing relay address");
-    return await this.p2pClientInitiated(sock, { sid: reg.sid, cid: reg.cid, conn: "relay", dest: reg.relay, requireConnMatch: true });
+    if (!reg.relay)
+      throw new Error("P2P relay discovery: missing relay address");
+    return await this.p2pClientInitiated(sock, {
+      sid: reg.sid,
+      cid: reg.cid,
+      conn: "relay",
+      dest: reg.relay,
+      requireConnMatch: true,
+    });
   }
 
   private async p2pClientInitiated(
     sock: dgram.Socket,
-    params: { sid: number; cid: number; conn: "local" | "relay"; dest: SockAddr; requireConnMatch?: boolean },
+    params: {
+      sid: number;
+      cid: number;
+      conn: "local" | "relay";
+      dest: SockAddr;
+      requireConnMatch?: boolean;
+    },
   ): Promise<{ did: number; rhost: string; rport: number; tid: number }> {
     const tid = (Math.floor(Math.random() * 0x7fffffff) | 0) >>> 0;
-    const xml = buildC2dT({ sid: params.sid, conn: params.conn, cid: params.cid, mtu: this.mtu });
+    const xml = buildC2dT({
+      sid: params.sid,
+      conn: params.conn,
+      cid: params.cid,
+      mtu: this.mtu,
+    });
     const pkt = encodeDiscoveryPacket(tid, xml);
 
     return await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         cleanup();
-        reject(new Error(`P2P client-initiated (${params.conn}) timeout after ${P2P_MAX_WAIT_MS}ms`));
+        reject(
+          new Error(
+            `P2P client-initiated (${params.conn}) timeout after ${P2P_MAX_WAIT_MS}ms`,
+          ),
+        );
       }, P2P_MAX_WAIT_MS);
 
       const onMsg = (msg: Buffer, rinfo: dgram.RemoteInfo) => {
@@ -500,10 +625,16 @@ export class BcUdpStream extends EventEmitter<{
           if (!cfm) return;
           if (cfm.cid !== params.cid) return;
           if (cfm.sid !== params.sid) return;
-          if (params.requireConnMatch && (cfm.conn ?? "") !== params.conn) return;
+          if (params.requireConnMatch && (cfm.conn ?? "") !== params.conn)
+            return;
           if (cfm.did == null) return;
           cleanup();
-          resolve({ did: cfm.did, rhost: rinfo.address, rport: rinfo.port, tid });
+          resolve({
+            did: cfm.did,
+            rhost: rinfo.address,
+            rport: rinfo.port,
+            tid,
+          });
         } catch {
           // ignore
         }
@@ -531,12 +662,21 @@ export class BcUdpStream extends EventEmitter<{
 
   private async p2pDeviceInitiated(
     sock: dgram.Socket,
-    params: { sid: number; cid: number; conn: "local" | "map"; expectFrom: SockAddr },
+    params: {
+      sid: number;
+      cid: number;
+      conn: "local" | "map";
+      expectFrom: SockAddr;
+    },
   ): Promise<{ did: number; rhost: string; rport: number; tid: number }> {
     return await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         cleanup();
-        reject(new Error(`P2P device-initiated (${params.conn}) timeout after ${P2P_MAX_WAIT_MS}ms`));
+        reject(
+          new Error(
+            `P2P device-initiated (${params.conn}) timeout after ${P2P_MAX_WAIT_MS}ms`,
+          ),
+        );
       }, P2P_MAX_WAIT_MS);
 
       let state: "wait_t" | "wait_cfm" = "wait_t";
@@ -547,9 +687,22 @@ export class BcUdpStream extends EventEmitter<{
       let resendA: NodeJS.Timeout | undefined;
 
       const sendA = () => {
-        if (state !== "wait_cfm" || did == null || tid == null || rhost == null || rport == null) return;
+        if (
+          state !== "wait_cfm" ||
+          did == null ||
+          tid == null ||
+          rhost == null ||
+          rport == null
+        )
+          return;
         try {
-          const aXml = buildC2dA({ sid: params.sid, conn: params.conn, cid: params.cid, did, mtu: this.mtu });
+          const aXml = buildC2dA({
+            sid: params.sid,
+            conn: params.conn,
+            cid: params.cid,
+            did,
+            mtu: this.mtu,
+          });
           const aPkt = encodeDiscoveryPacket(tid, aXml);
           sock.send(aPkt, rport, rhost);
         } catch {
@@ -569,7 +722,10 @@ export class BcUdpStream extends EventEmitter<{
             if (dt.sid !== params.sid) return;
             if ((dt.conn ?? "") !== params.conn) return;
             if (info.address !== params.expectFrom.host) return;
-            if (params.expectFrom.port && info.port !== params.expectFrom.port) {
+            if (
+              params.expectFrom.port &&
+              info.port !== params.expectFrom.port
+            ) {
               // Some environments can re-map ports; be permissive if we know only host.
             }
 
@@ -593,7 +749,12 @@ export class BcUdpStream extends EventEmitter<{
           if ((cfm.conn ?? "") !== params.conn) return;
 
           cleanup();
-          resolve({ did, rhost: info.address, rport: info.port, tid: tid ?? 0 });
+          resolve({
+            did,
+            rhost: info.address,
+            rport: info.port,
+            tid: tid ?? 0,
+          });
         } catch {
           // ignore
         }
@@ -609,8 +770,18 @@ export class BcUdpStream extends EventEmitter<{
     });
   }
 
-  private async p2pConfirm(sock: dgram.Socket, reg: SockAddr, params: { sid: number; conn: string; cid: number; did: number }): Promise<void> {
-    const xml = buildC2rCfm({ sid: params.sid, conn: params.conn, rsp: 0, cid: params.cid, did: params.did });
+  private async p2pConfirm(
+    sock: dgram.Socket,
+    reg: SockAddr,
+    params: { sid: number; conn: string; cid: number; did: number },
+  ): Promise<void> {
+    const xml = buildC2rCfm({
+      sid: params.sid,
+      conn: params.conn,
+      rsp: 0,
+      cid: params.cid,
+      did: params.did,
+    });
     for (let i = 0; i < 5; i++) {
       const tid = (Math.floor(Math.random() * 0x7fffffff) | 0) >>> 0;
       const pkt = encodeDiscoveryPacket(tid, xml);
@@ -623,17 +794,25 @@ export class BcUdpStream extends EventEmitter<{
     }
   }
 
-  private async discoveryUidLocal(sock: dgram.Socket, opts?: { localMode?: "local-broadcast" | "local-direct" }): Promise<void> {
-    if (this.opts.mode !== "uid") throw new Error("Internal: discoveryUidLocal called for non-uid mode");
+  private async discoveryUidLocal(
+    sock: dgram.Socket,
+    opts?: { localMode?: "local-broadcast" | "local-direct" },
+  ): Promise<void> {
+    if (this.opts.mode !== "uid")
+      throw new Error("Internal: discoveryUidLocal called for non-uid mode");
     // Internal defaults (do not expose knobs):
     // - Battery cameras may be sleeping -> keep a longer timeout.
     // - Send to both discovery ports 2015/2018.
     // - Use broadcast to discover by UID.
-    const ports = [BCUDP_DISCOVERY_PORT_LOCAL_ANY, BCUDP_DISCOVERY_PORT_LOCAL_UID];
+    const ports = [
+      BCUDP_DISCOVERY_PORT_LOCAL_ANY,
+      BCUDP_DISCOVERY_PORT_LOCAL_UID,
+    ];
     const broadcastHost = "255.255.255.255";
     const directHost = (this.opts.directHost ?? "").trim();
     const localMode = opts?.localMode ?? "local-broadcast";
-    const directFirstWindowMs = localMode === "local-direct" && directHost ? 3_000 : 0;
+    const directFirstWindowMs =
+      localMode === "local-direct" && directHost ? 3_000 : 0;
     const discoveryTimeout = 30_000;
     const retryInterval = 500;
 
@@ -643,24 +822,42 @@ export class BcUdpStream extends EventEmitter<{
 
     const addr = sock.address();
     const localPort = typeof addr === "string" ? 0 : (addr as AddressInfo).port;
-    const cid = (Math.floor(Math.random() * 0x7fffffff) | 0) || 82000;
+    const cid = Math.floor(Math.random() * 0x7fffffff) | 0 || 82000;
 
     // Build discovery packet (will be reused for retries)
     // Default OS is "MAC" for discovery
-    const xml = buildC2dC({ uid: this.opts.uid, clientPort: localPort, cid, mtu: this.mtu });
+    const xml = buildC2dC({
+      uid: this.opts.uid,
+      clientPort: localPort,
+      cid,
+      mtu: this.mtu,
+    });
 
-    const reply = await new Promise<{ cid: number; did: number; rhost: string; rport: number; sid?: number; tid?: number }>((resolve, reject) => {
+    const reply = await new Promise<{
+      cid: number;
+      did: number;
+      rhost: string;
+      rport: number;
+      sid?: number;
+      tid?: number;
+    }>((resolve, reject) => {
       const timeout = setTimeout(() => {
         if (retryTimer) clearInterval(retryTimer);
         sock.off("message", onMsg);
-        reject(new Error(`BCUDP discovery timeout after ${discoveryTimeout}ms (camera may be sleeping or unreachable)`));
+        reject(
+          new Error(
+            `BCUDP discovery timeout after ${discoveryTimeout}ms (camera may be sleeping or unreachable)`,
+          ),
+        );
       }, discoveryTimeout);
 
       let retryTimer: NodeJS.Timeout | undefined;
       let retryCount = 0;
       let discoveredSid: number | undefined;
       let discoveredTid: number | undefined;
-      let discovered: { cid: number; did: number; rhost: string; rport: number } | undefined;
+      let discovered:
+        | { cid: number; did: number; rhost: string; rport: number }
+        | undefined;
       let sentT = false;
       let gotT = false;
       let sentA = false;
@@ -680,8 +877,16 @@ export class BcUdpStream extends EventEmitter<{
           sock.off("message", onMsg);
           clearTimeout(timeout);
           if (retryTimer) clearInterval(retryTimer);
-          this.emit("debug", "discovery_finalize", { reason, ...(sid != null ? { sid } : {}), ...d });
-          resolve({ ...d, ...(sid != null ? { sid } : {}), ...(tid != null ? { tid } : {}) });
+          this.emit("debug", "discovery_finalize", {
+            reason,
+            ...(sid != null ? { sid } : {}),
+            ...d,
+          });
+          resolve({
+            ...d,
+            ...(sid != null ? { sid } : {}),
+            ...(tid != null ? { tid } : {}),
+          });
         }, 250);
       };
 
@@ -693,24 +898,52 @@ export class BcUdpStream extends EventEmitter<{
         if (discoveredSid == null) return;
         try {
           const tid = (Math.floor(Math.random() * 0x7fffffff) | 0) >>> 0;
-          const tXml = buildC2dT({ ...(discoveredSid != null ? { sid: discoveredSid } : {}), cid: discovered.cid, mtu: this.mtu, conn: "local" });
+          const tXml = buildC2dT({
+            ...(discoveredSid != null ? { sid: discoveredSid } : {}),
+            cid: discovered.cid,
+            mtu: this.mtu,
+            conn: "local",
+          });
           const tPkt = encodeDiscoveryPacket(tid, tXml);
           sock.send(tPkt, rport, rhost);
           sentT = true;
-          this.emit("debug", "discovery_t_send", { sid: discoveredSid, cid: discovered.cid, did: discovered.did, rhost, rport });
+          this.emit("debug", "discovery_t_send", {
+            sid: discoveredSid,
+            cid: discovered.cid,
+            did: discovered.did,
+            rhost,
+            rport,
+          });
         } catch (e) {
           this.emit("debug", "discovery_t_send_error", e);
         }
       };
 
-      const sendA = (tid: number, rhost: string, rport: number, dt: { sid: number; cid: number; did: number; conn?: string }) => {
+      const sendA = (
+        tid: number,
+        rhost: string,
+        rport: number,
+        dt: { sid: number; cid: number; did: number; conn?: string },
+      ) => {
         if (sentA) return;
         try {
-          const aXml = buildC2dA({ sid: dt.sid, conn: dt.conn ?? "local", cid: dt.cid, did: dt.did, mtu: this.mtu });
+          const aXml = buildC2dA({
+            sid: dt.sid,
+            conn: dt.conn ?? "local",
+            cid: dt.cid,
+            did: dt.did,
+            mtu: this.mtu,
+          });
           const aPkt = encodeDiscoveryPacket(tid, aXml);
           sock.send(aPkt, rport, rhost);
           sentA = true;
-          this.emit("debug", "discovery_a_send", { sid: dt.sid, cid: dt.cid, did: dt.did, rhost, rport });
+          this.emit("debug", "discovery_a_send", {
+            sid: dt.sid,
+            cid: dt.cid,
+            did: dt.did,
+            rhost,
+            rport,
+          });
         } catch (e) {
           this.emit("debug", "discovery_a_send_error", e);
         }
@@ -722,7 +955,12 @@ export class BcUdpStream extends EventEmitter<{
           if (p.kind !== "discovery") return;
 
           // Helpful for debugging odd camera behavior.
-          this.emit("debug", "discovery_rx", { tid: p.tid, rhost: rinfo.address, rport: rinfo.port, xmlPreview: p.xml.slice(0, 120) });
+          this.emit("debug", "discovery_rx", {
+            tid: p.tid,
+            rhost: rinfo.address,
+            rport: rinfo.port,
+            xmlPreview: p.xml.slice(0, 120),
+          });
 
           // Some models send a D2C_CFM before/around discovery completion.
           // Treat it as a strong signal that the session is established.
@@ -730,7 +968,12 @@ export class BcUdpStream extends EventEmitter<{
           if (cfm) {
             discoveredSid = cfm.sid;
             if (!discovered && cfm.cid != null && cfm.did != null) {
-              discovered = { cid: cfm.cid, did: cfm.did, rhost: rinfo.address, rport: rinfo.port };
+              discovered = {
+                cid: cfm.cid,
+                did: cfm.did,
+                rhost: rinfo.address,
+                rport: rinfo.port,
+              };
             }
             // If we have enough to proceed, finalize (but still attempt T/A if possible).
             if (discovered) {
@@ -745,9 +988,20 @@ export class BcUdpStream extends EventEmitter<{
             gotT = true;
             discoveredSid = dt.sid;
             if (!discovered) {
-              discovered = { cid: dt.cid, did: dt.did, rhost: rinfo.address, rport: rinfo.port };
+              discovered = {
+                cid: dt.cid,
+                did: dt.did,
+                rhost: rinfo.address,
+                rport: rinfo.port,
+              };
             }
-            this.emit("debug", "discovery_t_rx", { sid: dt.sid, cid: dt.cid, did: dt.did, rhost: rinfo.address, rport: rinfo.port });
+            this.emit("debug", "discovery_t_rx", {
+              sid: dt.sid,
+              cid: dt.cid,
+              did: dt.did,
+              rhost: rinfo.address,
+              rport: rinfo.port,
+            });
             sendA(p.tid, rinfo.address, rinfo.port, dt);
             // After receiving T and sending A, we should be good to proceed.
             maybeFinalize("t_a");
@@ -758,10 +1012,21 @@ export class BcUdpStream extends EventEmitter<{
           if (!parsed) return;
           if (parsed.rsp !== 0) return;
           // Success! Camera responded
-          this.emit("debug", "discovery_success", { retryCount, rhost: rinfo.address, rport: rinfo.port, sid: parsed.sid ?? discoveredSid, timer: parsed.timer });
+          this.emit("debug", "discovery_success", {
+            retryCount,
+            rhost: rinfo.address,
+            rport: rinfo.port,
+            sid: parsed.sid ?? discoveredSid,
+            timer: parsed.timer,
+          });
 
           discoveredTid = p.tid;
-          discovered = { cid: parsed.cid, did: parsed.did, rhost: rinfo.address, rport: rinfo.port };
+          discovered = {
+            cid: parsed.cid,
+            did: parsed.did,
+            rhost: rinfo.address,
+            rport: rinfo.port,
+          };
           if (parsed.sid != null) discoveredSid = parsed.sid;
 
           // Attempt T handshake if SID is available.
@@ -800,7 +1065,8 @@ export class BcUdpStream extends EventEmitter<{
           if (localMode === "local-direct") {
             if (directHost) {
               // Prefer direct unicast first, then add broadcast as fallback.
-              if (directFirstWindowMs > 0 && elapsedMs < directFirstWindowMs) return [directHost];
+              if (directFirstWindowMs > 0 && elapsedMs < directFirstWindowMs)
+                return [directHost];
               return [directHost, broadcastHost];
             }
             // No direct host -> degrade gracefully to broadcast.
@@ -841,7 +1107,12 @@ export class BcUdpStream extends EventEmitter<{
   }
 
   private startTimers(): void {
-    if (!this.sock || !this.remote || this.clientId == null || this.cameraId == null) {
+    if (
+      !this.sock ||
+      !this.remote ||
+      this.clientId == null ||
+      this.cameraId == null
+    ) {
       throw new Error("BCUDP not ready");
     }
 
@@ -881,7 +1152,13 @@ export class BcUdpStream extends EventEmitter<{
   }
 
   private sendHeartbeat(): void {
-    if (!this.sock || !this.remote || this.clientId == null || this.cameraId == null) return;
+    if (
+      !this.sock ||
+      !this.remote ||
+      this.clientId == null ||
+      this.cameraId == null
+    )
+      return;
     // Keep a stable TID for keepalive.
     const tid = this.getKeepAliveTid();
 
@@ -892,7 +1169,12 @@ export class BcUdpStream extends EventEmitter<{
 
     const pkt = encodeDiscoveryPacket(tid, xml);
 
-    this.emit("debug", "udp_hb_send", { tid, xml, host: this.remote.host, port: this.remote.port });
+    this.emit("debug", "udp_hb_send", {
+      tid,
+      xml,
+      host: this.remote.host,
+      port: this.remote.port,
+    });
 
     // Send to current remote (data port)
     this.sock.send(pkt, this.remote.port, this.remote.host);
@@ -957,7 +1239,9 @@ export class BcUdpStream extends EventEmitter<{
     this.sock.send(this.lastAckPacket, this.remote.port, this.remote.host);
     this.ackSentCount++;
     if (this.ackSentCount % 100 === 0) {
-      this.emit("debug", "ack_sent_100", { latency: this.ackLatency.getValue() });
+      this.emit("debug", "ack_sent_100", {
+        latency: this.ackLatency.getValue(),
+      });
     }
   }
 
@@ -1012,7 +1296,11 @@ export class BcUdpStream extends EventEmitter<{
     setImmediate(() => {
       this.drainScheduled = false;
       try {
-        for (; this.pendingDataOffset < this.pendingData.length; this.pendingDataOffset++) {
+        for (
+          ;
+          this.pendingDataOffset < this.pendingData.length;
+          this.pendingDataOffset++
+        ) {
           this.emit("data", this.pendingData[this.pendingDataOffset]!);
         }
       } catch (e) {
@@ -1040,15 +1328,27 @@ export class BcUdpStream extends EventEmitter<{
     }
   }
 
-  private handlePacket(p: ReturnType<typeof decodeBcUdpPacket>, rhost: string, rport: number): void {
+  private handlePacket(
+    p: ReturnType<typeof decodeBcUdpPacket>,
+    rhost: string,
+    rport: number,
+  ): void {
     // Bind/update remote to whoever talks to us.
     // Important for some battery cameras: discovery happens on one UDP port,
     // but the data/ack stream can come from another port. If we keep sending
     // ACK/heartbeat to the discovery port, the camera may stop streaming.
     const updateRemote = (reason: string) => {
-      if (!this.remote || this.remote.host !== rhost || this.remote.port !== rport) {
+      if (
+        !this.remote ||
+        this.remote.host !== rhost ||
+        this.remote.port !== rport
+      ) {
         this.remote = { host: rhost, port: rport };
-        this.emit("debug", "remote_update", { reason, host: rhost, port: rport });
+        this.emit("debug", "remote_update", {
+          reason,
+          host: rhost,
+          port: rport,
+        });
       }
     };
 
@@ -1071,7 +1371,9 @@ export class BcUdpStream extends EventEmitter<{
           this.flushReceived();
           this.updateAckPacket();
           if (this.packetsWant % 100 === 0) {
-            this.emit("debug", "udp_progress", { packetsWant: this.packetsWant });
+            this.emit("debug", "udp_progress", {
+              packetsWant: this.packetsWant,
+            });
           }
         }
       }
@@ -1084,8 +1386,18 @@ export class BcUdpStream extends EventEmitter<{
 
       // Some cameras send heartbeat probes (D2C_HB). Reply with a heartbeat.
       const hb = parseD2cHb(p.xml);
-      if (hb && this.clientId != null && this.cameraId != null && hb.cid === this.clientId && hb.did === this.cameraId) {
-        this.emit("debug", "discovery_hb_rx_connected", { ...hb, rhost, rport });
+      if (
+        hb &&
+        this.clientId != null &&
+        this.cameraId != null &&
+        hb.cid === this.clientId &&
+        hb.did === this.cameraId
+      ) {
+        this.emit("debug", "discovery_hb_rx_connected", {
+          ...hb,
+          rhost,
+          rport,
+        });
         try {
           updateRemote("d2c_hb");
           this.sendHeartbeat();
@@ -1099,22 +1411,57 @@ export class BcUdpStream extends EventEmitter<{
       // If we don't reply with C2D_A, the camera may terminate the session (D2C_DISC)
       // after a short time (often ~5-10s).
       const dt = parseD2cT(p.xml);
-      if (dt && this.clientId != null && this.cameraId != null && dt.cid === this.clientId && dt.did === this.cameraId) {
+      if (
+        dt &&
+        this.clientId != null &&
+        this.cameraId != null &&
+        dt.cid === this.clientId &&
+        dt.did === this.cameraId
+      ) {
         try {
           updateRemote("d2c_t");
           this.sid = dt.sid;
-          this.emit("debug", "discovery_t_rx_connected", { sid: dt.sid, cid: dt.cid, did: dt.did, rhost, rport });
+          this.emit("debug", "discovery_t_rx_connected", {
+            sid: dt.sid,
+            cid: dt.cid,
+            did: dt.did,
+            rhost,
+            rport,
+          });
           const now = Date.now();
           const throttleMs = 750;
-          if (this.lastAcceptAtMs == null || now - this.lastAcceptAtMs >= throttleMs) {
-            const aXml = buildC2dA({ sid: dt.sid, conn: dt.conn ?? "local", cid: dt.cid, did: dt.did, mtu: this.mtu });
+          if (
+            this.lastAcceptAtMs == null ||
+            now - this.lastAcceptAtMs >= throttleMs
+          ) {
+            const aXml = buildC2dA({
+              sid: dt.sid,
+              conn: dt.conn ?? "local",
+              cid: dt.cid,
+              did: dt.did,
+              mtu: this.mtu,
+            });
             const aPkt = encodeDiscoveryPacket(p.tid, aXml);
             this.sock?.send(aPkt, rport, rhost);
             this.acceptSent = true;
             this.lastAcceptAtMs = now;
-            this.emit("debug", "discovery_a_send_connected", { sid: dt.sid, cid: dt.cid, did: dt.did, rhost, rport });
+            this.emit("debug", "discovery_a_send_connected", {
+              sid: dt.sid,
+              cid: dt.cid,
+              did: dt.did,
+              rhost,
+              rport,
+            });
           } else {
-            this.emit("debug", "discovery_a_skip_throttle", { sinceMs: now - this.lastAcceptAtMs, throttleMs, sid: dt.sid, cid: dt.cid, did: dt.did, rhost, rport });
+            this.emit("debug", "discovery_a_skip_throttle", {
+              sinceMs: now - this.lastAcceptAtMs,
+              throttleMs,
+              sid: dt.sid,
+              cid: dt.cid,
+              did: dt.did,
+              rhost,
+              rport,
+            });
           }
         } catch (e) {
           this.emit("debug", "discovery_a_send_connected_error", e);
@@ -1133,12 +1480,24 @@ export class BcUdpStream extends EventEmitter<{
       }
 
       const disc = parseD2cDisc(p.xml);
-      if (disc && this.clientId != null && this.cameraId != null && disc.cid === this.clientId && disc.did === this.cameraId) {
-        this.emit("debug", "discovery_disc_rx_connected", { ...disc, rhost, rport });
+      if (
+        disc &&
+        this.clientId != null &&
+        this.cameraId != null &&
+        disc.cid === this.clientId &&
+        disc.did === this.cameraId
+      ) {
+        this.emit("debug", "discovery_disc_rx_connected", {
+          ...disc,
+          rhost,
+          rport,
+        });
         // Camera terminated the session.
         this.emit(
           "error",
-          new Error(`BCUDP disconnected by camera (D2C_DISC${this.sid != null ? ` sid=${this.sid}` : ""})`),
+          new Error(
+            `BCUDP disconnected by camera (D2C_DISC${this.sid != null ? ` sid=${this.sid}` : ""})`,
+          ),
         );
         void this.close();
         return;
@@ -1148,13 +1507,18 @@ export class BcUdpStream extends EventEmitter<{
   }
 
   write(buf: Buffer): void {
-    if (!this.sock || !this.remote || this.cameraId == null) throw new Error("BCUDP stream is not connected");
+    if (!this.sock || !this.remote || this.cameraId == null)
+      throw new Error("BCUDP stream is not connected");
     const maxPayload = this.mtu - BCUDP_DATA_HEADER_SIZE;
     for (let off = 0; off < buf.length; off += maxPayload) {
       const payload = buf.subarray(off, Math.min(buf.length, off + maxPayload));
       const packetId = this.sendPacketId >>> 0;
       this.sendPacketId = (this.sendPacketId + 1) >>> 0;
-      const pkt = encodeDataPacket({ connectionId: this.cameraId, packetId, payload: Buffer.from(payload) });
+      const pkt = encodeDataPacket({
+        connectionId: this.cameraId,
+        packetId,
+        payload: Buffer.from(payload),
+      });
       this.sent.set(packetId, { packetId, buf: pkt, ts: Date.now() });
       this.sock.send(pkt, this.remote.port, this.remote.host);
     }
@@ -1174,4 +1538,3 @@ export class BcUdpStream extends EventEmitter<{
     await new Promise<void>((resolve) => s.close(() => resolve()));
   }
 }
-
