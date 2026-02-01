@@ -141,9 +141,13 @@ jobs:
           echo "Base ref: $BASE_REF"
           echo "Head ref: $HEAD_REF"
 
-          AFFECTED=$(npx nx print-affected --base="$BASE_REF" --head="$HEAD_REF" --select=projects || true)
-          # Normalize separators (comma/space/newline) to newlines.
-          AFFECTED_NL=$(echo "$AFFECTED" | tr ', ' '\n\n' | sed '/^$/d' | sort -u)
+          # Nx 19+: `print-affected` was removed. Use `nx show projects --affected`.
+          AFFECTED_JSON=$(npx nx show projects --affected --base="$BASE_REF" --head="$HEAD_REF" --json || echo "[]")
+          # Make sure it's a single line (safe for GITHUB_OUTPUT / logs).
+          AFFECTED_JSON=$(echo "$AFFECTED_JSON" | tr -d '\r\n')
+
+          AFFECTED_NL=$(node -e 'const fs=require("fs"); const raw=fs.readFileSync(0,"utf8").trim()||"[]"; const arr=JSON.parse(raw); console.log((Array.isArray(arr)?arr:[]).join("\n"));' <<< "$AFFECTED_JSON" | sed '/^$/d' | sort -u)
+          AFFECTED=$(echo "$AFFECTED_NL" | tr '\n' ' ' | xargs)
           echo "Affected projects:" && echo "$AFFECTED_NL" || true
 
           AFFECTED_LIB=false
