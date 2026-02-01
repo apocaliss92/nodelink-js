@@ -49,6 +49,10 @@ Create local streaming servers:
 
 Automatically discover Reolink devices on your network using UDP broadcast.
 
+### 🔐 [Authentik + NGINX (SSO / Trusted Proxy)](./authentik-nginx.md)
+
+Run the Manager UI behind Authentik SSO via NGINX `auth_request`, using the app's Trusted Proxy Authentication mode.
+
 ---
 
 ## Baichuan API Documentation

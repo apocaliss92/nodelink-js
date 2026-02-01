@@ -1,4 +1,9 @@
-import { adminProcedure, router, publicProcedure } from "../trpc.js";
+import {
+  adminProcedure,
+  protectedProcedure,
+  router,
+  publicProcedure,
+} from "../trpc.js";
 import { z } from "zod";
 import {
   getSettings,
@@ -58,13 +63,17 @@ function readAppVersion(): string | null {
 
 export const settingsRouter = router({
   // Get current settings
-  get: publicProcedure
+  get: protectedProcedure
     .meta({ description: "Get current application settings" })
     .query(() => {
       const settings = getSettings();
 
-      // Never expose authTokens.
-      const { authTokens: _authTokens, ...rest } = settings;
+      // Never expose authTokens / personalTokens.
+      const {
+        authTokens: _authTokens,
+        personalTokens: _personalTokens,
+        ...rest
+      } = settings;
 
       return {
         ...rest,
@@ -93,7 +102,7 @@ export const settingsRouter = router({
     }),
 
   // Update settings
-  update: publicProcedure
+  update: adminProcedure
     .meta({ description: "Update application settings" })
     .input(
       z.object({
@@ -102,11 +111,47 @@ export const settingsRouter = router({
         logLevel: z.enum(["error", "warn", "info", "debug"]).optional(),
         logRetentionDays: z.number().optional(),
         rtspRequireAuth: z.boolean().optional(),
+        auth: z
+          .object({
+            trustedProxy: z
+              .object({
+                enabled: z.boolean().optional(),
+                allowedIps: z.array(z.string().min(1)).optional(),
+                usernameHeader: z.string().optional(),
+                groupsHeader: z.string().optional(),
+                adminGroup: z.string().optional(),
+              })
+              .optional(),
+          })
+          .optional(),
+        webrtc: z
+          .object({
+            icePortRange: z.string().optional(),
+            iceAdditionalHostAddresses: z.string().optional(),
+          })
+          .optional(),
         // Paths are controlled by DATA_PATH env var, not configurable at runtime
       }),
     )
     .mutation(({ input }) => {
-      const settings = saveSettings(input);
+      const current = getSettings();
+      const patch: any = { ...input };
+
+      if (input.auth) {
+        patch.auth = {
+          ...current.auth,
+          ...input.auth,
+          trustedProxy: input.auth.trustedProxy
+            ? { ...current.auth.trustedProxy, ...input.auth.trustedProxy }
+            : current.auth.trustedProxy,
+        };
+      }
+
+      if (input.webrtc) {
+        patch.webrtc = { ...current.webrtc, ...input.webrtc };
+      }
+
+      const settings = saveSettings(patch);
       // Reload logger if log settings changed
       if (
         input.logLevel !== undefined ||
@@ -122,7 +167,11 @@ export const settingsRouter = router({
         updateRtspUrls();
       }
 
-      const { authTokens: _authTokens, ...rest } = settings;
+      const {
+        authTokens: _authTokens,
+        personalTokens: _personalTokens,
+        ...rest
+      } = settings;
       return {
         ...rest,
         dashboardUsers: settings.dashboardUsers.map(
@@ -137,13 +186,17 @@ export const settingsRouter = router({
     }),
 
   // Reset settings to defaults
-  reset: publicProcedure
+  reset: adminProcedure
     .meta({ description: "Reset settings to defaults" })
     .mutation(() => {
       const defaults = SettingsSchema.parse({});
       saveSettings(defaults);
       reloadLogger();
-      const { authTokens: _authTokens, ...rest } = defaults;
+      const {
+        authTokens: _authTokens,
+        personalTokens: _personalTokens,
+        ...rest
+      } = defaults;
       return {
         ...rest,
         dashboardUsers: defaults.dashboardUsers.map(

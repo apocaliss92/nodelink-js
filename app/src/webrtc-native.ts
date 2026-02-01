@@ -18,9 +18,31 @@ import {
   getCameraInfo,
   sanitizeCameraName,
 } from "./rtsp-manager.js";
-import { getConfig } from "./settings-store.js";
+import { getConfig, getSettings } from "./settings-store.js";
 
 const logger = createSourceLogger("webrtc-native");
+
+function parsePortRange(
+  value: string | undefined,
+): [number, number] | undefined {
+  if (!value) return undefined;
+  const m = value.trim().match(/^\s*(\d+)\s*[-:]\s*(\d+)\s*$/);
+  if (!m) return undefined;
+  const min = Number(m[1]);
+  const max = Number(m[2]);
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return undefined;
+  if (min <= 0 || max <= 0 || min >= max) return undefined;
+  return [min, max];
+}
+
+function parseCsv(value: string | undefined): string[] | undefined {
+  if (!value) return undefined;
+  const out = value
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return out.length ? out : undefined;
+}
 
 // ============================================================================
 // Types
@@ -82,11 +104,19 @@ export async function createWebRTCSession(
   const channel = camera.rtspChannel ?? 0;
 
   // Create WebRTC server for this session
+  const settings = getSettings();
+  const icePortRange = parsePortRange(settings.webrtc?.icePortRange);
+  const iceAdditionalHostAddresses = parseCsv(
+    settings.webrtc?.iceAdditionalHostAddresses,
+  );
+
   const server = new BaichuanWebRTCServer({
     api,
     channel,
     profile,
     enableIntercom,
+    icePortRange,
+    iceAdditionalHostAddresses,
     logger: (level: "debug" | "info" | "warn" | "error", message: string) => {
       logger[level](message);
     },

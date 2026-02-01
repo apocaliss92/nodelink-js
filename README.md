@@ -71,74 +71,6 @@ npm install
 npm run dev
 ```
 
-## Trusted Proxy Authentication (NGINX + Authentik)
-
-If you want to hide the UI behind SSO (e.g. Authentik), you can delegate authentication to a reverse proxy and let this app **trust** specific headers **only** when requests come from an allowlisted proxy IP.
-
-### Server configuration
-
-Set these env vars for the app:
-
-- `AUTH_ENABLED=1`
-- `TRUST_PROXY_AUTH=1`
-- `TRUST_PROXY_IPS=127.0.0.1,::1` (comma-separated allowlist; use the _real_ proxy/container IPs)
-- `TRUST_PROXY_USERNAME_HEADER=x-authentik-username`
-- `TRUST_PROXY_GROUPS_HEADER=x-authentik-groups`
-- `TRUST_PROXY_ADMIN_GROUP=admin` (if present in groups header → user becomes `admin`)
-
-Security notes:
-
-- **Never expose the app directly to the Internet** when `TRUST_PROXY_AUTH=1`.
-- Always put it behind your reverse proxy and restrict inbound traffic to the proxy only.
-- The app will ignore trusted headers unless the TCP peer IP matches `TRUST_PROXY_IPS`.
-
-### NGINX example (Authentik outpost)
-
-This example assumes:
-
-- Authentik outpost is available at `http://authentik-outpost:9000`.
-- The app is at `http://nodelink-manager:3000`.
-
-```nginx
-# Authentik integration (auth_request)
-location = /outpost.goauthentik.io/auth/nginx {
-  internal;
-  proxy_pass http://authentik-outpost:9000/outpost.goauthentik.io/auth/nginx;
-  proxy_pass_request_body off;
-  proxy_set_header Content-Length "";
-  proxy_set_header X-Original-URL $scheme://$http_host$request_uri;
-  proxy_set_header X-Original-Method $request_method;
-  proxy_set_header X-Original-Host $http_host;
-}
-
-location / {
-  auth_request /outpost.goauthentik.io/auth/nginx;
-  error_page 401 = @ak_unauthorized;
-
-  # Pull identity from Authentik response
-  auth_request_set $ak_username $upstream_http_x_authentik_username;
-  auth_request_set $ak_groups   $upstream_http_x_authentik_groups;
-
-  proxy_pass http://nodelink-manager:3000;
-
-  # Forward identity headers to the app
-  proxy_set_header X-Authentik-Username $ak_username;
-  proxy_set_header X-Authentik-Groups $ak_groups;
-
-  # Good hygiene
-  proxy_set_header Host $host;
-  proxy_set_header X-Real-IP $remote_addr;
-  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-  proxy_set_header X-Forwarded-Proto $scheme;
-}
-
-location @ak_unauthorized {
-  return 302 /outpost.goauthentik.io/start?rd=$scheme://$http_host$request_uri;
-}
-```
-
-If you run NGINX and the app on the same Docker network, set `TRUST_PROXY_IPS` to the **NGINX container IP** (or keep it `127.0.0.1,::1` only if NGINX is on the same host network namespace).
-
 ### Production Build
 
 ```bash
@@ -148,6 +80,10 @@ npm start
 ```
 
 Open http://localhost:3000 in your browser.
+
+### SSO (Authentik) via Trusted Proxy
+
+See [documentation/authentik-nginx.md](documentation/authentik-nginx.md) for a step-by-step Authentik + NGINX setup and the required environment variables.
 
 ### Docker Deployment (Recommended)
 
@@ -170,6 +106,38 @@ Or with Docker Compose:
 docker-compose up -d
 ```
 
+#### WebRTC in Docker (bridge network)
+
+If you run the container in **bridge** mode (i.e. with `ports:` mappings), WebRTC needs two things to work reliably:
+
+1. **A fixed UDP port range** exposed from container → host.
+2. ICE candidates that contain an address the browser can reach (usually your **host LAN IP**) — configured in **Settings → WebRTC (ICE)**.
+
+Otherwise WebRTC may get stuck and you may see warnings like:
+
+```text
+Video data channel not open for session ...: connecting
+```
+
+Recommended example:
+
+```yaml
+services:
+  nodelink-manager:
+    ports:
+      - "3000:3000" # Web UI and API
+      - "8554:8554" # RTSP proxy
+      - "50000-50100:50000-50100/udp" # WebRTC / ICE UDP
+    # Then configure Settings → WebRTC (ICE):
+    # - ICE UDP port range: 50000-50100
+    # - Additional host addresses: 192.168.1.123
+```
+
+Notes:
+
+- The **Additional host addresses** setting should be an IP address that your browser can reach (typically the host machine IP on your LAN).
+- If you use `network_mode: host`, you usually **don’t need** any of the above (no port mapping).
+
 **Environment Variables:**
 
 | Variable    | Default | Description                          |
@@ -177,6 +145,11 @@ docker-compose up -d
 | `PORT`      | `3000`  | HTTP server port                     |
 | `RTSP_PORT` | `8554`  | RTSP proxy port                      |
 | `DATA_PATH` | `/data` | Directory for settings.json and logs |
+
+**WebRTC / ICE (Docker bridge mode):**
+
+- Configure the UDP port mapping in Docker.
+- Configure ICE options in **Settings → WebRTC (ICE)**.
 
 **Dashboard authentication (optional):**
 

@@ -66,6 +66,12 @@ export interface BaichuanWebRTCServerOptions {
     username?: string;
     credential?: string;
   }>;
+  /** Limit the UDP port range used by ICE (useful for Docker port publishing) */
+  icePortRange?: [number, number];
+  /** Extra host addresses to advertise as candidates (e.g. host LAN IP) */
+  iceAdditionalHostAddresses?: string[];
+  /** Force relay-only (TURN) if needed */
+  iceTransportPolicy?: "all" | "relay";
   /** Logger callback */
   logger?: (
     level: "debug" | "info" | "warn" | "error",
@@ -279,6 +285,9 @@ export class BaichuanWebRTCServer extends EventEmitter {
     // Create peer connection with H.264 codec
     const peerConnection = new RTCPeerConnection({
       iceServers,
+      icePortRange: this.options.icePortRange,
+      iceAdditionalHostAddresses: this.options.iceAdditionalHostAddresses,
+      iceTransportPolicy: this.options.iceTransportPolicy,
       codecs: {
         video: [
           new RTCRtpCodecParameters({

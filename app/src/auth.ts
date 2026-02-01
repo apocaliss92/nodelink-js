@@ -44,14 +44,6 @@ function normalizeRemoteIp(ip: string): string {
   return ip;
 }
 
-function parseCommaList(value: string | undefined): string[] {
-  if (!value) return [];
-  return value
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
 type TrustedProxyConfig = {
   enabled: boolean;
   allowedIps: string[];
@@ -61,27 +53,24 @@ type TrustedProxyConfig = {
 };
 
 function getTrustedProxyConfig(): TrustedProxyConfig {
-  const enabled = parseBoolEnv(process.env.TRUST_PROXY_AUTH) === true;
+  const settings = getSettings();
+  const cfg = settings.auth?.trustedProxy;
 
-  // Default to loopback only if allowlist not provided.
-  const allowedIpsRaw = parseCommaList(process.env.TRUST_PROXY_IPS);
   const allowedIps =
-    allowedIpsRaw.length > 0 ? allowedIpsRaw : ["127.0.0.1", "::1"];
+    cfg?.allowedIps && cfg.allowedIps.length > 0
+      ? cfg.allowedIps
+      : ["127.0.0.1", "::1"];
 
   return {
-    enabled,
+    enabled: cfg?.enabled === true,
     allowedIps,
-    usernameHeader: (
-      process.env.TRUST_PROXY_USERNAME_HEADER || "x-authentik-username"
-    )
+    usernameHeader: (cfg?.usernameHeader || "x-authentik-username")
       .trim()
       .toLowerCase(),
-    groupsHeader: (
-      process.env.TRUST_PROXY_GROUPS_HEADER || "x-authentik-groups"
-    )
+    groupsHeader: (cfg?.groupsHeader || "x-authentik-groups")
       .trim()
       .toLowerCase(),
-    adminGroup: (process.env.TRUST_PROXY_ADMIN_GROUP || "admin").trim(),
+    adminGroup: (cfg?.adminGroup || "admin").trim(),
   };
 }
 

@@ -23,6 +23,7 @@ services:
     # ports:
     #   - "3000:3000"   # Web UI and API
     #   - "8554:8554"   # RTSP proxy
+    #   - "50000-50100:50000-50100/udp" # WebRTC / ICE UDP (required for WebRTC in bridge mode)
 
     volumes:
       # Persist settings and logs
@@ -39,6 +40,8 @@ services:
       # Override ports if needed
       # - PORT=3000
       # - RTSP_PORT=8554
+      # WebRTC / ICE (bridge mode)
+      # Configure in Settings → WebRTC (ICE)
 
     # Healthcheck inherited from Dockerfile
 

@@ -80,6 +80,10 @@ docker run -d \
 | `AUTH_ENABLED`   | (unset) | Enable auth when set to `1/true` (or disable with `0/false`). If unset, auth auto-enables when `ADMIN_PASSWORD` is set. |
 | `ADMIN_PASSWORD` | (unset) | Sets the `admin` password. This credential works for both the web login form and HTTP Basic auth.                       |
 
+SSO / reverse-proxy auth:
+
+- Authentik + NGINX trusted proxy guide: [documentation/authentik-nginx.md](documentation/authentik-nginx.md)
+
 ## Network Mode
 
 ### Host Network (Default)
@@ -107,6 +111,40 @@ ports:
   - "3000:3000"
   - "8554-8564:8554-8564"
 ```
+
+### WebRTC in Bridge Mode (ICE / UDP Ports)
+
+When using bridge mode, WebRTC needs **UDP ports** to be reachable from the browser.
+
+If the container advertises ICE candidates that point to the container IP (e.g. `172.x.x.x`) or uses random UDP ports that are not mapped, WebRTC may never connect and you can see logs like:
+
+```text
+Video data channel not open for session ...: connecting
+```
+
+Recommended configuration:
+
+1. Publish a dedicated UDP port range:
+
+```yaml
+ports:
+  - "3000:3000" # Web UI and API
+  - "8554:8554" # RTSP proxy
+  - "50000-50100:50000-50100/udp" # WebRTC / ICE UDP
+```
+
+2. Tell the app to use (and advertise) the same range + a reachable host address:
+
+```yaml
+# Configure in Settings → WebRTC (ICE):
+# - ICE UDP port range: 50000-50100
+# - Additional host addresses: 192.168.1.123
+```
+
+Notes:
+
+- The **Additional host addresses** setting should be the **host LAN IP** (or another IP reachable by the browser).
+- If you use `network_mode: host`, you typically don’t need to publish a UDP range.
 
 ## Data Persistence
 

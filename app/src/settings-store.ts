@@ -100,6 +100,32 @@ export const SettingsSchema = z.object({
   // Personal tokens stored in cleartext for UI display.
   // Never expose these via settings APIs.
   personalTokens: z.array(PersonalTokenSchema).default([]),
+
+  // Auth (advanced)
+  auth: z
+    .object({
+      trustedProxy: z
+        .object({
+          enabled: z.boolean().default(false),
+          // Default to loopback only.
+          allowedIps: z.array(z.string().min(1)).default(["127.0.0.1", "::1"]),
+          usernameHeader: z.string().default("x-authentik-username"),
+          groupsHeader: z.string().default("x-authentik-groups"),
+          adminGroup: z.string().default("admin"),
+        })
+        .default({}),
+    })
+    .default({}),
+
+  // WebRTC (advanced)
+  webrtc: z
+    .object({
+      // Example: "10000-10100" (empty disables)
+      icePortRange: z.string().default(""),
+      // CSV list of IPs/hostnames to advertise in ICE candidates (empty disables)
+      iceAdditionalHostAddresses: z.string().default(""),
+    })
+    .default({}),
 });
 
 export type Settings = z.infer<typeof SettingsSchema>;

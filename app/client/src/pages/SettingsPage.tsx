@@ -8,6 +8,19 @@ type Settings = {
   logRetentionDays: number;
   rtspProxyEnabled: boolean;
   rtspRequireAuth: boolean;
+  auth?: {
+    trustedProxy?: {
+      enabled: boolean;
+      allowedIps: string[];
+      usernameHeader: string;
+      groupsHeader: string;
+      adminGroup: string;
+    };
+  };
+  webrtc?: {
+    icePortRange: string;
+    iceAdditionalHostAddresses: string;
+  };
 };
 
 type RuntimeInfo = {
@@ -191,6 +204,9 @@ export default function SettingsPage() {
   }, [authState.enabled, authState.user?.username]);
 
   const isAuthEnabled = authState.enabled === true;
+  const canEditSettings = isAuthEnabled
+    ? authState.user?.role === "admin"
+    : true;
 
   const canViewMetrics =
     isAuthEnabled === false || authState.user?.role === "admin";
@@ -338,6 +354,8 @@ export default function SettingsPage() {
         logLevel: settings.logLevel,
         logRetentionDays: settings.logRetentionDays,
         rtspRequireAuth: settings.rtspRequireAuth,
+        auth: settings.auth,
+        webrtc: settings.webrtc,
       });
     } catch (e) {
       setError(String(e));
@@ -384,7 +402,7 @@ export default function SettingsPage() {
         <h1 className="h1">Settings</h1>
         <button
           className="btn primary"
-          disabled={!dirty || saving}
+          disabled={!dirty || saving || !canEditSettings}
           onClick={save}
         >
           {saving ? "Saving…" : "Save"}
@@ -602,6 +620,7 @@ export default function SettingsPage() {
                 <select
                   className="input"
                   value={settings.logLevel}
+                  disabled={!canEditSettings}
                   onChange={(e) =>
                     setSettings({
                       ...settings,
@@ -622,6 +641,7 @@ export default function SettingsPage() {
                   className="input"
                   type="number"
                   value={settings.logRetentionDays}
+                  disabled={!canEditSettings}
                   onChange={(e) =>
                     setSettings({
                       ...settings,
@@ -638,6 +658,7 @@ export default function SettingsPage() {
                   <input
                     type="checkbox"
                     checked={settings.rtspRequireAuth}
+                    disabled={!canEditSettings}
                     onChange={(e) =>
                       setSettings({
                         ...settings,
@@ -798,6 +819,219 @@ export default function SettingsPage() {
                 </div>
               )
             ) : null}
+          </div>
+
+          <div className="card">
+            <div className="label">Trusted proxy (Authentik / NPM)</div>
+            <div style={{ color: "var(--muted)", fontSize: 12 }}>
+              Enable header-based authentication when running behind a trusted
+              reverse proxy (e.g. Nginx Proxy Manager + Authentik).
+            </div>
+
+            {!isAuthEnabled ? (
+              <div
+                style={{ marginTop: 10, color: "var(--muted)", fontSize: 13 }}
+              >
+                Auth is disabled. Set{" "}
+                <span className="mono">AUTH_ENABLED=1</span>
+                (and <span className="mono">ADMIN_PASSWORD</span>) to secure the
+                dashboard.
+              </div>
+            ) : (
+              (() => {
+                const tp = settings.auth?.trustedProxy ?? {
+                  enabled: false,
+                  allowedIps: ["127.0.0.1", "::1"],
+                  usernameHeader: "x-authentik-username",
+                  groupsHeader: "x-authentik-groups",
+                  adminGroup: "admin",
+                };
+
+                return (
+                  <>
+                    <div className="row" style={{ marginTop: 12 }}>
+                      <label className="row" style={{ cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={tp.enabled}
+                          disabled={!canEditSettings}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              auth: {
+                                ...settings.auth,
+                                trustedProxy: {
+                                  ...tp,
+                                  enabled: e.target.checked,
+                                },
+                              },
+                            })
+                          }
+                        />
+                        <span>Enable trusted proxy auth</span>
+                      </label>
+                    </div>
+
+                    <div className="grid cols2" style={{ marginTop: 10 }}>
+                      <div style={{ gridColumn: "1 / -1" }}>
+                        <div className="label">Allowed proxy IPs (CSV)</div>
+                        <input
+                          className="input mono"
+                          placeholder="127.0.0.1, ::1"
+                          value={tp.allowedIps.join(", ")}
+                          disabled={!canEditSettings}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              auth: {
+                                ...settings.auth,
+                                trustedProxy: {
+                                  ...tp,
+                                  allowedIps: e.target.value
+                                    .split(",")
+                                    .map((s) => s.trim())
+                                    .filter(Boolean),
+                                },
+                              },
+                            })
+                          }
+                        />
+                        <div
+                          style={{
+                            color: "var(--muted)",
+                            fontSize: 12,
+                            marginTop: 6,
+                          }}
+                        >
+                          Must match the IP of your reverse proxy as seen by the
+                          app (often the Docker bridge IP or the host).
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="label">Username header</div>
+                        <input
+                          className="input mono"
+                          value={tp.usernameHeader}
+                          disabled={!canEditSettings}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              auth: {
+                                ...settings.auth,
+                                trustedProxy: {
+                                  ...tp,
+                                  usernameHeader: e.target.value,
+                                },
+                              },
+                            })
+                          }
+                        />
+                      </div>
+
+                      <div>
+                        <div className="label">Groups header</div>
+                        <input
+                          className="input mono"
+                          value={tp.groupsHeader}
+                          disabled={!canEditSettings}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              auth: {
+                                ...settings.auth,
+                                trustedProxy: {
+                                  ...tp,
+                                  groupsHeader: e.target.value,
+                                },
+                              },
+                            })
+                          }
+                        />
+                      </div>
+
+                      <div style={{ gridColumn: "1 / -1" }}>
+                        <div className="label">Admin group name</div>
+                        <input
+                          className="input"
+                          value={tp.adminGroup}
+                          disabled={!canEditSettings}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              auth: {
+                                ...settings.auth,
+                                trustedProxy: {
+                                  ...tp,
+                                  adminGroup: e.target.value,
+                                },
+                              },
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
+                  </>
+                );
+              })()
+            )}
+          </div>
+
+          <div className="card">
+            <div className="label">WebRTC (ICE)</div>
+            <div style={{ color: "var(--muted)", fontSize: 12 }}>
+              Useful in Docker bridge mode. Configure the ICE UDP port range and
+              the additional host IPs/hostnames to advertise.
+            </div>
+
+            {(() => {
+              const webrtc = settings.webrtc ?? {
+                icePortRange: "",
+                iceAdditionalHostAddresses: "",
+              };
+
+              return (
+                <div className="grid cols2" style={{ marginTop: 10 }}>
+                  <div>
+                    <div className="label">ICE UDP port range</div>
+                    <input
+                      className="input mono"
+                      placeholder="10000-10100"
+                      value={webrtc.icePortRange}
+                      disabled={!canEditSettings}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          webrtc: {
+                            ...webrtc,
+                            icePortRange: e.target.value,
+                          },
+                        })
+                      }
+                    />
+                  </div>
+
+                  <div>
+                    <div className="label">Additional host addresses (CSV)</div>
+                    <input
+                      className="input mono"
+                      placeholder="192.168.1.10, my-ddns.example.com"
+                      value={webrtc.iceAdditionalHostAddresses}
+                      disabled={!canEditSettings}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          webrtc: {
+                            ...webrtc,
+                            iceAdditionalHostAddresses: e.target.value,
+                          },
+                        })
+                      }
+                    />
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}
