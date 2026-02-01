@@ -50,6 +50,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
       affected_lib: ${{ steps.affected.outputs.affected_lib }}
+      affected_manager: ${{ steps.affected.outputs.affected_manager }}
       affected_projects: ${{ steps.affected.outputs.affected_projects }}
       base_ref: ${{ steps.affected.outputs.base_ref }}
     steps:
@@ -155,8 +156,14 @@ jobs:
             AFFECTED_LIB=true
           fi
 
+          AFFECTED_MANAGER=false
+          if echo "$AFFECTED_NL" | grep -qx "nodelink-manager"; then
+            AFFECTED_MANAGER=true
+          fi
+
           echo "affected_projects=$AFFECTED" >> $GITHUB_OUTPUT
           echo "affected_lib=$AFFECTED_LIB" >> $GITHUB_OUTPUT
+          echo "affected_manager=$AFFECTED_MANAGER" >> $GITHUB_OUTPUT
           echo "base_ref=$BASE_REF" >> $GITHUB_OUTPUT
 
       - name: Build library
@@ -237,7 +244,13 @@ jobs:
     needs: build-library
     if: |
       (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_docker == 'true') ||
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
+      (
+        github.event_name == 'push' &&
+        github.ref == 'refs/heads/main' &&
+        contains(join(github.event.commits.*.message, ' '), '[publish]') &&
+        (needs.build-library.outputs.affected_lib == 'true' || needs.build-library.outputs.affected_manager == 'true')
+      )
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
