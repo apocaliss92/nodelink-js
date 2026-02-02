@@ -359,9 +359,7 @@ export function buildAacAudioSpecificConfigHex(params: {
   return asc.toString(16).padStart(4, "0");
 }
 
-export function parseAdtsHeader(
-  adtsFrame: Buffer,
-): {
+export function parseAdtsHeader(adtsFrame: Buffer): {
   headerLength: number;
   sampleRate: number;
   channels: number;
@@ -592,6 +590,8 @@ export class Rfc4571Muxer {
   private videoUsWrapOffset = 0;
   private videoLastAbsUs: number | undefined;
   private videoAvgDeltaUs: number | undefined;
+  private videoFramesSinceAbsUsChange = 0;
+  private videoEstimatedFrameDeltaUs: number | undefined;
   private readonly videoClockRate = 90000;
   private readonly fallbackVideoIncrement: number;
   private readonly fallbackVideoDeltaUs: number;
@@ -787,6 +787,8 @@ export class Rfc4571Muxer {
     this.videoUsWrapOffset = 0;
     this.videoLastAbsUs = undefined;
     this.videoAvgDeltaUs = undefined;
+    this.videoFramesSinceAbsUsChange = 0;
+    this.videoEstimatedFrameDeltaUs = undefined;
   }
 
   private logVideoTiming(
@@ -872,24 +874,61 @@ export class Rfc4571Muxer {
       return;
     }
 
-    const deltaUs = absUs - this.videoLastAbsUs;
+    const lastAbsUs = this.videoLastAbsUs;
+    const deltaUs = absUs - lastAbsUs;
     this.videoLastAbsUs = absUs;
 
-    const trusted =
-      Number.isFinite(deltaUs) &&
-      deltaUs > 0 &&
-      deltaUs <= this.maxTrustedDeltaUs;
+    // Some camera models produce a coarse or repeated timestamp (e.g., same absUs for N frames
+    // then jump by a larger delta). If we treat repeated timestamps as untrusted and use an EMA
+    // of the coarse deltas, we end up advancing RTP timestamps too slowly (stutter/jitter).
+    //
+    // Heuristic:
+    // - If absUs did not advance, use an estimated per-frame delta (learned from the next advance)
+    //   or fallback fps.
+    // - If absUs advanced after a streak of repeats, assume the delta covers (streak+1) frames and
+    //   derive a per-frame delta.
     let effectiveDeltaUs: number;
-    if (trusted) {
-      const prevAvg = this.videoAvgDeltaUs ?? deltaUs;
-      this.videoAvgDeltaUs = prevAvg + (deltaUs - prevAvg) * this.emaAlpha;
-      effectiveDeltaUs = deltaUs;
-    } else {
+    if (!Number.isFinite(deltaUs) || deltaUs < 0) {
       this.logVideoTiming(
         "untrusted-delta",
-        `discarded deltaUs=${deltaUs} (absUs=${absUs} lastAbsUs=${this.videoLastAbsUs} avgDeltaUs=${this.videoAvgDeltaUs ?? "n/a"}); using fallback`,
+        `discarded deltaUs=${deltaUs} (absUs=${absUs} lastAbsUs=${lastAbsUs} avgDeltaUs=${this.videoAvgDeltaUs ?? "n/a"}); using fallback`,
       );
-      effectiveDeltaUs = this.videoAvgDeltaUs ?? this.fallbackVideoDeltaUs;
+      this.videoFramesSinceAbsUsChange = 0;
+      effectiveDeltaUs =
+        this.videoEstimatedFrameDeltaUs ?? this.fallbackVideoDeltaUs;
+    } else if (deltaUs === 0) {
+      this.videoFramesSinceAbsUsChange++;
+      // Keep the average stable; do NOT update EMA with zeros.
+      effectiveDeltaUs =
+        this.videoEstimatedFrameDeltaUs ?? this.fallbackVideoDeltaUs;
+    } else if (deltaUs <= this.maxTrustedDeltaUs) {
+      if (this.videoFramesSinceAbsUsChange > 0) {
+        const framesCovered = this.videoFramesSinceAbsUsChange + 1;
+        const perFrameDeltaUs = Math.max(
+          1,
+          Math.round(deltaUs / framesCovered),
+        );
+        this.videoEstimatedFrameDeltaUs = perFrameDeltaUs;
+        this.videoFramesSinceAbsUsChange = 0;
+
+        const prevAvg = this.videoAvgDeltaUs ?? perFrameDeltaUs;
+        this.videoAvgDeltaUs =
+          prevAvg + (perFrameDeltaUs - prevAvg) * this.emaAlpha;
+        effectiveDeltaUs = perFrameDeltaUs;
+      } else {
+        const prevAvg = this.videoAvgDeltaUs ?? deltaUs;
+        this.videoAvgDeltaUs = prevAvg + (deltaUs - prevAvg) * this.emaAlpha;
+        effectiveDeltaUs = deltaUs;
+      }
+    } else {
+      // Large forward jump: do not incorporate into EMA.
+      this.logVideoTiming(
+        "untrusted-delta",
+        `discarded deltaUs=${deltaUs} (absUs=${absUs} lastAbsUs=${lastAbsUs} avgDeltaUs=${this.videoAvgDeltaUs ?? "n/a"} sameCount=${this.videoFramesSinceAbsUsChange}); using fallback`,
+      );
+      this.videoFramesSinceAbsUsChange = 0;
+      effectiveDeltaUs =
+        this.videoEstimatedFrameDeltaUs ?? this.fallbackVideoDeltaUs;
     }
 
     const inc = Math.max(

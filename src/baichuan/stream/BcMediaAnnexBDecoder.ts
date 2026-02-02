@@ -66,6 +66,38 @@ export function detectVideoCodecFromNal(data: Buffer): BcMediaVideoType | null {
   const nalByte = data[nalStart];
   if (nalByte === undefined) return null;
 
+  // IMPORTANT: Check H.264 FIRST because H.264 NAL bytes can be misinterpreted as H.265.
+  // Example: H.264 NAL byte 0x41 (non-IDR slice, nal_ref_idc=2) would be interpreted as
+  // H.265 VPS (type 32) if we check H.265 first. Similarly, 0x21 would appear as H.265 BLA.
+
+  // H.264/AVC: forbidden_zero_bit (bit 7) = 0, nal_ref_idc in bits 5-6, nal_unit_type in bits 0-4
+  // NAL types: SPS=7, PPS=8, IDR=5, non-IDR=1
+  const forbiddenBit264 = (nalByte >> 7) & 1;
+  const h264Type = nalByte & 0x1f;
+
+  if (forbiddenBit264 === 0 && h264Type > 0 && h264Type <= 12) {
+    // Strong H.264 indicators: SPS, PPS (these types don't exist in H.265 in the same form)
+    if (h264Type === 7 || h264Type === 8) {
+      return "H264";
+    }
+    // IDR slice (type 5) - H.265 type 5 is RADL_R which is rare without VPS/SPS/PPS
+    if (h264Type === 5) {
+      return "H264";
+    }
+    // Non-IDR slice (type 1) - need to be more careful here as it could be H.265 TRAIL_R
+    // For H.264 non-IDR, nal_ref_idc (bits 5-6) is typically non-zero for reference frames
+    // For H.265, the second byte's bits 0-2 contain temporal_id_plus1 which must be 1-7
+    if (h264Type === 1) {
+      // Additional heuristic: if nal_ref_idc is 2 or 3, strongly prefer H.264
+      // H.265 TRAIL_R (type 1) with forbidden=0 would have nalByte values 0x02 or 0x03
+      // H.264 non-IDR with nal_ref_idc=2 has nalByte 0x41, with nal_ref_idc=1 has 0x21
+      const nalRefIdc = (nalByte >> 5) & 0x03;
+      if (nalRefIdc >= 1) {
+        return "H264";
+      }
+    }
+  }
+
   // H.265/HEVC: forbidden_zero_bit (bit 7) = 0, nal_unit_type in bits 1-6
   // NAL types: VPS=32, SPS=33, PPS=34, IDR=19/20, CRA=21, TRAIL=0/1
   // The second byte contains temporal_id_plus1 in bits 0-2 (must be non-zero)
@@ -78,35 +110,21 @@ export function detectVideoCodecFromNal(data: Buffer): BcMediaVideoType | null {
 
       // Valid H.265 NAL: forbidden=0, temporal_id_plus1 > 0, type in valid range
       if (forbiddenBit === 0 && temporalId > 0 && hevcType <= 40) {
-        // Strong H.265 indicators: VPS, SPS, PPS
+        // Strong H.265 indicators: VPS, SPS, PPS (unique to H.265)
         if (hevcType === 32 || hevcType === 33 || hevcType === 34) {
           return "H265";
         }
-        // IDR, CRA frames
+        // IDR_W_RADL, IDR_N_LP, CRA_NUT
         if (hevcType === 19 || hevcType === 20 || hevcType === 21) {
           return "H265";
         }
-        // TRAIL_N, TRAIL_R (common P/B frames)
-        if (hevcType <= 9) {
+        // TRAIL_N (0), TRAIL_R (1) - but only if we didn't already match H.264
+        // These are weak indicators since H.264 type 1 is common
+        if (hevcType <= 1 && nalByte <= 0x03) {
+          // H.265 TRAIL with low NAL byte values (0x00-0x03) are more likely H.265
           return "H265";
         }
       }
-    }
-  }
-
-  // H.264/AVC: forbidden_zero_bit (bit 7) = 0, nal_ref_idc in bits 5-6, nal_unit_type in bits 0-4
-  // NAL types: SPS=7, PPS=8, IDR=5, non-IDR=1
-  const forbiddenBit264 = (nalByte >> 7) & 1;
-  const h264Type = nalByte & 0x1f;
-
-  if (forbiddenBit264 === 0 && h264Type > 0 && h264Type <= 12) {
-    // Strong H.264 indicators: SPS, PPS
-    if (h264Type === 7 || h264Type === 8) {
-      return "H264";
-    }
-    // IDR, non-IDR slice
-    if (h264Type === 5 || h264Type === 1) {
-      return "H264";
     }
   }
 
