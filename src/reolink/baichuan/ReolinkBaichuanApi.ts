@@ -490,6 +490,14 @@ export class ReolinkBaichuanApi {
   private simpleEventResubscribeTimer: NodeJS.Timeout | undefined;
   private simpleEventResubscribeInFlight: Promise<void> | undefined;
   private readonly simpleEventResubscribeIntervalMs = 5 * 60_000;
+
+  // Event watchdog: auto-recovery when events stop flowing or subscription fails
+  private simpleEventWatchdogTimer: NodeJS.Timeout | undefined;
+  private simpleEventLastReceivedAt: number = 0;
+  private simpleEventWatchdogRecoveryAttempts: number = 0;
+  private simpleEventWatchdogLastRecoveryAt: number = 0;
+  private readonly simpleEventWatchdogIntervalMs = 10_000; // check every 10s
+  private readonly simpleEventWatchdogSilenceThresholdMs = 5 * 60_000; // 5 min without events
   private statePollingInterval: NodeJS.Timeout | undefined;
   private udpSleepInferenceInterval: NodeJS.Timeout | undefined;
   private readonly udpLastInferredSleepStateByChannel = new Map<
@@ -1507,6 +1515,17 @@ export class ReolinkBaichuanApi {
   }
 
   private dispatchSimpleEvent(evt: ReolinkSimpleEvent): void {
+    // Track last event time for watchdog
+    this.simpleEventLastReceivedAt = Date.now();
+    // Reset recovery state on successful event delivery
+    if (this.simpleEventWatchdogRecoveryAttempts > 0) {
+      (this.logger.info ?? this.logger.log).call(
+        this.logger,
+        `[ReolinkBaichuanApi] event watchdog: events flowing again after ${this.simpleEventWatchdogRecoveryAttempts} recovery attempt(s)`,
+      );
+      this.simpleEventWatchdogRecoveryAttempts = 0;
+    }
+
     const debugCfg = this.client.getDebugConfig?.();
     if (debugCfg) {
       const sid = this.client.getSocketSessionId?.();
@@ -2298,13 +2317,17 @@ export class ReolinkBaichuanApi {
   /**
    * Subscribe to minimal high-level events.
    * The API manages Baichuan subscribe/unsubscribe automatically.
+   * Includes built-in watchdog: if no events arrive for 5 minutes while
+   * the connection is alive, the subscription is automatically renewed.
    */
   async onSimpleEvent(
     callback: (event: ReolinkSimpleEvent) => void | Promise<void>,
   ): Promise<void> {
     this.simpleEventListeners.add(callback);
     await this.ensureSimpleEventSubscribed();
+    this.simpleEventLastReceivedAt = Date.now();
     this.startSimpleEventResubscribeTimer();
+    this.startSimpleEventWatchdog();
   }
 
   /**
@@ -2322,6 +2345,7 @@ export class ReolinkBaichuanApi {
 
     if (this.simpleEventListeners.size === 0) {
       this.stopSimpleEventResubscribeTimer();
+      this.stopSimpleEventWatchdog();
       this.stopUdpSleepInference();
       await this.ensureSimpleEventUnsubscribed();
     } else {
@@ -2349,6 +2373,119 @@ export class ReolinkBaichuanApi {
     if (!this.simpleEventResubscribeTimer) return;
     clearInterval(this.simpleEventResubscribeTimer);
     this.simpleEventResubscribeTimer = undefined;
+  }
+
+  /**
+   * Event watchdog: monitors whether events are flowing and auto-recovers if they stop.
+   *
+   * Handles two failure modes:
+   * 1. Subscription flag is true but no events arrive for 5+ minutes (device dropped subscription silently)
+   * 2. Subscription flag is false because initial/retry subscribe failed, but connection is now alive
+   *
+   * Uses exponential backoff (30s → 60s → 120s → 240s → max 5min) to avoid hammering the device.
+   */
+  private startSimpleEventWatchdog(): void {
+    if (this.simpleEventWatchdogTimer) return;
+    if (this.simpleEventListeners.size === 0) return;
+
+    this.simpleEventWatchdogTimer = setInterval(() => {
+      void this.simpleEventWatchdogTick();
+    }, this.simpleEventWatchdogIntervalMs);
+  }
+
+  private stopSimpleEventWatchdog(): void {
+    if (!this.simpleEventWatchdogTimer) return;
+    clearInterval(this.simpleEventWatchdogTimer);
+    this.simpleEventWatchdogTimer = undefined;
+    this.simpleEventWatchdogRecoveryAttempts = 0;
+    this.simpleEventWatchdogLastRecoveryAt = 0;
+    this.simpleEventLastReceivedAt = 0;
+  }
+
+  private async simpleEventWatchdogTick(): Promise<void> {
+    // No listeners → nothing to watch
+    if (this.simpleEventListeners.size === 0) return;
+
+    // Connection must be alive for recovery to work
+    if (!this.client.isSocketConnected?.() || !this.client.loggedIn) return;
+
+    const now = Date.now();
+
+    // Case 1: subscription is active but no events for too long → force resubscribe
+    if (this.simpleEventSubscribed && this.simpleEventLastReceivedAt > 0) {
+      const silence = now - this.simpleEventLastReceivedAt;
+      if (silence < this.simpleEventWatchdogSilenceThresholdMs) return; // events flowing normally
+
+      // Events stopped flowing → force resubscribe
+      (this.logger.warn ?? this.logger.log).call(
+        this.logger,
+        `[ReolinkBaichuanApi] event watchdog: no events for ${Math.round(silence / 60_000)} min, forcing resubscribe`,
+        { host: this.host, silenceMs: silence },
+      );
+
+      try {
+        // Force the flag false so ensureSimpleEventSubscribed will actually resend
+        this.simpleEventSubscribed = false;
+        this.client.subscribed = false;
+        await this.ensureSimpleEventSubscribed();
+        this.simpleEventLastReceivedAt = Date.now(); // reset timer after resubscribe
+        this.simpleEventWatchdogRecoveryAttempts = 0;
+        (this.logger.info ?? this.logger.log).call(
+          this.logger,
+          `[ReolinkBaichuanApi] event watchdog: resubscribed successfully after silence`,
+        );
+      } catch (e: unknown) {
+        (this.logger.debug ?? this.logger.log).call(
+          this.logger,
+          `[ReolinkBaichuanApi] event watchdog: resubscribe after silence failed`,
+          formatErrorForLog(e),
+        );
+      }
+      return;
+    }
+
+    // Case 2: subscription failed (simpleEventSubscribed === false) but connection is alive → recovery
+    if (!this.simpleEventSubscribed) {
+      // Exponential backoff: 30s, 60s, 120s, 240s, max 5min
+      const backoffMs = Math.min(
+        30_000 * Math.pow(2, this.simpleEventWatchdogRecoveryAttempts),
+        this.simpleEventWatchdogSilenceThresholdMs,
+      );
+      if (now - this.simpleEventWatchdogLastRecoveryAt < backoffMs) return;
+
+      this.simpleEventWatchdogRecoveryAttempts++;
+      this.simpleEventWatchdogLastRecoveryAt = now;
+
+      const nextBackoff = Math.min(
+        30_000 * Math.pow(2, this.simpleEventWatchdogRecoveryAttempts),
+        this.simpleEventWatchdogSilenceThresholdMs,
+      );
+      (this.logger.info ?? this.logger.log).call(
+        this.logger,
+        `[ReolinkBaichuanApi] event watchdog: subscription inactive, attempting auto-recovery ` +
+          `(attempt #${this.simpleEventWatchdogRecoveryAttempts}, next backoff ${Math.round(nextBackoff / 1000)}s)`,
+        { host: this.host },
+      );
+
+      try {
+        await this.ensureSimpleEventSubscribed();
+        if (this.simpleEventSubscribed) {
+          this.simpleEventLastReceivedAt = Date.now();
+          (this.logger.info ?? this.logger.log).call(
+            this.logger,
+            `[ReolinkBaichuanApi] event watchdog: auto-recovery successful after ` +
+              `${this.simpleEventWatchdogRecoveryAttempts} attempt(s)`,
+          );
+          this.simpleEventWatchdogRecoveryAttempts = 0;
+        }
+      } catch (e: unknown) {
+        (this.logger.debug ?? this.logger.log).call(
+          this.logger,
+          `[ReolinkBaichuanApi] event watchdog: recovery attempt #${this.simpleEventWatchdogRecoveryAttempts} failed`,
+          formatErrorForLog(e),
+        );
+      }
+    }
   }
 
   private async renewSimpleEventSubscription(): Promise<void> {
@@ -2605,6 +2742,9 @@ export class ReolinkBaichuanApi {
     // Stop state polling before closing
     this.stopStatePolling();
     this.stopUdpSleepInference();
+    // Stop event watchdog and resubscribe timer
+    this.stopSimpleEventWatchdog();
+    this.stopSimpleEventResubscribeTimer();
     // Stop all RTSP servers before closing the client
     await this.cleanup();
     // Stop all active video streams on the main client before logout/close
