@@ -54,7 +54,8 @@ const logDebugStreamBlock = (params: {
   const videoEncTypeText =
     getXmlText(raw, "videoEncType") ?? getXmlText(raw, "VideoEncType");
   const audioText = getXmlText(raw, "audio") ?? getXmlText(raw, "Audio");
-  const enableText = getXmlText(raw, "enable") ?? getXmlText(raw, "Enable");
+  const enableCheckRaw = raw.replace(/<smartH265[\s\S]*?<\/smartH265>/g, "");
+  const enableText = getXmlText(enableCheckRaw, "enable") ?? getXmlText(enableCheckRaw, "Enable");
 
   const width = Number(widthText ?? "0");
   const height = Number(heightText ?? "0");
@@ -95,7 +96,11 @@ const buildStream = (params: {
   const bitRate = Number(getXmlText(streamXml, "bitRate") ?? "0");
   const audio = Number(getXmlText(streamXml, "audio") ?? "0");
 
-  const enabled = getXmlText(streamXml, "enable");
+  // Strip nested blocks that contain their own <enable> child tags
+  // (e.g. <smartH265><enable>0</enable>...</smartH265>) to prevent them
+  // from being mistakenly matched as the stream-level enable flag.
+  const enableXml = streamXml.replace(/<smartH265[\s\S]*?<\/smartH265>/g, "");
+  const enabled = getXmlText(enableXml, "enable");
   const isEnabled = isEnabledFromText(enabled);
 
   if (!isEnabled || !isPlausibleStream({ width, height, frameRate, bitRate }))

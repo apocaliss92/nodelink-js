@@ -324,6 +324,7 @@ export const DUAL_LENS_SINGLE_MOTION_MODELS = new Set<string>([
   "Reolink TrackMix PoE",
   "Reolink TrackMix WiFi",
   "RLC-81MA",
+  "TrackFlex Floodlight WiFi",
 ]);
 
 export const DUAL_LENS_MODELS = new Set<string>([
@@ -332,8 +333,11 @@ export const DUAL_LENS_MODELS = new Set<string>([
 ]);
 
 export const isDualLenseModel = (model: string): boolean => {
+  const lower = model.toLowerCase();
   return (
-    DUAL_LENS_MODELS.has(model) || model.toLowerCase().includes("trackmix")
+    Array.from(DUAL_LENS_MODELS).some((m) => m.toLowerCase() === lower) ||
+    lower.includes("trackmix") ||
+    lower.includes("trackflex")
   );
 };
 
@@ -453,6 +457,15 @@ export class ReolinkBaichuanApi {
    * Set via setIsNvr() from the plugin or auto-detected via isNvrDevice().
    */
   private _isNvr: boolean | undefined;
+
+  /**
+   * Cached multi-focal detection result.
+   * - true = dual-lens camera (e.g., TrackMix, TrackFlex) with multiple channels on a single device
+   * - false = single-lens camera
+   * Multi-focal cameras reject concurrent streaming TCP connections (response_code 430),
+   * so all channels must multiplex on the same streaming socket.
+   */
+  private _isMultiFocal: boolean | undefined;
 
   /** Maximum dedicated sessions allowed before triggering a reboot (default: 7). */
   private maxDedicatedSessionsBeforeReboot: number | undefined;
@@ -1035,14 +1048,16 @@ export class ReolinkBaichuanApi {
    * Determine the socket tag for a given sessionKey.
    * This implements the tag-based allocation strategy:
    *
-   * - "general" - commands, events
-   * - "streaming:ch{N}" - main + sub for channel N (closed when no streams)
-   * - "streaming:ch{N}:ext" - ext for channel N (closed when no streams)
+   * - "general" - commands, events, ext on ch0
+   * - "streaming:ch{N}" - main + sub for channel N (NVR/standalone single-lens)
+   * - "streaming:ch{N}:ext" - ext for channel N (NVR/standalone, N>0)
+   * - "streaming:a" - ch0 main + ch1 sub (multi-focal dedicated socket)
+   * - "general" also carries ch1 main + ch0 sub for multi-focal (merged with commands/events)
    * - "replay:deviceId:ch{N}" - dedicated per device+channel for replay
    *
-   * Always uses per-channel tagging for streams (works for both standalone and NVR).
-   * Replay uses per-device+channel sockets to allow multiple users to watch
-   * different clips simultaneously without interfering with each other.
+   * Multi-focal cameras (TrackMix, TrackFlex, Duo) reject two main or two sub
+   * streams on the same TCP connection (response_code 430). Cross-channel pairing
+   * ensures each socket always has a valid M+S combination using only 2 TCP connections.
    *
    * @param sessionKey - The session key (e.g., "live:device:ch0:main", "replay:device:ch1:file")
    * @returns The socket pool tag to use
@@ -1069,10 +1084,25 @@ export class ReolinkBaichuanApi {
         if (channel === 0) {
           return "general";
         }
-        return `streaming:ch${channel}:ext`;
+        // Multi-focal: ext goes to general (rarely used, avoid opening extra sockets)
+        if (this._isMultiFocal) {
+          return "general";
+        }
+        // NVR/Hub: per-channel ext socket
+        return this._isNvr ? `streaming:ch${channel}:ext` : `streaming:ch${channel}:ext`;
       }
-      // main/sub share socket per channel
-      return `streaming:ch${channel}`;
+      // Multi-focal (TrackMix, TrackFlex, Duo): cross-channel pairing.
+      // The camera rejects two main or two sub streams on the same TCP connection (response_code 430).
+      // Socket A (dedicated) = ch0 main + ch1 sub
+      // General socket        = commands + events + ch1 main + ch0 sub
+      // This ensures each socket always has a valid M+S combination (2 TCP connections total).
+      if (this._isMultiFocal) {
+        const isSocketA = (channel === 0 && profile === "main") || (channel === 1 && profile === "sub");
+        return isSocketA ? "streaming:a" : "general";
+      }
+      // NVR/Hub: per-channel socket for each camera
+      // Standalone single-lens: per-channel socket (only ch0 exists anyway)
+      return this._isNvr ? `streaming:ch${channel}` : `streaming:ch${channel}`;
     }
 
     // Unknown keys go to general socket
@@ -2679,6 +2709,18 @@ export class ReolinkBaichuanApi {
   setIsNvr(isNvr: boolean): void {
     this._isNvr = isNvr;
     this.logger.debug?.(`[ReolinkBaichuanApi] setIsNvr: ${isNvr}`);
+  }
+
+  /**
+   * Set the multi-focal flag explicitly.
+   * Call this early (before streaming) to ensure correct socket pooling.
+   * Multi-focal cameras (TrackMix, TrackFlex, Duo, etc.) reject concurrent
+   * streaming TCP connections, so all channels must share a single streaming socket.
+   * @param isMultiFocal - true if this is a dual-lens/multi-focal camera
+   */
+  setIsMultiFocal(isMultiFocal: boolean): void {
+    this._isMultiFocal = isMultiFocal;
+    this.logger.debug?.(`[ReolinkBaichuanApi] setIsMultiFocal: ${isMultiFocal}`);
   }
 
   /**
@@ -10763,7 +10805,7 @@ export class ReolinkBaichuanApi {
       });
       model = typeof info.type === "string" ? info.type.toLowerCase() : "";
       isMultiFocal = isDualLenseModel(model);
-      isTrackMix = model.includes("trackmix");
+      isTrackMix = model.includes("trackmix") || model.includes("trackflex");
     } catch (e) {
       logDebug(
         "[ReolinkBaichuanApi] buildVideoStreamOptions: getInfo(type) failed",
