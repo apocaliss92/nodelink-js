@@ -6,6 +6,8 @@ import { rtspRouter } from "./routers/rtsp.js";
 import { rtspProxyRouter } from "./routers/rtsp-proxy.js";
 import { settingsRouter } from "./routers/settings.js";
 import { logsRouter } from "./routers/logs.js";
+import { eventsRouter } from "./routers/events.js";
+import { restDocsRouter } from "./routers/rest-docs.js";
 
 export const appRouter = router({
   config: configRouter,
@@ -15,6 +17,8 @@ export const appRouter = router({
   rtspProxy: rtspProxyRouter,
   settings: settingsRouter,
   logs: logsRouter,
+  events: eventsRouter,
+  rest: restDocsRouter,
 });
 
 export type AppRouter = typeof appRouter;

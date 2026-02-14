@@ -126,6 +126,32 @@ export const SettingsSchema = z.object({
       iceAdditionalHostAddresses: z.string().default(""),
     })
     .default({}),
+
+  // MQTT (events publishing)
+  mqtt: z
+    .object({
+      enabled: z.boolean().default(false),
+      brokerUrl: z.string().default("mqtt://localhost:1883"),
+      username: z.string().optional(),
+      password: z.string().optional(),
+      clientId: z.string().optional(),
+      topicPrefix: z.string().default("nodelink-js"),
+      qos: z.union([z.literal(0), z.literal(1), z.literal(2)]).default(0),
+      reconnectPeriod: z.number().default(5000),
+    })
+    .default({}),
+
+  // Home Assistant MQTT discovery (device state forwarding)
+  homeassistant: z
+    .object({
+      enabled: z.boolean().default(false),
+      discoveryPrefix: z.string().default("homeassistant"),
+      /** Poll interval in seconds for fetching camera API data */
+      pollIntervalSeconds: z.number().min(10).max(3600).default(60),
+      /** Topic prefix for device state (e.g. nodelink-js/camera/living_room/state) */
+      stateTopicPrefix: z.string().default("nodelink-js"),
+    })
+    .default({}),
 });
 
 export type Settings = z.infer<typeof SettingsSchema>;

@@ -251,6 +251,23 @@ Tip: a personal token is ideal for integrations (Home Assistant, scripts, etc.) 
 
 ---
 
+## Manager REST API
+
+The Manager UI exposes a REST API for integrations, scripts, and third-party apps. Key endpoints:
+
+| Category | Endpoints |
+|----------|-----------|
+| **Auth** | `GET /api/auth/config`, `POST /api/auth/login`, `POST /api/auth/personal-token` |
+| **Streaming** | `GET /api/mpeg/:camera/:profile`, `GET /api/hls/:camera/:profile/playlist.m3u8`, `POST /api/webrtc/session` |
+| **Events** | `GET /api/events/sse` (SSE), `GET /api/events/stream` (NDJSON), `GET /api/events/status` |
+| **System** | `GET /api/health`, `GET /api/metrics`, `GET /api/updates` |
+
+**Events** — Real-time camera events (motion, doorbell, people, vehicle, etc.) via Server-Sent Events or NDJSON stream. When MQTT is configured, events are also published to the broker.
+
+📖 **[Full Manager API documentation →](./documentation/manager-api.md)**
+
+---
+
 ## 📚 Full API Documentation
 
 For detailed method-by-method documentation, see the [documentation](./documentation/) folder:
@@ -284,6 +301,7 @@ For detailed method-by-method documentation, see the [documentation](./documenta
 
 | Section                                           | Description                           |
 | ------------------------------------------------- | ------------------------------------- |
+| [**Manager REST API**](./documentation/manager-api.md) | HTTP API for auth, streaming, events, metrics |
 | [Streaming Servers](./documentation/streaming.md) | RTSP, RFC4571, HTTP streaming servers |
 | [Network Discovery](./documentation/discovery.md) | Automatic camera discovery via UDP    |
 
@@ -655,6 +673,7 @@ This library has been tested with:
 
 - [Baichuan Protocol API](./documentation/baichuan-api/README.md) - Binary protocol (port 9000)
 - [CGI HTTP API](./documentation/cgi-api/README.md) - HTTP REST API (port 80)
+- [Manager REST API](./documentation/manager-api.md) - Web dashboard HTTP API (auth, streaming, events, metrics)
 - [Streaming Servers](./documentation/streaming.md) - RTSP, RFC4571, HTTP servers
 - [Network Discovery](./documentation/discovery.md) - UDP autodiscovery
 

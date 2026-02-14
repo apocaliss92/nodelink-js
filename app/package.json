@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@apocaliss92/nodelink-js": "file:..",
+    "mqtt": "^5.15.0",
     "@trpc/server": "^10.45.0",
     "@types/uuid": "^10.0.0",
     "cors": "^2.8.5",

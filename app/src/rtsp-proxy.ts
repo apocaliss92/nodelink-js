@@ -9,6 +9,7 @@ import {
   startRtspServer,
   stopRtspServer,
 } from "./rtsp-manager.js";
+import { emitStreamClientsChanged } from "./events-manager.js";
 
 const logger = createSourceLogger("rtsp-proxy");
 
@@ -260,6 +261,28 @@ export class RtspProxyServer extends EventEmitter {
   }
 
   /**
+   * Emit stream_clients event for RTSP proxy (backendKey: cameraName/profile)
+   */
+  private emitRtspStreamClientsChanged(
+    backendKey: string,
+    clientCount: number,
+  ): void {
+    const [cameraName, profile] = backendKey.split("/");
+    if (!cameraName || !profile) return;
+    const camera = getConfig().cameras.find(
+      (c) =>
+        sanitizeCameraName(c.name) === cameraName || c.id === cameraName,
+    );
+    if (!camera) return;
+    emitStreamClientsChanged(
+      camera.id,
+      "rtsp",
+      profile as "main" | "sub" | "ext",
+      clientCount,
+    );
+  }
+
+  /**
    * Register a client for a backend
    */
   private registerBackendClient(backendKey: string, clientId: string): void {
@@ -279,6 +302,7 @@ export class RtspProxyServer extends EventEmitter {
     }
     clients.add(clientId);
     logger.debug(`Backend ${backendKey} now has ${clients.size} client(s)`);
+    this.emitRtspStreamClientsChanged(backendKey, clients.size);
   }
 
   /**
@@ -290,6 +314,7 @@ export class RtspProxyServer extends EventEmitter {
 
     clients.delete(clientId);
     logger.debug(`Backend ${backendKey} now has ${clients.size} client(s)`);
+    this.emitRtspStreamClientsChanged(backendKey, clients.size);
 
     // If no more clients, start idle timer
     if (clients.size === 0) {

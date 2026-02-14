@@ -19,6 +19,7 @@ import type { Response } from "express";
 import { createSourceLogger } from "./logger.js";
 import { getOrCreateApiConnection } from "./rtsp-manager.js";
 import { getConfig } from "./settings-store.js";
+import { emitStreamClientsChanged } from "./events-manager.js";
 
 const logger = createSourceLogger("mjpeg-native");
 
@@ -78,6 +79,7 @@ export async function addMjpegClient(
   logger.info(
     `MJPEG client ${clientId} connected to ${streamKey} (total: ${stream.clients.size})`,
   );
+  emitStreamClientsChanged(cameraId, "mjpeg", profile, stream.clients.size);
 
   // Return cleanup function
   const cleanup = () => {
@@ -97,6 +99,13 @@ function removeMjpegClient(streamKey: string, clientId: string): void {
   stream.clients.delete(clientId);
   logger.info(
     `MJPEG client ${clientId} disconnected from ${streamKey} (remaining: ${stream.clients.size})`,
+  );
+  const [camId, prof] = streamKey.split(":");
+  emitStreamClientsChanged(
+    camId,
+    "mjpeg",
+    prof as "main" | "sub" | "ext",
+    stream.clients.size,
   );
 
   // Stop stream if no clients

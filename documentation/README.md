@@ -37,6 +37,10 @@ The CGI API uses HTTP requests on port **80**. It provides:
 
 ## Additional Features
 
+### 🖥️ [Manager REST API](./manager-api.md)
+
+HTTP REST API exposed by the nodelink-manager web application: authentication, streaming (MJPEG, HLS, WebRTC), events (SSE, JSON stream, MQTT), and metrics.
+
 ### 📺 [Streaming Servers](./streaming.md)
 
 Create local streaming servers:

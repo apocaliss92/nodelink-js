@@ -15,6 +15,7 @@ import {
   sanitizeCameraName,
 } from "./rtsp-manager.js";
 import { getConfig } from "./settings-store.js";
+import { emitStreamClientsChanged } from "./events-manager.js";
 
 const logger = createSourceLogger("hls-native");
 
@@ -65,7 +66,15 @@ function now(): number {
 function cleanupClients(stream: ActiveHlsStream): void {
   const t = now();
   for (const [k, last] of stream.clients) {
-    if (t - last > CLIENT_TTL_MS) stream.clients.delete(k);
+    if (t - last > CLIENT_TTL_MS) {
+      stream.clients.delete(k);
+      emitStreamClientsChanged(
+        stream.cameraId,
+        "hls",
+        stream.profile,
+        stream.clients.size,
+      );
+    }
   }
 }
 
@@ -199,7 +208,16 @@ export async function touchHlsClient(
 ): Promise<void> {
   const stream = await createOrGetStream(cameraNameOrId, profile);
   stream.lastAccessAt = now();
+  const wasNew = !stream.clients.has(clientKey);
   stream.clients.set(clientKey, now());
+  if (wasNew) {
+    emitStreamClientsChanged(
+      stream.cameraId,
+      "hls",
+      stream.profile,
+      stream.clients.size,
+    );
+  }
   logger.debug(
     `HLS touch: ${stream.streamKey} client=${clientKey} clients=${stream.clients.size}`,
   );

@@ -121,6 +121,33 @@ export interface CameraInfo {
 // Store for API connections
 const apiConnections = new Map<string, ReolinkBaichuanApi>();
 
+// Listeners notified when a new API connection is established (for events, etc.)
+const apiConnectionListeners: Array<
+  (cameraId: string, api: ReolinkBaichuanApi) => void
+> = [];
+
+/**
+ * Register a callback to be notified when a camera API connection is established.
+ * The callback is also invoked immediately for all existing connections.
+ */
+export function onApiConnected(
+  callback: (cameraId: string, api: ReolinkBaichuanApi) => void,
+): void {
+  apiConnectionListeners.push(callback);
+  for (const [cameraId, api] of apiConnections) {
+    callback(cameraId, api);
+  }
+}
+
+/** Callback invoked when a camera API connection is closed */
+const apiDisconnectionListeners: Array<(cameraId: string) => void> = [];
+
+export function onApiDisconnected(
+  callback: (cameraId: string) => void,
+): void {
+  apiDisconnectionListeners.push(callback);
+}
+
 // Store for RTSP servers
 const rtspServers = new Map<
   string,
@@ -180,6 +207,17 @@ export async function getOrCreateApiConnection(
     logger.info(`Connected successfully`);
 
     apiConnections.set(cameraId, api);
+
+    // Notify listeners (e.g. events-manager for SSE/MQTT/JSON stream)
+    for (const cb of apiConnectionListeners) {
+      try {
+        cb(cameraId, api);
+      } catch (e) {
+        createSourceLogger("rtsp-manager").error(
+          `apiConnectionListener error: ${e}`,
+        );
+      }
+    }
 
     // Update camera info cache
     await updateCameraInfo(cameraId, api);
@@ -291,6 +329,16 @@ export async function closeApiConnection(cameraId: string) {
       logger.error(`Error closing connection: ${error}`);
     }
     apiConnections.delete(cameraId);
+
+    for (const cb of apiDisconnectionListeners) {
+      try {
+        cb(cameraId);
+      } catch (e) {
+        createSourceLogger("rtsp-manager").error(
+          `apiDisconnectionListener error: ${e}`,
+        );
+      }
+    }
 
     const info = cameraInfoCache.get(cameraId);
     if (info) {

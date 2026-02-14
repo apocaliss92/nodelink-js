@@ -16,50 +16,15 @@ import {
 } from "../settings-store.js";
 import { reloadLogger } from "../logger.js";
 import { updateRtspUrls } from "../rtsp-manager.js";
+import {
+  connectMqtt,
+  disconnectMqtt,
+} from "../events-manager.js";
+import { updateHomeAssistantPolling } from "../homeassistant-mqtt.js";
 import path from "node:path";
 import fs from "node:fs";
-
-function readAppVersion(): string | null {
-  if (process.env.APP_VERSION && process.env.APP_VERSION.trim()) {
-    return process.env.APP_VERSION.trim();
-  }
-
-  const candidates = [
-    path.resolve(process.cwd(), "package.json"),
-    path.resolve(process.cwd(), "app/package.json"),
-    path.resolve(process.cwd(), "../package.json"),
-  ];
-
-  for (const p of candidates) {
-    try {
-      if (!fs.existsSync(p)) continue;
-      const raw = fs.readFileSync(p, "utf8");
-      const parsed = JSON.parse(raw) as { name?: string; version?: string };
-      if (
-        parsed?.name === "nodelink-manager" &&
-        typeof parsed.version === "string"
-      ) {
-        return parsed.version;
-      }
-    } catch {
-      // ignore
-    }
-  }
-
-  // Fallback: return any version we can find.
-  for (const p of candidates) {
-    try {
-      if (!fs.existsSync(p)) continue;
-      const raw = fs.readFileSync(p, "utf8");
-      const parsed = JSON.parse(raw) as { version?: string };
-      if (typeof parsed.version === "string") return parsed.version;
-    } catch {
-      // ignore
-    }
-  }
-
-  return null;
-}
+import { inferGithubRepoSlug } from "../github-utils.js";
+import { readAppVersion } from "../app-version.js";
 
 export const settingsRouter = router({
   // Get current settings
@@ -93,11 +58,16 @@ export const settingsRouter = router({
     .meta({ description: "Get runtime information (ports, env-derived paths)" })
     .query(() => {
       const dataDir = process.env.DATA_PATH || ".";
+      const repo = inferGithubRepoSlug();
+      const docsUrl = repo
+        ? `https://github.com/${repo}/blob/main/documentation/manager-api.md`
+        : null;
       return {
         httpPort: Number(process.env.PORT) || 3000,
         rtspPort: Number(process.env.RTSP_PORT) || 8554,
         dataPath: path.resolve(dataDir),
         appVersion: readAppVersion(),
+        docsUrl,
       };
     }),
 
@@ -130,6 +100,26 @@ export const settingsRouter = router({
             iceAdditionalHostAddresses: z.string().optional(),
           })
           .optional(),
+        mqtt: z
+          .object({
+            enabled: z.boolean().optional(),
+            brokerUrl: z.string().optional(),
+            username: z.string().optional(),
+            password: z.string().optional(),
+            clientId: z.string().optional(),
+            topicPrefix: z.string().optional(),
+            qos: z.union([z.literal(0), z.literal(1), z.literal(2)]).optional(),
+            reconnectPeriod: z.number().optional(),
+          })
+          .optional(),
+        homeassistant: z
+          .object({
+            enabled: z.boolean().optional(),
+            discoveryPrefix: z.string().optional(),
+            pollIntervalSeconds: z.number().min(10).max(3600).optional(),
+            stateTopicPrefix: z.string().optional(),
+          })
+          .optional(),
         // Paths are controlled by DATA_PATH env var, not configurable at runtime
       }),
     )
@@ -149,6 +139,19 @@ export const settingsRouter = router({
 
       if (input.webrtc) {
         patch.webrtc = { ...current.webrtc, ...input.webrtc };
+      }
+
+      if (input.mqtt) {
+        patch.mqtt = { ...current.mqtt, ...input.mqtt };
+        void disconnectMqtt().then(() => connectMqtt());
+      }
+
+      if (input.homeassistant) {
+        patch.homeassistant = {
+          ...current.homeassistant,
+          ...input.homeassistant,
+        };
+        updateHomeAssistantPolling();
       }
 
       const settings = saveSettings(patch);

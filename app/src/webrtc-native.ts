@@ -19,6 +19,7 @@ import {
   sanitizeCameraName,
 } from "./rtsp-manager.js";
 import { getConfig, getSettings } from "./settings-store.js";
+import { emitStreamClientsChanged } from "./events-manager.js";
 
 const logger = createSourceLogger("webrtc-native");
 
@@ -129,7 +130,14 @@ export async function createWebRTCSession(
 
   server.on("session-closed", ({ sessionId }: { sessionId: string }) => {
     logger.info(`WebRTC session ${sessionId} closed`);
+    const session = activeSessions.get(sessionId);
     activeSessions.delete(sessionId);
+    if (session) {
+      const count = [...activeSessions.values()].filter(
+        (s) => s.cameraId === session.cameraId && s.profile === session.profile,
+      ).length;
+      emitStreamClientsChanged(session.cameraId, "webrtc", session.profile, count);
+    }
   });
 
   server.on("intercom-started", ({ sessionId }: { sessionId: string }) => {
@@ -150,6 +158,11 @@ export async function createWebRTCSession(
     server,
     sessionId,
   });
+
+  const count = [...activeSessions.values()].filter(
+    (s) => s.cameraId === camera.id && s.profile === profile,
+  ).length;
+  emitStreamClientsChanged(camera.id, "webrtc", profile, count);
 
   logger.info(
     `WebRTC session ${sessionId} created for ${camera.name}/${profile}`,
@@ -201,6 +214,10 @@ export async function closeWebRTCSession(sessionId: string): Promise<void> {
   await session.server.closeSession(sessionId);
   await session.server.stop();
   activeSessions.delete(sessionId);
+  const count = [...activeSessions.values()].filter(
+    (s) => s.cameraId === session.cameraId && s.profile === session.profile,
+  ).length;
+  emitStreamClientsChanged(session.cameraId, "webrtc", session.profile, count);
 }
 
 /**

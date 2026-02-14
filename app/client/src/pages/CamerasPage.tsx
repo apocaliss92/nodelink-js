@@ -1,7 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
 import { trpcMutation, trpcQuery } from "../api";
 import { getStoredAuthToken } from "../authToken";
+
+function withAuthTokenQuery(url: string): string {
+  const token = getStoredAuthToken();
+  if (!token) return url;
+  const u = new URL(url, window.location.origin);
+  u.searchParams.set("token", token);
+  return u.toString();
+}
 
 type StreamProfile = "main" | "sub" | "ext";
 
@@ -52,6 +60,19 @@ type DropdownItem = {
 };
 
 type PreviewKind = "mjpeg" | "webrtc" | "hls";
+
+type CameraEvent = {
+  cameraId: string;
+  cameraName: string;
+  cameraNameSlug: string;
+  type: string;
+  channel: number;
+  timestamp: number;
+  timestampIso: string;
+  streamType?: string;
+  profile?: string;
+  clientCount?: number;
+};
 
 type PreviewModalState =
   | {
@@ -583,6 +604,188 @@ function WebRTCInlinePlayer({
   );
 }
 
+function CameraEventsSection({
+  cameraId,
+  isConnected,
+}: {
+  cameraId: string;
+  cameraName: string;
+  sanitizedName: string;
+  isConnected: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [events, setEvents] = useState<CameraEvent[]>([]);
+  const [loading, setLoading] = useState(false);
+  const esRef = useRef<EventSource | null>(null);
+
+  const fetchEvents = useCallback(async () => {
+    setLoading(true);
+    try {
+      const list = await trpcQuery<CameraEvent[]>("events.getRecent", {
+        cameraId,
+      });
+      setEvents(list ?? []);
+    } catch {
+      setEvents([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [cameraId]);
+
+  useEffect(() => {
+    if (!expanded || !isConnected) return;
+    void fetchEvents();
+  }, [expanded, isConnected, fetchEvents]);
+
+  useEffect(() => {
+    if (!expanded || !isConnected) return;
+
+    const sseUrl = withAuthTokenQuery(
+      `${window.location.origin}/api/events/sse`,
+    );
+    const es = new EventSource(sseUrl);
+    esRef.current = es;
+
+    es.onmessage = (ev) => {
+      try {
+        const payload = JSON.parse(ev.data) as CameraEvent;
+        if (payload.cameraId === cameraId) {
+          setEvents((prev) => [payload, ...prev].slice(0, 50));
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    return () => {
+      es.close();
+      esRef.current = null;
+    };
+  }, [expanded, isConnected, cameraId]);
+
+  if (!isConnected) return null;
+
+  const eventBadgeColor = (type: string) => {
+    const colors: Record<string, string> = {
+      motion: "rgba(34, 197, 94, 0.25)",
+      doorbell: "rgba(96, 165, 250, 0.3)",
+      people: "rgba(124, 58, 237, 0.3)",
+      vehicle: "rgba(245, 158, 11, 0.25)",
+      animal: "rgba(234, 88, 12, 0.25)",
+      face: "rgba(236, 72, 153, 0.25)",
+      package: "rgba(20, 184, 166, 0.25)",
+      daynight: "rgba(59, 130, 246, 0.25)",
+      camera_connected: "rgba(34, 197, 94, 0.35)",
+      camera_disconnected: "rgba(239, 68, 68, 0.25)",
+      stream_clients: "rgba(59, 130, 246, 0.25)",
+    };
+    return colors[type] ?? "rgba(255, 255, 255, 0.06)";
+  };
+
+  return (
+    <div
+      style={{
+        marginTop: 12,
+        paddingTop: 12,
+        borderTop: "1px solid var(--border)",
+      }}
+    >
+      <button
+        type="button"
+        className="row"
+        onClick={() => setExpanded((e) => !e)}
+        style={{
+          width: "100%",
+          padding: "10px 0",
+          background: "none",
+          border: "none",
+          cursor: "pointer",
+          color: "inherit",
+          fontSize: 14,
+          fontWeight: 600,
+          justifyContent: "space-between",
+          alignItems: "center",
+        }}
+      >
+        <span>Recent events</span>
+        <span style={{ color: "var(--muted)", fontWeight: 400 }}>
+          {expanded ? "▼" : "▶"}
+        </span>
+      </button>
+      {expanded ? (
+        <div
+          style={{
+            maxHeight: 260,
+            overflowY: "auto",
+            fontSize: 13,
+            paddingTop: 8,
+          }}
+        >
+          {loading ? (
+            <div className="row" style={{ color: "var(--muted)" }}>
+              <span className="spinner" aria-hidden="true" />
+              <span>Loading…</span>
+            </div>
+          ) : events.length === 0 ? (
+            <div style={{ color: "var(--muted)", padding: 8 }}>
+              No events yet. Events appear when motion, doorbell, AI, camera
+              connect/disconnect, or stream clients change.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {events.map((ev, i) => (
+                <div
+                  key={`${ev.timestamp}-${i}`}
+                  className="row"
+                  style={{
+                    justifyContent: "space-between",
+                    padding: "8px 10px",
+                    background: "rgba(255,255,255,0.04)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 8,
+                    alignItems: "center",
+                  }}
+                >
+                  <span
+                    style={{
+                      textTransform: "capitalize",
+                      minWidth: 80,
+                      padding: "4px 8px",
+                      borderRadius: 6,
+                      fontSize: 12,
+                      fontWeight: 600,
+                      background: eventBadgeColor(ev.type),
+                      color: "var(--text)",
+                    }}
+                  >
+                    {ev.type === "stream_clients" &&
+                    ev.streamType &&
+                    ev.profile != null &&
+                    ev.clientCount != null
+                      ? `${ev.streamType}/${ev.profile}: ${ev.clientCount}`
+                      : ev.type.replace(/_/g, " ")}
+                  </span>
+                  <span
+                    style={{
+                      color: "var(--text)",
+                      fontSize: 12,
+                      opacity: 0.9,
+                    }}
+                  >
+                    {ev.timestampIso
+                      ? new Date(ev.timestampIso).toLocaleString()
+                      : "—"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function DropdownButton({
   label,
   items,
@@ -764,34 +967,21 @@ export default function CamerasPage() {
     return `rtsp://${window.location.hostname}:${rtspProxyStatus.port}/${cam.sanitizedName}/${profile}`;
   }
 
-  function getHttpOrigin(): string {
-    // Zero-config: use the current origin (works with Docker port mapping).
-    return window.location.origin;
-  }
-
-  function withAuthTokenQuery(url: string): string {
-    const token = getStoredAuthToken();
-    if (!token) return url;
-    const u = new URL(url, window.location.origin);
-    u.searchParams.set("token", token);
-    return u.toString();
-  }
-
   function getMjpegUrl(cam: CameraInfo, profile: StreamProfile): string {
     return withAuthTokenQuery(
-      `${getHttpOrigin()}/api/mpeg/${cam.sanitizedName}/${profile}`,
+      `${window.location.origin}/api/mpeg/${cam.sanitizedName}/${profile}`,
     );
   }
 
   function getMjpegPreviewUrl(cam: CameraInfo, profile: StreamProfile): string {
     return withAuthTokenQuery(
-      `${getHttpOrigin()}/api/mpeg/${cam.sanitizedName}/${profile}`,
+      `${window.location.origin}/api/mpeg/${cam.sanitizedName}/${profile}`,
     );
   }
 
   function getHlsUrl(cam: CameraInfo, profile: StreamProfile): string {
     return withAuthTokenQuery(
-      `${getHttpOrigin()}/api/hls/${cam.sanitizedName}/${profile}/playlist.m3u8`,
+      `${window.location.origin}/api/hls/${cam.sanitizedName}/${profile}/playlist.m3u8`,
     );
   }
 
@@ -1788,6 +1978,13 @@ export default function CamerasPage() {
                   </div>
                 )}
               </div>
+
+              <CameraEventsSection
+                cameraId={c.id}
+                cameraName={c.name}
+                sanitizedName={c.sanitizedName}
+                isConnected={c.status === "connected"}
+              />
             </div>
           ))}
         </div>

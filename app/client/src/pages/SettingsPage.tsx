@@ -8,6 +8,7 @@ type Settings = {
   logRetentionDays: number;
   rtspProxyEnabled: boolean;
   rtspRequireAuth: boolean;
+  serviceIp?: string;
   auth?: {
     trustedProxy?: {
       enabled: boolean;
@@ -20,6 +21,22 @@ type Settings = {
   webrtc?: {
     icePortRange: string;
     iceAdditionalHostAddresses: string;
+  };
+  mqtt?: {
+    enabled: boolean;
+    brokerUrl: string;
+    username?: string;
+    password?: string;
+    clientId?: string;
+    topicPrefix: string;
+    qos: 0 | 1 | 2;
+    reconnectPeriod: number;
+  };
+  homeassistant?: {
+    enabled: boolean;
+    discoveryPrefix: string;
+    pollIntervalSeconds: number;
+    stateTopicPrefix: string;
   };
 };
 
@@ -94,6 +111,15 @@ export default function SettingsPage() {
   const [metricsAutoRefresh, setMetricsAutoRefresh] = useState(true);
 
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+
+  type TabId =
+    | "general"
+    | "auth"
+    | "mqtt"
+    | "webrtc"
+    | "proxy"
+    | "metrics";
+  const [activeTab, setActiveTab] = useState<TabId>("general");
 
   const dirty = useMemo(() => settings !== null, [settings]);
 
@@ -351,11 +377,14 @@ export default function SettingsPage() {
     setError(null);
     try {
       await trpcMutation("settings.update", {
+        serviceIp: settings.serviceIp,
         logLevel: settings.logLevel,
         logRetentionDays: settings.logRetentionDays,
         rtspRequireAuth: settings.rtspRequireAuth,
         auth: settings.auth,
         webrtc: settings.webrtc,
+        mqtt: settings.mqtt,
+        homeassistant: settings.homeassistant,
       });
     } catch (e) {
       setError(String(e));
@@ -418,8 +447,39 @@ export default function SettingsPage() {
       {!settings ? (
         <div className="card">Loading…</div>
       ) : (
-        <div className="grid">
-          <div className="card">
+        <>
+          <div
+            className="row"
+            style={{
+              gap: 4,
+              marginBottom: 12,
+              borderBottom: "1px solid var(--border)",
+              paddingBottom: 8,
+            }}
+          >
+            {(
+              [
+                ["general", "General"],
+                ["auth", "Auth"],
+                ["mqtt", "MQTT"],
+                ["webrtc", "WebRTC"],
+                ["proxy", "Proxy"],
+                ["metrics", "Metrics"],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                className={`btn ${activeTab === id ? "primary" : ""}`}
+                onClick={() => setActiveTab(id)}
+                style={{ padding: "8px 14px" }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {activeTab === "general" ? (
+            <div className="card">
             <div className="label">Runtime (read-only)</div>
             <div className="grid cols2" style={{ marginTop: 10 }}>
               <div>
@@ -480,140 +540,20 @@ export default function SettingsPage() {
                 value={runtime ? runtime.dataPath : ""}
               />
             </div>
-          </div>
 
-          <div className="card">
-            <div className="label">Resource usage</div>
-            {!canViewMetrics ? (
-              <div style={{ color: "var(--muted)", fontSize: 12 }}>
-                Only admins can view metrics.
-              </div>
-            ) : (
-              <>
-                <div className="row" style={{ marginTop: 10 }}>
-                  <label className="row" style={{ cursor: "pointer" }}>
-                    <input
-                      type="checkbox"
-                      checked={metricsAutoRefresh}
-                      onChange={(e) => setMetricsAutoRefresh(e.target.checked)}
-                    />
-                    <span>Auto refresh</span>
-                  </label>
+            <div style={{ marginTop: 12 }}>
+              <div className="label">Service IP (for RTSP/MJPEG URLs)</div>
+              <input
+                className="input"
+                value={settings.serviceIp ?? "localhost"}
+                disabled={!canEditSettings}
+                onChange={(e) =>
+                  setSettings({ ...settings, serviceIp: e.target.value })
+                }
+              />
+            </div>
 
-                  <div style={{ flex: 1 }} />
-
-                  <button
-                    className="btn"
-                    disabled={metricsLoading}
-                    onClick={() => void fetchMetricsOnce()}
-                  >
-                    {metricsLoading ? "Refreshing…" : "Refresh"}
-                  </button>
-                </div>
-
-                {!metrics ? (
-                  <div
-                    style={{
-                      color: "var(--muted)",
-                      fontSize: 12,
-                      marginTop: 10,
-                    }}
-                  >
-                    {metricsError ? `Error: ${metricsError}` : "No data yet."}
-                  </div>
-                ) : null}
-
-                {metrics ? (
-                  <div className="grid cols2" style={{ marginTop: 10 }}>
-                    <div>
-                      <div className="label">Uptime</div>
-                      <input
-                        className="input"
-                        readOnly
-                        value={formatSeconds(metrics.process.uptimeSeconds)}
-                      />
-                    </div>
-                    <div>
-                      <div className="label">CPU</div>
-                      <input
-                        className="input"
-                        readOnly
-                        value={
-                          metrics.process.cpu.percent === null
-                            ? "(warming up…)"
-                            : `${metrics.process.cpu.percent.toFixed(1)}%`
-                        }
-                      />
-                    </div>
-
-                    <div>
-                      <div className="label">RSS</div>
-                      <input
-                        className="input"
-                        readOnly
-                        value={formatBytes(metrics.process.memory.rss)}
-                      />
-                    </div>
-                    <div>
-                      <div className="label">Heap used</div>
-                      <input
-                        className="input"
-                        readOnly
-                        value={`${formatBytes(metrics.process.memory.heapUsed)} / ${formatBytes(metrics.process.memory.heapTotal)}`}
-                      />
-                    </div>
-
-                    <div>
-                      <div className="label">Event loop utilization</div>
-                      <input
-                        className="input"
-                        readOnly
-                        value={`${(metrics.process.eventLoop.utilization * 100).toFixed(1)}%`}
-                      />
-                    </div>
-                    <div>
-                      <div className="label">Host memory</div>
-                      <input
-                        className="input"
-                        readOnly
-                        value={`${formatBytes(metrics.system.totalMem - metrics.system.freeMem)} / ${formatBytes(metrics.system.totalMem)}`}
-                      />
-                    </div>
-
-                    <div>
-                      <div className="label">Load avg</div>
-                      <input
-                        className="input"
-                        readOnly
-                        value={metrics.system.loadAvg
-                          .slice(0, 3)
-                          .map((n) => n.toFixed(2))
-                          .join(" ")}
-                      />
-                    </div>
-                    <div>
-                      <div className="label">Node</div>
-                      <input
-                        className="input mono"
-                        readOnly
-                        value={`${metrics.process.nodeVersion} (pid ${metrics.process.pid})`}
-                      />
-                    </div>
-
-                    <div style={{ gridColumn: "1 / -1" }}>
-                      <div style={{ color: "var(--muted)", fontSize: 12 }}>
-                        Updated: {new Date(metrics.timestamp).toLocaleString()}
-                      </div>
-                    </div>
-                  </div>
-                ) : null}
-              </>
-            )}
-          </div>
-
-          <div className="card">
-            <div className="label">Logging</div>
-
+            <div className="label" style={{ marginTop: 18 }}>Logging</div>
             <div className="grid cols2" style={{ marginTop: 10 }}>
               <div>
                 <div className="label">Log level</div>
@@ -634,7 +574,6 @@ export default function SettingsPage() {
                   <option value="debug">debug</option>
                 </select>
               </div>
-
               <div>
                 <div className="label">Log retention days</div>
                 <input
@@ -667,68 +606,26 @@ export default function SettingsPage() {
                     }
                   />
                   <span>
-                    Require auth for RTSP connections (uses the Users list
-                    below)
+                    Require auth for RTSP connections (uses the Users list)
                   </span>
                 </label>
               </div>
             ) : null}
+          </div>
+          ) : null}
 
+          {activeTab === "auth" ? (
+            <div className="card">
+            <div className="label">Dashboard authentication</div>
             {authState.enabled && authState.user ? (
-              <div style={{ marginTop: 18 }}>
-                <div className="label">Personal token</div>
-                <div style={{ color: "var(--muted)", fontSize: 12 }}>
-                  Generate a long-lived token for streaming endpoints (MJPEG/HLS
-                  via <span className="mono">?token=</span>, WebRTC via
-                  <span className="mono"> Authorization: Bearer</span>). This
-                  token does not expire.
-                </div>
-
-                <div
-                  className="row"
-                  style={{ marginTop: 10, justifyContent: "flex-end" }}
-                >
-                  <button
-                    className="btn primary"
-                    disabled={creatingPersonalToken}
-                    onClick={() => void createPersonalToken()}
-                  >
-                    Generate personal token
-                  </button>
-                </div>
-
-                {personalToken ? (
-                  <div style={{ marginTop: 10 }}>
-                    <div className="row" style={{ marginTop: 8 }}>
-                      <input
-                        className="input mono"
-                        readOnly
-                        value={personalToken}
-                        style={{ flex: 1, minWidth: 0 }}
-                      />
-                      <button
-                        className="btn"
-                        onClick={() =>
-                          void navigator.clipboard
-                            .writeText(personalToken)
-                            .catch(() => {})
-                        }
-                      >
-                        Copy
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-
-            {isAuthEnabled ? (
-              authState.user?.role === "admin" ? (
-                <div style={{ marginTop: 18 }}>
-                  <div className="label">Users</div>
+              <>
+                <div style={{ marginTop: 12 }}>
+                  <div className="label">Personal token</div>
                   <div style={{ color: "var(--muted)", fontSize: 12 }}>
-                    Users that can access this web dashboard and authenticate to
-                    the RTSP proxy (Digest).
+                    Generate a long-lived token for streaming endpoints (MJPEG/HLS
+                    via <span className="mono">?token=</span>, WebRTC via
+                    <span className="mono"> Authorization: Bearer</span>). This
+                    token does not expire.
                   </div>
 
                   <div
@@ -736,92 +633,436 @@ export default function SettingsPage() {
                     style={{ marginTop: 10, justifyContent: "flex-end" }}
                   >
                     <button
-                      className="btn"
-                      disabled={savingDashUsers}
-                      onClick={() => void refreshDashboardUsers()}
-                    >
-                      Refresh users
-                    </button>
-                    <button
                       className="btn primary"
-                      disabled={savingDashUsers}
-                      onClick={() => {
-                        setDashUserDraft({
-                          username: "",
-                          password: "",
-                          role: "user",
-                        });
-                        setAddDashUserOpen(true);
-                      }}
+                      disabled={creatingPersonalToken}
+                      onClick={() => void createPersonalToken()}
                     >
-                      Add user
+                      Generate personal token
                     </button>
                   </div>
 
-                  {dashUsers.length === 0 ? (
-                    <div
-                      style={{
-                        color: "var(--muted)",
-                        fontSize: 13,
-                        marginTop: 10,
-                      }}
-                    >
-                      No dashboard users configured.
+                  {personalToken ? (
+                    <div style={{ marginTop: 10 }}>
+                      <div className="row" style={{ marginTop: 8 }}>
+                        <input
+                          className="input mono"
+                          readOnly
+                          value={personalToken}
+                          style={{ flex: 1, minWidth: 0 }}
+                        />
+                        <button
+                          className="btn"
+                          onClick={() =>
+                            void navigator.clipboard
+                              .writeText(personalToken)
+                              .catch(() => {})
+                          }
+                        >
+                          Copy
+                        </button>
+                      </div>
                     </div>
-                  ) : (
-                    <table className="table" style={{ marginTop: 10 }}>
-                      <thead>
-                        <tr>
-                          <th style={{ width: 220 }}>Username</th>
-                          <th style={{ width: 110 }}>Role</th>
-                          <th />
-                          <th style={{ width: 220 }} />
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {dashUsers.map((u) => (
-                          <tr key={u.username}>
-                            <td className="mono">{u.username}</td>
-                            <td>{u.role}</td>
-                            <td />
-                            <td style={{ textAlign: "right" }}>
-                              <button
-                                className="btn"
-                                disabled={savingDashUsers}
-                                onClick={() =>
-                                  void resetDashboardUserPassword(u.username)
-                                }
-                              >
-                                Reset password
-                              </button>
-                              <button
-                                className="btn danger"
-                                disabled={savingDashUsers}
-                                onClick={() =>
-                                  void deleteDashboardUser(u.username)
-                                }
-                              >
-                                Delete
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
+                  ) : null}
                 </div>
-              ) : (
-                <div style={{ marginTop: 18 }}>
-                  <div className="label">Users</div>
-                  <div style={{ color: "var(--muted)", fontSize: 12 }}>
-                    Only admins can manage dashboard users.
+
+                {authState.user?.role === "admin" ? (
+                  <div style={{ marginTop: 18 }}>
+                    <div className="label">Users</div>
+                    <div style={{ color: "var(--muted)", fontSize: 12 }}>
+                      Users that can access this web dashboard and authenticate to
+                      the RTSP proxy (Digest).
+                    </div>
+
+                    <div
+                      className="row"
+                      style={{ marginTop: 10, justifyContent: "flex-end" }}
+                    >
+                      <button
+                        className="btn"
+                        disabled={savingDashUsers}
+                        onClick={() => void refreshDashboardUsers()}
+                      >
+                        Refresh users
+                      </button>
+                      <button
+                        className="btn primary"
+                        disabled={savingDashUsers}
+                        onClick={() => {
+                          setDashUserDraft({
+                            username: "",
+                            password: "",
+                            role: "user",
+                          });
+                          setAddDashUserOpen(true);
+                        }}
+                      >
+                        Add user
+                      </button>
+                    </div>
+
+                    {dashUsers.length === 0 ? (
+                      <div
+                        style={{
+                          color: "var(--muted)",
+                          fontSize: 13,
+                          marginTop: 10,
+                        }}
+                      >
+                        No dashboard users configured.
+                      </div>
+                    ) : (
+                      <table className="table" style={{ marginTop: 10 }}>
+                        <thead>
+                          <tr>
+                            <th style={{ width: 220 }}>Username</th>
+                            <th style={{ width: 110 }}>Role</th>
+                            <th />
+                            <th style={{ width: 220 }} />
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {dashUsers.map((u) => (
+                            <tr key={u.username}>
+                              <td className="mono">{u.username}</td>
+                              <td>{u.role}</td>
+                              <td />
+                              <td style={{ textAlign: "right" }}>
+                                <button
+                                  className="btn"
+                                  disabled={savingDashUsers}
+                                  onClick={() =>
+                                    void resetDashboardUserPassword(u.username)
+                                  }
+                                >
+                                  Reset password
+                                </button>
+                                <button
+                                  className="btn danger"
+                                  disabled={savingDashUsers}
+                                  onClick={() =>
+                                    void deleteDashboardUser(u.username)
+                                  }
+                                >
+                                  Delete
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 18 }}>
+                    <div className="label">Users</div>
+                    <div style={{ color: "var(--muted)", fontSize: 12 }}>
+                      Only admins can manage dashboard users.
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div style={{ color: "var(--muted)", fontSize: 12 }}>
+                Auth is disabled. Set AUTH_ENABLED=1 to secure the dashboard.
+              </div>
+            )}
+          </div>
+          ) : null}
+
+          {activeTab === "mqtt" ? (
+            <div className="card">
+            <div className="label">MQTT (events publishing)</div>
+            <div style={{ color: "var(--muted)", fontSize: 12 }}>
+              Publish camera events to an MQTT broker for SSE, JSON stream, and
+              Home Assistant integration.
+            </div>
+
+            {(() => {
+              const mqtt = settings.mqtt ?? {
+                enabled: false,
+                brokerUrl: "mqtt://localhost:1883",
+                username: "",
+                password: "",
+                clientId: "",
+                topicPrefix: "nodelink-js",
+                qos: 0 as 0 | 1 | 2,
+                reconnectPeriod: 5000,
+              };
+
+              return (
+                <>
+                  <div className="row" style={{ marginTop: 12 }}>
+                    <label className="row" style={{ cursor: "pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={mqtt.enabled}
+                        disabled={!canEditSettings}
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            mqtt: { ...mqtt, enabled: e.target.checked },
+                          })
+                        }
+                      />
+                      <span>Enable MQTT</span>
+                    </label>
+                  </div>
+
+                  <div className="grid cols2" style={{ marginTop: 10 }}>
+                    <div style={{ gridColumn: "1 / -1" }}>
+                      <div className="label">Broker URL</div>
+                      <input
+                        className="input mono"
+                        placeholder="mqtt://localhost:1883"
+                        value={mqtt.brokerUrl}
+                        disabled={!canEditSettings}
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            mqtt: { ...mqtt, brokerUrl: e.target.value },
+                          })
+                        }
+                      />
+                    </div>
+                    <div>
+                      <div className="label">Username</div>
+                      <input
+                        className="input"
+                        value={mqtt.username ?? ""}
+                        disabled={!canEditSettings}
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            mqtt: { ...mqtt, username: e.target.value || undefined },
+                          })
+                        }
+                      />
+                    </div>
+                    <div>
+                      <div className="label">Password</div>
+                      <input
+                        className="input"
+                        type="password"
+                        value={mqtt.password ?? ""}
+                        disabled={!canEditSettings}
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            mqtt: { ...mqtt, password: e.target.value || undefined },
+                          })
+                        }
+                      />
+                    </div>
+                    <div>
+                      <div className="label">Client ID</div>
+                      <input
+                        className="input mono"
+                        placeholder="auto"
+                        value={mqtt.clientId ?? ""}
+                        disabled={!canEditSettings}
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            mqtt: { ...mqtt, clientId: e.target.value || undefined },
+                          })
+                        }
+                      />
+                    </div>
+                    <div>
+                      <div className="label">Topic prefix</div>
+                      <input
+                        className="input mono"
+                        value={mqtt.topicPrefix}
+                        disabled={!canEditSettings}
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            mqtt: { ...mqtt, topicPrefix: e.target.value },
+                          })
+                        }
+                      />
+                    </div>
+                    <div>
+                      <div className="label">QoS</div>
+                      <select
+                        className="input"
+                        value={mqtt.qos}
+                        disabled={!canEditSettings}
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            mqtt: {
+                              ...mqtt,
+                              qos: Number(e.target.value) as 0 | 1 | 2,
+                            },
+                          })
+                        }
+                      >
+                        <option value={0}>0</option>
+                        <option value={1}>1</option>
+                        <option value={2}>2</option>
+                      </select>
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
+
+            <div className="label" style={{ marginTop: 18 }}>Home Assistant</div>
+            <div style={{ color: "var(--muted)", fontSize: 12 }}>
+              Forward camera device state to Home Assistant via MQTT discovery.
+            </div>
+
+            {(() => {
+              const ha = settings.homeassistant ?? {
+                enabled: false,
+                discoveryPrefix: "homeassistant",
+                pollIntervalSeconds: 60,
+                stateTopicPrefix: "nodelink-js",
+              };
+
+              return (
+                <>
+                  <div className="row" style={{ marginTop: 12 }}>
+                    <label className="row" style={{ cursor: "pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={ha.enabled}
+                        disabled={!canEditSettings}
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            homeassistant: { ...ha, enabled: e.target.checked },
+                          })
+                        }
+                      />
+                      <span>Enable Home Assistant MQTT discovery</span>
+                    </label>
+                  </div>
+
+                  <div className="grid cols2" style={{ marginTop: 10 }}>
+                    <div>
+                      <div className="label">Discovery prefix</div>
+                      <input
+                        className="input mono"
+                        value={ha.discoveryPrefix}
+                        disabled={!canEditSettings}
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            homeassistant: {
+                              ...ha,
+                              discoveryPrefix: e.target.value,
+                            },
+                          })
+                        }
+                      />
+                    </div>
+                    <div>
+                      <div className="label">Poll interval (seconds)</div>
+                      <input
+                        className="input"
+                        type="number"
+                        min={10}
+                        max={3600}
+                        value={ha.pollIntervalSeconds}
+                        disabled={!canEditSettings}
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            homeassistant: {
+                              ...ha,
+                              pollIntervalSeconds: Number(e.target.value),
+                            },
+                          })
+                        }
+                      />
+                    </div>
+                    <div>
+                      <div className="label">State topic prefix</div>
+                      <input
+                        className="input mono"
+                        value={ha.stateTopicPrefix}
+                        disabled={!canEditSettings}
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            homeassistant: {
+                              ...ha,
+                              stateTopicPrefix: e.target.value,
+                            },
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+          ) : null}
+
+          {activeTab === "webrtc" ? (
+            <div className="card">
+            <div className="label">WebRTC (ICE)</div>
+            <div style={{ color: "var(--muted)", fontSize: 12 }}>
+              Useful in Docker bridge mode. Configure the ICE UDP port range and
+              the additional host IPs/hostnames to advertise.
+            </div>
+
+            {(() => {
+              const webrtc = settings.webrtc ?? {
+                icePortRange: "",
+                iceAdditionalHostAddresses: "",
+              };
+
+              return (
+                <div className="grid cols2" style={{ marginTop: 10 }}>
+                  <div>
+                    <div className="label">ICE UDP port range</div>
+                    <input
+                      className="input mono"
+                      placeholder="10000-10100"
+                      value={webrtc.icePortRange}
+                      disabled={!canEditSettings}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          webrtc: {
+                            ...webrtc,
+                            icePortRange: e.target.value,
+                          },
+                        })
+                      }
+                    />
+                  </div>
+
+                  <div>
+                    <div className="label">Additional host addresses (CSV)</div>
+                    <input
+                      className="input mono"
+                      placeholder="192.168.1.10, my-ddns.example.com"
+                      value={webrtc.iceAdditionalHostAddresses}
+                      disabled={!canEditSettings}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          webrtc: {
+                            ...webrtc,
+                            iceAdditionalHostAddresses: e.target.value,
+                          },
+                        })
+                      }
+                    />
                   </div>
                 </div>
-              )
-            ) : null}
+              );
+            })()}
           </div>
+          ) : null}
 
-          <div className="card">
+          {activeTab === "proxy" ? (
+            <div className="card">
             <div className="label">Trusted proxy (Authentik / NPM)</div>
             <div style={{ color: "var(--muted)", fontSize: 12 }}>
               Enable header-based authentication when running behind a trusted
@@ -976,64 +1217,139 @@ export default function SettingsPage() {
               })()
             )}
           </div>
+          ) : null}
 
-          <div className="card">
-            <div className="label">WebRTC (ICE)</div>
-            <div style={{ color: "var(--muted)", fontSize: 12 }}>
-              Useful in Docker bridge mode. Configure the ICE UDP port range and
-              the additional host IPs/hostnames to advertise.
-            </div>
-
-            {(() => {
-              const webrtc = settings.webrtc ?? {
-                icePortRange: "",
-                iceAdditionalHostAddresses: "",
-              };
-
-              return (
-                <div className="grid cols2" style={{ marginTop: 10 }}>
-                  <div>
-                    <div className="label">ICE UDP port range</div>
+          {activeTab === "metrics" ? (
+            <div className="card">
+            <div className="label">Resource usage</div>
+            {!canViewMetrics ? (
+              <div style={{ color: "var(--muted)", fontSize: 12 }}>
+                Only admins can view metrics.
+              </div>
+            ) : (
+              <>
+                <div className="row" style={{ marginTop: 10 }}>
+                  <label className="row" style={{ cursor: "pointer" }}>
                     <input
-                      className="input mono"
-                      placeholder="10000-10100"
-                      value={webrtc.icePortRange}
-                      disabled={!canEditSettings}
-                      onChange={(e) =>
-                        setSettings({
-                          ...settings,
-                          webrtc: {
-                            ...webrtc,
-                            icePortRange: e.target.value,
-                          },
-                        })
-                      }
+                      type="checkbox"
+                      checked={metricsAutoRefresh}
+                      onChange={(e) => setMetricsAutoRefresh(e.target.checked)}
                     />
-                  </div>
+                    <span>Auto refresh</span>
+                  </label>
 
-                  <div>
-                    <div className="label">Additional host addresses (CSV)</div>
-                    <input
-                      className="input mono"
-                      placeholder="192.168.1.10, my-ddns.example.com"
-                      value={webrtc.iceAdditionalHostAddresses}
-                      disabled={!canEditSettings}
-                      onChange={(e) =>
-                        setSettings({
-                          ...settings,
-                          webrtc: {
-                            ...webrtc,
-                            iceAdditionalHostAddresses: e.target.value,
-                          },
-                        })
-                      }
-                    />
-                  </div>
+                  <div style={{ flex: 1 }} />
+
+                  <button
+                    className="btn"
+                    disabled={metricsLoading}
+                    onClick={() => void fetchMetricsOnce()}
+                  >
+                    {metricsLoading ? "Refreshing…" : "Refresh"}
+                  </button>
                 </div>
-              );
-            })()}
+
+                {!metrics ? (
+                  <div
+                    style={{
+                      color: "var(--muted)",
+                      fontSize: 12,
+                      marginTop: 10,
+                    }}
+                  >
+                    {metricsError ? `Error: ${metricsError}` : "No data yet."}
+                  </div>
+                ) : null}
+
+                {metrics ? (
+                  <div className="grid cols2" style={{ marginTop: 10 }}>
+                    <div>
+                      <div className="label">Uptime</div>
+                      <input
+                        className="input"
+                        readOnly
+                        value={formatSeconds(metrics.process.uptimeSeconds)}
+                      />
+                    </div>
+                    <div>
+                      <div className="label">CPU</div>
+                      <input
+                        className="input"
+                        readOnly
+                        value={
+                          metrics.process.cpu.percent === null
+                            ? "(warming up…)"
+                            : `${metrics.process.cpu.percent.toFixed(1)}%`
+                        }
+                      />
+                    </div>
+
+                    <div>
+                      <div className="label">RSS</div>
+                      <input
+                        className="input"
+                        readOnly
+                        value={formatBytes(metrics.process.memory.rss)}
+                      />
+                    </div>
+                    <div>
+                      <div className="label">Heap used</div>
+                      <input
+                        className="input"
+                        readOnly
+                        value={`${formatBytes(metrics.process.memory.heapUsed)} / ${formatBytes(metrics.process.memory.heapTotal)}`}
+                      />
+                    </div>
+
+                    <div>
+                      <div className="label">Event loop utilization</div>
+                      <input
+                        className="input"
+                        readOnly
+                        value={`${(metrics.process.eventLoop.utilization * 100).toFixed(1)}%`}
+                      />
+                    </div>
+                    <div>
+                      <div className="label">Host memory</div>
+                      <input
+                        className="input"
+                        readOnly
+                        value={`${formatBytes(metrics.system.totalMem - metrics.system.freeMem)} / ${formatBytes(metrics.system.totalMem)}`}
+                      />
+                    </div>
+
+                    <div>
+                      <div className="label">Load avg</div>
+                      <input
+                        className="input"
+                        readOnly
+                        value={metrics.system.loadAvg
+                          .slice(0, 3)
+                          .map((n) => n.toFixed(2))
+                          .join(" ")}
+                      />
+                    </div>
+                    <div>
+                      <div className="label">Node</div>
+                      <input
+                        className="input mono"
+                        readOnly
+                        value={`${metrics.process.nodeVersion} (pid ${metrics.process.pid})`}
+                      />
+                    </div>
+
+                    <div style={{ gridColumn: "1 / -1" }}>
+                      <div style={{ color: "var(--muted)", fontSize: 12 }}>
+                        Updated: {new Date(metrics.timestamp).toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </>
+            )}
           </div>
-        </div>
+        ) : null}
+        </>
       )}
 
       {addDashUserOpen ? (

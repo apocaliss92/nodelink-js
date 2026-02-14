@@ -48,6 +48,19 @@ import {
   getWebRTCStatus,
   stopAllWebRTCSessions,
 } from "./webrtc-native.js";
+import {
+  initEventsManager,
+  addSseClient,
+  addJsonStreamClient,
+  getEventsManagerStatus,
+  connectMqtt,
+  disconnectMqtt,
+} from "./events-manager.js";
+import {
+  initHomeAssistantMqtt,
+  updateHomeAssistantPolling,
+} from "./homeassistant-mqtt.js";
+import { inferGithubRepoSlug } from "./github-utils.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -135,52 +148,6 @@ function readLocalAppVersion(): string | null {
       const raw = fs.readFileSync(p, "utf8");
       const parsed = JSON.parse(raw) as { version?: string };
       if (typeof parsed.version === "string") return parsed.version;
-    } catch {
-      // ignore
-    }
-  }
-
-  return null;
-}
-
-function inferGithubRepoSlug(): string | null {
-  const explicit =
-    process.env.GITHUB_REPO ||
-    process.env.UPDATE_REPO ||
-    process.env.GITHUB_REPOSITORY;
-  if (explicit && explicit.trim()) return explicit.trim();
-
-  const candidates = [
-    path.resolve(process.cwd(), "package.json"),
-    path.resolve(process.cwd(), "../package.json"),
-  ];
-
-  for (const p of candidates) {
-    try {
-      if (!fs.existsSync(p)) continue;
-      const raw = fs.readFileSync(p, "utf8");
-      const parsed = JSON.parse(raw) as {
-        repository?: { url?: string } | string;
-      };
-      const repoUrl =
-        typeof parsed.repository === "string"
-          ? parsed.repository
-          : parsed.repository?.url;
-      if (!repoUrl) continue;
-
-      // Examples:
-      // - git+https://github.com/owner/repo.git
-      // - https://github.com/owner/repo
-      // - git@github.com:owner/repo.git
-      const cleaned = String(repoUrl)
-        .replace(/^git\+/, "")
-        .replace(/\.git$/i, "");
-
-      const httpsMatch = cleaned.match(/github\.com\/(.+\/[^/]+)$/i);
-      if (httpsMatch?.[1]) return httpsMatch[1];
-
-      const sshMatch = cleaned.match(/github\.com[:/](.+\/[^/]+)$/i);
-      if (sshMatch?.[1]) return sshMatch[1];
     } catch {
       // ignore
     }
@@ -730,6 +697,48 @@ app.get("/api/mjpeg/status", (req, res) => {
 });
 
 // ============================================================================
+// Events Endpoints (SSE, JSON stream, MQTT)
+// ============================================================================
+
+// SSE: Server-Sent Events - real-time events from all cameras
+// GET /api/events/sse
+app.get("/api/events/sse", (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no"); // nginx
+  res.flushHeaders();
+
+  addSseClient(res);
+
+  // Keep-alive every 30s
+  const keepAlive = setInterval(() => {
+    if (!res.writableEnded) {
+      res.write(": keepalive\n\n");
+    }
+  }, 30000);
+
+  req.on("close", () => clearInterval(keepAlive));
+});
+
+// JSON stream (NDJSON): one event per line
+// GET /api/events/stream
+app.get("/api/events/stream", (req, res) => {
+  res.setHeader("Content-Type", "application/x-ndjson");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+
+  addJsonStreamClient(res);
+});
+
+// Events status
+app.get("/api/events/status", (req, res) => {
+  res.json(getEventsManagerStatus());
+});
+
+// ============================================================================
 // HLS Endpoints (live preview)
 // ============================================================================
 
@@ -985,6 +994,15 @@ async function shutdown() {
     });
   }
 
+  // Disconnect MQTT
+  try {
+    await disconnectMqtt();
+  } catch (error) {
+    appLogger.error(`Error disconnecting MQTT: ${error}`, {
+      source: "server",
+    });
+  }
+
   await stopAllRtspServers();
   server.close();
   process.exit(0);
@@ -997,17 +1015,19 @@ process.on("SIGTERM", shutdown);
 server.listen(PORT, async () => {
   appLogger.info(`Server started on port ${PORT}`, { source: "server" });
 
+  const VITE_PORT = 5173;
   appLogger.info(
     `\n╔═══════════════════════════════════════════════════════════════╗\n` +
       `║              Nodelink.js Manager - RTSP Dashboard                ║\n` +
       `╠═══════════════════════════════════════════════════════════════╣\n` +
-      `║  Dashboard:  http://localhost:${String(PORT).padEnd(5)}                          ║\n` +
+      `║  UI (Vite):   http://localhost:${String(VITE_PORT).padEnd(5)}                          ║\n` +
       `║  API Docs:   http://localhost:${String(PORT).padEnd(5)}/docs                     ║\n` +
       `║  tRPC API:   http://localhost:${String(PORT).padEnd(5)}/api/trpc                 ║\n` +
       `║  WS Logs:    ws://localhost:${String(PORT).padEnd(5)}/ws/logs                    ║\n` +
       `╠═══════════════════════════════════════════════════════════════╣\n` +
       `║  RTSP:       rtsp://localhost:${String(RTSP_PORT).padEnd(5)}/<camera>/<profile>     ║\n` +
       `║  MJPEG:      http://localhost:${String(PORT).padEnd(5)}/api/mpeg/<cam>/<prof>    ║\n` +
+      `║  Events:     http://localhost:${String(PORT).padEnd(5)}/api/events/sse            ║\n` +
       `║  WebRTC:     POST /api/webrtc/session (signaling endpoint)    ║\n` +
       `╚═══════════════════════════════════════════════════════════════╝\n`,
     { source: "server" },
@@ -1045,6 +1065,16 @@ server.listen(PORT, async () => {
       source: "server",
     });
   }
+
+  // Init events manager (SSE, JSON stream, MQTT)
+  initEventsManager();
+  try {
+    await connectMqtt();
+  } catch (error) {
+    appLogger.error(`Error connecting MQTT: ${error}`, { source: "server" });
+  }
+  // Init Home Assistant MQTT device discovery
+  initHomeAssistantMqtt();
 
   // Start RTSP proxy if enabled (BEFORE auto-starting servers)
   // When proxy is enabled, servers will be started on-demand by the proxy
