@@ -6,6 +6,7 @@ import type { CameraConfig, RtspServerConfig, ConnectionParams } from "./types";
 import { createSourceLogger } from "./logger.js";
 import {
   getCamera,
+  getCameras,
   getRtspServers,
   updateRtspServer,
 } from "./settings-store.js";
@@ -51,27 +52,84 @@ export function clearActiveCredentials(): void {
   logger.info("Active credentials cleared");
 }
 
+export type ResolveCredentialsInput = Partial<ConnectionParams> & {
+  cameraId?: string;
+};
+
 export function resolveCredentials(
-  partial?: Partial<ConnectionParams>,
+  partial?: ResolveCredentialsInput,
 ): ConnectionParams {
-  if (partial?.host && partial?.username && partial?.password) {
+  // Use configured camera when cameraId is provided (not "manual" or empty)
+  const cameraId = partial?.cameraId?.trim();
+  if (cameraId && cameraId !== "manual") {
+    const camera =
+      getCamera(cameraId) ??
+      getCameras().find((c) => c.name === cameraId);
+    if (camera) {
+      const base: ConnectionParams = {
+        host: camera.host,
+        port: camera.port ?? 9000,
+        username: camera.username,
+        password: camera.password,
+      };
+      // Apply manual overrides if provided
+      const overrides: Partial<ConnectionParams> = {};
+      if (partial?.host && String(partial.host).trim()) {
+        overrides.host = partial.host.trim();
+      }
+      if (partial?.port !== undefined && partial?.port !== null && !isNaN(Number(partial.port))) {
+        overrides.port = Number(partial.port);
+      }
+      if (partial?.username && String(partial.username).trim()) {
+        overrides.username = partial.username.trim();
+      }
+      if (partial?.password !== undefined) {
+        overrides.password = partial.password;
+      }
+      return { ...base, ...overrides };
+    }
+  }
+
+  // Manual mode: all required connection params provided explicitly
+  if (
+    partial?.host &&
+    String(partial.host).trim() &&
+    partial?.username &&
+    String(partial.username).trim() &&
+    partial?.password !== undefined
+  ) {
     return {
-      host: partial.host,
-      port: partial.port || 9000,
-      username: partial.username,
+      host: partial.host.trim(),
+      port: partial.port ?? 9000,
+      username: partial.username.trim(),
       password: partial.password,
     };
   }
 
   if (!activeCredentials) {
     throw new Error(
-      "No active credentials set. Use 'setActiveCredentials' first or provide full connection params.",
+      "No active credentials set. Use 'setActiveCredentials' first, provide cameraId (from cameras.list), or provide full connection params (host, username, password).",
     );
+  }
+
+  // Merge only non-blank values from partial (blank = use active credentials)
+  const overrides: Partial<ConnectionParams> = {};
+  if (partial?.host && String(partial.host).trim()) {
+    overrides.host = partial.host.trim();
+  }
+  if (partial?.port !== undefined && partial?.port !== null && !isNaN(Number(partial.port))) {
+    overrides.port = Number(partial.port);
+  }
+  if (partial?.username && String(partial.username).trim()) {
+    overrides.username = partial.username.trim();
+  }
+  if (partial?.password !== undefined) {
+    overrides.password = partial.password;
   }
 
   return {
     ...activeCredentials,
-    ...partial,
+    ...overrides,
   };
 }
 

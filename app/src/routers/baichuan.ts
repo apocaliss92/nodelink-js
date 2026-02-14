@@ -7,6 +7,7 @@ import {
   clearActiveCredentials,
   resolveCredentials,
 } from "../connection-manager.js";
+import { getCameras } from "../settings-store.js";
 
 // Full connection input for setActiveCredentials and explicit connections
 const ConnectionInput = z.object({
@@ -16,12 +17,18 @@ const ConnectionInput = z.object({
   password: z.string(),
 });
 
-// Optional connection input - uses active credentials if not provided
+// Optional connection input - cameraId from configured cameras, or "manual" for host/port/username/password
 const OptionalConnectionInput = z.object({
-  host: z.string().optional(),
-  port: z.number().optional(),
-  username: z.string().optional(),
-  password: z.string().optional(),
+  cameraId: z
+    .string()
+    .optional()
+    .describe(
+      "Camera ID or name (from cameras.list / baichuan.listCameras), or 'manual' for host/port/username/password below",
+    ),
+  host: z.string().optional().describe("Host (when cameraId is 'manual' or empty)"),
+  port: z.number().optional().describe("Port (default 9000)"),
+  username: z.string().optional().describe("Username (when cameraId is 'manual' or empty)"),
+  password: z.string().optional().describe("Password (when cameraId is 'manual' or empty)"),
 });
 
 const ChannelInput = z.object({
@@ -79,6 +86,20 @@ export const baichuanRouter = router({
     .mutation(() => {
       clearActiveCredentials();
       return { success: true };
+    }),
+
+  listCameras: publicProcedure
+    .meta({
+      description:
+        "List configured cameras - use cameraId in other procedures to connect",
+    })
+    .query(() => {
+      return getCameras().map((c) => ({
+        id: c.id,
+        name: c.name,
+        host: c.host,
+        port: c.port,
+      }));
     }),
 
   // ============ CONNECTION ============
