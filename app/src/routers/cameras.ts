@@ -254,7 +254,7 @@ export const camerasRouter = router({
   getAvailableStreams: publicProcedure
     .meta({
       description:
-        "Get available native streams for a camera using buildVideoStreamOptions",
+        "Get available native streams for a camera using buildVideoStreamOptions. For multifocal devices, discovers streams for both wide and tele channels.",
     })
     .input(
       z.object({
@@ -264,25 +264,95 @@ export const camerasRouter = router({
     )
     .query(async ({ input }) => {
       const api = await getOrCreateApiConnection(input.id);
-      const streamOptions = await api.buildVideoStreamOptions({
-        channel: input.channel,
-      });
-      // Return nativeStreams which contains the available profiles
+      const config = getConfig();
+      const camera = config.cameras.find((c) => c.id === input.id);
+      const isNvr = camera?.isNvr ?? false;
+
+      // Check if device is multifocal (dual-lens: TrackMix, Duo)
+      let isMultifocal = false;
+      let dualLensChannels: Array<{ channel: number; lensType?: string }> = [];
+      try {
+        const rtspChannel = camera?.rtspChannel ?? 0;
+        const analysis = await api.getDualLensChannelInfo(rtspChannel, {
+          onNvr: isNvr,
+        });
+        if (analysis.isDualLens && analysis.channels.length > 0) {
+          isMultifocal = true;
+          dualLensChannels = analysis.channels.map((ch) => ({
+            channel: ch.channel,
+            lensType: ch.lensType,
+          }));
+        }
+      } catch {
+        // Not multifocal or getDualLensChannelInfo failed
+      }
+
+      const allNativeStreams: Array<{
+        id: string;
+        profile: "main" | "sub" | "ext";
+        channel: number;
+        lensType?: "wide" | "telephoto" | "composite";
+        resolution?: string;
+        codec?: string;
+      }> = [];
+      const seenIds = new Set<string>();
+
+      if (isMultifocal) {
+        // For multifocal: get streams for each channel (wide, tele) and composite
+        for (const { channel: ch, lensType } of dualLensChannels) {
+          try {
+            const opts = await api.buildVideoStreamOptions({
+              channel: ch,
+              onNvr: isNvr,
+            });
+            for (const s of opts.nativeStreams) {
+              const id = `${s.id}-ch${ch}`;
+              if (seenIds.has(id)) continue;
+              seenIds.add(id);
+              allNativeStreams.push({
+                id,
+                profile: s.profile,
+                channel: ch,
+                lensType:
+                  lensType === "wide"
+                    ? "wide"
+                    : lensType === "telephoto"
+                      ? "telephoto"
+                      : undefined,
+                resolution: s.metadata
+                  ? `${s.metadata.width}x${s.metadata.height}`
+                  : undefined,
+                codec: s.metadata?.videoEncType,
+              });
+            }
+          } catch {
+            // Skip channel if buildVideoStreamOptions fails
+          }
+        }
+      }
+
+      // If not multifocal or no streams found, use single-channel logic
+      if (allNativeStreams.length === 0) {
+        const streamOptions = await api.buildVideoStreamOptions({
+          channel: input.channel,
+          onNvr: isNvr,
+        });
+        for (const s of streamOptions.nativeStreams) {
+          allNativeStreams.push({
+            id: s.id,
+            profile: s.profile,
+            channel: s.channel ?? input.channel ?? 0,
+            resolution: s.metadata
+              ? `${s.metadata.width}x${s.metadata.height}`
+              : undefined,
+            codec: s.metadata?.videoEncType,
+          });
+        }
+      }
+
       return {
-        nativeStreams: streamOptions.nativeStreams.map((s) => ({
-          id: s.id,
-          profile: s.profile,
-          channel: s.channel,
-          resolution: s.metadata
-            ? `${s.metadata.width}x${s.metadata.height}`
-            : undefined,
-          codec: s.metadata?.videoEncType,
-        })),
-        rtspStreams: streamOptions.rtspStreams.map((s) => ({
-          id: s.id,
-          profile: s.profile,
-          url: s.url,
-        })),
+        nativeStreams: allNativeStreams,
+        rtspStreams: [], // Kept for API compatibility
       };
     }),
 
@@ -309,5 +379,150 @@ export const camerasRouter = router({
     .input(z.object({ name: z.string() }))
     .query(({ input }) => {
       return { sanitized: sanitizeCameraName(input.name) };
+    }),
+
+  // Get controls state (light, siren, PTZ capabilities and current state)
+  getControlsState: publicProcedure
+    .meta({
+      description:
+        "Get camera controls state: light, siren, PTZ capabilities and current values",
+    })
+    .input(z.object({ id: z.string() }))
+    .query(async ({ input }) => {
+      const config = getConfig();
+      const camera = config.cameras.find((c) => c.id === input.id);
+      if (!camera) return null;
+      const channel = camera.rtspChannel ?? 0;
+
+      const api = await getOrCreateApiConnection(input.id);
+      const caps = await api.getDeviceCapabilities(channel);
+      const cap = caps?.capabilities ?? {};
+      const support = caps?.support;
+
+      const hasFloodlight = cap.hasFloodlight === true;
+      const hasSiren = cap.hasSiren === true;
+      const hasPtz =
+        cap.hasPtz === true ||
+        (support?.ptzMode &&
+          support.ptzMode.toLowerCase() !== "none" &&
+          support.ptzMode !== "0");
+      const hasPresets = cap.hasPresets === true;
+
+      let lightOn: boolean | undefined;
+      let sirenOn: boolean | undefined;
+      let ptzPresets: Array<{ id: number; name: string }> | undefined;
+
+      if (hasFloodlight) {
+        try {
+          const st = await api.getWhiteLedState(channel);
+          lightOn = st?.enable === 1;
+        } catch {
+          // ignore
+        }
+      }
+      if (hasSiren) {
+        try {
+          const st = await api.getSiren(channel);
+          sirenOn = st?.enable === 1;
+        } catch {
+          // ignore
+        }
+      }
+      if (hasPresets || hasPtz) {
+        try {
+          ptzPresets = await api.getPtzPresets(channel);
+        } catch {
+          // ignore
+        }
+      }
+
+      return {
+        hasFloodlight,
+        hasSiren,
+        hasPtz,
+        hasPresets,
+        lightOn,
+        sirenOn,
+        ptzPresets: ptzPresets ?? [],
+      };
+    }),
+
+  // Set light (floodlight/spotlight) on/off
+  setLight: publicProcedure
+    .meta({ description: "Set camera light (floodlight) on or off" })
+    .input(z.object({ id: z.string(), on: z.boolean() }))
+    .mutation(async ({ input }) => {
+      const config = getConfig();
+      const camera = config.cameras.find((c) => c.id === input.id);
+      if (!camera) throw new Error(`Camera not found: ${input.id}`);
+      const api = await getOrCreateApiConnection(input.id);
+      await api.setWhiteLedState(camera.rtspChannel ?? 0, input.on);
+      return { success: true };
+    }),
+
+  // Set siren/alarm on/off
+  setSiren: publicProcedure
+    .meta({ description: "Set camera siren/alarm on or off" })
+    .input(z.object({ id: z.string(), on: z.boolean() }))
+    .mutation(async ({ input }) => {
+      const config = getConfig();
+      const camera = config.cameras.find((c) => c.id === input.id);
+      if (!camera) throw new Error(`Camera not found: ${input.id}`);
+      const api = await getOrCreateApiConnection(input.id);
+      await api.setSiren(camera.rtspChannel ?? 0, input.on);
+      return { success: true };
+    }),
+
+  // PTZ control (pan, tilt, zoom, presets)
+  ptzControl: publicProcedure
+    .meta({ description: "Send PTZ command to camera" })
+    .input(
+      z.object({
+        id: z.string(),
+        command: z.enum([
+          "Up",
+          "Down",
+          "Left",
+          "Right",
+          "ZoomIn",
+          "ZoomOut",
+          "FocusNear",
+          "FocusFar",
+        ]),
+        action: z.enum(["start", "stop"]).default("start"),
+        speed: z.number().min(1).max(64).optional().default(32),
+        autoStopMs: z.number().optional().default(500),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const config = getConfig();
+      const camera = config.cameras.find((c) => c.id === input.id);
+      if (!camera) throw new Error(`Camera not found: ${input.id}`);
+      const api = await getOrCreateApiConnection(input.id);
+      await api.ptz(camera.rtspChannel ?? 0, {
+        command: input.command,
+        action: input.action,
+        speed: input.speed,
+        autoStopMs: input.autoStopMs,
+      });
+      return { success: true };
+    }),
+
+  // Go to PTZ preset
+  ptzGotoPreset: publicProcedure
+    .meta({ description: "Move camera to PTZ preset" })
+    .input(
+      z.object({
+        id: z.string(),
+        preset: z.number(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const config = getConfig();
+      const camera = config.cameras.find((c) => c.id === input.id);
+      if (!camera) throw new Error(`Camera not found: ${input.id}`);
+      const api = await getOrCreateApiConnection(input.id);
+      await api.moveToPtzPreset(camera.rtspChannel ?? 0, input.preset);
+      return { success: true };
     }),
 });

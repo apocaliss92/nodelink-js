@@ -111,6 +111,8 @@ export interface CameraInfo {
     channelName?: string;
     /** Whether this device is an NVR/Hub with multiple channels */
     isNvr?: boolean;
+    /** Whether this device is multifocal/dual-lens (TrackMix, Duo) */
+    isMultifocal?: boolean;
     /** For NVR/Hub: the model of the Hub itself */
     hubModel?: string;
   };
@@ -248,6 +250,18 @@ async function updateCameraInfo(cameraId: string, api: ReolinkBaichuanApi) {
       modelLower.includes("nvr") ||
       modelLower.includes("home hub");
 
+    // Check if this is a multifocal/dual-lens device (TrackMix, Duo)
+    let isMultifocal = false;
+    try {
+      const dualLensAnalysis = await api.getDualLensChannelInfo(
+        isNvr ? channel : 0,
+        { onNvr: isNvr },
+      );
+      isMultifocal = dualLensAnalysis.isDualLens;
+    } catch {
+      // Not multifocal or getDualLensChannelInfo failed
+    }
+
     // For NVR/Hub, use getInfo(channel) to get the channel-specific camera name
     let channelName: string | undefined;
     let channelModel: string | undefined;
@@ -278,6 +292,7 @@ async function updateCameraInfo(cameraId: string, api: ReolinkBaichuanApi) {
         serialNumber: info?.serialNumber,
         channelCount,
         isNvr,
+        isMultifocal,
         channelName,
         hubModel: isNvr ? info?.type : undefined,
       },
@@ -396,9 +411,11 @@ export async function startRtspServer(
     port = await findNextAvailablePort(basePort);
   }
 
-  // Build RTSP path using friendly name (camera-name/profile)
-  // This makes it easier for proxying and human readability
-  const friendlyPath = `/${sanitizeCameraName(camera.name)}/${profile}`;
+  // Build RTSP path using friendly name (camera-name/profile or camera-name/profile/channel for multifocal)
+  // For multifocal with channel > 0, append /channel to avoid path collision (e.g. /camera/main/1 for tele)
+  const basePath = `/${sanitizeCameraName(camera.name)}/${profile}`;
+  const friendlyPath =
+    channel > 0 ? `${basePath}/${channel}` : basePath;
 
   // Keep token for backward compatibility in saved config
   let streamToken = savedStreamConfig?.token;

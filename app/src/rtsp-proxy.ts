@@ -218,11 +218,17 @@ export class RtspProxyServer extends EventEmitter {
 
   /**
    * Parse path from RTSP request
-   * Returns { cameraName, profile } or null
+   * Returns { cameraName, profile, channel, fullPath } or null
+   * Path formats: /camera-name/profile (ch0) or /camera-name/profile/channel (multifocal ch1+)
    */
   private parseRtspPath(
     data: Buffer,
-  ): { cameraName: string; profile: string; fullPath: string } | null {
+  ): {
+    cameraName: string;
+    profile: string;
+    channel: number;
+    fullPath: string;
+  } | null {
     const text = data.toString("utf-8");
     const lines = text.split("\r\n");
     if (lines.length < 1) return null;
@@ -241,33 +247,49 @@ export class RtspProxyServer extends EventEmitter {
       path = urlMatch[1] || "/";
     }
 
-    // Parse path: /camera-name/profile or /camera-name/profile/track0
-    const pathMatch = path.match(/^\/([^/]+)\/(main|sub|ext)(\/.*)?$/i);
+    // Parse path: /camera-name/profile or /camera-name/profile/channel (multifocal)
+    const pathMatch = path.match(
+      /^\/([^/]+)\/(main|sub|ext)(\/(\d+))?(\/.*)?$/i,
+    );
     if (!pathMatch) return null;
 
-    const [, cameraName, profile] = pathMatch;
+    const [, cameraName, profile, , channelStr] = pathMatch;
+    const channel = channelStr ? parseInt(channelStr, 10) : 0;
+    const fullPath =
+      channel > 0
+        ? `/${cameraName.toLowerCase()}/${profile.toLowerCase()}/${channel}`
+        : `/${cameraName.toLowerCase()}/${profile.toLowerCase()}`;
     return {
       cameraName: cameraName.toLowerCase(),
       profile: profile.toLowerCase(),
-      fullPath: `/${cameraName.toLowerCase()}/${profile.toLowerCase()}`,
+      channel: Number.isFinite(channel) ? channel : 0,
+      fullPath,
     };
   }
 
   /**
-   * Get backend key for tracking
+   * Get backend key for tracking (includes channel for multifocal)
    */
-  private getBackendKey(cameraName: string, profile: string): string {
-    return `${cameraName}/${profile}`;
+  private getBackendKey(
+    cameraName: string,
+    profile: string,
+    channel?: number,
+  ): string {
+    return channel !== undefined && channel > 0
+      ? `${cameraName}/${profile}/${channel}`
+      : `${cameraName}/${profile}`;
   }
 
   /**
-   * Emit stream_clients event for RTSP proxy (backendKey: cameraName/profile)
+   * Emit stream_clients event for RTSP proxy (backendKey: cameraName/profile or cameraName/profile/channel)
    */
   private emitRtspStreamClientsChanged(
     backendKey: string,
     clientCount: number,
   ): void {
-    const [cameraName, profile] = backendKey.split("/");
+    const parts = backendKey.split("/");
+    const cameraName = parts[0];
+    const profile = parts[1];
     if (!cameraName || !profile) return;
     const camera = getConfig().cameras.find(
       (c) =>
@@ -350,8 +372,12 @@ export class RtspProxyServer extends EventEmitter {
       }
 
       // Find and stop the backend server
-      const [cameraName, profile] = backendKey.split("/");
-      await this.stopBackendServer(cameraName!, profile!);
+      const parts = backendKey.split("/");
+      const cameraName = parts[0]!;
+      const profile = parts[1]!;
+      const channel =
+        parts.length > 2 ? parseInt(parts[2]!, 10) : undefined;
+      await this.stopBackendServer(cameraName, profile, channel);
     }, BACKEND_IDLE_TIMEOUT_MS);
 
     // Don't prevent process exit
@@ -365,6 +391,7 @@ export class RtspProxyServer extends EventEmitter {
   private async stopBackendServer(
     cameraName: string,
     profile: string,
+    channel?: number,
   ): Promise<void> {
     const normalizedProfile = profile as "main" | "sub" | "ext";
     const config = getConfig();
@@ -380,13 +407,15 @@ export class RtspProxyServer extends EventEmitter {
       return;
     }
 
-    // Find running server
+    // Find running server (match channel for multifocal)
     const servers = getAllRtspServersInfo();
+    const ch = channel ?? 0;
     const server = servers.find(
       (s) =>
         s.status === "running" &&
         s.cameraId === camera.id &&
-        s.profile === normalizedProfile,
+        s.profile === normalizedProfile &&
+        (s.channel ?? 0) === ch,
     );
 
     if (!server) {
@@ -409,19 +438,22 @@ export class RtspProxyServer extends EventEmitter {
   private async findOrStartBackend(
     cameraName: string,
     profile: string,
+    channel: number = 0,
   ): Promise<{ host: string; port: number } | null> {
     const normalizedProfile = profile as "main" | "sub" | "ext";
 
-    // Check for running server
+    // Check for running server (match camera, profile, and channel for multifocal)
     let servers = getAllRtspServersInfo();
     for (const server of servers) {
       if (server.status !== "running") continue;
       const serverCameraName = sanitizeCameraName(
         server.cameraName || server.cameraId,
       );
+      const channelMatch = (server.channel ?? 0) === channel;
       if (
         serverCameraName === cameraName &&
-        server.profile === normalizedProfile
+        server.profile === normalizedProfile &&
+        channelMatch
       ) {
         logger.info(`Found running backend: ${server.port}`);
         return { host: "127.0.0.1", port: server.port };
@@ -430,7 +462,7 @@ export class RtspProxyServer extends EventEmitter {
 
     // Start server on-demand
     logger.info(
-      `No running server for ${cameraName}/${profile}, starting on-demand...`,
+      `No running server for ${cameraName}/${profile}${channel > 0 ? `/${channel}` : ""}, starting on-demand...`,
     );
 
     const config = getConfig();
@@ -447,7 +479,7 @@ export class RtspProxyServer extends EventEmitter {
     try {
       await startRtspServer(camera.id, {
         profile: normalizedProfile,
-        channel: 0,
+        channel,
       });
 
       // Wait for server to start
@@ -459,7 +491,8 @@ export class RtspProxyServer extends EventEmitter {
         if (server.status !== "running") continue;
         if (
           server.cameraId === camera.id &&
-          server.profile === normalizedProfile
+          server.profile === normalizedProfile &&
+          (server.channel ?? 0) === channel
         ) {
           logger.info(`On-demand backend started: ${server.port}`);
           return { host: "127.0.0.1", port: server.port };
@@ -549,13 +582,14 @@ export class RtspProxyServer extends EventEmitter {
       }
 
       logger.info(
-        `Client ${clientId} requesting: ${parsed.cameraName}/${parsed.profile}`,
+        `Client ${clientId} requesting: ${parsed.cameraName}/${parsed.profile}${parsed.channel > 0 ? `/${parsed.channel}` : ""}`,
       );
 
       // Find or start backend
       const backend = await this.findOrStartBackend(
         parsed.cameraName,
         parsed.profile,
+        parsed.channel,
       );
       if (!backend) {
         logger.warn(`No backend available for ${parsed.fullPath}`);
@@ -575,7 +609,11 @@ export class RtspProxyServer extends EventEmitter {
       clientSocket.removeListener("data", onInitialData);
 
       // Track this client for the backend
-      const backendKey = this.getBackendKey(parsed.cameraName, parsed.profile);
+      const backendKey = this.getBackendKey(
+        parsed.cameraName,
+        parsed.profile,
+        parsed.channel,
+      );
 
       // Connect to backend
       const backendSocket = net.createConnection(
@@ -724,7 +762,11 @@ export class RtspProxyServer extends EventEmitter {
       const cameraPath = sanitizeCameraName(
         server.cameraName || server.cameraId,
       );
-      const path = `/${cameraPath}/${server.profile}`;
+      const ch = server.channel ?? 0;
+      const path =
+        ch > 0
+          ? `/${cameraPath}/${server.profile}/${ch}`
+          : `/${cameraPath}/${server.profile}`;
 
       streams.push({
         path,
