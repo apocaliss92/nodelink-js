@@ -2354,7 +2354,17 @@ export class ReolinkBaichuanApi {
     callback: (event: ReolinkSimpleEvent) => void | Promise<void>,
   ): Promise<void> {
     this.simpleEventListeners.add(callback);
-    await this.ensureSimpleEventSubscribed();
+    try {
+      await this.ensureSimpleEventSubscribed();
+    } catch (e: unknown) {
+      // Initial subscription failed — the watchdog will handle auto-recovery.
+      // Do NOT propagate: the caller should not see this as a fatal error.
+      (this.logger.debug ?? this.logger.log).call(
+        this.logger,
+        "[ReolinkBaichuanApi] onSimpleEvent: initial subscribe failed, watchdog will retry",
+        formatErrorForLog(e),
+      );
+    }
     this.simpleEventLastReceivedAt = Date.now();
     this.startSimpleEventResubscribeTimer();
     this.startSimpleEventWatchdog();
