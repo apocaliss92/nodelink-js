@@ -2389,12 +2389,16 @@ export class ReolinkBaichuanApi {
       this.stopUdpSleepInference();
       await this.ensureSimpleEventUnsubscribed();
     } else {
-      // If there are still listeners, keep polling running (TCP only)
-      const isUdp = this.client.getTransport?.() === "udp";
-      if (isUdp) {
-        this.startUdpSleepInference();
-      } else if (this.client.isStatePollingEnabled?.()) {
-        this.startStatePolling();
+      // If there are still listeners, keep polling running (TCP only).
+      // Guard: socket pool may already be destroyed during disconnect cleanup.
+      const generalEntry = this.socketPool.get("general");
+      if (generalEntry) {
+        const isUdp = generalEntry.client.getTransport?.() === "udp";
+        if (isUdp) {
+          this.startUdpSleepInference();
+        } else if (generalEntry.client.isStatePollingEnabled?.()) {
+          this.startStatePolling();
+        }
       }
     }
   }
@@ -2446,8 +2450,12 @@ export class ReolinkBaichuanApi {
     // No listeners → nothing to watch
     if (this.simpleEventListeners.size === 0) return;
 
+    // Guard: socket pool may already be destroyed during disconnect cleanup
+    const generalEntry = this.socketPool.get("general");
+    if (!generalEntry) return;
+
     // Connection must be alive for recovery to work
-    if (!this.client.isSocketConnected?.() || !this.client.loggedIn) return;
+    if (!generalEntry.client.isSocketConnected?.() || !generalEntry.client.loggedIn) return;
 
     const now = Date.now();
 
@@ -2466,7 +2474,7 @@ export class ReolinkBaichuanApi {
       try {
         // Force the flag false so ensureSimpleEventSubscribed will actually resend
         this.simpleEventSubscribed = false;
-        this.client.subscribed = false;
+        generalEntry.client.subscribed = false;
         await this.ensureSimpleEventSubscribed();
         this.simpleEventLastReceivedAt = Date.now(); // reset timer after resubscribe
         this.simpleEventWatchdogRecoveryAttempts = 0;
@@ -2565,22 +2573,26 @@ export class ReolinkBaichuanApi {
       return await this.simpleEventSubscribeInFlight;
 
     this.simpleEventSubscribeInFlight = (async () => {
+      // Guard: if socket pool is destroyed, bail out.
+      const entry = this.socketPool.get("general");
+      if (!entry) return;
+
       // If the caller already subscribed (e.g. NVR shared connection using subscribeToAllEvents),
       // don't resubscribe.
-      if (!this.client.subscribed) {
+      if (!entry.client.subscribed) {
         await this.subscribeEvents();
       }
       this.simpleEventSubscribed = true;
 
       // Only check current state and start polling for TCP connections (not UDP/battery cameras)
       // UDP/battery cameras should rely on event pushes only, not polling
-      const isUdp = this.client.getTransport?.() === "udp";
+      const isUdp = entry.client.getTransport?.() === "udp";
       if (isUdp) {
         // Passive sleep inference for UDP/battery cameras.
         // This does not send any requests and restores sleeping/awake events.
         this.startUdpSleepInference();
-      } else if (this.client.isStatePollingEnabled?.()) {
-        const channel = this.client.getConfiguredChannel?.() ?? 0;
+      } else if (entry.client.isStatePollingEnabled?.()) {
+        const channel = entry.client.getConfiguredChannel?.() ?? 0;
         // Check current state and dispatch events immediately (TCP only)
         await this.checkAndDispatchCurrentState(channel);
 
@@ -2595,7 +2607,18 @@ export class ReolinkBaichuanApi {
   }
 
   private async ensureSimpleEventUnsubscribed(): Promise<void> {
-    if (!this.simpleEventSubscribed && !this.client.subscribed) return;
+    // Guard: if the socket pool has already been destroyed (e.g. api.close()
+    // was called during disconnect cleanup), just reset local state and bail.
+    const generalEntry = this.socketPool.get("general");
+    if (!generalEntry) {
+      this.simpleEventSubscribed = false;
+      this.stopSimpleEventResubscribeTimer();
+      this.stopStatePolling();
+      this.stopUdpSleepInference();
+      return;
+    }
+
+    if (!this.simpleEventSubscribed && !generalEntry.client.subscribed) return;
     if (this.simpleEventUnsubscribeInFlight)
       return await this.simpleEventUnsubscribeInFlight;
 
@@ -7590,10 +7613,13 @@ export class ReolinkBaichuanApi {
    */
   async unsubscribeEvents(): Promise<void> {
     // Note: There's no explicit unsubscribe, but closing connection unsubscribes
-    // For now, we just mark as unsubscribed
-    this.client.subscribed = false;
+    // For now, we just mark as unsubscribed.
+    // Guard: socket pool may already be destroyed during disconnect cleanup.
+    const generalEntry = this.socketPool.get("general");
+    if (!generalEntry) return;
+    generalEntry.client.subscribed = false;
     // For BCUDP/battery cameras: allow the camera to sleep when idle.
-    this.client.refreshKeepAlive?.();
+    generalEntry.client.refreshKeepAlive?.();
   }
 
   /**
