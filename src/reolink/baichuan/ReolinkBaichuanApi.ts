@@ -1624,8 +1624,10 @@ export class ReolinkBaichuanApi {
         dbg.debugRtsp,
     );
 
-    // Store client options for creating new sockets in the pool
-    // Only include optional fields if they're defined to satisfy exactOptionalPropertyTypes
+    // Store client options for creating new sockets in the pool.
+    // All transport-related fields must be forwarded so that pooled sockets
+    // use the same transport (tcp/udp/auto) as the primary "general" socket.
+    // Only include optional fields if they're defined to satisfy exactOptionalPropertyTypes.
     this.clientOptions = {
       host: opts.host,
       username: opts.username,
@@ -1633,6 +1635,18 @@ export class ReolinkBaichuanApi {
       ...(opts.logger ? { logger: opts.logger } : {}),
       ...(opts.debugOptions ? { debugOptions: opts.debugOptions } : {}),
       ...(opts.uid ? { uid: opts.uid } : {}),
+      ...(opts.transport ? { transport: opts.transport } : {}),
+      ...(opts.port !== undefined ? { port: opts.port } : {}),
+      ...(opts.udpDiscoveryMethod
+        ? { udpDiscoveryMethod: opts.udpDiscoveryMethod }
+        : {}),
+      ...(opts.idleDisconnect !== undefined
+        ? { idleDisconnect: opts.idleDisconnect }
+        : {}),
+      ...(opts.idleDisconnectTimeoutMs !== undefined
+        ? { idleDisconnectTimeoutMs: opts.idleDisconnectTimeoutMs }
+        : {}),
+      ...(opts.channel !== undefined ? { channel: opts.channel } : {}),
     };
 
     // Create the "general" socket in the pool (primary socket for commands/events)
@@ -5541,7 +5555,13 @@ export class ReolinkBaichuanApi {
       }
     }
 
-    // Otherwise, queue the request and return a promise
+    // Otherwise, queue the request – reject if queue is full to protect camera stability
+    if (this.videoclipThumbnailQueue.length >= 50) {
+      throw new Error(
+        `Thumbnail queue full (${this.videoclipThumbnailQueue.length}/50) – request rejected to protect camera stability`,
+      );
+    }
+
     return new Promise<VideoclipThumbnailResult>((resolve, reject) => {
       this.videoclipThumbnailQueue.push({ params, resolve, reject });
     });
@@ -5678,8 +5698,7 @@ export class ReolinkBaichuanApi {
 
     // For NVR: use the resolved headerChannelId from push cache (like FileInfoList).
     // For standalone cameras: use session counter (let client handle it).
-    // NOTE: Retry logic is handled inside sendBinaryCoverPreview.
-    // PCAP analysis shows the camera often rejects first few requests with 400 before accepting.
+    // NOTE: Backoff/retry is now handled globally by withSerializedCoverPreview.
     let payload: Buffer;
     try {
       payload = await this.client.sendBinaryCoverPreview({
@@ -5694,9 +5713,6 @@ export class ReolinkBaichuanApi {
         streamType: 0,
         payloadXml: xml,
         timeoutMs,
-        // Retry parameters - camera often rejects first few requests
-        maxRetries: 8,
-        retryDelayMs: 1500,
       });
       trace(`CoverPreview succeeded`);
     } catch (e) {

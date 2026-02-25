@@ -168,6 +168,14 @@ export class BaichuanClient extends EventEmitter<{
     Promise<void>
   >();
 
+  /**
+   * Global CoverPreview backoff – increases on 400 rejection, resets on success.
+   * Prevents flooding the camera when it's overwhelmed.
+   */
+  private static readonly coverPreviewBackoffMs = new Map<string, number>();
+  private static readonly COVER_PREVIEW_INITIAL_BACKOFF_MS = 1_000;
+  private static readonly COVER_PREVIEW_MAX_BACKOFF_MS = 30_000;
+
   private readonly opts: BaichuanClientOptions;
   private readonly debugCfg: DebugConfig;
   private readonly logger: Logger;
@@ -598,7 +606,46 @@ export class BaichuanClient extends EventEmitter<{
     const prevTail =
       BaichuanClient.coverPreviewQueueTail.get(key) ?? Promise.resolve();
 
-    const run = prevTail.catch(() => undefined).then(fn);
+    const run = prevTail.catch(() => undefined).then(async () => {
+      // Apply incremental backoff if a previous request failed with 400
+      const backoffMs =
+        BaichuanClient.coverPreviewBackoffMs.get(key) ?? 0;
+      if (backoffMs > 0) {
+        this.logDebug("coverpreview_backoff_wait", { backoffMs });
+        await new Promise((r) => setTimeout(r, backoffMs));
+      }
+
+      try {
+        const result = await fn();
+        // Success – reset backoff
+        BaichuanClient.coverPreviewBackoffMs.delete(key);
+        return result;
+      } catch (e) {
+        // Increase backoff on 400 rejection (camera overload)
+        const msg = e instanceof Error ? e.message : String(e);
+        const is400 =
+          msg.includes("rejected") &&
+          (msg.includes("responseCode=400") || msg.includes("resp_code=400"));
+        if (is400) {
+          const current =
+            BaichuanClient.coverPreviewBackoffMs.get(key) ?? 0;
+          const next =
+            current === 0
+              ? BaichuanClient.COVER_PREVIEW_INITIAL_BACKOFF_MS
+              : Math.min(
+                  current * 2,
+                  BaichuanClient.COVER_PREVIEW_MAX_BACKOFF_MS,
+                );
+          BaichuanClient.coverPreviewBackoffMs.set(key, next);
+          this.logDebug("coverpreview_backoff_increased", {
+            previous: current,
+            next,
+          });
+        }
+        throw e;
+      }
+    });
+
     const tail = run.then(
       () => undefined,
       () => undefined,
@@ -3881,6 +3928,10 @@ export class BaichuanClient extends EventEmitter<{
    * Send CoverPreview command (cmd_id=298) to get an I-frame from a past recording.
    * Similar to sendBinarySnapshot109 but handles the stream header + frame format
    * instead of JPEG.
+   *
+   * Retry is minimal (2 attempts) – the global backoff in `withSerializedCoverPreview`
+   * throttles subsequent requests when the camera is overwhelmed.
+   * PCAP analysis shows the camera routinely rejects the first request with 400.
    */
   async sendBinaryCoverPreview(params: {
     cmdId: number;
@@ -3895,44 +3946,36 @@ export class BaichuanClient extends EventEmitter<{
     streamType?: number;
     encryption?: EncryptionProtocol;
     timeoutMs?: number;
-    /** Maximum retry attempts on 400 rejection (default: 5). PCAP analysis shows camera often rejects first few requests. */
-    maxRetries?: number;
-    /** Delay between retries in ms (default: 1000). */
-    retryDelayMs?: number;
   }): Promise<Buffer> {
     return await this.withSerializedCoverPreview(async () => {
-      const maxRetries = params.maxRetries ?? 5;
-      const retryDelayMs = params.retryDelayMs ?? 1000;
-
+      const maxAttempts = 5;
+      const retryDelay = 1_500;
       let lastError: Error | undefined;
 
-      for (let attempt = 0; attempt < maxRetries; attempt++) {
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
         try {
           return await this._sendBinaryCoverPreviewOnce(params);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           lastError = e instanceof Error ? e : new Error(msg);
 
-          // Check if it's a 400 rejection that might be recoverable with retry.
-          const is400Rejection =
+          const is400 =
             msg.includes("rejected") &&
             (msg.includes("responseCode=400") || msg.includes("resp_code=400"));
 
-          if (is400Rejection && attempt < maxRetries - 1) {
+          if (is400 && attempt < maxAttempts - 1) {
             this.logDebug("coverpreview_retry_400", {
               attempt: attempt + 1,
-              maxRetries,
-              retryDelayMs,
+              maxAttempts,
+              retryDelay,
             });
-            await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+            await new Promise((r) => setTimeout(r, retryDelay));
             continue;
           }
-
           throw lastError;
         }
       }
-
-      throw lastError ?? new Error("CoverPreview failed after all retries");
+      throw lastError ?? new Error("CoverPreview failed after all attempts");
     });
   }
 
