@@ -2368,14 +2368,20 @@ export class ReolinkBaichuanApi {
     callback: (event: ReolinkSimpleEvent) => void | Promise<void>,
   ): Promise<void> {
     this.simpleEventListeners.add(callback);
+    this.logger.debug?.(
+      `[ReolinkBaichuanApi] onSimpleEvent: registering listener (total=${this.simpleEventListeners.size})`,
+    );
     try {
       await this.ensureSimpleEventSubscribed();
+      this.logger.debug?.(
+        `[ReolinkBaichuanApi] onSimpleEvent: initial subscribe succeeded, simpleEventSubscribed=${this.simpleEventSubscribed}`,
+      );
     } catch (e: unknown) {
       // Initial subscription failed — the watchdog will handle auto-recovery.
       // Do NOT propagate: the caller should not see this as a fatal error.
       (this.logger.debug ?? this.logger.log).call(
         this.logger,
-        "[ReolinkBaichuanApi] onSimpleEvent: initial subscribe failed, watchdog will retry",
+        `[ReolinkBaichuanApi] onSimpleEvent: initial subscribe failed, simpleEventSubscribed=${this.simpleEventSubscribed}, watchdog will retry`,
         formatErrorForLog(e),
       );
     }
@@ -2469,9 +2475,21 @@ export class ReolinkBaichuanApi {
     if (!generalEntry) return;
 
     // Connection must be alive for recovery to work
-    if (!generalEntry.client.isSocketConnected?.() || !generalEntry.client.loggedIn) return;
+    if (!generalEntry.client.isSocketConnected?.() || !generalEntry.client.loggedIn) {
+      this.logger.debug?.(
+        `[ReolinkBaichuanApi] event watchdog tick: skipping (connection not alive: connected=${generalEntry.client.isSocketConnected?.()} loggedIn=${generalEntry.client.loggedIn})`,
+      );
+      return;
+    }
 
     const now = Date.now();
+    const sinceLastEvent = this.simpleEventLastReceivedAt > 0 ? now - this.simpleEventLastReceivedAt : -1;
+    this.logger.debug?.(
+      `[ReolinkBaichuanApi] event watchdog tick: subscribed=${this.simpleEventSubscribed} ` +
+        `clientSubscribed=${generalEntry.client.subscribed} ` +
+        `lastEventAgoMs=${sinceLastEvent} recoveryAttempts=${this.simpleEventWatchdogRecoveryAttempts} ` +
+        `listeners=${this.simpleEventListeners.size}`,
+    );
 
     // Case 1: subscription is active but no events for too long → force resubscribe
     if (this.simpleEventSubscribed && this.simpleEventLastReceivedAt > 0) {
@@ -2508,6 +2526,39 @@ export class ReolinkBaichuanApi {
 
     // Case 2: subscription failed (simpleEventSubscribed === false) but connection is alive → recovery
     if (!this.simpleEventSubscribed) {
+      // If events are actually flowing (e.g. the device pushes events even without
+      // a successful subscribe handshake), treat the subscription as healthy.
+      // This prevents an infinite recovery loop when subscribeEvents() keeps failing
+      // but events are delivered regardless (some firmware variants do this).
+      if (this.simpleEventLastReceivedAt > 0) {
+        const sinceLastEvent = now - this.simpleEventLastReceivedAt;
+        if (sinceLastEvent < this.simpleEventWatchdogSilenceThresholdMs) {
+          // Events are flowing — mark subscription as active and stop retrying.
+          this.simpleEventSubscribed = true;
+          this.logger.debug?.(
+            `[ReolinkBaichuanApi] event watchdog: events flowing (lastEventAgo=${Math.round(sinceLastEvent / 1000)}s) ` +
+              `despite simpleEventSubscribed=false, marking subscription as active ` +
+              `(recoveryAttempts=${this.simpleEventWatchdogRecoveryAttempts})`,
+          );
+          if (this.simpleEventWatchdogRecoveryAttempts > 0) {
+            (this.logger.info ?? this.logger.log).call(
+              this.logger,
+              `[ReolinkBaichuanApi] event watchdog: events flowing despite failed subscribe, marking subscription active`,
+            );
+            this.simpleEventWatchdogRecoveryAttempts = 0;
+          }
+          return;
+        } else {
+          this.logger.debug?.(
+            `[ReolinkBaichuanApi] event watchdog: events stale (lastEventAgo=${Math.round(sinceLastEvent / 1000)}s, threshold=${Math.round(this.simpleEventWatchdogSilenceThresholdMs / 1000)}s), proceeding with recovery`,
+          );
+        }
+      } else {
+        this.logger.debug?.(
+          `[ReolinkBaichuanApi] event watchdog: no events ever received (simpleEventLastReceivedAt=0), proceeding with recovery`,
+        );
+      }
+
       // Exponential backoff: 30s, 60s, 120s, 240s, max 5min
       const backoffMs = Math.min(
         30_000 * Math.pow(2, this.simpleEventWatchdogRecoveryAttempts),
@@ -2581,20 +2632,50 @@ export class ReolinkBaichuanApi {
   }
 
   private async ensureSimpleEventSubscribed(): Promise<void> {
-    if (this.simpleEventListeners.size === 0) return;
-    if (this.simpleEventSubscribed) return;
-    if (this.simpleEventSubscribeInFlight)
+    if (this.simpleEventListeners.size === 0) {
+      this.logger.debug?.(
+        `[ReolinkBaichuanApi] ensureSimpleEventSubscribed: no listeners, skipping`,
+      );
+      return;
+    }
+    if (this.simpleEventSubscribed) {
+      this.logger.debug?.(
+        `[ReolinkBaichuanApi] ensureSimpleEventSubscribed: already subscribed, skipping`,
+      );
+      return;
+    }
+    if (this.simpleEventSubscribeInFlight) {
+      this.logger.debug?.(
+        `[ReolinkBaichuanApi] ensureSimpleEventSubscribed: subscribe already in-flight, awaiting`,
+      );
       return await this.simpleEventSubscribeInFlight;
+    }
+
+    this.logger.debug?.(
+      `[ReolinkBaichuanApi] ensureSimpleEventSubscribed: starting subscribe (clientSubscribed=${this.socketPool.get("general")?.client.subscribed})`,
+    );
 
     this.simpleEventSubscribeInFlight = (async () => {
       // Guard: if socket pool is destroyed, bail out.
       const entry = this.socketPool.get("general");
-      if (!entry) return;
+      if (!entry) {
+        this.logger.debug?.(
+          `[ReolinkBaichuanApi] ensureSimpleEventSubscribed: no general socket, bailing out`,
+        );
+        return;
+      }
 
       // If the caller already subscribed (e.g. NVR shared connection using subscribeToAllEvents),
       // don't resubscribe.
       if (!entry.client.subscribed) {
+        this.logger.debug?.(
+          `[ReolinkBaichuanApi] ensureSimpleEventSubscribed: client.subscribed=false, calling subscribeEvents()`,
+        );
         await this.subscribeEvents();
+      } else {
+        this.logger.debug?.(
+          `[ReolinkBaichuanApi] ensureSimpleEventSubscribed: client already subscribed, skipping subscribeEvents()`,
+        );
       }
       this.simpleEventSubscribed = true;
 
