@@ -574,8 +574,12 @@ export function detectIosClient(userAgent: string | undefined): {
   return {
     isIos,
     isIosInstalledApp,
-    // iOS InstalledApp needs HLS for video playback
-    needsHls: isIos && isIosInstalledApp,
+    // ALL iOS clients need HLS for reliable video clip playback.
+    // iOS AVFoundation requires Content-Length + Range support for regular MP4,
+    // but generating the full MP4 upfront takes too long (camera download + transcode).
+    // HLS delivers segments progressively (~3-5s to first frame vs 25+ seconds).
+    // Safari, AVPlayer, and InstalledApp all support HLS natively.
+    needsHls: isIos,
   };
 }
 
