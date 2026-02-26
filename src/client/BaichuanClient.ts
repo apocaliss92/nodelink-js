@@ -435,7 +435,13 @@ export class BaichuanClient extends EventEmitter<{
     if (!this.isIdleDisconnectEnabled()) return false;
     if (!this.isSocketConnected()) return false;
     if (this.pending.size > 0) return false;
-    if (this.hasActiveVideoSubscriptionsInternal()) return false;
+    // Check the global streaming registry, not just this client's own subscriptions.
+    // A SocketPool may use separate BaichuanClient instances for commands ("general")
+    // and for streaming ("streaming:chN"). The "general" client has no video
+    // subscriptions itself, but must NOT disconnect while another client for the
+    // same device is actively streaming — otherwise the close cascade will tear
+    // down the streaming session too.
+    if (this.isDeviceStreamingActive()) return false;
     if (this.permits.size > 0) return false;
     return true;
   }
@@ -453,7 +459,18 @@ export class BaichuanClient extends EventEmitter<{
 
     this.idleDisconnectTimer = setTimeout(() => {
       try {
-        if (!this.isIdleDisconnectEligibleNow()) return;
+        if (!this.isIdleDisconnectEligibleNow()) {
+          this.logDebug("idle_disconnect_blocked", {
+            reason: "not eligible",
+            socketConnected: this.isSocketConnected(),
+            pending: this.pending.size,
+            deviceStreamingActive: this.isDeviceStreamingActive(),
+            localVideoSubs: this.hasActiveVideoSubscriptionsInternal(),
+            permits: this.permits.size,
+            host: this.opts.host,
+          });
+          return;
+        }
         if (this.lastUserActivityAtMs == null) return;
         const elapsed2 = Date.now() - this.lastUserActivityAtMs;
         if (elapsed2 < timeoutMs) {

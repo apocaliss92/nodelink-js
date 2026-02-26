@@ -417,6 +417,13 @@ export class ReolinkBaichuanApi {
       lastUsedAt: number;
       /** Timer to auto-close idle sockets (mainly for replay) */
       idleCloseTimer: ReturnType<typeof setTimeout> | undefined;
+      /**
+       * Release function for the permit held on the "general" client.
+       * When a streaming/replay socket is active, it acquires a permit on the
+       * general client to prevent it from idle-disconnecting and cascading a
+       * full API teardown.
+       */
+      generalPermitRelease: (() => void) | undefined;
     }
   >();
 
@@ -1222,6 +1229,15 @@ export class ReolinkBaichuanApi {
         `[SocketPool] Closing existing socket for tag=${tag} (recreating)`,
       );
       this.socketPool.delete(tag);
+      // Release the general-client permit if this socket held one.
+      if (existing.generalPermitRelease) {
+        try {
+          existing.generalPermitRelease();
+        } catch {
+          // ignore
+        }
+        existing.generalPermitRelease = undefined;
+      }
       try {
         await existing.client.close({
           reason: "socket pool recreation",
@@ -1244,12 +1260,14 @@ export class ReolinkBaichuanApi {
       createdAt: number;
       lastUsedAt: number;
       idleCloseTimer: ReturnType<typeof setTimeout> | undefined;
+      generalPermitRelease: (() => void) | undefined;
     } = {
       client: undefined as unknown as BaichuanClient, // Will be set after login
       refCount: 0,
       createdAt: now,
       lastUsedAt: now,
       idleCloseTimer: undefined,
+      generalPermitRelease: undefined,
     };
 
     // Create the socket with a pending promise
@@ -1277,6 +1295,23 @@ export class ReolinkBaichuanApi {
         delete entry.pendingPromise;
 
         log?.log?.(`[SocketPool] Socket connected for tag=${tag}`);
+
+        // When a non-general socket is created, acquire a permit on the
+        // general client to prevent it from idle-disconnecting (which would
+        // cascade a full API teardown and kill all active streams).
+        if (tag !== "general") {
+          try {
+            const generalEntry = this.socketPool.get("general");
+            if (generalEntry?.client) {
+              entry.generalPermitRelease = generalEntry.client.acquirePermit(
+                0, // indefinite — released when the streaming socket closes
+                `streaming-peer:${tag}`,
+              );
+            }
+          } catch {
+            // best-effort
+          }
+        }
 
         // Check session count after creating new socket
         void this.maybeRebootOnTooManySessions();
@@ -1376,6 +1411,15 @@ export class ReolinkBaichuanApi {
         if (current.refCount > 0) return;
 
         this.socketPool.delete(tag);
+        // Release the permit held on the general client.
+        if (current.generalPermitRelease) {
+          try {
+            current.generalPermitRelease();
+          } catch {
+            // ignore
+          }
+          current.generalPermitRelease = undefined;
+        }
         log?.log?.(`[SocketPool] Closing idle streaming socket for tag=${tag}`);
         try {
           await current.client.close({
@@ -1444,6 +1488,16 @@ export class ReolinkBaichuanApi {
       entry.idleCloseTimer = undefined;
     }
 
+    // Release the general-client permit if this socket held one.
+    if (entry.generalPermitRelease) {
+      try {
+        entry.generalPermitRelease();
+      } catch {
+        // ignore
+      }
+      entry.generalPermitRelease = undefined;
+    }
+
     log?.debug?.(`[SocketPool] Force-closing socket for tag=${tag}`);
     this.socketPool.delete(tag);
 
@@ -1472,6 +1526,15 @@ export class ReolinkBaichuanApi {
         try {
           if (entry.idleCloseTimer) {
             clearTimeout(entry.idleCloseTimer);
+          }
+          // Release the general-client permit if this socket held one.
+          if (entry.generalPermitRelease) {
+            try {
+              entry.generalPermitRelease();
+            } catch {
+              // ignore
+            }
+            entry.generalPermitRelease = undefined;
           }
           this.logger?.debug?.(`[SocketPool] Cleanup: closing tag=${tag}`);
           await entry.client.close({ reason: "API cleanup", skipLogout: true });
@@ -1657,6 +1720,7 @@ export class ReolinkBaichuanApi {
       createdAt: Date.now(),
       lastUsedAt: Date.now(),
       idleCloseTimer: undefined,
+      generalPermitRelease: undefined,
     });
 
     this.host = opts.host;
