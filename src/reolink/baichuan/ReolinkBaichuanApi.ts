@@ -564,6 +564,31 @@ export class ReolinkBaichuanApi {
     this.logger.log?.(
       "[ReolinkBaichuanApi] General socket reconnected successfully",
     );
+
+    // Re-subscribe to events if there are registered listeners.
+    // After reconnection the old subscription is gone (old socket destroyed),
+    // so we need to re-send the subscribe command on the new socket.
+    // This handles camera reboots and transient disconnections transparently,
+    // without requiring the consumer to track subscription intent.
+    if (this.simpleEventListeners.size > 0) {
+      this.simpleEventSubscribed = false;
+      this.simpleEventWatchdogRecoveryAttempts = 0;
+      this.simpleEventWatchdogLastRecoveryAt = 0;
+      try {
+        await this.ensureSimpleEventSubscribed();
+        this.simpleEventLastReceivedAt = Date.now();
+        this.logger.log?.(
+          `[ReolinkBaichuanApi] Events re-subscribed after reconnection (listeners=${this.simpleEventListeners.size})`,
+        );
+      } catch (e: unknown) {
+        // Non-fatal: the watchdog will retry with exponential backoff.
+        (this.logger.debug ?? this.logger.log).call(
+          this.logger,
+          `[ReolinkBaichuanApi] Event re-subscribe after reconnection failed, watchdog will retry`,
+          formatErrorForLog(e),
+        );
+      }
+    }
   }
 
   /**
