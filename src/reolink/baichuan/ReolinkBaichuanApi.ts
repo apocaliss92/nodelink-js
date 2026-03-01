@@ -388,6 +388,12 @@ export class ReolinkBaichuanApi {
   private readonly username: string;
   private readonly password: string;
 
+  /**
+   * Set to `true` after `close()` is called.
+   * Once closed, the API instance should not be reused.
+   */
+  private _closed = false;
+
   // ─────────────────────────────────────────────────────────────────────────────
   // SOCKET POOL - Tag-based socket management
   // ─────────────────────────────────────────────────────────────────────────────
@@ -439,11 +445,219 @@ export class ReolinkBaichuanApi {
   get client(): BaichuanClient {
     const entry = this.socketPool.get("general");
     if (!entry) {
-      // Should never happen after constructor completes, but handle gracefully
+      if (this._closed) {
+        throw new Error(
+          "[ReolinkBaichuanApi] API has been closed — create a new instance to reconnect",
+        );
+      }
       throw new Error("[ReolinkBaichuanApi] General socket not initialized");
     }
     return entry.client;
   }
+
+  /**
+   * `true` after `close()` has been called. A closed API should not be reused;
+   * the consumer should create a new instance.
+   */
+  get isClosed(): boolean {
+    return this._closed;
+  }
+
+  /**
+   * `true` when the API is usable: not closed, general socket exists, socket
+   * is connected and the client is logged in.
+   *
+   * This is the recommended way for consumers to check whether the API is
+   * still valid before issuing commands, instead of directly accessing
+   * `api.client.isSocketConnected()` / `api.client.loggedIn` (which throws
+   * if the socket pool was already destroyed).
+   */
+  get isReady(): boolean {
+    if (this._closed) return false;
+    const entry = this.socketPool.get("general");
+    if (!entry) return false;
+    try {
+      return entry.client.isSocketConnected() && entry.client.loggedIn;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Promise tracking an in-flight reconnection from `ensureConnected()`. */
+  private _ensureConnectedPromise: Promise<void> | undefined;
+
+  /**
+   * Ensure the "general" socket is connected and logged in.
+   * If the socket is disconnected or the pool entry was destroyed, a new
+   * general socket is created, logged in, and all event/push/guard listeners
+   * are re-attached automatically.
+   *
+   * This is a **no-op** when the API is already {@link isReady}.
+   *
+   * @throws If `close()` was called — the API is permanently closed and a new
+   *         instance must be created.
+   */
+  async ensureConnected(): Promise<void> {
+    if (this._closed) {
+      throw new Error(
+        "[ReolinkBaichuanApi] API has been closed — create a new instance to reconnect",
+      );
+    }
+
+    if (this.isReady) return;
+
+    // Prevent concurrent reconnections — second caller reuses the same promise
+    if (this._ensureConnectedPromise) {
+      return this._ensureConnectedPromise;
+    }
+
+    this._ensureConnectedPromise = this.reconnectGeneralSocket();
+    try {
+      await this._ensureConnectedPromise;
+    } finally {
+      this._ensureConnectedPromise = undefined;
+    }
+  }
+
+  /**
+   * Internal: destroy the current general socket (if any), create a new one,
+   * login, and re-attach all listeners.
+   */
+  private async reconnectGeneralSocket(): Promise<void> {
+    // --- tear down old general socket ---
+    const oldEntry = this.socketPool.get("general");
+    if (oldEntry) {
+      oldEntry.client.removeAllListeners();
+      if (oldEntry.idleCloseTimer) clearTimeout(oldEntry.idleCloseTimer);
+      if (oldEntry.generalPermitRelease) {
+        try {
+          oldEntry.generalPermitRelease();
+        } catch {
+          /* ignore */
+        }
+      }
+      this.socketPool.delete("general");
+      try {
+        await oldEntry.client.close({ reason: "reconnect", skipLogout: true });
+      } catch {
+        // ignore close errors
+      }
+    }
+
+    // --- create new general socket ---
+    const newClient = new BaichuanClient(this.clientOptions);
+    this.socketPool.set("general", {
+      client: newClient,
+      refCount: 1, // general socket is always "in use"
+      createdAt: Date.now(),
+      lastUsedAt: Date.now(),
+      idleCloseTimer: undefined,
+      generalPermitRelease: undefined,
+    });
+
+    // Attach listeners *before* login — some events fire during the login handshake
+    this.setupGeneralClientListeners();
+
+    // Login with the new socket
+    await this.client.login();
+
+    this.logger.log?.(
+      "[ReolinkBaichuanApi] General socket reconnected successfully",
+    );
+  }
+
+  /**
+   * Attach event, push, channelInfo, and guard listeners to the current
+   * "general" client.  Called from the constructor and from
+   * {@link reconnectGeneralSocket}.
+   */
+  private setupGeneralClientListeners(): void {
+    const client = this.client; // cache to avoid repeated getter look-ups
+
+    // Dispatch parsed events in a minimal, stable shape.
+    client.on("event", (event) => {
+      const mapped = mapToSimpleEvent(event);
+      if (!mapped) return;
+      this.dispatchSimpleEvent(mapped);
+    });
+
+    // Handle channel info push from NVR (cmd_id 145)
+    client.on("channelInfo", (xml: string) => {
+      try {
+        this.parseAndStoreChannelInfo(xml);
+      } catch (e: unknown) {
+        this.logger.warn?.(
+          "[ReolinkBaichuanApi] Error parsing channel info from push",
+          formatErrorForLog(e),
+        );
+      }
+    });
+
+    // Parse and cache additional push frames observed in settings PCAPs.
+    client.on("push", (frame) => {
+      const cmdId = frame.header.cmdId;
+      if (
+        cmdId !== BC_CMD_ID_PUSH_VIDEO_INPUT &&
+        cmdId !== BC_CMD_ID_PUSH_SERIAL &&
+        cmdId !== BC_CMD_ID_PUSH_NET_INFO &&
+        cmdId !== BC_CMD_ID_PUSH_DINGDONG_LIST &&
+        cmdId !== BC_CMD_ID_PUSH_SLEEP_STATUS &&
+        cmdId !== BC_CMD_ID_PUSH_COORDINATE_POINT_LIST
+      ) {
+        return;
+      }
+
+      try {
+        if (frame.body.length === 0) return;
+        const xml = client.tryDecryptXml(
+          frame.body,
+          frame.header.channelId,
+          client.enc,
+        );
+        if (!xml || !xml.startsWith("<?xml")) return;
+        this.parseAndStoreSettingsPush(cmdId, xml, frame.header.channelId);
+      } catch (e: unknown) {
+        this.logger.debug?.(
+          "[ReolinkBaichuanApi] Error parsing settings push",
+          formatErrorForLog(e),
+        );
+      }
+    });
+
+    // Disconnect storm guard
+    if (this.rebootAfterDisconnectionsPerMinute > 0) {
+      client.on("close", () => {
+        try {
+          void this.maybeRebootOnDisconnectStorm();
+        } catch {
+          // never throw from close handler
+        }
+      });
+    }
+
+    // ECONNRESET storm guard
+    if (this.rebootAfterConsecutiveEconnreset > 0) {
+      client.on("close", () => {
+        try {
+          void this.maybeRebootOnEconnresetStorm();
+        } catch {
+          // never throw from close handler
+        }
+      });
+    }
+
+    // Session guard: start periodic check after first push
+    // (skip if the interval is already running from a previous connection)
+    if (!this.sessionGuardIntervalTimer) {
+      client.once("push", () => {
+        void this.logActiveSessionsOnStartup();
+        this.sessionGuardIntervalTimer = setInterval(() => {
+          void this.maybeRebootOnTooManySessions();
+        }, 60_000);
+      });
+    }
+  }
+
   /**
    * Cached camera UID. May be initially undefined if not provided in the constructor.
    * Will be lazily populated on demand when needed (e.g. for recordings).
@@ -1742,57 +1956,6 @@ export class ReolinkBaichuanApi {
       debugConfig: generalClient.getDebugConfig?.(),
     });
 
-    // Dispatch parsed events in a minimal, stable shape.
-    this.client.on("event", (event) => {
-      const mapped = mapToSimpleEvent(event);
-      if (!mapped) return;
-
-      this.dispatchSimpleEvent(mapped);
-    });
-
-    // Handle channel info push from NVR (cmd_id 145)
-    this.client.on("channelInfo", (xml: string) => {
-      try {
-        this.parseAndStoreChannelInfo(xml);
-      } catch (e: unknown) {
-        this.logger.warn?.(
-          "[ReolinkBaichuanApi] Error parsing channel info from push",
-          formatErrorForLog(e),
-        );
-      }
-    });
-
-    // Parse and cache additional push frames observed in settings PCAPs.
-    this.client.on("push", (frame) => {
-      const cmdId = frame.header.cmdId;
-      if (
-        cmdId !== BC_CMD_ID_PUSH_VIDEO_INPUT &&
-        cmdId !== BC_CMD_ID_PUSH_SERIAL &&
-        cmdId !== BC_CMD_ID_PUSH_NET_INFO &&
-        cmdId !== BC_CMD_ID_PUSH_DINGDONG_LIST &&
-        cmdId !== BC_CMD_ID_PUSH_SLEEP_STATUS &&
-        cmdId !== BC_CMD_ID_PUSH_COORDINATE_POINT_LIST
-      ) {
-        return;
-      }
-
-      try {
-        if (frame.body.length === 0) return;
-        const xml = this.client.tryDecryptXml(
-          frame.body,
-          frame.header.channelId,
-          this.client.enc,
-        );
-        if (!xml || !xml.startsWith("<?xml")) return;
-        this.parseAndStoreSettingsPush(cmdId, xml, frame.header.channelId);
-      } catch (e: unknown) {
-        this.logger.debug?.(
-          "[ReolinkBaichuanApi] Error parsing settings push",
-          formatErrorForLog(e),
-        );
-      }
-    });
-
     // Session guard: reboot if too many dedicated sessions are open
     const maxSessions = opts.maxDedicatedSessionsBeforeReboot;
     if (
@@ -1803,7 +1966,7 @@ export class ReolinkBaichuanApi {
       this.maxDedicatedSessionsBeforeReboot = Math.floor(maxSessions);
     }
 
-    // Disconnect storm guard: reboot if too many voluntary disconnections per minute
+    // Disconnect storm guard threshold (field only — listener in setupGeneralClientListeners)
     const disconnectThreshold = opts.rebootAfterDisconnectionsPerMinute;
     if (
       typeof disconnectThreshold === "number" &&
@@ -1811,17 +1974,8 @@ export class ReolinkBaichuanApi {
     ) {
       this.rebootAfterDisconnectionsPerMinute = Math.floor(disconnectThreshold);
     }
-    if (this.rebootAfterDisconnectionsPerMinute > 0) {
-      this.client.on("close", () => {
-        try {
-          void this.maybeRebootOnDisconnectStorm();
-        } catch {
-          // never throw from close handler
-        }
-      });
-    }
 
-    // ECONNRESET storm guard: reboot if too many consecutive ECONNRESET errors
+    // ECONNRESET storm guard threshold (field only — listener in setupGeneralClientListeners)
     const econnresetThreshold = opts.rebootAfterConsecutiveEconnreset;
     if (
       typeof econnresetThreshold === "number" &&
@@ -1829,24 +1983,10 @@ export class ReolinkBaichuanApi {
     ) {
       this.rebootAfterConsecutiveEconnreset = Math.floor(econnresetThreshold);
     }
-    if (this.rebootAfterConsecutiveEconnreset > 0) {
-      this.client.on("close", () => {
-        try {
-          void this.maybeRebootOnEconnresetStorm();
-        } catch {
-          // never throw from close handler
-        }
-      });
-    }
 
-    // Start periodic session guard after first push (indicates we are connected)
-    this.client.once("push", () => {
-      void this.logActiveSessionsOnStartup();
-      // Check sessions every 60 seconds
-      this.sessionGuardIntervalTimer = setInterval(() => {
-        void this.maybeRebootOnTooManySessions();
-      }, 60_000);
-    });
+    // Attach event, push, channelInfo, and guard listeners on the general client.
+    // Extracted to a helper so ensureConnected() can re-attach them after reconnecting.
+    this.setupGeneralClientListeners();
   }
 
   /**
@@ -2968,6 +3108,11 @@ export class ReolinkBaichuanApi {
   }
 
   async close(options?: { reason?: string }): Promise<void> {
+    // Guard against double-close: once the pool is cleared, a second call
+    // would crash on this.client accesses inside stopAllActiveStreams, etc.
+    if (this._closed) return;
+    this._closed = true;
+
     // Stop periodic session guard
     if (this.sessionGuardIntervalTimer) {
       clearInterval(this.sessionGuardIntervalTimer);
