@@ -373,7 +373,9 @@ export function computeDeviceCapabilities(params: {
       : hasFloodlightFromAbilities,
     hasPir: hasPirFromAbilities || hasPirFromSupport,
     isDoorbell: isDoorbellFromSupport || isDoorbellFromModel,
-    hasAutotracking: hasAutotrackingFromSupport || hasAutotrackingFromAbilities,
+    hasAutotracking: ptzDisabledBySupport
+      ? false
+      : hasAutotrackingFromSupport || hasAutotrackingFromAbilities,
   };
 
   if (ptzMode !== undefined) result.ptzMode = ptzMode;
