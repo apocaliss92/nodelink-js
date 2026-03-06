@@ -6,6 +6,7 @@ import type {
   ChimeDevice,
   ChimeParams,
   HardwiredChimeState,
+  WirelessChimeSilentState,
 } from "../types";
 
 // --------------------
@@ -187,5 +188,38 @@ export const parseHardwiredChimeFromXml = (xml: string): HardwiredChimeState => 
     type,
     enabled: bopenText === "1",
     time: timeText !== undefined ? Number(timeText) : 0,
+  };
+};
+
+/** Build XML for GetDingDongSilent (cmd_id 609) - get wireless chime silent mode. */
+export const buildGetDingDongSilentXml = (chimeId: number): string => `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<dingdongSilentMode version="1.1">
+<id>${chimeId}</id>
+</dingdongSilentMode>
+</body>`;
+
+/** Build XML for SetDingDongSilent (cmd_id 610) - set wireless chime silent mode.
+ *
+ * @param chimeId - The wireless chime device ID
+ * @param time - Silence duration in seconds. 0 = not silenced (chime active), >0 = silenced for this many seconds.
+ */
+export const buildSetDingDongSilentXml = (chimeId: number, time: number): string => `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<dingdongSilentMode version="1.1">
+<id>${chimeId}</id>
+<time>${time}</time>
+<type>63</type>
+</dingdongSilentMode>
+</body>`;
+
+/** Parse GetDingDongSilent / SetDingDongSilent response XML into WirelessChimeSilentState. */
+export const parseWirelessChimeSilentFromXml = (xml: string, chimeId: number): WirelessChimeSilentState => {
+  const timeText = getXmlText(xml, "time");
+  const time = timeText !== undefined ? Number(timeText) : 0;
+  return {
+    id: chimeId,
+    time,
+    active: time === 0,
   };
 };

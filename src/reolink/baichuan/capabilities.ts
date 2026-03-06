@@ -339,12 +339,10 @@ export function computeDeviceCapabilities(params: {
   // Fallback: check abilities for explicit smartTrack only (NOT aiCfg - too broad)
   const hasAutotrackingFromAbilities = abilitiesHasAny(flat, /smartTrack/i);
 
-  // Chime/DingDong capability: wireless or hardwired chime, available on doorbells.
-  // Observed signals:
-  // - doorbellVersion > 0 in SupportInfo item (primary indicator)
-  // - dingDong_* or dingdong_* abilities (when present)
-  const hasChimeFromAbilities = abilitiesHasAny(flat, /dingDong|dingdong/i);
-  const hasChimeFromSupport = isDoorbellFromSupport;
+  const hasBattery = hasBatteryFromSupport || hasBatteryFromAbilities;
+  // Wireless chime: paired Reolink Chime receiver (cmd 609/610 getDingDongSilent/setDingDongSilent).
+  // Detected via explicit dingDong abilities reported by the doorbell.
+  const hasWirelessChimeFromAbilities = abilitiesHasAny(flat, /dingDong|dingdong/i);
 
   const hasPan = hasPanTiltFromSupport || hasPanTiltFromAbilities;
   const hasTilt = hasPanTiltFromSupport || hasPanTiltFromAbilities;
@@ -371,7 +369,7 @@ export function computeDeviceCapabilities(params: {
         finalHasTilt ||
         finalHasZoom ||
         finalHasPresets,
-    hasBattery: hasBatteryFromSupport || hasBatteryFromAbilities,
+    hasBattery,
     hasIntercom: hasIntercomFromSupport,
     hasSiren: hasSirenFromAbilities,
     // lightType >= 2 indicates controllable white LED / floodlight (1 = IR only)
@@ -383,7 +381,7 @@ export function computeDeviceCapabilities(params: {
     hasAutotracking: ptzDisabledBySupport
       ? false
       : hasAutotrackingFromSupport || hasAutotrackingFromAbilities,
-    hasChime: hasChimeFromSupport || hasChimeFromAbilities || isDoorbellFromModel,
+    hasWirelessChime: hasWirelessChimeFromAbilities,
   };
 
   if (ptzMode !== undefined) result.ptzMode = ptzMode;

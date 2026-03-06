@@ -633,4 +633,33 @@ export const baichuanRouter = router({
       await api.quickReplyPlay(input.fileId, input.channel);
       return { success: true };
     }),
+
+  getDingDongSilent: publicProcedure
+    .meta({ description: "Get silent mode state of a paired wireless chime (time=0 means active/not silenced)" })
+    .input(
+      ConnectionWithChannel.merge(
+        z.object({
+          chimeId: z.number().describe("Wireless chime device ID (from getDingDongList)"),
+        }),
+      ),
+    )
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getDingDongSilent(input.chimeId, input.channel);
+    }),
+
+  setDingDongSilent: publicProcedure
+    .meta({ description: "Set silent mode of a paired wireless chime. time=0 activates chime, time>0 silences it for that many seconds." })
+    .input(
+      ConnectionWithChannel.merge(
+        z.object({
+          chimeId: z.number().describe("Wireless chime device ID (from getDingDongList)"),
+          time: z.number().describe("Silence duration in seconds. 0 = active (not silenced), >0 = silenced for N seconds."),
+        }),
+      ),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.setDingDongSilent(input.chimeId, input.time, input.channel);
+    }),
 });

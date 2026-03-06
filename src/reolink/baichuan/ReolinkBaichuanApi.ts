@@ -115,6 +115,8 @@ import {
   BC_CMD_ID_GET_DING_DONG_CFG,
   BC_CMD_ID_SET_DING_DONG_CFG,
   BC_CMD_ID_QUICK_REPLY_PLAY,
+  BC_CMD_ID_GET_DING_DONG_SILENT,
+  BC_CMD_ID_SET_DING_DONG_SILENT,
 } from "../../protocol/constants";
 import {
   buildAbilityInfoExtensionXml,
@@ -232,6 +234,7 @@ import type {
   ChimeParams,
   ChimeCfg,
   HardwiredChimeState,
+  WirelessChimeSilentState,
 } from "./types";
 import { parseXmlFragmentToJson, type XmlJsonValue } from "./utils/xml";
 
@@ -305,10 +308,13 @@ import {
   buildGetDingDongCtrlXml,
   buildSetDingDongCtrlXml,
   buildQuickReplyPlayXml,
+  buildGetDingDongSilentXml,
+  buildSetDingDongSilentXml,
   parseDingDongListFromXml,
   parseDingDongParamsFromXml,
   parseDingDongCfgFromXml,
   parseHardwiredChimeFromXml,
+  parseWirelessChimeSilentFromXml,
 } from "./utils/chime";
 import { parseEventsFromGetEventsXml } from "./utils/eventsGetEvents";
 import { parsePirInfoFromXml } from "./utils/pir";
@@ -3266,7 +3272,9 @@ export class ReolinkBaichuanApi {
   ): Promise<string> {
     const emptyBody = frame.body.length === 0;
     const emptyBody400Msg =
-      "Baichuan request failed (responseCode 400, empty body). Possible causes: camera sleeping/waking (battery), expired session, invalid username/password, or unsupported command on NVR/Hub.";
+      "Baichuan request failed (responseCode 400, empty body). Possible causes: expired session, invalid username/password, or unsupported command on NVR/Hub.";
+    // const emptyBody400Msg =
+    //   "Baichuan request failed (responseCode 400, empty body). Possible causes: camera sleeping/waking (battery), expired session, invalid username/password, or unsupported command on NVR/Hub.";
 
     if (this.isSendXmlFailFast400(params, frame.body.length)) {
       throw new Error(emptyBody400Msg);
@@ -10648,8 +10656,7 @@ export class ReolinkBaichuanApi {
       hasAutotracking: item
         ? truthy(item.autoPt) || truthy(item.smartAI)
         : false,
-      // Chime: available on doorbells (doorbellVersion > 0)
-      hasChime: isDoorbell,
+      hasWirelessChime: false,
     };
   }
 
@@ -14798,6 +14805,9 @@ ${scheduleItems}
     });
   }
 
+  /** Cache of last known hardwired chime state per channel, used to avoid re-fetching on every set. */
+  private _hardwiredChimeCache: Map<number, HardwiredChimeState> = new Map();
+
   /**
    * Get the hardwired (wired-in) chime state.
    * cmd_id: 483 (GetDingDongCtrl)
@@ -14815,12 +14825,18 @@ ${scheduleItems}
       channel: ch,
       payloadXml,
     });
-    return parseHardwiredChimeFromXml(xml);
+    const state = parseHardwiredChimeFromXml(xml);
+    this._hardwiredChimeCache.set(ch, state);
+    return state;
   }
 
   /**
    * Set the hardwired (wired-in) chime state.
    * cmd_id: 483 (SetDingDongCtrl)
+   *
+   * Uses the cached state from a previous getHardwiredChime call to fill in
+   * missing type/time fields, avoiding a double round-trip on every set.
+   * Falls back to fetching if no cache is available.
    *
    * @param params - Chime configuration (type, enabled, time)
    * @param channel - Channel number (0-based, default 0)
@@ -14830,8 +14846,14 @@ ${scheduleItems}
     channel?: number,
   ): Promise<HardwiredChimeState> {
     const ch = this.normalizeChannel(channel);
-    // Fetch current state to fill in any missing fields
-    const current = await this.getHardwiredChime(ch);
+
+    // Use cached state if available to avoid extra round-trip (matching Python's cached approach).
+    // Battery cameras can return 400 when sleeping; using cache prevents double-failure on set.
+    let current = this._hardwiredChimeCache.get(ch);
+    if (!current) {
+      current = await this.getHardwiredChime(ch);
+    }
+
     const chimeType = params.type ?? current.type;
     const enabled: 0 | 1 = params.enabled ? 1 : 0;
     const time = params.time ?? current.time;
@@ -14842,7 +14864,9 @@ ${scheduleItems}
       channel: ch,
       payloadXml,
     });
-    return parseHardwiredChimeFromXml(xml);
+    const newState = parseHardwiredChimeFromXml(xml);
+    this._hardwiredChimeCache.set(ch, newState);
+    return newState;
   }
 
   /**
@@ -14860,5 +14884,44 @@ ${scheduleItems}
       channel: ch,
       payloadXml,
     });
+  }
+
+  /**
+   * Get the silent mode state of a paired wireless chime.
+   * cmd_id: 609 (GetDingDongSilent)
+   *
+   * @param chimeId - The wireless chime device ID (from getDingDongList)
+   * @param channel - Channel number (0-based, default 0)
+   * @returns Wireless chime silent state (time=0 means active/not silenced)
+   */
+  async getDingDongSilent(chimeId: number, channel?: number): Promise<WirelessChimeSilentState> {
+    const ch = this.normalizeChannel(channel);
+    const payloadXml = buildGetDingDongSilentXml(chimeId);
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_DING_DONG_SILENT,
+      channel: ch,
+      payloadXml,
+    });
+    return parseWirelessChimeSilentFromXml(xml, chimeId);
+  }
+
+  /**
+   * Set the silent mode of a paired wireless chime.
+   * cmd_id: 610 (SetDingDongSilent)
+   *
+   * @param chimeId - The wireless chime device ID (from getDingDongList)
+   * @param time - Silence duration in seconds. 0 = not silenced (chime active), >0 = silenced for this many seconds.
+   * @param channel - Channel number (0-based, default 0)
+   * @returns Updated wireless chime silent state
+   */
+  async setDingDongSilent(chimeId: number, time: number, channel?: number): Promise<WirelessChimeSilentState> {
+    const ch = this.normalizeChannel(channel);
+    const payloadXml = buildSetDingDongSilentXml(chimeId, time);
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_SET_DING_DONG_SILENT,
+      channel: ch,
+      payloadXml,
+    });
+    return parseWirelessChimeSilentFromXml(xml, chimeId);
   }
 }

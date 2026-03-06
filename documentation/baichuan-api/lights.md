@@ -27,6 +27,8 @@ Methods for controlling lights, siren, and other camera accessories.
   - [ringDingDong](#ringdingdong)
   - [getDingDongCfg](#getdingdongcfg)
   - [setDingDongCfg](#setdingdongcfg)
+  - [getDingDongSilent](#getdingdongsilent)
+  - [setDingDongSilent](#setdingdongsilent)
   - [getHardwiredChime](#gethardwiredchime)
   - [setHardwiredChime](#sethardwiredchime)
   - [quickReplyPlay](#quickreplyplay)
@@ -609,6 +611,81 @@ await api.setDingDongCfg(chimeId: number, eventType: string, state: number, musi
 ```typescript
 // Play ringtone #2 when a person is detected
 await api.setDingDongCfg(1, "people", 1, 2);
+```
+
+---
+
+### getDingDongSilent
+
+Gets the silent mode state of a paired wireless Reolink Chime receiver.
+
+```typescript
+const state = await api.getDingDongSilent(chimeId: number, channel?: number);
+```
+
+#### Parameters
+
+| Parameter | Type     | Required | Default | Description                                    |
+| --------- | -------- | -------- | ------- | ---------------------------------------------- |
+| `chimeId` | `number` | ✅       | —       | Wireless chime ID (from `getDingDongList`)      |
+| `channel` | `number` | ❌       | `0`     | Channel number                                 |
+
+#### Returns
+
+`Promise<WirelessChimeSilentState>`
+
+```typescript
+interface WirelessChimeSilentState {
+  id: number;
+  /** 0 = not silenced (active), >0 = silenced for this many seconds */
+  time: number;
+  /** Derived: time === 0 */
+  active: boolean;
+}
+```
+
+#### Example
+
+```typescript
+const chimes = await api.getDingDongList();
+const state = await api.getDingDongSilent(chimes[0].id);
+console.log(`Wireless chime is ${state.active ? "active" : `silenced (${state.time}s remaining)`}`);
+```
+
+---
+
+### setDingDongSilent
+
+Sets the silent mode of a paired wireless Reolink Chime receiver.
+Use `time=0` to unmute (activate) the chime; use `time>0` to mute it for the given number of seconds.
+
+```typescript
+const state = await api.setDingDongSilent(chimeId: number, time: number, channel?: number);
+```
+
+#### Parameters
+
+| Parameter | Type     | Required | Default | Description                                                        |
+| --------- | -------- | -------- | ------- | ------------------------------------------------------------------ |
+| `chimeId` | `number` | ✅       | —       | Wireless chime ID (from `getDingDongList`)                         |
+| `time`    | `number` | ✅       | —       | Silence duration in seconds. `0` = active (unmuted), `>0` = muted |
+| `channel` | `number` | ❌       | `0`     | Channel number                                                     |
+
+#### Returns
+
+`Promise<WirelessChimeSilentState>`
+
+#### Example
+
+```typescript
+const chimes = await api.getDingDongList();
+const chimeId = chimes[0].id;
+
+// Mute for 1 hour
+await api.setDingDongSilent(chimeId, 3600);
+
+// Unmute
+await api.setDingDongSilent(chimeId, 0);
 ```
 
 ---

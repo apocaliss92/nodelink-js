@@ -788,8 +788,8 @@ export interface DeviceCapabilities {
   isDoorbell: boolean;
   /** True when device supports autotracking (smartTrack in AiCfg). */
   hasAutotracking: boolean;
-  /** True when device supports chime/DingDong control (wireless or wired, doorbell-based). */
-  hasChime: boolean;
+  /** True when device has a paired wireless Reolink Chime (dingDong abilities detected). */
+  hasWirelessChime: boolean;
 }
 
 export type DeviceObjectType = string;
@@ -1688,4 +1688,17 @@ export interface HardwiredChimeState {
   enabled: boolean;
   /** Duration / timing value */
   time: number;
+}
+
+/** Wireless chime silent mode state from GetDingDongSilent / SetDingDongSilent. */
+export interface WirelessChimeSilentState {
+  /** The wireless chime device ID */
+  id: number;
+  /**
+   * Silent mode duration in seconds.
+   * 0 = not silenced (chime active), >0 = silenced for this many seconds.
+   */
+  time: number;
+  /** Whether the chime is currently active (not silenced). Derived: time === 0 */
+  active: boolean;
 }

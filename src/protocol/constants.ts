@@ -207,3 +207,5 @@ export const BC_CMD_ID_DING_DONG_OPT = 485; // DingDongOpt (get/set/ring wireles
 export const BC_CMD_ID_GET_DING_DONG_CFG = 486; // GetDingDongCfg (chime event config)
 export const BC_CMD_ID_SET_DING_DONG_CFG = 487; // SetDingDongCfg (set chime event config)
 export const BC_CMD_ID_QUICK_REPLY_PLAY = 349; // QuickReplyPlay (play audio file on doorbell)
+export const BC_CMD_ID_GET_DING_DONG_SILENT = 609; // GetDingDongSilent (get wireless chime silent mode)
+export const BC_CMD_ID_SET_DING_DONG_SILENT = 610; // SetDingDongSilent (set wireless chime silent mode)
