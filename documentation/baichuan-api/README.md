@@ -43,7 +43,7 @@ await api.close();
 ### Configuration
 
 - **[Detection Settings](./detection.md)** - Motion, AI, PIR, autotracking
-- **[Lights & Accessories](./lights.md)** - Spotlight, floodlight, siren
+- **[Lights & Accessories](./lights.md)** - Spotlight, floodlight, siren, chime/DingDong
 - **[Battery & Sleep](./battery.md)** - Battery status, wake-up
 - **[OSD & Display](./osd.md)** - On-screen display, camera name
 - **[Network & System](./network.md)** - Ports, WiFi, storage, reboot

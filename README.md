@@ -286,7 +286,7 @@ For detailed method-by-method documentation, see the [documentation](./documenta
 | [Intercom](./documentation/baichuan-api/intercom.md)       | Two-way audio, talk sessions                    |
 | [Snapshots](./documentation/baichuan-api/snapshots.md)     | Capture images, thumbnails                      |
 | [Detection](./documentation/baichuan-api/detection.md)     | Motion, AI, PIR, autotracking settings          |
-| [Lights](./documentation/baichuan-api/lights.md)           | Spotlight, floodlight, siren control            |
+| [Lights & Chime](./documentation/baichuan-api/lights.md)   | Spotlight, floodlight, siren, chime/DingDong    |
 | [Battery](./documentation/baichuan-api/battery.md)         | Battery status, sleep/wake management           |
 | [OSD](./documentation/baichuan-api/osd.md)                 | On-screen display configuration                 |
 | [Network](./documentation/baichuan-api/network.md)         | Network, WiFi, storage, system settings         |

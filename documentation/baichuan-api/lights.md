@@ -20,6 +20,16 @@ Methods for controlling lights, siren, and other camera accessories.
   - [getSirenStatus](#getsirenstatus)
 - [IR LED](#ir-led)
   - [getLedState](#getledstate)
+- [Chime / DingDong](#chime--dingdong)
+  - [getDingDongList](#getdingdonglist)
+  - [getDingDongParams](#getdingdongparams)
+  - [setDingDongParams](#setdingdongparams)
+  - [ringDingDong](#ringdingdong)
+  - [getDingDongCfg](#getdingdongcfg)
+  - [setDingDongCfg](#setdingdongcfg)
+  - [getHardwiredChime](#gethardwiredchime)
+  - [setHardwiredChime](#sethardwiredchime)
+  - [quickReplyPlay](#quickreplyplay)
 
 ---
 
@@ -414,6 +424,287 @@ api.on("aiAlarm", async (event) => {
     await alertMode();
   }
 });
+```
+
+---
+
+## Chime / DingDong
+
+Methods for controlling doorbells' paired wireless chimes (DingDong) and the hardwired built-in chime.
+
+### getDingDongList
+
+Gets the list of wireless chime devices paired to the doorbell.
+
+```typescript
+const chimes = await api.getDingDongList(channel?: number);
+```
+
+#### Parameters
+
+| Parameter | Type     | Required | Default | Description    |
+| --------- | -------- | -------- | ------- | -------------- |
+| `channel` | `number` | ❌       | `0`     | Channel number |
+
+#### Returns
+
+`Promise<ChimeDevice[]>`
+
+```typescript
+interface ChimeDevice {
+  id: number;
+  name: string;
+  netState: number; // 0 = offline, 1 = online
+}
+```
+
+#### Example
+
+```typescript
+const chimes = await api.getDingDongList();
+for (const chime of chimes) {
+  console.log(`Chime ${chime.id}: ${chime.name} (${chime.netState === 1 ? "online" : "offline"})`);
+}
+```
+
+---
+
+### getDingDongParams
+
+Gets the parameters of a specific paired wireless chime.
+
+```typescript
+const params = await api.getDingDongParams(chimeId: number, channel?: number);
+```
+
+#### Parameters
+
+| Parameter | Type     | Required | Default | Description    |
+| --------- | -------- | -------- | ------- | -------------- |
+| `chimeId` | `number` | ✅       | -       | Chime device ID |
+| `channel` | `number` | ❌       | `0`     | Channel number |
+
+#### Returns
+
+`Promise<ChimeParams>`
+
+```typescript
+interface ChimeParams {
+  name?: string;
+  volLevel?: number;
+  ledState?: number;
+}
+```
+
+---
+
+### setDingDongParams
+
+Sets parameters (name, volume level, LED state) of a paired wireless chime.
+
+```typescript
+await api.setDingDongParams(chimeId: number, params: ChimeParams, channel?: number);
+```
+
+#### Parameters
+
+| Parameter          | Type     | Required | Description              |
+| ------------------ | -------- | -------- | ------------------------ |
+| `chimeId`          | `number` | ✅       | Chime device ID          |
+| `params.name`      | `string` | ❌       | Chime display name       |
+| `params.volLevel`  | `number` | ❌       | Volume level             |
+| `params.ledState`  | `number` | ❌       | LED state                |
+| `channel`          | `number` | ❌       | Channel number (default 0) |
+
+#### Returns
+
+`Promise<void>`
+
+#### Example
+
+```typescript
+await api.setDingDongParams(1, { volLevel: 3, ledState: 1 });
+```
+
+---
+
+### ringDingDong
+
+Rings a paired wireless chime with the specified ringtone.
+
+```typescript
+await api.ringDingDong(chimeId: number, musicId: number, channel?: number);
+```
+
+#### Parameters
+
+| Parameter | Type     | Required | Default | Description       |
+| --------- | -------- | -------- | ------- | ----------------- |
+| `chimeId` | `number` | ✅       | -       | Chime device ID   |
+| `musicId` | `number` | ✅       | -       | Ringtone ID       |
+| `channel` | `number` | ❌       | `0`     | Channel number    |
+
+#### Returns
+
+`Promise<void>`
+
+#### Example
+
+```typescript
+// Ring chime #1 with ringtone #0
+await api.ringDingDong(1, 0);
+```
+
+---
+
+### getDingDongCfg
+
+Gets the alarm-event ringtone configuration for paired wireless chimes.
+
+```typescript
+const cfg = await api.getDingDongCfg(channel?: number);
+```
+
+#### Returns
+
+`Promise<ChimeCfg[]>`
+
+```typescript
+interface ChimeAlarmCfg {
+  valid: number;
+  musicId: number;
+}
+interface ChimeCfg {
+  id: number;
+  type: Record<string, ChimeAlarmCfg>; // keyed by event type (e.g. "people", "visitor")
+}
+```
+
+---
+
+### setDingDongCfg
+
+Sets the ringtone to play for a specific alarm event on a paired wireless chime.
+
+```typescript
+await api.setDingDongCfg(chimeId: number, eventType: string, state: number, musicId: number, channel?: number);
+```
+
+#### Parameters
+
+| Parameter   | Type     | Required | Description                                       |
+| ----------- | -------- | -------- | ------------------------------------------------- |
+| `chimeId`   | `number` | ✅       | Chime device ID                                   |
+| `eventType` | `string` | ✅       | Event type (e.g. `"people"`, `"vehicle"`, `"visitor"`) |
+| `state`     | `number` | ✅       | Enable state (`1` = enabled, `0` = disabled)      |
+| `musicId`   | `number` | ✅       | Ringtone ID to play for this event                |
+| `channel`   | `number` | ❌       | Channel number (default 0)                        |
+
+#### Returns
+
+`Promise<void>`
+
+#### Example
+
+```typescript
+// Play ringtone #2 when a person is detected
+await api.setDingDongCfg(1, "people", 1, 2);
+```
+
+---
+
+### getHardwiredChime
+
+Gets the state of the hardwired (built-in) chime on the doorbell.
+
+```typescript
+const state = await api.getHardwiredChime(channel?: number);
+```
+
+#### Parameters
+
+| Parameter | Type     | Required | Default | Description    |
+| --------- | -------- | -------- | ------- | -------------- |
+| `channel` | `number` | ❌       | `0`     | Channel number |
+
+#### Returns
+
+`Promise<HardwiredChimeState>`
+
+```typescript
+interface HardwiredChimeState {
+  type: string;    // e.g. "dingdong", "single", "dual"
+  enabled: boolean;
+  time: number;    // Duration/timing value
+}
+```
+
+#### Example
+
+```typescript
+const chime = await api.getHardwiredChime();
+console.log(`Hardwired chime: ${chime.enabled ? "enabled" : "disabled"} (type: ${chime.type})`);
+```
+
+---
+
+### setHardwiredChime
+
+Enables or disables the hardwired (built-in) chime on the doorbell. Optionally sets the chime type and timing.
+
+```typescript
+const state = await api.setHardwiredChime(params: { enabled: boolean; type?: string; time?: number }, channel?: number);
+```
+
+#### Parameters
+
+| Parameter        | Type      | Required | Description                                     |
+| ---------------- | --------- | -------- | ----------------------------------------------- |
+| `params.enabled` | `boolean` | ✅       | Enable or disable the chime                     |
+| `params.type`    | `string`  | ❌       | Chime type (e.g. `"dingdong"`, `"single"`, `"dual"`) |
+| `params.time`    | `number`  | ❌       | Chime duration/timing value                     |
+| `channel`        | `number`  | ❌       | Channel number (default 0)                      |
+
+#### Returns
+
+`Promise<HardwiredChimeState>` — the updated state as reported by the device.
+
+#### Example
+
+```typescript
+// Mute the hardwired chime
+await api.setHardwiredChime({ enabled: false });
+
+// Re-enable with specific type
+await api.setHardwiredChime({ enabled: true, type: "dingdong" });
+```
+
+---
+
+### quickReplyPlay
+
+Plays a quick reply audio file on the doorbell speaker.
+
+```typescript
+await api.quickReplyPlay(fileId: number, channel?: number);
+```
+
+#### Parameters
+
+| Parameter | Type     | Required | Default | Description           |
+| --------- | -------- | -------- | ------- | --------------------- |
+| `fileId`  | `number` | ✅       | -       | Quick reply file ID   |
+| `channel` | `number` | ❌       | `0`     | Channel number        |
+
+#### Returns
+
+`Promise<void>`
+
+#### Example
+
+```typescript
+// Play quick reply message #0
+await api.quickReplyPlay(0);
 ```
 
 ---
