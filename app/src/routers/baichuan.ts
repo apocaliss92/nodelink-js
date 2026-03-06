@@ -496,4 +496,141 @@ export const baichuanRouter = router({
       const api = await getApi(input);
       return await api.getOsdDatetime(input.channel);
     }),
+
+  // ============ CHIME / DINGDONG ============
+
+  getDingDongList: publicProcedure
+    .meta({ description: "Get list of paired wireless chimes (DingDong devices)" })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getDingDongList(input.channel);
+    }),
+
+  getDingDongParams: publicProcedure
+    .meta({ description: "Get parameters of a specific paired wireless chime" })
+    .input(
+      ConnectionWithChannel.merge(
+        z.object({
+          chimeId: z.number().describe("Chime device ID"),
+        }),
+      ),
+    )
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getDingDongParams(input.chimeId, input.channel);
+    }),
+
+  setDingDongParams: publicProcedure
+    .meta({ description: "Set parameters (name, volume, LED) of a paired wireless chime" })
+    .input(
+      ConnectionWithChannel.merge(
+        z.object({
+          chimeId: z.number().describe("Chime device ID"),
+          name: z.string().optional(),
+          volLevel: z.number().optional(),
+          ledState: z.number().optional(),
+        }),
+      ),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.setDingDongParams(
+        input.chimeId,
+        { name: input.name, volLevel: input.volLevel, ledState: input.ledState },
+        input.channel,
+      );
+      return { success: true };
+    }),
+
+  ringDingDong: publicProcedure
+    .meta({ description: "Ring a paired wireless chime with a specific ringtone" })
+    .input(
+      ConnectionWithChannel.merge(
+        z.object({
+          chimeId: z.number().describe("Chime device ID"),
+          musicId: z.number().describe("Ringtone/music ID"),
+        }),
+      ),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.ringDingDong(input.chimeId, input.musicId, input.channel);
+      return { success: true };
+    }),
+
+  getDingDongCfg: publicProcedure
+    .meta({ description: "Get alarm-event ringtone configuration for paired wireless chimes" })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getDingDongCfg(input.channel);
+    }),
+
+  setDingDongCfg: publicProcedure
+    .meta({ description: "Set alarm-event ringtone configuration for a paired wireless chime" })
+    .input(
+      ConnectionWithChannel.merge(
+        z.object({
+          chimeId: z.number().describe("Chime device ID"),
+          eventType: z.string().describe("Event type (e.g. 'people', 'vehicle', 'visitor')"),
+          state: z.number().describe("Enable state (1 = enabled, 0 = disabled)"),
+          musicId: z.number().describe("Ringtone ID to play for this event"),
+        }),
+      ),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.setDingDongCfg(
+        input.chimeId,
+        input.eventType,
+        input.state,
+        input.musicId,
+        input.channel,
+      );
+      return { success: true };
+    }),
+
+  getHardwiredChime: publicProcedure
+    .meta({ description: "Get hardwired chime state (doorbell built-in chime enable/disable)" })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getHardwiredChime(input.channel);
+    }),
+
+  setHardwiredChime: publicProcedure
+    .meta({ description: "Enable or disable the hardwired chime on the doorbell" })
+    .input(
+      ConnectionWithChannel.merge(
+        z.object({
+          enabled: z.boolean().describe("Enable or disable the chime"),
+          type: z.string().optional().describe("Chime type (e.g. 'dingdong', 'single', 'dual')"),
+          time: z.number().optional().describe("Chime duration/timing value"),
+        }),
+      ),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      const state = await api.setHardwiredChime(
+        { enabled: input.enabled, type: input.type, time: input.time },
+        input.channel,
+      );
+      return state;
+    }),
+
+  quickReplyPlay: publicProcedure
+    .meta({ description: "Play a quick reply audio file on the doorbell" })
+    .input(
+      ConnectionWithChannel.merge(
+        z.object({
+          fileId: z.number().describe("Quick reply file ID to play"),
+        }),
+      ),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.quickReplyPlay(input.fileId, input.channel);
+      return { success: true };
+    }),
 });

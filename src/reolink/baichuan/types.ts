@@ -788,6 +788,8 @@ export interface DeviceCapabilities {
   isDoorbell: boolean;
   /** True when device supports autotracking (smartTrack in AiCfg). */
   hasAutotracking: boolean;
+  /** True when device supports chime/DingDong control (wireless or wired, doorbell-based). */
+  hasChime: boolean;
 }
 
 export type DeviceObjectType = string;
@@ -1639,4 +1641,51 @@ export function decideVideoclipTranscodeMode(
     reason: "Unknown client - transcoding for compatibility",
     clientInfo,
   };
+}
+
+// --------------------
+// Chime / DingDong types
+// --------------------
+
+/** A paired wireless chime device as returned by GetDingDongList. */
+export interface ChimeDevice {
+  id: number;
+  name: string;
+  /** 0 = offline, 1 = online */
+  netState: number;
+}
+
+/** Wireless chime parameters returned by DingDongOpt (option 2 / getParam). */
+export interface ChimeParams {
+  name?: string;
+  /** Volume level (0-4 typical) */
+  volLevel?: number;
+  /** LED state: 0 = off, 1 = on */
+  ledState?: number;
+}
+
+/** Per-event alarm config entry inside a chime's GetDingDongCfg response. */
+export interface ChimeAlarmCfg {
+  /** Whether this event type triggers the chime: 0 = off, 1 = on */
+  valid: number;
+  /** Ringtone / music ID */
+  musicId: number;
+}
+
+/** Per-chime config from GetDingDongCfg. */
+export interface ChimeCfg {
+  /** Chime ring ID */
+  id: number;
+  /** Map of event type string → alarm config */
+  type: Record<string, ChimeAlarmCfg>;
+}
+
+/** Hardwired (wired-in) chime state from GetDingDongCtrl / SetDingDongCtrl. */
+export interface HardwiredChimeState {
+  /** Chime type string (e.g. "dingdong", "single", "dual") */
+  type: string;
+  /** Whether the chime is enabled */
+  enabled: boolean;
+  /** Duration / timing value */
+  time: number;
 }

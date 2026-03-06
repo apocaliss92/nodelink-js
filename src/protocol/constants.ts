@@ -199,3 +199,11 @@ export const BC_CMD_ID_PUSH_NET_INFO = 464; // <NetInfo>
 export const BC_CMD_ID_PUSH_DINGDONG_LIST = 484; // <dingdongList>
 export const BC_CMD_ID_PUSH_SLEEP_STATUS = 623; // <sleepStatus>
 export const BC_CMD_ID_PUSH_COORDINATE_POINT_LIST = 723; // <coordinatePointList>
+
+// Chime / DingDong command IDs
+export const BC_CMD_ID_DING_DONG_CTRL = 483; // GetDingDongCtrl / SetDingDongCtrl (hardwired chime)
+export const BC_CMD_ID_GET_DING_DONG_LIST = 484; // GetDingDongList (paired wireless chimes)
+export const BC_CMD_ID_DING_DONG_OPT = 485; // DingDongOpt (get/set/ring wireless chime params)
+export const BC_CMD_ID_GET_DING_DONG_CFG = 486; // GetDingDongCfg (chime event config)
+export const BC_CMD_ID_SET_DING_DONG_CFG = 487; // SetDingDongCfg (set chime event config)
+export const BC_CMD_ID_QUICK_REPLY_PLAY = 349; // QuickReplyPlay (play audio file on doorbell)

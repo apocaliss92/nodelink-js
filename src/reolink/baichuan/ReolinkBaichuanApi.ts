@@ -109,6 +109,12 @@ import {
   BC_CMD_ID_UDP_KEEP_ALIVE,
   BC_CMD_ID_VIDEO,
   BC_CMD_ID_VIDEO_STOP,
+  BC_CMD_ID_DING_DONG_CTRL,
+  BC_CMD_ID_GET_DING_DONG_LIST,
+  BC_CMD_ID_DING_DONG_OPT,
+  BC_CMD_ID_GET_DING_DONG_CFG,
+  BC_CMD_ID_SET_DING_DONG_CFG,
+  BC_CMD_ID_QUICK_REPLY_PLAY,
 } from "../../protocol/constants";
 import {
   buildAbilityInfoExtensionXml,
@@ -222,6 +228,10 @@ import type {
   TimelapseCfgConfig,
   AccessUserListConfig,
   OnlineUserListConfig,
+  ChimeDevice,
+  ChimeParams,
+  ChimeCfg,
+  HardwiredChimeState,
 } from "./types";
 import { parseXmlFragmentToJson, type XmlJsonValue } from "./utils/xml";
 
@@ -287,6 +297,19 @@ import { discoverPerChannelUidViaCgiChannelstatus } from "./utils/uidDiscovery";
 import { getXmlBlocks, getXmlTexts, parseTalkAbilityXml } from "./xmlUtils";
 
 import { parseRecordingFileName } from "./recordingFileName";
+import {
+  buildDingDongGetParamsXml,
+  buildDingDongSetParamsXml,
+  buildDingDongRingXml,
+  buildSetDingDongCfgXml,
+  buildGetDingDongCtrlXml,
+  buildSetDingDongCtrlXml,
+  buildQuickReplyPlayXml,
+  parseDingDongListFromXml,
+  parseDingDongParamsFromXml,
+  parseDingDongCfgFromXml,
+  parseHardwiredChimeFromXml,
+} from "./utils/chime";
 import { parseEventsFromGetEventsXml } from "./utils/eventsGetEvents";
 import { parsePirInfoFromXml } from "./utils/pir";
 import { discoverDeviceUidForRecordings as discoverDeviceUidForRecordingsUtil } from "./utils/uidRecordings";
@@ -10625,6 +10648,8 @@ export class ReolinkBaichuanApi {
       hasAutotracking: item
         ? truthy(item.autoPt) || truthy(item.smartAI)
         : false,
+      // Chime: available on doorbells (doorbellVersion > 0)
+      hasChime: isDoorbell,
     };
   }
 
@@ -14650,5 +14675,190 @@ ${scheduleItems}
   async standaloneGetSnapshot(): Promise<Buffer> {
     const channel = 0; // Standalone cameras always use channel 0
     return await this.getSnapshot(channel);
+  }
+
+  // --------------------
+  // Chime / DingDong APIs
+  // --------------------
+
+  /**
+   * Get the list of paired wireless chime devices.
+   * cmd_id: 484 (GetDingDongList)
+   *
+   * @param channel - Channel number (0-based, default 0)
+   * @returns Array of paired chime devices
+   */
+  async getDingDongList(channel?: number): Promise<ChimeDevice[]> {
+    const ch = this.normalizeChannel(channel);
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_DING_DONG_LIST,
+      channel: ch,
+    });
+    return parseDingDongListFromXml(xml);
+  }
+
+  /**
+   * Get parameters (name, volume, LED state) for a specific wireless chime.
+   * cmd_id: 485 (DingDongOpt, option getParam)
+   *
+   * @param chimeId - The chime device ID
+   * @param channel - Channel number (0-based, default 0)
+   * @returns Chime parameters
+   */
+  async getDingDongParams(chimeId: number, channel?: number): Promise<ChimeParams> {
+    const ch = this.normalizeChannel(channel);
+    const payloadXml = buildDingDongGetParamsXml(chimeId);
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_DING_DONG_OPT,
+      channel: ch,
+      payloadXml,
+    });
+    return parseDingDongParamsFromXml(xml);
+  }
+
+  /**
+   * Set parameters (name, volume, LED state) for a specific wireless chime.
+   * cmd_id: 485 (DingDongOpt, option setParam)
+   *
+   * @param chimeId - The chime device ID
+   * @param params - Parameters to set (volLevel, ledState, name)
+   * @param channel - Channel number (0-based, default 0)
+   */
+  async setDingDongParams(
+    chimeId: number,
+    params: { volLevel?: number; ledState?: number; name?: string },
+    channel?: number,
+  ): Promise<void> {
+    const ch = this.normalizeChannel(channel);
+    const payloadXml = buildDingDongSetParamsXml(chimeId, params);
+    await this.sendXml({
+      cmdId: BC_CMD_ID_DING_DONG_OPT,
+      channel: ch,
+      payloadXml,
+    });
+  }
+
+  /**
+   * Trigger a wireless chime to ring with a specific ringtone.
+   * cmd_id: 485 (DingDongOpt, option ringWithMusic)
+   *
+   * @param chimeId - The chime device ID
+   * @param musicId - The ringtone/music ID to play
+   * @param channel - Channel number (0-based, default 0)
+   */
+  async ringDingDong(chimeId: number, musicId: number, channel?: number): Promise<void> {
+    const ch = this.normalizeChannel(channel);
+    const payloadXml = buildDingDongRingXml(chimeId, musicId);
+    await this.sendXml({
+      cmdId: BC_CMD_ID_DING_DONG_OPT,
+      channel: ch,
+      payloadXml,
+    });
+  }
+
+  /**
+   * Get the per-event alarm configuration for paired wireless chimes.
+   * cmd_id: 486 (GetDingDongCfg)
+   *
+   * @param channel - Channel number (0-based, default 0)
+   * @returns Array of chime configurations (one per paired chime)
+   */
+  async getDingDongCfg(channel?: number): Promise<ChimeCfg[]> {
+    const ch = this.normalizeChannel(channel);
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_DING_DONG_CFG,
+      channel: ch,
+    });
+    return parseDingDongCfgFromXml(xml);
+  }
+
+  /**
+   * Set the per-event alarm configuration for a specific wireless chime.
+   * cmd_id: 487 (SetDingDongCfg)
+   *
+   * @param chimeId - The chime ring/device ID
+   * @param eventType - Event type string (e.g. "doorbell", "package", "people")
+   * @param state - 0 = disabled, 1 = enabled
+   * @param musicId - Ringtone ID to use for this event type
+   * @param channel - Channel number (0-based, default 0)
+   */
+  async setDingDongCfg(
+    chimeId: number,
+    eventType: string,
+    state: 0 | 1,
+    musicId: number,
+    channel?: number,
+  ): Promise<void> {
+    const ch = this.normalizeChannel(channel);
+    const payloadXml = buildSetDingDongCfgXml(chimeId, eventType, state, musicId);
+    await this.sendXml({
+      cmdId: BC_CMD_ID_SET_DING_DONG_CFG,
+      channel: ch,
+      payloadXml,
+    });
+  }
+
+  /**
+   * Get the hardwired (wired-in) chime state.
+   * cmd_id: 483 (GetDingDongCtrl)
+   *
+   * Note: calling this may briefly trigger the physical chime to rattle.
+   *
+   * @param channel - Channel number (0-based, default 0)
+   * @returns Hardwired chime state (type, enabled, time)
+   */
+  async getHardwiredChime(channel?: number): Promise<HardwiredChimeState> {
+    const ch = this.normalizeChannel(channel);
+    const payloadXml = buildGetDingDongCtrlXml();
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_DING_DONG_CTRL,
+      channel: ch,
+      payloadXml,
+    });
+    return parseHardwiredChimeFromXml(xml);
+  }
+
+  /**
+   * Set the hardwired (wired-in) chime state.
+   * cmd_id: 483 (SetDingDongCtrl)
+   *
+   * @param params - Chime configuration (type, enabled, time)
+   * @param channel - Channel number (0-based, default 0)
+   */
+  async setHardwiredChime(
+    params: { type?: string | undefined; enabled: boolean; time?: number },
+    channel?: number,
+  ): Promise<HardwiredChimeState> {
+    const ch = this.normalizeChannel(channel);
+    // Fetch current state to fill in any missing fields
+    const current = await this.getHardwiredChime(ch);
+    const chimeType = params.type ?? current.type;
+    const enabled: 0 | 1 = params.enabled ? 1 : 0;
+    const time = params.time ?? current.time;
+
+    const payloadXml = buildSetDingDongCtrlXml(chimeType, enabled, time);
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_DING_DONG_CTRL,
+      channel: ch,
+      payloadXml,
+    });
+    return parseHardwiredChimeFromXml(xml);
+  }
+
+  /**
+   * Play an audio file on the doorbell / chime device.
+   * cmd_id: 349 (QuickReplyPlay)
+   *
+   * @param fileId - The audio file ID to play
+   * @param channel - Channel number (0-based, default 0)
+   */
+  async quickReplyPlay(fileId: number, channel?: number): Promise<void> {
+    const ch = this.normalizeChannel(channel);
+    const payloadXml = buildQuickReplyPlayXml(ch, fileId);
+    await this.sendXml({
+      cmdId: BC_CMD_ID_QUICK_REPLY_PLAY,
+      channel: ch,
+      payloadXml,
+    });
   }
 }

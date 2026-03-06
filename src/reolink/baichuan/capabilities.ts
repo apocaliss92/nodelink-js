@@ -339,6 +339,13 @@ export function computeDeviceCapabilities(params: {
   // Fallback: check abilities for explicit smartTrack only (NOT aiCfg - too broad)
   const hasAutotrackingFromAbilities = abilitiesHasAny(flat, /smartTrack/i);
 
+  // Chime/DingDong capability: wireless or hardwired chime, available on doorbells.
+  // Observed signals:
+  // - doorbellVersion > 0 in SupportInfo item (primary indicator)
+  // - dingDong_* or dingdong_* abilities (when present)
+  const hasChimeFromAbilities = abilitiesHasAny(flat, /dingDong|dingdong/i);
+  const hasChimeFromSupport = isDoorbellFromSupport;
+
   const hasPan = hasPanTiltFromSupport || hasPanTiltFromAbilities;
   const hasTilt = hasPanTiltFromSupport || hasPanTiltFromAbilities;
   const hasZoom = hasZoomFromSupport || hasZoomFromAbilities;
@@ -376,6 +383,7 @@ export function computeDeviceCapabilities(params: {
     hasAutotracking: ptzDisabledBySupport
       ? false
       : hasAutotrackingFromSupport || hasAutotrackingFromAbilities,
+    hasChime: hasChimeFromSupport || hasChimeFromAbilities || isDoorbellFromModel,
   };
 
   if (ptzMode !== undefined) result.ptzMode = ptzMode;
