@@ -10441,6 +10441,27 @@ export class ReolinkBaichuanApi {
     }
     // else: lightType is defined, computeDeviceCapabilities already set hasFloodlight
 
+    // Wireless chime: only true when paired chimes are discovered (like reolink_aio)
+    let dingDongListIds: number[] | undefined;
+    let dingDongCfgIds: number[] | undefined;
+    let wirelessChimeError: string | undefined;
+    if (capabilities.hasWirelessChime) {
+      try {
+        const list = await this.getDingDongList(ch);
+        dingDongListIds = list.map((d) => d.id);
+        const first = list[0];
+        const fromList = first !== undefined && first.id >= 0;
+        if (!fromList) {
+          const configs = await this.getDingDongCfg(ch);
+          dingDongCfgIds = configs.map((c) => c.id);
+          capabilities.hasWirelessChime = configs.some((c) => c.id >= 0);
+        }
+      } catch (e) {
+        capabilities.hasWirelessChime = false;
+        wirelessChimeError = e instanceof Error ? e.message : String(e);
+      }
+    }
+
     // Build features from SupportInfo
     const features = this.parseFeaturesFromSupport(support);
 
@@ -10491,6 +10512,9 @@ export class ReolinkBaichuanApi {
         abilityMergedKeyCount: Object.keys(abilities).length,
       }),
       ...(support?.items && { supportItemCount: support.items.length }),
+      ...(dingDongListIds !== undefined && { dingDongListIds }),
+      ...(dingDongCfgIds !== undefined && { dingDongCfgIds }),
+      ...(wirelessChimeError !== undefined && { wirelessChimeError }),
     };
 
     const result: DeviceCapabilitiesResult = {

@@ -830,6 +830,12 @@ export interface DeviceCapabilitiesDebugInfo {
   supportPirSch?: number;
   /** Selected SupportItem chnID */
   supportItemChnID?: number;
+  /** Wireless chime IDs from GetDingDongList (cmd 484) */
+  dingDongListIds?: number[];
+  /** Wireless chime IDs from GetDingDongCfg (cmd 486) */
+  dingDongCfgIds?: number[];
+  /** Error message if chime discovery failed */
+  wirelessChimeError?: string;
 }
 
 export interface DeviceCapabilitiesResult {
