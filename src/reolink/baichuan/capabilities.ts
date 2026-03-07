@@ -132,26 +132,19 @@ export function parseSupportXml(xml: string): SupportInfo | undefined {
   return support;
 }
 
-function getSupportItemForChannel(
+export function getSupportItemForChannel(
   support: SupportInfo | undefined,
   channel: number,
 ): SupportItem | undefined {
   if (!support?.items?.length) return undefined;
 
-  // NOTE: callers always pass channel as 0-based and we only match that exact chnID.
-  // Some firmwares return multiple <item> entries with the same chnID:
-  // - smartHome items (googleHome/amazonAlexa) with only {name, ver}
-  // - a "real" capability item with many numeric fields (ptzType, ledCtrl, lightType, etc.)
-  // We must pick the best candidate, otherwise we miss lightType/ledCtrl and mis-detect capabilities.
+  const candidates = support.items.filter((i) => i.chnID === channel);
+  if (!candidates.length) return undefined;
 
-  const scoreSupportItem = (item: SupportItem): number => {
-    const anyItem = item as any;
-    let score = 0;
-
-    // Prefer items without a "name" field (often smartHome entries).
-    if (anyItem.name == null) score += 2;
-
-    // Prefer items with known capability-ish fields.
+  const score = (item: SupportItem): number => {
+    const anyItem = item as Record<string, unknown>;
+    let result = 0;
+    if (anyItem.name == null) result += 100;
     const capabilityKeys = [
       "ptzType",
       "ptzControl",
@@ -164,25 +157,17 @@ function getSupportItemForChannel(
       "encCtrl",
       "newIspCfg",
       "remoteAbility",
+      "aitype",
+      "videoClip",
+      "snap",
     ];
     for (const k of capabilityKeys) {
-      if (anyItem[k] !== undefined) score += 3;
+      if (anyItem[k] !== undefined) result += 3;
     }
-
-    // Fallback: reward having many fields at all.
-    score += Math.min(10, Math.max(0, Object.keys(anyItem).length - 1));
-    return score;
+    return result;
   };
 
-  const pickBest = (chnId: number): SupportItem | undefined => {
-    const candidates = support.items.filter((i) => i.chnID === chnId);
-    if (!candidates.length) return undefined;
-    return candidates
-      .slice()
-      .sort((a, b) => scoreSupportItem(b) - scoreSupportItem(a))[0];
-  };
-
-  return pickBest(channel);
+  return candidates.sort((a, b) => score(b) - score(a))[0];
 }
 
 export function computeDeviceCapabilities(params: {
@@ -385,16 +370,8 @@ export function computeDeviceCapabilities(params: {
     hasAutotracking: ptzDisabledBySupport
       ? false
       : hasAutotrackingFromSupport || hasAutotrackingFromAbilities,
-    // Force hasWirelessChime to true for all doorbells (debugging)
-    hasWirelessChime: isDoorbell ? true : hasWirelessChimeFromAbilities,
+    hasWirelessChime: isDoorbell || hasWirelessChimeFromAbilities,
   };
-
-  // Debug log for wireless chime capability detection - FORCED DEBUG
-  // Note: Using console.error to ensure visibility in logs
-  console.error(`[WIRELESS-CHIME-DEBUG] Channel=${channel}, isDoorbell=${isDoorbell}, doorbellVersion=${doorbellVersionRaw}, hasWirelessChime=${result.hasWirelessChime}, model=${params.model}, isDoorbellFromSupport=${isDoorbellFromSupport}, isDoorbellFromModel=${isDoorbellFromModel}`);
-  if (isDoorbell) {
-    console.error(`[WIRELESS-CHIME-DEBUG] DOORBELL DETECTED - forcing hasWirelessChime=true`);
-  }
 
   if (ptzMode !== undefined) result.ptzMode = ptzMode;
   return result;

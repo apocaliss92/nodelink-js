@@ -248,7 +248,7 @@ import {
 } from "../cgi/ReolinkCgiApi";
 import { ReolinkHttpClient } from "../http/ReolinkHttpClient";
 import type { ReolinkDeviceInfo, ReolinkDeviceInfoTag } from "../types";
-import { computeDeviceCapabilities, parseSupportXml } from "./capabilities";
+import { computeDeviceCapabilities, getSupportItemForChannel, parseSupportXml } from "./capabilities";
 import { parseAbilityInfoXml } from "./utils/abilityInfo";
 import { getAiStateViaGetAiAlarm } from "./utils/aiState";
 import { parseChannelInfoPushBlocks } from "./utils/channelInfoPush";
@@ -3995,12 +3995,6 @@ export class ReolinkBaichuanApi {
    * Minimal per-channel inventory for NVR-connected devices.
    *
    * Intended to be fast: avoids AI/abilities and returns only the common identity + battery hints.
-   *
-   * DATA FLOW ISSUE IDENTIFIED:
-   * - computeDeviceCapabilities() called early (line ~4037) with NO model parameter
-   * - getInfo() calls happen later (lines ~4063-4067) to obtain device model strings
-   * - This timing issue causes wireless chime detection to fail for doorbell generation parsing
-   * - See getDeviceCapabilities() method for proper flow that includes model parameter
    */
   async getNvrChannelsSummary(options?: {
     channels?: number[];
@@ -4037,10 +4031,6 @@ export class ReolinkBaichuanApi {
     const isDoorbellByChannel = new Map<number, boolean>();
     if (support) {
       for (const ch of channels) {
-        // TIMING ISSUE IDENTIFIED: computeDeviceCapabilities called here with NO model parameter
-        // This happens BEFORE getInfo() calls below (lines 4063-4067) that obtain device model info
-        // Result: wireless chime detection fails because doorbellVersion defaults to 0
-        // without model string to parse doorbell generation from (e.g., "Video Doorbell WiFi 2")
         const caps = computeDeviceCapabilities({ channel: ch, support });
         isBatteryByChannel.set(ch, Boolean(caps.hasBattery));
         const anySupportDoorbellLight = (support.items ?? []).some(
@@ -4088,9 +4078,6 @@ export class ReolinkBaichuanApi {
       const info = infoPerChannel.get(channel);
       const networkInfo = networkInfoPerChannel.get(channel);
       const isBattery = isBatteryByChannel.get(channel) ?? false;
-      // MODEL INFO AVAILABLE HERE: obtained from getInfo() call in loop above
-      // This is where model string like "Video Doorbell WiFi 2" becomes available,
-      // but computeDeviceCapabilities was already called earlier without this data
       const model = info?.type ?? "";
       const isDoorbell =
         (isDoorbellByChannel.get(channel) ?? false) || /doorbell/i.test(model);
@@ -10419,52 +10406,17 @@ export class ReolinkBaichuanApi {
         : undefined;
 
     // Find the best SupportItem for this channel
-    const supportItem = this.pickBestSupportItem(support, ch);
+    const supportItem = getSupportItemForChannel(support, ch);
 
-    // COMPARISON: Two different capability computation paths exist:
-    //
-    // **CALL SITE 1: getDeviceCapabilities() method (line 10431)**
-    // - Uses parseCapabilitiesFromSupport() [LEGACY]
-    // - NO model parameter support - always passes undefined
-    // - Signature: parseCapabilitiesFromSupport(channel, supportItem, support, abilities)
-    // - Result: hasWirelessChime always hardcoded to false (line ~10678)
-    // - Used by: standalone getDeviceCapabilities() method calls
-    //
-    // **CALL SITE 2: getNvrChannelsSummary() method (line 4044)**
-    // - Uses computeDeviceCapabilities() [NEW]
-    // - HAS model parameter support but NOT utilized
-    // - Signature: computeDeviceCapabilities({ channel, support }) - model omitted
-    // - TIMING ISSUE: called BEFORE getInfo() calls (lines 4063-4067) obtain device model
-    // - Result: wireless chime detection fails, doorbellVersion defaults to 0
-    // - Used by: getNvrChannelsSummary() for bulk channel processing
-    //
-    // **ROOT CAUSE**: Neither path calls getInfo(channel, {tags: ["type"]}) beforehand
-    // to obtain DeviceInfo.type for the model parameter needed by wireless chime detection.
-    //
-    // **PROPER MODEL PARAMETER CONSTRUCTION** (as seen in getCapabilitiesFromNvrChannelItem):
-    // 1. Call: await this.getInfo(channel, { tags: ["type"] })  [cmd 80 for host, 318 for channel]
-    // 2. Extract: model = deviceInfo.type?.trim()
-    // 3. Pass: computeDeviceCapabilities({ channel, model, support, abilities })
-    // 4. Result: wireless chime detection works via doorbell generation parsing
-    //
-    // The model string enables doorbell generation parsing (e.g., "Video Doorbell WiFi 2" → gen 2)
-    //
-    // Both methods currently fail to get device model info for wireless chime detection
-    // because neither path attempts to call getInfo() for model before capability computation
+    const capabilities = computeDeviceCapabilities({
+      channel: ch,
+      ...(support != null && { support }),
+      ...(abilities != null && { abilities }),
+    });
 
-    // Parse capabilities from SupportInfo (single source of truth)
-    const capabilities = this.parseCapabilitiesFromSupport(
-      ch,
-      supportItem,
-      support,
-      abilities,
-    );
-
-    // Floodlight detection:
-    // - If lightType >= 2: hasFloodlight = true (from parseCapabilitiesFromSupport)
-    // - If ledCtrl > 0: hasFloodlight = true (NVR cameras report LED capabilities via ledCtrl bitmask)
-    // - If lightType is undefined on standalone camera: probe cmd 289
-    // - If lightType is 0 or 1 on standalone camera: hasFloodlight = false
+    // Floodlight post-processing: override computeDeviceCapabilities result for special cases
+    // - NVR: ledCtrl > 0 indicates LED control capabilities for connected camera
+    // - Standalone with unknown lightType: probe cmd 289
     const item = supportItem as Record<string, unknown> | undefined;
     const lightType = item?.lightType as number | undefined;
     const ledCtrl = item?.ledCtrl as number | undefined;
@@ -10487,7 +10439,7 @@ export class ReolinkBaichuanApi {
       });
       capabilities.hasFloodlight = probed;
     }
-    // else: lightType is defined, parseCapabilitiesFromSupport already set hasFloodlight
+    // else: lightType is defined, computeDeviceCapabilities already set hasFloodlight
 
     // Build features from SupportInfo
     const features = this.parseFeaturesFromSupport(support);
@@ -10569,139 +10521,6 @@ export class ReolinkBaichuanApi {
     } else {
       this.deviceCapabilitiesCache.clear();
     }
-  }
-
-  /**
-   * Pick the best SupportItem for a channel.
-   * Prefers items without a name (capability items) over named items (googleHome, amazonAlexa).
-   */
-  private pickBestSupportItem(
-    support: SupportInfo | undefined,
-    channel: number,
-  ): SupportItem | undefined {
-    if (!support?.items?.length) return undefined;
-
-    const candidates = support.items.filter((i) => i.chnID === channel);
-    if (!candidates.length) return undefined;
-
-    // Score items: prefer those without name and with more capability fields
-    const score = (item: SupportItem): number => {
-      const anyItem = item as Record<string, unknown>;
-      let result = 0;
-      // Prefer items without name (capability items vs named features)
-      if (anyItem.name == null) result += 100;
-      // Prefer items with more capability fields
-      const capabilityKeys = [
-        "ptzType",
-        "ptzControl",
-        "ptzPreset",
-        "ledCtrl",
-        "lightType",
-        "battery",
-        "audioVersion",
-        "motion",
-        "encCtrl",
-        "newIspCfg",
-        "remoteAbility",
-        "aitype",
-        "videoClip",
-        "snap",
-      ];
-      for (const k of capabilityKeys) {
-        if (anyItem[k] !== undefined) result += 3;
-      }
-      return result;
-    };
-
-    return candidates.sort((a, b) => score(b) - score(a))[0];
-  }
-
-  /**
-   * Parse device capabilities from SupportInfo.
-   * Uses SupportInfo as the single source of truth with AbilityInfo as fallback.
-   */
-  private parseCapabilitiesFromSupport(
-    channel: number,
-    supportItem: SupportItem | undefined,
-    support: SupportInfo | undefined,
-    abilities: DeviceAbilities | undefined,
-  ): import("./types").DeviceCapabilities {
-    const truthy = (v: unknown): boolean => {
-      if (typeof v === "number") return v > 0;
-      if (typeof v === "string") {
-        const n = Number(v);
-        return Number.isFinite(n) ? n > 0 : v.length > 0 && v !== "0";
-      }
-      return Boolean(v);
-    };
-
-    const item = supportItem as Record<string, unknown> | undefined;
-    const ptzMode = support?.ptzMode?.toLowerCase();
-
-    // PTZ: from ptzType/ptzControl in SupportItem or ptzMode from SupportInfo
-    const ptzType = item ? truthy(item.ptzType) : false;
-    const ptzControl = item ? truthy(item.ptzControl) : false;
-    const hasPtzFromItem = ptzType || ptzControl;
-    const hasPtzFromMode = ptzMode
-      ? ptzMode !== "none" && ptzMode !== "0"
-      : false;
-
-    // PTZ sub-capabilities from ptzMode
-    const hasPanTilt = ptzMode
-      ? ptzMode.includes("pt") || ptzMode === "ptz"
-      : hasPtzFromItem;
-    const hasZoom = ptzMode ? ptzMode.includes("z") : hasPtzFromItem;
-
-    // Presets: from ptzPreset in SupportItem
-    const hasPresets = item ? truthy(item.ptzPreset) : false;
-
-    // Battery: from battery in SupportItem
-    const hasBattery = item ? truthy(item.battery) : false;
-
-    // Siren: from audioVersion or audioPlay ability
-    // audioVersion > 0 indicates audio alarm support
-    const hasSiren = item ? truthy(item.audioVersion) : false;
-
-    // Floodlight: ONLY from lightType >= 2
-    // lightType: 0 = no light, 1 = IR only, 2+ = controllable floodlight
-    const lightType = item?.lightType;
-    const hasFloodlight =
-      typeof lightType === "number" ? lightType >= 2 : false;
-
-    // PIR: from rfCfg, newRfCfg, or battery presence (battery cams often have PIR)
-    const hasPir = item
-      ? truthy(item.rfCfg) || truthy(item.newRfCfg) || truthy(item.rfVersion)
-      : false;
-
-    // Doorbell: from doorbellVersion in SupportItem
-    const isDoorbell = item ? truthy(item.doorbellVersion) : false;
-
-    // Intercom: from audioTalk in SupportInfo or ipcAudioTalk in SupportItem
-    const hasIntercom =
-      truthy(support?.audioTalk) || (item ? truthy(item.ipcAudioTalk) : false);
-
-    return {
-      channel,
-      ...(ptzMode && { ptzMode }),
-      hasPan: hasPanTilt,
-      hasTilt: hasPanTilt,
-      hasZoom,
-      hasPresets,
-      hasPtz: hasPtzFromItem || hasPtzFromMode || hasPanTilt || hasZoom,
-      hasBattery,
-      hasIntercom,
-      hasSiren,
-      hasFloodlight,
-      hasPir,
-      isDoorbell,
-      // Autotracking: explicit flags only (autoPt or smartAI)
-      // Note: the heuristic (ptzControl && aitype) was too aggressive and caused false positives
-      // on cameras that have PTZ and AI detection but NOT autotracking capability.
-      hasAutotracking: item
-        ? truthy(item.autoPt) || truthy(item.smartAI)
-        : false,
-      hasWirelessChime: false,
-    };
   }
 
   /**
