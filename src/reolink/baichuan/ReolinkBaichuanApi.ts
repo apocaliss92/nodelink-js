@@ -3995,6 +3995,12 @@ export class ReolinkBaichuanApi {
    * Minimal per-channel inventory for NVR-connected devices.
    *
    * Intended to be fast: avoids AI/abilities and returns only the common identity + battery hints.
+   *
+   * DATA FLOW ISSUE IDENTIFIED:
+   * - computeDeviceCapabilities() called early (line ~4037) with NO model parameter
+   * - getInfo() calls happen later (lines ~4063-4067) to obtain device model strings
+   * - This timing issue causes wireless chime detection to fail for doorbell generation parsing
+   * - See getDeviceCapabilities() method for proper flow that includes model parameter
    */
   async getNvrChannelsSummary(options?: {
     channels?: number[];
@@ -4031,6 +4037,10 @@ export class ReolinkBaichuanApi {
     const isDoorbellByChannel = new Map<number, boolean>();
     if (support) {
       for (const ch of channels) {
+        // TIMING ISSUE IDENTIFIED: computeDeviceCapabilities called here with NO model parameter
+        // This happens BEFORE getInfo() calls below (lines 4063-4067) that obtain device model info
+        // Result: wireless chime detection fails because doorbellVersion defaults to 0
+        // without model string to parse doorbell generation from (e.g., "Video Doorbell WiFi 2")
         const caps = computeDeviceCapabilities({ channel: ch, support });
         isBatteryByChannel.set(ch, Boolean(caps.hasBattery));
         const anySupportDoorbellLight = (support.items ?? []).some(
@@ -4078,6 +4088,9 @@ export class ReolinkBaichuanApi {
       const info = infoPerChannel.get(channel);
       const networkInfo = networkInfoPerChannel.get(channel);
       const isBattery = isBatteryByChannel.get(channel) ?? false;
+      // MODEL INFO AVAILABLE HERE: obtained from getInfo() call in loop above
+      // This is where model string like "Video Doorbell WiFi 2" becomes available,
+      // but computeDeviceCapabilities was already called earlier without this data
       const model = info?.type ?? "";
       const isDoorbell =
         (isDoorbellByChannel.get(channel) ?? false) || /doorbell/i.test(model);
@@ -10407,6 +10420,12 @@ export class ReolinkBaichuanApi {
 
     // Find the best SupportItem for this channel
     const supportItem = this.pickBestSupportItem(support, ch);
+
+    // COMPARISON: Two different capability computation paths exist:
+    // 1. parseCapabilitiesFromSupport() [LEGACY, used here] - NO model parameter support
+    // 2. computeDeviceCapabilities() [NEW, used in getNvrChannelsSummary] - HAS model parameter support
+    // Both methods currently fail to get device model info for wireless chime detection
+    // because neither path attempts to call getInfo() for model before capability computation
 
     // Parse capabilities from SupportInfo (single source of truth)
     const capabilities = this.parseCapabilitiesFromSupport(
