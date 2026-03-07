@@ -341,7 +341,9 @@ export function computeDeviceCapabilities(params: {
 
   const hasBattery = hasBatteryFromSupport || hasBatteryFromAbilities;
   // Wireless chime: paired Reolink Chime receiver (cmd 609/610 getDingDongSilent/setDingDongSilent).
-  // Detected via explicit dingDong abilities reported by the doorbell.
+  // All doorbells can potentially have a paired wireless chime; Baichuan abilities XML
+  // does not always expose dingDong keys, so treat any doorbell as chime-capable.
+  const isDoorbell = isDoorbellFromSupport || isDoorbellFromModel;
   const hasWirelessChimeFromAbilities = abilitiesHasAny(flat, /dingDong|dingdong/i);
 
   const hasPan = hasPanTiltFromSupport || hasPanTiltFromAbilities;
@@ -377,11 +379,11 @@ export function computeDeviceCapabilities(params: {
       ? (lightType as number) >= 2
       : hasFloodlightFromAbilities,
     hasPir: hasPirFromAbilities || hasPirFromSupport,
-    isDoorbell: isDoorbellFromSupport || isDoorbellFromModel,
+    isDoorbell,
     hasAutotracking: ptzDisabledBySupport
       ? false
       : hasAutotrackingFromSupport || hasAutotrackingFromAbilities,
-    hasWirelessChime: hasWirelessChimeFromAbilities,
+    hasWirelessChime: isDoorbell || hasWirelessChimeFromAbilities,
   };
 
   if (ptzMode !== undefined) result.ptzMode = ptzMode;
