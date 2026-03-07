@@ -261,6 +261,9 @@ export function computeDeviceCapabilities(params: {
     flat,
     /white\s*led|whiteLed|flood\s*light|floodlight/i,
   );
+  const hasSirenFromSupport = supportItem
+    ? isTruthyNumberLike((supportItem as any).audioVersion)
+    : false;
   const hasSirenFromAbilities = abilitiesHasAny(
     flat,
     /audio\s*alarm|audioAlarm|siren|pushAlarn|audioPlay/i,
@@ -360,7 +363,7 @@ export function computeDeviceCapabilities(params: {
         finalHasPresets,
     hasBattery,
     hasIntercom: hasIntercomFromSupport,
-    hasSiren: hasSirenFromAbilities,
+    hasSiren: hasSirenFromSupport || hasSirenFromAbilities,
     // lightType >= 2 indicates controllable white LED / floodlight (1 = IR only)
     hasFloodlight: Number.isFinite(lightType as number)
       ? (lightType as number) >= 2
