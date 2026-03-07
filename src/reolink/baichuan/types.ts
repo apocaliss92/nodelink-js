@@ -788,7 +788,7 @@ export interface DeviceCapabilities {
   isDoorbell: boolean;
   /** True when device supports autotracking (smartTrack in AiCfg). */
   hasAutotracking: boolean;
-  /** True when device has a paired wireless Reolink Chime (dingDong abilities detected). */
+  /** True when device is a doorbell (can potentially support wireless chime) or has dingDong abilities explicitly detected. */
   hasWirelessChime: boolean;
 }
 

@@ -192,8 +192,10 @@ export function computeDeviceCapabilities(params: {
   abilities?: DeviceAbilities;
   support?: SupportInfo;
 }): DeviceCapabilities {
+  // Debug: model comes from DeviceInfo.type via getInfo() cmd 80/318 response
   const { channel } = params;
   const flat = flattenAbilitiesForChannel(params.abilities, channel);
+  // Debug: Support XML comes from cmd 199 response
   const supportItem = getSupportItemForChannel(params.support, channel);
 
   const ptzModeRaw = params.support?.ptzMode;
@@ -341,8 +343,8 @@ export function computeDeviceCapabilities(params: {
 
   const hasBattery = hasBatteryFromSupport || hasBatteryFromAbilities;
   // Wireless chime: paired Reolink Chime receiver (cmd 609/610 getDingDongSilent/setDingDongSilent).
-  // All doorbells can potentially have a paired wireless chime; Baichuan abilities XML
-  // does not always expose dingDong keys, so treat any doorbell as chime-capable.
+  // All doorbells can potentially support wireless chime; some may not expose dingDong abilities
+  // in XML but still support the chime commands. Use getDingDongList() to check for paired chimes.
   const isDoorbell = isDoorbellFromSupport || isDoorbellFromModel;
   const hasWirelessChimeFromAbilities = abilitiesHasAny(flat, /dingDong|dingdong/i);
 
@@ -383,8 +385,16 @@ export function computeDeviceCapabilities(params: {
     hasAutotracking: ptzDisabledBySupport
       ? false
       : hasAutotrackingFromSupport || hasAutotrackingFromAbilities,
-    hasWirelessChime: isDoorbell || hasWirelessChimeFromAbilities,
+    // Force hasWirelessChime to true for all doorbells (debugging)
+    hasWirelessChime: isDoorbell ? true : hasWirelessChimeFromAbilities,
   };
+
+  // Debug log for wireless chime capability detection - FORCED DEBUG
+  // Note: Using console.error to ensure visibility in logs
+  console.error(`[WIRELESS-CHIME-DEBUG] Channel=${channel}, isDoorbell=${isDoorbell}, doorbellVersion=${doorbellVersionRaw}, hasWirelessChime=${result.hasWirelessChime}, model=${params.model}, isDoorbellFromSupport=${isDoorbellFromSupport}, isDoorbellFromModel=${isDoorbellFromModel}`);
+  if (isDoorbell) {
+    console.error(`[WIRELESS-CHIME-DEBUG] DOORBELL DETECTED - forcing hasWirelessChime=true`);
+  }
 
   if (ptzMode !== undefined) result.ptzMode = ptzMode;
   return result;

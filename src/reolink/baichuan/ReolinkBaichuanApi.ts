@@ -10422,8 +10422,33 @@ export class ReolinkBaichuanApi {
     const supportItem = this.pickBestSupportItem(support, ch);
 
     // COMPARISON: Two different capability computation paths exist:
-    // 1. parseCapabilitiesFromSupport() [LEGACY, used here] - NO model parameter support
-    // 2. computeDeviceCapabilities() [NEW, used in getNvrChannelsSummary] - HAS model parameter support
+    //
+    // **CALL SITE 1: getDeviceCapabilities() method (line 10431)**
+    // - Uses parseCapabilitiesFromSupport() [LEGACY]
+    // - NO model parameter support - always passes undefined
+    // - Signature: parseCapabilitiesFromSupport(channel, supportItem, support, abilities)
+    // - Result: hasWirelessChime always hardcoded to false (line ~10678)
+    // - Used by: standalone getDeviceCapabilities() method calls
+    //
+    // **CALL SITE 2: getNvrChannelsSummary() method (line 4044)**
+    // - Uses computeDeviceCapabilities() [NEW]
+    // - HAS model parameter support but NOT utilized
+    // - Signature: computeDeviceCapabilities({ channel, support }) - model omitted
+    // - TIMING ISSUE: called BEFORE getInfo() calls (lines 4063-4067) obtain device model
+    // - Result: wireless chime detection fails, doorbellVersion defaults to 0
+    // - Used by: getNvrChannelsSummary() for bulk channel processing
+    //
+    // **ROOT CAUSE**: Neither path calls getInfo(channel, {tags: ["type"]}) beforehand
+    // to obtain DeviceInfo.type for the model parameter needed by wireless chime detection.
+    //
+    // **PROPER MODEL PARAMETER CONSTRUCTION** (as seen in getCapabilitiesFromNvrChannelItem):
+    // 1. Call: await this.getInfo(channel, { tags: ["type"] })  [cmd 80 for host, 318 for channel]
+    // 2. Extract: model = deviceInfo.type?.trim()
+    // 3. Pass: computeDeviceCapabilities({ channel, model, support, abilities })
+    // 4. Result: wireless chime detection works via doorbell generation parsing
+    //
+    // The model string enables doorbell generation parsing (e.g., "Video Doorbell WiFi 2" → gen 2)
+    //
     // Both methods currently fail to get device model info for wireless chime detection
     // because neither path attempts to call getInfo() for model before capability computation
 
