@@ -116,9 +116,10 @@ export const parseDingDongListFromXml = (xml: string): ChimeDevice[] => {
   const devices: ChimeDevice[] = [];
   const blocks = getXmlBlocks(xml, "dingdongDeviceInfo");
   for (const block of blocks) {
-    const idText = getXmlText(block, "deviceId");
-    const name = getXmlText(block, "deviceName") ?? "";
-    const netStateText = getXmlText(block, "netState");
+    // Some firmware uses <deviceId>/<deviceName>/<netState>, others use <id>/<name>/<netstate>
+    const idText = getXmlText(block, "deviceId") ?? getXmlText(block, "id");
+    const name = getXmlText(block, "deviceName") ?? getXmlText(block, "name") ?? "";
+    const netStateText = getXmlText(block, "netState") ?? getXmlText(block, "netstate");
     if (idText === undefined) continue;
     const id = Number(idText);
     if (!Number.isFinite(id)) continue;
@@ -155,7 +156,8 @@ export const parseDingDongCfgFromXml = (xml: string): ChimeCfg[] => {
   const configs: ChimeCfg[] = [];
   const deviceBlocks = getXmlBlocks(xml, "deviceCfg");
   for (const deviceBlock of deviceBlocks) {
-    const idText = getXmlText(deviceBlock, "ringId");
+    // Some firmware uses <ringId>, others use <id>
+    const idText = getXmlText(deviceBlock, "ringId") ?? getXmlText(deviceBlock, "id");
     if (idText === undefined) continue;
     const id = Number(idText);
     if (!Number.isFinite(id)) continue;
