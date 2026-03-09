@@ -3995,22 +3995,62 @@ export class ReolinkBaichuanApi {
    * Minimal per-channel inventory for NVR-connected devices.
    *
    * Intended to be fast: avoids AI/abilities and returns only the common identity + battery hints.
+   *
+   * @param options.source - Data source for the channel list (default: `"cgi"`):
+   *   - `"cgi"`: Uses HTTP `GetChannelstatus` — returns the channel list immediately,
+   *     no dependency on async push messages. Recommended for first-call discovery.
+   *   - `"baichuan"`: Uses the cmd_id 145 push cache populated when the NVR sends channel
+   *     info after login + event subscription. This push is *asynchronous*: if it has not
+   *     arrived yet, the result will have zero channels. Callers must retry (nvr.ts does this
+   *     with a 1-second loop). Note: explicitly requesting cmd_id 145 is not supported.
    */
   async getNvrChannelsSummary(options?: {
     channels?: number[];
     timeoutMs?: number;
-    source?: "baichuan" | "cgi";
+    source?: "cgi" | "baichuan";
   }): Promise<NvrChannelsSummaryCacheEntry> {
-    const source = options?.source ?? "baichuan";
+    const source = options?.source ?? "cgi";
 
-    const pushInfo = this.getChannelInfoFromPushCache();
-    const channels = (
-      options?.channels?.length ? options.channels : Array.from(pushInfo.keys())
-    )
-      .map((c) => Number(c))
-      .filter((n) => Number.isFinite(n))
-      .sort((a, b) => a - b);
+    // ── Resolve channel list ─────────────────────────────────────────────────
+    let channels: number[];
+    // cgiStatusByChannel carries name/uid/sleep from GetChannelstatus for CGI path
+    const cgiStatusByChannel = new Map<number, { name?: string; uid?: string; sleeping?: boolean }>();
 
+    if (options?.channels?.length) {
+      channels = options.channels.map((c) => Number(c)).filter((n) => Number.isFinite(n));
+    } else if (source === "cgi") {
+      try {
+        const { channels: cgiChannels, channelsResponse } = await this.cgiApi.getChannels();
+        const status = channelsResponse?.[0]?.value?.status ?? [];
+        for (const s of status) {
+          const ch = Number(s?.channel);
+          if (!Number.isFinite(ch)) continue;
+          cgiStatusByChannel.set(ch, {
+            ...(s.name != null ? { name: s.name } : {}),
+            ...(s.uid != null ? { uid: s.uid } : {}),
+            sleeping: s.sleep === 1,
+          });
+        }
+        channels = cgiChannels;
+        this.logger.debug?.(
+          `[ReolinkBaichuanApi] getNvrChannelsSummary: CGI found ${channels.length} channel(s): [${channels.join(", ")}]`,
+        );
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        this.logger.warn?.(
+          `[ReolinkBaichuanApi] getNvrChannelsSummary: CGI GetChannelstatus failed (${msg}), returning empty`,
+        );
+        channels = [];
+      }
+    } else {
+      // baichuan: derive channels from cmd_id 145 push cache
+      const pushInfo = this.getChannelInfoFromPushCache();
+      channels = Array.from(pushInfo.keys()).map((c) => Number(c)).filter((n) => Number.isFinite(n));
+    }
+
+    channels = channels.sort((a, b) => a - b);
+
+    // ── Support info for battery/doorbell flags ───────────────────────────────
     const support = await this.getSupportInfo().catch(() => {
       this.logger.error?.(
         "[ReolinkBaichuanApi] getNvrChannelsSummary: failed to get support info",
@@ -4043,7 +4083,7 @@ export class ReolinkBaichuanApi {
       }
     }
 
-    const cacheKey = `baichuan:${channels.join(",")}`;
+    const cacheKey = `${source}:${channels.join(",")}`;
     const cached = this.nvrChannelsSummaryCache.get(cacheKey);
     if (cached) {
       return {
@@ -4052,6 +4092,7 @@ export class ReolinkBaichuanApi {
       };
     }
 
+    // ── Per-channel detail via Baichuan getInfo ───────────────────────────────
     const timeoutMs = options?.timeoutMs;
     const infoPerChannel = new Map<number, ReolinkDeviceInfo>();
     const networkInfoPerChannel = new Map<
@@ -4073,8 +4114,15 @@ export class ReolinkBaichuanApi {
       } catch {}
     }
 
+    // ── Build device list ────────────────────────────────────────────────────
+    // For the baichuan path, enrich from push cache; for CGI path, enrich from
+    // GetChannelstatus status entries. Push cache data is richer (wifiState,
+    // streamSupport, loginState, etc.) so it is always preferred when available.
+    const pushInfo = this.getChannelInfoFromPushCache();
+
     const devices = channels.map((channel) => {
-      const cached = pushInfo.get(channel);
+      const pushCached = pushInfo.get(channel);
+      const cgiStatus = cgiStatusByChannel.get(channel);
       const info = infoPerChannel.get(channel);
       const networkInfo = networkInfoPerChannel.get(channel);
       const isBattery = isBatteryByChannel.get(channel) ?? false;
@@ -4087,6 +4135,11 @@ export class ReolinkBaichuanApi {
         ? isDualLenseModel(normalizedModel)
         : false;
 
+      // Prefer push cache for identity fields; fall back to CGI status
+      const name = pushCached?.name || cgiStatus?.name || "";
+      const uid = pushCached?.uid || cgiStatus?.uid || "";
+      const sleeping = pushCached?.sleeping ?? cgiStatus?.sleeping;
+
       return {
         channel,
         isBattery,
@@ -4098,32 +4151,30 @@ export class ReolinkBaichuanApi {
         ...(networkInfo?.activeLink
           ? { activeLink: networkInfo.activeLink }
           : {}),
-        ...(cached?.name ? { name: cached.name } : {}),
-        ...(cached?.uid ? { uid: cached.uid } : {}),
-        ...(cached?.state ? { state: cached.state } : {}),
-        ...(typeof cached?.index === "number" ? { index: cached.index } : {}),
-        ...(cached?.streamSupport?.length
-          ? { streamSupport: cached.streamSupport }
+        ...(name ? { name } : {}),
+        ...(uid ? { uid } : {}),
+        ...(pushCached?.state ? { state: pushCached.state } : {}),
+        ...(typeof pushCached?.index === "number" ? { index: pushCached.index } : {}),
+        ...(pushCached?.streamSupport?.length
+          ? { streamSupport: pushCached.streamSupport }
           : {}),
-        ...(cached?.wifiState ? { wifiState: cached.wifiState } : {}),
-        ...(cached?.networkSegment
-          ? { networkSegment: cached.networkSegment }
+        ...(pushCached?.wifiState ? { wifiState: pushCached.wifiState } : {}),
+        ...(pushCached?.networkSegment
+          ? { networkSegment: pushCached.networkSegment }
           : {}),
-        ...(typeof cached?.changed === "boolean"
-          ? { changed: cached.changed }
+        ...(typeof pushCached?.changed === "boolean"
+          ? { changed: pushCached.changed }
           : {}),
-        ...(typeof cached?.abilityChanged === "boolean"
-          ? { abilityChanged: cached.abilityChanged }
+        ...(typeof pushCached?.abilityChanged === "boolean"
+          ? { abilityChanged: pushCached.abilityChanged }
           : {}),
-        ...(typeof cached?.online === "boolean"
-          ? { online: cached.online }
+        ...(typeof pushCached?.online === "boolean"
+          ? { online: pushCached.online }
           : {}),
-        ...(typeof cached?.sleeping === "boolean"
-          ? { sleeping: cached.sleeping }
-          : {}),
-        ...(cached?.loginState ? { loginState: cached.loginState } : {}),
-        ...(typeof cached?.updatedAtMs === "number"
-          ? { updatedAtMs: cached.updatedAtMs }
+        ...(typeof sleeping === "boolean" ? { sleeping } : {}),
+        ...(pushCached?.loginState ? { loginState: pushCached.loginState } : {}),
+        ...(typeof pushCached?.updatedAtMs === "number"
+          ? { updatedAtMs: pushCached.updatedAtMs }
           : {}),
       };
     });
