@@ -323,6 +323,24 @@ export class BaichuanRtspServer extends EventEmitter<{
   }> | null = null;
   private noClientAutoStopTimer: NodeJS.Timeout | undefined;
 
+  // Prebuffer: rolling ring of recent video frames for IDR-aligned fast startup.
+  // When a new client connects while the stream is already running it does not need
+  // to wait up to one full GOP interval for the next keyframe — we replay frames
+  // from the last IDR in the prebuffer immediately.
+  private readonly PREBUFFER_MAX_MS = 3000;
+  private prebuffer: Array<{
+    frame: {
+      audio: boolean;
+      data: Buffer;
+      codec: string | null;
+      sampleRate: number | null;
+      microseconds: number | null;
+      videoType?: "H264" | "H265";
+    };
+    time: number;
+    isKeyframe: boolean;
+  }> = [];
+
   private static isAdtsAacFrame(b: Buffer): boolean {
     // ADTS syncword: 0xFFF (12 bits)
     return b.length >= 2 && b[0] === 0xff && (b[1]! & 0xf0) === 0xf0;
@@ -359,6 +377,30 @@ export class BaichuanRtspServer extends EventEmitter<{
       "hex",
     );
     return { sampleRate, channels, configHex };
+  }
+
+  /** Returns true if the raw (packed/Annex B) frame is an IDR (H.264) or IRAP (H.265). */
+  private isRawFrameKeyframe(frame: {
+    videoType?: "H264" | "H265";
+    data: Buffer;
+  }): boolean {
+    try {
+      if (frame.videoType === "H264") {
+        const nals = BaichuanRtspServer.splitAnnexBNals(
+          convertH264ToAnnexB(frame.data),
+        );
+        return nals.some((n) => n.length >= 1 && (n[0]! & 0x1f) === 5);
+      }
+      if (frame.videoType === "H265") {
+        const nals = splitAnnexBToNalPayloads(convertH265ToAnnexB(frame.data));
+        return nals.some(
+          (n) => n.length >= 2 && isH265Irap((n[0]! >> 1) & 0x3f),
+        );
+      }
+    } catch {
+      // ignore conversion errors
+    }
+    return false;
   }
 
   private static parseInterleavedChannels(
@@ -873,10 +915,17 @@ export class BaichuanRtspServer extends EventEmitter<{
 
             const { hasParamSets } = this.flow.getFmtp();
             if (!hasParamSets) {
-              // Wait a bit (seconds, not tens of seconds) to avoid ffmpeg failing on missing params,
-              // but still keep DESCRIBE responsive.
+              // Wait for SPS/PPS to arrive before sending DESCRIBE response.
+              // TCP cameras typically deliver first keyframe within ~1-2s; use 3000ms to give
+              // slower or 4K cameras enough time. Without param sets, go2rtc/ffmpeg must wait
+              // for in-band SPS/PPS which causes the visible "hang at first load".
+              // UDP transport is already slower to start, so keep 4000ms.
               const primingMs =
-                this.api.client.getTransport() === "udp" ? 4000 : 1500;
+                this.api.client.getTransport() === "udp" ? 4000 : 3000;
+              const primingStart = Date.now();
+              this.logger.info(
+                `[rebroadcast] DESCRIBE priming: waiting up to ${primingMs}ms for SPS/PPS  client=${clientId} path=${this.path}`,
+              );
               try {
                 await Promise.race([
                   this.firstFramePromise || Promise.resolve(),
@@ -884,6 +933,17 @@ export class BaichuanRtspServer extends EventEmitter<{
                 ]);
               } catch {
                 // ignore
+              }
+              const primingElapsed = Date.now() - primingStart;
+              const { hasParamSets: hasParamSetsAfter } = this.flow.getFmtp();
+              if (hasParamSetsAfter) {
+                this.logger.info(
+                  `[rebroadcast] DESCRIBE priming: SPS/PPS received after ${primingElapsed}ms  client=${clientId} path=${this.path}`,
+                );
+              } else {
+                this.logger.warn(
+                  `[rebroadcast] DESCRIBE priming: timed out after ${primingElapsed}ms without SPS/PPS — SDP will lack sprop-parameter-sets, downstream decoder may hang  client=${clientId} path=${this.path}`,
+                );
               }
             }
           }
@@ -896,11 +956,6 @@ export class BaichuanRtspServer extends EventEmitter<{
             this.logger.info(
               `[BaichuanRtspServer] DESCRIBE SDP for ${clientId} path=${this.path} codec=${this.flow.sdpCodec} hasParamSets=${hasParamSets} fmtp=${fmtpPreview}`,
             );
-            if (!hasParamSets) {
-              this.rtspDebugLog(
-                `DESCRIBE responding without parameter sets yet (client=${clientId}, path=${this.path}, flow=${this.flow.key})`,
-              );
-            }
           }
           const sdp = this.generateSdp();
           sendResponse(
@@ -1241,6 +1296,18 @@ export class BaichuanRtspServer extends EventEmitter<{
           return false;
         if (channel === audioRtpChannel && !resources?.setupTrack1)
           return false;
+
+        // Backpressure: kill dead/slow clients whose socket buffer has grown too large.
+        // A healthy TCP connection drains near-instantly; a large backlog means the
+        // client is dead or too slow to consume the stream (e.g., network drop).
+        const buffered = rtspSocket.writableLength;
+        if (buffered > 10 * 1024 * 1024) {
+          this.logger.warn(
+            `[rebroadcast] backpressure: ${Math.round(buffered / 1024)}KB buffered for client=${clientId} — disconnecting`,
+          );
+          rtspSocket.destroy();
+          return false;
+        }
 
         try {
           return rtspSocket.write(frameRtpOverTcp(channel, msg));
@@ -1782,6 +1849,31 @@ export class BaichuanRtspServer extends EventEmitter<{
         ? 1000 / streamMetadata.frameRate
         : 40; // Default to 25fps if not available
 
+    // Prebuffer injection: snapshot the ring buffer and find the last IDR.
+    // Subscribing to the live fanout first ensures no frames are dropped while
+    // we replay prebuffered ones.
+    const prebufferSnap = this.prebuffer.slice();
+    let lastIdrIdx = -1;
+    for (let i = prebufferSnap.length - 1; i >= 0; i--) {
+      if (prebufferSnap[i]!.isKeyframe) {
+        lastIdrIdx = i;
+        break;
+      }
+    }
+    const prebufferFrames =
+      lastIdrIdx >= 0 ? prebufferSnap.slice(lastIdrIdx) : [];
+    if (prebufferFrames.length > 0) {
+      this.logger.info(
+        `[rebroadcast] prebuffer replay  client=${clientId} frames=${prebufferFrames.length} starting from IDR`,
+      );
+    }
+
+    // Combined generator: prebuffered IDR-onwards frames first, then live stream.
+    const combined = async function* () {
+      for (const entry of prebufferFrames) yield entry.frame;
+      for await (const f of clientGenerator) yield f;
+    };
+
     const feedFrames = async () => {
       try {
         this.rtspDebugLog(
@@ -1793,7 +1885,7 @@ export class BaichuanRtspServer extends EventEmitter<{
         let firstVideoFrameSeenLogged = false;
         let h265WaitParamSetsLogged = false;
         let h265WaitIrapLogged = false;
-        for await (const frame of clientGenerator) {
+        for await (const frame of combined()) {
           // Check if client is still connected before processing frame
           if (!this.connectedClients.has(clientId)) {
             this.rtspDebugLog(
@@ -2215,6 +2307,24 @@ export class BaichuanRtspServer extends EventEmitter<{
         if (hasParamSets) {
           this.markFirstFrameReceived();
         }
+
+        // Add to prebuffer ring for IDR-aligned fast startup on client connect.
+        const isKeyframe = this.isRawFrameKeyframe(frame);
+        this.prebuffer.push({
+          frame: { ...frame, data: Buffer.from(frame.data) },
+          time: Date.now(),
+          isKeyframe,
+        });
+        // Trim frames older than the window.
+        const cutoff = Date.now() - this.PREBUFFER_MAX_MS;
+        let trimIdx = 0;
+        while (
+          trimIdx < this.prebuffer.length &&
+          this.prebuffer[trimIdx]!.time < cutoff
+        ) {
+          trimIdx++;
+        }
+        if (trimIdx > 0) this.prebuffer.splice(0, trimIdx);
       },
       onError: (error) => {
         this.logger.warn(
@@ -2232,6 +2342,7 @@ export class BaichuanRtspServer extends EventEmitter<{
         this.firstFramePromise = null;
         this.firstFrameResolve = null;
         this.nativeFanout = null;
+        this.prebuffer = [];
         this.logger.info(
           `[rebroadcast] native stream ended (camera sleeping or connection lost)  profile=${this.profile} channel=${this.channel} clients=${this.connectedClients.size}`,
         );
@@ -2314,6 +2425,7 @@ export class BaichuanRtspServer extends EventEmitter<{
       this.nativeFanout = null;
       await fanout.stop();
     }
+    this.prebuffer = [];
 
     // Legacy: ensure no priming generator remains open.
     if (this.tempStreamGenerator) {
