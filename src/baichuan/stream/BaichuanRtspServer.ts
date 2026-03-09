@@ -80,6 +80,8 @@ type FanoutOptions<T> = {
   createSource: () => AsyncGenerator<T, void, unknown>;
   onFrame?: (frame: T) => void;
   onError?: (error: unknown) => void;
+  /** Called when the pump ends, whether by error or natural stream end. */
+  onEnd?: () => void;
 };
 
 class NativeStreamFanout<T> {
@@ -115,6 +117,8 @@ class NativeStreamFanout<T> {
       } finally {
         for (const q of this.queues.values()) q.close();
         this.queues.clear();
+        this.running = false;
+        this.opts.onEnd?.();
       }
     })();
   }
@@ -235,8 +239,8 @@ export class BaichuanRtspServer extends EventEmitter<{
   private clientConnectionServer: net.Server | undefined; // TCP server to track connections
   private streamMetadata: {
     frameRate: number;
-    width: number;
-    height: number;
+    width?: number;
+    height?: number;
   } | null = null;
   // Track all client resources for cleanup
   private clientResources = new Map<
@@ -607,7 +611,11 @@ export class BaichuanRtspServer extends EventEmitter<{
       this.logger.warn(
         `[BaichuanRtspServer] Could not get stream metadata: ${error}`,
       );
-      this.streamMetadata = { frameRate: 25, width: 1920, height: 1080 };
+      // Do NOT hardcode 1920x1080 — for 4K cameras this would advertise wrong
+      // a=framesize in SDP. Leave width/height undefined so generateSdp() omits
+      // the attribute and downstream decoders (go2rtc, ffmpeg) derive resolution
+      // from the actual SPS/PPS in the bitstream.
+      this.streamMetadata = { frameRate: 25 };
       this.setFlowVideoType("H264", "metadata unavailable");
     }
 
@@ -646,7 +654,10 @@ export class BaichuanRtspServer extends EventEmitter<{
    */
   private handleRtspConnection(socket: net.Socket): void {
     const clientId = `${socket.remoteAddress}:${socket.remotePort}`;
-    this.logger.info(`[BaichuanRtspServer] RTSP client connected: ${clientId}`);
+    const connectTime = Date.now();
+    this.logger.info(
+      `[rebroadcast] client connected  client=${clientId} path=${this.path} profile=${this.profile} channel=${this.channel}`,
+    );
 
     let sessionId = "";
     let buffer = Buffer.alloc(0);
@@ -656,6 +667,12 @@ export class BaichuanRtspServer extends EventEmitter<{
     let clientUdpSocketAudio: dgram.Socket | null = null;
 
     const cleanup = () => {
+      const sessionDurationMs = Date.now() - connectTime;
+      const res = this.clientResources.get(clientId) as any;
+      const framesSent: number = res?.framesSent ?? 0;
+      this.logger.info(
+        `[rebroadcast] client disconnected  client=${clientId} path=${this.path} profile=${this.profile} duration=${sessionDurationMs}ms frames=${framesSent}`,
+      );
       this.removeClient(clientId);
 
       // Clean up authentication nonce for this client
@@ -832,9 +849,18 @@ export class BaichuanRtspServer extends EventEmitter<{
             Public: "DESCRIBE, SETUP, TEARDOWN, PLAY, PAUSE, OPTIONS",
           });
         } else if (method === "DESCRIBE") {
-          // Best-effort priming: try to include parameter sets in SDP.
-          // For H.264, ffmpeg often needs SPS/PPS (or it can't determine width/height/extradata).
-          if (!this.firstFrameReceived && this.connectedClients.size === 0) {
+          // Best-effort priming: start the native stream to extract codec parameter sets
+          // (SPS/PPS for H.264, VPS/SPS/PPS for H.265) needed for a valid SDP response.
+          //
+          // IMPORTANT: skip priming if param sets are already available from a previous stream.
+          // Starting the native stream prematurely (before a real RTSP client has done SETUP/PLAY)
+          // is harmful for battery cameras: the camera wakes up, sends a few frames, but the Hub
+          // (or the camera itself) closes the stream shortly after because no consumer is actively
+          // reading with proper keepalives. By the time SETUP/PLAY arrives the fanout pump has
+          // already ended, leaving the new subscriber with a dead queue and no frames.
+          // startNativeStream() is always called at SETUP time (see below), so battery cameras
+          // are only woken up when an actual RTSP consumer is ready to receive frames.
+          if (!this.flow.getFmtp().hasParamSets && this.connectedClients.size === 0) {
             try {
               if (!this.nativeStreamActive) {
                 await this.startNativeStream();
@@ -943,7 +969,8 @@ export class BaichuanRtspServer extends EventEmitter<{
               setupTrack0: false,
               setupTrack1: false,
               isPlaying: false,
-            });
+              connectTime,
+            } as any);
           } else {
             // Keep existing state across multiple SETUP requests (track0 + track1).
             existing.rtspSocket = socket;
@@ -998,8 +1025,10 @@ export class BaichuanRtspServer extends EventEmitter<{
             if (resources) {
               if (isTrack1) resources.setupTrack1 = true;
               else resources.setupTrack0 = true;
-              this.rtspDebugLog(
-                `SETUP done for ${clientId}: track0=${!!resources.setupTrack0} track1=${!!resources.setupTrack1} playing=${!!resources.isPlaying}`,
+              const transport = useTcpInterleaved ? "TCP/interleaved" : "UDP";
+              const track = isTrack1 ? "track1(audio)" : "track0(video)";
+              this.logger.info(
+                `[rebroadcast] SETUP  client=${clientId} ${track} transport=${transport} session=${sessionId}`,
               );
             }
           }
@@ -1032,8 +1061,9 @@ export class BaichuanRtspServer extends EventEmitter<{
             const resources = this.clientResources.get(clientId) as any;
             if (resources) {
               resources.isPlaying = true;
-              this.rtspDebugLog(
-                `PLAY for ${clientId}: track0=${!!resources.setupTrack0} track1=${!!resources.setupTrack1} playing=${!!resources.isPlaying}`,
+              const hasAudio = !!resources.setupTrack1;
+              this.logger.info(
+                `[rebroadcast] PLAY  client=${clientId} path=${this.path} profile=${this.profile} channel=${this.channel} codec=${this.flow.sdpCodec} audio=${hasAudio} session=${sessionId}`,
               );
             }
           }
@@ -1042,6 +1072,9 @@ export class BaichuanRtspServer extends EventEmitter<{
             Range: "npt=0.000-",
           });
         } else if (method === "TEARDOWN") {
+          this.logger.info(
+            `[rebroadcast] TEARDOWN  client=${clientId} session=${sessionId}`,
+          );
           cleanup();
           sendResponse(200, "OK", {
             Session: sessionId,
@@ -1144,7 +1177,7 @@ export class BaichuanRtspServer extends EventEmitter<{
         this.logger.warn(
           `[BaichuanRtspServer] Could not fetch stream metadata: ${error}`,
         );
-        streamMetadata = { frameRate: 25, width: 1920, height: 1080 };
+        streamMetadata = { frameRate: 25 };
       }
     }
 
@@ -1894,18 +1927,21 @@ export class BaichuanRtspServer extends EventEmitter<{
             );
           }
 
-          // Throttle frame sending to match frame rate
-          // Use a more precise timing mechanism to ensure frames are sent at the correct rate
-          const now = Date.now();
-          const timeSinceLastFrame = now - lastFrameTime;
-          const waitTime = targetFrameInterval - timeSinceLastFrame;
-          if (waitTime > 0) {
-            // Wait for the exact interval before sending the next frame
-            await new Promise((resolve) =>
-              setTimeout(resolve, Math.min(waitTime, targetFrameInterval * 2)),
-            );
+          // Throttle frame sending to match frame rate — FFmpeg path only.
+          // For direct RTP, the client (go2rtc/ffmpeg) uses RTP timestamps for timing;
+          // throttling here would only cause artificial frame drops when the camera
+          // streams faster than the configured FPS (e.g., 30fps camera with 25fps metadata).
+          if (!useDirectRtp) {
+            const now = Date.now();
+            const timeSinceLastFrame = now - lastFrameTime;
+            const waitTime = targetFrameInterval - timeSinceLastFrame;
+            if (waitTime > 0) {
+              await new Promise((resolve) =>
+                setTimeout(resolve, Math.min(waitTime, targetFrameInterval * 2)),
+              );
+            }
+            lastFrameTime = Date.now();
           }
-          lastFrameTime = Date.now();
 
           if (useDirectRtp) {
             const videoType = (frame.videoType ?? this.flow.videoType) as
@@ -2010,6 +2046,11 @@ export class BaichuanRtspServer extends EventEmitter<{
             }
             if (!firstVideoWriteLogged) {
               firstVideoWriteLogged = true;
+              const clientConnectTime: number = (resources as any)?.connectTime ?? Date.now();
+              const ttffMs = Date.now() - clientConnectTime;
+              this.logger.info(
+                `[rebroadcast] first keyframe → client  client=${clientId} codec=${videoType} ttff=${ttffMs}ms`,
+              );
               if (rtspDebug) {
                 const headHex = frame.data.subarray(0, 16).toString("hex");
                 rtspDebugLog(
@@ -2018,6 +2059,9 @@ export class BaichuanRtspServer extends EventEmitter<{
               }
             }
 
+            if (resources) {
+              (resources as any).framesSent = ((resources as any).framesSent ?? 0) + 1;
+            }
             sendVideoAccessUnit(videoType, normalizedVideoData, true);
           } else {
             try {
@@ -2118,8 +2162,8 @@ export class BaichuanRtspServer extends EventEmitter<{
       this.firstAudioResolve = resolve;
     });
 
-    this.rtspDebugLog(
-      `Starting native stream for profile ${this.profile} (waiting for camera to start transmitting...)`,
+    this.logger.info(
+      `[rebroadcast] native stream starting  profile=${this.profile} channel=${this.channel} clients=${this.connectedClients.size}`,
     );
 
     // Keep-alive behavior is part of the selected protocol flow.
@@ -2177,6 +2221,28 @@ export class BaichuanRtspServer extends EventEmitter<{
           `[BaichuanRtspServer] Shared native stream error: ${error}`,
         );
       },
+      onEnd: () => {
+        // Stream ended (camera went to sleep, Hub closed the relay, or stream error).
+        // Reset state so the next SETUP/PLAY triggers a fresh startNativeStream().
+        // If connected clients exist, restart immediately so they can continue receiving
+        // frames once the camera wakes back up.
+        if (!this.nativeStreamActive) return; // already cleaned up
+        this.nativeStreamActive = false;
+        this.firstFrameReceived = false;
+        this.firstFramePromise = null;
+        this.firstFrameResolve = null;
+        this.nativeFanout = null;
+        this.logger.info(
+          `[rebroadcast] native stream ended (camera sleeping or connection lost)  profile=${this.profile} channel=${this.channel} clients=${this.connectedClients.size}`,
+        );
+        if (this.connectedClients.size > 0) {
+          this.logger.info(
+            `[rebroadcast] restarting native stream for ${this.connectedClients.size} active client(s)`,
+          );
+          // Defer to avoid re-entering while the fanout finally-block is still executing.
+          setImmediate(() => void this.startNativeStream());
+        }
+      },
     });
     this.nativeFanout.start();
 
@@ -2222,7 +2288,9 @@ export class BaichuanRtspServer extends EventEmitter<{
       return;
     }
 
-    this.rtspDebugLog(`Stopping native stream`);
+    this.logger.info(
+      `[rebroadcast] native stream stopping  profile=${this.profile} channel=${this.channel} clients=${this.connectedClients.size}`,
+    );
 
     this.flow.stopKeepAlive();
 
@@ -2265,9 +2333,6 @@ export class BaichuanRtspServer extends EventEmitter<{
     if (this.connectedClients.has(clientId)) {
       this.connectedClients.delete(clientId);
       this.emit("clientDisconnected", clientId);
-      this.logger.info(
-        `[BaichuanRtspServer] RTSP client disconnected: ${clientId}`,
-      );
 
       // Stop native stream if no clients remain
       if (this.connectedClients.size === 0) {
