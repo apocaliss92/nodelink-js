@@ -1193,9 +1193,6 @@ export class BaichuanRtspServer extends EventEmitter<{
       sdp += `a=control:track1\r\n`;
     }
 
-    sdp += `a=setup:passive\r\n`;
-    sdp += `a=connection:new\r\n`;
-
     return sdp;
   }
 
