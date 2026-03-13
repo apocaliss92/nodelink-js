@@ -3,7 +3,12 @@ import { z } from "zod";
 import { getRecentLogs, clearLogBuffer, LogEntry } from "../logger.js";
 import fs from "node:fs";
 import path from "node:path";
-import { getSettings } from "../settings-store.js";
+
+/** Resolve the logs directory (same logic as logger.ts) */
+function getLogsDir(): string {
+  const dataDir = process.env.DATA_PATH || ".";
+  return path.resolve(path.join(dataDir, "logs"));
+}
 
 export const logsRouter = router({
   // Get recent logs from memory buffer
@@ -52,8 +57,7 @@ export const logsRouter = router({
   listFiles: publicProcedure
     .meta({ description: "List available log files" })
     .query(() => {
-      const settings = getSettings();
-      const logsPath = path.resolve(settings.logsPath);
+      const logsPath = getLogsDir();
 
       if (!fs.existsSync(logsPath)) {
         return [];
@@ -85,8 +89,7 @@ export const logsRouter = router({
       }),
     )
     .query(({ input }) => {
-      const settings = getSettings();
-      const logsPath = path.resolve(settings.logsPath);
+      const logsPath = getLogsDir();
       const filePath = path.join(logsPath, input.filename);
 
       // Security check - prevent directory traversal
@@ -130,8 +133,7 @@ export const logsRouter = router({
     .meta({ description: "Delete a log file" })
     .input(z.object({ filename: z.string() }))
     .mutation(({ input }) => {
-      const settings = getSettings();
-      const logsPath = path.resolve(settings.logsPath);
+      const logsPath = getLogsDir();
       const filePath = path.join(logsPath, input.filename);
 
       // Security check

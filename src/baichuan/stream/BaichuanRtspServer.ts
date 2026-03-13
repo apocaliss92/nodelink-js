@@ -843,13 +843,15 @@ export class BaichuanRtspServer extends EventEmitter<{
             response += `${key}: ${value}\r\n`;
           }
           if (body) {
-            response += `Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n`;
+            const bodyBuf = Buffer.from(body, "utf8");
+            response += `Content-Length: ${bodyBuf.length}\r\n`;
+            response += "\r\n";
+            socket.write(response);
+            socket.write(bodyBuf);
+          } else {
+            response += "\r\n";
+            socket.write(response);
           }
-          response += "\r\n";
-          if (body) {
-            response += body;
-          }
-          socket.write(response);
         };
 
         this.rtspDebugLog(`RTSP ${method} ${url}`);
@@ -1132,10 +1134,26 @@ export class BaichuanRtspServer extends EventEmitter<{
               );
             }
           }
-          sendResponse(200, "OK", {
-            Session: sessionId,
-            Range: "npt=0.000-",
-          });
+          // Build RTP-Info header with track URLs (go2rtc and other clients expect this)
+          {
+            const baseUrl = `rtsp://${this.listenHost}:${this.listenPort}${this.path}`;
+            const resources = this.clientResources.get(clientId) as any;
+            const rtpInfoParts: string[] = [];
+            if (resources?.setupTrack0) {
+              rtpInfoParts.push(`url=${baseUrl}/track0`);
+            }
+            if (resources?.setupTrack1) {
+              rtpInfoParts.push(`url=${baseUrl}/track1`);
+            }
+            const playHeaders: Record<string, string> = {
+              Session: sessionId,
+              Range: "npt=now-",
+            };
+            if (rtpInfoParts.length > 0) {
+              playHeaders["RTP-Info"] = rtpInfoParts.join(",");
+            }
+            sendResponse(200, "OK", playHeaders);
+          }
         } else if (method === "TEARDOWN") {
           this.logger.info(
             `[rebroadcast] TEARDOWN  client=${clientId} session=${sessionId}`,
@@ -1165,10 +1183,13 @@ export class BaichuanRtspServer extends EventEmitter<{
     sdp += "s=Baichuan Stream\r\n";
     sdp += `c=IN IP4 ${this.listenHost}\r\n`;
     sdp += "t=0 0\r\n";
+    sdp += "a=range:npt=now-\r\n";
+    sdp += "a=control:*\r\n";
 
     // Video track
     sdp += `m=video 0 RTP/AVP ${videoPayloadType}\r\n`;
     sdp += `a=rtpmap:${videoPayloadType} ${codec}/90000\r\n`;
+    sdp += `a=sendonly\r\n`;
     if (this.streamMetadata?.frameRate) {
       sdp += `a=framerate:${this.streamMetadata.frameRate}\r\n`;
     }
@@ -1192,6 +1213,7 @@ export class BaichuanRtspServer extends EventEmitter<{
     // We packetize AAC (ADTS) as RTP mpeg4-generic, with config derived from ADTS.
     if (this.hasAudio) {
       sdp += `m=audio 0 RTP/AVP ${audioPayloadType}\r\n`;
+      sdp += `a=sendonly\r\n`;
       const a = this.audioInfo;
       const rate = a?.sampleRate ?? 8000;
       const ch = a?.channels ?? 1;
