@@ -1,7 +1,13 @@
+import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import dgram from "node:dgram";
-import { networkInterfaces } from "node:os";
+import * as net from "node:net";
+import { networkInterfaces, platform } from "node:os";
+import { promisify } from "node:util";
 import { ReolinkCgiApi } from "./cgi/ReolinkCgiApi";
 import type { Logger } from "../debug/DebugConfig";
+
+const execFileAsync = promisify(execFile);
 import { BCUDP_DISCOVERY_PORT_LOCAL_ANY, BCUDP_DISCOVERY_PORT_LOCAL_UID } from "../bcudp/constants";
 import { decodeBcUdpPacket, encodeDiscoveryPacket } from "../bcudp/packets";
 import { buildC2dS, parseD2cCr, parseD2cDisc } from "../bcudp/xml";
@@ -22,7 +28,7 @@ export interface DiscoveredDevice {
   /** Firmware version (if available) */
   firmwareVersion?: string;
   /** Discovery method used to find this device */
-  discoveryMethod: "http_probe" | "udp_broadcast" | "udp_direct";
+  discoveryMethod: "http_probe" | "udp_broadcast" | "udp_direct" | "tcp_port_scan" | "arp" | "dhcp" | "onvif";
   /** Whether HTTPS is supported */
   supportsHttps?: boolean;
   /** Whether the device is accessible via HTTP */
@@ -152,6 +158,20 @@ export type DiscoveryOptions = {
   enableUdpDiscovery?: boolean;
   /** Whether to enable HTTP port scanning (default: true) */
   enableHttpScanning?: boolean;
+  /** Whether to enable TCP port 9000 scanning (Baichuan protocol). Works with all Reolink devices. (default: false) */
+  enableTcpPortScan?: boolean;
+  /** Timeout per TCP port probe in milliseconds (default: 1500) */
+  tcpProbeTimeoutMs?: number;
+  /** Whether to enable ARP table lookup for Reolink MAC prefix (ec:71:db). Similar to Home Assistant DHCP discovery. (default: false) */
+  enableArpLookup?: boolean;
+  /** Whether to enable passive DHCP listening for Reolink devices (requires root/NET_RAW). (default: false) */
+  enableDhcpListener?: boolean;
+  /** Timeout for DHCP listener in milliseconds (default: 10000) */
+  dhcpListenerTimeoutMs?: number;
+  /** Whether to enable ONVIF WS-Discovery (multicast probe on 239.255.255.250:3702). Most Reolink cameras support ONVIF. (default: false) */
+  enableOnvifDiscovery?: boolean;
+  /** Timeout for ONVIF WS-Discovery in milliseconds (default: 5000) */
+  onvifDiscoveryTimeoutMs?: number;
   /** Ports to scan for HTTP (default: [80, 443]) */
   httpPorts?: number[];
 };
@@ -553,6 +573,469 @@ export async function discoverViaUdpBroadcast(options: DiscoveryOptions): Promis
   });
 }
 
+/** Reolink OUI MAC prefixes (uppercase, colon-separated) */
+const REOLINK_MAC_PREFIXES = [
+  "EC:71:DB", // Most common Reolink OUI
+  "2C:1B:3A", // WiFi cameras (E1 Zoom, etc.)
+  "18:2C:65", // Battery cameras (Video Doorbell, Argus, etc.)
+  "DC:E5:37", // Some newer models
+  "9C:8E:CD", // Some WiFi models
+  "B4:4B:D6", // Some models
+  "E4:3D:1A", // Some models
+];
+
+/**
+ * Discover Reolink devices by reading the system ARP table and filtering
+ * for Reolink MAC address prefixes (EC:71:DB). This mirrors the DHCP-based
+ * discovery used by Home Assistant but reads the already-populated ARP cache
+ * instead of sniffing live DHCP packets.
+ *
+ * Works on Linux, macOS, and Docker containers (reads /proc/net/arp or `arp -a`).
+ */
+export async function discoverViaArpTable(options: DiscoveryOptions): Promise<DiscoveredDevice[]> {
+  if (!options.enableArpLookup) return [];
+
+  const logger = options.logger;
+  logger?.log?.("[Discovery] Starting ARP table lookup for Reolink MAC prefix...");
+
+  const discovered: DiscoveredDevice[] = [];
+
+  try {
+    let entries: Array<{ ip: string; mac: string }> = [];
+
+    if (platform() === "linux") {
+      // Linux: read /proc/net/arp directly (works in Docker too)
+      try {
+        const { readFile } = await import("node:fs/promises");
+        const content = await readFile("/proc/net/arp", "utf8");
+        // Format: IP address HW type Flags HW address Mask Device
+        for (const line of content.split("\n").slice(1)) {
+          const parts = line.trim().split(/\s+/);
+          if (parts.length >= 4 && parts[0] && parts[3] && parts[3] !== "00:00:00:00:00:00") {
+            entries.push({ ip: parts[0], mac: parts[3].toUpperCase() });
+          }
+        }
+      } catch {
+        // Fallback to arp command (try common paths)
+        const { stdout } = await runArpCommand();
+        entries = parseArpOutput(stdout);
+      }
+    } else {
+      // macOS / other: use arp -a
+      const { stdout } = await runArpCommand();
+      entries = parseArpOutput(stdout);
+    }
+
+    logger?.log?.(`[Discovery] ARP table has ${entries.length} entries`);
+
+    for (const { ip, mac } of entries) {
+      const isReolink = REOLINK_MAC_PREFIXES.some((prefix) =>
+        mac.startsWith(prefix),
+      );
+      if (isReolink) {
+        logger?.log?.(`[Discovery] Found Reolink device via ARP: ${ip} (MAC: ${mac})`);
+        discovered.push({
+          host: ip,
+          discoveryMethod: "arp" as any,
+        });
+      }
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger?.warn?.(`[Discovery] ARP table lookup failed: ${msg}`);
+  }
+
+  logger?.log?.(`[Discovery] ARP lookup complete. Found ${discovered.length} device(s).`);
+  return discovered;
+}
+
+/**
+ * Run the `arp -a` command, trying common binary paths.
+ * On macOS arp lives in /usr/sbin which may not be in Node's PATH.
+ */
+async function runArpCommand(): Promise<{ stdout: string }> {
+  // Use -an (no DNS resolution) — arp -a can take 10+ seconds doing reverse lookups
+  const paths = ["/usr/sbin/arp", "/sbin/arp", "/usr/bin/arp", "arp"];
+  for (const arpPath of paths) {
+    try {
+      return await execFileAsync(arpPath, ["-an"], { timeout: 5000 });
+    } catch {
+      // try next
+    }
+  }
+  throw new Error("arp command not found");
+}
+
+/**
+ * Parse `arp -a` output (macOS/Linux format).
+ * macOS: "? (192.168.1.161) at ec:71:db:72:bb:fe on en0 ifscope [ethernet]"
+ * Linux: "? (192.168.1.161) at ec:71:db:72:bb:fe [ether] on eth0"
+ */
+function parseArpOutput(stdout: string): Array<{ ip: string; mac: string }> {
+  const results: Array<{ ip: string; mac: string }> = [];
+  for (const line of stdout.split("\n")) {
+    const match = /\((\d+\.\d+\.\d+\.\d+)\)\s+at\s+([0-9a-fA-F:]+)/i.exec(line);
+    if (match && match[1] && match[2] && match[2] !== "(incomplete)") {
+      results.push({ ip: match[1], mac: match[2].toUpperCase() });
+    }
+  }
+  return results;
+}
+
+/**
+ * Discover Reolink devices by passively listening for DHCP traffic (port 67/68).
+ * Parses DHCP ACK/REQUEST packets and filters for Reolink MAC prefix or hostname.
+ * Requires root or CAP_NET_RAW (typical in Docker with --net=host).
+ *
+ * This mirrors Home Assistant's DHCP discovery: matches hostname "reolink*" or MAC "EC:71:DB".
+ */
+export async function discoverViaDhcpListener(options: DiscoveryOptions): Promise<DiscoveredDevice[]> {
+  if (!options.enableDhcpListener) return [];
+
+  const logger = options.logger;
+  const timeoutMs = options.dhcpListenerTimeoutMs ?? 10000;
+  logger?.log?.(`[Discovery] Starting passive DHCP listener (${timeoutMs}ms)...`);
+
+  const discovered = new Map<string, DiscoveredDevice>();
+
+  return new Promise((resolve) => {
+    let socket: dgram.Socket;
+    let timeout: NodeJS.Timeout;
+
+    try {
+      socket = dgram.createSocket({ type: "udp4", reuseAddr: true });
+    } catch (err) {
+      logger?.warn?.(`[Discovery] DHCP: failed to create socket: ${err instanceof Error ? err.message : String(err)}`);
+      resolve([]);
+      return;
+    }
+
+    socket.on("message", (msg) => {
+      try {
+        // Minimal DHCP packet parsing (RFC 2131)
+        // Byte 0: op (1=request, 2=reply)
+        // Bytes 28-31: chaddr (first 6 bytes = MAC)
+        // Bytes 16-19: yiaddr (your IP, set by server in ACK)
+        // Bytes 12-15: ciaddr (client IP, set in REQUEST/RENEW)
+        if (msg.length < 240) return;
+
+        const op = msg[0]; // 1=BOOTREQUEST, 2=BOOTREPLY
+        const hlen = msg[2]; // hardware address length (6 for ethernet)
+        if (hlen !== 6) return;
+
+        // Extract MAC address (bytes 28-33)
+        const mac = [
+          msg[28]?.toString(16).padStart(2, "0"),
+          msg[29]?.toString(16).padStart(2, "0"),
+          msg[30]?.toString(16).padStart(2, "0"),
+          msg[31]?.toString(16).padStart(2, "0"),
+          msg[32]?.toString(16).padStart(2, "0"),
+          msg[33]?.toString(16).padStart(2, "0"),
+        ].join(":").toUpperCase();
+
+        // Check if MAC matches Reolink prefix
+        const isReolinkMac = REOLINK_MAC_PREFIXES.some((p) => mac.startsWith(p));
+
+        // Extract hostname from DHCP options (option 12)
+        let hostname = "";
+        let i = 240; // DHCP options start after magic cookie at byte 236 + 4
+        while (i < msg.length - 1) {
+          const optType = msg[i];
+          if (optType === 255) break; // End
+          if (optType === 0) { i++; continue; } // Padding
+          const optLen = msg[i + 1] ?? 0;
+          if (optType === 12 && optLen > 0) {
+            hostname = msg.subarray(i + 2, i + 2 + optLen).toString("ascii").toLowerCase();
+          }
+          i += 2 + optLen;
+        }
+
+        const isReolinkHostname = hostname.startsWith("reolink");
+
+        if (!isReolinkMac && !isReolinkHostname) return;
+
+        // Get IP: prefer yiaddr (server-assigned), fallback to ciaddr
+        const yiaddr = `${msg[16]}.${msg[17]}.${msg[18]}.${msg[19]}`;
+        const ciaddr = `${msg[12]}.${msg[13]}.${msg[14]}.${msg[15]}`;
+        const ip = yiaddr !== "0.0.0.0" ? yiaddr : ciaddr;
+        if (ip === "0.0.0.0" || !ip) return;
+
+        if (!discovered.has(ip)) {
+          logger?.log?.(`[Discovery] DHCP: found Reolink device ${ip} (MAC: ${mac}, hostname: ${hostname || "n/a"}, op: ${op === 1 ? "request" : "reply"})`);
+          const device: DiscoveredDevice = {
+            host: ip,
+            discoveryMethod: "dhcp" as any,
+          };
+          if (hostname) device.name = hostname;
+          discovered.set(ip, device);
+        }
+      } catch {
+        // ignore parse errors
+      }
+    });
+
+    socket.on("error", (err) => {
+      logger?.warn?.(`[Discovery] DHCP socket error: ${err.message}`);
+      clearTimeout(timeout);
+      socket.close();
+      resolve(Array.from(discovered.values()));
+    });
+
+    socket.bind(67, "0.0.0.0", () => {
+      logger?.log?.("[Discovery] DHCP listener bound on port 67");
+      timeout = setTimeout(() => {
+        socket.close();
+        logger?.log?.(`[Discovery] DHCP listener complete. Found ${discovered.size} device(s).`);
+        resolve(Array.from(discovered.values()));
+      }, timeoutMs);
+    });
+  });
+}
+
+/**
+ * Probe a single IP for an open TCP port 9000 (Baichuan protocol).
+ * Returns true if the port is open (connection succeeds), false otherwise.
+ */
+function probeTcpPort(ip: string, port: number, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    let settled = false;
+    const done = (result: boolean) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(result);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.on("connect", () => done(true));
+    socket.on("timeout", () => done(false));
+    socket.on("error", () => done(false));
+    socket.connect(port, ip);
+  });
+}
+
+/**
+ * Discover Reolink devices by scanning TCP port 9000 (Baichuan protocol).
+ * This is the most reliable method — every Reolink camera/NVR listens on port 9000.
+ * It only checks if the port is open; it does not authenticate or extract device info.
+ */
+export async function discoverViaTcpPortScan(options: DiscoveryOptions): Promise<DiscoveredDevice[]> {
+  if (!options.enableTcpPortScan) return [];
+
+  const logger = options.logger;
+  const networkCidr = options.networkCidr ?? getLocalNetworks()[0];
+  const timeoutMs = options.tcpProbeTimeoutMs ?? 1500;
+  const maxConcurrent = options.maxConcurrentProbes ?? 80;
+
+  if (!networkCidr) {
+    logger?.warn?.("[Discovery] No network CIDR available for TCP port scan");
+    return [];
+  }
+
+  logger?.log?.(`[Discovery] Starting TCP port 9000 scan on network ${networkCidr}...`);
+
+  const ipRange = parseCidr(networkCidr);
+  if (!ipRange) {
+    logger?.warn?.(`[Discovery] Invalid CIDR: ${networkCidr}`);
+    return [];
+  }
+
+  const discovered: DiscoveredDevice[] = [];
+  const ipAddresses: string[] = [];
+
+  for (let ipNum = ipRange.start; ipNum <= ipRange.end && ipNum <= ipRange.start + 254; ipNum++) {
+    ipAddresses.push(ipNumberToString(ipNum));
+  }
+
+  logger?.log?.(`[Discovery] Scanning ${ipAddresses.length} IPs on port 9000...`);
+
+  for (let i = 0; i < ipAddresses.length; i += maxConcurrent) {
+    const batch = ipAddresses.slice(i, i + maxConcurrent);
+    const batchResults = await Promise.allSettled(
+      batch.map(async (ip) => {
+        const open = await probeTcpPort(ip, 9000, timeoutMs);
+        if (open) {
+          logger?.log?.(`[Discovery] Found Baichuan device at ${ip}:9000`);
+          return { host: ip, discoveryMethod: "tcp_port_scan" as const };
+        }
+        return null;
+      }),
+    );
+
+    for (const result of batchResults) {
+      if (result.status === "fulfilled" && result.value) {
+        discovered.push(result.value);
+      }
+    }
+  }
+
+  logger?.log?.(`[Discovery] TCP port scan complete. Found ${discovered.length} device(s).`);
+  return discovered;
+}
+
+/**
+ * Discover devices via ONVIF WS-Discovery (multicast probe on 239.255.255.250:3702).
+ * Most Reolink cameras and NVRs support ONVIF and will respond with their service
+ * endpoint (XAddrs), model, and scopes. This is the standard IP camera discovery
+ * mechanism used by NVRs, VMS, and similar software.
+ */
+export async function discoverViaOnvif(options: DiscoveryOptions): Promise<DiscoveredDevice[]> {
+  if (!options.enableOnvifDiscovery) return [];
+
+  const logger = options.logger;
+  const timeoutMs = options.onvifDiscoveryTimeoutMs ?? 5000;
+  logger?.log?.(`[Discovery] Starting ONVIF WS-Discovery (${timeoutMs}ms)...`);
+
+  const discovered = new Map<string, DiscoveredDevice>();
+
+  // WS-Discovery multicast address and port
+  const MULTICAST_ADDR = "239.255.255.250";
+  const MULTICAST_PORT = 3702;
+
+  // Build WS-Discovery Probe SOAP message targeting NetworkVideoTransmitter
+  const messageId = `uuid:${randomUUID()}`;
+  const probeMessage = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"',
+    '  xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing"',
+    '  xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery"',
+    '  xmlns:dn="http://www.onvif.org/ver10/network/wsdl">',
+    "  <s:Header>",
+    `    <a:MessageID>${messageId}</a:MessageID>`,
+    '    <a:To>urn:schemas-xmlsoap-org:ws:2005:04:discovery</a:To>',
+    '    <a:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</a:Action>',
+    "  </s:Header>",
+    "  <s:Body>",
+    "    <d:Probe>",
+    "      <d:Types>dn:NetworkVideoTransmitter</d:Types>",
+    "    </d:Probe>",
+    "  </s:Body>",
+    "</s:Envelope>",
+  ].join("\n");
+
+  return new Promise((resolve) => {
+    const socket = dgram.createSocket({ type: "udp4", reuseAddr: true });
+    let timeout: NodeJS.Timeout;
+
+    socket.on("message", (msg, rinfo) => {
+      try {
+        const xml = msg.toString("utf8");
+
+        // Extract XAddrs (service endpoint URL) — contains the device IP/port
+        const xaddrsMatch = /<[^:]*:?XAddrs>([^<]+)<\/[^:]*:?XAddrs>/i.exec(xml);
+        const scopesMatch = /<[^:]*:?Scopes>([^<]+)<\/[^:]*:?Scopes>/i.exec(xml);
+
+        // Parse IP from XAddrs or fall back to rinfo
+        let host = rinfo.address;
+        let httpPort: number | undefined;
+        if (xaddrsMatch?.[1]) {
+          // XAddrs may contain multiple URLs separated by spaces
+          const urls = xaddrsMatch[1].trim().split(/\s+/);
+          for (const url of urls) {
+            try {
+              const parsed = new URL(url);
+              if (parsed.hostname) {
+                host = parsed.hostname;
+                const p = Number.parseInt(parsed.port, 10);
+                if (p && p !== 80) httpPort = p;
+                break;
+              }
+            } catch {
+              // ignore malformed URL
+            }
+          }
+        }
+
+        if (discovered.has(host)) return;
+
+        // Parse scopes for model, name, manufacturer
+        let model: string | undefined;
+        let name: string | undefined;
+        let manufacturer: string | undefined;
+        if (scopesMatch?.[1]) {
+          const scopes = scopesMatch[1].trim().split(/\s+/);
+          for (const scope of scopes) {
+            // Common ONVIF scope formats:
+            // onvif://www.onvif.org/hardware/RLC-810A
+            // onvif://www.onvif.org/name/IPC
+            // onvif://www.onvif.org/manufacturer/Reolink
+            const hwMatch = /\/hardware\/(.+)$/i.exec(scope);
+            if (hwMatch?.[1]) model = decodeURIComponent(hwMatch[1]);
+            const nameMatch = /\/name\/(.+)$/i.exec(scope);
+            if (nameMatch?.[1]) name = decodeURIComponent(nameMatch[1]);
+            const mfgMatch = /\/manufacturer\/(.+)$/i.exec(scope);
+            if (mfgMatch?.[1]) manufacturer = decodeURIComponent(mfgMatch[1]);
+          }
+        }
+
+        // Filter: only keep Reolink devices.
+        // 1. Check if manufacturer/model/XAddrs explicitly contain "reolink"
+        // 2. Check if the model matches known Reolink naming patterns
+        // 3. Check if the device name is "IPC" (generic Reolink ONVIF name) with a known model pattern
+        const allText = `${manufacturer ?? ""} ${model ?? ""} ${xaddrsMatch?.[1] ?? ""}`.toLowerCase();
+        const hasReolinkText = allText.includes("reolink");
+        const hasReolinkModel = /^(rlc|rln|rl[ncb]|e1|cw|cx|duo|trackmix|argus|lumus|go|video doorbell|reolink)/i.test(model ?? "");
+        const isReolink = hasReolinkText || hasReolinkModel;
+        if (!isReolink) {
+          logger?.debug?.(`[Discovery] ONVIF: skipping non-Reolink device at ${host} (${model ?? "unknown"}, manufacturer: ${manufacturer ?? "unknown"})`);
+          return;
+        }
+
+        logger?.log?.(`[Discovery] ONVIF: found Reolink device at ${host}${model ? ` (${model})` : ""}${name ? ` name="${name}"` : ""}`);
+
+        const device: DiscoveredDevice = {
+          host,
+          discoveryMethod: "onvif",
+        };
+        if (model) device.model = model;
+        // Reolink cameras often report "IPC" as name — use model instead
+        if (name && name !== "IPC") {
+          device.name = name;
+        } else if (model) {
+          device.name = model;
+        }
+        if (httpPort) device.httpPort = httpPort;
+        discovered.set(host, device);
+      } catch {
+        // ignore parse errors
+      }
+    });
+
+    socket.on("error", (err) => {
+      logger?.warn?.(`[Discovery] ONVIF socket error: ${err.message}`);
+    });
+
+    socket.bind(0, "0.0.0.0", () => {
+      // Send the probe message to multicast address
+      const buf = Buffer.from(probeMessage, "utf8");
+      socket.send(buf, 0, buf.length, MULTICAST_PORT, MULTICAST_ADDR, (err) => {
+        if (err) {
+          logger?.warn?.(`[Discovery] ONVIF: failed to send probe: ${err.message}`);
+        }
+      });
+
+      // Send a second probe after a short delay (some devices miss the first)
+      setTimeout(() => {
+        try {
+          socket.send(buf, 0, buf.length, MULTICAST_PORT, MULTICAST_ADDR);
+        } catch {
+          // ignore
+        }
+      }, 500);
+
+      timeout = setTimeout(() => {
+        try { socket.close(); } catch { /* ignore */ }
+        logger?.log?.(`[Discovery] ONVIF WS-Discovery complete. Found ${discovered.size} device(s).`);
+        resolve(Array.from(discovered.values()));
+      }, timeoutMs);
+    });
+
+    socket.on("close", () => {
+      if (timeout) clearTimeout(timeout);
+    });
+  });
+}
+
 /**
  * Discover Reolink devices on the local network using multiple methods.
  * This is a "best effort" discovery that tries HTTP port scanning and UDP broadcast.
@@ -601,12 +1084,28 @@ export async function discoverReolinkDevices(options: DiscoveryOptions = {}): Pr
   };
 
   // Run discovery methods in parallel
-  const [httpDevices, udpDevices] = await Promise.all([
+  const [httpDevices, udpDevices, tcpDevices, arpDevices, dhcpDevices, onvifDevices] = await Promise.all([
     discoverViaHttpScan(options),
     discoverViaUdpBroadcast(options),
+    discoverViaTcpPortScan(options),
+    discoverViaArpTable(options),
+    discoverViaDhcpListener(options),
+    discoverViaOnvif(options),
   ]);
 
-  // Merge results
+  // Merge results (cheapest first, then richer methods override)
+  for (const device of dhcpDevices) {
+    mergeDevice(device);
+  }
+  for (const device of arpDevices) {
+    mergeDevice(device);
+  }
+  for (const device of tcpDevices) {
+    mergeDevice(device);
+  }
+  for (const device of onvifDevices) {
+    mergeDevice(device);
+  }
   for (const device of httpDevices) {
     mergeDevice(device);
   }
