@@ -1189,7 +1189,6 @@ export class BaichuanRtspServer extends EventEmitter<{
     // Video track
     sdp += `m=video 0 RTP/AVP ${videoPayloadType}\r\n`;
     sdp += `a=rtpmap:${videoPayloadType} ${codec}/90000\r\n`;
-    sdp += `a=sendonly\r\n`;
     if (this.streamMetadata?.frameRate) {
       sdp += `a=framerate:${this.streamMetadata.frameRate}\r\n`;
     }
@@ -1213,7 +1212,6 @@ export class BaichuanRtspServer extends EventEmitter<{
     // We packetize AAC (ADTS) as RTP mpeg4-generic, with config derived from ADTS.
     if (this.hasAudio) {
       sdp += `m=audio 0 RTP/AVP ${audioPayloadType}\r\n`;
-      sdp += `a=sendonly\r\n`;
       const a = this.audioInfo;
       const rate = a?.sampleRate ?? 8000;
       const ch = a?.channels ?? 1;

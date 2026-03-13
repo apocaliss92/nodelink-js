@@ -3,52 +3,37 @@
 # Multi-stage build: library + app in single container
 # =============================================================================
 
-# -----------------------------------------------------------------------------
-# Stage 1: Build the main library
-# -----------------------------------------------------------------------------
-FROM node:22-alpine AS lib-builder
+# Builder stages are forced to linux/amd64 because they produce pure
+# JavaScript/CSS artifacts — no platform-specific binaries. This avoids
+# extremely slow QEMU arm64 emulation during multi-arch builds.
 
+# -----------------------------------------------------------------------------
+# Stage 1: Build library + app
+# -----------------------------------------------------------------------------
+FROM --platform=linux/amd64 node:22-alpine AS builder
+
+# Build the library
 WORKDIR /lib
-
-# Copy library source files
 COPY package*.json ./
 COPY tsconfig.json ./
 COPY tsup.config.ts ./
 COPY api-extractor.json ./
 COPY src/ ./src/
+RUN npm install --ignore-scripts && npm run build:js
 
-# Install dependencies and build
-RUN npm install --ignore-scripts
-RUN npm run build:js
-
-# -----------------------------------------------------------------------------
-# Stage 2: Build the app
-# -----------------------------------------------------------------------------
-FROM node:22-alpine AS app-builder
-
+# Build the app (reuses /lib in-place, single npm install)
 WORKDIR /build
-
-# Copy built library from previous stage
-COPY --from=lib-builder /lib /lib
-
-# Copy app source files
 COPY app/package*.json ./
 COPY app/tsconfig.json ./
 COPY app/tsup.config.ts ./
 COPY app/vite.config.ts ./
 COPY app/src/ ./src/
 COPY app/client/ ./client/
-
-# Install dependencies (will resolve file:.. from /lib)
-# Need to update package.json to point to correct path
 RUN sed -i 's|"file:.."|"file:/lib"|g' package.json
-RUN npm install --ignore-scripts
-
-# Build app
-RUN npm run build
+RUN npm install --ignore-scripts && npm run build
 
 # -----------------------------------------------------------------------------
-# Stage 3: Production runtime
+# Stage 2: Production runtime (multi-arch: amd64 + arm64)
 # -----------------------------------------------------------------------------
 FROM node:22-alpine AS production
 
@@ -61,26 +46,23 @@ WORKDIR /app
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S nodejs -u 1001
 
-# Copy built library and install its dependencies
-COPY --from=lib-builder /lib/dist /lib/dist
-COPY --from=lib-builder /lib/package.json /lib/package.json
-COPY --from=lib-builder /lib/package-lock.json /lib/package-lock.json
+# Copy built library and install its production dependencies
+COPY --from=builder /lib/dist /lib/dist
+COPY --from=builder /lib/package.json /lib/package.json
+COPY --from=builder /lib/package-lock.json /lib/package-lock.json
 WORKDIR /lib
 ENV NODE_ENV=production
 RUN npm install --ignore-scripts
 WORKDIR /app
 
-# Copy app package.json and update library path
+# Copy app package.json and install production dependencies
 COPY app/package*.json ./
 RUN sed -i 's|"file:.."|"file:/lib"|g' package.json
-
-# Install production dependencies only
-# Using npm install instead of npm ci because we modify the library path
 ENV NODE_ENV=production
 RUN npm install --ignore-scripts
 
 # Copy built app (server.js and public/ with React client)
-COPY --from=app-builder /build/dist ./dist
+COPY --from=builder /build/dist ./dist
 
 # Copy entrypoint script
 COPY docker-entrypoint.sh /usr/local/bin/
