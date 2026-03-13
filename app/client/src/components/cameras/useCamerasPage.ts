@@ -259,38 +259,18 @@ export function useCamerasPage() {
 
   const setAutoStartForCamera = useCallback(
     async (camera: CameraInfo, autoStart: boolean) => {
-      const available = streamsByCamera[camera.id] ?? [];
       setSavingAutoStart((m) => ({ ...m, [camera.id]: true }));
       try {
-        const unique: AvailableStream[] = [];
-        const seen = new Set<string>();
-        for (const s of available) {
-          const k = `${s.profile}:${s.channel}`;
-          if (seen.has(k)) continue;
-          seen.add(k);
-          unique.push(s);
-        }
-
-        if (unique.length === 0) return;
-
-        const rtspStreams: RtspStreamConfig[] = unique.map((s) => ({
-          profile: s.profile,
-          channel: s.channel,
-          enabled: true,
-          autoStart,
-        }));
-
-        await trpcMutation("cameras.updateRtspStreams", {
+        await trpcMutation("cameras.setAutoStart", {
           id: camera.id,
-          rtspStreams,
+          autoStart,
         });
-
         await refresh();
       } finally {
         setSavingAutoStart((m) => ({ ...m, [camera.id]: false }));
       }
     },
-    [streamsByCamera, refresh],
+    [refresh],
   );
 
   const addCamera = useCallback(async () => {

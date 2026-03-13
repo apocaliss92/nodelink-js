@@ -146,6 +146,7 @@ async function createNativeMjpegStream(
   };
 
   // Start native video stream
+  // createNativeStream automatically acquires a dedicated socket from the pool.
   stream.nativeStream = createNativeStream(api, channel, profile);
 
   // Pump the native stream

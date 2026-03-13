@@ -1419,6 +1419,8 @@ export class BaichuanVideoStream extends EventEmitter<{
       }
     };
 
+    // Register the push handler BEFORE the VIDEO start command.
+    // Some NVR/Hub firmwares begin streaming before replying to the start command.
     this.client.on("push", this.videoFrameHandler);
     this.active = true;
     this.startWatchdog();
@@ -1464,27 +1466,14 @@ export class BaichuanVideoStream extends EventEmitter<{
         // Small delay to ensure the device has processed the stop commands
         await new Promise((resolve) => setTimeout(resolve, 100));
 
-        // this.logger?.log(
-        //   `[BaichuanVideoStream] start() calling startVideoStream: channel=${this.channel}, profile=${this.profile}, variant=${this.variant}`
-        // );
-
+        // Start the video stream. startVideoStream() synchronously reserves a msgNum and
+        // stores it in activeVideoMsgNums BEFORE its first await (sendFrame). Read the
+        // activeMsgNum immediately after to enable per-stream frame filtering on shared sockets.
         const startPromise = this.api.startVideoStream(
           this.channel,
           this.profile,
           { variant: this.variant, client: this.client },
         );
-
-        // On UDP/battery cams the stream typically will NOT start automatically; wait for the response.
-        // On TCP/NVR/Hub the response can be very slow; do not block stream processing on it.
-        if (this.client.getTransport?.() === "udp") {
-          await startPromise;
-        } else {
-          // Give it a brief window to fail fast (bad credentials, disconnected).
-          await Promise.race([
-            startPromise,
-            new Promise<void>((resolve) => setTimeout(resolve, 400)),
-          ]);
-        }
 
         const updateActiveMsgNum = () => {
           try {
@@ -1505,6 +1494,22 @@ export class BaichuanVideoStream extends EventEmitter<{
             // keep current activeMsgNum (may have been learned from frames)
           }
         };
+
+        // Read activeMsgNum immediately — it was set synchronously by startVideoStream().
+        // This enables msgNum-based frame filtering even before the camera responds.
+        updateActiveMsgNum();
+
+        // On UDP/battery cams the stream typically will NOT start automatically; wait for the response.
+        // On TCP/NVR/Hub the response can be very slow; do not block stream processing on it.
+        if (this.client.getTransport?.() === "udp") {
+          await startPromise;
+        } else {
+          // Give it a brief window to fail fast (bad credentials, disconnected).
+          await Promise.race([
+            startPromise,
+            new Promise<void>((resolve) => setTimeout(resolve, 400)),
+          ]);
+        }
 
         updateActiveMsgNum();
         void startPromise

@@ -209,7 +209,8 @@ export function emitStreamClientsChanged(
 }
 
 function registerCameraEvents(cameraId: string, api: ReolinkBaichuanApi): void {
-  if (registeredCameras.has(cameraId)) return;
+  // Allow re-registration after reconnection: the old API is dead,
+  // so we must subscribe on the new one even if cameraId was already registered.
   registeredCameras.add(cameraId);
 
   api.onSimpleEvent((event) => handleCameraEvent(cameraId, event));

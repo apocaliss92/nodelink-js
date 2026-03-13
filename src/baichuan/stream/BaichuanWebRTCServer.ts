@@ -630,6 +630,7 @@ export class BaichuanWebRTCServer extends EventEmitter {
     );
 
     // Create native stream generator
+    // createNativeStream automatically acquires a dedicated socket from the pool.
     session.nativeStream = createNativeStream(
       this.options.api,
       this.options.channel,

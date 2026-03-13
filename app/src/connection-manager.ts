@@ -158,8 +158,20 @@ export async function getConnection(
 
   const cached = connectionCache.get(key);
   if (cached) {
-    cached.lastUsed = Date.now();
-    return cached.api;
+    // Check if connection is still alive before reusing
+    if (cached.api.isReady) {
+      cached.lastUsed = Date.now();
+      return cached.api;
+    }
+
+    // Connection is dead — clean up and recreate
+    logger.debug(`Cached connection ${key} is no longer ready, recreating`);
+    try {
+      await cached.api.close();
+    } catch {
+      // ignore
+    }
+    connectionCache.delete(key);
   }
 
   const api = new ReolinkBaichuanApi({

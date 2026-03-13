@@ -120,8 +120,34 @@ export interface CameraInfo {
   error?: string;
 }
 
-// Store for API connections
-const apiConnections = new Map<string, ReolinkBaichuanApi>();
+// Store for API connections with connection state
+interface ManagedConnection {
+  api: ReolinkBaichuanApi;
+  cameraId: string;
+  /** Timestamp of last successful connection */
+  connectionTime: number;
+  /** Timestamp of last disconnect (for backoff) */
+  lastDisconnectTime: number;
+  /** Ping keepalive interval */
+  pingInterval?: NodeJS.Timeout;
+  /** Consecutive ping failures */
+  consecutivePingFailures: number;
+  /** Whether cleanup is in progress (prevent re-entrant cleanup) */
+  cleanupInProgress: boolean;
+  /** In-flight connect promise (prevent concurrent login storms) */
+  connectPromise?: Promise<ReolinkBaichuanApi>;
+}
+
+const apiConnections = new Map<string, ManagedConnection>();
+
+/** Minimum ms between reconnection attempts */
+const RECONNECT_BACKOFF_MS = 2000;
+
+/** Ping interval ms */
+const PING_INTERVAL_MS = 30_000;
+
+/** Max consecutive ping failures before forcing reconnect */
+const MAX_PING_FAILURES = 3;
 
 // Listeners notified when a new API connection is established (for events, etc.)
 const apiConnectionListeners: Array<
@@ -136,8 +162,10 @@ export function onApiConnected(
   callback: (cameraId: string, api: ReolinkBaichuanApi) => void,
 ): void {
   apiConnectionListeners.push(callback);
-  for (const [cameraId, api] of apiConnections) {
-    callback(cameraId, api);
+  for (const [cameraId, conn] of apiConnections) {
+    if (conn.api.isReady) {
+      callback(cameraId, conn.api);
+    }
   }
 }
 
@@ -162,13 +190,205 @@ const rtspServers = new Map<
 // Store for camera info cache
 const cameraInfoCache = new Map<string, CameraInfo>();
 
-// Get or create API connection for a camera
+/**
+ * Cleanup a managed connection: remove listeners, stop ping, close API.
+ * Safe to call multiple times (idempotent via cleanupInProgress guard).
+ */
+async function cleanupManagedConnection(
+  cameraId: string,
+  conn: ManagedConnection,
+): Promise<void> {
+  if (conn.cleanupInProgress) return;
+  conn.cleanupInProgress = true;
+
+  const cameraLogger = createSourceLogger(`camera:${cameraId}`);
+
+  try {
+    // Stop ping interval
+    if (conn.pingInterval) {
+      clearInterval(conn.pingInterval);
+      conn.pingInterval = undefined;
+    }
+
+    // Remove listeners to prevent re-entrant close handling
+    try {
+      conn.api.client.removeAllListeners("error");
+      conn.api.client.removeAllListeners("close");
+    } catch {
+      // ignore — client may already be destroyed
+    }
+
+    // Close the API connection
+    try {
+      await conn.api.close();
+    } catch {
+      // ignore
+    }
+
+    cameraLogger.info("Connection cleaned up");
+  } finally {
+    conn.cleanupInProgress = false;
+  }
+}
+
+/**
+ * Notify disconnection listeners and update cache status.
+ */
+function notifyDisconnection(cameraId: string): void {
+  for (const cb of apiDisconnectionListeners) {
+    try {
+      cb(cameraId);
+    } catch (e) {
+      createSourceLogger("rtsp-manager").error(
+        `apiDisconnectionListener error: ${e}`,
+      );
+    }
+  }
+
+  const info = cameraInfoCache.get(cameraId);
+  if (info) {
+    info.status = "disconnected";
+  }
+}
+
+/**
+ * Attach error/close listeners to a managed connection.
+ * On close: cleanup, remove from map, notify listeners.
+ */
+function attachConnectionListeners(
+  cameraId: string,
+  conn: ManagedConnection,
+): void {
+  const cameraLogger = createSourceLogger(`camera:${cameraId}`);
+
+  conn.api.client.on("error", (err: unknown) => {
+    const msg =
+      (err as any)?.message || (err as any)?.toString?.() || String(err);
+    if (
+      typeof msg === "string" &&
+      (msg.includes("Baichuan socket closed") ||
+        msg.includes("Baichuan UDP stream closed") ||
+        msg.includes("Not running"))
+    ) {
+      cameraLogger.debug(`Connection error (recoverable): ${msg}`);
+      return;
+    }
+    cameraLogger.error(`Connection error: ${msg}`);
+  });
+
+  conn.api.client.on("close", async () => {
+    // Only handle if this is still the current connection for this camera
+    const current = apiConnections.get(cameraId);
+    if (!current || current !== conn || conn.cleanupInProgress) {
+      cameraLogger.debug("Close event for stale connection, ignoring");
+      return;
+    }
+
+    conn.lastDisconnectTime = Date.now();
+    cameraLogger.warn("Socket closed, cleaning up for reconnection on next use");
+
+    // Remove from map FIRST to prevent getOrCreateApiConnection from returning dead conn
+    apiConnections.delete(cameraId);
+
+    await cleanupManagedConnection(cameraId, conn);
+    notifyDisconnection(cameraId);
+  });
+}
+
+/**
+ * Start ping keepalive for a managed connection.
+ */
+function startPingKeepalive(cameraId: string, conn: ManagedConnection): void {
+  const cameraLogger = createSourceLogger(`camera:${cameraId}`);
+
+  if (conn.pingInterval) {
+    clearInterval(conn.pingInterval);
+  }
+
+  conn.consecutivePingFailures = 0;
+
+  conn.pingInterval = setInterval(async () => {
+    // Stop if connection has changed
+    const current = apiConnections.get(cameraId);
+    if (!current || current !== conn) {
+      clearInterval(conn.pingInterval);
+      conn.pingInterval = undefined;
+      return;
+    }
+
+    try {
+      await conn.api.ping();
+      conn.consecutivePingFailures = 0;
+    } catch (e) {
+      conn.consecutivePingFailures++;
+      cameraLogger.debug(
+        `Ping failed (${conn.consecutivePingFailures}/${MAX_PING_FAILURES}): ${(e as any)?.message || e}`,
+      );
+
+      if (conn.consecutivePingFailures >= MAX_PING_FAILURES) {
+        cameraLogger.warn(
+          `${MAX_PING_FAILURES} consecutive ping failures, forcing reconnection`,
+        );
+
+        // Remove from map and cleanup — next call will reconnect
+        apiConnections.delete(cameraId);
+        await cleanupManagedConnection(cameraId, conn);
+        notifyDisconnection(cameraId);
+      }
+    }
+  }, PING_INTERVAL_MS);
+}
+
+/**
+ * Get or create a robust API connection for a camera.
+ *
+ * Aligned with scrypted-reolink-native plugin's ensureBaichuanClient():
+ * - Checks isReady/isClosed before reusing connections
+ * - Calls setIsNvr()/setIsMultiFocal() after login for correct socket pooling
+ * - Attaches error/close listeners for automatic cleanup
+ * - Serializes concurrent login attempts (prevents login storms)
+ * - Reconnection backoff after disconnections
+ * - Ping keepalive to detect stale connections
+ */
 export async function getOrCreateApiConnection(
   cameraId: string,
 ): Promise<ReolinkBaichuanApi> {
   const existing = apiConnections.get(cameraId);
+
   if (existing) {
-    return existing;
+    // Prevent concurrent login storms — wait on in-flight connect
+    if (existing.connectPromise) {
+      return existing.connectPromise;
+    }
+
+    // Already connected and ready → reuse
+    if (existing.api.isReady) {
+      return existing.api;
+    }
+
+    // API was explicitly closed → cleanup and recreate
+    if (existing.api.isClosed) {
+      const cameraLogger = createSourceLogger(`camera:${cameraId}`);
+      cameraLogger.info("API is closed, recreating connection");
+      apiConnections.delete(cameraId);
+      await cleanupManagedConnection(cameraId, existing);
+      notifyDisconnection(cameraId);
+    } else {
+      // Socket disconnected but API still valid → try library-side reconnect
+      const cameraLogger = createSourceLogger(`camera:${cameraId}`);
+      try {
+        cameraLogger.info("Socket lost, attempting ensureConnected()");
+        await existing.api.ensureConnected();
+        return existing.api;
+      } catch (e) {
+        cameraLogger.warn(
+          `ensureConnected failed: ${(e as any)?.message || e}, recreating connection`,
+        );
+        apiConnections.delete(cameraId);
+        await cleanupManagedConnection(cameraId, existing);
+        notifyDisconnection(cameraId);
+      }
+    }
   }
 
   const config = getConfig();
@@ -177,38 +397,107 @@ export async function getOrCreateApiConnection(
     throw new Error(`Camera not found: ${cameraId}`);
   }
 
-  const logger = createSourceLogger(`camera:${camera.name}`);
+  const cameraLogger = createSourceLogger(`camera:${camera.name}`);
 
-  const debugOptions = camera.debugLogs
-    ? {
-        general: true,
-        debugRtsp: true,
-        traceNativeStream: true,
-        traceTalk: true,
+  // Create a managed connection entry with the connect promise to serialize access
+  const conn: ManagedConnection = {
+    api: null!,
+    cameraId,
+    connectionTime: 0,
+    lastDisconnectTime: existing?.lastDisconnectTime ?? 0,
+    consecutivePingFailures: 0,
+    cleanupInProgress: false,
+  };
+
+  // The connect promise serializes concurrent callers
+  conn.connectPromise = (async () => {
+    // Apply backoff to avoid aggressive reconnection after disconnection
+    if (conn.lastDisconnectTime > 0) {
+      const timeSinceDisconnect = Date.now() - conn.lastDisconnectTime;
+      if (timeSinceDisconnect < RECONNECT_BACKOFF_MS) {
+        const waitTime = RECONNECT_BACKOFF_MS - timeSinceDisconnect;
+        cameraLogger.info(`Waiting ${waitTime}ms before reconnection (backoff)`);
+        await new Promise((resolve) => setTimeout(resolve, waitTime));
       }
-    : undefined;
+    }
 
-  const api = new ReolinkBaichuanApi({
-    host: camera.host,
-    port: camera.port,
-    username: camera.username,
-    password: camera.password,
-    debugOptions,
-    logger: {
-      log: (msg: unknown) => logger.info(String(msg)),
-      info: (msg: string) => logger.info(msg),
-      warn: (msg: string) => logger.warn(msg),
-      error: (msg: string) => logger.error(msg),
-      debug: (msg: string) => logger.debug(msg),
-    },
-  });
+    const debugOptions = camera.debugLogs
+      ? {
+          general: true,
+          debugRtsp: true,
+          traceNativeStream: true,
+          traceTalk: true,
+        }
+      : undefined;
 
-  try {
-    logger.info(`Connecting to camera at ${camera.host}:${camera.port}`);
+    const api = new ReolinkBaichuanApi({
+      host: camera.host,
+      port: camera.port,
+      username: camera.username,
+      password: camera.password,
+      debugOptions,
+      logger: {
+        log: (msg: unknown) => cameraLogger.info(String(msg)),
+        info: (msg: string) => cameraLogger.info(msg),
+        warn: (msg: string) => cameraLogger.warn(msg),
+        error: (msg: string) => cameraLogger.error(msg),
+        debug: (msg: string) => cameraLogger.debug(msg),
+      },
+    });
+
+    cameraLogger.info(`Connecting to camera at ${camera.host}:${camera.port}`);
     await api.login();
-    logger.info(`Connected successfully`);
+    cameraLogger.info("Connected successfully");
 
-    apiConnections.set(cameraId, api);
+    // Detect device type and set flags BEFORE any streaming (critical for socket pooling)
+    const channelCount = await api.getChannelCount();
+    const info = await api.getInfo();
+    const modelLower = (info?.type ?? "").toLowerCase();
+    const isNvr =
+      channelCount > 1 ||
+      modelLower.includes("hub") ||
+      modelLower.includes("nvr") ||
+      modelLower.includes("home hub");
+
+    api.setIsNvr(isNvr);
+    cameraLogger.info(`setIsNvr(${isNvr}) — model=${info?.type}, channels=${channelCount}`);
+
+    // Detect multifocal/dual-lens (TrackMix, Duo)
+    const channel = camera.rtspChannel ?? 0;
+    let isMultifocal = false;
+    try {
+      const dualLensAnalysis = await api.getDualLensChannelInfo(
+        isNvr ? channel : 0,
+        { onNvr: isNvr },
+      );
+      isMultifocal = dualLensAnalysis.isDualLens;
+    } catch {
+      // Not multifocal
+    }
+
+    api.setIsMultiFocal(isMultifocal);
+    if (isMultifocal) {
+      cameraLogger.info("setIsMultiFocal(true) — dual-lens device detected");
+    }
+
+    // Verify socket is connected
+    if (!api.client.isSocketConnected()) {
+      throw new Error("Socket not connected after login");
+    }
+
+    // Finalize the managed connection
+    conn.api = api;
+    conn.connectionTime = Date.now();
+    conn.connectPromise = undefined;
+
+    // Attach error/close listeners for auto-cleanup
+    attachConnectionListeners(cameraId, conn);
+
+    // Start ping keepalive
+    startPingKeepalive(cameraId, conn);
+
+    // Store in map
+    apiConnections.set(cameraId, conn);
 
     // Notify listeners (e.g. events-manager for SSE/MQTT/JSON stream)
     for (const cb of apiConnectionListeners) {
@@ -221,12 +510,23 @@ export async function getOrCreateApiConnection(
       }
     }
 
-    // Update camera info cache
+    // Update camera info cache (use already-fetched data)
     await updateCameraInfo(cameraId, api);
 
     return api;
+  })();
+
+  // Store immediately so concurrent callers find the connectPromise
+  apiConnections.set(cameraId, conn);
+
+  try {
+    return await conn.connectPromise;
   } catch (error) {
-    logger.error(`Failed to connect: ${error}`);
+    // Connection failed — clean up and apply backoff timestamp
+    conn.lastDisconnectTime = Date.now();
+    conn.connectPromise = undefined;
+    apiConnections.delete(cameraId);
+    cameraLogger.error(`Failed to connect: ${error}`);
     throw error;
   }
 }
@@ -334,31 +634,11 @@ export function getAllCamerasInfo(): CameraInfo[] {
 
 // Close API connection
 export async function closeApiConnection(cameraId: string) {
-  const api = apiConnections.get(cameraId);
-  if (api) {
-    const logger = createSourceLogger(`camera:${cameraId}`);
-    try {
-      await api.close();
-      logger.info("Connection closed");
-    } catch (error) {
-      logger.error(`Error closing connection: ${error}`);
-    }
+  const conn = apiConnections.get(cameraId);
+  if (conn) {
     apiConnections.delete(cameraId);
-
-    for (const cb of apiDisconnectionListeners) {
-      try {
-        cb(cameraId);
-      } catch (e) {
-        createSourceLogger("rtsp-manager").error(
-          `apiDisconnectionListener error: ${e}`,
-        );
-      }
-    }
-
-    const info = cameraInfoCache.get(cameraId);
-    if (info) {
-      info.status = "disconnected";
-    }
+    await cleanupManagedConnection(cameraId, conn);
+    notifyDisconnection(cameraId);
   }
 }
 
@@ -693,7 +973,7 @@ export async function stopAllCameraStreams(cameraId: string): Promise<void> {
   }
 }
 
-// Auto-start RTSP servers for streams with autoStart flag enabled
+// Auto-start RTSP servers for cameras with autoStart flag enabled
 export async function autoStartRtspServers() {
   const config = getConfig();
   const logger = createSourceLogger("rtsp-manager");
@@ -703,16 +983,19 @@ export async function autoStartRtspServers() {
   );
 
   for (const camera of config.cameras) {
-    // Get streams with autoStart enabled (default is true for all streams)
-    const autoStartStreams =
-      camera.rtspStreams?.filter((s) => s.autoStart !== false) || [];
+    const enabledStreams = (camera.rtspStreams ?? []).filter((s) => s.enabled === true);
 
-    if (autoStartStreams.length > 0) {
-      // Start only streams with autoStart enabled
-      for (const stream of autoStartStreams) {
+    logger.info(
+      `Camera ${camera.name}: autoStart=${camera.autoStart}, ${enabledStreams.length} enabled stream(s)`,
+    );
+
+    if (camera.autoStart !== true) continue;
+
+    if (enabledStreams.length > 0) {
+      for (const stream of enabledStreams) {
         try {
           logger.info(
-            `Auto-starting stream ${stream.profile} for camera: ${camera.name}`,
+            `Auto-starting stream ${stream.profile}/ch${stream.channel} for camera: ${camera.name}`,
           );
           await startRtspServer(camera.id, {
             profile: stream.profile,
@@ -725,7 +1008,7 @@ export async function autoStartRtspServers() {
         }
       }
     } else if (camera.rtspEnabled) {
-      // Legacy support - check if autoStart is not explicitly disabled
+      // Legacy support
       try {
         logger.info(
           `Auto-starting RTSP for camera: ${camera.name} (legacy mode)`,
@@ -735,8 +1018,6 @@ export async function autoStartRtspServers() {
         logger.error(`Failed to auto-start RTSP for ${camera.name}: ${error}`);
       }
     }
-    // If no streams configured and no legacy setting, don't auto-start anything
-    // Users need to explicitly configure streams first
   }
 }
 
@@ -746,15 +1027,12 @@ export async function autoConnectCameras() {
   const logger = createSourceLogger("rtsp-manager");
 
   const camerasToConnect = config.cameras.filter((camera) => {
-    const hasAutoStartStream =
-      (camera.rtspStreams ?? []).some(
-        (s) => s.enabled !== false && s.autoStart !== false,
-      ) || false;
-
-    // Legacy support
-    const hasLegacyAutoStart = camera.rtspEnabled === true;
-
-    return hasAutoStartStream || hasLegacyAutoStart;
+    if (camera.autoStart === true) {
+      logger.info(`Camera ${camera.name}: auto-connect (autoStart=true)`);
+      return true;
+    }
+    logger.info(`Camera ${camera.name}: skipped (autoStart=${camera.autoStart})`);
+    return false;
   });
 
   logger.info(

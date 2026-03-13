@@ -263,6 +263,7 @@ export class BaichuanHlsServer extends EventEmitter {
       this.log("info", `Starting HLS stream to ${this.outputDir}`);
 
       // Start native stream
+      // createNativeStream automatically acquires a dedicated socket from the pool.
       this.nativeStream = createNativeStream(
         this.api,
         this.channel,

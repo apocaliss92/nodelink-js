@@ -2371,6 +2371,16 @@ export class BaichuanRtspServer extends EventEmitter<{
         this.firstFrameResolve = null;
         this.nativeFanout = null;
         this.prebuffer = [];
+
+        // Release the dedicated session from the ended stream to prevent session leaks.
+        // Without this, each restart acquires a new session (incrementing refCount)
+        // while the old session is never released, eventually exhausting camera sessions.
+        if (this.dedicatedSessionRelease) {
+          const release = this.dedicatedSessionRelease;
+          this.dedicatedSessionRelease = undefined;
+          release().catch(() => { /* ignore */ });
+        }
+
         this.logger.info(
           `[rebroadcast] native stream ended (camera sleeping or connection lost)  profile=${this.profile} channel=${this.channel} clients=${this.connectedClients.size}`,
         );

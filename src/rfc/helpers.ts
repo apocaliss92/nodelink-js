@@ -349,8 +349,28 @@ export async function* createNativeStream(
   videoType?: "H264" | "H265";
   isKeyframe?: boolean;
 }, void, unknown> {
+  // When no dedicated client is provided, automatically acquire one from the socket pool.
+  // This prevents VIDEO START from being rejected (400) on the shared socket used for events.
+  let client = options?.client;
+  let dedicatedRelease: (() => Promise<void>) | undefined;
+  if (!client) {
+    const variantSuffix = options?.variant && options.variant !== "default" ? `:${options.variant}` : "";
+    const sessionKey = `native-stream:ch${channel}:${profile}${variantSuffix}`;
+    try {
+      api.logger?.info?.(`[createNativeStream] acquiring dedicated session  key=${sessionKey}`);
+      const session = await api.createDedicatedSession(sessionKey);
+      client = session.client;
+      dedicatedRelease = session.release;
+      api.logger?.info?.(`[createNativeStream] dedicated session acquired  key=${sessionKey}`);
+    } catch (e) {
+      // Fallback to shared client if pool is unavailable
+      api.logger?.warn?.(`[createNativeStream] dedicated session failed, using shared client: ${e instanceof Error ? e.message : e}`);
+      client = api.client;
+    }
+  }
+
   const videoStream = new BaichuanVideoStream({
-    client: options?.client ?? api.client,
+    client,
     api,
     channel,
     profile,
@@ -368,10 +388,16 @@ export async function* createNativeStream(
     closed = true;
     // Do not throw from an event callback: it can crash the process asynchronously.
     // Consumers will observe stream termination.
+    api.logger?.warn?.(
+      `[createNativeStream] stream error → closed  channel=${channel} profile=${profile} error=${_error?.message ?? _error}`,
+    );
   };
 
   const onClose = () => {
     closed = true;
+    api.logger?.warn?.(
+      `[createNativeStream] stream close → closed  channel=${channel} profile=${profile}`,
+    );
   };
 
   try {
@@ -543,6 +569,10 @@ export async function* createNativeStream(
     }
     videoStream.removeListener("error", onError);
     videoStream.removeListener("close", onClose);
+    // Release the dedicated session acquired above
+    if (dedicatedRelease) {
+      dedicatedRelease().catch(() => { /* ignore */ });
+    }
   }
 }
 

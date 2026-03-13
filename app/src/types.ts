@@ -7,7 +7,7 @@ export const RtspStreamConfigSchema = z.object({
   port: z.number().optional(), // Remember assigned port for this stream
   token: z.string().optional(), // Random token for RTSP path (instead of camera name)
   enabled: z.boolean().default(false),
-  autoStart: z.boolean().default(true), // Auto-start this stream on server startup
+  autoStart: z.boolean().default(false), // Auto-start this stream on server startup
 });
 
 export type RtspStreamConfig = z.infer<typeof RtspStreamConfigSchema>;
@@ -26,6 +26,8 @@ export const CameraConfigSchema = z.object({
   isNvr: z.boolean().default(false),
   // Debug logging for this camera
   debugLogs: z.boolean().default(false),
+  // Auto-connect and auto-start streams on server startup
+  autoStart: z.boolean().default(false),
   // RTSP streams configuration (multiple streams per camera)
   rtspStreams: z.array(RtspStreamConfigSchema).default([]),
   // Legacy fields (for backward compatibility, will be migrated)

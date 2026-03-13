@@ -248,6 +248,7 @@ export class BaichuanMjpegServer extends EventEmitter {
 
     try {
       // Create native stream
+      // createNativeStream automatically acquires a dedicated socket from the pool.
       this.nativeStream = createNativeStream(
         api,
         channel,
@@ -401,6 +402,7 @@ export class BaichuanMjpegServer extends EventEmitter {
     }
 
     this.detectedCodec = null;
+
     this.log("debug", "Stream stopped");
   }
 

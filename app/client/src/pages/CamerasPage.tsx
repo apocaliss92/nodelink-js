@@ -124,10 +124,7 @@ export default function CamerasPage() {
               onDisconnect={() => void disconnect(c.id)}
               onSetDebug={() => void setCameraDebug(c.id, !c.debugLogs)}
               onSetAutoStart={() => {
-                const allAuto =
-                  (c.rtspStreams?.length ?? 0) > 0 &&
-                  c.rtspStreams.every((s) => s.autoStart !== false);
-                void setAutoStartForCamera(c, !allAuto);
+                void setAutoStartForCamera(c, !(c.autoStart === true));
               }}
               onDelete={() => void deleteCamera(c.id)}
               onOpenPreview={setPreviewModal}

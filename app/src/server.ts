@@ -1011,6 +1011,29 @@ async function shutdown() {
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
+// Prevent the process from crashing on unhandled errors.
+// Without these handlers, any unhandled rejection or uncaught exception
+// will terminate the Node.js process (and kill the Docker container).
+process.on("uncaughtException", (err) => {
+  appLogger.error(`Uncaught exception: ${err?.message ?? err}`, {
+    source: "server",
+  });
+  if (err?.stack) {
+    appLogger.error(err.stack, { source: "server" });
+  }
+});
+
+process.on("unhandledRejection", (reason) => {
+  const msg =
+    reason instanceof Error
+      ? reason.message
+      : String(reason);
+  appLogger.error(`Unhandled rejection: ${msg}`, { source: "server" });
+  if (reason instanceof Error && reason.stack) {
+    appLogger.error(reason.stack, { source: "server" });
+  }
+});
+
 // Start server
 server.listen(PORT, async () => {
   appLogger.info(`Server started on port ${PORT}`, { source: "server" });

@@ -39,6 +39,7 @@ export type CameraInfo = {
   rtspChannel: number;
   isNvr: boolean;
   debugLogs: boolean;
+  autoStart: boolean;
   rtspStreams: RtspStreamConfig[];
 };
 

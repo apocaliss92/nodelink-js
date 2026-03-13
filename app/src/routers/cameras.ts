@@ -36,7 +36,8 @@ export const camerasRouter = router({
           rtspChannel: camConfig?.rtspChannel ?? 0,
           isNvr: camConfig?.isNvr ?? false,
           debugLogs: camConfig?.debugLogs ?? false,
-          rtspStreams: camConfig?.rtspStreams ?? [], // Include stream configs with autoStart
+          autoStart: camConfig?.autoStart ?? false,
+          rtspStreams: camConfig?.rtspStreams ?? [],
         };
       });
     }),
@@ -57,7 +58,8 @@ export const camerasRouter = router({
         rtspChannel: camConfig?.rtspChannel ?? 0,
         isNvr: camConfig?.isNvr ?? false,
         debugLogs: camConfig?.debugLogs ?? false,
-        rtspStreams: camConfig?.rtspStreams ?? [], // Include stream configs with autoStart
+        autoStart: camConfig?.autoStart ?? false,
+        rtspStreams: camConfig?.rtspStreams ?? [],
       };
     }),
 
@@ -136,6 +138,7 @@ export const camerasRouter = router({
         channels: z.number().optional(),
         isNvr: z.boolean().optional(),
         debugLogs: z.boolean().optional(),
+        autoStart: z.boolean().optional(),
         rtspStreams: z.array(RtspStreamConfigSchema).optional(),
         // Legacy support
         rtspEnabled: z.boolean().optional(),
@@ -212,6 +215,15 @@ export const camerasRouter = router({
       // Stop all streams first when disconnecting
       await stopAllCameraStreams(input.id);
       await closeApiConnection(input.id);
+      return { success: true };
+    }),
+
+  // Toggle auto-start for a camera
+  setAutoStart: publicProcedure
+    .meta({ description: "Enable/disable auto-start for a camera" })
+    .input(z.object({ id: z.string(), autoStart: z.boolean() }))
+    .mutation(({ input }) => {
+      updateCamera(input.id, { autoStart: input.autoStart });
       return { success: true };
     }),
 

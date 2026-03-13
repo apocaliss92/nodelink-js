@@ -58,9 +58,7 @@ export function CameraCard({
   onDelete: () => void;
   onOpenPreview: (state: PreviewModalState) => void;
 }) {
-  const allAuto =
-    (camera.rtspStreams?.length ?? 0) > 0 &&
-    camera.rtspStreams.every((s) => s.autoStart !== false);
+  const allAuto = camera.autoStart === true;
 
   return (
     <div className="card">
