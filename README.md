@@ -39,9 +39,13 @@ The library includes a **complete web-based management interface** for easy came
 </p>
 
 - 🎛️ **Camera Management** - Add, configure, and monitor multiple cameras
-- 📹 **Live Streaming** - Preview streams via MJPEG, WebRTC, or RTSP
+- 📡 **NVR / Hub Support** - Add NVRs as first-class entities, discover channels, and manage child cameras. All cameras on an NVR share a single connection (like Scrypted). Connect/disconnect at the NVR level; add or remove cameras at any time via channel discovery
+- 🔋 **Battery Camera Support** - Cameras are auto-detected as battery-powered when they emit sleep/wake events. Per-camera battery mode setting: **Stream Only** (default — camera sleeps when no stream clients) or **Always On** (stays awake while connected). Live awake/sleeping badge on each camera card. Controls and stream discovery are paused while the camera sleeps to avoid unnecessary wake-ups
+- 💡 **Camera Controls** - Toggle floodlight, siren, floodlight-on-motion, siren-on-motion, PTZ auto-tracking, and PIR sensor directly from the camera card. PTZ directional controls and preset navigation via a dedicated modal
+- 📹 **Live Streaming** - Preview streams via MJPEG, WebRTC, or HLS. Stream options are cached so battery cameras show available streams even while sleeping
+- 🔔 **Real-time Events** - Per-camera event viewer with live SSE updates (motion, doorbell, people, vehicle, animal, face, package, day/night, sleep/wake). Events are broadcast via SSE, NDJSON stream, and MQTT
 - 📊 **Real-time Logs** - Monitor camera events and system logs
-- ⚙️ **Settings** - Configure RTSP proxy, ports, and auto-start options
+- ⚙️ **Settings** - Configure RTSP proxy, ports, auto-start options, MQTT broker, and Home Assistant discovery
 - 📱 **PWA Support** - Install as a Progressive Web App on mobile devices
 - 🌐 **Responsive Design** - Works on desktop, tablet, and mobile
 

@@ -4,8 +4,10 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import {
   CameraConfigSchema,
+  NvrConfigSchema,
   RtspServerConfigSchema,
   type CameraConfig,
+  type NvrConfig,
   type RtspServerConfig,
 } from "./types.js";
 import { hashPassword } from "./password.js";
@@ -87,8 +89,9 @@ export const SettingsSchema = z.object({
   // RTSP Authentication
   rtspRequireAuth: z.boolean().default(false),
 
-  // Cameras and RTSP servers (previously in config.json)
+  // Cameras, NVRs, and RTSP servers
   cameras: z.array(CameraConfigSchema).default([]),
+  nvrs: z.array(NvrConfigSchema).default([]),
   rtspServers: z.array(RtspServerConfigSchema).default([]),
 
   // Dashboard/web UI authentication users
@@ -241,6 +244,49 @@ export function deleteCamera(id: string): boolean {
   ];
   // Also remove associated RTSP servers
   settings.rtspServers = settings.rtspServers.filter((s) => s.cameraId !== id);
+  saveSettings(settings);
+  return true;
+}
+
+// ==================== NVRs ====================
+
+export function getNvrs(): NvrConfig[] {
+  return settings.nvrs;
+}
+
+export function getNvr(id: string): NvrConfig | undefined {
+  return settings.nvrs.find((n) => n.id === id);
+}
+
+export function addNvr(
+  nvr: Omit<NvrConfig, "id"> & { id?: string },
+): NvrConfig {
+  const newNvr: NvrConfig = {
+    ...nvr,
+    id: nvr.id || randomUUID(),
+  } as NvrConfig;
+  settings.nvrs = [...settings.nvrs, newNvr];
+  saveSettings(settings);
+  return newNvr;
+}
+
+export function deleteNvr(id: string): boolean {
+  const index = settings.nvrs.findIndex((n) => n.id === id);
+  if (index === -1) return false;
+
+  settings.nvrs = [
+    ...settings.nvrs.slice(0, index),
+    ...settings.nvrs.slice(index + 1),
+  ];
+  // Also remove cameras that belong to this NVR
+  const cameraIds = settings.cameras
+    .filter((c) => c.nvrId === id)
+    .map((c) => c.id);
+  settings.cameras = settings.cameras.filter((c) => c.nvrId !== id);
+  // Remove associated RTSP servers
+  settings.rtspServers = settings.rtspServers.filter(
+    (s) => !cameraIds.includes(s.cameraId),
+  );
   saveSettings(settings);
   return true;
 }
@@ -466,10 +512,12 @@ export function setStreamAutoStart(
 
 export function getConfig(): {
   cameras: CameraConfig[];
+  nvrs: NvrConfig[];
   rtspServers: RtspServerConfig[];
 } {
   return {
     cameras: settings.cameras,
+    nvrs: settings.nvrs,
     rtspServers: settings.rtspServers,
   };
 }

@@ -1,4 +1,5 @@
 export { AddCameraModal } from "./AddCameraModal";
+export { AddNvrModal } from "./AddNvrModal";
 export { CameraCard } from "./CameraCard";
 export { CameraControlsSection } from "./CameraControlsSection";
 export { DropdownButton } from "./DropdownButton";

@@ -38,6 +38,10 @@ export type CameraInfo = {
   sanitizedName: string;
   rtspChannel: number;
   isNvr: boolean;
+  nvrId?: string;
+  isBattery?: boolean;
+  batteryMode?: "alwaysOn" | "streamOnly";
+  sleepStatus?: "awake" | "sleeping";
   debugLogs: boolean;
   autoStart: boolean;
   rtspStreams: RtspStreamConfig[];
@@ -86,12 +90,38 @@ export type AddCameraInput = {
   nvrChannel: number;
 };
 
+export type NvrChannel = {
+  channel: number;
+  name: string;
+  model: string;
+  uid: string;
+  state: string;
+  online: boolean;
+  isMultifocal: boolean;
+  isBattery: boolean;
+  isDoorbell: boolean;
+  ip: string;
+};
+
+export type NvrInfo = {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+};
+
 export type ControlsState = {
   hasFloodlight: boolean;
   hasSiren: boolean;
   hasPtz: boolean;
   hasPresets: boolean;
+  hasAutotracking: boolean;
+  hasPir: boolean;
   lightOn?: boolean;
   sirenOn?: boolean;
+  floodlightOnMotion?: boolean;
+  sirenOnMotion?: boolean;
+  autotrackingOn?: boolean;
+  pirOn?: boolean;
   ptzPresets: Array<{ id: number; name: string }>;
 } | null;

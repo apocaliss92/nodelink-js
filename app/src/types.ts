@@ -24,6 +24,13 @@ export const CameraConfigSchema = z.object({
   // Explicitly mark this camera as a channel on an NVR/Hub
   // (so the UI can show the channel even if it's 0)
   isNvr: z.boolean().default(false),
+  // Reference to parent NVR (if this camera was added via NVR discovery)
+  nvrId: z.string().optional(),
+  // Whether this camera is battery-powered (affects query behavior)
+  isBattery: z.boolean().default(false),
+  // Battery behavior: "alwaysOn" keeps camera awake while connected,
+  // "streamOnly" wakes on stream and sleeps after last client disconnects
+  batteryMode: z.enum(["alwaysOn", "streamOnly"]).optional().default("streamOnly"),
   // Debug logging for this camera
   debugLogs: z.boolean().default(false),
   // Auto-connect and auto-start streams on server startup
@@ -52,9 +59,22 @@ export const RtspServerConfigSchema = z.object({
 
 export type RtspServerConfig = z.infer<typeof RtspServerConfigSchema>;
 
+// NVR configuration schema
+export const NvrConfigSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  host: z.string(),
+  port: z.number().default(9000),
+  username: z.string(),
+  password: z.string(),
+});
+
+export type NvrConfig = z.infer<typeof NvrConfigSchema>;
+
 // Full config file schema
 export const ConfigFileSchema = z.object({
   cameras: z.array(CameraConfigSchema),
+  nvrs: z.array(NvrConfigSchema).default([]),
   rtspServers: z.array(RtspServerConfigSchema),
 });
 

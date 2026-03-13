@@ -5,10 +5,18 @@ import {
   addCamera,
   updateCamera,
   deleteCamera,
+  addNvr,
+  deleteNvr,
+  getNvrs,
+  getNvr,
 } from "../settings-store.js";
 import {
   getOrCreateApiConnection,
   closeApiConnection,
+  connectNvr,
+  disconnectNvr,
+  enableNvrCamera,
+  disableNvrCamera,
   getCameraInfo,
   getAllCamerasInfo,
   testCameraConnection,
@@ -17,6 +25,7 @@ import {
   stopAllCameraStreams,
   sanitizeCameraName,
 } from "../rtsp-manager.js";
+import { getCameraSleepStatus } from "../events-manager.js";
 import { RtspStreamConfigSchema } from "../types.js";
 
 export const camerasRouter = router({
@@ -35,6 +44,10 @@ export const camerasRouter = router({
           sanitizedName: sanitizeCameraName(cam.name),
           rtspChannel: camConfig?.rtspChannel ?? 0,
           isNvr: camConfig?.isNvr ?? false,
+          nvrId: camConfig?.nvrId,
+          isBattery: camConfig?.isBattery ?? false,
+          batteryMode: camConfig?.batteryMode ?? "streamOnly",
+          sleepStatus: getCameraSleepStatus(cam.id),
           debugLogs: camConfig?.debugLogs ?? false,
           autoStart: camConfig?.autoStart ?? false,
           rtspStreams: camConfig?.rtspStreams ?? [],
@@ -57,6 +70,7 @@ export const camerasRouter = router({
         sanitizedName: sanitizeCameraName(cam.name),
         rtspChannel: camConfig?.rtspChannel ?? 0,
         isNvr: camConfig?.isNvr ?? false,
+        nvrId: camConfig?.nvrId,
         debugLogs: camConfig?.debugLogs ?? false,
         autoStart: camConfig?.autoStart ?? false,
         rtspStreams: camConfig?.rtspStreams ?? [],
@@ -199,22 +213,37 @@ export const camerasRouter = router({
     }),
 
   // Connect to camera
+  // For NVR children: enables camera for restreaming (NVR socket stays shared)
+  // For standalone cameras: opens the TCP connection
   connect: publicProcedure
     .meta({ description: "Connect to a camera" })
     .input(z.object({ id: z.string() }))
     .mutation(async ({ input }) => {
-      await getOrCreateApiConnection(input.id);
+      const config = getConfig();
+      const camera = config.cameras.find((c) => c.id === input.id);
+      if (camera?.nvrId) {
+        await enableNvrCamera(input.id);
+      } else {
+        await getOrCreateApiConnection(input.id);
+      }
       return { success: true };
     }),
 
   // Disconnect from camera
+  // For NVR children: disables camera from restreaming (NVR socket stays alive)
+  // For standalone cameras: closes the TCP connection
   disconnect: publicProcedure
     .meta({ description: "Disconnect from a camera" })
     .input(z.object({ id: z.string() }))
     .mutation(async ({ input }) => {
-      // Stop all streams first when disconnecting
-      await stopAllCameraStreams(input.id);
-      await closeApiConnection(input.id);
+      const config = getConfig();
+      const camera = config.cameras.find((c) => c.id === input.id);
+      if (camera?.nvrId) {
+        await disableNvrCamera(input.id);
+      } else {
+        await stopAllCameraStreams(input.id);
+        await closeApiConnection(input.id);
+      }
       return { success: true };
     }),
 
@@ -419,15 +448,27 @@ export const camerasRouter = router({
           support.ptzMode.toLowerCase() !== "none" &&
           support.ptzMode !== "0");
       const hasPresets = cap.hasPresets === true;
+      const hasAutotracking = cap.hasAutotracking === true;
+      const hasPir = cap.hasPir === true;
 
       let lightOn: boolean | undefined;
       let sirenOn: boolean | undefined;
+      let floodlightOnMotion: boolean | undefined;
+      let sirenOnMotion: boolean | undefined;
+      let autotrackingOn: boolean | undefined;
+      let pirOn: boolean | undefined;
       let ptzPresets: Array<{ id: number; name: string }> | undefined;
 
       if (hasFloodlight) {
         try {
           const st = await api.getWhiteLedState(channel);
-          lightOn = st?.enable === 1;
+          lightOn = st?.enabled === true;
+        } catch {
+          // ignore
+        }
+        try {
+          const fm = await api.getFloodlightOnMotion(channel);
+          floodlightOnMotion = fm?.floodlightOnMotion === true;
         } catch {
           // ignore
         }
@@ -435,7 +476,29 @@ export const camerasRouter = router({
       if (hasSiren) {
         try {
           const st = await api.getSiren(channel);
-          sirenOn = st?.enable === 1;
+          sirenOn = st?.enabled === true;
+        } catch {
+          // ignore
+        }
+        try {
+          const sm = await api.getSirenOnMotion(channel);
+          sirenOnMotion = (sm as any)?.enable === 1;
+        } catch {
+          // ignore
+        }
+      }
+      if (hasAutotracking) {
+        try {
+          const at = await api.getAutotracking(channel);
+          autotrackingOn = at?.enabled === true;
+        } catch {
+          // ignore
+        }
+      }
+      if (hasPir) {
+        try {
+          const pir = await api.getPirInfo(channel);
+          pirOn = (pir as any)?.enable === 1;
         } catch {
           // ignore
         }
@@ -453,8 +516,14 @@ export const camerasRouter = router({
         hasSiren,
         hasPtz,
         hasPresets,
+        hasAutotracking,
+        hasPir,
         lightOn,
         sirenOn,
+        floodlightOnMotion,
+        sirenOnMotion,
+        autotrackingOn,
+        pirOn,
         ptzPresets: ptzPresets ?? [],
       };
     }),
@@ -532,6 +601,58 @@ export const camerasRouter = router({
       return { success: true };
     }),
 
+  // Set floodlight on motion
+  setFloodlightOnMotion: publicProcedure
+    .meta({ description: "Enable/disable floodlight on motion detection" })
+    .input(z.object({ id: z.string(), on: z.boolean() }))
+    .mutation(async ({ input }) => {
+      const config = getConfig();
+      const camera = config.cameras.find((c) => c.id === input.id);
+      if (!camera) throw new Error(`Camera not found: ${input.id}`);
+      const api = await getOrCreateApiConnection(input.id);
+      await api.setFloodlightOnMotion(input.on, camera.rtspChannel ?? 0);
+      return { success: true };
+    }),
+
+  // Set siren on motion
+  setSirenOnMotion: publicProcedure
+    .meta({ description: "Enable/disable siren on motion detection" })
+    .input(z.object({ id: z.string(), on: z.boolean() }))
+    .mutation(async ({ input }) => {
+      const config = getConfig();
+      const camera = config.cameras.find((c) => c.id === input.id);
+      if (!camera) throw new Error(`Camera not found: ${input.id}`);
+      const api = await getOrCreateApiConnection(input.id);
+      await api.setSirenOnMotion({ enable: input.on ? 1 : 0 }, camera.rtspChannel ?? 0);
+      return { success: true };
+    }),
+
+  // Set autotracking
+  setAutotracking: publicProcedure
+    .meta({ description: "Enable/disable PTZ auto-tracking" })
+    .input(z.object({ id: z.string(), on: z.boolean() }))
+    .mutation(async ({ input }) => {
+      const config = getConfig();
+      const camera = config.cameras.find((c) => c.id === input.id);
+      if (!camera) throw new Error(`Camera not found: ${input.id}`);
+      const api = await getOrCreateApiConnection(input.id);
+      await api.setAutotracking(input.on, camera.rtspChannel ?? 0);
+      return { success: true };
+    }),
+
+  // Set PIR sensor
+  setPir: publicProcedure
+    .meta({ description: "Enable/disable PIR sensor" })
+    .input(z.object({ id: z.string(), on: z.boolean() }))
+    .mutation(async ({ input }) => {
+      const config = getConfig();
+      const camera = config.cameras.find((c) => c.id === input.id);
+      if (!camera) throw new Error(`Camera not found: ${input.id}`);
+      const api = await getOrCreateApiConnection(input.id);
+      await api.setPirInfo(camera.rtspChannel ?? 0, { enable: input.on ? 1 : 0 });
+      return { success: true };
+    }),
+
   // PTZ control (pan, tilt, zoom, presets)
   ptzControl: publicProcedure
     .meta({ description: "Send PTZ command to camera" })
@@ -583,5 +704,188 @@ export const camerasRouter = router({
       const api = await getOrCreateApiConnection(input.id);
       await api.moveToPtzPreset(camera.rtspChannel ?? 0, input.preset);
       return { success: true };
+    }),
+
+  // Set battery mode for a camera
+  setBatteryMode: publicProcedure
+    .meta({ description: "Set battery behavior mode for a camera" })
+    .input(z.object({ id: z.string(), mode: z.enum(["alwaysOn", "streamOnly"]) }))
+    .mutation(({ input }) => {
+      updateCamera(input.id, { batteryMode: input.mode });
+      return { success: true };
+    }),
+
+  // ==================== NVR Management ====================
+
+  // Connect all cameras of an NVR (shared connection)
+  connectNvrDevice: publicProcedure
+    .meta({ description: "Connect to an NVR (shared connection for all child cameras)" })
+    .input(z.object({ nvrId: z.string() }))
+    .mutation(async ({ input }) => {
+      await connectNvr(input.nvrId);
+      return { success: true };
+    }),
+
+  // Disconnect an NVR and all its child cameras
+  disconnectNvrDevice: publicProcedure
+    .meta({ description: "Disconnect an NVR and all its child cameras" })
+    .input(z.object({ nvrId: z.string() }))
+    .mutation(async ({ input }) => {
+      await disconnectNvr(input.nvrId);
+      return { success: true };
+    }),
+
+  // List all NVRs
+  listNvrs: publicProcedure
+    .meta({ description: "List all configured NVRs" })
+    .query(() => {
+      return getNvrs();
+    }),
+
+  // Add NVR
+  addNvr: publicProcedure
+    .meta({ description: "Add a new NVR" })
+    .input(
+      z.object({
+        name: z.string(),
+        host: z.string(),
+        port: z.number().default(9000),
+        username: z.string(),
+        password: z.string(),
+      }),
+    )
+    .mutation(({ input }) => {
+      return addNvr(input);
+    }),
+
+  // Delete NVR and all its child cameras
+  deleteNvr: publicProcedure
+    .meta({ description: "Delete an NVR and all its child cameras" })
+    .input(z.object({ id: z.string() }))
+    .mutation(async ({ input }) => {
+      // Disconnect and stop streams for all child cameras
+      const config = getConfig();
+      const childCameras = config.cameras.filter((c) => c.nvrId === input.id);
+      for (const cam of childCameras) {
+        try {
+          await stopAllCameraStreams(cam.id);
+          await closeApiConnection(cam.id);
+        } catch {
+          // ignore cleanup errors
+        }
+      }
+      deleteNvr(input.id);
+      return { success: true };
+    }),
+
+  // Discover NVR channels
+  discoverNvrChannels: publicProcedure
+    .meta({ description: "Discover all channels on an NVR/Hub device" })
+    .input(
+      z.union([
+        z.object({
+          host: z.string(),
+          port: z.number().default(9000),
+          username: z.string(),
+          password: z.string(),
+        }),
+        z.object({
+          nvrId: z.string(),
+        }),
+      ]),
+    )
+    .mutation(async ({ input }) => {
+      let host: string, port: number, username: string, password: string;
+      if ("nvrId" in input) {
+        const nvr = getNvr(input.nvrId);
+        if (!nvr) return { success: false, error: "NVR not found", nvrName: "", channelCount: 0, channels: [] };
+        ({ host, port, username, password } = nvr);
+      } else {
+        ({ host, port, username, password } = input);
+      }
+
+      const { ReolinkBaichuanApi } = await import("@apocaliss92/nodelink-js");
+      const api = new ReolinkBaichuanApi({ host, port, username, password });
+
+      try {
+        await api.login();
+
+        // Get NVR info first
+        const info = await api.getInfo();
+        const nvrName = info?.name ?? info?.type ?? host;
+
+        // Discover channels
+        const summary = await api.getNvrChannelsSummary({ source: "cgi" });
+
+        const channels = summary.devices.map((d) => ({
+          channel: d.channel,
+          name: d.name ?? `Channel ${d.channel}`,
+          model: d.model ?? "",
+          uid: d.uid ?? "",
+          state: d.state ?? "",
+          online: d.online ?? d.state === "connect",
+          isMultifocal: d.isMultifocal ?? false,
+          isBattery: d.isBattery ?? false,
+          isDoorbell: d.isDoorbell ?? false,
+          ip: d.ip ?? "",
+        }));
+
+        return {
+          success: true,
+          nvrName,
+          channelCount: summary.channels.length,
+          channels,
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: String(error),
+          nvrName: "",
+          channelCount: 0,
+          channels: [],
+        };
+      } finally {
+        await api.close();
+      }
+    }),
+
+  // Add a camera from NVR channel discovery
+  addNvrCamera: publicProcedure
+    .meta({ description: "Add a camera from NVR channel discovery" })
+    .input(
+      z.object({
+        nvrId: z.string(),
+        channelName: z.string(),
+        channelNumber: z.number(),
+        isBattery: z.boolean().default(false),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const config = getConfig();
+      const nvr = config.nvrs.find((n) => n.id === input.nvrId);
+      if (!nvr) throw new Error("NVR not found");
+
+      // Check if already added
+      const existing = config.cameras.find(
+        (c) => c.nvrId === input.nvrId && c.rtspChannel === input.channelNumber,
+      );
+      if (existing) throw new Error("Channel already added");
+
+      const camera = addCamera({
+        name: input.channelName,
+        host: nvr.host,
+        port: nvr.port,
+        username: nvr.username,
+        password: nvr.password,
+        isNvr: true,
+        nvrId: input.nvrId,
+        rtspChannel: input.channelNumber,
+        isBattery: input.isBattery ?? false,
+      });
+
+      // Connect in background
+      getOrCreateApiConnection(camera.id).catch(() => {});
+
+      return camera;
     }),
 });

@@ -7,7 +7,7 @@ import type { ReolinkSimpleEvent } from "@apocaliss92/nodelink-js";
 import type { ReolinkBaichuanApi } from "@apocaliss92/nodelink-js";
 import type { Response } from "express";
 import { onApiConnected, onApiDisconnected } from "./rtsp-manager.js";
-import { getConfig, getSettings } from "./settings-store.js";
+import { getConfig, getSettings, updateCamera } from "./settings-store.js";
 import { getCameraInfo } from "./rtsp-manager.js";
 import { sanitizeCameraName } from "./rtsp-manager.js";
 import { createSourceLogger } from "./logger.js";
@@ -71,6 +71,9 @@ export type AnyEventPayload = CameraEventPayload | SystemEventPayload;
 /** In-memory buffer of recent events per camera (for UI) */
 const RECENT_EVENTS_MAX = 100;
 const recentEventsByCamera = new Map<string, AnyEventPayload[]>();
+
+/** Per-camera sleep/wake status (tracked from sleeping/awake events) */
+const cameraSleepStatus = new Map<string, "awake" | "sleeping">();
 
 /** Callback invoked when MQTT client connects (for Home Assistant discovery re-publish) */
 let onMqttConnectedCb: (() => void) | null = null;
@@ -153,6 +156,19 @@ function handleCameraEvent(cameraId: string, event: ReolinkSimpleEvent): void {
   logger.debug(
     `Event: ${payload.cameraName} ch${event.channel} ${event.type}`,
   );
+
+  // Track sleep/wake status for battery cameras
+  if (event.type === "sleeping" || event.type === "awake") {
+    cameraSleepStatus.set(cameraId, event.type === "sleeping" ? "sleeping" : "awake");
+    // Auto-mark camera as battery if it receives sleep/awake events
+    const config = getConfig();
+    const cam = config.cameras.find((c) => c.id === cameraId);
+    if (cam && !cam.isBattery) {
+      updateCamera(cameraId, { isBattery: true });
+      logger.info(`Auto-marked camera ${cameraId} as battery (received ${event.type} event)`);
+    }
+  }
+
   broadcastEventPayload(payload);
 }
 
@@ -213,8 +229,20 @@ function registerCameraEvents(cameraId: string, api: ReolinkBaichuanApi): void {
   // so we must subscribe on the new one even if cameraId was already registered.
   registeredCameras.add(cameraId);
 
-  api.onSimpleEvent((event) => handleCameraEvent(cameraId, event));
-  logger.info(`Subscribed to events for camera ${cameraId}`);
+  const config = getConfig();
+  const camera = config.cameras.find((c) => c.id === cameraId);
+  const cameraChannel = camera?.rtspChannel ?? 0;
+  const isNvrChild = !!camera?.nvrId;
+
+  api.onSimpleEvent((event) => {
+    // For NVR children, only process events for this camera's channel
+    if (isNvrChild && event.channel !== undefined && event.channel !== cameraChannel) {
+      return;
+    }
+    handleCameraEvent(cameraId, event);
+  });
+
+  logger.info(`Subscribed to events for camera ${cameraId}${isNvrChild ? ` (ch${cameraChannel})` : ""}`);
 }
 
 /**
@@ -230,6 +258,7 @@ export function initEventsManager(): void {
     emitSystemEvent(cameraId, "camera_disconnected");
     registeredCameras.delete(cameraId);
     recentEventsByCamera.delete(cameraId);
+    cameraSleepStatus.delete(cameraId);
     logger.debug(`Unregistered events for camera ${cameraId}`);
   });
   logger.info("Events manager initialized");
@@ -338,6 +367,14 @@ export async function disconnectMqtt(): Promise<void> {
  */
 export function getMqttClient(): import("mqtt").MqttClient | null {
   return mqttClient;
+}
+
+/**
+ * Get the sleep/wake status of a camera.
+ * Returns undefined if no sleeping/awake event has been received yet.
+ */
+export function getCameraSleepStatus(cameraId: string): "awake" | "sleeping" | undefined {
+  return cameraSleepStatus.get(cameraId);
 }
 
 /**

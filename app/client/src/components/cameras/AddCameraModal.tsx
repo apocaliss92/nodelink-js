@@ -84,38 +84,6 @@ export function AddCameraModal({
             </div>
           </div>
 
-          <div className="grid cols2">
-            <label className="row" style={{ cursor: "pointer" }}>
-              <input
-                type="checkbox"
-                checked={adding.isNvr}
-                onChange={(e) =>
-                  setAdding({ ...adding, isNvr: e.target.checked })
-                }
-              />
-              <span>Camera is part of an NVR / Hub</span>
-            </label>
-
-            {adding.isNvr ? (
-              <div>
-                <div className="label">Channel</div>
-                <input
-                  className="input"
-                  type="number"
-                  value={adding.nvrChannel}
-                  onChange={(e) =>
-                    setAdding({
-                      ...adding,
-                      nvrChannel: Number(e.target.value),
-                    })
-                  }
-                />
-              </div>
-            ) : (
-              <div />
-            )}
-          </div>
-
           <div className="row" style={{ justifyContent: "flex-end" }}>
             <button
               className="btn primary"

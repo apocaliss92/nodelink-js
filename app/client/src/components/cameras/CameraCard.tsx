@@ -1,3 +1,5 @@
+import { useCallback, useState } from "react";
+import { trpcMutation } from "../../api";
 import type {
   AvailableStream,
   CameraInfo,
@@ -60,6 +62,19 @@ export function CameraCard({
   onOpenPreview: (state: PreviewModalState) => void;
 }) {
   const allAuto = camera.autoStart === true;
+  const [savingBatteryMode, setSavingBatteryMode] = useState(false);
+
+  const toggleBatteryMode = useCallback(async () => {
+    setSavingBatteryMode(true);
+    try {
+      const next = camera.batteryMode === "alwaysOn" ? "streamOnly" : "alwaysOn";
+      await trpcMutation("cameras.setBatteryMode", { id: camera.id, mode: next });
+    } catch {
+      // ignore
+    } finally {
+      setSavingBatteryMode(false);
+    }
+  }, [camera.id, camera.batteryMode]);
 
   return (
     <div className="card">
@@ -76,11 +91,18 @@ export function CameraCard({
             </div>
           </div>
           <span className={statusBadge(camera.status)}>{camera.status}</span>
-          <span className="badge mono">
-            {camera.host}:{camera.port}
-          </span>
+          {!camera.nvrId && (
+            <span className="badge mono">
+              {camera.host}:{camera.port}
+            </span>
+          )}
           {camera.isNvr ? (
             <span className="badge mono">ch {camera.rtspChannel}</span>
+          ) : null}
+          {camera.sleepStatus ? (
+            <span className={`badge ${camera.sleepStatus === "awake" ? "ok" : ""}`}>
+              {camera.sleepStatus}
+            </span>
           ) : null}
           {camera.error ? (
             <span className="badge err">{camera.error}</span>
@@ -137,6 +159,20 @@ export function CameraCard({
               <span className="spinner" aria-hidden="true" />
             ) : null}
           </button>
+          {(camera.isBattery || camera.sleepStatus) && (
+            <button
+              className={`btn autostart ${camera.batteryMode === "alwaysOn" ? "on" : "off"}`}
+              disabled={savingBatteryMode}
+              onClick={() => void toggleBatteryMode()}
+              title={
+                camera.batteryMode === "alwaysOn"
+                  ? "Always On: camera stays awake while connected"
+                  : "Stream Only: camera sleeps when no stream clients"
+              }
+            >
+              {camera.batteryMode === "alwaysOn" ? "Always On" : "Stream Only"}
+            </button>
+          )}
           <button
             className="btn danger"
             disabled={connecting}
@@ -151,34 +187,7 @@ export function CameraCard({
       </div>
 
       <div style={{ marginTop: 12 }}>
-        {camera.status !== "connected" ? null : streamsLoading ? (
-          <div
-            className="row"
-            style={{ color: "var(--muted)", fontSize: 13 }}
-          >
-            <span className="spinner" aria-hidden="true" />
-            <span>Discovering streams…</span>
-          </div>
-        ) : (streams?.length ?? 0) === 0 ? (
-          streamsDiscoveryAttempts > 0 &&
-          streamsDiscoveryAttempts < MAX_STREAM_DISCOVERY_ATTEMPTS ? (
-            <div
-              className="row"
-              style={{ color: "var(--muted)", fontSize: 13 }}
-            >
-              <span
-                className="spinner"
-                aria-hidden="true"
-                style={{ marginLeft: 0, marginRight: 8 }}
-              />
-              <span>Waiting for streams…</span>
-            </div>
-          ) : (
-            <div style={{ color: "var(--muted)", fontSize: 13 }}>
-              No streams discovered yet.
-            </div>
-          )
-        ) : (
+        {camera.status !== "connected" ? null : (streams?.length ?? 0) > 0 ? (
           <div className="streamsGrid">
             {(streams ?? []).map((s) => (
               <StreamCard
@@ -194,6 +203,35 @@ export function CameraCard({
               />
             ))}
           </div>
+        ) : streamsLoading ? (
+          <div
+            className="row"
+            style={{ color: "var(--muted)", fontSize: 13 }}
+          >
+            <span className="spinner" aria-hidden="true" />
+            <span>Discovering streams…</span>
+          </div>
+        ) : camera.sleepStatus === "sleeping" ? (
+          <div style={{ color: "var(--muted)", fontSize: 13 }}>
+            Camera is sleeping. Streams will be discovered when it wakes up.
+          </div>
+        ) : streamsDiscoveryAttempts > 0 &&
+          streamsDiscoveryAttempts < MAX_STREAM_DISCOVERY_ATTEMPTS ? (
+          <div
+            className="row"
+            style={{ color: "var(--muted)", fontSize: 13 }}
+          >
+            <span
+              className="spinner"
+              aria-hidden="true"
+              style={{ marginLeft: 0, marginRight: 8 }}
+            />
+            <span>Waiting for streams…</span>
+          </div>
+        ) : (
+          <div style={{ color: "var(--muted)", fontSize: 13 }}>
+            No streams discovered yet.
+          </div>
         )}
       </div>
 
@@ -202,6 +240,7 @@ export function CameraCard({
         cameraName={camera.name}
         sanitizedName={camera.sanitizedName}
         isConnected={camera.status === "connected"}
+        sleepStatus={camera.sleepStatus}
       />
     </div>
   );

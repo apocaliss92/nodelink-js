@@ -5,6 +5,7 @@ import type {
   AddCameraInput,
   AvailableStream,
   CameraInfo,
+  NvrInfo,
   PreviewModalState,
   RtspStreamConfig,
   StreamProfile,
@@ -91,6 +92,8 @@ export function useCamerasPage() {
   const [savingAutoStart, setSavingAutoStart] = useState<
     Record<string, boolean>
   >({});
+  const [nvrs, setNvrs] = useState<NvrInfo[]>([]);
+  const [addNvrOpen, setAddNvrOpen] = useState(false);
 
   const refresh = useCallback(async (silent = false): Promise<CameraInfo[] | null> => {
     if (!silent) {
@@ -98,7 +101,7 @@ export function useCamerasPage() {
       setError(null);
     }
     try {
-      const [list, proxy, rtspList, mjpeg, webrtc, hls] = await Promise.all([
+      const [list, proxy, rtspList, mjpeg, webrtc, hls, nvrList] = await Promise.all([
         trpcQuery<CameraInfo[]>("cameras.list"),
         trpcQuery<any>("rtspProxy.getStatus").catch(() => null),
         trpcQuery<any[]>("rtsp.list").catch(() => []),
@@ -107,6 +110,7 @@ export function useCamerasPage() {
           .then((r) => (r.ok ? r.json() : { sessions: [] }))
           .catch(() => ({ sessions: [] })),
         apiFetch("/api/hls/status").then((r) => (r.ok ? r.json() : [])).catch(() => []),
+        trpcQuery<NvrInfo[]>("cameras.listNvrs").catch(() => []),
       ]);
       updateIfChanged(setCameras, list);
 
@@ -162,6 +166,8 @@ export function useCamerasPage() {
           return newVal;
         });
       }
+
+      updateIfChanged(setNvrs, nvrList ?? []);
 
       return list;
     } catch (e) {
@@ -302,6 +308,15 @@ export function useCamerasPage() {
     }
   }, [adding, refresh]);
 
+  const deleteNvr = useCallback(
+    async (id: string) => {
+      if (!confirm("Delete NVR and all its cameras?")) return;
+      await trpcMutation("cameras.deleteNvr", { id });
+      await refresh();
+    },
+    [refresh],
+  );
+
   const toggleProxy = useCallback(async () => {
     setSavingProxy(true);
     setError(null);
@@ -335,8 +350,10 @@ export function useCamerasPage() {
   }, [refresh]);
 
   useEffect(() => {
+    // Discover streams for connected cameras that don't have cached streams yet.
+    // Skip sleeping cameras — they'll be discovered when they wake up.
     const connected = cameras.filter(
-      (c) => c.status === "connected" && !streamsByCamera[c.id],
+      (c) => c.status === "connected" && !streamsByCamera[c.id] && c.sleepStatus !== "sleeping",
     );
     if (connected.length === 0) return;
 
@@ -374,7 +391,7 @@ export function useCamerasPage() {
 
   useEffect(() => {
     const t = window.setInterval(() => {
-      const connected = cameras.filter((c) => c.status === "connected");
+      const connected = cameras.filter((c) => c.status === "connected" && c.sleepStatus !== "sleeping");
       for (const cam of connected) {
         const streams = streamsByCamera[cam.id];
         const attempts = streamsDiscoveryAttemptsByCamera[cam.id] ?? 0;
@@ -427,6 +444,10 @@ export function useCamerasPage() {
     setAutoStartForCamera,
     addCamera,
     deleteCamera,
+    nvrs,
+    addNvrOpen,
+    setAddNvrOpen,
+    deleteNvr,
     toggleProxy,
   };
 }

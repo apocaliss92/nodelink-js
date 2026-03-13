@@ -6,6 +6,7 @@ import { createSourceLogger } from "./logger.js";
 import {
   getConfig,
   getSettings,
+  getNvr,
   updateCamera,
   upsertCameraStream,
 } from "./settings-store.js";
@@ -150,6 +151,30 @@ const PING_INTERVAL_MS = 30_000;
 /** Max consecutive ping failures before forcing reconnect */
 const MAX_PING_FAILURES = 3;
 
+// --- NVR shared connection helpers ---
+
+/** Get the connection map key for a camera (shared by NVR siblings) */
+function getConnectionKey(cameraId: string): string {
+  const config = getConfig();
+  const camera = config.cameras.find((c) => c.id === cameraId);
+  if (camera?.nvrId) return `nvr:${camera.nvrId}`;
+  return cameraId;
+}
+
+/** Get all camera IDs belonging to an NVR */
+function getNvrChildCameraIds(nvrId: string): string[] {
+  const config = getConfig();
+  return config.cameras.filter((c) => c.nvrId === nvrId).map((c) => c.id);
+}
+
+/** Get all camera IDs affected by a connection key */
+function getAffectedCameraIds(connKey: string): string[] {
+  if (connKey.startsWith("nvr:")) {
+    return getNvrChildCameraIds(connKey.slice(4));
+  }
+  return [connKey];
+}
+
 // Listeners notified when a new API connection is established (for events, etc.)
 const apiConnectionListeners: Array<
   (cameraId: string, api: ReolinkBaichuanApi) => void
@@ -190,6 +215,11 @@ const rtspServers = new Map<
 
 // Store for camera info cache
 const cameraInfoCache = new Map<string, CameraInfo>();
+
+// NVR per-camera disabled set: cameras in this set are "disconnected" from restreaming
+// but the NVR shared socket stays alive. When a user "connects" an NVR child,
+// it's removed from this set and becomes visible for restreaming.
+const disabledNvrCameras = new Set<string>();
 
 /**
  * Cleanup a managed connection: remove listeners, stop ping, close API.
@@ -235,23 +265,26 @@ async function cleanupManagedConnection(
 /**
  * Notify disconnection listeners and update cache status.
  */
-function notifyDisconnection(cameraId: string): void {
-  // Release any shared streams from the pool for this camera.
-  releaseStreamsByCamera(cameraId);
+function notifyDisconnection(connKey: string): void {
+  const affectedIds = getAffectedCameraIds(connKey);
 
-  for (const cb of apiDisconnectionListeners) {
-    try {
-      cb(cameraId);
-    } catch (e) {
-      createSourceLogger("rtsp-manager").error(
-        `apiDisconnectionListener error: ${e}`,
-      );
+  for (const camId of affectedIds) {
+    releaseStreamsByCamera(camId);
+
+    for (const cb of apiDisconnectionListeners) {
+      try {
+        cb(camId);
+      } catch (e) {
+        createSourceLogger("rtsp-manager").error(
+          `apiDisconnectionListener error: ${e}`,
+        );
+      }
     }
-  }
 
-  const info = cameraInfoCache.get(cameraId);
-  if (info) {
-    info.status = "disconnected";
+    const info = cameraInfoCache.get(camId);
+    if (info) {
+      info.status = "disconnected";
+    }
   }
 }
 
@@ -357,7 +390,15 @@ function startPingKeepalive(cameraId: string, conn: ManagedConnection): void {
 export async function getOrCreateApiConnection(
   cameraId: string,
 ): Promise<ReolinkBaichuanApi> {
-  const existing = apiConnections.get(cameraId);
+  const config = getConfig();
+  const camera = config.cameras.find((c) => c.id === cameraId);
+  if (!camera) {
+    throw new Error(`Camera not found: ${cameraId}`);
+  }
+
+  // For NVR children, use a shared connection keyed by nvrId
+  const connKey = getConnectionKey(cameraId);
+  const existing = apiConnections.get(connKey);
 
   if (existing) {
     // Prevent concurrent login storms — wait on in-flight connect
@@ -372,14 +413,14 @@ export async function getOrCreateApiConnection(
 
     // API was explicitly closed → cleanup and recreate
     if (existing.api.isClosed) {
-      const cameraLogger = createSourceLogger(`camera:${cameraId}`);
+      const cameraLogger = createSourceLogger(`camera:${connKey}`);
       cameraLogger.info("API is closed, recreating connection");
-      apiConnections.delete(cameraId);
-      await cleanupManagedConnection(cameraId, existing);
-      notifyDisconnection(cameraId);
+      apiConnections.delete(connKey);
+      await cleanupManagedConnection(connKey, existing);
+      notifyDisconnection(connKey);
     } else {
       // Socket disconnected but API still valid → try library-side reconnect
-      const cameraLogger = createSourceLogger(`camera:${cameraId}`);
+      const cameraLogger = createSourceLogger(`camera:${connKey}`);
       try {
         cameraLogger.info("Socket lost, attempting ensureConnected()");
         await existing.api.ensureConnected();
@@ -388,25 +429,34 @@ export async function getOrCreateApiConnection(
         cameraLogger.warn(
           `ensureConnected failed: ${(e as any)?.message || e}, recreating connection`,
         );
-        apiConnections.delete(cameraId);
-        await cleanupManagedConnection(cameraId, existing);
-        notifyDisconnection(cameraId);
+        apiConnections.delete(connKey);
+        await cleanupManagedConnection(connKey, existing);
+        notifyDisconnection(connKey);
       }
     }
   }
 
-  const config = getConfig();
-  const camera = config.cameras.find((c) => c.id === cameraId);
-  if (!camera) {
-    throw new Error(`Camera not found: ${cameraId}`);
+  // Resolve credentials: NVR children use NVR credentials
+  let host: string, port: number, username: string, password: string;
+  let logLabel: string;
+
+  if (camera.nvrId) {
+    const nvr = getNvr(camera.nvrId);
+    if (!nvr) throw new Error(`NVR not found: ${camera.nvrId}`);
+    ({ host, port, username, password } = nvr);
+    logLabel = `nvr:${nvr.name}`;
+  } else {
+    ({ host, port, username, password } = camera);
+    logLabel = camera.name;
   }
 
-  const cameraLogger = createSourceLogger(`camera:${camera.name}`);
+  const cameraLogger = createSourceLogger(`camera:${logLabel}`);
+  const isNvrConnection = !!camera.nvrId;
 
   // Create a managed connection entry with the connect promise to serialize access
   const conn: ManagedConnection = {
     api: null!,
-    cameraId,
+    cameraId: connKey,
     connectionTime: 0,
     lastDisconnectTime: existing?.lastDisconnectTime ?? 0,
     consecutivePingFailures: 0,
@@ -435,10 +485,10 @@ export async function getOrCreateApiConnection(
       : undefined;
 
     const api = new ReolinkBaichuanApi({
-      host: camera.host,
-      port: camera.port,
-      username: camera.username,
-      password: camera.password,
+      host,
+      port,
+      username,
+      password,
       debugOptions,
       logger: {
         log: (msg: unknown) => cameraLogger.info(String(msg)),
@@ -449,7 +499,7 @@ export async function getOrCreateApiConnection(
       },
     });
 
-    cameraLogger.info(`Connecting to camera at ${camera.host}:${camera.port}`);
+    cameraLogger.info(`Connecting to ${host}:${port}`);
     await api.login();
     cameraLogger.info("Connected successfully");
 
@@ -458,6 +508,7 @@ export async function getOrCreateApiConnection(
     const info = await api.getInfo();
     const modelLower = (info?.type ?? "").toLowerCase();
     const isNvr =
+      isNvrConnection ||
       channelCount > 1 ||
       modelLower.includes("hub") ||
       modelLower.includes("nvr") ||
@@ -469,14 +520,16 @@ export async function getOrCreateApiConnection(
     // Detect multifocal/dual-lens (TrackMix, Duo)
     const channel = camera.rtspChannel ?? 0;
     let isMultifocal = false;
-    try {
-      const dualLensAnalysis = await api.getDualLensChannelInfo(
-        isNvr ? channel : 0,
-        { onNvr: isNvr },
-      );
-      isMultifocal = dualLensAnalysis.isDualLens;
-    } catch {
-      // Not multifocal
+    if (!isNvrConnection) {
+      try {
+        const dualLensAnalysis = await api.getDualLensChannelInfo(
+          isNvr ? channel : 0,
+          { onNvr: isNvr },
+        );
+        isMultifocal = dualLensAnalysis.isDualLens;
+      } catch {
+        // Not multifocal
+      }
     }
 
     api.setIsMultiFocal(isMultifocal);
@@ -494,34 +547,51 @@ export async function getOrCreateApiConnection(
     conn.connectionTime = Date.now();
     conn.connectPromise = undefined;
 
-    // Attach error/close listeners for auto-cleanup
-    attachConnectionListeners(cameraId, conn);
+    // Attach error/close listeners for auto-cleanup (keyed by connKey)
+    attachConnectionListeners(connKey, conn);
 
     // Start ping keepalive
-    startPingKeepalive(cameraId, conn);
+    startPingKeepalive(connKey, conn);
 
     // Store in map
-    apiConnections.set(cameraId, conn);
+    apiConnections.set(connKey, conn);
 
-    // Notify listeners (e.g. events-manager for SSE/MQTT/JSON stream)
-    for (const cb of apiConnectionListeners) {
-      try {
-        cb(cameraId, api);
-      } catch (e) {
-        createSourceLogger("rtsp-manager").error(
-          `apiConnectionListener error: ${e}`,
-        );
+    // Notify listeners for all affected cameras
+    const affectedIds = getAffectedCameraIds(connKey);
+    for (const camId of affectedIds) {
+      for (const cb of apiConnectionListeners) {
+        try {
+          cb(camId, api);
+        } catch (e) {
+          createSourceLogger("rtsp-manager").error(
+            `apiConnectionListener error: ${e}`,
+          );
+        }
       }
     }
 
-    // Update camera info cache (use already-fetched data)
-    await updateCameraInfo(cameraId, api);
+    // Update camera info cache for all affected cameras
+    await updateCameraInfo(connKey, api);
+
+    // For NVR connections: only the requesting camera is enabled,
+    // all siblings start disabled (user must explicitly connect each one)
+    if (connKey.startsWith("nvr:")) {
+      const nvrId = connKey.slice(4);
+      const siblings = getNvrChildCameraIds(nvrId);
+      for (const sibId of siblings) {
+        if (sibId !== cameraId) {
+          disabledNvrCameras.add(sibId);
+        }
+      }
+      // Ensure the requesting camera is NOT disabled
+      disabledNvrCameras.delete(cameraId);
+    }
 
     return api;
   })();
 
   // Store immediately so concurrent callers find the connectPromise
-  apiConnections.set(cameraId, conn);
+  apiConnections.set(connKey, conn);
 
   try {
     return await conn.connectPromise;
@@ -529,63 +599,60 @@ export async function getOrCreateApiConnection(
     // Connection failed — clean up and apply backoff timestamp
     conn.lastDisconnectTime = Date.now();
     conn.connectPromise = undefined;
-    apiConnections.delete(cameraId);
+    apiConnections.delete(connKey);
     cameraLogger.error(`Failed to connect: ${error}`);
     throw error;
   }
 }
 
-// Update camera info cache
-async function updateCameraInfo(cameraId: string, api: ReolinkBaichuanApi) {
-  const config = getConfig();
-  const camera = config.cameras.find((c) => c.id === cameraId);
-  if (!camera) return;
-
+// Update a single camera's info cache entry
+async function updateSingleCameraInfo(
+  camera: { id: string; name: string; host: string; port: number; rtspChannel?: number; isBattery?: boolean },
+  api: ReolinkBaichuanApi,
+  sharedInfo?: { type?: string; firmwareVersion?: string; serialNumber?: string },
+  sharedChannelCount?: number,
+  sharedIsNvr?: boolean,
+) {
   try {
-    const info = await api.getInfo();
-    const channelCount = await api.getChannelCount();
+    const info = sharedInfo ?? (await api.getInfo());
+    const channelCount = sharedChannelCount ?? (await api.getChannelCount());
     const channel = camera.rtspChannel ?? 0;
 
-    // Check if this is an NVR/Hub (multiple channels or specific device types)
     const modelLower = (info?.type ?? "").toLowerCase();
     const isNvr =
-      channelCount > 1 ||
-      modelLower.includes("hub") ||
-      modelLower.includes("nvr") ||
-      modelLower.includes("home hub");
+      sharedIsNvr ??
+      (channelCount > 1 ||
+        modelLower.includes("hub") ||
+        modelLower.includes("nvr") ||
+        modelLower.includes("home hub"));
 
-    // Check if this is a multifocal/dual-lens device (TrackMix, Duo)
     let isMultifocal = false;
-    try {
-      const dualLensAnalysis = await api.getDualLensChannelInfo(
-        isNvr ? channel : 0,
-        { onNvr: isNvr },
-      );
-      isMultifocal = dualLensAnalysis.isDualLens;
-    } catch {
-      // Not multifocal or getDualLensChannelInfo failed
-    }
-
-    // For NVR/Hub, use getInfo(channel) to get the channel-specific camera name
-    let channelName: string | undefined;
-    let channelModel: string | undefined;
-    if (isNvr && channel >= 0) {
+    if (!camera.isBattery) {
       try {
-        // getInfo(channel) uses cmd_id 318 which returns channel-specific device info
-        const channelInfo = await api.getInfo(channel);
-        if (channelInfo?.name) {
-          channelName = channelInfo.name;
-        }
-        if (channelInfo?.type) {
-          channelModel = channelInfo.type;
-        }
-      } catch (e) {
-        // Ignore errors, channelName will remain undefined
+        const dualLensAnalysis = await api.getDualLensChannelInfo(
+          isNvr ? channel : 0,
+          { onNvr: isNvr },
+        );
+        isMultifocal = dualLensAnalysis.isDualLens;
+      } catch {
+        // Not multifocal
       }
     }
 
-    cameraInfoCache.set(cameraId, {
-      id: cameraId,
+    let channelName: string | undefined;
+    let channelModel: string | undefined;
+    if (!camera.isBattery && isNvr && channel >= 0) {
+      try {
+        const channelInfo = await api.getInfo(channel);
+        if (channelInfo?.name) channelName = channelInfo.name;
+        if (channelInfo?.type) channelModel = channelInfo.type;
+      } catch {
+        // ignore
+      }
+    }
+
+    cameraInfoCache.set(camera.id, {
+      id: camera.id,
       name: camera.name,
       host: camera.host,
       port: camera.port,
@@ -603,14 +670,36 @@ async function updateCameraInfo(cameraId: string, api: ReolinkBaichuanApi) {
       lastConnected: new Date(),
     });
   } catch (error) {
-    cameraInfoCache.set(cameraId, {
-      id: cameraId,
+    cameraInfoCache.set(camera.id, {
+      id: camera.id,
       name: camera.name,
       host: camera.host,
       port: camera.port,
       status: "error",
       error: String(error),
     });
+  }
+}
+
+// Update camera info cache (handles both standalone and NVR shared connections)
+async function updateCameraInfo(connKey: string, api: ReolinkBaichuanApi) {
+  const config = getConfig();
+
+  if (connKey.startsWith("nvr:")) {
+    // NVR shared connection: update all children
+    const nvrId = connKey.slice(4);
+    const children = config.cameras.filter((c) => c.nvrId === nvrId);
+
+    // Fetch NVR-level info once
+    const info = await api.getInfo();
+    const channelCount = await api.getChannelCount();
+
+    for (const camera of children) {
+      await updateSingleCameraInfo(camera, api, info, channelCount, true);
+    }
+  } else {
+    const camera = config.cameras.find((c) => c.id === connKey);
+    if (camera) await updateSingleCameraInfo(camera, api);
   }
 }
 
@@ -624,6 +713,12 @@ export function getAllCamerasInfo(): CameraInfo[] {
   const config = getConfig();
   return config.cameras.map((camera) => {
     const cached = cameraInfoCache.get(camera.id);
+
+    // NVR children that are disabled show as disconnected even if the NVR socket is alive
+    if (cached && disabledNvrCameras.has(camera.id)) {
+      return { ...cached, status: "disconnected" as const };
+    }
+
     if (cached) return cached;
 
     return {
@@ -636,13 +731,76 @@ export function getAllCamerasInfo(): CameraInfo[] {
   });
 }
 
-// Close API connection
+/**
+ * Enable an NVR child camera for restreaming (without affecting the NVR socket).
+ * If the NVR socket isn't alive yet, creates it (only this camera will be enabled).
+ * Events stay subscribed for all NVR children regardless of enable/disable state.
+ */
+export async function enableNvrCamera(cameraId: string): Promise<void> {
+  const config = getConfig();
+  const camera = config.cameras.find((c) => c.id === cameraId);
+  if (!camera?.nvrId) throw new Error(`Camera ${cameraId} is not an NVR child`);
+
+  // Ensure the NVR socket is alive (getOrCreateApiConnection will disable siblings)
+  const connKey = getConnectionKey(cameraId);
+  const conn = apiConnections.get(connKey);
+  if (!conn?.api?.isReady) {
+    await getOrCreateApiConnection(cameraId);
+    return;
+  }
+
+  // NVR socket already alive — just remove from disabled set
+  disabledNvrCameras.delete(cameraId);
+
+  // Update cache to connected (refresh device info)
+  await updateSingleCameraInfo(camera, conn.api);
+}
+
+/**
+ * Disable an NVR child camera from restreaming (without closing the NVR socket).
+ * Stops streams but keeps event subscriptions alive (for sleep/wake detection).
+ */
+export async function disableNvrCamera(cameraId: string): Promise<void> {
+  disabledNvrCameras.add(cameraId);
+
+  // Stop all streams for this camera
+  await stopAllCameraStreams(cameraId);
+  releaseStreamsByCamera(cameraId);
+}
+
+// Close API connection (handles NVR shared connections)
 export async function closeApiConnection(cameraId: string) {
-  const conn = apiConnections.get(cameraId);
+  const connKey = getConnectionKey(cameraId);
+  const conn = apiConnections.get(connKey);
   if (conn) {
-    apiConnections.delete(cameraId);
-    await cleanupManagedConnection(cameraId, conn);
-    notifyDisconnection(cameraId);
+    apiConnections.delete(connKey);
+    await cleanupManagedConnection(connKey, conn);
+    notifyDisconnection(connKey);
+  }
+}
+
+// Connect all cameras of an NVR via shared connection
+export async function connectNvr(nvrId: string): Promise<void> {
+  const childIds = getNvrChildCameraIds(nvrId);
+  if (childIds.length === 0) return;
+  // Connecting any child triggers the shared NVR connection
+  await getOrCreateApiConnection(childIds[0]);
+}
+
+// Disconnect an NVR and all its child cameras
+export async function disconnectNvr(nvrId: string): Promise<void> {
+  const connKey = `nvr:${nvrId}`;
+  // Stop all streams for child cameras first
+  const childIds = getNvrChildCameraIds(nvrId);
+  for (const camId of childIds) {
+    disabledNvrCameras.delete(camId);
+    await stopAllCameraStreams(camId);
+  }
+  const conn = apiConnections.get(connKey);
+  if (conn) {
+    apiConnections.delete(connKey);
+    await cleanupManagedConnection(connKey, conn);
+    notifyDisconnection(connKey);
   }
 }
 
@@ -1048,7 +1206,12 @@ export async function autoConnectCameras() {
       logger.info(
         `Connecting to camera: ${camera.name} (${camera.host}:${camera.port})`,
       );
-      await getOrCreateApiConnection(camera.id);
+      if (camera.nvrId) {
+        // NVR child: enable only this camera (creates shared socket if needed)
+        await enableNvrCamera(camera.id);
+      } else {
+        await getOrCreateApiConnection(camera.id);
+      }
       logger.info(`Connected to camera: ${camera.name}`);
     } catch (error) {
       logger.error(`Failed to connect to ${camera.name}: ${error}`);
