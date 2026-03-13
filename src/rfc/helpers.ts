@@ -5,6 +5,7 @@
 
 import type { ReolinkBaichuanApi } from "../reolink/baichuan/ReolinkBaichuanApi";
 import type { NativeVideoStreamVariant, ReolinkEvent, StreamProfile } from "../reolink/baichuan/types";
+import type { BaichuanClient } from "../client/BaichuanClient";
 import { buildRtspUrl } from "../rtsp/urls";
 import { spawn } from "node:child_process";
 import { BaichuanVideoStream } from "../baichuan/stream/BaichuanVideoStream";
@@ -336,6 +337,8 @@ export async function* createNativeStream(
   profile: StreamProfile,
   options?: {
     variant?: NativeVideoStreamVariant;
+    /** Optional dedicated BaichuanClient for stream isolation. When omitted, uses api.client (shared). */
+    client?: BaichuanClient;
   }
 ): AsyncGenerator<{
   audio: boolean;
@@ -347,7 +350,7 @@ export async function* createNativeStream(
   isKeyframe?: boolean;
 }, void, unknown> {
   const videoStream = new BaichuanVideoStream({
-    client: api.client,
+    client: options?.client ?? api.client,
     api,
     channel,
     profile,

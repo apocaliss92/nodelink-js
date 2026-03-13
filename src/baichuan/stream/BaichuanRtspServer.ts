@@ -195,6 +195,13 @@ export interface BaichuanRtspServerOptions {
   credentials?: Array<{ username: string; password: string }>;
   /** Require authentication for RTSP connections (default: false if no credentials set) */
   requireAuth?: boolean;
+
+  /**
+   * External identifier for dedicated socket session.
+   * When provided, a dedicated BaichuanClient is created for the stream,
+   * isolating it from other streams on the shared socket (avoids streamType mismatch).
+   */
+  deviceId?: string;
 }
 
 /**
@@ -225,6 +232,8 @@ export class BaichuanRtspServer extends EventEmitter<{
   private tcpRtpFraming: "rtsp-interleaved" | "rfc4571";
   private active = false;
   private flow: RtspFlow;
+  private deviceId: string | undefined;
+  private dedicatedSessionRelease: (() => Promise<void>) | undefined;
 
   // Authentication
   private authCredentials: Array<{ username: string; password: string }> = [];
@@ -478,6 +487,7 @@ export class BaichuanRtspServer extends EventEmitter<{
     this.path = options.path ?? `/stream/${this.profile}`;
     this.logger = options.logger ?? console;
     this.tcpRtpFraming = options.tcpRtpFraming ?? "rfc4571";
+    this.deviceId = options.deviceId;
 
     // Authentication settings
     this.authCredentials = options.credentials ?? [];
@@ -2251,8 +2261,28 @@ export class BaichuanRtspServer extends EventEmitter<{
       this.firstAudioResolve = resolve;
     });
 
+    // Acquire a dedicated socket session for stream isolation.
+    // Without this, frames from other active streams (e.g. main) on the shared socket
+    // can interleave, causing streamType mismatches and delayed time-to-first-frame.
+    let dedicatedClient: import("../../client/BaichuanClient").BaichuanClient | undefined;
+    const variantSuffix = this.variant && this.variant !== "default" ? `:${this.variant}` : "";
+    const deviceIdPart = this.deviceId ?? "rtsp-server";
+    const sessionKey = `live:${deviceIdPart}:ch${this.channel}:${this.profile}${variantSuffix}`;
+    try {
+      const session = await this.api.createDedicatedSession(sessionKey, this.logger);
+      dedicatedClient = session.client;
+      this.dedicatedSessionRelease = session.release;
+      this.logger.info(
+        `[rebroadcast] dedicated session acquired  sessionKey=${sessionKey}`,
+      );
+    } catch (e) {
+      this.logger.warn(
+        `[rebroadcast] failed to acquire dedicated session, falling back to shared socket: ${e}`,
+      );
+    }
+
     this.logger.info(
-      `[rebroadcast] native stream starting  profile=${this.profile} channel=${this.channel} clients=${this.connectedClients.size}`,
+      `[rebroadcast] native stream starting  profile=${this.profile} channel=${this.channel} clients=${this.connectedClients.size} dedicated=${!!dedicatedClient}`,
     );
 
     // Keep-alive behavior is part of the selected protocol flow.
@@ -2265,6 +2295,7 @@ export class BaichuanRtspServer extends EventEmitter<{
       createSource: () =>
         createNativeStream(this.api, this.channel, this.profile, {
           variant: this.variant,
+          ...(dedicatedClient ? { client: dedicatedClient } : {}),
         }),
       onFrame: (frame) => {
         if (frame.audio) {
@@ -2424,6 +2455,17 @@ export class BaichuanRtspServer extends EventEmitter<{
     }
     this.prebuffer = [];
 
+    // Release dedicated socket session.
+    if (this.dedicatedSessionRelease) {
+      const release = this.dedicatedSessionRelease;
+      this.dedicatedSessionRelease = undefined;
+      try {
+        await release();
+      } catch {
+        // ignore
+      }
+    }
+
     // Legacy: ensure no priming generator remains open.
     if (this.tempStreamGenerator) {
       try {
@@ -2436,16 +2478,24 @@ export class BaichuanRtspServer extends EventEmitter<{
   }
 
   /**
-   * Remove a client and stop native stream if no clients remain.
+   * Remove a client and schedule native stream stop if no clients remain.
+   * Uses a grace period so rapid reconnects (e.g. Frigate polling) reuse the running stream
+   * and benefit from the prebuffer instead of waiting for a fresh keyframe.
    */
   private removeClient(clientId: string): void {
     if (this.connectedClients.has(clientId)) {
       this.connectedClients.delete(clientId);
       this.emit("clientDisconnected", clientId);
 
-      // Stop native stream if no clients remain
+      // Defer native stream stop to allow rapid reconnects to reuse the running stream.
       if (this.connectedClients.size === 0) {
-        void this.stopNativeStream();
+        this.clearNoClientAutoStopTimer();
+        this.noClientAutoStopTimer = setTimeout(() => {
+          if (this.connectedClients.size === 0) {
+            void this.stopNativeStream();
+          }
+        }, 30_000);
+        (this.noClientAutoStopTimer as any)?.unref?.();
       }
     }
   }
