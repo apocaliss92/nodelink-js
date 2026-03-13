@@ -459,6 +459,53 @@ export const camerasRouter = router({
       };
     }),
 
+  // Get active sessions on the camera
+  getSessions: publicProcedure
+    .meta({ description: "Get active user sessions on the camera" })
+    .input(z.object({ id: z.string() }))
+    .query(async ({ input }) => {
+      const config = getConfig();
+      const camera = config.cameras.find((c) => c.id === input.id);
+      if (!camera) return { sessions: [], total: 0 };
+
+      const api = await getOrCreateApiConnection(input.id);
+      const result = await api.getOnlineUserList({ timeoutMs: 5000 });
+
+      const list = result?.body?.OnlineUserList;
+      const sessions: Array<{
+        userName: string;
+        ip: string;
+        sessionId: number;
+        level: number;
+      }> = [];
+
+      // Parse both legacy and current formats
+      if (list?.OnlineUser) {
+        for (const u of list.OnlineUser) {
+          sessions.push({
+            userName: u.userName ?? "?",
+            ip: u.ipAddress ?? "?",
+            sessionId: u.sessionId ?? 0,
+            level: u.userLevel ?? 0,
+          });
+        }
+      } else if (list?.item) {
+        for (const u of list.item) {
+          sessions.push({
+            userName: u.userName ?? "?",
+            ip: u.ip ?? "?",
+            sessionId: 0,
+            level: u.level ?? 0,
+          });
+        }
+      }
+
+      return {
+        sessions,
+        total: list?.itemNum ?? sessions.length,
+      };
+    }),
+
   // Set light (floodlight/spotlight) on/off
   setLight: publicProcedure
     .meta({ description: "Set camera light (floodlight) on or off" })

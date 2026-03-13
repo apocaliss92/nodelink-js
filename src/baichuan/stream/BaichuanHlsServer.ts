@@ -38,6 +38,7 @@ import type { StreamProfile } from "../../reolink/baichuan/types";
 import type { ReolinkBaichuanApi } from "../../reolink/baichuan/ReolinkBaichuanApi";
 import type { NativeVideoStreamVariant } from "../../reolink/baichuan/types";
 import { createNativeStream } from "../../rfc/helpers";
+import type { BaichuanVideoStream } from "./BaichuanVideoStream";
 import { detectVideoCodecFromNal } from "./BcMediaAnnexBDecoder";
 import { convertToAnnexB as convertH264ToAnnexB } from "./H264Converter";
 import { convertToAnnexB as convertH265ToAnnexB } from "./H265Converter";
@@ -65,6 +66,13 @@ export interface BaichuanHlsServerOptions {
   playlistSize?: number;
   /** ffmpeg binary path (default: "ffmpeg") */
   ffmpegPath?: string;
+  /**
+   * External video stream from a shared pool (e.g. createRfc4571TcpServer).
+   * When provided, the HLS server subscribes to this stream's events instead
+   * of creating its own via createNativeStream. This allows multiple outputs
+   * (MJPEG, HLS, WebRTC) to share a single camera streaming session.
+   */
+  externalVideoStream?: BaichuanVideoStream;
   /** Logger callback */
   logger?: (
     level: "debug" | "info" | "warn" | "error",
@@ -198,6 +206,7 @@ export class BaichuanHlsServer extends EventEmitter {
   private readonly segmentDuration: number;
   private readonly playlistSize: number;
   private readonly ffmpegPath: string;
+  private readonly externalVideoStream: BaichuanVideoStream | undefined;
   private readonly log: (
     level: "debug" | "info" | "warn" | "error",
     message: string,
@@ -232,6 +241,7 @@ export class BaichuanHlsServer extends EventEmitter {
       this.createdTempDir = false;
     }
 
+    this.externalVideoStream = options.externalVideoStream;
     this.log = options.logger ?? (() => {});
   }
 
@@ -262,14 +272,18 @@ export class BaichuanHlsServer extends EventEmitter {
 
       this.log("info", `Starting HLS stream to ${this.outputDir}`);
 
-      // Start native stream
-      // createNativeStream automatically acquires a dedicated socket from the pool.
-      this.nativeStream = createNativeStream(
-        this.api,
-        this.channel,
-        this.profile,
-        this.variant ? { variant: this.variant } : undefined,
-      );
+      // Use external video stream if provided (shared pool), otherwise create our own.
+      if (this.externalVideoStream) {
+        this.nativeStream = this.wrapVideoStreamAsGenerator(this.externalVideoStream);
+      } else {
+        // createNativeStream automatically acquires a dedicated socket from the pool.
+        this.nativeStream = createNativeStream(
+          this.api,
+          this.channel,
+          this.profile,
+          this.variant ? { variant: this.variant } : undefined,
+        );
+      }
 
       // Start pumping frames to ffmpeg
       this.pumpPromise = this.pumpNativeToFfmpeg();
@@ -423,6 +437,75 @@ export class BaichuanHlsServer extends EventEmitter {
   // ============================================================================
   // Private Methods
   // ============================================================================
+
+  /**
+   * Wrap a BaichuanVideoStream's videoAccessUnit events into an async generator
+   * compatible with createNativeStream's output format.
+   */
+  private async *wrapVideoStreamAsGenerator(
+    videoStream: BaichuanVideoStream,
+  ): AsyncGenerator<{
+    audio: boolean;
+    data: Buffer;
+    videoType?: "H264" | "H265";
+    isKeyframe?: boolean;
+    microseconds: number | null;
+  }, void, unknown> {
+    type Frame = {
+      data: Buffer;
+      isKeyframe: boolean;
+      videoType: "H264" | "H265";
+      microseconds: number;
+    };
+
+    const queue: Frame[] = [];
+    let resolve: (() => void) | null = null;
+    let done = false;
+
+    const onFrame = (au: Frame) => {
+      queue.push(au);
+      resolve?.();
+      resolve = null;
+    };
+
+    const onClose = () => {
+      done = true;
+      resolve?.();
+      resolve = null;
+    };
+
+    const onError = () => {
+      done = true;
+      resolve?.();
+      resolve = null;
+    };
+
+    videoStream.on("videoAccessUnit", onFrame);
+    videoStream.on("close", onClose);
+    videoStream.on("error", onError);
+
+    try {
+      while (!done) {
+        if (queue.length === 0) {
+          await new Promise<void>((r) => { resolve = r; });
+        }
+        while (queue.length > 0) {
+          const frame = queue.shift()!;
+          yield {
+            audio: false,
+            data: frame.data,
+            videoType: frame.videoType,
+            isKeyframe: frame.isKeyframe,
+            microseconds: frame.microseconds,
+          };
+        }
+      }
+    } finally {
+      videoStream.removeListener("videoAccessUnit", onFrame);
+      videoStream.removeListener("close", onClose);
+      videoStream.removeListener("error", onError);
+    }
+  }
 
   private async pumpNativeToFfmpeg(): Promise<void> {
     if (!this.nativeStream || !this.playlistPath || !this.segmentPattern) {

@@ -6,6 +6,7 @@ import type {
 } from "./types";
 import { statusBadge, streamKey } from "./utils";
 import { CameraControlsSection } from "./CameraControlsSection";
+import { SessionsSection } from "./SessionsSection";
 import { StreamCard } from "./StreamCard";
 
 const MAX_STREAM_DISCOVERY_ATTEMPTS = 12;
@@ -143,6 +144,9 @@ export function CameraCard({
           >
             Delete
           </button>
+          {camera.status === "connected" && (
+            <SessionsSection cameraId={camera.id} isConnected />
+          )}
         </div>
       </div>
 

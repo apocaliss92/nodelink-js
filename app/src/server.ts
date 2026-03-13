@@ -40,6 +40,7 @@ import {
   getNativeMjpegStatus,
 } from "./mjpeg-native.js";
 import { getHlsStatus, readHlsAsset, stopAllHlsStreams } from "./hls-native.js";
+import { releaseAllStreams } from "./stream-pool.js";
 import {
   createWebRTCSession,
   handleWebRTCAnswer,
@@ -999,6 +1000,15 @@ async function shutdown() {
     await disconnectMqtt();
   } catch (error) {
     appLogger.error(`Error disconnecting MQTT: ${error}`, {
+      source: "server",
+    });
+  }
+
+  // Release shared stream pool (tears down all shared RFC4571 servers)
+  try {
+    await releaseAllStreams();
+  } catch (error) {
+    appLogger.error(`Error releasing stream pool: ${error}`, {
       source: "server",
     });
   }

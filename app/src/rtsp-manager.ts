@@ -11,6 +11,7 @@ import {
 } from "./settings-store.js";
 import * as net from "net";
 import * as crypto from "crypto";
+import { releaseStreamsByCamera } from "./stream-pool.js";
 
 // Helper: sanitize camera name for URL path (Camera Studio => camera_studio)
 export function sanitizeCameraName(name: string): string {
@@ -235,6 +236,9 @@ async function cleanupManagedConnection(
  * Notify disconnection listeners and update cache status.
  */
 function notifyDisconnection(cameraId: string): void {
+  // Release any shared streams from the pool for this camera.
+  releaseStreamsByCamera(cameraId);
+
   for (const cb of apiDisconnectionListeners) {
     try {
       cb(cameraId);

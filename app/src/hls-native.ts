@@ -1,8 +1,9 @@
 /**
  * HLS Native Manager
  *
- * Manages HLS sessions using the BaichuanHlsServer from the library.
- * Handles multiple cameras and sessions with automatic cleanup.
+ * Manages HLS sessions using BaichuanHlsServer + shared stream pool.
+ * The pool provides a single streaming session per camera:profile;
+ * the HLS server subscribes to the pool's videoStream events.
  */
 
 import {
@@ -10,12 +11,10 @@ import {
   type HlsServerStatus,
 } from "@apocaliss92/nodelink-js";
 import { createSourceLogger } from "./logger.js";
-import {
-  getOrCreateApiConnection,
-  sanitizeCameraName,
-} from "./rtsp-manager.js";
+import { sanitizeCameraName } from "./rtsp-manager.js";
 import { getConfig } from "./settings-store.js";
 import { emitStreamClientsChanged } from "./events-manager.js";
+import { acquireStream, addConsumer, type SharedStream } from "./stream-pool.js";
 
 const logger = createSourceLogger("hls-native");
 
@@ -36,6 +35,8 @@ interface ActiveHlsStream {
   startedAt: number;
   lastAccessAt: number;
   clients: Map<ClientKey, number>; // lastSeen
+  /** Release function to remove this HLS stream as a consumer from the pool. */
+  releasePool: (() => void) | null;
 }
 
 // ============================================================================
@@ -119,17 +120,19 @@ async function createOrGetStream(
   const existing = activeStreams.get(streamKey);
   if (existing) return existing;
 
-  const api = await getOrCreateApiConnection(camera.id);
-  const channel = camera.rtspChannel ?? 0;
   const sanitizedName = sanitizeCameraName(camera.name);
 
-  logger.info(`Creating HLS stream for ${camera.name}/${profile}`);
+  logger.info(`Creating HLS stream for ${camera.name}/${profile} via shared pool`);
 
-  // Create HLS server from library
+  // Acquire shared stream from pool (single camera session).
+  const shared: SharedStream = await acquireStream(camera.id, profile);
+
+  // Create HLS server using the pool's external video stream.
   const server = new BaichuanHlsServer({
-    api,
-    channel,
+    api: shared.rfc.videoStream as any, // api is required but unused when externalVideoStream is set
+    channel: shared.channel,
     profile,
+    externalVideoStream: shared.videoStream,
     logger: (level: "debug" | "info" | "warn" | "error", message: string) => {
       logger[level](message);
     },
@@ -175,13 +178,29 @@ async function createOrGetStream(
     startedAt: now(),
     lastAccessAt: now(),
     clients: new Map(),
+    releasePool: null,
   };
 
-  // Start the server
+  // Start the HLS server (subscribes to shared videoStream events).
   await server.start();
+
+  // Register as a consumer in the pool.
+  stream.releasePool = addConsumer(shared, `hls:${streamKey}`, "hls", () => {
+    logger.warn(`HLS stream ${streamKey}: shared pool teardown, stopping`);
+    void stopHlsStreamInternal(streamKey);
+  });
 
   activeStreams.set(streamKey, stream);
   return stream;
+}
+
+async function stopHlsStreamInternal(streamKey: string): Promise<void> {
+  const stream = activeStreams.get(streamKey);
+  if (!stream) return;
+
+  activeStreams.delete(streamKey);
+  await stream.server.stop();
+  logger.info(`HLS stream stopped for ${streamKey}`);
 }
 
 async function stopHlsStream(streamKey: string): Promise<void> {
@@ -189,9 +208,14 @@ async function stopHlsStream(streamKey: string): Promise<void> {
   if (!stream) return;
 
   logger.info(`Stopping HLS stream ${streamKey}`);
-  activeStreams.delete(streamKey);
 
-  await stream.server.stop();
+  // Release pool consumer first.
+  if (stream.releasePool) {
+    stream.releasePool();
+    stream.releasePool = null;
+  }
+
+  await stopHlsStreamInternal(streamKey);
 }
 
 // ============================================================================

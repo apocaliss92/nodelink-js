@@ -355,7 +355,7 @@ export async function* createNativeStream(
   let dedicatedRelease: (() => Promise<void>) | undefined;
   if (!client) {
     const variantSuffix = options?.variant && options.variant !== "default" ? `:${options.variant}` : "";
-    const sessionKey = `native-stream:ch${channel}:${profile}${variantSuffix}`;
+    const sessionKey = `live:native${variantSuffix}:ch${channel}:${profile}`;
     try {
       api.logger?.info?.(`[createNativeStream] acquiring dedicated session  key=${sessionKey}`);
       const session = await api.createDedicatedSession(sessionKey);
