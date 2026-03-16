@@ -2390,7 +2390,28 @@ export class BaichuanRtspServer extends EventEmitter<{
         this.firstFramePromise = null;
         this.firstFrameResolve = null;
         this.nativeFanout = null;
-        this.prebuffer = [];
+        // Keep prebuffer across restarts so reconnecting clients can still get
+        // IDR-aligned fast startup while the new stream spins up.
+        // The prebuffer will be naturally replaced once the new stream starts
+        // producing frames (trimmed by the PREBUFFER_MAX_MS window).
+
+        // Reset RTP timestamp bases for all connected clients.
+        // The new camera stream will have a reset internal clock, so stale
+        // base values would produce non-monotonic / backwards-jumping DTS.
+        // Also reset keyframe gate so clients wait for a fresh IDR from the
+        // new stream before forwarding frames (avoids sending orphan P-frames
+        // that cause H.264 decode errors like "illegal reordering_of_pic_nums_idc").
+        for (const [, resources] of this.clientResources) {
+          const res = resources as any;
+          res.rtpVideoBaseMicroseconds = undefined;
+          res.rtpVideoBaseTimestamp = undefined;
+          res.rtpVideoLastTimestamp = undefined;
+          res.seenFirstVideoKeyframe = false;
+          res.rtpSentVideoConfig = false;
+          // Keep rtpVideoTimestamp and rtpVideoSeq so the RTP stream
+          // continues with monotonically increasing values for the client.
+          // The next frame will re-anchor the base from the current timestamp.
+        }
 
         // Release the dedicated session from the ended stream to prevent session leaks.
         // Without this, each restart acquires a new session (incrementing refCount)
