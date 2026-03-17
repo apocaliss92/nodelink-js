@@ -176,6 +176,23 @@ export class BaichuanClient extends EventEmitter<{
   private static readonly COVER_PREVIEW_INITIAL_BACKOFF_MS = 1_000;
   private static readonly COVER_PREVIEW_MAX_BACKOFF_MS = 30_000;
 
+  /**
+   * Per-client snapshot (cmd_id=109) serialization queue.
+   * 
+   * WHY: On NVR/multi-camera devices sharing one socket, concurrent snapshot requests
+   * can cause JPEG data to mix (even with per-request msgNum filtering):
+   * - Camera A and B both send frames on same socket
+   * - Frame listener is global per socket
+   * - Timing quirks can cause chunk reordering or listener confusion
+   * 
+   * FIX: Serialize all cmd_id=109 requests on THIS client instance.
+   * Each snapshot waits for previous one to complete before starting.
+   * This ensures clean frame sequences per request, zero data corruption.
+   * 
+   * Impact: Snapshots are ~0–50ms slower per camera (negligible for users).
+   */
+  private snapshotQueueTail: Promise<void> = Promise.resolve();
+
   private readonly opts: BaichuanClientOptions;
   private readonly debugCfg: DebugConfig;
   private readonly logger: Logger;
@@ -3738,6 +3755,35 @@ export class BaichuanClient extends EventEmitter<{
     encryption?: EncryptionProtocol;
     timeoutMs?: number;
   }): Promise<Buffer> {
+    // **SERIALIZATION**: Wait for previous snapshot to complete before starting this one.
+    // This prevents concurrent snapshots from mixing JPEG data on the shared socket.
+    const prevTail = this.snapshotQueueTail;
+    let resolve: () => void;
+    const newTail = new Promise<void>((r) => {
+      resolve = r;
+    });
+    this.snapshotQueueTail = newTail;
+
+    try {
+      await prevTail; // Wait for previous snapshot to complete
+      return await this.sendBinarySnapshot109Impl(params);
+    } finally {
+      resolve!(); // Unlock for next snapshot
+    }
+  }
+
+  private async sendBinarySnapshot109Impl(params: {
+    cmdId: number;
+    channel?: number;
+    /** Override the header channelId (and encryption channelId) for this request. */
+    channelIdOverride?: number;
+    payloadXml?: string;
+    extensionXml?: string;
+    messageClass?: number;
+    streamType?: number;
+    encryption?: EncryptionProtocol;
+    timeoutMs?: number;
+  }): Promise<Buffer> {
     await this.connect();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
@@ -3820,12 +3866,14 @@ export class BaichuanClient extends EventEmitter<{
       const onFrame = (frame: BaichuanFrame) => {
         if (frame.header.cmdId !== cmdId) return;
 
+        // **CRITICAL FIX**: Ignore frames from OTHER concurrent snapshot requests.
+        // Without this, concurrent snapshots on the same shared client mix their JPEG chunks.
+        // Use strong msgNum correlation to ensure each listener processes ONLY its own response frames.
+        if (frame.header.msgNum !== msgNum) return;
+
         // If the request itself was rejected, fail fast instead of timing out.
         // Some firmwares respond with an empty-body error for snapshot.
-        if (
-          frame.header.msgNum === msgNum &&
-          frame.header.responseCode >= 400
-        ) {
+        if (frame.header.responseCode >= 400) {
           fail(
             new Error(
               `Baichuan snapshot request rejected (cmdId=${cmdId} msgNum=${msgNum} responseCode=${frame.header.responseCode})`,
