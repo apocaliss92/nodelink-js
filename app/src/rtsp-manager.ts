@@ -1,6 +1,7 @@
 import {
   ReolinkBaichuanApi,
   BaichuanRtspServer,
+  Go2rtcTcpServer,
 } from "@apocaliss92/nodelink-js";
 import { createSourceLogger } from "./logger.js";
 import {
@@ -10,6 +11,7 @@ import {
   updateCamera,
   upsertCameraStream,
 } from "./settings-store.js";
+import { getGo2rtcManager } from "./go2rtc-manager.js";
 import * as net from "net";
 import * as crypto from "crypto";
 import { releaseStreamsByCamera } from "./stream-pool.js";
@@ -25,6 +27,16 @@ export function sanitizeCameraName(name: string): string {
 // Helper: generate random token for RTSP path
 export function generateStreamToken(): string {
   return crypto.randomBytes(8).toString("hex");
+}
+
+// Helper: build go2rtc-safe stream name (e.g. "camera_studio_main")
+export function buildGo2rtcStreamName(
+  cameraName: string,
+  profile: string,
+  channel: number,
+): string {
+  const base = sanitizeCameraName(cameraName);
+  return channel > 0 ? `${base}_${profile}_ch${channel}` : `${base}_${profile}`;
 }
 
 // Helper: generate RTSP server key for multi-stream support
@@ -96,6 +108,12 @@ export interface RtspServerInfo {
   streamKey: string;
   /** RTSP path (e.g., /token123) */
   path?: string;
+  /** When using go2rtc: the stream name registered in go2rtc. */
+  go2rtcStreamName?: string;
+  /** When using go2rtc: the tcp:// source URL. */
+  go2rtcSourceUrl?: string;
+  /** Server mode: "rtsp" (BaichuanRtspServer) or "go2rtc" (Go2rtcTcpServer). */
+  mode?: "rtsp" | "go2rtc";
 }
 
 export interface CameraInfo {
@@ -204,12 +222,14 @@ export function onApiDisconnected(
   apiDisconnectionListeners.push(callback);
 }
 
-// Store for RTSP servers
+// Store for RTSP servers (may be BaichuanRtspServer or Go2rtcTcpServer)
 const rtspServers = new Map<
   string,
   {
-    server: BaichuanRtspServer;
+    server: BaichuanRtspServer | Go2rtcTcpServer;
     info: RtspServerInfo;
+    /** go2rtc stream name (set when using Go2rtcTcpServer). */
+    go2rtcStreamName?: string;
   }
 >();
 
@@ -881,53 +901,115 @@ export async function startRtspServer(
   rtspServers.set(streamKey, { server: null as any, info });
 
   try {
+    const api = await getOrCreateApiConnection(cameraId);
+    const go2rtcMgr = getGo2rtcManager();
+    const useGo2rtc = settings.go2rtc?.enabled === true && go2rtcMgr?.isRunning;
+
     logger.info(
-      `Starting RTSP server on port ${port} (${profile}, ch${channel})`,
+      `Stream mode decision: go2rtc.enabled=${settings.go2rtc?.enabled}, manager=${!!go2rtcMgr}, running=${go2rtcMgr?.isRunning}, useGo2rtc=${useGo2rtc}`,
     );
 
-    const api = await getOrCreateApiConnection(cameraId);
+    if (useGo2rtc) {
+      // ---- go2rtc mode: Go2rtcTcpServer (raw Annex-B TCP pipe) ----
+      const isBatteryOnDemand =
+        camera.isBattery === true && camera.batteryMode === "streamOnly";
+      logger.info(
+        `Starting Go2rtc TCP server (${profile}, ch${channel}) — go2rtc mode${isBatteryOnDemand ? " [battery on-demand]" : ""}`,
+      );
 
-    const server = new BaichuanRtspServer({
-      api,
-      profile,
-      channel,
-      listenPort: port,
-      listenHost: "0.0.0.0", // Listen on all interfaces
-      path: rtspPath,
-      logger: {
-        log: (msg: unknown) => logger.info(String(msg)),
-        info: (msg: string) => logger.info(msg),
-        warn: (msg: string) => logger.warn(msg),
-        error: (msg: string) => logger.error(msg),
-        debug: (msg: string) => logger.debug(msg),
-      },
-    });
+      const tcpServer = new Go2rtcTcpServer({
+        api,
+        profile,
+        channel,
+        listenPort: 0, // OS picks a free port
+        listenHost: "127.0.0.1",
+        deviceId: cameraId,
+        // Battery cameras: don't pre-start the native stream — it will start
+        // on-demand when go2rtc connects (user opens a preview).
+        prestartStream: !isBatteryOnDemand,
+        // Battery cameras: shorter grace period so camera sleeps sooner.
+        ...(isBatteryOnDemand ? { gracePeriodMs: 10_000 } : {}),
+        logger: {
+          log: (msg: unknown) => logger.info(String(msg)),
+          info: (msg: string) => logger.info(msg),
+          warn: (msg: string) => logger.warn(msg),
+          error: (msg: string) => logger.error(msg),
+          debug: (msg: string) => logger.debug(msg),
+        },
+      });
 
-    await server.start();
+      await tcpServer.start();
 
-    info.status = "running";
-    // Build URL using serviceIp setting
-    const serviceIp = settings.serviceIp || "localhost";
-    info.rtspUrl = `rtsp://${serviceIp}:${port}${rtspPath}`;
-    info.startedAt = new Date();
+      const sourceUrl = tcpServer.go2rtcSourceUrl!;
+      const go2rtcName = buildGo2rtcStreamName(camera.name, profile, channel);
 
-    rtspServers.set(streamKey, { server, info });
+      // Register stream with go2rtc
+      await go2rtcMgr!.addStream(go2rtcName, sourceUrl);
 
-    // Save stream configuration for auto-start on next server restart (including port and token)
+      info.status = "running";
+      info.mode = "go2rtc";
+      info.go2rtcStreamName = go2rtcName;
+      info.go2rtcSourceUrl = sourceUrl;
+      info.port = tcpServer.port!;
+      info.startedAt = new Date();
+
+      // Build RTSP URL via go2rtc's RTSP output
+      const serviceIp = settings.serviceIp || "localhost";
+      const go2rtcRtspPort = settings.go2rtc?.rtspPort ?? 18554;
+      info.rtspUrl = `rtsp://${serviceIp}:${go2rtcRtspPort}/${go2rtcName}`;
+
+      rtspServers.set(streamKey, { server: tcpServer, info, go2rtcStreamName: go2rtcName });
+
+      logger.info(`Go2rtc stream registered: ${go2rtcName} → ${sourceUrl}`);
+      logger.info(`RTSP via go2rtc: ${info.rtspUrl}`);
+    } else {
+      // ---- Classic mode: BaichuanRtspServer ----
+      logger.info(
+        `Starting RTSP server on port ${port} (${profile}, ch${channel})`,
+      );
+
+      const server = new BaichuanRtspServer({
+        api,
+        profile,
+        channel,
+        listenPort: port,
+        listenHost: "0.0.0.0",
+        path: rtspPath,
+        logger: {
+          log: (msg: unknown) => logger.info(String(msg)),
+          info: (msg: string) => logger.info(msg),
+          warn: (msg: string) => logger.warn(msg),
+          error: (msg: string) => logger.error(msg),
+          debug: (msg: string) => logger.debug(msg),
+        },
+      });
+
+      await server.start();
+
+      info.status = "running";
+      info.mode = "rtsp";
+      const serviceIp = settings.serviceIp || "localhost";
+      info.rtspUrl = `rtsp://${serviceIp}:${port}${rtspPath}`;
+      info.startedAt = new Date();
+
+      rtspServers.set(streamKey, { server, info });
+
+      logger.info(`RTSP server started: ${info.rtspUrl}`);
+    }
+
+    // Save stream configuration for auto-start on next server restart
     upsertCameraStream(cameraId, {
       profile,
       channel,
-      port, // Remember the port for next time
-      token: streamToken, // Remember the token for consistent URLs
+      port,
+      token: streamToken,
       enabled: true,
       autoStart: true,
     });
 
-    logger.info(`RTSP server started: ${info.rtspUrl}`);
-
     return info;
   } catch (error) {
-    logger.error(`Failed to start RTSP server: ${error}`);
+    logger.error(`Failed to start stream server: ${error}`);
     info.status = "error";
     info.error = String(error);
     rtspServers.set(streamKey, { server: null as any, info });
@@ -972,17 +1054,27 @@ export async function stopRtspServer(
   );
 
   try {
+    // Deregister from go2rtc if this was a go2rtc stream
+    if (entry.go2rtcStreamName) {
+      const go2rtcMgr = getGo2rtcManager();
+      if (go2rtcMgr?.isRunning) {
+        await go2rtcMgr.removeStream(entry.go2rtcStreamName).catch(() => {});
+      }
+    }
+
     if (entry.server) {
-      logger.info("Stopping RTSP server");
+      logger.info(`Stopping ${entry.info.mode === "go2rtc" ? "Go2rtc TCP" : "RTSP"} server`);
       await entry.server.stop();
     }
     entry.info.status = "stopped";
     entry.info.rtspUrl = undefined;
     entry.info.startedAt = undefined;
+    entry.info.go2rtcStreamName = undefined;
+    entry.info.go2rtcSourceUrl = undefined;
 
-    logger.info("RTSP server stopped");
+    logger.info("Stream server stopped");
   } catch (error) {
-    logger.error(`Error stopping RTSP server: ${error}`);
+    logger.error(`Error stopping stream server: ${error}`);
     entry.info.status = "error";
     entry.info.error = String(error);
     throw error;
@@ -1024,7 +1116,10 @@ export function getAllRtspServersInfo(): RtspServerInfo[] {
   return Array.from(rtspServers.values()).map((entry) => {
     // Update connections count from live server
     if (entry.server && entry.info.status === "running") {
-      entry.info.connections = entry.server.getClientCount();
+      entry.info.connections =
+        entry.server instanceof Go2rtcTcpServer
+          ? entry.server.clientCount
+          : entry.server.getClientCount();
     }
     return entry.info;
   });
@@ -1037,7 +1132,10 @@ export function getCameraRtspServers(cameraId: string): RtspServerInfo[] {
     .map((entry) => {
       // Update connections count from live server
       if (entry.server && entry.info.status === "running") {
-        entry.info.connections = entry.server.getClientCount();
+        entry.info.connections =
+          entry.server instanceof Go2rtcTcpServer
+            ? entry.server.clientCount
+            : entry.server.getClientCount();
       }
       return entry.info;
     });
@@ -1287,4 +1385,63 @@ export async function testCameraConnection(
     logger.error(`Connection test failed: ${error}`);
     return { success: false, error: String(error) };
   }
+}
+
+/**
+ * Register a listener that auto-starts go2rtc streams when any camera connects.
+ * Call once at startup when go2rtc is enabled.
+ */
+export function enableGo2rtcAutoStreams(): void {
+  const logger = createSourceLogger("go2rtc-auto");
+
+  onApiConnected((cameraId, _api) => {
+    const settings = getSettings();
+    if (!settings.go2rtc?.enabled) return;
+
+    const go2rtcMgr = getGo2rtcManager();
+    if (!go2rtcMgr?.isRunning) return;
+
+    const config = getConfig();
+    const camera = config.cameras.find((c) => c.id === cameraId);
+    if (!camera) return;
+
+    const enabledStreams = (camera.rtspStreams ?? []).filter(
+      (s) => s.enabled === true,
+    );
+
+    const isBattery = camera.isBattery && camera.batteryMode === "streamOnly";
+
+    if (enabledStreams.length === 0) {
+      // No configured streams — start main by default
+      logger.info(
+        `Camera ${camera.name} connected, auto-starting main stream${isBattery ? " [battery on-demand]" : ""}`,
+      );
+      void startRtspServer(cameraId, {
+        profile: "main",
+        channel: camera.rtspChannel ?? 0,
+      }).catch((e) =>
+        logger.error(`Failed to auto-start main for ${camera.name}: ${e}`),
+      );
+    } else {
+      for (const stream of enabledStreams) {
+        const streamKey = getRtspServerKey(cameraId, stream.profile, stream.channel);
+        const existing = rtspServers.get(streamKey);
+        if (existing?.info.status === "running") continue; // already running
+
+        logger.info(
+          `Camera ${camera.name} connected, auto-starting ${stream.profile}/ch${stream.channel}`,
+        );
+        void startRtspServer(cameraId, {
+          profile: stream.profile,
+          channel: stream.channel,
+        }).catch((e) =>
+          logger.error(
+            `Failed to auto-start ${stream.profile} for ${camera.name}: ${e}`,
+          ),
+        );
+      }
+    }
+  });
+
+  logger.info("go2rtc auto-stream listener registered");
 }

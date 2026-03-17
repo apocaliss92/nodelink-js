@@ -128,7 +128,13 @@ export const camerasRouter = router({
         }
       }
 
-      const camera = addCamera({ ...input, name: cameraName ?? input.host });
+      const camera = addCamera({
+        ...input,
+        name: cameraName ?? input.host,
+        autoStart: false,
+        isBattery: false,
+        batteryMode: "streamOnly" as const,
+      });
 
       // Connect to camera immediately after adding (don't await - let it happen in background)
       getOrCreateApiConnection(camera.id).catch(() => {
@@ -881,6 +887,13 @@ export const camerasRouter = router({
         nvrId: input.nvrId,
         rtspChannel: input.channelNumber,
         isBattery: input.isBattery ?? false,
+        autoStart: false,
+        channels: 1,
+        batteryMode: "streamOnly" as const,
+        debugLogs: false,
+        rtspStreams: [],
+        rtspEnabled: false,
+        rtspProfile: "main" as const,
       });
 
       // Connect in background

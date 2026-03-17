@@ -7,6 +7,7 @@ import { rtspProxyRouter } from "./routers/rtsp-proxy.js";
 import { settingsRouter } from "./routers/settings.js";
 import { logsRouter } from "./routers/logs.js";
 import { eventsRouter } from "./routers/events.js";
+import { go2rtcRouter } from "./routers/go2rtc.js";
 export const appRouter = router({
   config: configRouter,
   baichuan: baichuanRouter,
@@ -16,6 +17,7 @@ export const appRouter = router({
   settings: settingsRouter,
   logs: logsRouter,
   events: eventsRouter,
+  go2rtc: go2rtcRouter,
 });
 
 export type AppRouter = typeof appRouter;

@@ -1,5 +1,4 @@
-import type { PreviewModalState, StreamProfile } from "./types";
-import { HlsInlinePlayer } from "./HlsInlinePlayer";
+import type { PreviewModalState } from "./types";
 import { WebRTCInlinePlayer } from "./WebRTCInlinePlayer";
 
 export function PreviewModal({
@@ -25,7 +24,7 @@ export function PreviewModal({
           <div>
             <div style={{ fontWeight: 800 }}>{state.title}</div>
             <div className="subtitle">
-              {state.kind.toUpperCase()} · {state.cameraName} · {state.profile}
+              WebRTC · {state.cameraName} · {state.profile}
             </div>
           </div>
           <button className="btn" onClick={onClose}>
@@ -33,26 +32,12 @@ export function PreviewModal({
           </button>
         </div>
 
-        {state.kind === "mjpeg" ? (
-          <div className="previewBox" style={{ marginTop: 12 }}>
-            <img
-              src={state.mjpegUrl ?? ""}
-              alt={state.title}
-              style={{ width: "100%", display: "block" }}
-            />
-          </div>
-        ) : state.kind === "webrtc" ? (
-          <div style={{ marginTop: 12 }}>
-            <WebRTCInlinePlayer
-              cameraName={state.cameraName}
-              profile={state.profile as StreamProfile}
-            />
-          </div>
-        ) : (
-          <div style={{ marginTop: 12 }}>
-            <HlsInlinePlayer url={state.hlsUrl ?? ""} />
-          </div>
-        )}
+        <div style={{ marginTop: 12 }}>
+          <WebRTCInlinePlayer
+            streamName={state.streamName ?? state.cameraName}
+            go2rtcApiPort={state.go2rtcApiPort}
+          />
+        </div>
       </div>
     </div>
   );

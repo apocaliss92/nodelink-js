@@ -38,6 +38,14 @@ type Settings = {
     pollIntervalSeconds: number;
     stateTopicPrefix: string;
   };
+  go2rtc?: {
+    enabled: boolean;
+    binaryPath: string;
+    apiPort: number;
+    rtspPort: number;
+    webrtcPort: number;
+    iceServers: string[];
+  };
 };
 
 type RuntimeInfo = {
@@ -105,6 +113,13 @@ export default function SettingsPage() {
   const [personalToken, setPersonalToken] = useState<string | null>(null);
   const [creatingPersonalToken, setCreatingPersonalToken] = useState(false);
 
+  const [go2rtcStatus, setGo2rtcStatus] = useState<{
+    running: boolean;
+    apiUrl: string | null;
+    streams: Record<string, unknown>;
+  } | null>(null);
+  const [go2rtcLoading, setGo2rtcLoading] = useState(false);
+
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [metricsError, setMetricsError] = useState<string | null>(null);
   const [metricsLoading, setMetricsLoading] = useState(false);
@@ -114,6 +129,7 @@ export default function SettingsPage() {
 
   type TabId =
     | "general"
+    | "go2rtc"
     | "auth"
     | "mqtt"
     | "webrtc"
@@ -460,6 +476,7 @@ export default function SettingsPage() {
             {(
               [
                 ["general", "General"],
+                ["go2rtc", "go2rtc"],
                 ["auth", "Auth"],
                 ["mqtt", "MQTT"],
                 ["webrtc", "WebRTC"],
@@ -1059,6 +1076,267 @@ export default function SettingsPage() {
               );
             })()}
           </div>
+          ) : null}
+
+          {activeTab === "go2rtc" ? (
+            <div className="card">
+              <div className="label">go2rtc Restreamer</div>
+              <div style={{ color: "var(--muted)", fontSize: 12 }}>
+                When enabled, camera streams are fed as raw video to go2rtc via TCP
+                instead of running individual RTSP servers. go2rtc then provides
+                WebRTC, HLS, MJPEG, and RTSP output automatically.
+              </div>
+
+              {(() => {
+                const go2rtc = settings.go2rtc ?? {
+                  enabled: true,
+                  binaryPath: "go2rtc",
+                  apiPort: 11984,
+                  rtspPort: 18554,
+                  webrtcPort: 18555,
+                  iceServers: [],
+                };
+
+                const refreshStatus = async () => {
+                  try {
+                    const s = await trpcQuery("go2rtc.status");
+                    setGo2rtcStatus(s as any);
+                  } catch {
+                    setGo2rtcStatus(null);
+                  }
+                };
+
+                const handleStartStop = async () => {
+                  setGo2rtcLoading(true);
+                  try {
+                    if (go2rtcStatus?.running) {
+                      await trpcMutation("go2rtc.stop");
+                    } else {
+                      await trpcMutation("go2rtc.start");
+                    }
+                    await refreshStatus();
+                  } catch (e) {
+                    setError(String(e));
+                  } finally {
+                    setGo2rtcLoading(false);
+                  }
+                };
+
+                // Auto-refresh status when tab is active
+                if (!go2rtcStatus && !go2rtcLoading) {
+                  refreshStatus();
+                }
+
+                return (
+                  <>
+                    <div style={{ marginTop: 12, marginBottom: 12 }}>
+                      <label className="row" style={{ cursor: "pointer", gap: 8 }}>
+                        <input
+                          type="checkbox"
+                          checked={go2rtc.enabled}
+                          disabled={!canEditSettings}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              go2rtc: { ...go2rtc, enabled: e.target.checked },
+                            })
+                          }
+                        />
+                        <span>Enable go2rtc restreamer</span>
+                      </label>
+                    </div>
+
+                    {go2rtcStatus && (
+                      <div
+                        className="row"
+                        style={{
+                          gap: 8,
+                          marginBottom: 12,
+                          padding: "8px 12px",
+                          borderRadius: 8,
+                          background: go2rtcStatus.running
+                            ? "rgba(34,197,94,0.1)"
+                            : "rgba(239,68,68,0.1)",
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: 8,
+                            height: 8,
+                            borderRadius: "50%",
+                            background: go2rtcStatus.running ? "#22c55e" : "#ef4444",
+                          }}
+                        />
+                        <span style={{ flex: 1, fontSize: 13 }}>
+                          {go2rtcStatus.running
+                            ? `Running — API: ${go2rtcStatus.apiUrl}`
+                            : "Stopped"}
+                        </span>
+                        <button
+                          className={`btn ${go2rtcStatus.running ? "" : "primary"}`}
+                          style={{ padding: "4px 12px", fontSize: 12 }}
+                          disabled={go2rtcLoading}
+                          onClick={handleStartStop}
+                        >
+                          {go2rtcLoading
+                            ? "..."
+                            : go2rtcStatus.running
+                              ? "Stop"
+                              : "Start"}
+                        </button>
+                        <button
+                          className="btn"
+                          style={{ padding: "4px 12px", fontSize: 12 }}
+                          onClick={refreshStatus}
+                        >
+                          Refresh
+                        </button>
+                      </div>
+                    )}
+
+                    {go2rtcStatus?.running &&
+                      Object.keys(go2rtcStatus.streams).length > 0 && (
+                        <div style={{ marginBottom: 12 }}>
+                          <div className="label" style={{ fontSize: 12, marginBottom: 4 }}>
+                            Registered streams
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 12,
+                              fontFamily: "monospace",
+                              background: "var(--bg-secondary)",
+                              padding: "8px 10px",
+                              borderRadius: 6,
+                              maxHeight: 150,
+                              overflow: "auto",
+                            }}
+                          >
+                            {Object.keys(go2rtcStatus.streams).map((name) => (
+                              <div key={name}>{name}</div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                    <div className="grid cols2" style={{ marginTop: 4 }}>
+                      <div>
+                        <div className="label">Binary path</div>
+                        <input
+                          className="input mono"
+                          placeholder="go2rtc"
+                          value={go2rtc.binaryPath}
+                          disabled={!canEditSettings}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              go2rtc: { ...go2rtc, binaryPath: e.target.value },
+                            })
+                          }
+                        />
+                        <div style={{ color: "var(--muted)", fontSize: 11, marginTop: 2 }}>
+                          Path to go2rtc binary. Downloaded automatically if not found.
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="label">API port</div>
+                        <input
+                          className="input mono"
+                          type="number"
+                          value={go2rtc.apiPort}
+                          disabled={!canEditSettings}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              go2rtc: {
+                                ...go2rtc,
+                                apiPort: Number(e.target.value) || 1984,
+                              },
+                            })
+                          }
+                        />
+                      </div>
+
+                      <div>
+                        <div className="label">RTSP port</div>
+                        <input
+                          className="input mono"
+                          type="number"
+                          value={go2rtc.rtspPort}
+                          disabled={!canEditSettings}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              go2rtc: {
+                                ...go2rtc,
+                                rtspPort: Number(e.target.value) || 8554,
+                              },
+                            })
+                          }
+                        />
+                      </div>
+
+                      <div>
+                        <div className="label">WebRTC port</div>
+                        <input
+                          className="input mono"
+                          type="number"
+                          value={go2rtc.webrtcPort}
+                          disabled={!canEditSettings}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              go2rtc: {
+                                ...go2rtc,
+                                webrtcPort: Number(e.target.value) || 8555,
+                              },
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
+
+                    <div style={{ marginTop: 10 }}>
+                      <div className="label">ICE servers (one per line)</div>
+                      <textarea
+                        className="input mono"
+                        rows={3}
+                        placeholder={"stun:stun.l.google.com:19302"}
+                        value={(go2rtc.iceServers ?? []).join("\n")}
+                        disabled={!canEditSettings}
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            go2rtc: {
+                              ...go2rtc,
+                              iceServers: e.target.value
+                                .split("\n")
+                                .map((s) => s.trim())
+                                .filter(Boolean),
+                            },
+                          })
+                        }
+                        style={{ width: "100%", resize: "vertical" }}
+                      />
+                    </div>
+
+                    {go2rtcStatus?.running && go2rtcStatus.apiUrl && (
+                      <div style={{ marginTop: 12 }}>
+                        <a
+                          href={`/go2rtc/`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="btn primary"
+                          style={{ padding: "6px 14px", fontSize: 13, textDecoration: "none" }}
+                        >
+                          Open go2rtc Dashboard
+                        </a>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
+            </div>
           ) : null}
 
           {activeTab === "proxy" ? (

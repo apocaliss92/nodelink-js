@@ -144,6 +144,23 @@ export const SettingsSchema = z.object({
     })
     .default({}),
 
+  // go2rtc restreamer (default, provides WebRTC/HLS/MJPEG/RTSP output)
+  go2rtc: z
+    .object({
+      enabled: z.boolean().default(true),
+      /** Path to go2rtc binary (e.g. "./bin/go2rtc" or "go2rtc"). */
+      binaryPath: z.string().default("go2rtc"),
+      /** go2rtc API port (default 11984). */
+      apiPort: z.number().int().min(1).max(65535).default(11984),
+      /** go2rtc RTSP listen port (default 18554). */
+      rtspPort: z.number().int().min(1).max(65535).default(18554),
+      /** go2rtc WebRTC listen port (default 18555). */
+      webrtcPort: z.number().int().min(1).max(65535).default(18555),
+      /** ICE servers for WebRTC (e.g. "stun:stun.l.google.com:19302"). */
+      iceServers: z.array(z.string()).default([]),
+    })
+    .default({}),
+
   // Home Assistant MQTT discovery (device state forwarding)
   homeassistant: z
     .object({

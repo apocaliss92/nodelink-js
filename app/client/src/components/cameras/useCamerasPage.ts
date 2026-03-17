@@ -66,6 +66,7 @@ export function useCamerasPage() {
     host: string;
     connections: number;
   }>(null);
+  const [go2rtcApiPort, setGo2rtcApiPort] = useState<number | null>(null);
   const [savingProxy, setSavingProxy] = useState(false);
   const [streamsLoadingByCamera, setStreamsLoadingByCamera] = useState<
     Record<string, boolean>
@@ -101,17 +102,22 @@ export function useCamerasPage() {
       setError(null);
     }
     try {
-      const [list, proxy, rtspList, mjpeg, webrtc, hls, nvrList] = await Promise.all([
+      const [list, proxy, rtspList, nvrList, go2rtcSt] = await Promise.all([
         trpcQuery<CameraInfo[]>("cameras.list"),
         trpcQuery<any>("rtspProxy.getStatus").catch(() => null),
         trpcQuery<any[]>("rtsp.list").catch(() => []),
-        apiFetch("/api/mjpeg/status").then((r) => (r.ok ? r.json() : [])).catch(() => []),
-        apiFetch("/api/webrtc/status")
-          .then((r) => (r.ok ? r.json() : { sessions: [] }))
-          .catch(() => ({ sessions: [] })),
-        apiFetch("/api/hls/status").then((r) => (r.ok ? r.json() : [])).catch(() => []),
         trpcQuery<NvrInfo[]>("cameras.listNvrs").catch(() => []),
+        trpcQuery<{ apiUrl: string | null; running: boolean }>("go2rtc.status").catch(() => null),
       ]);
+      if (go2rtcSt) {
+        setGo2rtcRunning(go2rtcSt.running);
+        if (go2rtcSt.apiUrl) {
+          try {
+            const port = new URL(go2rtcSt.apiUrl).port;
+            if (port) setGo2rtcApiPort(Number(port));
+          } catch { /* ignore */ }
+        }
+      }
       updateIfChanged(setCameras, list);
 
       updateIfChanged(
@@ -122,34 +128,9 @@ export function useCamerasPage() {
           channel: Number(x.channel ?? 0),
           status: x.status ? String(x.status) : undefined,
           connections: x.connections === undefined ? undefined : Number(x.connections),
-        })),
-      );
-
-      updateIfChanged(
-        setMjpegStatus,
-        (mjpeg ?? []).map((x: any) => ({
-          cameraId: String(x.cameraId ?? ""),
-          profile: String(x.profile ?? "main") as StreamProfile,
-          clients: Number(x.clients ?? 0),
-        })),
-      );
-
-      updateIfChanged(
-        setWebrtcStatus,
-        (webrtc?.sessions ?? []).map((x: any) => ({
-          sessionId: String(x.sessionId ?? ""),
-          cameraId: String(x.cameraId ?? ""),
-          profile: String(x.profile ?? "main") as StreamProfile,
-          state: String(x.state ?? ""),
-        })),
-      );
-
-      updateIfChanged(
-        setHlsStatus,
-        (hls ?? []).map((x: any) => ({
-          cameraId: String(x.cameraId ?? ""),
-          profile: String(x.profile ?? "main") as StreamProfile,
-          clients: Number(x.clients ?? 0),
+          go2rtcStreamName: x.go2rtcStreamName ? String(x.go2rtcStreamName) : undefined,
+          rtspUrl: x.rtspUrl ? String(x.rtspUrl) : undefined,
+          mode: x.mode ? String(x.mode) : undefined,
         })),
       );
 
@@ -317,22 +298,27 @@ export function useCamerasPage() {
     [refresh],
   );
 
-  const toggleProxy = useCallback(async () => {
-    setSavingProxy(true);
+  const [go2rtcRunning, setGo2rtcRunning] = useState(false);
+  const [go2rtcToggling, setGo2rtcToggling] = useState(false);
+
+  const toggleGo2rtc = useCallback(async () => {
+    setGo2rtcToggling(true);
     setError(null);
     try {
-      if (rtspProxyStatus?.running) {
-        await trpcMutation("rtspProxy.stop", undefined as any);
+      if (go2rtcRunning) {
+        await trpcMutation("go2rtc.stop", undefined as any);
       } else {
-        await trpcMutation("rtspProxy.start", undefined as any);
+        await trpcMutation("go2rtc.start", undefined as any);
       }
+      const st = await trpcQuery<{ running: boolean }>("go2rtc.status").catch(() => null);
+      setGo2rtcRunning(st?.running ?? false);
       await refresh();
     } catch (e) {
       setError(String(e));
     } finally {
-      setSavingProxy(false);
+      setGo2rtcToggling(false);
     }
-  }, [rtspProxyStatus?.running, refresh]);
+  }, [go2rtcRunning, refresh]);
 
   const deleteCamera = useCallback(
     async (id: string) => {
@@ -422,11 +408,10 @@ export function useCamerasPage() {
     error,
     connectingByCamera,
     rtspServers,
-    mjpegStatus,
-    webrtcStatus,
-    hlsStatus,
     rtspProxyStatus,
-    savingProxy,
+    go2rtcApiPort,
+    go2rtcRunning,
+    go2rtcToggling,
     streamsByCamera,
     streamsLoadingByCamera,
     streamsDiscoveryAttemptsByCamera,
@@ -448,6 +433,6 @@ export function useCamerasPage() {
     addNvrOpen,
     setAddNvrOpen,
     deleteNvr,
-    toggleProxy,
+    toggleGo2rtc,
   };
 }

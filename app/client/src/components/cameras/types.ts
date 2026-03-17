@@ -75,6 +75,10 @@ export type PreviewModalState =
       title: string;
       cameraName: string;
       profile: StreamProfile;
+      /** go2rtc stream name for WHEP signaling. */
+      streamName?: string;
+      /** go2rtc API port for direct access. */
+      go2rtcApiPort?: number | null;
       mjpegUrl?: string;
       hlsUrl?: string;
     }

@@ -18,11 +18,10 @@ export default function CamerasPage() {
     error,
     connectingByCamera,
     rtspServers,
-    mjpegStatus,
-    webrtcStatus,
-    hlsStatus,
     rtspProxyStatus,
-    savingProxy,
+    go2rtcApiPort,
+    go2rtcRunning,
+    go2rtcToggling,
     streamsByCamera,
     streamsLoadingByCamera,
     streamsDiscoveryAttemptsByCamera,
@@ -43,7 +42,7 @@ export default function CamerasPage() {
     addNvrOpen,
     setAddNvrOpen,
     deleteNvr,
-    toggleProxy,
+    toggleGo2rtc,
     refresh,
   } = useCamerasPage();
 
@@ -61,10 +60,8 @@ export default function CamerasPage() {
       connecting={connectingByCamera[c.id] ?? false}
       savingAutoStart={savingAutoStart[c.id] ?? false}
       rtspProxyPort={rtspProxyStatus?.port}
+      go2rtcApiPort={go2rtcApiPort}
       rtspServers={rtspServers}
-      mjpegStatus={mjpegStatus}
-      webrtcStatus={webrtcStatus}
-      hlsStatus={hlsStatus}
       onConnect={() => void connect(c.id)}
       onDisconnect={() => void disconnect(c.id)}
       onSetDebug={() => void setCameraDebug(c.id, !c.debugLogs)}
@@ -142,27 +139,16 @@ export default function CamerasPage() {
         <div className="row">
           <button
             className={`btn master ${
-              rtspProxyStatus?.running ? "autostart on" : "autostart off"
+              go2rtcRunning ? "autostart on" : "autostart off"
             }`}
-            disabled={
-              savingProxy || loading || rtspProxyStatus?.enabled === false
-            }
-            onClick={() => void toggleProxy()}
-            title={
-              rtspProxyStatus?.enabled === false
-                ? "RTSP Proxy disabled in settings"
-                : rtspProxyStatus?.running
-                  ? "Stop RTSP proxy"
-                  : "Start RTSP proxy"
-            }
+            disabled={go2rtcToggling || loading}
+            onClick={() => void toggleGo2rtc()}
+            title={go2rtcRunning ? "Stop go2rtc restreamer" : "Start go2rtc restreamer"}
           >
-            {savingProxy ? (
-              <>RTSP Proxy: working…</>
+            {go2rtcToggling ? (
+              <>Restreamer: working…</>
             ) : (
-              <>
-                RTSP Proxy: {rtspProxyStatus?.running ? "ON" : "OFF"}
-                {rtspProxyStatus ? ` (${rtspProxyStatus.connections})` : ""}
-              </>
+              <>Restreamer: {go2rtcRunning ? "ON" : "OFF"}</>
             )}
           </button>
 

@@ -21,10 +21,8 @@ export function CameraCard({
   connecting,
   savingAutoStart,
   rtspProxyPort,
+  go2rtcApiPort,
   rtspServers,
-  mjpegStatus,
-  webrtcStatus,
-  hlsStatus,
   onConnect,
   onDisconnect,
   onSetDebug,
@@ -44,16 +42,12 @@ export function CameraCard({
     channel: number;
     status?: string;
     connections?: number;
+    go2rtcStreamName?: string;
+    rtspUrl?: string;
+    mode?: string;
   }>;
-  mjpegStatus: Array<{ cameraId: string; profile: StreamProfile; clients: number }>;
-  webrtcStatus: Array<{
-    sessionId: string;
-    cameraId: string;
-    profile: StreamProfile;
-    state: string;
-  }>;
-  hlsStatus: Array<{ cameraId: string; profile: StreamProfile; clients: number }>;
   rtspProxyPort?: number;
+  go2rtcApiPort?: number | null;
   onConnect: () => void;
   onDisconnect: () => void;
   onSetDebug: () => void;
@@ -195,10 +189,8 @@ export function CameraCard({
                 camera={camera}
                 stream={s}
                 rtspProxyPort={rtspProxyPort}
+                go2rtcApiPort={go2rtcApiPort}
                 rtspServers={rtspServers}
-                mjpegStatus={mjpegStatus}
-                webrtcStatus={webrtcStatus}
-                hlsStatus={hlsStatus}
                 onOpenPreview={onOpenPreview}
               />
             ))}

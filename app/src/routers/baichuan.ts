@@ -574,7 +574,7 @@ export const baichuanRouter = router({
         z.object({
           chimeId: z.number().describe("Chime device ID"),
           eventType: z.string().describe("Event type (e.g. 'people', 'vehicle', 'visitor')"),
-          state: z.number().describe("Enable state (1 = enabled, 0 = disabled)"),
+          state: z.union([z.literal(0), z.literal(1)]).describe("Enable state (1 = enabled, 0 = disabled)"),
           musicId: z.number().describe("Ringtone ID to play for this event"),
         }),
       ),

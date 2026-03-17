@@ -5,52 +5,70 @@ import type {
   PreviewModalState,
   StreamProfile,
 } from "./types";
-import { copyToClipboard, streamKey, withAuthTokenQuery } from "./utils";
+import { copyToClipboard, streamKey } from "./utils";
 import { DropdownButton } from "./DropdownButton";
+
+/** Build the stream name matching rtsp-manager's buildGo2rtcStreamName(). */
+function buildStreamName(
+  sanitizedCameraName: string,
+  profile: string,
+  channel: number,
+): string {
+  return channel > 0
+    ? `${sanitizedCameraName}_${profile}_ch${channel}`
+    : `${sanitizedCameraName}_${profile}`;
+}
 
 export function StreamCard({
   camera,
   stream,
   rtspProxyPort,
   rtspServers,
-  mjpegStatus,
-  webrtcStatus,
-  hlsStatus,
+  go2rtcApiPort,
   onOpenPreview,
 }: {
   camera: CameraInfo;
   stream: AvailableStream;
   rtspProxyPort: number | undefined;
+  go2rtcApiPort?: number | null;
   rtspServers: Array<{
     cameraId: string;
     profile: StreamProfile;
     channel: number;
     status?: string;
     connections?: number;
+    go2rtcStreamName?: string;
+    rtspUrl?: string;
+    mode?: string;
   }>;
-  mjpegStatus: Array<{ cameraId: string; profile: StreamProfile; clients: number }>;
-  webrtcStatus: Array<{
-    sessionId: string;
-    cameraId: string;
-    profile: StreamProfile;
-    state: string;
-  }>;
-  hlsStatus: Array<{ cameraId: string; profile: StreamProfile; clients: number }>;
   onOpenPreview: (state: PreviewModalState) => void;
 }) {
-  const k = streamKey(camera.id, stream.profile, stream.channel);
-  const rtspUrl =
-    rtspProxyPort && camera.sanitizedName
-      ? `rtsp://${window.location.hostname}:${rtspProxyPort}${
-          stream.channel > 0
-            ? `/${camera.sanitizedName}/${stream.profile}/${stream.channel}`
-            : `/${camera.sanitizedName}/${stream.profile}`
-        }`
-      : null;
-  const mjpegUrl = withAuthTokenQuery(
-    `${window.location.origin}/api/mpeg/${camera.sanitizedName}/${stream.profile}`,
+  const streamName = buildStreamName(
+    camera.sanitizedName,
+    stream.profile,
+    stream.channel,
   );
-  const mjpegPreviewUrl = mjpegUrl;
+
+  // Build go2rtc base URL: direct to go2rtc API when port is known, fallback to proxy
+  const go2rtcBase = go2rtcApiPort
+    ? `${window.location.protocol}//${window.location.hostname}:${go2rtcApiPort}`
+    : `${window.location.origin}/go2rtc`;
+  const src = encodeURIComponent(streamName);
+  const mjpegUrl = `${go2rtcBase}/api/stream.mjpeg?src=${src}`;
+  const hlsUrl = `${go2rtcBase}/api/stream.m3u8?src=${src}`;
+  const snapshotUrl = `${go2rtcBase}/api/frame.jpeg?src=${src}`;
+  const dashboardUrl = `${go2rtcBase}/stream.html?src=${src}`;
+
+  const rtsp = rtspServers.find(
+    (x) =>
+      x.cameraId === camera.id &&
+      x.profile === stream.profile &&
+      Number(x.channel ?? 0) === Number(stream.channel),
+  );
+  const rtspUrl = rtsp?.rtspUrl ?? null;
+  const rtspViewers =
+    rtsp?.status === "running" ? Number(rtsp.connections ?? 0) : 0;
+
   const lensLabel =
     stream.lensType === "wide"
       ? "Wide - "
@@ -62,78 +80,58 @@ export function StreamCard({
     : camera.deviceInfo?.isMultifocal && stream.channel > 0
       ? ` (ch ${stream.channel})`
       : "";
-  const streamName = `${lensLabel}${stream.profile.toUpperCase()}${channelSuffix}`;
+  const streamLabel = `${lensLabel}${stream.profile.toUpperCase()}${channelSuffix}`;
   const metaRight = `${stream.codec ?? "—"} · ${stream.resolution ?? "—"}`;
 
   const urlItems: DropdownItem[] = [
     {
-      label: "Copy RTSP",
+      label: "Copy RTSP URL",
       disabled: !rtspUrl,
       onClick: () => {
-        if (!rtspUrl) return;
-        void copyToClipboard(rtspUrl);
+        if (rtspUrl) void copyToClipboard(rtspUrl);
       },
     },
     {
       label: "Copy MJPEG URL",
       onClick: () => void copyToClipboard(mjpegUrl),
     },
+    {
+      label: "Copy HLS URL",
+      onClick: () => void copyToClipboard(hlsUrl),
+    },
+    {
+      label: "Copy Snapshot URL",
+      onClick: () => void copyToClipboard(snapshotUrl),
+    },
   ];
 
   const previewItems: DropdownItem[] = [
     {
-      label: "WebRTC",
+      label: "WebRTC Preview",
       onClick: () =>
         onOpenPreview({
           open: true,
           kind: "webrtc",
-          title: `${camera.name} ${streamName}`,
+          title: `${camera.name} ${streamLabel}`,
           cameraName: camera.sanitizedName,
           profile: stream.profile,
-          mjpegUrl: mjpegPreviewUrl,
+          streamName,
+          go2rtcApiPort,
         }),
     },
     {
-      label: "MJPEG",
-      onClick: () =>
-        onOpenPreview({
-          open: true,
-          kind: "mjpeg",
-          title: `${camera.name} ${streamName}`,
-          cameraName: camera.sanitizedName,
-          profile: stream.profile,
-          mjpegUrl: mjpegPreviewUrl,
-        }),
+      label: "Open Dashboard",
+      onClick: () => {
+        window.open(dashboardUrl, "_blank");
+      },
     },
   ];
-
-  const rtsp = rtspServers.find(
-    (x) =>
-      x.cameraId === camera.id &&
-      x.profile === stream.profile &&
-      Number(x.channel ?? 0) === Number(stream.channel),
-  );
-  const rtspViewers =
-    rtsp?.status === "running" ? Number(rtsp.connections ?? 0) : 0;
-  const mjpegViewers = Number(
-    mjpegStatus.find(
-      (x) => x.cameraId === camera.id && x.profile === stream.profile,
-    )?.clients ?? 0,
-  );
-  const webrtcViewers = webrtcStatus.filter(
-    (x) => x.cameraId === camera.id && x.profile === stream.profile,
-  ).length;
-  const hlsViewers = Number(
-    hlsStatus.find(
-      (x) => x.cameraId === camera.id && x.profile === stream.profile,
-    )?.clients ?? 0,
-  );
 
   return (
     <div className="streamCard">
       <div className="streamSingleRow">
-        <div className="streamName" title={streamName}>
-          {streamName}
+        <div className="streamName" title={streamLabel}>
+          {streamLabel}
         </div>
         <div className="streamRightMeta" title={metaRight}>
           {metaRight}
@@ -141,10 +139,7 @@ export function StreamCard({
       </div>
 
       <div className="streamViewersRow">
-        <span>
-          Viewers: RTSP {rtspViewers} · MJPEG {mjpegViewers} · WebRTC{" "}
-          {webrtcViewers} · HLS {hlsViewers}
-        </span>
+        <span>RTSP viewers: {rtspViewers}</span>
       </div>
 
       <div className="streamActionsRow">
