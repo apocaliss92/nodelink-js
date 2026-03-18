@@ -56,4 +56,5 @@ app/logs/*
 logs/*
 app/config.json
 app/settings.json
+app/go2rtc.yaml
 
