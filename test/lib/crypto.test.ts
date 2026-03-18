@@ -21,34 +21,32 @@ describe("Crypto", () => {
     });
   });
 
-  describe("bcEncrypt / bcDecrypt (XOR)", () => {
+  describe("bcEncrypt / bcDecrypt (XOR with offset)", () => {
     it("round-trips data correctly", () => {
-      const key = Buffer.from("0123456789abcdef", "hex");
       const plaintext = Buffer.from("Hello, Baichuan!");
-      const encrypted = bcEncrypt(plaintext, key);
-      const decrypted = bcDecrypt(encrypted, key);
+      const offset = 42;
+      const encrypted = bcEncrypt(Buffer.from(plaintext), offset);
+      const decrypted = bcDecrypt(encrypted, offset);
       expect(decrypted).toEqual(plaintext);
     });
 
-    it("XOR is symmetric", () => {
-      const key = Buffer.from("deadbeef", "hex");
+    it("XOR is symmetric with same offset", () => {
       const data = Buffer.from([0x01, 0x02, 0x03, 0x04]);
-      const enc = bcEncrypt(data, key);
-      // XOR same key again = original
-      const dec = bcEncrypt(enc, key);
+      const offset = 7;
+      const enc = bcEncrypt(Buffer.from(data), offset);
+      const dec = bcEncrypt(enc, offset);
       expect(dec).toEqual(data);
     });
 
     it("handles empty data", () => {
-      const key = Buffer.from("abcd", "hex");
-      const result = bcEncrypt(Buffer.alloc(0), key);
+      const result = bcEncrypt(Buffer.alloc(0), 0);
       expect(result.length).toBe(0);
     });
   });
 
   describe("aesEncrypt / aesDecrypt (AES-128-CFB)", () => {
     it("round-trips data correctly", () => {
-      const key = Buffer.alloc(16, 0x42); // 16-byte AES key
+      const key = Buffer.alloc(16, 0x42);
       const plaintext = Buffer.from("AES test payload for Reolink camera protocol");
       const encrypted = aesEncrypt(plaintext, key);
       expect(encrypted).not.toEqual(plaintext);

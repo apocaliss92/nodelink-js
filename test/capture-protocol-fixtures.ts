@@ -142,7 +142,7 @@ async function main() {
 
   // WiFi
   try {
-    const wifi = await capture("getWifiSignal", () => api.getWifiSignal());
+    const wifi = await capture("getWifiSignal", () => api.getWifiSignal(0));
     fs.writeFileSync(path.join(FIXTURES_DIR, "getWifiSignal-response.json"), JSON.stringify(wifi, null, 2));
   } catch { /* skip */ }
 
@@ -160,7 +160,7 @@ async function main() {
 
   // Ability/Support info (for capabilities)
   try {
-    const support = await capture("getSupportInfo", () => api.getSupportInfo(0));
+    const support = await capture("getSupportInfo", () => api.getSupportInfo());
     fs.writeFileSync(path.join(FIXTURES_DIR, "getSupportInfo-response.json"), JSON.stringify(support, null, 2));
   } catch { /* skip */ }
 

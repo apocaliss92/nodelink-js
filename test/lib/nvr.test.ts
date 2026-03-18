@@ -207,8 +207,8 @@ describe("Go2rtcTcpServer battery behavior (unit tests)", () => {
     const battery = { isBattery: true, batteryMode: "streamOnly" as const };
     expect(battery.isBattery && battery.batteryMode === "streamOnly").toBe(true);
 
-    // Battery alwaysOn: prestartStream = true
-    const alwaysOn = { isBattery: true, batteryMode: "alwaysOn" as const };
+    // Battery alwaysOn: prestartStream = true (not streamOnly)
+    const alwaysOn = { isBattery: true, batteryMode: "alwaysOn" as string };
     expect(alwaysOn.isBattery && alwaysOn.batteryMode === "streamOnly").toBe(false);
   });
 

@@ -78,10 +78,10 @@ async function main() {
     );
   }
 
-  // 5. Capabilities
+  // 5. Capabilities (via getSupportInfo)
   console.log("Capturing capabilities...");
   try {
-    const caps = await api.getCapabilities(0);
+    const caps = await api.getSupportInfo();
     fs.writeFileSync(
       path.join(FIXTURES_DIR, "capabilities.json"),
       JSON.stringify(caps, null, 2),

@@ -15,8 +15,8 @@ const logger = createSourceLogger("frigate");
 
 export interface FrigateClientOptions {
   host: string;
-  username?: string;
-  password?: string;
+  username?: string | undefined;
+  password?: string | undefined;
 }
 
 export class FrigateClient {

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import * as http from "node:http";
 
 describe("go2rtc integration (mock)", () => {
@@ -108,7 +108,7 @@ describe("go2rtc integration (mock)", () => {
     registeredStreams.set("cam1_sub", "rtsp://127.0.0.1:8557/cam1/sub");
 
     const res = await fetch(`http://127.0.0.1:${mockPort}/api/streams`);
-    const data = await res.json();
+    const data = await res.json() as Record<string, any>;
     expect(Object.keys(data)).toHaveLength(2);
     expect(data.cam1_main.producers[0].url).toBe("rtsp://127.0.0.1:8556/cam1/main");
   });
@@ -151,7 +151,7 @@ describe("go2rtc integration (mock)", () => {
 
     // List
     let res = await fetch(`http://127.0.0.1:${mockPort}/api/streams`);
-    let data = await res.json();
+    let data = await res.json() as Record<string, any>;
     expect(Object.keys(data)).toHaveLength(2);
 
     // Remove one
@@ -162,7 +162,7 @@ describe("go2rtc integration (mock)", () => {
 
     // List again
     res = await fetch(`http://127.0.0.1:${mockPort}/api/streams`);
-    data = await res.json();
+    data = await res.json() as Record<string, any>;
     expect(Object.keys(data)).toHaveLength(1);
     expect(data.studio_main).toBeDefined();
   });
@@ -179,7 +179,7 @@ describe("go2rtc integration (mock)", () => {
     }
 
     const res = await fetch(`http://127.0.0.1:${mockPort}/api/streams`);
-    const data = await res.json();
+    const data = await res.json() as Record<string, any>;
     expect(Object.keys(data)).toHaveLength(6);
 
     // Each camera has its own streams
