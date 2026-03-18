@@ -13,7 +13,4 @@ ffmpeg:
   mjpeg: -hide_banner -an -vf "scale=-1:720" -q:v 5 -f mjpeg -
 
 streams:
-        cameretta_daniel_main: rtsp://127.0.0.1:8556/cameretta_daniel/main
-        cameretta_daniel_sub: rtsp://127.0.0.1:8557/cameretta_daniel/sub
-        cameretta_daniel_ext: rtsp://127.0.0.1:8558/cameretta_daniel/ext
   # No streams registered yet
