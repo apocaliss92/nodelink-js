@@ -22,6 +22,11 @@ on:
         required: true
         type: boolean
         default: true
+      docker_tag:
+        description: "Additional Docker tag (e.g. beta, rc1). Leave empty for standard release."
+        required: false
+        type: string
+        default: ""
   push:
     branches:
       - "main"
@@ -279,10 +284,19 @@ jobs:
           OWNER_LC=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
           IMG="${{ env.REGISTRY }}/${OWNER_LC}/nodelink-js-manager"
           VERSION="${{ needs.build-library.outputs.version }}"
+          EXTRA_TAG="${{ github.event.inputs.docker_tag }}"
+
+          TAGS="${IMG}:${VERSION}"
+          if [ -z "$EXTRA_TAG" ]; then
+            # Standard release: also tag as latest
+            TAGS="${TAGS},${IMG}:latest"
+          else
+            # Beta/RC: tag with the custom label (e.g. beta, rc1)
+            TAGS="${TAGS},${IMG}:${EXTRA_TAG}"
+          fi
 
           echo "image=${IMG}" >> $GITHUB_OUTPUT
-          echo "tag_version=${IMG}:${VERSION}" >> $GITHUB_OUTPUT
-          echo "tag_latest=${IMG}:latest" >> $GITHUB_OUTPUT
+          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
@@ -291,9 +305,7 @@ jobs:
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ${{ steps.docker-tags.outputs.tag_latest }}
-            ${{ steps.docker-tags.outputs.tag_version }}
+          tags: ${{ steps.docker-tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           labels: |
