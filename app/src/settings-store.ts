@@ -161,6 +161,24 @@ export const SettingsSchema = z.object({
     })
     .default({}),
 
+  // Frigate integration (config management)
+  frigate: z
+    .object({
+      /** Frigate server URL (e.g. http://192.168.1.100:5000). */
+      host: z.string().default(""),
+      /** Frigate username (optional, for authenticated instances). */
+      username: z.string().default(""),
+      /** Frigate password (optional). */
+      password: z.string().default(""),
+      /**
+       * Streaming mode:
+       * - "nodelink" — cameras use nodelink's go2rtc RTSP URLs as source
+       * - "frigate" — cameras are added to Frigate's own go2rtc restream
+       */
+      streamMode: z.enum(["nodelink", "frigate"]).default("nodelink"),
+    })
+    .default({}),
+
   // Home Assistant MQTT discovery (device state forwarding)
   homeassistant: z
     .object({

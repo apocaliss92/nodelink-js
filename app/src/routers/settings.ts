@@ -120,7 +120,24 @@ export const settingsRouter = router({
             stateTopicPrefix: z.string().optional(),
           })
           .optional(),
-        // Paths are controlled by DATA_PATH env var, not configurable at runtime
+        go2rtc: z
+          .object({
+            enabled: z.boolean().optional(),
+            binaryPath: z.string().optional(),
+            apiPort: z.number().int().min(1).max(65535).optional(),
+            rtspPort: z.number().int().min(1).max(65535).optional(),
+            webrtcPort: z.number().int().min(1).max(65535).optional(),
+            iceServers: z.array(z.string()).optional(),
+          })
+          .optional(),
+        frigate: z
+          .object({
+            host: z.string().optional(),
+            username: z.string().optional(),
+            password: z.string().optional(),
+            streamMode: z.enum(["nodelink", "frigate"]).optional(),
+          })
+          .optional(),
       }),
     )
     .mutation(({ input }) => {
@@ -152,6 +169,14 @@ export const settingsRouter = router({
           ...input.homeassistant,
         };
         updateHomeAssistantPolling();
+      }
+
+      if (input.go2rtc) {
+        patch.go2rtc = { ...current.go2rtc, ...input.go2rtc };
+      }
+
+      if (input.frigate) {
+        patch.frigate = { ...current.frigate, ...input.frigate };
       }
 
       const settings = saveSettings(patch);
