@@ -87,6 +87,62 @@ Separate npm project using `file://..` symlink to the library. Tech stack: Expre
 - **api-extractor** rolls up `.d.ts` files into a single `dist/index.d.ts`
 - **nx** orchestrates builds across library and app workspaces
 
+## Testing Policy (MANDATORY)
+
+**Every code change MUST include tests.** This is non-negotiable for both new features and bug fixes.
+
+### Rules
+
+1. **New features** — Write tests BEFORE or alongside the implementation. No feature is complete without tests.
+2. **Bug fixes** — Write a test that reproduces the bug FIRST, verify it fails, then fix the code and verify the test passes. This prevents regressions.
+3. **Protocol changes** — Capture real request/response fixtures from a camera (`npx tsx test/capture-protocol-fixtures.ts`) and add fixture-based tests.
+4. **Refactoring** — Existing tests must still pass. Add tests for any edge cases discovered during refactoring.
+
+### Test Structure
+
+```
+test/
+├── lib/                    # Library tests (protocol, converters, framing)
+│   ├── crypto.test.ts      # XOR/AES encryption
+│   ├── framing.test.ts     # Binary header encode/decode
+│   ├── xml-parsing.test.ts # XML builders/parsers
+│   ├── h264-converter.test.ts
+│   ├── h265-converter.test.ts
+│   ├── bcmedia.test.ts     # Stream frame analysis
+│   ├── nvr.test.ts         # NVR multi-channel, socket isolation, battery
+│   ├── fixtures-validation.test.ts
+│   └── protocol-responses.test.ts
+├── app/                    # Manager app tests
+│   ├── settings-schema.test.ts
+│   ├── frigate-config.test.ts
+│   ├── frigate-client.test.ts   # Mock HTTP server
+│   ├── go2rtc-manager.test.ts
+│   ├── go2rtc-integration.test.ts # Mock go2rtc API
+│   ├── rtsp-manager.test.ts
+│   └── events-manager.test.ts
+├── fixtures/               # Captured from real cameras (committed to git)
+│   ├── protocol/           # XML response fixtures
+│   ├── nvr/                # NVR multi-channel fixtures
+│   └── *.json, *.bin       # Stream frames, keyframes
+├── capture-fixtures.ts     # Script to re-capture camera fixtures
+├── capture-protocol-fixtures.ts
+└── capture-nvr-fixtures.ts
+```
+
+### Commands
+
+```bash
+npm test              # Run all tests (must pass before any commit)
+npm run test:watch    # Watch mode during development
+npx tsx test/capture-fixtures.ts           # Re-capture camera fixtures
+npx tsx test/capture-protocol-fixtures.ts  # Re-capture protocol fixtures
+npx tsx test/capture-nvr-fixtures.ts       # Re-capture NVR fixtures
+```
+
+### CI
+
+Tests run automatically on every push/PR via `.github/workflows/ci.yml`. **PRs with failing tests will not be merged.**
+
 ## Adding New API Methods — Checklist
 
 1. **`src/protocol/constants.ts`** — Add `BC_CMD_ID_*` constant(s)
@@ -95,9 +151,10 @@ Separate npm project using `file://..` symlink to the library. Tech stack: Expre
 4. **`src/reolink/baichuan/ReolinkBaichuanApi.ts`** — Add public method(s), import new constants/utils/types
 5. **`src/reolink/baichuan/capabilities.ts`** — Update `DeviceCapabilities` if the feature requires a capability flag
 6. **`app/src/routers/baichuan.ts`** — Add tRPC procedure(s) (query for GET, mutation for SET)
-7. **`documentation/baichuan-api/`** — Update the relevant `.md` file: add to ToC and add a section with signature, parameters table, return type, and example
-8. **`README.md`** — Update the root README if the new feature adds a user-facing capability (new section, usage example, or entry in the features/API tables)
-9. **`npm run build`** — Rebuild before testing consumers
+7. **`test/`** — **Add tests** for new XML parsers, protocol responses, and tRPC procedures
+8. **`documentation/baichuan-api/`** — Update the relevant `.md` file
+9. **`README.md`** — Update if the feature adds a user-facing capability
+10. **`npm test && npm run build`** — Tests pass and rebuild before testing consumers
 
 ## Capability Flags
 

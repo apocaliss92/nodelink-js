@@ -1,0 +1,18 @@
+{
+  "body": {
+    "HddInfoList": {
+      "HddInfo": {
+        "number": 0,
+        "capacity": 249,
+        "capacityM": 991,
+        "format": 1,
+        "mount": 1,
+        "remainSize": 123,
+        "remainSizeM": 67,
+        "capacityV2": 268401836032,
+        "remainSizeV2": 132141320576
+      },
+      "@_version": 1.1
+    }
+  }
+}
