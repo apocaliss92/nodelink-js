@@ -18,6 +18,7 @@ export default [
       ".venv*/**",
       "**/.venv*/**",
       "test/capture-*.ts",
+      "scripts/**",
     ],
   },
   js.configs.recommended,
