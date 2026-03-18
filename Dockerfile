@@ -85,6 +85,10 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 RUN mkdir -p /data/logs && chown -R nodejs:nodejs /data
 
 # Environment variables
+# App version (set at build time via --build-arg, shown in UI)
+ARG APP_VERSION=dev
+ENV APP_VERSION=${APP_VERSION}
+
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV DATA_PATH=/data

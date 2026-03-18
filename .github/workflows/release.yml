@@ -306,11 +306,13 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.docker-tags.outputs.tags }}
+          build-args: |
+            APP_VERSION=${{ needs.build-library.outputs.version }}${{ github.event.inputs.docker_tag && format('-{0}', github.event.inputs.docker_tag) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           labels: |
             org.opencontainers.image.title=Nodelink.js Manager
-            org.opencontainers.image.description=Web dashboard for Reolink cameras with RTSP streaming
+            org.opencontainers.image.description=Web dashboard for Reolink cameras with go2rtc streaming
             org.opencontainers.image.version=${{ needs.build-library.outputs.version }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
