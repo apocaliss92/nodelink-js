@@ -646,73 +646,8 @@ app.get("/api/events/status", (req, res) => {
   res.json(getEventsManagerStatus());
 });
 
-// HLS/WebRTC/MJPEG endpoints removed — go2rtc handles all output formats.
-
-// ---- go2rtc API/UI proxy ----
-// Proxies /go2rtc/* to the local go2rtc API so the go2rtc web dashboard and
-// API endpoints (streams, WebRTC, HLS, MJPEG, snapshots) are accessible
-// through the main app server.
-app.use("/go2rtc", async (req, res) => {
-  const mgr = getGo2rtcManager();
-  if (!mgr?.isRunning) {
-    res.status(503).json({ error: "go2rtc is not running" });
-    return;
-  }
-  try {
-    const targetUrl = `${mgr.apiUrl}${req.url}`;
-    const headers: Record<string, string> = {};
-    if (req.headers["content-type"]) {
-      headers["content-type"] = req.headers["content-type"] as string;
-    }
-
-    const fetchInit: RequestInit = {
-      method: req.method,
-      headers,
-    };
-
-    // Forward body for non-GET methods
-    if (req.method !== "GET" && req.method !== "HEAD") {
-      // Read raw body
-      const chunks: Buffer[] = [];
-      for await (const chunk of req) {
-        chunks.push(chunk as Buffer);
-      }
-      if (chunks.length > 0) {
-        fetchInit.body = Buffer.concat(chunks);
-      }
-    }
-
-    const upstream = await fetch(targetUrl, fetchInit);
-
-    res.status(upstream.status);
-    // Forward response headers
-    upstream.headers.forEach((value, key) => {
-      // Skip hop-by-hop headers
-      if (key === "transfer-encoding" || key === "connection") return;
-      res.setHeader(key, value);
-    });
-
-    if (upstream.body) {
-      const reader = (upstream.body as ReadableStream<Uint8Array>).getReader();
-      const pump = async () => {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          res.write(Buffer.from(value));
-        }
-        res.end();
-      };
-      pump().catch(() => res.end());
-    } else {
-      const body = await upstream.text();
-      res.send(body);
-    }
-  } catch (error) {
-    if (!res.headersSent) {
-      res.status(502).json({ error: `go2rtc proxy error: ${error}` });
-    }
-  }
-});
+// All streaming handled directly by go2rtc on its own port (default 11984).
+// No proxy needed — go2rtc has CORS enabled (origin: "*").
 
 // Main dashboard - serve static HTML file
 app.get("/", (req, res) => {
@@ -769,8 +704,7 @@ app.get("*", (req, res, next) => {
     req.path.startsWith("/api") ||
     req.path.startsWith("/panel") ||
     req.path.startsWith("/static") ||
-    req.path.startsWith("/ws") ||
-    req.path.startsWith("/go2rtc")
+    req.path.startsWith("/ws")
   ) {
     return next();
   }

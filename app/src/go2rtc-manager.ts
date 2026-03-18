@@ -83,6 +83,7 @@ function generateGo2rtcYaml(
 
   lines.push("api:");
   lines.push(`  listen: ":${options.apiPort}"`);
+  lines.push('  origin: "*"');
   lines.push("");
 
   lines.push("rtsp:");

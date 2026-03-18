@@ -1191,6 +1191,17 @@ export default function SettingsPage() {
                         >
                           Refresh
                         </button>
+                        {go2rtcStatus.running && (
+                          <a
+                            href={`${window.location.protocol}//${window.location.hostname}:${go2rtc.apiPort}/`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="btn"
+                            style={{ padding: "4px 12px", fontSize: 12, textDecoration: "none" }}
+                          >
+                            Dashboard
+                          </a>
+                        )}
                       </div>
                     )}
 
@@ -1320,19 +1331,6 @@ export default function SettingsPage() {
                       />
                     </div>
 
-                    {go2rtcStatus?.running && go2rtcStatus.apiUrl && (
-                      <div style={{ marginTop: 12 }}>
-                        <a
-                          href={`/go2rtc/`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="btn primary"
-                          style={{ padding: "6px 14px", fontSize: 13, textDecoration: "none" }}
-                        >
-                          Open go2rtc Dashboard
-                        </a>
-                      </div>
-                    )}
                   </>
                 );
               })()}

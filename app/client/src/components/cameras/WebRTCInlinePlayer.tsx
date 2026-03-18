@@ -68,10 +68,8 @@ export function WebRTCInlinePlayer({
         if (closed) return;
         setStatus("Signaling...");
 
-        // WHEP: POST SDP offer to go2rtc, get SDP answer back
-        const go2rtcBase = go2rtcApiPort
-          ? `${window.location.protocol}//${window.location.hostname}:${go2rtcApiPort}`
-          : `${window.location.origin}/go2rtc`;
+        // WHEP: POST SDP offer directly to go2rtc API (CORS enabled via origin:"*").
+        const go2rtcBase = `${window.location.protocol}//${window.location.hostname}:${go2rtcApiPort ?? 11984}`;
         const whepUrl = `${go2rtcBase}/api/webrtc?src=${encodeURIComponent(streamName)}`;
         const res = await fetch(whepUrl, {
           method: "POST",

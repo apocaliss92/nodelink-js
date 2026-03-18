@@ -49,10 +49,8 @@ export function StreamCard({
     stream.channel,
   );
 
-  // Build go2rtc base URL: direct to go2rtc API when port is known, fallback to proxy
-  const go2rtcBase = go2rtcApiPort
-    ? `${window.location.protocol}//${window.location.hostname}:${go2rtcApiPort}`
-    : `${window.location.origin}/go2rtc`;
+  // Build go2rtc base URL: direct to go2rtc API
+  const go2rtcBase = `${window.location.protocol}//${window.location.hostname}:${go2rtcApiPort ?? 11984}`;
   const src = encodeURIComponent(streamName);
   const mjpegUrl = `${go2rtcBase}/api/stream.mjpeg?src=${src}`;
   const hlsUrl = `${go2rtcBase}/api/stream.m3u8?src=${src}`;
@@ -105,6 +103,9 @@ export function StreamCard({
     },
   ];
 
+  // MSE stream page URL — go2rtc native player (works for H265 too)
+  const mseUrl = `${go2rtcBase}/stream.html?src=${src}&mode=mse`;
+
   const previewItems: DropdownItem[] = [
     {
       label: "WebRTC Preview",
@@ -120,9 +121,9 @@ export function StreamCard({
         }),
     },
     {
-      label: "Open Dashboard",
+      label: "MSE Stream",
       onClick: () => {
-        window.open(dashboardUrl, "_blank");
+        window.open(mseUrl, "_blank");
       },
     },
   ];

@@ -22,10 +22,6 @@ export default defineConfig(({ mode }) => {
           target: "http://localhost:3000",
           changeOrigin: true,
         },
-        "/go2rtc": {
-          target: "http://localhost:3000",
-          changeOrigin: true,
-        },
         "/panel": {
           target: "http://localhost:3000",
           changeOrigin: false,
