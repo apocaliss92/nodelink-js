@@ -81,6 +81,8 @@ export function StreamCard({
   const streamLabel = `${lensLabel}${stream.profile.toUpperCase()}${channelSuffix}`;
   const metaRight = `${stream.codec ?? "—"} · ${stream.resolution ?? "—"}`;
 
+  const mp4Url = `${go2rtcBase}/api/stream.mp4?src=${src}`;
+
   const urlItems: DropdownItem[] = [
     {
       label: "Copy RTSP URL",
@@ -90,8 +92,8 @@ export function StreamCard({
       },
     },
     {
-      label: "Copy MJPEG URL",
-      onClick: () => void copyToClipboard(mjpegUrl),
+      label: "Copy MP4/MSE URL",
+      onClick: () => void copyToClipboard(mp4Url),
     },
     {
       label: "Copy HLS URL",

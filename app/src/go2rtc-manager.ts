@@ -102,6 +102,8 @@ function generateGo2rtcYaml(
 
   lines.push("ffmpeg:");
   lines.push("  bin: ffmpeg");
+  // Template for MJPEG transcoding (H264/H265 → MJPEG via ffmpeg)
+  lines.push("  mjpeg: -hide_banner -an -vf \"scale=-1:720\" -q:v 5 -f mjpeg -");
   lines.push("");
 
   lines.push("streams:");
