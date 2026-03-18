@@ -1,13 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { trpcMutation, trpcQuery } from "../../api";
-import { apiFetch } from "./utils";
 import type {
   AddCameraInput,
   AvailableStream,
   CameraInfo,
   NvrInfo,
   PreviewModalState,
-  RtspStreamConfig,
   StreamProfile,
 } from "./types";
 
@@ -45,20 +43,6 @@ export function useCamerasPage() {
       connections?: number;
     }>
   >([]);
-  const [mjpegStatus, setMjpegStatus] = useState<
-    Array<{ cameraId: string; profile: StreamProfile; clients: number }>
-  >([]);
-  const [webrtcStatus, setWebrtcStatus] = useState<
-    Array<{
-      sessionId: string;
-      cameraId: string;
-      profile: StreamProfile;
-      state: string;
-    }>
-  >([]);
-  const [hlsStatus, setHlsStatus] = useState<
-    Array<{ cameraId: string; profile: StreamProfile; clients: number }>
-  >([]);
   const [rtspProxyStatus, setRtspProxyStatus] = useState<null | {
     enabled: boolean;
     running: boolean;
@@ -67,7 +51,6 @@ export function useCamerasPage() {
     connections: number;
   }>(null);
   const [go2rtcApiPort, setGo2rtcApiPort] = useState<number | null>(null);
-  const [savingProxy, setSavingProxy] = useState(false);
   const [streamsLoadingByCamera, setStreamsLoadingByCamera] = useState<
     Record<string, boolean>
   >({});
@@ -76,7 +59,6 @@ export function useCamerasPage() {
   const [previewModal, setPreviewModal] = useState<PreviewModalState>({
     open: false,
   });
-  const [savingMaster, setSavingMaster] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [adding, setAdding] = useState<AddCameraInput>({
     host: "",

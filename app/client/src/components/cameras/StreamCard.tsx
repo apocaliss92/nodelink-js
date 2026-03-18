@@ -5,7 +5,7 @@ import type {
   PreviewModalState,
   StreamProfile,
 } from "./types";
-import { copyToClipboard, streamKey } from "./utils";
+import { copyToClipboard } from "./utils";
 import { DropdownButton } from "./DropdownButton";
 
 /** Build the stream name matching rtsp-manager's buildGo2rtcStreamName(). */
@@ -22,7 +22,7 @@ function buildStreamName(
 export function StreamCard({
   camera,
   stream,
-  rtspProxyPort,
+  rtspProxyPort: _rtspProxyPort,
   rtspServers,
   go2rtcApiPort,
   onOpenPreview,
@@ -52,10 +52,10 @@ export function StreamCard({
   // Build go2rtc base URL: direct to go2rtc API
   const go2rtcBase = `${window.location.protocol}//${window.location.hostname}:${go2rtcApiPort ?? 11984}`;
   const src = encodeURIComponent(streamName);
-  const mjpegUrl = `${go2rtcBase}/api/stream.mjpeg?src=${src}`;
+  const _mjpegUrl = `${go2rtcBase}/api/stream.mjpeg?src=${src}`;
   const hlsUrl = `${go2rtcBase}/api/stream.m3u8?src=${src}`;
   const snapshotUrl = `${go2rtcBase}/api/frame.jpeg?src=${src}`;
-  const dashboardUrl = `${go2rtcBase}/stream.html?src=${src}`;
+  const _dashboardUrl = `${go2rtcBase}/stream.html?src=${src}`;
 
   const rtsp = rtspServers.find(
     (x) =>

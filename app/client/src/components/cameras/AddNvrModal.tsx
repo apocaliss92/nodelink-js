@@ -116,7 +116,6 @@ export function AddNvrModal({
     if (existingNvr) {
       void discoverByNvrId(existingNvr.id);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const addChannel = async (ch: NvrChannel) => {
