@@ -1218,9 +1218,9 @@ export default function SettingsPage() {
                         >
                           Refresh
                         </button>
-                        {go2rtcStatus.running && (
+                        {go2rtcStatus.running && go2rtcStatus.apiUrl && (
                           <a
-                            href={`${window.location.protocol}//${window.location.hostname}:${go2rtc.apiPort}/`}
+                            href={`${go2rtcStatus.apiUrl.replace("127.0.0.1", window.location.hostname)}/`}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="btn"

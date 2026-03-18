@@ -69,7 +69,7 @@ export function WebRTCInlinePlayer({
         setStatus("Signaling...");
 
         // WHEP: POST SDP offer directly to go2rtc API (CORS enabled via origin:"*").
-        const go2rtcBase = `${window.location.protocol}//${window.location.hostname}:${go2rtcApiPort ?? 11984}`;
+        const go2rtcBase = `${window.location.protocol}//${window.location.hostname}:${go2rtcApiPort || 1984}`;
         const whepUrl = `${go2rtcBase}/api/webrtc?src=${encodeURIComponent(streamName)}`;
         const res = await fetch(whepUrl, {
           method: "POST",

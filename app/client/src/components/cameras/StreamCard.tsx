@@ -50,7 +50,7 @@ export function StreamCard({
   );
 
   // Build go2rtc base URL: direct to go2rtc API
-  const go2rtcBase = `${window.location.protocol}//${window.location.hostname}:${go2rtcApiPort ?? 11984}`;
+  const go2rtcBase = `${window.location.protocol}//${window.location.hostname}:${go2rtcApiPort || 1984}`;
   const src = encodeURIComponent(streamName);
   const _mjpegUrl = `${go2rtcBase}/api/stream.mjpeg?src=${src}`;
   const hlsUrl = `${go2rtcBase}/api/stream.m3u8?src=${src}`;
