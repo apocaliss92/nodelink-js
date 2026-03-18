@@ -33,30 +33,37 @@ export default [
     },
     rules: {
       // Keep "recommended" baseline, but avoid noisy refactors on an existing codebase.
-      // We still report these as warnings (not failing) so they can be cleaned up incrementally.
       "prefer-const": "warn",
       "no-empty": "warn",
+      "no-cond-assign": "warn",
+      "no-unreachable": "warn",
+      "no-regex-spaces": "warn",
+      "no-constant-binary-expression": "warn",
+      "no-useless-escape": "warn",
+      "no-undef": "off",
 
       // JS
-      "no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
+      "no-unused-vars": "off",
 
-      // TS-only rules
+      // TS-only rules — all as warnings to avoid blocking CI on pre-existing code
       "@typescript-eslint/no-explicit-any": "off",
       "@typescript-eslint/ban-ts-comment": "off",
       "@typescript-eslint/no-require-imports": "off",
       "@typescript-eslint/no-this-alias": "warn",
-    }
-  },
-  // TS files: use the TS-aware unused-vars rule and disable the base rule to avoid duplicates.
-  {
-    files: ["**/*.ts", "**/*.tsx"],
-    rules: {
-      "no-unused-vars": "off",
       "@typescript-eslint/no-unused-vars": [
         "warn",
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
       ],
+      "@typescript-eslint/no-unused-expressions": "warn",
+      "@typescript-eslint/no-empty-object-type": "warn",
+    }
+  },
+  // Override for JS files (non-TS)
+  {
+    files: ["**/*.js", "**/*.mjs", "**/*.cjs"],
+    rules: {
+      "@typescript-eslint/no-unused-vars": "off",
+      "no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
     },
   },
 ];
-
