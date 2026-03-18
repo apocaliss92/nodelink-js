@@ -11,7 +11,4 @@ ffmpeg:
   bin: ffmpeg
 
 streams:
-        cameretta_daniel_main: tcp://127.0.0.1:57504
-        videocamera_porta_retro_main_ch1: tcp://127.0.0.1:57555
-        baby_monitor_main_ch2: tcp://127.0.0.1:57557
   # No streams registered yet
