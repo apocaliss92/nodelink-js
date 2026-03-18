@@ -37,8 +37,8 @@ RUN npm install --ignore-scripts && npm run build
 # -----------------------------------------------------------------------------
 FROM node:22-alpine AS production
 
-# Install ffmpeg for MJPEG streaming and su-exec for entrypoint
-RUN apk add --no-cache ffmpeg su-exec
+# Install ffmpeg for snapshot transcoding and su-exec for entrypoint
+RUN apk add --no-cache ffmpeg su-exec curl
 
 WORKDIR /app
 
@@ -61,6 +61,19 @@ RUN sed -i 's|"file:.."|"file:/lib"|g' package.json
 ENV NODE_ENV=production
 RUN npm install --ignore-scripts
 
+# Download go2rtc binary (go2rtc-static postinstall is skipped by --ignore-scripts)
+RUN ARCH=$(uname -m) && \
+    case "$ARCH" in \
+      x86_64)  GO2RTC_ARCH="amd64" ;; \
+      aarch64) GO2RTC_ARCH="arm64" ;; \
+      armv7l)  GO2RTC_ARCH="arm" ;; \
+      *)       GO2RTC_ARCH="amd64" ;; \
+    esac && \
+    GO2RTC_VERSION="1.9.4" && \
+    curl -fsSL -o /usr/local/bin/go2rtc \
+      "https://github.com/AlexxIT/go2rtc/releases/download/v${GO2RTC_VERSION}/go2rtc_linux_${GO2RTC_ARCH}" && \
+    chmod +x /usr/local/bin/go2rtc
+
 # Copy built app (server.js and public/ with React client)
 COPY --from=builder /build/dist ./dist
 
@@ -74,12 +87,17 @@ RUN mkdir -p /data/logs && chown -R nodejs:nodejs /data
 # Environment variables
 ENV NODE_ENV=production
 ENV PORT=3000
-ENV RTSP_PORT=8554
 ENV DATA_PATH=/data
+ENV GO2RTC_PATH=/usr/local/bin/go2rtc
+ENV GO2RTC_API_PORT=1984
+ENV GO2RTC_RTSP_PORT=8554
+ENV GO2RTC_WEBRTC_PORT=8555
 
 # Expose ports
 EXPOSE 3000
+EXPOSE 1984
 EXPOSE 8554
+EXPOSE 8555
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

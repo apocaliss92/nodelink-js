@@ -46,7 +46,22 @@ export function resolveGo2rtcBinary(binaryPath?: string): string {
     if (existsSync(fromCwd)) return fromCwd;
   }
 
-  // 2. Bundled via go2rtc-static npm package
+  // 2. GO2RTC_PATH environment variable (set by Docker)
+  const envPath = process.env.GO2RTC_PATH;
+  if (envPath && existsSync(envPath)) {
+    logger.info(`Using go2rtc binary from GO2RTC_PATH: ${envPath}`);
+    return envPath;
+  }
+
+  // 3. Common system paths
+  for (const p of ["/usr/local/bin/go2rtc", "/usr/bin/go2rtc"]) {
+    if (existsSync(p)) {
+      logger.info(`Using go2rtc binary from system path: ${p}`);
+      return p;
+    }
+  }
+
+  // 4. Bundled via go2rtc-static npm package
   try {
     const require = createRequire(import.meta.url);
     const staticPath: string = require("go2rtc-static");
@@ -55,12 +70,12 @@ export function resolveGo2rtcBinary(binaryPath?: string): string {
       return staticPath;
     }
   } catch {
-    // Package not installed — shouldn't happen since it's a dependency
+    // Package not installed
   }
 
   throw new Error(
-    `go2rtc binary not found. Tried: "${binaryPath ?? "(none)"}". ` +
-      `Ensure the go2rtc-static npm package is installed (npm install go2rtc-static).`,
+    `go2rtc binary not found. Tried: "${binaryPath ?? "(none)"}", GO2RTC_PATH="${envPath ?? ""}", system paths, go2rtc-static. ` +
+      `Install go2rtc or set GO2RTC_PATH.`,
   );
 }
 
