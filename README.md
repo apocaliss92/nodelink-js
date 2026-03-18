@@ -42,10 +42,10 @@ The library includes a **complete web-based management interface** for easy came
 - 📡 **NVR / Hub Support** - Add NVRs as first-class entities, discover channels, and manage child cameras. All cameras on an NVR share a single connection (like Scrypted). Connect/disconnect at the NVR level; add or remove cameras at any time via channel discovery
 - 🔋 **Battery Camera Support** - Cameras are auto-detected as battery-powered when they emit sleep/wake events. Per-camera battery mode setting: **Stream Only** (default — camera sleeps when no stream clients) or **Always On** (stays awake while connected). Live awake/sleeping badge on each camera card. Controls and stream discovery are paused while the camera sleeps to avoid unnecessary wake-ups
 - 💡 **Camera Controls** - Toggle floodlight, siren, floodlight-on-motion, siren-on-motion, PTZ auto-tracking, and PIR sensor directly from the camera card. PTZ directional controls and preset navigation via a dedicated modal
-- 📹 **Live Streaming** - Preview streams via MJPEG, WebRTC, or HLS. Stream options are cached so battery cameras show available streams even while sleeping
+- 📹 **Live Streaming via go2rtc** - WebRTC, MSE/MP4, HLS, RTSP, and snapshot output powered by an embedded go2rtc restreamer. Stream options are cached so battery cameras show available streams even while sleeping
 - 🔔 **Real-time Events** - Per-camera event viewer with live SSE updates (motion, doorbell, people, vehicle, animal, face, package, day/night, sleep/wake). Events are broadcast via SSE, NDJSON stream, and MQTT
-- 📊 **Real-time Logs** - Monitor camera events and system logs
-- ⚙️ **Settings** - Configure RTSP proxy, ports, auto-start options, MQTT broker, and Home Assistant discovery
+- 📊 **Real-time Logs** - Monitor camera events, system logs, and go2rtc process output
+- ⚙️ **Settings** - Configure go2rtc ports, auto-start options, MQTT broker, and Home Assistant discovery
 - 📱 **PWA Support** - Install as a Progressive Web App on mobile devices
 - 🌐 **Responsive Design** - Works on desktop, tablet, and mobile
 
@@ -129,12 +129,12 @@ Recommended example:
 services:
   nodelink-manager:
     ports:
-      - "3000:3000" # Web UI and API
-      - "8554:8554" # RTSP proxy
-      - "50000-50100:50000-50100/udp" # WebRTC / ICE UDP
-    # Then configure Settings → WebRTC (ICE):
-    # - ICE UDP port range: 50000-50100
-    # - Additional host addresses: 192.168.1.123
+      - "3000:3000"   # Web UI and API
+      - "11984:11984"  # go2rtc API + dashboard
+      - "18554:18554"  # go2rtc RTSP output
+      - "18555:18555/udp" # go2rtc WebRTC ICE
+    # Then configure Settings → go2rtc:
+    # - ICE servers if needed for NAT traversal
 ```
 
 Notes:
@@ -144,11 +144,16 @@ Notes:
 
 **Environment Variables:**
 
-| Variable    | Default | Description                          |
-| ----------- | ------- | ------------------------------------ |
-| `PORT`      | `3000`  | HTTP server port                     |
-| `RTSP_PORT` | `8554`  | RTSP proxy port                      |
+| Variable | Default | Description |
+| --- | --- | --- |
+| `PORT` | `3000` | HTTP server port |
 | `DATA_PATH` | `/data` | Directory for settings.json and logs |
+| `GO2RTC_PATH` | (auto) | Path to go2rtc binary (falls back to bundled `go2rtc-static`) |
+| `GO2RTC_API_PORT` | `11984` | go2rtc REST API + web dashboard port |
+| `GO2RTC_RTSP_PORT` | `18554` | go2rtc RTSP output port |
+| `GO2RTC_WEBRTC_PORT` | `18555` | go2rtc WebRTC ICE port |
+
+Environment variables override `settings.json` values. Ports are also configurable in Settings → go2rtc.
 
 **WebRTC / ICE (Docker bridge mode):**
 
@@ -162,88 +167,46 @@ Notes:
 | `AUTH_ENABLED`   | (unset) | Enable auth when set to `1/true` (or disable with `0/false`). If unset, auth auto-enables when `ADMIN_PASSWORD` is set. |
 | `ADMIN_PASSWORD` | (unset) | Sets the `admin` password. This credential works for both the web login form and HTTP Basic auth.                       |
 
-### Streaming Authentication (RTSP / MJPEG / HLS / WebRTC)
+### Streaming via go2rtc
 
-When authentication is enabled (see `AUTH_ENABLED` / `ADMIN_PASSWORD`), **all streaming endpoints are protected**.
+All streaming is handled by an embedded **go2rtc** process (default API port `11984`, RTSP port `18554`). go2rtc provides:
 
-#### Step-by-step
+| Format | URL | Notes |
+|--------|-----|-------|
+| **WebRTC** | `POST http://HOST:11984/api/webrtc?src={name}` | WHEP signaling (SDP offer/answer) |
+| **MSE/MP4** | `http://HOST:11984/api/stream.mp4?src={name}` | Fragmented MP4 for browsers |
+| **HLS** | `http://HOST:11984/api/stream.m3u8?src={name}` | Adaptive streaming |
+| **RTSP** | `rtsp://HOST:18554/{name}` | For VLC, ffmpeg, NVR software |
+| **Snapshot** | `http://HOST:11984/api/frame.jpeg?src={name}` | Single JPEG (requires ffmpeg) |
+| **Dashboard** | `http://HOST:11984/` | go2rtc web UI |
 
-1. **Login to the Manager UI** (or use the API login) to obtain an auth token.
-2. (Recommended) **Generate a long-lived personal token** from **Settings → Personal token**.
-3. Use the correct auth mechanism depending on the streaming protocol:
+Stream names follow the pattern `{sanitized_camera_name}_{profile}` (e.g. `studio_main`, `garage_sub`).
 
-- RTSP: **Digest** with username/password
-- MJPEG/HLS: token in query string `?token=...`
-- WebRTC signaling + status endpoints: `Authorization: Bearer ...`
+go2rtc has CORS enabled (`origin: "*"`) so browser-based players can connect directly.
+
+### Authentication
+
+When authentication is enabled (see `AUTH_ENABLED` / `ADMIN_PASSWORD`), the Manager API endpoints are protected. go2rtc streaming endpoints are currently unauthenticated (accessible on the local network).
+
+- Manager API: `Authorization: Bearer <token>` header or session cookie
 - WebSocket logs: `?token=...` in the WS URL
 
-There are two auth mechanisms depending on the protocol:
-
-1. **RTSP (RTSP proxy): Digest auth with username/password**
-
-- URL format: `rtsp://<host>:<RTSP_PORT>/<camera>/<main|sub|ext>`
-- Credentials: the same **Users** list used by the dashboard.
-- Digest realm: `RTSP Proxy`
-- You can toggle whether auth is required via the Manager UI setting **“Require auth for RTSP connections”**.
-
 Examples:
 
 ```bash
-# ffmpeg (Digest)
-ffmpeg -rtsp_transport tcp -i "rtsp://USERNAME:PASSWORD@HOST:8554/camera/main" -f null -
+# RTSP via go2rtc (no auth)
+ffmpeg -rtsp_transport tcp -i “rtsp://HOST:18554/studio_main” -f null -
+vlc “rtsp://HOST:18554/studio_main”
 
-# VLC (it will prompt for credentials, or use URL user:pass)
-vlc "rtsp://USERNAME:PASSWORD@HOST:8554/camera/main"
-```
+# WebRTC WHEP signaling
+curl -X POST “http://HOST:11984/api/webrtc?src=studio_main” \
+  -H “Content-Type: application/sdp” \
+  --data-binary @offer.sdp
 
-2. **HTTP-based streaming (MJPEG / HLS): token in query string**
+# Snapshot
+curl -o snap.jpg “http://HOST:11984/api/frame.jpeg?src=studio_main”
 
-Browsers cannot reliably attach custom headers (like `Authorization`) to media tags (`<img>`, `<video>`), so MJPEG/HLS streams must be accessed with the auth token in the URL query string:
-
-- MJPEG: `/api/mpeg/<camera>/<profile>?token=...`
-- HLS playlist: `/api/hls/<camera>/<profile>/playlist.m3u8?token=...` (and segment requests will inherit the query param)
-
-Examples:
-
-```text
-MJPEG:
-  http://HOST:3000/api/mpeg/camera/main?token=YOUR_TOKEN
-
-HLS:
-  http://HOST:3000/api/hls/camera/main/playlist.m3u8?token=YOUR_TOKEN
-```
-
-Security note: query tokens may end up in logs/history. Treat them like passwords.
-
-3. **WebRTC control endpoints: Bearer token in Authorization header**
-
-WebRTC signaling uses JSON endpoints (create session, send ICE candidates, send answer) and supports standard Bearer auth:
-
-```bash
-# 1) Login to obtain a token
-curl -sS -X POST http://HOST:3000/api/auth/login \
-  -H 'content-type: application/json' \
-  -d '{"username":"admin","password":"YOUR_PASSWORD"}'
-
-# 2) Use the returned token for WebRTC signaling
-curl -sS http://HOST:3000/api/webrtc/status \
-  -H "Authorization: Bearer YOUR_TOKEN"
-```
-
-You can also generate a personal token via API (requires an existing valid token):
-
-```bash
-curl -sS -X POST http://HOST:3000/api/auth/personal-token \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H 'content-type: application/json' \
-  -d '{}'
-```
-
-4. **WebSocket logs: token in query string**
-
-The browser WebSocket handshake cannot reliably attach custom headers, so use:
-
-```text
+# WebSocket logs (auth)
 ws://HOST:3000/ws/logs?token=YOUR_TOKEN
 ```
 
@@ -262,9 +225,12 @@ The Manager UI exposes a REST API for integrations, scripts, and third-party app
 | Category | Endpoints |
 |----------|-----------|
 | **Auth** | `GET /api/auth/config`, `POST /api/auth/login`, `POST /api/auth/personal-token` |
-| **Streaming** | `GET /api/mpeg/:camera/:profile`, `GET /api/hls/:camera/:profile/playlist.m3u8`, `POST /api/webrtc/session` |
+| **go2rtc Streaming** | Served directly by go2rtc (default port `11984`): WebRTC, MSE/MP4, HLS, RTSP, Snapshot |
+| **go2rtc Management** | tRPC: `go2rtc.start`, `go2rtc.stop`, `go2rtc.status`, `go2rtc.listStreams` |
 | **Events** | `GET /api/events/sse` (SSE), `GET /api/events/stream` (NDJSON), `GET /api/events/status` |
 | **System** | `GET /api/health`, `GET /api/metrics`, `GET /api/updates` |
+
+**Streaming** — All video output (WebRTC, MSE, HLS, RTSP, snapshots) is handled by an embedded go2rtc restreamer. The Manager creates internal RTSP servers per stream and registers them with go2rtc, which provides multi-format output with audio support.
 
 **Events** — Real-time camera events (motion, doorbell, people, vehicle, etc.) via Server-Sent Events or NDJSON stream. When MQTT is configured, events are also published to the broker.
 

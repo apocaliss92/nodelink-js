@@ -820,17 +820,19 @@ server.listen(PORT, async () => {
   initHomeAssistantMqtt();
 
   // Start go2rtc if enabled
+  // Environment variables override settings for Docker/deployment flexibility.
   if (settings.go2rtc?.enabled) {
+    const go2rtcConfig = {
+      binaryPath: process.env.GO2RTC_PATH || settings.go2rtc.binaryPath,
+      apiPort: Number(process.env.GO2RTC_API_PORT) || settings.go2rtc.apiPort,
+      rtspPort: Number(process.env.GO2RTC_RTSP_PORT) || settings.go2rtc.rtspPort,
+      webrtcPort: Number(process.env.GO2RTC_WEBRTC_PORT) || settings.go2rtc.webrtcPort,
+      iceServers: settings.go2rtc.iceServers,
+    };
     try {
-      await initGo2rtc({
-        binaryPath: settings.go2rtc.binaryPath,
-        apiPort: settings.go2rtc.apiPort,
-        rtspPort: settings.go2rtc.rtspPort,
-        webrtcPort: settings.go2rtc.webrtcPort,
-        iceServers: settings.go2rtc.iceServers,
-      });
+      await initGo2rtc(go2rtcConfig);
       appLogger.info(
-        `go2rtc started (API: http://localhost:${settings.go2rtc.apiPort}, RTSP: ${settings.go2rtc.rtspPort})`,
+        `go2rtc started (API: http://localhost:${go2rtcConfig.apiPort}, RTSP: ${go2rtcConfig.rtspPort}, WebRTC: ${go2rtcConfig.webrtcPort})`,
         { source: "go2rtc" },
       );
       // Register listener to auto-start streams when cameras connect on the fly

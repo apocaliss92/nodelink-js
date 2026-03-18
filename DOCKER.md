@@ -67,11 +67,14 @@ docker run -d \
 
 ### Environment Variables
 
-| Variable    | Default | Description                          |
-| ----------- | ------- | ------------------------------------ |
-| `PORT`      | `3000`  | Web UI and API port                  |
-| `RTSP_PORT` | `8554`  | RTSP port                            |
+| Variable | Default | Description |
+| --- | --- | --- |
+| `PORT` | `3000` | Web UI and API port |
 | `DATA_PATH` | `/data` | Directory for settings.json and logs |
+| `GO2RTC_PATH` | (auto) | Path to go2rtc binary (falls back to bundled `go2rtc-static`) |
+| `GO2RTC_API_PORT` | `11984` | go2rtc REST API + web dashboard port |
+| `GO2RTC_RTSP_PORT` | `18554` | go2rtc RTSP output port |
+| `GO2RTC_WEBRTC_PORT` | `18555` | go2rtc WebRTC ICE port |
 
 **Dashboard authentication (optional):**
 

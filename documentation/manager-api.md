@@ -1,6 +1,6 @@
 # Manager REST API
 
-The nodelink-manager web application exposes a REST API for authentication, streaming, events, and system monitoring. All endpoints (except auth config and health) require authentication when `AUTH_ENABLED` is set.
+The nodelink-manager web application exposes a REST API for authentication, events, and system monitoring. All endpoints (except auth config and health) require authentication when `AUTH_ENABLED` is set.
 
 **Base URL:** `http://HOST:3000` (or your configured port)
 
@@ -11,9 +11,10 @@ The nodelink-manager web application exposes a REST API for authentication, stre
 - [Authentication](#authentication)
 - [Health & Updates](#health--updates)
 - [Metrics](#metrics)
-- [Streaming (MJPEG, HLS, WebRTC)](#streaming-mjpeg-hls-webrtc)
+- [go2rtc Restreamer](#go2rtc-restreamer)
 - [Events (SSE, JSON stream)](#events-sse-json-stream)
 - [MQTT Topics](#mqtt-topics-when-configured)
+- [tRPC API](#trpc-api)
 
 ---
 
@@ -139,114 +140,98 @@ Returns resource usage metrics (CPU, memory, event loop). When auth is enabled, 
   "timestamp": "2024-01-15T10:00:00.000Z",
   "process": {
     "pid": 12345,
-    "nodeVersion": "v20.10.0",
+    "nodeVersion": "v22.14.0",
     "uptimeSeconds": 3600,
-    "memory": {
-      "rss": 123456789,
-      "heapUsed": 45678901,
-      "heapTotal": 56789012,
-      "external": 1234567,
-      "arrayBuffers": 234567
-    },
-    "cpu": {
-      "percent": 2.5,
-      "userUs": 100000,
-      "systemUs": 50000,
-      "windowMs": 1000
-    },
-    "eventLoop": {
-      "utilization": 0.1
-    }
-  },
-  "system": {
-    "cpuCount": 8,
-    "loadAvg": [1.2, 1.1, 1.0],
-    "totalMem": 17179869184,
-    "freeMem": 8589934592
+    "memory": { "rss": 123456789, "heapUsed": 45678901 },
+    "cpu": { "percent": 2.5 }
   }
 }
 ```
 
 ---
 
-## Streaming (MJPEG, HLS, WebRTC)
+## go2rtc Restreamer
 
-### MJPEG
+All video streaming is handled by **go2rtc**, which runs as an embedded subprocess managed by the Manager. go2rtc provides WebRTC, MSE/MP4, HLS, RTSP, and snapshot output from camera streams.
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/mpeg/:cameraName/:profile` | Start MJPEG stream (alias: `/api/stream/:cameraName/:profile`) |
-| DELETE | `/api/mpeg/:cameraId/:profile` | Stop stream (legacy; streams auto-stop when no clients) |
-| GET | `/api/mjpeg/status` | MJPEG stream status |
+### Architecture
 
-**Profiles:** `main`, `sub`, `ext`
-
-**Auth:** `?token=YOUR_TOKEN` (query string) or session cookie
-
-**Example:**
 ```
-http://HOST:3000/api/mpeg/living_room/main?token=YOUR_TOKEN
+Camera → Baichuan Protocol → BaichuanRtspServer (internal, loopback)
+                                    ↓
+                        rtsp://127.0.0.1:{port}/path
+                                    ↓
+                              go2rtc ingest
+                                    ↓
+                  WebRTC / MSE / HLS / RTSP / Snapshot
 ```
 
-### HLS
+Each camera stream profile (main/sub/ext) runs an internal `BaichuanRtspServer` on a unique loopback port. The RTSP URL is registered with go2rtc, which handles all output formats with audio+video support.
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/hls/:cameraName/:profile/:asset` | Playlist (`playlist.m3u8`) or segments (`segment_00001.ts`) |
-| GET | `/api/hls/status` | HLS status |
+### Ports & Environment Variables
 
-**Auth:** `?token=YOUR_TOKEN` (query string) or session cookie
+| Service | Default | Env Variable | Description |
+|---------|---------|-------------|-------------|
+| Manager UI/API | 3000 | `PORT` | Express + tRPC |
+| go2rtc API | 11984 | `GO2RTC_API_PORT` | REST API + web dashboard |
+| go2rtc RTSP | 18554 | `GO2RTC_RTSP_PORT` | RTSP output for all streams |
+| go2rtc WebRTC | 18555 | `GO2RTC_WEBRTC_PORT` | ICE/STUN for WebRTC |
+| go2rtc binary | (auto) | `GO2RTC_PATH` | Path to binary (falls back to bundled `go2rtc-static`) |
+| Data directory | `.` | `DATA_PATH` | Settings, logs, go2rtc.yaml |
 
-**Example:**
+Environment variables override `settings.json`. Ports are also configurable in Settings → go2rtc tab.
+
+### go2rtc Stream Endpoints
+
+All streaming endpoints are served directly by go2rtc on its API port (default `11984`). CORS is enabled (`origin: "*"`).
+
+| Format | URL | Notes |
+|--------|-----|-------|
+| **WebRTC** (WHEP) | `POST http://HOST:11984/api/webrtc?src={name}` | Send SDP offer (`Content-Type: application/sdp`), receive SDP answer |
+| **MSE/MP4** | `http://HOST:11984/api/stream.mp4?src={name}` | Fragmented MP4 via HTTP (Media Source Extensions) |
+| **HLS** | `http://HOST:11984/api/stream.m3u8?src={name}` | HLS playlist + segments |
+| **RTSP** | `rtsp://HOST:18554/{name}` | Standard RTSP (e.g. for VLC, ffmpeg) |
+| **Snapshot** | `http://HOST:11984/api/frame.jpeg?src={name}` | Single JPEG frame (requires ffmpeg) |
+| **go2rtc Dashboard** | `http://HOST:11984/` | Web UI for stream management and debugging |
+| **MSE Player** | `http://HOST:11984/stream.html?src={name}` | Embedded MSE player page |
+
+### Stream Naming Convention
+
+Stream names are built from the camera name and profile:
+
 ```
-http://HOST:3000/api/hls/living_room/main/playlist.m3u8?token=YOUR_TOKEN
-```
-
-### WebRTC
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/webrtc/session` | Create session (returns offer SDP) |
-| POST | `/api/webrtc/session/:sessionId/answer` | Send answer SDP |
-| POST | `/api/webrtc/session/:sessionId/ice` | Add ICE candidate |
-| DELETE | `/api/webrtc/session/:sessionId` | Close session |
-| GET | `/api/webrtc/status` | WebRTC status |
-
-**Auth:** `Authorization: Bearer YOUR_TOKEN` header
-
-**Create session request:**
-```json
-{
-  "cameraName": "living_room",
-  "profile": "main",
-  "enableIntercom": false
-}
-```
-
-**Create session response:**
-```json
-{
-  "sessionId": "uuid-...",
-  "offer": "v=0\r\n..."
-}
+{sanitized_camera_name}_{profile}
 ```
 
-**Answer request:**
-```json
-{
-  "sdp": "v=0\r\n...",
-  "type": "answer"
-}
-```
+Examples:
+- `studio_main` — Studio camera, main stream
+- `cameretta_daniel_sub` — Cameretta Daniel camera, sub stream
+- `garage_ext` — Garage camera, ext stream
 
-**ICE candidate request:**
-```json
-{
-  "candidate": "candidate:...",
-  "sdpMid": "0",
-  "sdpMLineIndex": 0
-}
-```
+For multifocal cameras with channel > 0: `{name}_{profile}_ch{channel}`
+
+### go2rtc tRPC API
+
+The Manager exposes go2rtc management via tRPC:
+
+| Procedure | Type | Description |
+|-----------|------|-------------|
+| `go2rtc.status` | query | Get go2rtc status (running, apiUrl, streams) |
+| `go2rtc.getSettings` | query | Get go2rtc configuration |
+| `go2rtc.updateSettings` | mutation | Update go2rtc configuration |
+| `go2rtc.start` | mutation | Start go2rtc process |
+| `go2rtc.stop` | mutation | Stop go2rtc process |
+| `go2rtc.restart` | mutation | Restart go2rtc process |
+| `go2rtc.listStreams` | query | List registered streams |
+| `go2rtc.addStream` | mutation | Add a custom stream source |
+| `go2rtc.removeStream` | mutation | Remove a stream |
+| `go2rtc.ensureBinary` | mutation | Resolve/download go2rtc binary |
+
+### Known Limitations
+
+- **MJPEG stream** (`/api/stream.mjpeg`) does not work for H264/H265 sources in go2rtc 1.9.4. Use **Snapshot** (`/api/frame.jpeg`) for single frames or **MSE/WebRTC** for live preview.
+- **Audio over TCP** is not supported directly. Audio is delivered via the internal RTSP source (BaichuanRtspServer handles RTP audio). go2rtc re-exports audio via WebRTC, MSE, and HLS.
+- **ffmpeg** must be installed for snapshot generation and H265 transcoding.
 
 ---
 
@@ -270,11 +255,6 @@ NDJSON stream (one JSON object per line).
 
 **Headers:** `Content-Type: application/x-ndjson`
 
-**Example line:**
-```json
-{"cameraId":"...","cameraName":"Living Room","cameraNameSlug":"living_room","type":"motion","channel":0,"timestamp":1705312800000,"timestampIso":"2024-01-15T10:00:00.000Z"}
-```
-
 ### `GET /api/events/status`
 
 Returns events manager status.
@@ -296,13 +276,10 @@ Returns events manager status.
 | `cameraId` | string | Camera ID |
 | `cameraName` | string | Human-readable name |
 | `cameraNameSlug` | string | Sanitized name for URLs |
-| `type` | string | Camera: `motion`, `doorbell`, `people`, `vehicle`, `animal`, `face`, `package`, `daynight`, etc. System: `camera_connected`, `camera_disconnected`, `stream_clients` |
+| `type` | string | Camera: `motion`, `doorbell`, `people`, `vehicle`, `animal`, `face`, `package`, `daynight`, etc. System: `camera_connected`, `camera_disconnected` |
 | `channel` | number | Channel (0-based) |
 | `timestamp` | number | Unix timestamp (ms) |
 | `timestampIso` | string | ISO 8601 |
-| `streamType` | string | (stream_clients only) `mjpeg`, `hls`, `webrtc`, `rtsp` |
-| `profile` | string | (stream_clients only) `main`, `sub`, `ext` |
-| `clientCount` | number | (stream_clients only) Number of connected clients |
 
 ---
 
@@ -315,48 +292,22 @@ When MQTT is enabled in Settings, the Manager publishes to the broker. Default `
 | Topic | Payload | Description |
 |-------|---------|--------------|
 | `{topicPrefix}/{cameraNameSlug}/{type}` | JSON | Per-camera, per-event-type. Example: `nodelink-js/living_room/motion` |
-| `{topicPrefix}/all` | JSON | All events from all cameras (same payload as above) |
-
-**Event types for `{type}`:**
-- Camera: `motion`, `doorbell`, `people`, `vehicle`, `animal`, `face`, `package`, `daynight`, etc.
-- System: `camera_connected`, `camera_disconnected`, `stream_clients`
-
-**Examples:**
-```
-nodelink-js/living_room/motion
-nodelink-js/garage/doorbell
-nodelink-js/living_room/camera_connected
-nodelink-js/living_room/camera_disconnected
-nodelink-js/living_room/stream_clients
-nodelink-js/all
-```
-
-Payload is the same JSON as SSE/stream (see [Event payload fields](#event-payload-fields)).
+| `{topicPrefix}/all` | JSON | All events from all cameras |
 
 ### Home Assistant topics (when HA integration enabled)
 
 | Topic | Payload | Description |
 |-------|---------|-------------|
-| `{discoveryPrefix}/sensor/{uniqueId}/config` | JSON | MQTT discovery config (retained). `uniqueId` = `nodelink_{cameraId}` |
-| `{stateTopicPrefix}/camera/{cameraNameSlug}/state` | JSON | Camera device state (retained). Polled at `pollIntervalSeconds` |
-
-**Settings:**
-- `discoveryPrefix` — default `homeassistant`
-- `stateTopicPrefix` — defaults to `topicPrefix` (e.g. `nodelink-js`)
-
-**Examples:**
-```
-homeassistant/sensor/nodelink_cam_123/config
-nodelink-js/camera/living_room/state
-```
-
-State payload includes: `cameraId`, `cameraName`, `cameraNameSlug`, `channel`, `timestamp`, plus optional `info`, `batteryInfo`, `motionAlarm`, `aiState`, `wifiSignal`, etc.
+| `{discoveryPrefix}/sensor/{uniqueId}/config` | JSON | MQTT discovery config (retained) |
+| `{stateTopicPrefix}/camera/{cameraNameSlug}/state` | JSON | Camera device state (retained) |
 
 ---
 
 ## tRPC API
 
-The Manager also exposes a tRPC API at `/api/trpc` for cameras, settings, logs, and events. Use the tRPC panel at `/panel` (requires auth) to explore procedures.
+The Manager also exposes a tRPC API at `/api/trpc` for cameras, settings, logs, events, and go2rtc management. Use the tRPC panel at `/panel` (requires auth) to explore all procedures.
+
+Key routers: `cameras`, `rtsp`, `go2rtc`, `settings`, `baichuan`, `events`, `logs`
 
 ---
 
