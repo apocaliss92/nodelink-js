@@ -52,6 +52,7 @@ external/*
 docs/*
 tools/stream-probe/*
 
+app/data/
 app/logs/*
 logs/*
 app/config.json
