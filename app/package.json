@@ -1,6 +1,6 @@
 {
   "name": "nodelink-manager",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "Web UI to manage Reolink cameras and RTSP streams",
   "type": "module",
   "engines": {
