@@ -1410,11 +1410,20 @@ export default function SettingsPage() {
                       }
                     }
 
+                    // Collect old names to remove when a camera was renamed
+                    const removeNames: string[] = [];
+                    for (const cam of frigatePreview.cameras as any[]) {
+                      if (cam._originalFrigateName && cam.frigateName !== cam._originalFrigateName) {
+                        removeNames.push(cam._originalFrigateName);
+                      }
+                    }
+
+                    console.log("[Frigate apply]", { cameras: Object.keys(cameras), removeNames, go2rtcStreams: Object.keys(go2rtcStreams) });
                     const res = await trpcMutation("frigate.apply", {
                       ...fgConn,
                       cameras,
                       go2rtcStreams,
-                      removeNames: [],
+                      removeNames,
                       restart,
                     });
                     if ((res as any).success) {
@@ -1456,6 +1465,8 @@ export default function SettingsPage() {
                       for (const cam of res.cameras as any[]) {
                         // Mark if already exists in Frigate (from cached data)
                         cam.alreadyInFrigate = frigateExistingCameras.includes(cam.frigateName);
+                        // Track original name so we can remove the old entry on rename
+                        cam._originalFrigateName = cam.frigateName;
                         // Auto-select hwaccel based on Frigate's system hwaccel family + stream codec
                         if (frigateSystemInfo?.hwaccelFamily && cam.streamInfo) {
                           for (const s of cam.streamInfo as any[]) {
@@ -1646,6 +1657,7 @@ export default function SettingsPage() {
                                         cameras: [{
                                           ...baseCam,
                                           frigateName: fc.frigateName,
+                                          _originalFrigateName: fc.frigateName,
                                           alreadyInFrigate: true,
                                           yaml: existing.yaml,
                                           _manualEdit: true,
@@ -1827,6 +1839,7 @@ export default function SettingsPage() {
                                 frigateName: string,
                                 opts: {
                                   useFrigateGo2rtc: boolean;
+                                  recordEnabled: boolean;
                                   detectEnabled: boolean;
                                   snapshotsEnabled: boolean;
                                   audioEnabled: boolean;
@@ -1853,7 +1866,7 @@ export default function SettingsPage() {
                                 }
                                 const cam: any = { enabled: true, ffmpeg: { inputs } };
                                 cam.detect = { enabled: opts.detectEnabled };
-                                cam.record = { enabled: false };
+                                cam.record = { enabled: opts.recordEnabled };
                                 cam.snapshots = { enabled: opts.snapshotsEnabled };
                                 cam.audio = { enabled: opts.audioEnabled };
                                 // Simple YAML serializer for the camera block
@@ -1911,6 +1924,7 @@ export default function SettingsPage() {
                                   const si = merged.streamInfo ?? streamInfoList;
                                   merged.yaml = rebuildYaml(si, merged.frigateName, {
                                     useFrigateGo2rtc: merged._useFrigateGo2rtc === true,
+                                    recordEnabled: merged._recordEnabled !== false,
                                     detectEnabled: merged._detectEnabled !== false,
                                     snapshotsEnabled: merged._snapshotsEnabled !== false,
                                     audioEnabled: merged._audioEnabled !== false,
@@ -1918,6 +1932,19 @@ export default function SettingsPage() {
                                 }
                                 updated[idx] = merged;
                                 setFrigatePreview({ ...frigatePreview, cameras: updated });
+                              };
+
+                              const updateStreamRole = (sIdx: number, role: string, checked: boolean) => {
+                                const si = [...streamInfoList];
+                                const cur = si[sIdx]!;
+                                const roles = [...(cur.roles ?? [])];
+                                if (checked && !roles.includes(role)) roles.push(role);
+                                if (!checked) {
+                                  const i = roles.indexOf(role);
+                                  if (i >= 0) roles.splice(i, 1);
+                                }
+                                si[sIdx] = { ...cur, roles };
+                                updateCam({ streamInfo: si });
                               };
 
                               const updateStreamPreset = (sIdx: number, key: string, val: string) => {
@@ -1989,7 +2016,7 @@ export default function SettingsPage() {
                                     />
                                   ) : (
                                     <>
-                                      {/* Stream table */}
+                                      {/* Stream table with role assignment */}
                                       <div style={{ padding: "8px 12px" }}>
                                         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
                                           <thead>
@@ -1997,6 +2024,9 @@ export default function SettingsPage() {
                                               <th style={{ padding: "3px 6px" }}>Profile</th>
                                               <th style={{ padding: "3px 6px" }}>Codec</th>
                                               <th style={{ padding: "3px 6px" }}>Resolution</th>
+                                              <th style={{ padding: "3px 6px", textAlign: "center" }}>record</th>
+                                              <th style={{ padding: "3px 6px", textAlign: "center" }}>detect</th>
+                                              <th style={{ padding: "3px 6px", textAlign: "center" }}>audio</th>
                                               <th style={{ padding: "3px 6px" }}>input_args</th>
                                               <th style={{ padding: "3px 6px" }}>hwaccel_args</th>
                                             </tr>
@@ -2017,6 +2047,15 @@ export default function SettingsPage() {
                                                   ) : <span style={{ color: "var(--muted)" }}>—</span>}
                                                 </td>
                                                 <td style={{ padding: "4px 6px", fontFamily: "monospace", fontSize: 10 }}>{s.resolution || "—"}</td>
+                                                {["record", "detect", "audio"].map((role) => (
+                                                  <td key={role} style={{ padding: "4px 6px", textAlign: "center" }}>
+                                                    <input
+                                                      type="checkbox"
+                                                      checked={(s.roles ?? []).includes(role)}
+                                                      onChange={(e) => updateStreamRole(sIdx, role, e.target.checked)}
+                                                    />
+                                                  </td>
+                                                ))}
                                                 <td style={{ padding: "4px 4px" }}>
                                                   <select
                                                     className="input"
@@ -2049,6 +2088,14 @@ export default function SettingsPage() {
 
                                       {/* Feature toggles */}
                                       <div style={{ padding: "6px 12px 8px", borderTop: "1px solid var(--border)", display: "flex", flexWrap: "wrap", gap: 12 }}>
+                                        <label style={{ fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
+                                          <input
+                                            type="checkbox"
+                                            checked={c._recordEnabled !== false}
+                                            onChange={(e) => updateCam({ _recordEnabled: e.target.checked })}
+                                          />
+                                          Record
+                                        </label>
                                         <label style={{ fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
                                           <input
                                             type="checkbox"

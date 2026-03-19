@@ -81,10 +81,11 @@ jobs:
         id: version
         run: |
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            # Get current version from package.json
-            CURRENT_VERSION=$(node -p "require('./package.json').version")
+            # Get current version from package.json, strip any pre-release suffix (e.g. 0.3.9-beta → 0.3.9)
+            RAW_VERSION=$(node -p "require('./package.json').version")
+            CURRENT_VERSION="${RAW_VERSION%%-*}"
             VERSION_TYPE="${{ github.event.inputs.version_type }}"
-            
+
             # Calculate new version
             IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
             case "$VERSION_TYPE" in

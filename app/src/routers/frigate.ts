@@ -189,12 +189,13 @@ function buildFrigateCameraBlock(
     return inp;
   };
 
-  // Main stream → audio role
+  // Best-effort role assignment:
+  // Main stream (highest res) → record + audio
+  // Sub/ext (lower res, ≤720p preferred) → detect
   if (sorted[0]) {
-    inputs.push(buildInput(sorted[0], ["audio"]));
+    inputs.push(buildInput(sorted[0], ["record", "audio"]));
   }
 
-  // Detect: prefer sub/ext ≤720p
   const detectStream =
     sorted.find((s) => {
       if (s.profile === "main") return false;
@@ -704,6 +705,8 @@ export const frigateRouter = router({
       const summary = buildChangeSummary(rawYaml, frigateConfig, input.removeNames, addedOrUpdated);
       createBackup(rawYaml, summary);
 
+      console.log("[Frigate apply] cameras:", Object.keys(input.cameras), "removeNames:", input.removeNames);
+
       // Remove deselected cameras
       for (const name of input.removeNames) {
         delete frigateConfig.cameras[name];
@@ -714,10 +717,25 @@ export const frigateRouter = router({
         }
       }
 
-      // Merge camera blocks from the client preview YAML
+      // Merge camera blocks from the client preview YAML.
+      // The YAML text is typically wrapped as "camera_name:\n  enabled: true\n  ffmpeg: ..."
+      // The wrapping name may differ from frigateName if the user renamed.
+      // Strategy: parse, then unwrap — take the inner block that has "ffmpeg" or "enabled".
       for (const [frigateName, yamlText] of Object.entries(input.cameras)) {
         const parsed = YAML.parse(yamlText) as Record<string, any>;
-        const block = parsed[frigateName] ?? parsed;
+
+        let block: Record<string, any>;
+        if (parsed?.ffmpeg || parsed?.enabled !== undefined) {
+          // Already unwrapped (flat block)
+          block = parsed;
+        } else {
+          // Wrapped as { some_name: { ... } } — extract the inner object
+          const innerValues = Object.values(parsed).filter(
+            (v) => typeof v === "object" && v !== null && ("ffmpeg" in v || "enabled" in v),
+          );
+          block = (innerValues[0] as Record<string, any>) ?? parsed;
+        }
+
         frigateConfig.cameras[frigateName] = block;
       }
 
