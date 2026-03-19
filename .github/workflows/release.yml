@@ -268,11 +268,8 @@ jobs:
         with:
           ref: ${{ github.event_name == 'push' && github.ref || 'main' }}
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: all
-
+      # QEMU removed — builder stage runs amd64 only, production stage uses
+      # COPY from builder (no emulation needed for node:22-alpine base image pull).
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
