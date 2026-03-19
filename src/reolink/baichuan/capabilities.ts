@@ -200,14 +200,14 @@ export function computeDeviceCapabilities(params: {
     supportExplicitlyDefinesPtz &&
     !isTruthyNumberLike(ptzTypeRaw) &&
     !isTruthyNumberLike(ptzControlRaw);
-  const hasPtzFromSupportItem =
-    isTruthyNumberLike(ptzTypeRaw) ||
-    isTruthyNumberLike(ptzControlRaw) ||
-    isTruthyNumberLike((supportItem as any)?.ptzPreset);
+  // ptzType is the authoritative indicator for physical PTZ (pan/tilt/zoom motors).
+  // ptzControl is a bitmask that includes digital zoom and other control features —
+  // it does NOT indicate physical PTZ. Many fixed cameras have ptzControl > 0.
+  // ptzPreset similarly can be a false positive on non-PTZ cameras.
+  const hasPtzFromSupportItem = isTruthyNumberLike(ptzTypeRaw);
 
-  // Some battery cameras expose legacy/host PTZ abilities (e.g. preset_rw/ptzInfo_ro) even when
-  // the actual channel PTZ is explicitly disabled. When support.ptzMode says "none", treat it
-  // as authoritative ONLY if the channel support item does not indicate PTZ.
+  // When ptzMode says "none", treat it as authoritative: the device has no physical PTZ.
+  // Only override if ptzType explicitly indicates PTZ hardware.
   const ptzDisabledBySupport =
     (ptzMode === "none" || ptzMode === "0") && !hasPtzFromSupportItem;
 

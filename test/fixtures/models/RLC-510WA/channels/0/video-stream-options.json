@@ -1,0 +1,51 @@
+{
+  "nativeStreams": [
+    {
+      "name": "Native main",
+      "id": "channel_0_main",
+      "container": "rtp",
+      "channel": 0,
+      "profile": "main",
+      "streamName": "main",
+      "lens": "wide",
+      "url": "baichuan://10.***.***.***/channel/0/profile/main",
+      "urlWithAuth": "baichuan://***:***@10.***.***.***/channel/0/profile/main",
+      "metadata": {
+        "profile": "main",
+        "audio": 1,
+        "width": 2560,
+        "height": 1920,
+        "videoEncType": "H.265",
+        "videoEncTypeInt": 1,
+        "frameRate": 30,
+        "bitRate": 6144,
+        "audioCodec": "aac"
+      }
+    },
+    {
+      "name": "Native sub",
+      "id": "channel_0_sub",
+      "container": "rtp",
+      "channel": 0,
+      "profile": "sub",
+      "streamName": "sub",
+      "lens": "wide",
+      "url": "baichuan://10.***.***.***/channel/0/profile/sub",
+      "urlWithAuth": "baichuan://***:***@10.***.***.***/channel/0/profile/sub",
+      "metadata": {
+        "profile": "sub",
+        "audio": 1,
+        "width": 640,
+        "height": 480,
+        "videoEncType": "H.264",
+        "videoEncTypeInt": 0,
+        "frameRate": 15,
+        "bitRate": 256,
+        "audioCodec": "aac"
+      }
+    }
+  ],
+  "rtmpStreams": [],
+  "rtspStreams": [],
+  "rawEncXml": "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<body>\n<Compression version=\"1.1\">\n<channelId>0</channelId>\n<isNoTranslateFrame>1</isNoTranslateFrame>\n<mainStream>\n<audio>1</audio>\n<resolutionName>2560*1920</resolutionName>\n<width>2560</width>\n<height>1920</height>\n<frame>30</frame>\n<bitRate>6144</bitRate>\n<encoderProfile>high</encoderProfile>\n<videoEncType>1</videoEncType>\n<gop>\n<cur>2</cur>\n<max>2</max>\n<min>1</min>\n</gop>\n</mainStream>\n<subStream>\n<audio>1</audio>\n<resolutionName>640*480</resolutionName>\n<width>640</width>\n<height>480</height>\n<frame>15</frame>\n<bitRate>256</bitRate>\n<encoderProfile>high</encoderProfile>\n<videoEncType>0</videoEncType>\n<gop>\n<cur>1</cur>\n<max>4</max>\n<min>1</min>\n</gop>\n</subStream>\n<thirdStream>\n<audio>0</audio>\n<resolutionName></resolutionName>\n<width>0</width>\n<height>0</height>\n<frame>0</frame>\n<bitRate>0</bitRate>\n<encoderProfile>default</encoderProfile>\n<videoEncType>0</videoEncType>\n</thirdStream>\n</Compression>\n</body>\n"
+}

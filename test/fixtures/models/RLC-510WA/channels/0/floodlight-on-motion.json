@@ -1,0 +1,7 @@
+{
+  "floodlightOnMotion": true,
+  "enabled": true,
+  "brightness": 85,
+  "duration": 180,
+  "detectType": "people,vehicle,dog_cat"
+}

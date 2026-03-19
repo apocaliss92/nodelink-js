@@ -196,6 +196,31 @@ describe("computeDeviceCapabilities — from model fixtures", () => {
     });
   });
 
+  // RLC-510WA — fixed camera, NO PTZ despite ptzControl=64 and Host abilities
+  describe("RLC-510WA", () => {
+    const caps = loadModelJson("RLC-510WA", 0, "capabilities.json");
+
+    it("fixture exists", () => {
+      expect(caps).toBeDefined();
+    });
+
+    it("hasPtz is false (ptzType=0, ptzMode=none — ptzControl=64 is NOT physical PTZ)", () => {
+      const result = computeDeviceCapabilities({
+        channel: 0,
+        support: caps?.support,
+        abilities: caps?.abilities,
+      });
+      expect(result.hasPtz).toBe(false);
+      expect(result.hasPan).toBe(false);
+      expect(result.hasTilt).toBe(false);
+      expect(result.hasPresets).toBe(false);
+    });
+
+    it("hasFloodlight is false (lightType=0)", () => {
+      expect(caps?.capabilities?.hasFloodlight).toBe(false);
+    });
+  });
+
   // Argus PT Ultra (behind Hub, but stored as standalone model)
   describe("Argus PT Ultra", () => {
     const caps = loadModelJson("Argus_PT_Ultra", 0, "capabilities.json");
