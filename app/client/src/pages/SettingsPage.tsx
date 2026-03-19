@@ -1256,83 +1256,24 @@ export default function SettingsPage() {
                         </div>
                       )}
 
-                    <div className="grid cols2" style={{ marginTop: 4 }}>
-                      <div>
-                        <div className="label">Binary path</div>
-                        <input
-                          className="input mono"
-                          placeholder="go2rtc"
-                          value={go2rtc.binaryPath}
-                          disabled={!canEditSettings}
-                          onChange={(e) =>
-                            setSettings({
-                              ...settings,
-                              go2rtc: { ...go2rtc, binaryPath: e.target.value },
-                            })
-                          }
-                        />
-                        <div style={{ color: "var(--muted)", fontSize: 11, marginTop: 2 }}>
-                          Path to go2rtc binary. Downloaded automatically if not found.
+                    {/* Ports are configured via environment variables, shown read-only */}
+                    {go2rtcStatus?.running && go2rtcStatus.apiUrl && (
+                      <div
+                        style={{
+                          marginTop: 8,
+                          padding: "8px 12px",
+                          borderRadius: 6,
+                          background: "var(--bg-secondary)",
+                          fontSize: 12,
+                          fontFamily: "monospace",
+                        }}
+                      >
+                        <div style={{ color: "var(--muted)", fontSize: 10, marginBottom: 4 }}>
+                          Ports (configured via environment variables)
                         </div>
+                        <div>API: {go2rtcStatus.apiUrl}</div>
                       </div>
-
-                      <div>
-                        <div className="label">API port</div>
-                        <input
-                          className="input mono"
-                          type="number"
-                          value={go2rtc.apiPort}
-                          disabled={!canEditSettings}
-                          onChange={(e) =>
-                            setSettings({
-                              ...settings,
-                              go2rtc: {
-                                ...go2rtc,
-                                apiPort: Number(e.target.value) || 1984,
-                              },
-                            })
-                          }
-                        />
-                      </div>
-
-                      <div>
-                        <div className="label">RTSP port</div>
-                        <input
-                          className="input mono"
-                          type="number"
-                          value={go2rtc.rtspPort}
-                          disabled={!canEditSettings}
-                          onChange={(e) =>
-                            setSettings({
-                              ...settings,
-                              go2rtc: {
-                                ...go2rtc,
-                                rtspPort: Number(e.target.value) || 8554,
-                              },
-                            })
-                          }
-                        />
-                      </div>
-
-                      <div>
-                        <div className="label">WebRTC port</div>
-                        <input
-                          className="input mono"
-                          type="number"
-                          value={go2rtc.webrtcPort}
-                          disabled={!canEditSettings}
-                          onChange={(e) =>
-                            setSettings({
-                              ...settings,
-                              go2rtc: {
-                                ...go2rtc,
-                                webrtcPort: Number(e.target.value) || 8555,
-                              },
-                            })
-                          }
-                        />
-                      </div>
-                    </div>
+                    )}
 
                     <div style={{ marginTop: 10 }}>
                       <div className="label">ICE servers (one per line)</div>

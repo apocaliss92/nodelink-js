@@ -49,13 +49,15 @@ export function StreamCard({
     stream.channel,
   );
 
-  // Build go2rtc base URL: direct to go2rtc API
-  const go2rtcBase = `${window.location.protocol}//${window.location.hostname}:${go2rtcApiPort || 1984}`;
+  // Build go2rtc base URL from the port returned by the server (via go2rtc.status)
+  const go2rtcBase = go2rtcApiPort
+    ? `${window.location.protocol}//${window.location.hostname}:${go2rtcApiPort}`
+    : null;
   const src = encodeURIComponent(streamName);
-  const _mjpegUrl = `${go2rtcBase}/api/stream.mjpeg?src=${src}`;
-  const hlsUrl = `${go2rtcBase}/api/stream.m3u8?src=${src}`;
-  const snapshotUrl = `${go2rtcBase}/api/frame.jpeg?src=${src}`;
-  const _dashboardUrl = `${go2rtcBase}/stream.html?src=${src}`;
+  const hlsUrl = go2rtcBase ? `${go2rtcBase}/api/stream.m3u8?src=${src}` : "";
+  const snapshotUrl = go2rtcBase ? `${go2rtcBase}/api/frame.jpeg?src=${src}` : "";
+  const mp4Url = go2rtcBase ? `${go2rtcBase}/api/stream.mp4?src=${src}` : "";
+  const mseUrl = go2rtcBase ? `${go2rtcBase}/stream.html?src=${src}&mode=mse` : "";
 
   const rtsp = rtspServers.find(
     (x) =>
@@ -81,7 +83,6 @@ export function StreamCard({
   const streamLabel = `${lensLabel}${stream.profile.toUpperCase()}${channelSuffix}`;
   const metaRight = `${stream.codec ?? "—"} · ${stream.resolution ?? "—"}`;
 
-  const mp4Url = `${go2rtcBase}/api/stream.mp4?src=${src}`;
 
   const urlItems: DropdownItem[] = [
     {
@@ -104,9 +105,6 @@ export function StreamCard({
       onClick: () => void copyToClipboard(snapshotUrl),
     },
   ];
-
-  // MSE stream page URL — go2rtc native player (works for H265 too)
-  const mseUrl = `${go2rtcBase}/stream.html?src=${src}&mode=mse`;
 
   const previewItems: DropdownItem[] = [
     {
