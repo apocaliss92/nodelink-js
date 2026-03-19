@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { trpcMutation } from "../../api";
+import { DumpButton } from "./DumpButton";
 import type {
   AvailableStream,
   CameraInfo,
@@ -176,6 +177,7 @@ export function CameraCard({
           >
             Delete
           </button>
+          <DumpButton cameraId={camera.id} cameraName={camera.name} />
           {camera.status === "connected" && (
             <SessionsSection cameraId={camera.id} isConnected />
           )}

@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { renderTrpcPanel } from "trpc-panel";
 import { WebSocket, WebSocketServer } from "ws";
 import { appLogger, logEmitter, LogEntry, getRecentLogs } from "./logger.js";
+import { getDumpZipPath } from "./routers/cameras.js";
 import { appRouter } from "./router.js";
 import {
   getAuthConfig,
@@ -417,6 +418,18 @@ app.get("/health", (req, res) => {
 });
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
+// Download dump zip file by token
+app.get("/api/dump/:token", (req, res) => {
+  const zipPath = getDumpZipPath(req.params.token);
+  if (!zipPath || !fs.existsSync(zipPath)) {
+    return res.status(404).json({ error: "Download not found or expired" });
+  }
+  const filename = path.basename(zipPath);
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  res.setHeader("Content-Type", "application/zip");
+  return res.sendFile(path.resolve(zipPath));
 });
 
 // Update check (GitHub Releases)

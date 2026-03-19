@@ -1,5 +1,9 @@
 import { router, publicProcedure } from "../trpc.js";
 import { z } from "zod";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as crypto from "node:crypto";
+import { captureModelFixtures, zipDirectory } from "@apocaliss92/nodelink-js";
 import {
   getConfig,
   addCamera,
@@ -27,6 +31,20 @@ import {
 } from "../rtsp-manager.js";
 import { getCameraSleepStatus } from "../events-manager.js";
 import { RtspStreamConfigSchema } from "../types.js";
+
+// In-memory map for dump download tokens (token → zip path, expires after 10 min)
+const dumpDownloads = new Map<string, { zipPath: string; expiresAt: number }>();
+const DUMP_DIR = path.join(process.env.DATA_PATH || ".", "dumps");
+
+export function getDumpZipPath(token: string): string | null {
+  const entry = dumpDownloads.get(token);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    dumpDownloads.delete(token);
+    return null;
+  }
+  return entry.zipPath;
+}
 
 export const camerasRouter = router({
   // List all cameras with their RTSP server status
@@ -900,5 +918,49 @@ export const camerasRouter = router({
       getOrCreateApiConnection(camera.id).catch(() => {});
 
       return camera;
+    }),
+
+  /**
+   * Run model fixture dump for a camera.
+   * Returns a download token for the resulting zip file.
+   */
+  dump: publicProcedure
+    .meta({ description: "Dump all API responses for a camera as a zip" })
+    .input(z.object({ cameraId: z.string() }))
+    .mutation(async ({ input }) => {
+      const config = getConfig();
+      const camera = config.cameras.find((c) => c.id === input.cameraId);
+      if (!camera) throw new Error("Camera not found");
+
+      const api = await getOrCreateApiConnection(input.cameraId);
+      const channel = camera.rtspChannel ?? 0;
+      const camName = sanitizeCameraName(camera.name);
+
+      const ts = new Date().toISOString().replace(/[:.]/g, "-");
+      const outDir = path.join(DUMP_DIR, `${camName}-${ts}`);
+      fs.mkdirSync(outDir, { recursive: true });
+
+      const result = await captureModelFixtures({
+        api,
+        channel,
+        outDir,
+      });
+
+      // Zip the output directory
+      const zipPath = `${outDir}.zip`;
+      await zipDirectory({ sourceDir: outDir, zipPath });
+
+      // Clean up the unzipped directory
+      fs.rmSync(outDir, { recursive: true, force: true });
+
+      // Create a download token (valid 10 min)
+      const token = crypto.randomBytes(16).toString("hex");
+      dumpDownloads.set(token, { zipPath, expiresAt: Date.now() + 10 * 60 * 1000 });
+
+      return {
+        token,
+        filename: `${camName}-dump-${ts}.zip`,
+        summary: result.summary,
+      };
     }),
 });
