@@ -3102,6 +3102,98 @@ export async function runAllDiagnosticsConsecutively(
 // Model Fixture Capture — dump all API responses for a device/channel
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Sensitive data sanitization for fixtures
+// ---------------------------------------------------------------------------
+
+/** Keys whose values are always fully masked. */
+const REDACT_KEYS = new Set([
+  "password", "pass", "token", "secret", "apiKey", "api_key",
+]);
+
+/** Keys whose values are partially masked (show type/length hint). */
+const MASK_KEYS = new Set([
+  "serialNumber", "serial", "uid", "mac", "ssid", "wifiPassword",
+  "userName", "username", "user",
+]);
+
+/** Regex for IPv4 addresses (private ranges we want to mask). */
+const IPV4_RE = /\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b/g;
+
+/** Regex for MAC addresses. */
+const MAC_RE = /\b([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}\b/g;
+
+function maskIp(ip: string): string {
+  // Keep the first octet, mask the rest: 192.x.x.x → 192.***.***.***
+  const parts = ip.split(".");
+  return `${parts[0]}.***.***.***`;
+}
+
+function maskMac(mac: string): string {
+  const sep = mac.includes("-") ? "-" : ":";
+  const parts = mac.split(/[:-]/);
+  return `${parts[0]}${sep}${parts[1]}${sep}**${sep}**${sep}**${sep}**`;
+}
+
+function maskSerial(val: string): string {
+  if (val.length <= 4) return "****";
+  return val.slice(0, 2) + "*".repeat(val.length - 4) + val.slice(-2);
+}
+
+function sanitizeString(s: string): string {
+  let out = s;
+  // Mask credentials in URLs: ://user:pass@ → ://***:***@
+  out = out.replace(/:\/\/([^:@]+):([^@]+)@/g, "://***:***@");
+  // Mask password= query params
+  out = out.replace(/(password=)[^&\s]*/gi, "$1***");
+  // Mask user= query params
+  out = out.replace(/(user=)[^&\s]*/gi, "$1***");
+  // Mask IPs
+  out = out.replace(IPV4_RE, (match) => maskIp(match));
+  // Mask MACs
+  out = out.replace(MAC_RE, (match) => maskMac(match));
+  return out;
+}
+
+/**
+ * Deep-clone and sanitize a value, masking passwords, IPs, MACs, serial numbers, etc.
+ */
+export function sanitizeFixtureData(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+
+  if (typeof value === "string") {
+    return sanitizeString(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(sanitizeFixtureData);
+  }
+
+  if (typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      const kLower = k.toLowerCase();
+      if (REDACT_KEYS.has(kLower)) {
+        out[k] = "***";
+      } else if (MASK_KEYS.has(kLower) || kLower === "serialnumber") {
+        out[k] = typeof v === "string" ? maskSerial(v) : "***";
+      } else if (kLower === "mac") {
+        out[k] = typeof v === "string" ? maskMac(v) : "***";
+      } else if (kLower === "ip" || kLower === "ipaddress" || kLower === "host") {
+        out[k] = typeof v === "string" ? maskIp(v) : v;
+      } else if (kLower === "name" && typeof v === "string" && k !== "name") {
+        // Don't mask device/camera "name" — only mask if it looks like a hostname
+        out[k] = v;
+      } else {
+        out[k] = sanitizeFixtureData(v);
+      }
+    }
+    return out;
+  }
+
+  return value;
+}
+
 export interface ModelFixtureCaptureResult {
   /** Per-call results: command name → ok/error */
   calls: Record<string, { ok: true; value?: unknown } | { ok: false; error: string }>;
@@ -3133,6 +3225,12 @@ export async function captureModelFixtures(params: {
 
   mkdirp(outDir);
 
+  // Sanitized writers — mask passwords, IPs, MACs, serial numbers before persisting
+  const writeJsonSafe = (filePath: string, data: unknown) =>
+    writeJson(filePath, sanitizeFixtureData(data));
+  const writeTextSafe = (filePath: string, text: string) =>
+    writeText(filePath, sanitizeString(text));
+
   const calls: ModelFixtureCaptureResult["calls"] = {};
   const errors: string[] = [];
 
@@ -3160,22 +3258,22 @@ export async function captureModelFixtures(params: {
 
   // ── Device Info ──────────────────────────────────────────────────────────
   const info = await capture("getInfo", () => api.getInfo(channel), (v) =>
-    writeJson(path.join(outDir, "device-info.json"), v),
+    writeJsonSafe(path.join(outDir, "device-info.json"), v),
   );
 
   // ── Support Info ─────────────────────────────────────────────────────────
   const support = await capture("getSupportInfo", () => api.getSupportInfo(), (v) =>
-    writeJson(path.join(outDir, "support-info.json"), v),
+    writeJsonSafe(path.join(outDir, "support-info.json"), v),
   );
 
   // ── Ability Info ─────────────────────────────────────────────────────────
   const abilities = await capture("getAbilityInfo", () => api.getAbilityInfo(), (v) =>
-    writeJson(path.join(outDir, "ability-info.json"), v),
+    writeJsonSafe(path.join(outDir, "ability-info.json"), v),
   );
 
   // ── Device Capabilities (full, with probe) ───────────────────────────────
   await capture("getDeviceCapabilities", () => api.getDeviceCapabilities(channel), (v) =>
-    writeJson(path.join(outDir, "capabilities.json"), v),
+    writeJsonSafe(path.join(outDir, "capabilities.json"), v),
   );
 
   // ── cmd 289 — White LED / Floodlight (raw XML) ──────────────────────────
@@ -3183,96 +3281,96 @@ export async function captureModelFixtures(params: {
     cmdId: BC_CMD_ID_GET_WHITE_LED,
     channel,
     timeoutMs: 3000,
-  }), (v) => writeText(path.join(outDir, "cmd289-white-led.xml"), v as string));
+  }), (v) => writeTextSafe(path.join(outDir, "cmd289-white-led.xml"), v as string));
 
   // ── Stream Metadata (encoding info) ──────────────────────────────────────
   await capture("getStreamMetadata", () => api.getStreamMetadata(channel), (v) =>
-    writeJson(path.join(outDir, "stream-metadata.json"), v),
+    writeJsonSafe(path.join(outDir, "stream-metadata.json"), v),
   );
 
   // ── Encoding Config (raw XML) ────────────────────────────────────────────
   await capture("getEncXml", () => api.getEncXml(channel), (v) =>
-    writeText(path.join(outDir, "enc-config.xml"), v as string),
+    writeTextSafe(path.join(outDir, "enc-config.xml"), v as string),
   );
 
   // ── Ports ────────────────────────────────────────────────────────────────
   await capture("getPorts", () => api.getPorts(), (v) =>
-    writeJson(path.join(outDir, "ports.json"), v),
+    writeJsonSafe(path.join(outDir, "ports.json"), v),
   );
 
   // ── Talk Ability (intercom) ──────────────────────────────────────────────
   await capture("getTalkAbility", () => api.getTalkAbility(channel), (v) =>
-    writeJson(path.join(outDir, "talk-ability.json"), v),
+    writeJsonSafe(path.join(outDir, "talk-ability.json"), v),
   );
 
   // ── Two-Way Audio Config ─────────────────────────────────────────────────
   await capture("getTwoWayAudioConfig", () => api.getTwoWayAudioConfig(channel), (v) =>
-    writeJson(path.join(outDir, "two-way-audio-config.json"), v),
+    writeJsonSafe(path.join(outDir, "two-way-audio-config.json"), v),
   );
 
   // ── AI State ─────────────────────────────────────────────────────────────
   await capture("getAiState", () => api.getAiState(channel), (v) =>
-    writeJson(path.join(outDir, "ai-state.json"), v),
+    writeJsonSafe(path.join(outDir, "ai-state.json"), v),
   );
 
   // ── AI Config (autotracking) ─────────────────────────────────────────────
   await capture("getAiCfg", () => api.getAiCfg(channel), (v) =>
-    writeJson(path.join(outDir, "ai-cfg.json"), v),
+    writeJsonSafe(path.join(outDir, "ai-cfg.json"), v),
   );
 
   // ── OSD ──────────────────────────────────────────────────────────────────
   await capture("getOsd", () => api.getOsd(channel), (v) =>
-    writeJson(path.join(outDir, "osd.json"), v),
+    writeJsonSafe(path.join(outDir, "osd.json"), v),
   );
 
   // ── Motion Alarm ─────────────────────────────────────────────────────────
   await capture("getMotionAlarm", () => api.getMotionAlarm(channel), (v) =>
-    writeJson(path.join(outDir, "motion-alarm.json"), v),
+    writeJsonSafe(path.join(outDir, "motion-alarm.json"), v),
   );
 
   // ── Record Config ────────────────────────────────────────────────────────
   await capture("getRecordCfg", () => api.getRecordCfg(channel), (v) =>
-    writeJson(path.join(outDir, "record-cfg.json"), v),
+    writeJsonSafe(path.join(outDir, "record-cfg.json"), v),
   );
 
   // ── Video Input (image settings) ─────────────────────────────────────────
   await capture("getVideoInput", () => api.getVideoInput(channel), (v) =>
-    writeJson(path.join(outDir, "video-input.json"), v),
+    writeJsonSafe(path.join(outDir, "video-input.json"), v),
   );
 
   // ── PTZ Presets ──────────────────────────────────────────────────────────
   await capture("getPtzPresets", () => api.getPtzPresets(channel), (v) =>
-    writeJson(path.join(outDir, "ptz-presets.json"), v),
+    writeJsonSafe(path.join(outDir, "ptz-presets.json"), v),
   );
 
   // ── Network Info ─────────────────────────────────────────────────────────
   await capture("getNetworkInfo", () => api.getNetworkInfo(), (v) =>
-    writeJson(path.join(outDir, "network-info.json"), v),
+    writeJsonSafe(path.join(outDir, "network-info.json"), v),
   );
 
   // ── System General ───────────────────────────────────────────────────────
   await capture("getSystemGeneral", () => api.getSystemGeneral(), (v) =>
-    writeJson(path.join(outDir, "system-general.json"), v),
+    writeJsonSafe(path.join(outDir, "system-general.json"), v),
   );
 
   // ── WiFi Signal ──────────────────────────────────────────────────────────
   await capture("getWifiSignal", () => api.getWifiSignal(channel), (v) =>
-    writeJson(path.join(outDir, "wifi-signal.json"), v),
+    writeJsonSafe(path.join(outDir, "wifi-signal.json"), v),
   );
 
   // ── White LED State (parsed) ─────────────────────────────────────────────
   await capture("getWhiteLedState", () => api.getWhiteLedState(channel), (v) =>
-    writeJson(path.join(outDir, "white-led-state.json"), v),
+    writeJsonSafe(path.join(outDir, "white-led-state.json"), v),
   );
 
   // ── Floodlight-on-motion ─────────────────────────────────────────────────
   await capture("getFloodlightOnMotion", () => api.getFloodlightOnMotion(channel), (v) =>
-    writeJson(path.join(outDir, "floodlight-on-motion.json"), v),
+    writeJsonSafe(path.join(outDir, "floodlight-on-motion.json"), v),
   );
 
   // ── Video Stream Options ─────────────────────────────────────────────────
   await capture("buildVideoStreamOptions", () => api.buildVideoStreamOptions({ channel }), (v) =>
-    writeJson(path.join(outDir, "video-stream-options.json"), v),
+    writeJsonSafe(path.join(outDir, "video-stream-options.json"), v),
   );
 
   // ── Summary ──────────────────────────────────────────────────────────────
@@ -3281,7 +3379,7 @@ export async function captureModelFixtures(params: {
   const failed = total - ok;
 
   const summary = { total, ok, failed, errors };
-  writeJson(path.join(outDir, "_summary.json"), {
+  writeJsonSafe(path.join(outDir, "_summary.json"), {
     collectedAt: new Date().toISOString(),
     model: info?.type ?? "unknown",
     itemNo: (info as any)?.itemNo ?? "unknown",
