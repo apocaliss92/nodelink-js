@@ -1218,17 +1218,25 @@ export default function SettingsPage() {
                         >
                           Refresh
                         </button>
-                        {go2rtcStatus.running && go2rtcStatus.apiUrl && (
-                          <a
-                            href={`${go2rtcStatus.apiUrl.replace("127.0.0.1", window.location.hostname)}/`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="btn"
-                            style={{ padding: "4px 12px", fontSize: 12, textDecoration: "none" }}
-                          >
-                            Dashboard
-                          </a>
-                        )}
+                        {go2rtcStatus.running && go2rtcStatus.apiUrl && (() => {
+                          try {
+                            const p = new URL(go2rtcStatus.apiUrl as string).port;
+                            const href = `${window.location.protocol}//${window.location.hostname}:${p}/`;
+                            return (
+                              <a
+                                href={href}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="btn"
+                                style={{ padding: "4px 12px", fontSize: 12, textDecoration: "none" }}
+                              >
+                                Dashboard
+                              </a>
+                            );
+                          } catch {
+                            return null;
+                          }
+                        })()}
                       </div>
                     )}
 
