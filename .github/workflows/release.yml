@@ -319,7 +319,7 @@ jobs:
           push: true
           tags: ${{ steps.docker-tags.outputs.tags }}
           build-args: |
-            APP_VERSION=${{ needs.build-library.outputs.version }}${{ github.event.inputs.docker_tag != 'latest' && format('-{0}', github.event.inputs.docker_tag) || '' }}
+            APP_VERSION=${{ needs.build-library.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           labels: |
