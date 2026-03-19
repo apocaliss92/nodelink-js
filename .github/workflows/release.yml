@@ -23,10 +23,15 @@ on:
         type: boolean
         default: true
       docker_tag:
-        description: "Additional Docker tag (e.g. beta, rc1). Leave empty for standard release."
-        required: false
-        type: string
-        default: ""
+        description: "Docker tag — 'latest' for stable release, or beta/rc/dev for pre-release"
+        required: true
+        type: choice
+        options:
+          - latest
+          - beta
+          - rc
+          - dev
+        default: latest
   push:
     branches:
       - "main"
@@ -284,15 +289,17 @@ jobs:
           OWNER_LC=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
           IMG="${{ env.REGISTRY }}/${OWNER_LC}/nodelink-js-manager"
           VERSION="${{ needs.build-library.outputs.version }}"
-          EXTRA_TAG="${{ github.event.inputs.docker_tag }}"
+          TAG="${{ github.event.inputs.docker_tag || 'latest' }}"
 
+          # Always tag with version number
           TAGS="${IMG}:${VERSION}"
-          if [ -z "$EXTRA_TAG" ]; then
-            # Standard release: also tag as latest
+
+          if [ "$TAG" = "latest" ]; then
+            # Stable release: version + latest
             TAGS="${TAGS},${IMG}:latest"
           else
-            # Beta/RC: tag with the custom label (e.g. beta, rc1)
-            TAGS="${TAGS},${IMG}:${EXTRA_TAG}"
+            # Pre-release: version + tag (beta/rc/dev), NOT latest
+            TAGS="${TAGS},${IMG}:${TAG}"
           fi
 
           echo "image=${IMG}" >> $GITHUB_OUTPUT
@@ -307,7 +314,7 @@ jobs:
           push: true
           tags: ${{ steps.docker-tags.outputs.tags }}
           build-args: |
-            APP_VERSION=${{ needs.build-library.outputs.version }}${{ github.event.inputs.docker_tag && format('-{0}', github.event.inputs.docker_tag) || '' }}
+            APP_VERSION=${{ needs.build-library.outputs.version }}${{ github.event.inputs.docker_tag != 'latest' && format('-{0}', github.event.inputs.docker_tag) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           labels: |
