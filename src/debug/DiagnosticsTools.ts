@@ -3194,6 +3194,71 @@ export function sanitizeFixtureData(value: unknown): unknown {
   return value;
 }
 
+/**
+ * Compute the expected stream socket compatibility matrix for a device.
+ *
+ * This is a pure function (no I/O) that encodes the Baichuan protocol rules:
+ * - streamType: main=0, sub=1, ext=0 (default variant)
+ * - Two streams with the same streamType on one socket → only one gets frames
+ * - Multifocal: camera rejects same profile from different channels (error 430)
+ *
+ * Use this to validate live test results or to generate expected results for
+ * cameras that are not physically available for testing.
+ */
+export function computeExpectedStreamCompatibility(params: {
+  /** Number of stream channels (1 for single-lens, 2 for multifocal). */
+  channelCount: number;
+  /** Profiles available on each channel. */
+  profiles?: Array<"main" | "sub" | "ext">;
+}): Array<{
+  pair: [string, string];
+  expectedOk: boolean;
+  reason: string;
+}> {
+  const { channelCount } = params;
+  const profiles = params.profiles ?? (["main", "sub", "ext"] as const);
+  const expectedStreamType: Record<string, number> = { main: 0, sub: 1, ext: 0 };
+
+  type StreamId = { ch: number; profile: string; label: string };
+  const allStreams: StreamId[] = [];
+  for (let ch = 0; ch < channelCount; ch++) {
+    for (const p of profiles) {
+      allStreams.push({ ch, profile: p, label: channelCount > 1 ? `ch${ch}_${p}` : p });
+    }
+  }
+
+  const results: Array<{ pair: [string, string]; expectedOk: boolean; reason: string }> = [];
+  for (let i = 0; i < allStreams.length; i++) {
+    for (let j = i + 1; j < allStreams.length; j++) {
+      const a = allStreams[i]!;
+      const b = allStreams[j]!;
+      const stA = expectedStreamType[a.profile] ?? 0;
+      const stB = expectedStreamType[b.profile] ?? 0;
+      const sameChannel = a.ch === b.ch;
+
+      let expectedOk: boolean;
+      let reason: string;
+
+      if (sameChannel && stA === stB) {
+        expectedOk = false;
+        reason = `same streamType (${stA}) on same channel`;
+      } else if (!sameChannel && a.profile === b.profile) {
+        expectedOk = false;
+        reason = `multifocal rejects same profile (${a.profile}) across channels`;
+      } else if (!sameChannel && stA === stB) {
+        expectedOk = false;
+        reason = `same streamType (${stA}) across channels`;
+      } else {
+        expectedOk = true;
+        reason = `different streamTypes (${stA} vs ${stB})`;
+      }
+
+      results.push({ pair: [a.label, b.label], expectedOk, reason });
+    }
+  }
+  return results;
+}
+
 export interface ModelFixtureCaptureResult {
   /** Per-call results: command name → ok/error */
   calls: Record<string, { ok: true; value?: unknown } | { ok: false; error: string }>;
@@ -3380,18 +3445,76 @@ export async function captureModelFixtures(params: {
 
   // ── Stream Combination Test ────────────────────────────────────────────
   // Tests which stream pairs can share a single TCP socket without
-  // streamType mismatches. Each pair is started on the SAME client,
-  // we listen for video frames for a few seconds and check for mismatches.
+  // streamType mismatches.
+  //
+  // Single-lens: tests all pairs on the same channel (main+sub, main+ext, sub+ext).
+  // Multifocal:  also tests cross-channel pairs (ch0_main+ch1_sub, etc.) since
+  //              multifocal cameras have strict constraints on which stream
+  //              combinations are allowed per socket (see resolveSocketTag).
   await capture("streamCombinationTest", async () => {
+    // Detect multifocal
+    let dualLensInfo: any;
+    try { dualLensInfo = await api.getDualLensChannelInfo(channel); } catch { /* ignore */ }
+    const isMultifocal = dualLensInfo?.isDualLens === true;
+    const channelCount: number = dualLensInfo?.streamChannelCount ?? 1;
+
+    // Build list of stream identifiers: { channel, profile, label }
+    type StreamId = { ch: number; profile: StreamProfile; label: string };
+    const allStreams: StreamId[] = [];
     const profiles: StreamProfile[] = ["main", "sub", "ext"];
-    const pairs: Array<[StreamProfile, StreamProfile]> = [];
-    for (let i = 0; i < profiles.length; i++) {
-      for (let j = i + 1; j < profiles.length; j++) {
-        pairs.push([profiles[i]!, profiles[j]!]);
+    for (let ch = 0; ch < channelCount; ch++) {
+      for (const p of profiles) {
+        const label = channelCount > 1 ? `ch${ch}_${p}` : p;
+        allStreams.push({ ch, profile: p, label });
       }
     }
 
-    const results: Array<{
+    // Generate all unique pairs
+    const pairs: Array<[StreamId, StreamId]> = [];
+    for (let i = 0; i < allStreams.length; i++) {
+      for (let j = i + 1; j < allStreams.length; j++) {
+        pairs.push([allStreams[i]!, allStreams[j]!]);
+      }
+    }
+
+    // Expected compatibility based on protocol rules:
+    // - streamType: main=0, sub=1, ext=0 (default variant)
+    // - Two streams with the same streamType on the same socket → only one produces frames
+    // - Multifocal: camera rejects two "main" or two "sub" from different channels (error 430)
+    const expectedStreamType: Record<StreamProfile, number> = { main: 0, sub: 1, ext: 0 };
+
+    const expectedCompat: Array<{ pair: [string, string]; expectedOk: boolean; reason: string }> = [];
+    for (const [a, b] of pairs) {
+      const stA = expectedStreamType[a.profile]!;
+      const stB = expectedStreamType[b.profile]!;
+      const sameChannel = a.ch === b.ch;
+
+      let expectedOk: boolean;
+      let reason: string;
+
+      if (sameChannel && stA === stB) {
+        // Same channel, same streamType → conflict (ext=0 clashes with main=0)
+        expectedOk = false;
+        reason = `same streamType (${stA}) on same channel`;
+      } else if (!sameChannel && a.profile === b.profile) {
+        // Cross-channel, same profile → multifocal rejects this (error 430)
+        expectedOk = false;
+        reason = `multifocal rejects same profile (${a.profile}) across channels`;
+      } else if (!sameChannel && stA === stB) {
+        // Cross-channel, different profiles but same streamType
+        // e.g., ch0_main (st=0) + ch1_ext (st=0) → conflict
+        expectedOk = false;
+        reason = `same streamType (${stA}) across channels`;
+      } else {
+        expectedOk = true;
+        reason = `different streamTypes (${stA} vs ${stB})`;
+      }
+
+      expectedCompat.push({ pair: [a.label, b.label], expectedOk, reason });
+    }
+
+    // Run live tests
+    interface ComboResult {
       pair: [string, string];
       ok: boolean;
       framesA: number;
@@ -3399,29 +3522,34 @@ export async function captureModelFixtures(params: {
       mismatches: number;
       error?: string;
       durationMs: number;
-    }> = [];
-
+      expectedOk: boolean;
+      expectedReason: string;
+      matchesExpected: boolean;
+    }
+    const results: ComboResult[] = [];
     const TEST_DURATION_MS = 4000;
 
-    for (const [profA, profB] of pairs) {
-      log(`    testing ${profA}+${profB} on shared socket...`);
+    for (let pairIdx = 0; pairIdx < pairs.length; pairIdx++) {
+      const [a, b] = pairs[pairIdx]!;
+      const expected = expectedCompat[pairIdx]!;
+      log(`    testing ${a.label}+${b.label} on shared socket...`);
 
-      // Create a dedicated session so we get an isolated socket for this test
       let session: { client: any; release: () => Promise<void> } | undefined;
       try {
         session = await api.createDedicatedSession(
-          `test:combo:ch${channel}:${profA}_${profB}`,
+          `test:combo:${a.label}_${b.label}`,
         );
       } catch (e) {
-        results.push({
-          pair: [profA, profB],
-          ok: false,
-          framesA: 0,
-          framesB: 0,
-          mismatches: 0,
-          error: `session failed: ${e instanceof Error ? e.message : String(e)}`,
+        const result: ComboResult = {
+          pair: [a.label, b.label],
+          ok: false, framesA: 0, framesB: 0, mismatches: 0,
+          error: `session: ${e instanceof Error ? e.message : String(e)}`,
           durationMs: 0,
-        });
+          expectedOk: expected.expectedOk,
+          expectedReason: expected.reason,
+          matchesExpected: !expected.expectedOk, // failed as expected if we expected failure
+        };
+        results.push(result);
         continue;
       }
 
@@ -3431,36 +3559,28 @@ export async function captureModelFixtures(params: {
       let mismatches = 0;
       const start = Date.now();
 
-      // Expected streamTypes: main=0, sub=1, ext=0
-      const expectedTypes: Record<StreamProfile, Set<number>> = {
-        main: new Set([0, 2]),
-        sub: new Set([1, 3]),
-        ext: new Set([0, 2]),
+      const stTypes: Record<StreamProfile, Set<number>> = {
+        main: new Set([0, 2]), sub: new Set([1, 3]), ext: new Set([0, 2]),
       };
-      const expectedA = expectedTypes[profA]!;
-      const expectedB = expectedTypes[profB]!;
+      const setA = stTypes[a.profile]!;
+      const setB = stTypes[b.profile]!;
 
       const onFrame = (frame: any) => {
         if (frame.header?.cmdId !== BC_CMD_ID_VIDEO) return;
         const st = frame.header.streamType;
-        if (expectedA.has(st)) framesA++;
-        else if (expectedB.has(st)) framesB++;
+        if (setA.has(st)) framesA++;
+        else if (setB.has(st)) framesB++;
         else mismatches++;
       };
       testClient.on("frame", onFrame);
 
       let error: string | undefined;
       try {
-        // Start both streams on the same client
-        await api.startVideoStream(channel, profA, { client: testClient });
-        await api.startVideoStream(channel, profB, { client: testClient });
-
-        // Wait for frames
+        await api.startVideoStream(a.ch, a.profile, { client: testClient });
+        await api.startVideoStream(b.ch, b.profile, { client: testClient });
         await new Promise((r) => setTimeout(r, TEST_DURATION_MS));
-
-        // Stop both
-        await api.stopVideoStream(channel, profA, { client: testClient }).catch(() => {});
-        await api.stopVideoStream(channel, profB, { client: testClient }).catch(() => {});
+        await api.stopVideoStream(a.ch, a.profile, { client: testClient }).catch(() => {});
+        await api.stopVideoStream(b.ch, b.profile, { client: testClient }).catch(() => {});
       } catch (e) {
         error = e instanceof Error ? e.message : String(e);
       } finally {
@@ -3470,19 +3590,34 @@ export async function captureModelFixtures(params: {
 
       const elapsed = Date.now() - start;
       const ok = !error && framesA > 0 && framesB > 0 && mismatches === 0;
-      results.push({
-        pair: [profA, profB],
-        ok,
-        framesA,
-        framesB,
-        mismatches,
+
+      const result: ComboResult = {
+        pair: [a.label, b.label], ok, framesA, framesB, mismatches,
         ...(error ? { error } : {}),
         durationMs: elapsed,
-      });
-      log(`    ${profA}+${profB}: ${ok ? "OK" : "FAIL"} (A=${framesA} B=${framesB} mismatch=${mismatches}${error ? ` err=${error}` : ""})`);
+        expectedOk: expected.expectedOk,
+        expectedReason: expected.reason,
+        matchesExpected: ok === expected.expectedOk,
+      };
+      results.push(result);
+
+      const matchStr = result.matchesExpected ? "" : " *** UNEXPECTED ***";
+      log(`    ${a.label}+${b.label}: ${ok ? "OK" : "FAIL"} (expected=${expected.expectedOk ? "OK" : "FAIL"}) A=${framesA} B=${framesB} mismatch=${mismatches}${matchStr}`);
     }
 
-    return results;
+    const unexpected = results.filter((r) => !r.matchesExpected);
+    return {
+      isMultifocal,
+      channelCount,
+      results,
+      summary: {
+        total: results.length,
+        ok: results.filter((r) => r.ok).length,
+        failed: results.filter((r) => !r.ok).length,
+        matchesExpected: results.filter((r) => r.matchesExpected).length,
+        unexpected: unexpected.map((r) => `${r.pair[0]}+${r.pair[1]}: got ${r.ok ? "OK" : "FAIL"}, expected ${r.expectedOk ? "OK" : "FAIL"}`),
+      },
+    };
   }, (v) => writeJsonSafe(path.join(outDir, "stream-combination-test.json"), v));
 
   // ── Summary ──────────────────────────────────────────────────────────────
