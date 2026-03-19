@@ -19,7 +19,7 @@ import { getOrCreateApiConnection } from "../rtsp-manager.js";
 const MAX_BACKUPS = 20;
 const BACKUP_DIR = path.join(process.env.DATA_PATH || ".", "frigate-backups");
 
-interface BackupEntry {
+export interface BackupEntry {
   id: string;
   timestamp: string;
   summary: string;
