@@ -3373,6 +3373,118 @@ export async function captureModelFixtures(params: {
     writeJsonSafe(path.join(outDir, "video-stream-options.json"), v),
   );
 
+  // ── Multifocal / Dual-Lens Info ────────────────────────────────────────
+  await capture("getDualLensChannelInfo", () => api.getDualLensChannelInfo(channel), (v) =>
+    writeJsonSafe(path.join(outDir, "dual-lens-info.json"), v),
+  );
+
+  // ── Stream Combination Test ────────────────────────────────────────────
+  // Tests which stream pairs can share a single TCP socket without
+  // streamType mismatches. Each pair is started on the SAME client,
+  // we listen for video frames for a few seconds and check for mismatches.
+  await capture("streamCombinationTest", async () => {
+    const profiles: StreamProfile[] = ["main", "sub", "ext"];
+    const pairs: Array<[StreamProfile, StreamProfile]> = [];
+    for (let i = 0; i < profiles.length; i++) {
+      for (let j = i + 1; j < profiles.length; j++) {
+        pairs.push([profiles[i]!, profiles[j]!]);
+      }
+    }
+
+    const results: Array<{
+      pair: [string, string];
+      ok: boolean;
+      framesA: number;
+      framesB: number;
+      mismatches: number;
+      error?: string;
+      durationMs: number;
+    }> = [];
+
+    const TEST_DURATION_MS = 4000;
+
+    for (const [profA, profB] of pairs) {
+      log(`    testing ${profA}+${profB} on shared socket...`);
+
+      // Create a dedicated session so we get an isolated socket for this test
+      let session: { client: any; release: () => Promise<void> } | undefined;
+      try {
+        session = await api.createDedicatedSession(
+          `test:combo:ch${channel}:${profA}_${profB}`,
+        );
+      } catch (e) {
+        results.push({
+          pair: [profA, profB],
+          ok: false,
+          framesA: 0,
+          framesB: 0,
+          mismatches: 0,
+          error: `session failed: ${e instanceof Error ? e.message : String(e)}`,
+          durationMs: 0,
+        });
+        continue;
+      }
+
+      const testClient = session.client;
+      let framesA = 0;
+      let framesB = 0;
+      let mismatches = 0;
+      const start = Date.now();
+
+      // Expected streamTypes: main=0, sub=1, ext=0
+      const expectedTypes: Record<StreamProfile, Set<number>> = {
+        main: new Set([0, 2]),
+        sub: new Set([1, 3]),
+        ext: new Set([0, 2]),
+      };
+      const expectedA = expectedTypes[profA]!;
+      const expectedB = expectedTypes[profB]!;
+
+      const onFrame = (frame: any) => {
+        if (frame.header?.cmdId !== BC_CMD_ID_VIDEO) return;
+        const st = frame.header.streamType;
+        if (expectedA.has(st)) framesA++;
+        else if (expectedB.has(st)) framesB++;
+        else mismatches++;
+      };
+      testClient.on("frame", onFrame);
+
+      let error: string | undefined;
+      try {
+        // Start both streams on the same client
+        await api.startVideoStream(channel, profA, { client: testClient });
+        await api.startVideoStream(channel, profB, { client: testClient });
+
+        // Wait for frames
+        await new Promise((r) => setTimeout(r, TEST_DURATION_MS));
+
+        // Stop both
+        await api.stopVideoStream(channel, profA, { client: testClient }).catch(() => {});
+        await api.stopVideoStream(channel, profB, { client: testClient }).catch(() => {});
+      } catch (e) {
+        error = e instanceof Error ? e.message : String(e);
+      } finally {
+        testClient.removeListener("frame", onFrame);
+        await session.release().catch(() => {});
+      }
+
+      const elapsed = Date.now() - start;
+      const ok = !error && framesA > 0 && framesB > 0 && mismatches === 0;
+      results.push({
+        pair: [profA, profB],
+        ok,
+        framesA,
+        framesB,
+        mismatches,
+        ...(error ? { error } : {}),
+        durationMs: elapsed,
+      });
+      log(`    ${profA}+${profB}: ${ok ? "OK" : "FAIL"} (A=${framesA} B=${framesB} mismatch=${mismatches}${error ? ` err=${error}` : ""})`);
+    }
+
+    return results;
+  }, (v) => writeJsonSafe(path.join(outDir, "stream-combination-test.json"), v));
+
   // ── Summary ──────────────────────────────────────────────────────────────
   const total = Object.keys(calls).length;
   const ok = Object.values(calls).filter((c) => c.ok).length;

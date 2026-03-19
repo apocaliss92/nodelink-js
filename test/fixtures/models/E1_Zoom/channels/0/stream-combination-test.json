@@ -1,0 +1,35 @@
+[
+  {
+    "pair": [
+      "main",
+      "sub"
+    ],
+    "ok": true,
+    "framesA": 221,
+    "framesB": 175,
+    "mismatches": 0,
+    "durationMs": 4040
+  },
+  {
+    "pair": [
+      "main",
+      "ext"
+    ],
+    "ok": false,
+    "framesA": 452,
+    "framesB": 0,
+    "mismatches": 0,
+    "durationMs": 4054
+  },
+  {
+    "pair": [
+      "sub",
+      "ext"
+    ],
+    "ok": true,
+    "framesA": 161,
+    "framesB": 200,
+    "mismatches": 0,
+    "durationMs": 4085
+  }
+]
