@@ -399,7 +399,7 @@ export const frigateRouter = router({
     .query(async ({ input }) => {
       const settings = getSettings();
       const config = getConfig();
-      const go2rtcRtspPort = settings.go2rtc?.rtspPort ?? 18554;
+      const go2rtcRtspPort = Number(process.env.GO2RTC_RTSP_PORT) || (settings.go2rtc?.rtspPort ?? 18554);
       const serviceIp = settings.serviceIp || "localhost";
 
       const client = createClientFromInput(input);
@@ -529,7 +529,7 @@ export const frigateRouter = router({
       const settings = getSettings();
       const config = getConfig();
       const rtspServers = getAllRtspServersInfo();
-      const go2rtcRtspPort = settings.go2rtc?.rtspPort ?? 18554;
+      const go2rtcRtspPort = Number(process.env.GO2RTC_RTSP_PORT) || (settings.go2rtc?.rtspPort ?? 18554);
       const serviceIp = settings.serviceIp || "localhost";
 
       const camerasToAdd: Array<{

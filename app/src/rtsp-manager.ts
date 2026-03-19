@@ -971,7 +971,7 @@ export async function startRtspServer(
       info.port = port;
       info.startedAt = new Date();
 
-      const go2rtcRtspPort = settings.go2rtc?.rtspPort ?? 18554;
+      const go2rtcRtspPort = Number(process.env.GO2RTC_RTSP_PORT) || (settings.go2rtc?.rtspPort ?? 18554);
       info.rtspUrl = `rtsp://${serviceIp}:${go2rtcRtspPort}/${go2rtcName}`;
 
       rtspServers.set(streamKey, { server, info, go2rtcStreamName: go2rtcName });
