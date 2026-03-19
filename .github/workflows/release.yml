@@ -106,6 +106,12 @@ jobs:
             echo "Using current version: ${VERSION}"
           fi
 
+          # Append pre-release suffix if docker_tag is not 'latest'
+          DOCKER_TAG="${{ github.event.inputs.docker_tag }}"
+          if [ -n "$DOCKER_TAG" ] && [ "$DOCKER_TAG" != "latest" ]; then
+            VERSION="${VERSION}-${DOCKER_TAG}"
+          fi
+
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "tag=v${VERSION}" >> $GITHUB_OUTPUT
           echo "Final version: ${VERSION}"
@@ -113,9 +119,10 @@ jobs:
       - name: Update package.json version
         if: github.event_name == 'workflow_dispatch'
         run: |
-          npm version ${{ steps.version.outputs.version }} --no-git-tag-version
-          # Also update app/package.json if needed
-          cd app && npm version ${{ steps.version.outputs.version }} --no-git-tag-version || true
+          # Use base version (without pre-release suffix) for package.json
+          BASE_VERSION=$(echo "${{ steps.version.outputs.version }}" | sed 's/-.*//')
+          npm version ${BASE_VERSION} --no-git-tag-version --allow-same-version
+          cd app && npm version ${BASE_VERSION} --no-git-tag-version --allow-same-version || true
 
       - name: Install dependencies
         run: npm ci
@@ -190,8 +197,8 @@ jobs:
             LICENSE
           retention-days: 1
 
-      - name: Commit version bump (workflow_dispatch only)
-        if: github.event_name == 'workflow_dispatch'
+      - name: Commit version bump (stable releases only)
+        if: github.event_name == 'workflow_dispatch' && (github.event.inputs.docker_tag == 'latest' || github.event.inputs.docker_tag == '')
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
