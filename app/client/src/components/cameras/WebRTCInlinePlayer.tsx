@@ -13,9 +13,11 @@ import { useEffect, useRef, useState } from "react";
 export function WebRTCInlinePlayer({
   streamName,
   go2rtcApiPort,
+  serviceIp,
 }: {
   streamName: string;
   go2rtcApiPort?: number | null;
+  serviceIp?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
@@ -71,7 +73,8 @@ export function WebRTCInlinePlayer({
         // WHEP: POST SDP offer directly to go2rtc API (CORS enabled via origin:"*").
         // Port comes from go2rtc.status tRPC query — no hardcoded fallback.
         if (!go2rtcApiPort) throw new Error("go2rtc API port not available yet");
-        const go2rtcBase = `${window.location.protocol}//${window.location.hostname}:${go2rtcApiPort}`;
+        const go2rtcHost = serviceIp || window.location.hostname;
+        const go2rtcBase = `${window.location.protocol}//${go2rtcHost}:${go2rtcApiPort}`;
         const whepUrl = `${go2rtcBase}/api/webrtc?src=${encodeURIComponent(streamName)}`;
         const res = await fetch(whepUrl, {
           method: "POST",

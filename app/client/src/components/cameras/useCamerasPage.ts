@@ -51,6 +51,7 @@ export function useCamerasPage() {
     connections: number;
   }>(null);
   const [go2rtcApiPort, setGo2rtcApiPort] = useState<number | null>(null);
+  const [serviceIp, setServiceIp] = useState<string>("");
   const [streamsLoadingByCamera, setStreamsLoadingByCamera] = useState<
     Record<string, boolean>
   >({});
@@ -84,13 +85,15 @@ export function useCamerasPage() {
       setError(null);
     }
     try {
-      const [list, proxy, rtspList, nvrList, go2rtcSt] = await Promise.all([
+      const [list, proxy, rtspList, nvrList, go2rtcSt, settingsRes] = await Promise.all([
         trpcQuery<CameraInfo[]>("cameras.list"),
         trpcQuery<any>("rtspProxy.getStatus").catch(() => null),
         trpcQuery<any[]>("rtsp.list").catch(() => []),
         trpcQuery<NvrInfo[]>("cameras.listNvrs").catch(() => []),
         trpcQuery<{ apiUrl: string | null; running: boolean }>("go2rtc.status").catch(() => null),
+        trpcQuery<{ serviceIp?: string }>("settings.get").catch(() => null),
       ]);
+      if (settingsRes?.serviceIp) setServiceIp(settingsRes.serviceIp);
       if (go2rtcSt) {
         setGo2rtcRunning(go2rtcSt.running);
         if (go2rtcSt.apiUrl) {
@@ -392,6 +395,7 @@ export function useCamerasPage() {
     rtspServers,
     rtspProxyStatus,
     go2rtcApiPort,
+    serviceIp,
     go2rtcRunning,
     go2rtcToggling,
     streamsByCamera,

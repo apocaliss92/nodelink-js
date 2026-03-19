@@ -170,12 +170,6 @@ export const SettingsSchema = z.object({
       username: z.string().default(""),
       /** Frigate password (optional). */
       password: z.string().default(""),
-      /**
-       * Streaming mode:
-       * - "nodelink" — cameras use nodelink's go2rtc RTSP URLs as source
-       * - "frigate" — cameras are added to Frigate's own go2rtc restream
-       */
-      streamMode: z.enum(["nodelink", "frigate"]).default("nodelink"),
     })
     .default({}),
 

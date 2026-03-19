@@ -79,6 +79,8 @@ export type PreviewModalState =
       streamName?: string;
       /** go2rtc API port for direct access. */
       go2rtcApiPort?: number | null;
+      /** Service IP for building go2rtc URLs. */
+      serviceIp?: string;
       mjpegUrl?: string;
       hlsUrl?: string;
     }

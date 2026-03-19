@@ -36,6 +36,7 @@ export function PreviewModal({
           <WebRTCInlinePlayer
             streamName={state.streamName ?? state.cameraName}
             go2rtcApiPort={state.go2rtcApiPort}
+            serviceIp={state.serviceIp}
           />
         </div>
       </div>

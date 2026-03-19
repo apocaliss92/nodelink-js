@@ -22,6 +22,7 @@ export function CameraCard({
   savingAutoStart,
   rtspProxyPort,
   go2rtcApiPort,
+  serviceIp,
   rtspServers,
   onConnect,
   onDisconnect,
@@ -48,6 +49,7 @@ export function CameraCard({
   }>;
   rtspProxyPort?: number;
   go2rtcApiPort?: number | null;
+  serviceIp?: string;
   onConnect: () => void;
   onDisconnect: () => void;
   onSetDebug: () => void;
@@ -190,6 +192,7 @@ export function CameraCard({
                 stream={s}
                 rtspProxyPort={rtspProxyPort}
                 go2rtcApiPort={go2rtcApiPort}
+                serviceIp={serviceIp}
                 rtspServers={rtspServers}
                 onOpenPreview={onOpenPreview}
               />

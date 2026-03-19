@@ -50,7 +50,6 @@ type Settings = {
     host: string;
     username: string;
     password: string;
-    streamMode: "nodelink" | "frigate";
   };
 };
 
@@ -140,15 +139,21 @@ export default function SettingsPage() {
     error?: string;
   } | null>(null);
   const [frigateExistingCameras, setFrigateExistingCameras] = useState<string[]>([]);
-  const [frigateSelectedIds, setFrigateSelectedIds] = useState<Set<string>>(new Set());
+  const [frigateSelectedId, setFrigateSelectedId] = useState<string>("");
   const [frigatePreview, setFrigatePreview] = useState<any>(null);
   const [frigateApplying, setFrigateApplying] = useState(false);
   const [frigateMessage, setFrigateMessage] = useState<string | null>(null);
   const [frigateMatchData, setFrigateMatchData] = useState<any>(null);
   const [frigateRemoveNames, setFrigateRemoveNames] = useState<Set<string>>(new Set());
+  const [frigateBackups, setFrigateBackups] = useState<Array<{ id: string; timestamp: string; summary: string }>>([]);
+  const [frigateBackupsOpen, setFrigateBackupsOpen] = useState(false);
   const [frigateCameraList, setFrigateCameraList] = useState<
     Array<{ id: string; name: string; status: string }>
   >([]);
+  const [frigateSystemInfo, setFrigateSystemInfo] = useState<{
+    globalHwaccel: string;
+    hwaccelFamily: string | null;
+  } | null>(null);
 
   type TabId =
     | "general"
@@ -162,6 +167,45 @@ export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<TabId>("general");
 
   const dirty = useMemo(() => settings !== null, [settings]);
+
+  // Auto-connect to Frigate when the tab is opened or settings are saved
+  const connectToFrigate = useCallback(async () => {
+    const fg = settings?.frigate;
+    if (!fg?.host) return;
+    setFrigateLoading(true);
+    setFrigateMessage(null);
+    try {
+      const fgConn = { host: fg.host, username: fg.username, password: fg.password };
+      const camList = await trpcQuery<Array<{ id: string; name: string; status: string }>>("cameras.list");
+      setFrigateCameraList(camList);
+      const res = await trpcQuery<{ ok: boolean; version?: string; error?: string }>("frigate.ping", fgConn);
+      setFrigateConnected(res);
+      if (res.ok) {
+        const [cams, matchData, backups, sysInfo] = await Promise.all([
+          trpcQuery<string[]>("frigate.getCameras", fgConn),
+          trpcQuery<any>("frigate.match", fgConn),
+          trpcQuery<Array<{ id: string; timestamp: string; summary: string }>>("frigate.listBackups"),
+          trpcQuery<{ globalHwaccel: string; hwaccelFamily: string | null }>("frigate.getSystemInfo", fgConn),
+        ]);
+        setFrigateExistingCameras(cams);
+        setFrigateMatchData(matchData);
+        setFrigateBackups(backups);
+        setFrigateSystemInfo(sysInfo);
+        setFrigateRemoveNames(new Set());
+      }
+    } catch (e) {
+      setFrigateConnected({ ok: false, error: String(e) });
+    } finally {
+      setFrigateLoading(false);
+    }
+  }, [settings?.frigate?.host, settings?.frigate?.username, settings?.frigate?.password]);
+
+  // Auto-connect when switching to the frigate tab
+  useEffect(() => {
+    if (activeTab === "frigate" && settings?.frigate?.host && !frigateConnected && !frigateLoading) {
+      void connectToFrigate();
+    }
+  }, [activeTab, settings?.frigate?.host, frigateConnected, frigateLoading, connectToFrigate]);
 
   useEffect(() => {
     // Fast path: show whatever is currently stored.
@@ -428,6 +472,11 @@ export default function SettingsPage() {
         go2rtc: settings.go2rtc,
         frigate: settings.frigate,
       });
+      // Re-connect to Frigate after saving (connection params may have changed)
+      if (settings.frigate?.host) {
+        setFrigateConnected(null);
+        void connectToFrigate();
+      }
     } catch (e) {
       setError(String(e));
     } finally {
@@ -1221,7 +1270,8 @@ export default function SettingsPage() {
                         {go2rtcStatus.running && go2rtcStatus.apiUrl && (() => {
                           try {
                             const p = new URL(go2rtcStatus.apiUrl as string).port;
-                            const href = `${window.location.protocol}//${window.location.hostname}:${p}/`;
+                            const host = settings?.serviceIp || window.location.hostname;
+                            const href = `${window.location.protocol}//${host}:${p}/`;
                             return (
                               <a
                                 href={href}
@@ -1326,12 +1376,11 @@ export default function SettingsPage() {
                   host: "",
                   username: "",
                   password: "",
-                  streamMode: "nodelink" as const,
                 };
 
-                const connectedCameras = frigateCameraList.filter(
-                  (c) => c.status === "connected",
-                );
+                // All cameras (not just connected — disconnected cameras can still
+                // be configured in Frigate so they start recording once online).
+                const allCameras = frigateCameraList;
 
                 // Connection params from the form (not yet saved)
                 const fgConn = {
@@ -1340,69 +1389,32 @@ export default function SettingsPage() {
                   password: fg.password,
                 };
 
-                const testConnection = async () => {
-                  setFrigateLoading(true);
-                  setFrigateMessage(null);
-                  try {
-                    // Load nodelink cameras for selection
-                    const camList = await trpcQuery<
-                      Array<{ id: string; name: string; status: string }>
-                    >("cameras.list");
-                    setFrigateCameraList(camList);
-
-                    const res = await trpcQuery<{
-                      ok: boolean;
-                      version?: string;
-                      error?: string;
-                    }>("frigate.ping", fgConn);
-                    setFrigateConnected(res);
-                    if (res.ok) {
-                      const cams = await trpcQuery<string[]>(
-                        "frigate.getCameras",
-                        fgConn,
-                      );
-                      setFrigateExistingCameras(cams);
-                      // Load match data
-                      const matchData = await trpcQuery<any>("frigate.match", fgConn);
-                      setFrigateMatchData(matchData);
-                      setFrigateRemoveNames(new Set());
-                    }
-                  } catch (e) {
-                    setFrigateConnected({ ok: false, error: String(e) });
-                  } finally {
-                    setFrigateLoading(false);
-                  }
-                };
-
                 const applyToFrigate = async (restart: boolean) => {
+                  if (!frigateSelectedId || !frigatePreview?.cameras?.length) return;
                   setFrigateApplying(true);
                   setFrigateMessage(null);
                   try {
-                    const ids = Array.from(frigateSelectedIds);
-                    // Names to remove: existing Frigate cameras that match our naming
-                    // but are no longer selected
-                    const allManagedNames = connectedCameras.map((c) =>
-                      c.name
-                        .toLowerCase()
-                        .replace(/[^a-z0-9]+/g, "_")
-                        .replace(/^_+|_+$/g, ""),
-                    );
-                    const selectedNames = connectedCameras
-                      .filter((c) => frigateSelectedIds.has(c.id))
-                      .map((c) =>
-                        c.name
-                          .toLowerCase()
-                          .replace(/[^a-z0-9]+/g, "_")
-                          .replace(/^_+|_+$/g, ""),
-                      );
-                    const removeNames = frigateExistingCameras.filter(
-                      (n) => allManagedNames.includes(n) && !selectedNames.includes(n),
-                    );
+                    // Build camera blocks from the preview YAML (user-configured)
+                    const cameras: Record<string, string> = {};
+                    const go2rtcStreams: Record<string, string> = {};
+                    for (const cam of frigatePreview.cameras as any[]) {
+                      if (!cam.yaml || !cam.frigateName) continue;
+                      cameras[cam.frigateName] = cam.yaml;
+                      // If using Frigate go2rtc restream, include go2rtc stream defs
+                      if (cam._useFrigateGo2rtc && cam.streamInfo) {
+                        for (const s of cam.streamInfo as any[]) {
+                          if (s.go2rtcName && s.rtspUrl) {
+                            go2rtcStreams[s.go2rtcName] = s.rtspUrl;
+                          }
+                        }
+                      }
+                    }
 
                     const res = await trpcMutation("frigate.apply", {
                       ...fgConn,
-                      cameraIds: ids,
-                      removeNames,
+                      cameras,
+                      go2rtcStreams,
+                      removeNames: [],
                       restart,
                     });
                     if ((res as any).success) {
@@ -1437,9 +1449,25 @@ export default function SettingsPage() {
                   setFrigateLoading(true);
                   try {
                     const res = await trpcQuery<any>("frigate.preview", {
-                      ...fgConn,
                       cameraIds: ids,
                     });
+                    // Enrich with client-side data: alreadyInFrigate + auto-select hwaccel
+                    if (res?.cameras) {
+                      for (const cam of res.cameras as any[]) {
+                        // Mark if already exists in Frigate (from cached data)
+                        cam.alreadyInFrigate = frigateExistingCameras.includes(cam.frigateName);
+                        // Auto-select hwaccel based on Frigate's system hwaccel family + stream codec
+                        if (frigateSystemInfo?.hwaccelFamily && cam.streamInfo) {
+                          for (const s of cam.streamInfo as any[]) {
+                            if (s._hwaccelArgs) continue; // don't override user choice
+                            const codec = (s.codec ?? "").toLowerCase().replace(/\./g, "");
+                            const isH265 = codec.includes("h265") || codec.includes("hevc");
+                            const family = frigateSystemInfo.hwaccelFamily;
+                            s._hwaccelArgs = `preset-${family}-${isH265 ? "h265" : "h264"}`;
+                          }
+                        }
+                      }
+                    }
                     setFrigatePreview(res);
                   } catch {
                     // ignore
@@ -1448,25 +1476,13 @@ export default function SettingsPage() {
                   }
                 };
 
-                const toggleCamera = (id: string) => {
-                  setFrigateSelectedIds((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(id)) next.delete(id);
-                    else next.add(id);
-                    void loadPreviewForIds(Array.from(next));
-                    return next;
-                  });
-                };
-
-                const selectAll = () => {
-                  const allIds = connectedCameras.map((c) => c.id);
-                  setFrigateSelectedIds(new Set(allIds));
-                  void loadPreviewForIds(allIds);
-                };
-
-                const selectNone = () => {
-                  setFrigateSelectedIds(new Set());
+                const selectCamera = (id: string) => {
+                  setFrigateSelectedId(id);
+                  // Clear previous preview immediately to avoid mixing
                   setFrigatePreview(null);
+                  if (id) {
+                    void loadPreviewForIds([id]);
+                  }
                 };
 
                 return (
@@ -1517,54 +1533,30 @@ export default function SettingsPage() {
                       </div>
                     </div>
 
-                    {/* Stream mode */}
-                    <div style={{ marginBottom: 12 }}>
-                      <div className="label">Stream source</div>
-                      <div style={{ color: "var(--muted)", fontSize: 11, marginBottom: 4 }}>
-                        How Frigate receives video from your cameras
-                      </div>
-                      <select
-                        className="input"
-                        value={fg.streamMode}
-                        onChange={(e) =>
-                          setSettings({
-                            ...settings,
-                            frigate: {
-                              ...fg,
-                              streamMode: e.target.value as "nodelink" | "frigate",
-                            },
-                          })
-                        }
-                      >
-                        <option value="nodelink">
-                          Nodelink go2rtc RTSP (recommended)
-                        </option>
-                        <option value="frigate">
-                          Frigate go2rtc restream (adds streams to Frigate's go2rtc)
-                        </option>
-                      </select>
-                    </div>
-
-                    {/* Test connection */}
-                    <div className="row" style={{ gap: 8, marginBottom: 12 }}>
-                      <button
-                        className="btn primary"
-                        disabled={!fg.host || frigateLoading}
-                        onClick={testConnection}
-                      >
-                        {frigateLoading ? "Testing..." : "Test Connection"}
-                      </button>
+                    {/* Connection status + refresh */}
+                    <div className="row" style={{ gap: 8, marginBottom: 12, alignItems: "center" }}>
                       {frigateConnected && (
-                        <span
-                          style={{
-                            fontSize: 12,
-                            color: frigateConnected.ok ? "#22c55e" : "#ef4444",
-                          }}
-                        >
+                        <span style={{ fontSize: 12, color: frigateConnected.ok ? "#22c55e" : "#ef4444" }}>
                           {frigateConnected.ok
-                            ? `Connected (Frigate ${frigateConnected.version})`
+                            ? `Connected (Frigate ${frigateConnected.version})${frigateSystemInfo?.hwaccelFamily ? ` · hwaccel: ${frigateSystemInfo.hwaccelFamily}` : ""}`
                             : `Error: ${frigateConnected.error}`}
                         </span>
+                      )}
+                      {frigateLoading && !frigateConnected && (
+                        <span style={{ fontSize: 12, color: "var(--muted)" }}>Connecting...</span>
+                      )}
+                      {frigateConnected?.ok && (
+                        <button
+                          className="btn"
+                          style={{ padding: "2px 8px", fontSize: 10, marginLeft: "auto" }}
+                          disabled={frigateLoading}
+                          onClick={() => {
+                            setFrigateConnected(null);
+                            void connectToFrigate();
+                          }}
+                        >
+                          {frigateLoading ? "Refreshing..." : "Refresh"}
+                        </button>
                       )}
                     </div>
 
@@ -1604,7 +1596,7 @@ export default function SettingsPage() {
                             </span>
                           ) : (
                             <span style={{ color: "var(--muted)", fontSize: 11 }}>
-                              {fc.frigateIps.length > 0 ? fc.frigateIps.join(", ") : ""}
+                              (unmanaged)
                             </span>
                           )}
                           <span style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
@@ -1615,7 +1607,9 @@ export default function SettingsPage() {
                                 onClick={async () => {
                                   // Load the EXISTING Frigate config for this camera
                                   const camId = fc.matchedNodelinkCamera.id;
-                                  setFrigateSelectedIds(new Set([camId]));
+                                  // Clear current preview + dropdown to avoid mixing
+                                  setFrigatePreview(null);
+                                  setFrigateSelectedId(camId);
                                   setFrigateLoading(true);
                                   setFrigateMessage(null);
                                   try {
@@ -1628,24 +1622,35 @@ export default function SettingsPage() {
                                       cameraName: fc.frigateName,
                                     });
                                     if (existing.found) {
-                                      // Show the existing block as editable preview
+                                      // Load fresh preview from API for this camera
+                                      // (gives us streamInfo with codec/resolution),
+                                      // then overlay the existing YAML for manual editing
+                                      let preview: any = null;
+                                      try {
+                                        preview = await trpcQuery<any>("frigate.preview", {
+                                          cameraIds: [camId],
+                                        });
+                                      } catch { /* ignore */ }
+
+                                      const baseCam = preview?.cameras?.[0] ?? {
+                                        cameraId: camId,
+                                        cameraName: fc.matchedNodelinkCamera.name,
+                                        frigateName: fc.frigateName,
+                                        streams: [],
+                                        streamInfo: [],
+                                        go2rtcStreams: {},
+                                        go2rtcYaml: "",
+                                      };
+
                                       setFrigatePreview({
                                         cameras: [{
-                                          cameraId: camId,
-                                          cameraName: fc.matchedNodelinkCamera.name,
+                                          ...baseCam,
                                           frigateName: fc.frigateName,
                                           alreadyInFrigate: true,
                                           yaml: existing.yaml,
-                                          block: existing.block,
-                                          streams: fc.frigateInputs?.map((i: any) => ({
-                                            go2rtcName: i.path?.split("/").pop() ?? "",
-                                            profile: i.roles?.includes("record") ? "main" : "sub",
-                                            roles: i.roles ?? [],
-                                          })) ?? [],
-                                          go2rtcStreams: {},
-                                          go2rtcYaml: "",
+                                          _manualEdit: true,
                                         }],
-                                        presets: {
+                                        presets: preview?.presets ?? {
                                           inputArgs: [
                                             "preset-rtsp-generic",
                                             "preset-rtsp-restream",
@@ -1792,97 +1797,65 @@ export default function SettingsPage() {
                             marginTop: 4,
                           }}
                         >
-                          <div className="label">Add/update cameras in Frigate</div>
-                          <div className="row" style={{ gap: 6, marginBottom: 8 }}>
-                            <button
-                              className="btn"
-                              style={{ padding: "2px 8px", fontSize: 11 }}
-                              onClick={selectAll}
-                            >
-                              Select all
-                            </button>
-                            <button
-                              className="btn"
-                              style={{ padding: "2px 8px", fontSize: 11 }}
-                              onClick={selectNone}
-                            >
-                              Select none
-                            </button>
+                          <div className="label">Camera</div>
+                          <div style={{ color: "var(--muted)", fontSize: 11, marginBottom: 4 }}>
+                            Select a camera to configure and push to Frigate
                           </div>
-
-                          <div
-                            style={{
-                              display: "grid",
-                              gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
-                              gap: 6,
-                            }}
+                          <select
+                            className="input"
+                            value={frigateSelectedId}
+                            onChange={(e) => selectCamera(e.target.value)}
                           >
-                            {connectedCameras.map((c) => (
-                              <label
-                                key={c.id}
-                                className="row"
-                                style={{
-                                  gap: 6,
-                                  cursor: "pointer",
-                                  padding: "6px 8px",
-                                  borderRadius: 6,
-                                  background: frigateSelectedIds.has(c.id)
-                                    ? "rgba(59,130,246,0.1)"
-                                    : "transparent",
-                                  border: "1px solid var(--border)",
-                                  fontSize: 13,
-                                }}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={frigateSelectedIds.has(c.id)}
-                                  onChange={() => toggleCamera(c.id)}
-                                />
-                                <span>{c.name}</span>
-                              </label>
+                            <option value="">— Select a camera —</option>
+                            {allCameras.map((c) => (
+                              <option key={c.id} value={c.id}>
+                                {c.name}{c.status !== "connected" ? ` (${c.status})` : ""}
+                              </option>
                             ))}
-                          </div>
+                          </select>
                         </div>
 
                         {frigatePreview?.cameras && (
                           <div style={{ marginTop: 12 }}>
                             {(frigatePreview.cameras as any[]).map((c: any, idx: number) => {
                               const isManualEdit = c._manualEdit === true;
-                              const allRoles = ["record", "detect", "audio"];
                               const streamInfoList: any[] = c.streamInfo ?? c.streams ?? [];
 
                               /** Rebuild YAML from current streamInfo + options */
                               const rebuildYaml = (
                                 streams: any[],
                                 frigateName: string,
-                                useFrigateGo2rtc: boolean,
+                                opts: {
+                                  useFrigateGo2rtc: boolean;
+                                  detectEnabled: boolean;
+                                  snapshotsEnabled: boolean;
+                                  audioEnabled: boolean;
+                                },
                               ): string => {
                                 const inputs: any[] = [];
                                 const go2rtcStreamsBlock: string[] = [];
                                 for (const s of streams) {
                                   if (!s.roles?.length) continue;
-                                  const streamPath = useFrigateGo2rtc
+                                  // useFrigateGo2rtc → Frigate's own go2rtc loopback (always 127.0.0.1:8554 inside Frigate container)
+                                  // otherwise → nodelink's RTSP URL (serviceIp:go2rtcRtspPort)
+                                  const streamPath = opts.useFrigateGo2rtc
                                     ? `rtsp://127.0.0.1:8554/${s.go2rtcName}`
-                                    : (s.rtspUrl || `rtsp://127.0.0.1:8554/${s.go2rtcName}`);
+                                    : s.rtspUrl;
                                   const inp: any = { path: streamPath, roles: s.roles };
                                   const inputArgs = s._inputArgs ?? "preset-rtsp-restream";
                                   if (inputArgs) inp.input_args = inputArgs;
                                   const hwaccel = s._hwaccelArgs ?? "";
                                   if (hwaccel) inp.hwaccel_args = hwaccel;
                                   inputs.push(inp);
-                                  if (useFrigateGo2rtc) {
+                                  if (opts.useFrigateGo2rtc) {
                                     go2rtcStreamsBlock.push(`    ${s.go2rtcName}: "${s.rtspUrl}"`);
                                   }
                                 }
-                                const detectStream = streams.find((s: any) => s.roles?.includes("detect"));
-                                const res = detectStream?.resolution?.match(/(\d+)x(\d+)/);
                                 const cam: any = { enabled: true, ffmpeg: { inputs } };
-                                if (res) {
-                                  cam.detect = { enabled: true, width: Number(res[1]), height: Number(res[2]), fps: Number(res[2]) <= 480 ? 5 : 10 };
-                                }
-                                cam.record = { enabled: true, alerts: { retain: { days: 30, mode: "motion" } }, detections: { retain: { days: 30, mode: "motion" } }, motion: { days: 7 } };
-                                cam.snapshots = { enabled: true };
-                                cam.audio = { enabled: streams.some((s: any) => s.roles?.includes("audio")) };
+                                cam.detect = { enabled: opts.detectEnabled };
+                                cam.record = { enabled: false };
+                                cam.snapshots = { enabled: opts.snapshotsEnabled };
+                                cam.audio = { enabled: opts.audioEnabled };
                                 // Simple YAML serializer for the camera block
                                 const yamlLines: string[] = [];
                                 const write = (obj: any, indent: number) => {
@@ -1936,23 +1909,15 @@ export default function SettingsPage() {
                                 // Auto-rebuild YAML when not in manual edit mode
                                 if (!merged._manualEdit) {
                                   const si = merged.streamInfo ?? streamInfoList;
-                                  merged.yaml = rebuildYaml(si, merged.frigateName, merged._useFrigateGo2rtc === true);
+                                  merged.yaml = rebuildYaml(si, merged.frigateName, {
+                                    useFrigateGo2rtc: merged._useFrigateGo2rtc === true,
+                                    detectEnabled: merged._detectEnabled !== false,
+                                    snapshotsEnabled: merged._snapshotsEnabled !== false,
+                                    audioEnabled: merged._audioEnabled !== false,
+                                  });
                                 }
                                 updated[idx] = merged;
                                 setFrigatePreview({ ...frigatePreview, cameras: updated });
-                              };
-
-                              const updateStreamRole = (sIdx: number, role: string, checked: boolean) => {
-                                const si = [...streamInfoList];
-                                const cur = si[sIdx]!;
-                                const roles = [...(cur.roles ?? [])];
-                                if (checked && !roles.includes(role)) roles.push(role);
-                                if (!checked) {
-                                  const i = roles.indexOf(role);
-                                  if (i >= 0) roles.splice(i, 1);
-                                }
-                                si[sIdx] = { ...cur, roles };
-                                updateCam({ streamInfo: si });
                               };
 
                               const updateStreamPreset = (sIdx: number, key: string, val: string) => {
@@ -1983,7 +1948,16 @@ export default function SettingsPage() {
                                     }}
                                   >
                                     <strong style={{ fontSize: 13 }}>{c.cameraName}</strong>
-                                    <span style={{ color: "var(--muted)", fontSize: 12 }}>→ {c.frigateName}</span>
+                                    <span style={{ color: "var(--muted)", fontSize: 12 }}>→</span>
+                                    <input
+                                      className="input"
+                                      value={c.frigateName}
+                                      onChange={(e) => {
+                                        const raw = e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "_").replace(/_{2,}/g, "_");
+                                        updateCam({ frigateName: raw });
+                                      }}
+                                      style={{ fontSize: 12, padding: "2px 6px", width: 160 }}
+                                    />
                                     {c.alreadyInFrigate && (
                                       <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 4, background: "rgba(245,158,11,0.15)", color: "#f59e0b" }}>
                                         update
@@ -2015,7 +1989,7 @@ export default function SettingsPage() {
                                     />
                                   ) : (
                                     <>
-                                      {/* Stream table with role checkboxes and per-stream presets */}
+                                      {/* Stream table */}
                                       <div style={{ padding: "8px 12px" }}>
                                         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
                                           <thead>
@@ -2023,9 +1997,6 @@ export default function SettingsPage() {
                                               <th style={{ padding: "3px 6px" }}>Profile</th>
                                               <th style={{ padding: "3px 6px" }}>Codec</th>
                                               <th style={{ padding: "3px 6px" }}>Resolution</th>
-                                              {allRoles.map((r) => (
-                                                <th key={r} style={{ padding: "3px 6px", textAlign: "center" }}>{r}</th>
-                                              ))}
                                               <th style={{ padding: "3px 6px" }}>input_args</th>
                                               <th style={{ padding: "3px 6px" }}>hwaccel_args</th>
                                             </tr>
@@ -2046,15 +2017,6 @@ export default function SettingsPage() {
                                                   ) : <span style={{ color: "var(--muted)" }}>—</span>}
                                                 </td>
                                                 <td style={{ padding: "4px 6px", fontFamily: "monospace", fontSize: 10 }}>{s.resolution || "—"}</td>
-                                                {allRoles.map((role) => (
-                                                  <td key={role} style={{ padding: "4px 6px", textAlign: "center" }}>
-                                                    <input
-                                                      type="checkbox"
-                                                      checked={(s.roles ?? []).includes(role)}
-                                                      onChange={(e) => updateStreamRole(sIdx, role, e.target.checked)}
-                                                    />
-                                                  </td>
-                                                ))}
                                                 <td style={{ padding: "4px 4px" }}>
                                                   <select
                                                     className="input"
@@ -2085,15 +2047,39 @@ export default function SettingsPage() {
                                         </table>
                                       </div>
 
-                                      {/* Use Frigate go2rtc restream checkbox */}
-                                      <div style={{ padding: "4px 12px 8px", borderTop: "1px solid var(--border)" }}>
-                                        <label style={{ fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+                                      {/* Feature toggles */}
+                                      <div style={{ padding: "6px 12px 8px", borderTop: "1px solid var(--border)", display: "flex", flexWrap: "wrap", gap: 12 }}>
+                                        <label style={{ fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
+                                          <input
+                                            type="checkbox"
+                                            checked={c._detectEnabled !== false}
+                                            onChange={(e) => updateCam({ _detectEnabled: e.target.checked })}
+                                          />
+                                          Detect
+                                        </label>
+                                        <label style={{ fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
+                                          <input
+                                            type="checkbox"
+                                            checked={c._snapshotsEnabled !== false}
+                                            onChange={(e) => updateCam({ _snapshotsEnabled: e.target.checked })}
+                                          />
+                                          Snapshots
+                                        </label>
+                                        <label style={{ fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
+                                          <input
+                                            type="checkbox"
+                                            checked={c._audioEnabled !== false}
+                                            onChange={(e) => updateCam({ _audioEnabled: e.target.checked })}
+                                          />
+                                          Audio
+                                        </label>
+                                        <label style={{ fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
                                           <input
                                             type="checkbox"
                                             checked={c._useFrigateGo2rtc === true}
                                             onChange={(e) => updateCam({ _useFrigateGo2rtc: e.target.checked })}
                                           />
-                                          Add streams to Frigate go2rtc (restream via Frigate instead of direct RTSP)
+                                          Frigate go2rtc restream
                                         </label>
                                       </div>
 
@@ -2159,6 +2145,73 @@ export default function SettingsPage() {
                           </div>
                         )}
                       </>
+                    )}
+
+                    {/* Config backups */}
+                    {frigateConnected?.ok && frigateBackups.length > 0 && (
+                      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12, marginTop: 12 }}>
+                        <div
+                          className="label"
+                          style={{ cursor: "pointer", userSelect: "none" }}
+                          onClick={() => setFrigateBackupsOpen(!frigateBackupsOpen)}
+                        >
+                          Config Backups ({frigateBackups.length}) {frigateBackupsOpen ? "▾" : "▸"}
+                        </div>
+                        {frigateBackupsOpen && (
+                          <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
+                            {frigateBackups.map((b) => (
+                              <div
+                                key={b.id}
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 8,
+                                  padding: "4px 8px",
+                                  borderRadius: 6,
+                                  border: "1px solid var(--border)",
+                                  fontSize: 11,
+                                }}
+                              >
+                                <span style={{ color: "var(--muted)", minWidth: 140 }}>
+                                  {new Date(b.timestamp).toLocaleString()}
+                                </span>
+                                <span style={{ flex: 1 }}>{b.summary}</span>
+                                <button
+                                  className="btn"
+                                  style={{ padding: "1px 8px", fontSize: 10 }}
+                                  disabled={frigateApplying}
+                                  onClick={async () => {
+                                    if (!confirm(`Rollback to backup from ${new Date(b.timestamp).toLocaleString()}?`)) return;
+                                    setFrigateApplying(true);
+                                    setFrigateMessage(null);
+                                    try {
+                                      const res = await trpcMutation("frigate.rollback", {
+                                        ...fgConn,
+                                        backupId: b.id,
+                                        restart: true,
+                                      });
+                                      if ((res as any).success) {
+                                        setFrigateMessage("Rollback applied and Frigate restarting.");
+                                        // Refresh
+                                        setFrigateConnected(null);
+                                        void connectToFrigate();
+                                      } else {
+                                        setFrigateMessage(`Rollback error: ${(res as any).error ?? "Unknown"}`);
+                                      }
+                                    } catch (e) {
+                                      setFrigateMessage(`Rollback error: ${e}`);
+                                    } finally {
+                                      setFrigateApplying(false);
+                                    }
+                                  }}
+                                >
+                                  Rollback
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     )}
                   </>
                 );

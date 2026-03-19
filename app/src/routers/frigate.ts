@@ -1,5 +1,7 @@
 import { router, publicProcedure } from "../trpc.js";
 import { z } from "zod";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import YAML from "yaml";
 import { getSettings } from "../settings-store.js";
 import { getConfig } from "../settings-store.js";
@@ -10,6 +12,86 @@ import {
 } from "../rtsp-manager.js";
 import { FrigateClient } from "../frigate-client.js";
 import { getOrCreateApiConnection } from "../rtsp-manager.js";
+
+// ---------------------------------------------------------------------------
+// Frigate config backup system (max 20 backups, FIFO)
+// ---------------------------------------------------------------------------
+const MAX_BACKUPS = 20;
+const BACKUP_DIR = path.join(process.env.DATA_PATH || ".", "frigate-backups");
+
+interface BackupEntry {
+  id: string;
+  timestamp: string;
+  summary: string;
+  filename: string;
+}
+
+function ensureBackupDir(): void {
+  fs.mkdirSync(BACKUP_DIR, { recursive: true });
+}
+
+function getBackupIndexPath(): string {
+  return path.join(BACKUP_DIR, "index.json");
+}
+
+function loadBackupIndex(): BackupEntry[] {
+  const indexPath = getBackupIndexPath();
+  try {
+    return JSON.parse(fs.readFileSync(indexPath, "utf-8"));
+  } catch {
+    return [];
+  }
+}
+
+function saveBackupIndex(entries: BackupEntry[]): void {
+  ensureBackupDir();
+  fs.writeFileSync(getBackupIndexPath(), JSON.stringify(entries, null, 2));
+}
+
+function createBackup(yamlBefore: string, summary: string): BackupEntry {
+  ensureBackupDir();
+  const now = new Date();
+  const id = now.toISOString().replace(/[:.]/g, "-");
+  const filename = `frigate-config-${id}.yaml`;
+  fs.writeFileSync(path.join(BACKUP_DIR, filename), yamlBefore);
+
+  const entry: BackupEntry = {
+    id,
+    timestamp: now.toISOString(),
+    summary,
+    filename,
+  };
+
+  const index = loadBackupIndex();
+  index.push(entry);
+
+  // Prune old backups beyond MAX_BACKUPS
+  while (index.length > MAX_BACKUPS) {
+    const removed = index.shift()!;
+    try {
+      fs.unlinkSync(path.join(BACKUP_DIR, removed.filename));
+    } catch { /* file may already be gone */ }
+  }
+
+  saveBackupIndex(index);
+  return entry;
+}
+
+function buildChangeSummary(
+  beforeYaml: string,
+  afterConfig: Record<string, any>,
+  removedNames: string[],
+  addedOrUpdated: string[],
+): string {
+  const parts: string[] = [];
+  if (addedOrUpdated.length > 0) {
+    parts.push(`updated: ${addedOrUpdated.join(", ")}`);
+  }
+  if (removedNames.length > 0) {
+    parts.push(`removed: ${removedNames.join(", ")}`);
+  }
+  return parts.length > 0 ? parts.join("; ") : "config update";
+}
 
 // ---------------------------------------------------------------------------
 // Shared input schema for Frigate connection params (from form, not settings)
@@ -107,9 +189,9 @@ function buildFrigateCameraBlock(
     return inp;
   };
 
-  // Main → record + audio
+  // Main stream → audio role
   if (sorted[0]) {
-    inputs.push(buildInput(sorted[0], ["record", "audio"]));
+    inputs.push(buildInput(sorted[0], ["audio"]));
   }
 
   // Detect: prefer sub/ext ≤720p
@@ -126,32 +208,14 @@ function buildFrigateCameraBlock(
     inputs[0]!.roles.push("detect");
   }
 
-  const detectRes = parseResolution(detectStream?.resolution);
-  const fps = detectRes && detectRes.height <= 480 ? 5 : 10;
-
   const block: Record<string, any> = {
     enabled: true,
     ffmpeg: { inputs },
+    detect: { enabled: true },
+    record: { enabled: false },
+    snapshots: { enabled: true },
+    audio: { enabled: true },
   };
-
-  if (detectRes) {
-    block.detect = {
-      enabled: true,
-      width: detectRes.width,
-      height: detectRes.height,
-      fps,
-    };
-  }
-
-  block.record = {
-    enabled: true,
-    alerts: { retain: { days: 30, mode: "motion" } },
-    detections: { retain: { days: 30, mode: "motion" } },
-    motion: { days: 7 },
-  };
-
-  block.snapshots = { enabled: true };
-  block.audio = { enabled: true };
 
   return block;
 }
@@ -199,6 +263,56 @@ export const frigateRouter = router({
     .query(async ({ input }) => {
       const client = createClientFromInput(input);
       return client.getGo2rtcStreams();
+    }),
+
+  /**
+   * Get Frigate system info: detected hwaccel presets, global ffmpeg config, etc.
+   * Used to auto-select the right hwaccel_args per codec when adding cameras.
+   */
+  getSystemInfo: publicProcedure
+    .meta({ description: "Get Frigate system-level config (hwaccel, ffmpeg defaults)" })
+    .input(FrigateConnectionInput)
+    .query(async ({ input }) => {
+      const client = createClientFromInput(input);
+      const rawYaml = await client.getRawConfig();
+      const frigateConfig = YAML.parse(rawYaml) as Record<string, any>;
+
+      // Extract global ffmpeg hwaccel_args
+      const globalHwaccel: string = frigateConfig.ffmpeg?.hwaccel_args ?? "";
+      const globalInputArgs: string = frigateConfig.ffmpeg?.input_args ?? "";
+
+      // Detect hwaccel family from the global preset or per-camera presets
+      let hwaccelFamily: string | null = null;
+      const detectFamily = (preset: string): string | null => {
+        if (/intel.*qsv/i.test(preset)) return "intel-qsv";
+        if (/nvidia/i.test(preset)) return "nvidia";
+        if (/vaapi/i.test(preset)) return "vaapi";
+        if (/rpi/i.test(preset)) return "rpi";
+        return null;
+      };
+
+      hwaccelFamily = detectFamily(globalHwaccel);
+
+      // If no global, scan cameras for a per-input hwaccel preset
+      if (!hwaccelFamily) {
+        const cameras = frigateConfig.cameras ?? {};
+        outer: for (const cam of Object.values(cameras)) {
+          for (const inp of (cam as any)?.ffmpeg?.inputs ?? []) {
+            const ha = inp.hwaccel_args ?? "";
+            const family = detectFamily(ha);
+            if (family) {
+              hwaccelFamily = family;
+              break outer;
+            }
+          }
+        }
+      }
+
+      return {
+        globalHwaccel,
+        globalInputArgs,
+        hwaccelFamily,
+      };
     }),
 
   /** Get the existing YAML block for a specific Frigate camera (raw text from file). */
@@ -273,113 +387,75 @@ export const frigateRouter = router({
     }),
 
   /**
-   * Match existing Frigate cameras against nodelink cameras by IP.
-   * Returns a unified list with match status, existing config, etc.
+   * Match existing Frigate cameras against nodelink cameras by RTSP URL.
+   * A Frigate camera is "managed by nodelink" if any of its ffmpeg input URLs
+   * or associated go2rtc stream sources match the RTSP URLs nodelink would
+   * generate for a given camera (e.g. rtsp://host:port/camera_name_main).
    */
   match: publicProcedure
-    .meta({ description: "Match Frigate cameras to nodelink cameras by IP" })
+    .meta({ description: "Match Frigate cameras to nodelink cameras by URL" })
     .input(FrigateConnectionInput)
     .query(async ({ input }) => {
+      const settings = getSettings();
       const config = getConfig();
+      const go2rtcRtspPort = settings.go2rtc?.rtspPort ?? 18554;
+      const serviceIp = settings.serviceIp || "localhost";
+
       const client = createClientFromInput(input);
-      // Use raw config (reads YAML from disk) to see latest saved changes,
-      // even before Frigate restarts and reloads its in-memory config.
       const rawYaml = await client.getRawConfig();
       const frigateConfig = YAML.parse(rawYaml) as Record<string, any>;
 
       const frigateCameras = frigateConfig.cameras ?? {};
       const frigateGo2rtc = frigateConfig.go2rtc?.streams ?? {};
 
-      // Extract IPs from Frigate camera RTSP inputs
-      const extractIps = (cam: any): string[] => {
-        const ips: string[] = [];
-        const inputs = cam?.ffmpeg?.inputs ?? [];
-        for (const inp of inputs) {
-          const path = inp.path ?? "";
-          try {
-            const m = path.match(/:\/\/([^:/@]+)/);
-            if (m?.[1] && m[1] !== "127.0.0.1") ips.push(m[1]);
-          } catch { /* ignore */ }
+      // Build the full set of nodelink RTSP URLs for each camera.
+      // A Frigate camera is "managed" only if its input URL exactly matches
+      // one of these (scheme://host:port/path).
+      const nodelinkUrlToCam = new Map<string, { id: string; name: string; host: string }>();
+      for (const nlCam of config.cameras) {
+        const channel = nlCam.rtspChannel ?? 0;
+        for (const profile of ["main", "sub", "ext"]) {
+          const go2rtcName = buildGo2rtcStreamName(nlCam.name, profile, channel);
+          const fullUrl = `rtsp://${serviceIp}:${go2rtcRtspPort}/${go2rtcName}`.toLowerCase();
+          nodelinkUrlToCam.set(fullUrl, {
+            id: nlCam.id,
+            name: nlCam.name,
+            host: nlCam.host,
+          });
         }
-        // Also check go2rtc streams that reference this camera name
-        for (const [streamName, streamSrc] of Object.entries(frigateGo2rtc)) {
-          const srcStr = Array.isArray(streamSrc) ? streamSrc[0] : String(streamSrc);
-          if (!srcStr) continue;
-          try {
-            const m = srcStr.match(/:\/\/([^:/@]+)/);
-            if (m?.[1] && m[1] !== "127.0.0.1") ips.push(m[1]);
-          } catch { /* ignore */ }
-        }
-        return [...new Set(ips)];
-      };
+      }
 
       const results: Array<{
         frigateName: string;
         frigateEnabled: boolean;
-        frigateIps: string[];
         frigateInputs: Array<{ path: string; roles: string[] }>;
-        matchedNodelinkCamera?: {
-          id: string;
-          name: string;
-          host: string;
-        };
-        matchedByName: boolean;
-        matchedByIp: boolean;
+        matchedNodelinkCamera?: { id: string; name: string; host: string };
       }> = [];
 
       for (const [fName, fCam] of Object.entries(frigateCameras)) {
         const cam = fCam as any;
-        const ips = extractIps(cam);
         const inputs = (cam?.ffmpeg?.inputs ?? []).map((i: any) => ({
           path: i.path ?? "",
           roles: i.roles ?? [],
         }));
 
-        // Collect all RTSP paths from inputs for URL-based matching
-        const allPaths = inputs.map((i: { path: string }) => i.path.toLowerCase());
-
-        let matchedByName = false;
-        let matchedByIp = false;
-        let matchedCamera: { id: string; name: string; host: string } | undefined;
-
-        // Also collect go2rtc stream URLs that reference this Frigate camera
-        const go2rtcPaths: string[] = [];
+        // Collect all URLs: ffmpeg inputs + go2rtc stream sources for this camera
+        const allUrls: string[] = inputs.map((i: { path: string }) => i.path.toLowerCase());
         for (const [streamName, streamSrc] of Object.entries(frigateGo2rtc)) {
           if (streamName.startsWith(`${fName}_`) || streamName === fName) {
             const srcStr = Array.isArray(streamSrc) ? streamSrc[0] : String(streamSrc ?? "");
-            if (srcStr) go2rtcPaths.push(srcStr.toLowerCase());
+            if (srcStr) allUrls.push(srcStr.toLowerCase());
           }
         }
-        const allUrls = [...allPaths, ...go2rtcPaths];
 
-        for (const nlCam of config.cameras) {
-          const sName = sanitizeCameraName(nlCam.name);
-
-          // 1. Exact camera name match
-          if (sName === fName) {
-            matchedCamera = { id: nlCam.id, name: nlCam.name, host: nlCam.host };
-            matchedByName = true;
-            break;
-          }
-
-          // 2. Any RTSP URL (camera inputs or go2rtc streams) contains the
-          //    nodelink stream name pattern: /{sName}_ or /{sName}/
-          const hasUrlMatch = allUrls.some(
-            (u: string) => u.includes(`/${sName}_`) || u.includes(`/${sName}/`),
-          );
-          if (hasUrlMatch) {
-            matchedCamera = { id: nlCam.id, name: nlCam.name, host: nlCam.host };
-            matchedByName = true;
-            break;
-          }
-
-          // 3. Any URL contains the camera's direct IP
-          const hasIpMatch = allUrls.some(
-            (u: string) => u.includes(`://${nlCam.host}:`) || u.includes(`://${nlCam.host}/`),
-          );
-          if (hasIpMatch) {
-            matchedCamera = { id: nlCam.id, name: nlCam.name, host: nlCam.host };
-            matchedByIp = true;
+        // Exact URL match against known nodelink RTSP URLs
+        let matchedCamera: { id: string; name: string; host: string } | undefined;
+        for (const url of allUrls) {
+          // Strip trailing slashes or query strings for comparison
+          const normalized = url.split("?")[0]!.replace(/\/+$/, "");
+          const found = nodelinkUrlToCam.get(normalized);
+          if (found) {
+            matchedCamera = found;
             break;
           }
         }
@@ -387,23 +463,12 @@ export const frigateRouter = router({
         results.push({
           frigateName: fName,
           frigateEnabled: cam?.enabled !== false,
-          frigateIps: ips,
           frigateInputs: inputs,
           matchedNodelinkCamera: matchedCamera,
-          matchedByName,
-          matchedByIp,
         });
       }
 
-      return {
-        cameras: results,
-        nodelinkCameras: config.cameras.map((c) => ({
-          id: c.id,
-          name: c.name,
-          host: c.host,
-          sanitizedName: sanitizeCameraName(c.name),
-        })),
-      };
+      return { cameras: results };
     }),
 
   /**
@@ -454,7 +519,7 @@ export const frigateRouter = router({
         "Preview Frigate config changes for selected cameras without saving",
     })
     .input(
-      FrigateConnectionInput.extend({
+      z.object({
         /** Camera IDs to include. */
         cameraIds: z.array(z.string()),
       }),
@@ -465,18 +530,6 @@ export const frigateRouter = router({
       const rtspServers = getAllRtspServersInfo();
       const go2rtcRtspPort = settings.go2rtc?.rtspPort ?? 18554;
       const serviceIp = settings.serviceIp || "localhost";
-      const useNodelink = settings.frigate?.streamMode !== "frigate";
-
-      // Current Frigate config (if reachable)
-      let existingCameras: string[] = [];
-      let existingGo2rtcStreams: Record<string, any> = {};
-      try {
-        const client = createClientFromInput(input);
-        existingCameras = await client.getCameraNames();
-        existingGo2rtcStreams = await client.getGo2rtcStreams();
-      } catch {
-        // Frigate not reachable — still generate the config
-      }
 
       const camerasToAdd: Array<{
         cameraId: string;
@@ -502,58 +555,65 @@ export const frigateRouter = router({
         const camera = config.cameras.find((c) => c.id === cameraId);
         if (!camera) continue;
 
-        const cameraRtsp = rtspServers.filter(
-          (s) => s.cameraId === cameraId && s.status === "running",
-        );
-        if (cameraRtsp.length === 0) continue;
-
         const frigateName = sanitizeCameraName(camera.name);
+        const channel = camera.rtspChannel ?? 0;
 
-        // Get codec/resolution from the camera API
-        let nativeStreamMeta: Array<{
-          profile: string;
-          resolution?: string;
-          codec?: string;
-          channel: number;
-        }> = [];
+        // Build streams from native video stream options (all available profiles)
+        // rather than only from currently-running RTSP servers.
+        // This way disconnected cameras still show all 3 streams (main/sub/ext).
+        let streams: StreamInput[] = [];
         try {
           const api = await getOrCreateApiConnection(cameraId);
-          const channel = camera.rtspChannel ?? 0;
           const isNvr = camera.isNvr || !!camera.nvrId;
           const streamOpts = await api.buildVideoStreamOptions({ channel, onNvr: isNvr });
-          nativeStreamMeta = streamOpts.nativeStreams.map((s: any) => ({
-            profile: s.profile,
-            resolution: s.metadata ? `${s.metadata.width}x${s.metadata.height}` : undefined,
-            codec: s.metadata?.videoEncType,
-            channel: s.channel ?? channel,
-          }));
+          streams = streamOpts.nativeStreams.map((s: any) => {
+            const profile: string = s.profile ?? "main";
+            const ch: number = s.channel ?? channel;
+            const go2rtcName = buildGo2rtcStreamName(camera.name, profile, ch);
+            return {
+              profile,
+              go2rtcName,
+              rtspUrl: `rtsp://${serviceIp}:${go2rtcRtspPort}/${go2rtcName}`,
+              resolution: s.metadata ? `${s.metadata.width}x${s.metadata.height}` : undefined,
+              codec: s.metadata?.videoEncType,
+            };
+          });
         } catch {
-          // Camera not connected or API error — continue without metadata
-        }
-
-        const streams: StreamInput[] = cameraRtsp.map((s) => {
-          const go2rtcName = buildGo2rtcStreamName(camera.name, s.profile, s.channel);
-          const meta = nativeStreamMeta.find(
-            (m) => m.profile === s.profile && m.channel === s.channel,
+          // Camera not reachable — fall back to running RTSP servers
+          const cameraRtsp = rtspServers.filter(
+            (s) => s.cameraId === cameraId && s.status === "running",
           );
-          return {
-            profile: s.profile,
-            go2rtcName,
-            rtspUrl: `rtsp://${serviceIp}:${go2rtcRtspPort}/${go2rtcName}`,
-            resolution: meta?.resolution,
-            codec: meta?.codec,
-          };
-        });
-
-        const block = buildFrigateCameraBlock(streams, useNodelink);
-
-        const go2rtcStreams: Record<string, string> = {};
-        if (!useNodelink) {
-          // Frigate restream mode: add streams to Frigate's own go2rtc
-          for (const s of streams) {
-            go2rtcStreams[s.go2rtcName] = s.rtspUrl;
+          if (cameraRtsp.length > 0) {
+            streams = cameraRtsp.map((s) => {
+              const go2rtcName = buildGo2rtcStreamName(camera.name, s.profile, s.channel);
+              return {
+                profile: s.profile,
+                go2rtcName,
+                rtspUrl: `rtsp://${serviceIp}:${go2rtcRtspPort}/${go2rtcName}`,
+                resolution: undefined,
+                codec: undefined,
+              };
+            });
+          } else {
+            // No running RTSP servers either — generate default stream entries
+            // so the camera can still be configured in Frigate
+            const defaultProfiles = ["main", "sub", "ext"];
+            streams = defaultProfiles.map((profile) => ({
+              profile,
+              go2rtcName: buildGo2rtcStreamName(camera.name, profile, channel),
+              rtspUrl: `rtsp://${serviceIp}:${go2rtcRtspPort}/${buildGo2rtcStreamName(camera.name, profile, channel)}`,
+              resolution: undefined,
+              codec: undefined,
+            }));
           }
         }
+
+        // Preview always uses direct RTSP (nodelink) as default.
+        // Per-camera _useFrigateGo2rtc override is applied client-side in rebuildYaml.
+        const block = buildFrigateCameraBlock(streams, true);
+
+        // go2rtc streams are populated client-side when _useFrigateGo2rtc is toggled
+        const go2rtcStreams: Record<string, string> = {};
 
         // Generate YAML preview using the yaml package
         const cameraYaml = YAML.stringify(
@@ -588,7 +648,7 @@ export const frigateRouter = router({
           cameraId,
           cameraName: camera.name,
           frigateName,
-          alreadyInFrigate: existingCameras.includes(frigateName),
+          alreadyInFrigate: false, // client checks this from cached frigateExistingCameras
           block,
           yaml: cameraYaml,
           go2rtcStreams,
@@ -599,9 +659,6 @@ export const frigateRouter = router({
 
       return {
         cameras: camerasToAdd,
-        existingCameras,
-        existingGo2rtcStreams,
-        streamMode: useNodelink ? "nodelink" : "frigate",
         presets: {
           inputArgs: FRIGATE_INPUT_PRESETS as unknown as string[],
           hwaccelArgs: FRIGATE_HWACCEL_PRESETS as unknown as string[],
@@ -620,32 +677,32 @@ export const frigateRouter = router({
     })
     .input(
       FrigateConnectionInput.extend({
-        /** Camera IDs to add/update. */
-        cameraIds: z.array(z.string()),
-        /** Frigate camera names to remove (cameras previously managed by us but now deselected). */
+        /** Camera blocks to merge into Frigate config, keyed by Frigate camera name.
+         *  Each value is the YAML text for that camera (parsed server-side). */
+        cameras: z.record(z.string(), z.string()),
+        /** go2rtc stream definitions to merge (for Frigate go2rtc restream mode). */
+        go2rtcStreams: z.record(z.string(), z.string()).default({}),
+        /** Frigate camera names to remove. */
         removeNames: z.array(z.string()).default([]),
         /** Whether to restart Frigate after saving. */
         restart: z.boolean().default(false),
       }),
     )
     .mutation(async ({ input }) => {
-      const settings = getSettings();
-      const config = getConfig();
-      const rtspServers = getAllRtspServersInfo();
-      const go2rtcRtspPort = settings.go2rtc?.rtspPort ?? 18554;
-      const serviceIp = settings.serviceIp || "localhost";
-      const useNodelink = settings.frigate?.streamMode !== "frigate";
-
       const client = createClientFromInput(input);
 
-      // Read current config as raw YAML, parse it, merge, serialize back.
+      // Read current config
       const rawYaml = await client.getRawConfig();
       const frigateConfig = YAML.parse(rawYaml) as Record<string, any>;
 
-      // Ensure sections exist
       if (!frigateConfig.cameras) frigateConfig.cameras = {};
       if (!frigateConfig.go2rtc) frigateConfig.go2rtc = {};
       if (!frigateConfig.go2rtc.streams) frigateConfig.go2rtc.streams = {};
+
+      // Backup before making changes
+      const addedOrUpdated = Object.keys(input.cameras);
+      const summary = buildChangeSummary(rawYaml, frigateConfig, input.removeNames, addedOrUpdated);
+      createBackup(rawYaml, summary);
 
       // Remove deselected cameras
       for (const name of input.removeNames) {
@@ -657,39 +714,18 @@ export const frigateRouter = router({
         }
       }
 
-      // Add/update selected cameras
-      for (const cameraId of input.cameraIds) {
-        const camera = config.cameras.find((c) => c.id === cameraId);
-        if (!camera) continue;
-
-        const cameraRtsp = rtspServers.filter(
-          (s) => s.cameraId === cameraId && s.status === "running",
-        );
-        if (cameraRtsp.length === 0) continue;
-
-        const frigateName = sanitizeCameraName(camera.name);
-
-        const streams = cameraRtsp.map((s) => {
-          const go2rtcName = buildGo2rtcStreamName(camera.name, s.profile, s.channel);
-          return {
-            profile: s.profile,
-            go2rtcName,
-            rtspUrl: `rtsp://${serviceIp}:${go2rtcRtspPort}/${go2rtcName}`,
-            resolution: undefined as string | undefined,
-          };
-        });
-
-        const block = buildFrigateCameraBlock(streams, useNodelink);
+      // Merge camera blocks from the client preview YAML
+      for (const [frigateName, yamlText] of Object.entries(input.cameras)) {
+        const parsed = YAML.parse(yamlText) as Record<string, any>;
+        const block = parsed[frigateName] ?? parsed;
         frigateConfig.cameras[frigateName] = block;
-
-        if (!useNodelink) {
-          for (const s of streams) {
-            frigateConfig.go2rtc.streams[s.go2rtcName] = s.rtspUrl;
-          }
-        }
       }
 
-      // Serialize back to YAML and save
+      // Merge go2rtc streams
+      for (const [streamName, streamUrl] of Object.entries(input.go2rtcStreams)) {
+        frigateConfig.go2rtc.streams[streamName] = streamUrl;
+      }
+
       const outputYaml = YAML.stringify(frigateConfig, {
         lineWidth: 0,
         defaultKeyType: "PLAIN",
@@ -706,5 +742,47 @@ export const frigateRouter = router({
     .mutation(async ({ input }) => {
       const client = createClientFromInput(input);
       return client.restart();
+    }),
+
+  // ── Backup management ────────────────────────────────────────────────
+
+  /** List available config backups (newest first). */
+  listBackups: publicProcedure
+    .meta({ description: "List Frigate config backups" })
+    .query(() => {
+      return loadBackupIndex().reverse();
+    }),
+
+  /** Rollback to a specific backup. */
+  rollback: publicProcedure
+    .meta({ description: "Rollback Frigate config to a backup" })
+    .input(
+      FrigateConnectionInput.extend({
+        backupId: z.string(),
+        restart: z.boolean().default(false),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const index = loadBackupIndex();
+      const entry = index.find((e) => e.id === input.backupId);
+      if (!entry) {
+        return { success: false, error: "Backup not found" };
+      }
+
+      const backupPath = path.join(BACKUP_DIR, entry.filename);
+      if (!fs.existsSync(backupPath)) {
+        return { success: false, error: "Backup file missing" };
+      }
+
+      const client = createClientFromInput(input);
+
+      // Backup the current config before rolling back
+      const currentYaml = await client.getRawConfig();
+      createBackup(currentYaml, `rollback to ${entry.id}`);
+
+      // Restore
+      const backupYaml = fs.readFileSync(backupPath, "utf-8");
+      const result = await client.saveRawConfig(backupYaml, input.restart);
+      return result;
     }),
 });

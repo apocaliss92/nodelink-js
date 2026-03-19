@@ -25,12 +25,14 @@ export function StreamCard({
   rtspProxyPort: _rtspProxyPort,
   rtspServers,
   go2rtcApiPort,
+  serviceIp,
   onOpenPreview,
 }: {
   camera: CameraInfo;
   stream: AvailableStream;
   rtspProxyPort: number | undefined;
   go2rtcApiPort?: number | null;
+  serviceIp?: string;
   rtspServers: Array<{
     cameraId: string;
     profile: StreamProfile;
@@ -50,8 +52,9 @@ export function StreamCard({
   );
 
   // Build go2rtc base URL from the port returned by the server (via go2rtc.status)
+  const go2rtcHost = serviceIp || window.location.hostname;
   const go2rtcBase = go2rtcApiPort
-    ? `${window.location.protocol}//${window.location.hostname}:${go2rtcApiPort}`
+    ? `${window.location.protocol}//${go2rtcHost}:${go2rtcApiPort}`
     : null;
   const src = encodeURIComponent(streamName);
   const hlsUrl = go2rtcBase ? `${go2rtcBase}/api/stream.m3u8?src=${src}` : "";

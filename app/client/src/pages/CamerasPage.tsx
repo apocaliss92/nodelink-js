@@ -20,6 +20,7 @@ export default function CamerasPage() {
     rtspServers,
     rtspProxyStatus,
     go2rtcApiPort,
+    serviceIp,
     go2rtcRunning,
     go2rtcToggling,
     streamsByCamera,
@@ -61,6 +62,7 @@ export default function CamerasPage() {
       savingAutoStart={savingAutoStart[c.id] ?? false}
       rtspProxyPort={rtspProxyStatus?.port}
       go2rtcApiPort={go2rtcApiPort}
+      serviceIp={serviceIp}
       rtspServers={rtspServers}
       onConnect={() => void connect(c.id)}
       onDisconnect={() => void disconnect(c.id)}
