@@ -375,7 +375,19 @@ jobs:
               --jq .body)
           fi
 
-          printf "%s\n\n" "$BASE_NOTES" > release_notes.md
+          # Read manual changelog from NEXT_RELEASE.md (strip HTML comments)
+          MANUAL_NOTES=""
+          if [ -f "NEXT_RELEASE.md" ]; then
+            MANUAL_NOTES=$(sed '/^<!--/,/^-->/d' NEXT_RELEASE.md | sed '/^$/N;/^\n$/d')
+          fi
+
+          # Build release notes: manual highlights first, then auto-generated commits
+          if [ -n "$MANUAL_NOTES" ]; then
+            printf "## Highlights\n\n%s\n\n" "$MANUAL_NOTES" > release_notes.md
+            printf "%s\n\n" "$BASE_NOTES" >> release_notes.md
+          else
+            printf "%s\n\n" "$BASE_NOTES" > release_notes.md
+          fi
 
           # Add installation section
           echo "## Installation" >> release_notes.md
@@ -419,3 +431,46 @@ jobs:
           gh release create "${TAG}" \
             --title "Release ${TAG}" \
             --notes-file release_notes.md
+
+      - name: Archive changelog
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.build-library.outputs.version }}"
+          TAG="${{ needs.build-library.outputs.tag }}"
+
+          # Read manual notes (strip HTML comments)
+          MANUAL_NOTES=""
+          if [ -f "NEXT_RELEASE.md" ]; then
+            MANUAL_NOTES=$(sed '/^<!--/,/^-->/d' NEXT_RELEASE.md | sed '/^$/N;/^\n$/d')
+          fi
+
+          if [ -z "$MANUAL_NOTES" ]; then
+            echo "No manual changelog to archive"
+            exit 0
+          fi
+
+          # Prepend to CHANGELOG.md
+          DATE=$(date +%Y-%m-%d)
+          ENTRY="## ${TAG} (${DATE})\n\n${MANUAL_NOTES}\n\n---\n"
+
+          if [ -f "CHANGELOG.md" ]; then
+            # Insert after the header line (line 4: after "---")
+            head -n 4 CHANGELOG.md > CHANGELOG_new.md
+            printf "\n${ENTRY}\n" >> CHANGELOG_new.md
+            tail -n +5 CHANGELOG.md >> CHANGELOG_new.md
+            mv CHANGELOG_new.md CHANGELOG.md
+          else
+            printf "# Changelog\n\n${ENTRY}" > CHANGELOG.md
+          fi
+
+          # Clear NEXT_RELEASE.md (keep the comment template)
+          printf '%s\n' '<!--' '  Write your changelog entries here before releasing.' '  This file is included in the GitHub release notes and then' '  moved to CHANGELOG.md automatically by the release workflow.' '' '  ### Features' '  - ...' '' '  ### Fixes' '  - ...' '-->' '' > NEXT_RELEASE.md
+
+          # Commit the changes
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md NEXT_RELEASE.md
+          git diff --cached --quiet || git commit -m "chore: archive ${TAG} changelog [skip ci]"
+          git push
