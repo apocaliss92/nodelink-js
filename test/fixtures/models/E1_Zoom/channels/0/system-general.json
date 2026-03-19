@@ -1,0 +1,27 @@
+{
+  "body": {
+    "SystemGeneral": {
+      "timeZone": -3600,
+      "osdFormat": "DMY",
+      "year": 2026,
+      "month": 3,
+      "day": 19,
+      "hour": 18,
+      "minute": 12,
+      "second": 33,
+      "deviceId": 0,
+      "timeFormat": 0,
+      "language": "English",
+      "deviceName": "Camera da letto",
+      "loginLock": 0,
+      "lockTime": 300,
+      "allowedTimes": 10,
+      "isDst": 0,
+      "@_version": 1.1
+    },
+    "Norm": {
+      "norm": "NTSC",
+      "@_version": 1.1
+    }
+  }
+}

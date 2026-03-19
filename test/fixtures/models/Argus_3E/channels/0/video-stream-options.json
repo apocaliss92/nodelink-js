@@ -1,0 +1,151 @@
+{
+  "nativeStreams": [
+    {
+      "name": "Native main",
+      "id": "channel_2_main",
+      "container": "rtp",
+      "channel": 2,
+      "profile": "main",
+      "streamName": "main",
+      "lens": "wide",
+      "url": "baichuan://192.168.1.161/channel/2/profile/main",
+      "urlWithAuth": "baichuan://admin:Ruocco123@192.168.1.161/channel/2/profile/main",
+      "metadata": {
+        "profile": "main",
+        "audio": 1,
+        "width": 2304,
+        "height": 1296,
+        "videoEncType": "H.265",
+        "videoEncTypeInt": 1,
+        "frameRate": 15,
+        "bitRate": 2048,
+        "audioCodec": "aac"
+      }
+    },
+    {
+      "name": "Native sub",
+      "id": "channel_2_sub",
+      "container": "rtp",
+      "channel": 2,
+      "profile": "sub",
+      "streamName": "sub",
+      "lens": "wide",
+      "url": "baichuan://192.168.1.161/channel/2/profile/sub",
+      "urlWithAuth": "baichuan://admin:Ruocco123@192.168.1.161/channel/2/profile/sub",
+      "metadata": {
+        "profile": "sub",
+        "audio": 1,
+        "width": 640,
+        "height": 360,
+        "videoEncType": "H.264",
+        "videoEncTypeInt": 0,
+        "frameRate": 15,
+        "bitRate": 192,
+        "audioCodec": "aac"
+      }
+    }
+  ],
+  "rtmpStreams": [
+    {
+      "name": "RTMP main",
+      "id": "main.bcs",
+      "container": "rtmp",
+      "channel": 2,
+      "profile": "main",
+      "streamName": "main",
+      "lens": "wide",
+      "url": "rtmp://192.168.1.161:1935/bcs/channel2_main.bcs?channel=2&stream=0",
+      "urlWithAuth": "rtmp://192.168.1.161:1935/bcs/channel2_main.bcs?channel=2&stream=0&user=admin&password=Ruocco123",
+      "path": "/bcs/channel2_main.bcs",
+      "port": 1935,
+      "streamType": 0,
+      "metadata": {
+        "profile": "main",
+        "audio": 1,
+        "width": 2304,
+        "height": 1296,
+        "videoEncType": "H.265",
+        "videoEncTypeInt": 1,
+        "frameRate": 15,
+        "bitRate": 2048,
+        "audioCodec": "aac"
+      }
+    },
+    {
+      "name": "RTMP sub",
+      "id": "sub.bcs",
+      "container": "rtmp",
+      "channel": 2,
+      "profile": "sub",
+      "streamName": "sub",
+      "lens": "wide",
+      "url": "rtmp://192.168.1.161:1935/bcs/channel2_sub.bcs?channel=2&stream=1",
+      "urlWithAuth": "rtmp://192.168.1.161:1935/bcs/channel2_sub.bcs?channel=2&stream=1&user=admin&password=Ruocco123",
+      "path": "/bcs/channel2_sub.bcs",
+      "port": 1935,
+      "streamType": 1,
+      "metadata": {
+        "profile": "sub",
+        "audio": 1,
+        "width": 640,
+        "height": 360,
+        "videoEncType": "H.264",
+        "videoEncTypeInt": 0,
+        "frameRate": 15,
+        "bitRate": 192,
+        "audioCodec": "aac"
+      }
+    }
+  ],
+  "rtspStreams": [
+    {
+      "name": "RTSP main",
+      "id": "h265Preview_03_main",
+      "container": "rtsp",
+      "channel": 2,
+      "profile": "main",
+      "streamName": "main",
+      "lens": "wide",
+      "url": "rtsp://192.168.1.161:554/h265Preview_03_main",
+      "urlWithAuth": "rtsp://admin:Ruocco123@192.168.1.161:554/h265Preview_03_main",
+      "path": "/h265Preview_03_main",
+      "port": 554,
+      "metadata": {
+        "profile": "main",
+        "audio": 1,
+        "width": 2304,
+        "height": 1296,
+        "videoEncType": "H.265",
+        "videoEncTypeInt": 1,
+        "frameRate": 15,
+        "bitRate": 2048,
+        "audioCodec": "aac"
+      }
+    },
+    {
+      "name": "RTSP sub",
+      "id": "h264Preview_03_sub",
+      "container": "rtsp",
+      "channel": 2,
+      "profile": "sub",
+      "streamName": "sub",
+      "lens": "wide",
+      "url": "rtsp://192.168.1.161:554/h264Preview_03_sub",
+      "urlWithAuth": "rtsp://admin:Ruocco123@192.168.1.161:554/h264Preview_03_sub",
+      "path": "/h264Preview_03_sub",
+      "port": 554,
+      "metadata": {
+        "profile": "sub",
+        "audio": 1,
+        "width": 640,
+        "height": 360,
+        "videoEncType": "H.264",
+        "videoEncTypeInt": 0,
+        "frameRate": 15,
+        "bitRate": 192,
+        "audioCodec": "aac"
+      }
+    }
+  ],
+  "rawEncXml": "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<body>\n<Compression version=\"1.1\">\n<channelId>2</channelId>\n<separateCfg>\n<encodeCfg>0</encodeCfg>\n</separateCfg>\n<isNoTranslateFrame>1</isNoTranslateFrame>\n<mainStream>\n<audio>1</audio>\n<resolutionName>2304*1296</resolutionName>\n<width>2304</width>\n<height>1296</height>\n<encoderType>vbr</encoderType>\n<frame>15</frame>\n<bitRate>2048</bitRate>\n<encoderProfile>high</encoderProfile>\n<videoEncType>1</videoEncType>\n<gop>\n<cur>0</cur>\n<max>0</max>\n<min>0</min>\n</gop>\n</mainStream>\n<subStream>\n<audio>1</audio>\n<resolutionName>640*360</resolutionName>\n<width>640</width>\n<height>360</height>\n<encoderType>vbr</encoderType>\n<frame>15</frame>\n<bitRate>192</bitRate>\n<encoderProfile>high</encoderProfile>\n<videoEncType>0</videoEncType>\n<gop>\n<cur>0</cur>\n<max>0</max>\n<min>0</min>\n</gop>\n</subStream>\n<thirdStream>\n<audio>1</audio>\n<resolutionName>0*0</resolutionName>\n<width>0</width>\n<height>0</height>\n<encoderType>vbr</encoderType>\n<frame>0</frame>\n<bitRate>0</bitRate>\n<encoderProfile>default</encoderProfile>\n<videoEncType>0</videoEncType>\n<gop>\n<cur>0</cur>\n<max>0</max>\n<min>0</min>\n</gop>\n</thirdStream>\n</Compression>\n</body>\n"
+}

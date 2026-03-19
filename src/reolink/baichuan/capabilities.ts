@@ -379,3 +379,27 @@ export function computeDeviceCapabilities(params: {
   if (ptzMode !== undefined) result.ptzMode = ptzMode;
   return result;
 }
+
+/**
+ * Determine whether a cmd 289 (GetWhiteLed) XML response indicates
+ * controllable floodlight/spotlight hardware.
+ *
+ * `<FloodlightTask>`, `<FloodlightManual>`, and `<FloodlightStatusList>` are
+ * conclusive.  `<WhiteLed>` is ambiguous — doorbells (e.g. D340W) return it
+ * for their status-indicator LED which is NOT a floodlight.  Only treat
+ * `<WhiteLed>` as floodlight when brightness or scheduling controls are
+ * present (`brightness_cur`, `bright`, `LightingSchedule`).
+ */
+export function xmlIndicatesFloodlight(xml: string): boolean {
+  if (
+    /(<FloodlightTask\b|<FloodlightManual\b|<FloodlightStatusList\b)/i.test(
+      xml,
+    )
+  ) {
+    return true;
+  }
+  if (/<WhiteLed\b/i.test(xml)) {
+    return /(<brightness_cur>|<bright>|<LightingSchedule\b)/i.test(xml);
+  }
+  return false;
+}

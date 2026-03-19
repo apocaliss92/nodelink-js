@@ -1,0 +1,12 @@
+{
+  "collectedAt": "2026-03-19T00:00:00.000Z",
+  "model": "Reolink Video Doorbell WiFi",
+  "itemNo": "D340W",
+  "firmwareVersion": "v3.0.0.4662_2508071282",
+  "channel": 0,
+  "total": 3,
+  "ok": 3,
+  "failed": 0,
+  "errors": [],
+  "note": "Manually created from user log — D340W has no floodlight but returns bare <WhiteLed> for its status indicator LED"
+}

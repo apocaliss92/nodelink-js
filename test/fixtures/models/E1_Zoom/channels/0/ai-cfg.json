@@ -1,0 +1,26 @@
+{
+  "body": {
+    "AiCfg": {
+      "channelId": 0,
+      "smartTrack": 0,
+      "smartTrackMode": 1,
+      "smartTrackModeAbility": 1,
+      "detectType": "people,dog_cat",
+      "smartTrackType": "people",
+      "smartTrackPt": 1,
+      "smartTrackObjectStopDelay": 20,
+      "smartTrackObjectDisappearDelay": 10,
+      "cryDetectLevel": 3,
+      "cryDetectAbility": 1,
+      "trackPriorities": {
+        "item": [
+          "people",
+          "vehicle",
+          "animal",
+          "face"
+        ]
+      },
+      "@_version": 1.1
+    }
+  }
+}

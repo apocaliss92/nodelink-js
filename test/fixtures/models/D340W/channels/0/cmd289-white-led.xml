@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<WhiteLed version="1.1">
+<channel>0</channel>
+<state>1</state>
+<enable>1</enable>
+</WhiteLed>
+</body>

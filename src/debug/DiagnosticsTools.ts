@@ -24,6 +24,7 @@ import type { Logger } from "./DebugConfig";
 import {
   BC_CLASS_MODERN_24,
   BC_CLASS_MODERN_24_ALT,
+  BC_CMD_ID_GET_WHITE_LED,
   BC_CMD_ID_VIDEO,
 } from "../protocol/constants";
 import type { BaichuanFrame } from "../protocol/framing";
@@ -67,6 +68,11 @@ function mkdirp(dir: string): void {
 function writeJson(filePath: string, obj: unknown): void {
   mkdirp(path.dirname(filePath));
   fs.writeFileSync(filePath, JSON.stringify(obj, null, 2));
+}
+
+function writeText(filePath: string, text: string): void {
+  mkdirp(path.dirname(filePath));
+  fs.writeFileSync(filePath, text);
 }
 
 function appendNdjson(filePath: string, obj: unknown): void {
@@ -3090,4 +3096,213 @@ export async function runAllDiagnosticsConsecutively(
     diagnosticsPath: diagnosticsRes.diagnosticsPath,
     streamsDir,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Model Fixture Capture — dump all API responses for a device/channel
+// ---------------------------------------------------------------------------
+
+export interface ModelFixtureCaptureResult {
+  /** Per-call results: command name → ok/error */
+  calls: Record<string, { ok: true; value?: unknown } | { ok: false; error: string }>;
+  /** Output directory where fixtures were written */
+  outDir: string;
+  /** Summary counters */
+  summary: { total: number; ok: number; failed: number; errors: string[] };
+}
+
+/**
+ * Capture all relevant API responses from a single device (or NVR channel)
+ * and write them as JSON/XML fixtures into `outDir`.
+ *
+ * This is the library-level building block used by both:
+ *   - `test/capture-model-fixtures.ts` (CLI)
+ *   - the Scrypted plugin's "Dump Model Fixtures" setting action
+ *
+ * For NVR/Hub devices, call once per active channel.
+ */
+export async function captureModelFixtures(params: {
+  api: ReolinkBaichuanApi;
+  channel: number;
+  outDir: string;
+  /** Logger (defaults to console) */
+  log?: (...args: unknown[]) => void;
+}): Promise<ModelFixtureCaptureResult> {
+  const { api, channel, outDir } = params;
+  const log = params.log ?? console.log;
+
+  mkdirp(outDir);
+
+  const calls: ModelFixtureCaptureResult["calls"] = {};
+  const errors: string[] = [];
+
+  async function capture<T>(
+    name: string,
+    fn: () => Promise<T>,
+    writer?: (value: T) => void,
+  ): Promise<T | undefined> {
+    try {
+      const value = await fn();
+      calls[name] = { ok: true, value };
+      if (writer && value !== undefined && value !== null) {
+        writer(value);
+      }
+      log(`  ✓ ${name}`);
+      return value;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      calls[name] = { ok: false, error: msg };
+      errors.push(`${name}: ${msg}`);
+      log(`  ✗ ${name}: ${msg}`);
+      return undefined;
+    }
+  }
+
+  // ── Device Info ──────────────────────────────────────────────────────────
+  const info = await capture("getInfo", () => api.getInfo(channel), (v) =>
+    writeJson(path.join(outDir, "device-info.json"), v),
+  );
+
+  // ── Support Info ─────────────────────────────────────────────────────────
+  const support = await capture("getSupportInfo", () => api.getSupportInfo(), (v) =>
+    writeJson(path.join(outDir, "support-info.json"), v),
+  );
+
+  // ── Ability Info ─────────────────────────────────────────────────────────
+  const abilities = await capture("getAbilityInfo", () => api.getAbilityInfo(), (v) =>
+    writeJson(path.join(outDir, "ability-info.json"), v),
+  );
+
+  // ── Device Capabilities (full, with probe) ───────────────────────────────
+  await capture("getDeviceCapabilities", () => api.getDeviceCapabilities(channel), (v) =>
+    writeJson(path.join(outDir, "capabilities.json"), v),
+  );
+
+  // ── cmd 289 — White LED / Floodlight (raw XML) ──────────────────────────
+  await capture("cmd289-WhiteLed", () => api.sendXml({
+    cmdId: BC_CMD_ID_GET_WHITE_LED,
+    channel,
+    timeoutMs: 3000,
+  }), (v) => writeText(path.join(outDir, "cmd289-white-led.xml"), v as string));
+
+  // ── Stream Metadata (encoding info) ──────────────────────────────────────
+  await capture("getStreamMetadata", () => api.getStreamMetadata(channel), (v) =>
+    writeJson(path.join(outDir, "stream-metadata.json"), v),
+  );
+
+  // ── Encoding Config (raw XML) ────────────────────────────────────────────
+  await capture("getEncXml", () => api.getEncXml(channel), (v) =>
+    writeText(path.join(outDir, "enc-config.xml"), v as string),
+  );
+
+  // ── Ports ────────────────────────────────────────────────────────────────
+  await capture("getPorts", () => api.getPorts(), (v) =>
+    writeJson(path.join(outDir, "ports.json"), v),
+  );
+
+  // ── Talk Ability (intercom) ──────────────────────────────────────────────
+  await capture("getTalkAbility", () => api.getTalkAbility(channel), (v) =>
+    writeJson(path.join(outDir, "talk-ability.json"), v),
+  );
+
+  // ── Two-Way Audio Config ─────────────────────────────────────────────────
+  await capture("getTwoWayAudioConfig", () => api.getTwoWayAudioConfig(channel), (v) =>
+    writeJson(path.join(outDir, "two-way-audio-config.json"), v),
+  );
+
+  // ── AI State ─────────────────────────────────────────────────────────────
+  await capture("getAiState", () => api.getAiState(channel), (v) =>
+    writeJson(path.join(outDir, "ai-state.json"), v),
+  );
+
+  // ── AI Config (autotracking) ─────────────────────────────────────────────
+  await capture("getAiCfg", () => api.getAiCfg(channel), (v) =>
+    writeJson(path.join(outDir, "ai-cfg.json"), v),
+  );
+
+  // ── OSD ──────────────────────────────────────────────────────────────────
+  await capture("getOsd", () => api.getOsd(channel), (v) =>
+    writeJson(path.join(outDir, "osd.json"), v),
+  );
+
+  // ── Motion Alarm ─────────────────────────────────────────────────────────
+  await capture("getMotionAlarm", () => api.getMotionAlarm(channel), (v) =>
+    writeJson(path.join(outDir, "motion-alarm.json"), v),
+  );
+
+  // ── Record Config ────────────────────────────────────────────────────────
+  await capture("getRecordCfg", () => api.getRecordCfg(channel), (v) =>
+    writeJson(path.join(outDir, "record-cfg.json"), v),
+  );
+
+  // ── Video Input (image settings) ─────────────────────────────────────────
+  await capture("getVideoInput", () => api.getVideoInput(channel), (v) =>
+    writeJson(path.join(outDir, "video-input.json"), v),
+  );
+
+  // ── PTZ Presets ──────────────────────────────────────────────────────────
+  await capture("getPtzPresets", () => api.getPtzPresets(channel), (v) =>
+    writeJson(path.join(outDir, "ptz-presets.json"), v),
+  );
+
+  // ── Network Info ─────────────────────────────────────────────────────────
+  await capture("getNetworkInfo", () => api.getNetworkInfo(), (v) =>
+    writeJson(path.join(outDir, "network-info.json"), v),
+  );
+
+  // ── System General ───────────────────────────────────────────────────────
+  await capture("getSystemGeneral", () => api.getSystemGeneral(), (v) =>
+    writeJson(path.join(outDir, "system-general.json"), v),
+  );
+
+  // ── WiFi Signal ──────────────────────────────────────────────────────────
+  await capture("getWifiSignal", () => api.getWifiSignal(channel), (v) =>
+    writeJson(path.join(outDir, "wifi-signal.json"), v),
+  );
+
+  // ── White LED State (parsed) ─────────────────────────────────────────────
+  await capture("getWhiteLedState", () => api.getWhiteLedState(channel), (v) =>
+    writeJson(path.join(outDir, "white-led-state.json"), v),
+  );
+
+  // ── Floodlight-on-motion ─────────────────────────────────────────────────
+  await capture("getFloodlightOnMotion", () => api.getFloodlightOnMotion(channel), (v) =>
+    writeJson(path.join(outDir, "floodlight-on-motion.json"), v),
+  );
+
+  // ── Video Stream Options ─────────────────────────────────────────────────
+  await capture("buildVideoStreamOptions", () => api.buildVideoStreamOptions({ channel }), (v) =>
+    writeJson(path.join(outDir, "video-stream-options.json"), v),
+  );
+
+  // ── Summary ──────────────────────────────────────────────────────────────
+  const total = Object.keys(calls).length;
+  const ok = Object.values(calls).filter((c) => c.ok).length;
+  const failed = total - ok;
+
+  const summary = { total, ok, failed, errors };
+  writeJson(path.join(outDir, "_summary.json"), {
+    collectedAt: new Date().toISOString(),
+    model: info?.type ?? "unknown",
+    itemNo: (info as any)?.itemNo ?? "unknown",
+    firmwareVersion: info?.firmwareVersion ?? "unknown",
+    channel,
+    ...summary,
+    calls: Object.fromEntries(
+      Object.entries(calls).map(([k, v]) => [
+        k,
+        v.ok ? "ok" : `FAILED: ${(v as any).error}`,
+      ]),
+    ),
+  });
+
+  log(`\n  Summary: ${ok}/${total} ok, ${failed} failed`);
+  if (errors.length) {
+    log(`  Errors:`);
+    for (const err of errors) {
+      log(`    - ${err}`);
+    }
+  }
+
+  return { calls, outDir, summary };
 }

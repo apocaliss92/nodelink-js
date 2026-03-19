@@ -248,7 +248,7 @@ import {
 } from "../cgi/ReolinkCgiApi";
 import { ReolinkHttpClient } from "../http/ReolinkHttpClient";
 import type { ReolinkDeviceInfo, ReolinkDeviceInfoTag } from "../types";
-import { computeDeviceCapabilities, getSupportItemForChannel, parseSupportXml } from "./capabilities";
+import { computeDeviceCapabilities, getSupportItemForChannel, parseSupportXml, xmlIndicatesFloodlight } from "./capabilities";
 import { parseAbilityInfoXml } from "./utils/abilityInfo";
 import { getAiStateViaGetAiAlarm } from "./utils/aiState";
 import { parseChannelInfoPushBlocks } from "./utils/channelInfoPush";
@@ -10350,9 +10350,7 @@ export class ReolinkBaichuanApi {
         `probeFloodlightSupportByCmd289: received XML for channel ${ch}:\n${xml}`,
       );
 
-      return /(<FloodlightTask\b|<FloodlightManual\b|<FloodlightStatusList\b|<WhiteLed\b)/i.test(
-        xml,
-      );
+      return xmlIndicatesFloodlight(xml);
     } catch {
       return false;
     }
