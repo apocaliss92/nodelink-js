@@ -782,9 +782,9 @@ export async function enableNvrCamera(cameraId: string): Promise<void> {
   const settings = getSettings();
   const go2rtcMgr = getGo2rtcManager();
   if (settings.go2rtc?.enabled && go2rtcMgr?.isRunning) {
-    // Start all stream profiles for the camera
     const channel = camera.rtspChannel ?? 0;
-    for (const profile of ["main", "sub", "ext"] as const) {
+    const profiles = await getAvailableProfiles(cameraId);
+    for (const profile of profiles) {
       const sk = getRtspServerKey(cameraId, profile, channel);
       if (rtspServers.get(sk)?.info.status === "running") continue;
       startRtspServer(cameraId, { profile, channel }).catch(() => {});
@@ -837,6 +837,34 @@ export async function disconnectNvr(nvrId: string): Promise<void> {
     apiConnections.delete(connKey);
     await cleanupManagedConnection(connKey, conn);
     notifyDisconnection(connKey);
+  }
+}
+
+/**
+ * Query the camera API for available stream profiles (main, sub, ext).
+ * Returns only the profiles the camera actually supports.
+ * Falls back to ["main", "sub"] if the camera is unreachable.
+ */
+async function getAvailableProfiles(
+  cameraId: string,
+): Promise<Array<"main" | "sub" | "ext">> {
+  try {
+    const config = getConfig();
+    const camera = config.cameras.find((c) => c.id === cameraId);
+    if (!camera) return ["main", "sub"];
+
+    const api = await getOrCreateApiConnection(cameraId);
+    const channel = camera.rtspChannel ?? 0;
+    const isNvr = camera.isNvr || !!camera.nvrId;
+    const opts = await api.buildVideoStreamOptions({ channel, onNvr: isNvr });
+    const profiles = opts.nativeStreams
+      .map((s: any) => s.profile as string)
+      .filter((p: string): p is "main" | "sub" | "ext" =>
+        p === "main" || p === "sub" || p === "ext",
+      );
+    return profiles.length > 0 ? [...new Set(profiles)] : ["main", "sub"];
+  } catch {
+    return ["main", "sub"];
   }
 }
 
@@ -1234,19 +1262,16 @@ export async function autoStartRtspServers() {
 
     if (camera.autoStart !== true) continue;
 
-    // When autoStart is enabled, start ALL available streams for the camera
-    // (main, sub, ext). The per-stream "enabled" flag from old settings is ignored.
     const channel = camera.rtspChannel ?? 0;
-    const profilesToStart: Array<"main" | "sub" | "ext"> = ["main", "sub", "ext"];
-
-    for (const profile of profilesToStart) {
+    const profiles = await getAvailableProfiles(camera.id);
+    for (const profile of profiles) {
       try {
         logger.info(
           `Auto-starting stream ${profile}/ch${channel} for camera: ${camera.name}`,
         );
         await startRtspServer(camera.id, { profile, channel });
       } catch (error) {
-        logger.error(
+        logger.warn(
           `Failed to auto-start ${profile} for ${camera.name}: ${error}`,
         );
       }
@@ -1385,11 +1410,9 @@ export function enableGo2rtcAutoStreams(): void {
       return;
     }
 
-    // Start all stream profiles for the camera
     const channel = camera.rtspChannel ?? 0;
-    const profilesToStart: Array<"main" | "sub" | "ext"> = ["main", "sub", "ext"];
-
-    for (const profile of profilesToStart) {
+    const profiles = await getAvailableProfiles(cameraId);
+    for (const profile of profiles) {
       const sk = getRtspServerKey(cameraId, profile, channel);
       if (rtspServers.get(sk)?.info.status === "running") continue;
 
@@ -1397,7 +1420,7 @@ export function enableGo2rtcAutoStreams(): void {
       try {
         await startRtspServer(cameraId, { profile, channel });
       } catch (e) {
-        logger.error(`Failed to start ${profile} for ${camera.name}: ${e}`);
+        logger.warn(`Failed to start ${profile} for ${camera.name}: ${e}`);
       }
     }
   });

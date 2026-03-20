@@ -2413,25 +2413,29 @@ export class BaichuanRtspServer extends EventEmitter<{
           // The next frame will re-anchor the base from the current timestamp.
         }
 
-        // Release the dedicated session from the ended stream to prevent session leaks.
-        // Without this, each restart acquires a new session (incrementing refCount)
-        // while the old session is never released, eventually exhausting camera sessions.
-        if (this.dedicatedSessionRelease) {
-          const release = this.dedicatedSessionRelease;
-          this.dedicatedSessionRelease = undefined;
-          release().catch(() => { /* ignore */ });
-        }
-
         this.logger.info(
           `[rebroadcast] native stream ended (camera sleeping or connection lost)  profile=${this.profile} channel=${this.channel} clients=${this.connectedClients.size}`,
         );
-        if (this.connectedClients.size > 0) {
-          this.logger.info(
-            `[rebroadcast] restarting native stream for ${this.connectedClients.size} active client(s)`,
-          );
-          // Defer to avoid re-entering while the fanout finally-block is still executing.
-          setImmediate(() => void this.startNativeStream());
-        }
+
+        // Release the dedicated session BEFORE restarting to prevent session leaks.
+        // Without awaiting release, the new session would be created while the old one
+        // is still active on the camera, causing response_code 430 (too many streams).
+        const releaseAndRestart = async () => {
+          if (this.dedicatedSessionRelease) {
+            const release = this.dedicatedSessionRelease;
+            this.dedicatedSessionRelease = undefined;
+            try { await release(); } catch { /* ignore */ }
+          }
+          if (this.connectedClients.size > 0) {
+            this.logger.info(
+              `[rebroadcast] restarting native stream for ${this.connectedClients.size} active client(s)`,
+            );
+            // Small delay to let the camera fully close the old stream.
+            await new Promise((r) => setTimeout(r, 500));
+            void this.startNativeStream();
+          }
+        };
+        void releaseAndRestart();
       },
     });
     this.nativeFanout.start();
