@@ -3,6 +3,86 @@ import { fetchUpdates, trpcMutation, trpcQuery, type UpdateInfo } from "../api";
 import { useAuth } from "../auth";
 import { getStoredAuthToken, setStoredAuthToken } from "../authToken";
 
+/** Build Frigate camera YAML from streamInfo + feature options. */
+function buildFrigateYaml(
+  streams: any[],
+  frigateName: string,
+  opts: {
+    useFrigateGo2rtc: boolean;
+    recordEnabled: boolean;
+    detectEnabled: boolean;
+    snapshotsEnabled: boolean;
+    audioEnabled: boolean;
+  },
+): string {
+  const inputs: any[] = [];
+  const go2rtcStreamsBlock: string[] = [];
+  for (const s of streams) {
+    if (!s.roles?.length) continue;
+    const streamPath = opts.useFrigateGo2rtc
+      ? `rtsp://127.0.0.1:8554/${s.go2rtcName}`
+      : s.rtspUrl;
+    const inp: any = { path: streamPath, roles: s.roles };
+    const inputArgs = s._inputArgs ?? "preset-rtsp-restream";
+    if (inputArgs) inp.input_args = inputArgs;
+    const hwaccel = s._hwaccelArgs ?? "";
+    if (hwaccel) inp.hwaccel_args = hwaccel;
+    inputs.push(inp);
+    if (opts.useFrigateGo2rtc) {
+      go2rtcStreamsBlock.push(`    ${s.go2rtcName}: "${s.rtspUrl}"`);
+    }
+  }
+  const cam: any = { enabled: true, ffmpeg: { inputs } };
+  cam.detect = { enabled: opts.detectEnabled };
+  cam.record = { enabled: opts.recordEnabled };
+  cam.snapshots = { enabled: opts.snapshotsEnabled };
+  cam.audio = { enabled: opts.audioEnabled };
+
+  const yamlLines: string[] = [];
+  const write = (obj: any, indent: number) => {
+    const pad = "  ".repeat(indent);
+    if (Array.isArray(obj)) {
+      for (const item of obj) {
+        if (typeof item === "object" && item !== null) {
+          const entries = Object.entries(item);
+          yamlLines.push(`${pad}- ${entries[0]![0]}: ${JSON.stringify(entries[0]![1])}`);
+          for (let i = 1; i < entries.length; i++) {
+            const [k, v] = entries[i]!;
+            if (Array.isArray(v)) {
+              yamlLines.push(`${pad}  ${k}:`);
+              for (const vi of v) yamlLines.push(`${pad}    - ${vi}`);
+            } else {
+              yamlLines.push(`${pad}  ${k}: ${typeof v === "string" && /[:#]/.test(v) ? JSON.stringify(v) : v}`);
+            }
+          }
+        } else {
+          yamlLines.push(`${pad}- ${item}`);
+        }
+      }
+    } else if (typeof obj === "object" && obj !== null) {
+      for (const [k, v] of Object.entries(obj)) {
+        if (v === undefined || v === null) continue;
+        if (typeof v === "object") {
+          yamlLines.push(`${pad}${k}:`);
+          write(v, indent + 1);
+        } else {
+          yamlLines.push(`${pad}${k}: ${v}`);
+        }
+      }
+    }
+  };
+  if (go2rtcStreamsBlock.length > 0) {
+    yamlLines.push("# go2rtc streams (add to go2rtc section)");
+    yamlLines.push("go2rtc:");
+    yamlLines.push("  streams:");
+    for (const line of go2rtcStreamsBlock) yamlLines.push(line);
+    yamlLines.push("");
+  }
+  yamlLines.push(`${frigateName}:`);
+  write(cam, 1);
+  return yamlLines.join("\n");
+}
+
 type Settings = {
   logLevel: "error" | "warn" | "info" | "debug";
   logRetentionDays: number;
@@ -1478,6 +1558,19 @@ export default function SettingsPage() {
                           }
                         }
                       }
+
+                      // Rebuild YAML with enriched data (hwaccel, inputArgs, defaults)
+                      for (const cam of res.cameras as any[]) {
+                        if (cam._manualEdit) continue;
+                        const si = cam.streamInfo ?? [];
+                        cam.yaml = buildFrigateYaml(si, cam.frigateName, {
+                          useFrigateGo2rtc: cam._useFrigateGo2rtc === true,
+                          recordEnabled: cam._recordEnabled !== false,
+                          detectEnabled: cam._detectEnabled !== false,
+                          snapshotsEnabled: cam._snapshotsEnabled !== false,
+                          audioEnabled: cam._audioEnabled !== false,
+                        });
+                      }
                     }
                     setFrigatePreview(res);
                   } catch {
@@ -1833,88 +1926,7 @@ export default function SettingsPage() {
                               const isManualEdit = c._manualEdit === true;
                               const streamInfoList: any[] = c.streamInfo ?? c.streams ?? [];
 
-                              /** Rebuild YAML from current streamInfo + options */
-                              const rebuildYaml = (
-                                streams: any[],
-                                frigateName: string,
-                                opts: {
-                                  useFrigateGo2rtc: boolean;
-                                  recordEnabled: boolean;
-                                  detectEnabled: boolean;
-                                  snapshotsEnabled: boolean;
-                                  audioEnabled: boolean;
-                                },
-                              ): string => {
-                                const inputs: any[] = [];
-                                const go2rtcStreamsBlock: string[] = [];
-                                for (const s of streams) {
-                                  if (!s.roles?.length) continue;
-                                  // useFrigateGo2rtc → Frigate's own go2rtc loopback (always 127.0.0.1:8554 inside Frigate container)
-                                  // otherwise → nodelink's RTSP URL (serviceIp:go2rtcRtspPort)
-                                  const streamPath = opts.useFrigateGo2rtc
-                                    ? `rtsp://127.0.0.1:8554/${s.go2rtcName}`
-                                    : s.rtspUrl;
-                                  const inp: any = { path: streamPath, roles: s.roles };
-                                  const inputArgs = s._inputArgs ?? "preset-rtsp-restream";
-                                  if (inputArgs) inp.input_args = inputArgs;
-                                  const hwaccel = s._hwaccelArgs ?? "";
-                                  if (hwaccel) inp.hwaccel_args = hwaccel;
-                                  inputs.push(inp);
-                                  if (opts.useFrigateGo2rtc) {
-                                    go2rtcStreamsBlock.push(`    ${s.go2rtcName}: "${s.rtspUrl}"`);
-                                  }
-                                }
-                                const cam: any = { enabled: true, ffmpeg: { inputs } };
-                                cam.detect = { enabled: opts.detectEnabled };
-                                cam.record = { enabled: opts.recordEnabled };
-                                cam.snapshots = { enabled: opts.snapshotsEnabled };
-                                cam.audio = { enabled: opts.audioEnabled };
-                                // Simple YAML serializer for the camera block
-                                const yamlLines: string[] = [];
-                                const write = (obj: any, indent: number) => {
-                                  const pad = "  ".repeat(indent);
-                                  if (Array.isArray(obj)) {
-                                    for (const item of obj) {
-                                      if (typeof item === "object" && item !== null) {
-                                        const entries = Object.entries(item);
-                                        yamlLines.push(`${pad}- ${entries[0]![0]}: ${JSON.stringify(entries[0]![1])}`);
-                                        for (let i = 1; i < entries.length; i++) {
-                                          const [k, v] = entries[i]!;
-                                          if (Array.isArray(v)) {
-                                            yamlLines.push(`${pad}  ${k}:`);
-                                            for (const vi of v) yamlLines.push(`${pad}    - ${vi}`);
-                                          } else {
-                                            yamlLines.push(`${pad}  ${k}: ${typeof v === "string" && /[:#]/.test(v) ? JSON.stringify(v) : v}`);
-                                          }
-                                        }
-                                      } else {
-                                        yamlLines.push(`${pad}- ${item}`);
-                                      }
-                                    }
-                                  } else if (typeof obj === "object" && obj !== null) {
-                                    for (const [k, v] of Object.entries(obj)) {
-                                      if (v === undefined || v === null) continue;
-                                      if (typeof v === "object") {
-                                        yamlLines.push(`${pad}${k}:`);
-                                        write(v, indent + 1);
-                                      } else {
-                                        yamlLines.push(`${pad}${k}: ${v}`);
-                                      }
-                                    }
-                                  }
-                                };
-                                // go2rtc streams section if using Frigate restream
-                                if (go2rtcStreamsBlock.length > 0) {
-                                  yamlLines.push("# go2rtc streams (add to go2rtc section)");
-                                  yamlLines.push("go2rtc:");
-                                  yamlLines.push("  streams:");
-                                  for (const line of go2rtcStreamsBlock) yamlLines.push(line);
-                                  yamlLines.push("");
-                                }
-                                yamlLines.push(`${frigateName}:`);
-                                write(cam, 1);
-                                return yamlLines.join("\n");
-                              };
+                              const rebuildYaml = buildFrigateYaml;
 
                               const updateCam = (patch: any) => {
                                 const updated = [...frigatePreview.cameras];

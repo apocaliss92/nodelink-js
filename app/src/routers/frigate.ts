@@ -196,12 +196,15 @@ function buildFrigateCameraBlock(
     inputs.push(buildInput(sorted[0], ["record", "audio"]));
   }
 
+  // Prefer sub for detect (lower res, better for object detection performance)
   const detectStream =
+    streams.find((s) => s.profile === "sub") ??
     sorted.find((s) => {
       if (s.profile === "main") return false;
       const r = parseResolution(s.resolution);
       return r ? r.height <= 720 : true;
-    }) ?? sorted[sorted.length - 1];
+    }) ??
+    sorted[sorted.length - 1];
 
   if (detectStream && detectStream !== sorted[0]) {
     inputs.push(buildInput(detectStream, ["detect"]));
