@@ -841,6 +841,7 @@ server.listen(PORT, async () => {
       rtspPort: Number(process.env.GO2RTC_RTSP_PORT) || settings.go2rtc.rtspPort,
       webrtcPort: Number(process.env.GO2RTC_WEBRTC_PORT) || settings.go2rtc.webrtcPort,
       iceServers: settings.go2rtc.iceServers,
+      rtspSource: settings.go2rtc.rtspSource,
     };
     try {
       await initGo2rtc(go2rtcConfig);
