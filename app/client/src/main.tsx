@@ -1,9 +1,16 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
+import { ThemeProvider } from "camstack-ui/theme";
 import App from "./App";
 import "./styles.css";
 import "./app.css";
+import { nodelinkThemeCss } from "./theme/nodelink-theme";
+
+const themeStyle = document.createElement('style');
+themeStyle.id = 'nodelink-theme';
+themeStyle.textContent = nodelinkThemeCss;
+document.head.appendChild(themeStyle);
 
 // Register Service Worker for PWA support
 if ("serviceWorker" in navigator) {
@@ -35,7 +42,9 @@ if (!rootEl) {
 }
 
 createRoot(rootEl).render(
-  <BrowserRouter>
-    <App />
-  </BrowserRouter>,
+  <ThemeProvider defaultMode="dark" storageKey="nodelink-theme-mode">
+    <BrowserRouter>
+      <App />
+    </BrowserRouter>
+  </ThemeProvider>,
 );
