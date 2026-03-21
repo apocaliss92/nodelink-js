@@ -202,6 +202,13 @@ export interface BaichuanRtspServerOptions {
    * isolating it from other streams on the shared socket (avoids streamType mismatch).
    */
   deviceId?: string;
+
+  /**
+   * When true, the server does NOT create its own net.Server.
+   * Connections are accepted externally via acceptConnection().
+   * start() still performs metadata fetch and codec detection.
+   */
+  externalListener?: boolean;
 }
 
 /**
@@ -234,6 +241,7 @@ export class BaichuanRtspServer extends EventEmitter<{
   private flow: RtspFlow;
   private deviceId: string | undefined;
   private dedicatedSessionRelease: (() => Promise<void>) | undefined;
+  private externalListener: boolean;
 
   // Authentication
   private authCredentials: Array<{ username: string; password: string }> = [];
@@ -488,6 +496,7 @@ export class BaichuanRtspServer extends EventEmitter<{
     this.logger = options.logger ?? console;
     this.tcpRtpFraming = options.tcpRtpFraming ?? "rfc4571";
     this.deviceId = options.deviceId;
+    this.externalListener = options.externalListener ?? false;
 
     // Authentication settings
     this.authCredentials = options.credentials ?? [];
@@ -671,29 +680,31 @@ export class BaichuanRtspServer extends EventEmitter<{
       this.setFlowVideoType("H264", "metadata unavailable");
     }
 
-    // Start TCP server to handle RTSP connections
-    this.clientConnectionServer = net.createServer((socket) => {
-      this.handleRtspConnection(socket);
-    });
-
-    // Start listening
-    await new Promise<void>((resolve, reject) => {
-      this.clientConnectionServer!.listen(
-        this.listenPort,
-        this.listenHost,
-        () => {
-          // Update listenPort with the actual assigned port (in case listenPort was 0)
-          const address = this.clientConnectionServer!.address();
-          if (address && typeof address === "object" && "port" in address) {
-            this.listenPort = address.port;
-          }
-          resolve();
-        },
-      );
-      this.clientConnectionServer!.on("error", (error) => {
-        reject(error);
+    if (!this.externalListener) {
+      // Start TCP server to handle RTSP connections
+      this.clientConnectionServer = net.createServer((socket) => {
+        this.handleRtspConnection(socket);
       });
-    });
+
+      // Start listening
+      await new Promise<void>((resolve, reject) => {
+        this.clientConnectionServer!.listen(
+          this.listenPort,
+          this.listenHost,
+          () => {
+            // Update listenPort with the actual assigned port (in case listenPort was 0)
+            const address = this.clientConnectionServer!.address();
+            if (address && typeof address === "object" && "port" in address) {
+              this.listenPort = address.port;
+            }
+            resolve();
+          },
+        );
+        this.clientConnectionServer!.on("error", (error) => {
+          reject(error);
+        });
+      });
+    }
 
     this.active = true;
     this.logger.info(
@@ -702,9 +713,23 @@ export class BaichuanRtspServer extends EventEmitter<{
   }
 
   /**
+   * Accept an externally-routed RTSP connection.
+   * Used in directHandoff mode where RtspProxyServer routes sockets here.
+   * @param socket - The client TCP socket (already authenticated by proxy)
+   * @param initialBuffer - Any bytes already read during path parsing/auth
+   */
+  acceptConnection(socket: net.Socket, initialBuffer?: Buffer): void {
+    if (!this.active) {
+      socket.end("RTSP/1.0 503 Service Unavailable\r\n\r\n");
+      return;
+    }
+    this.handleRtspConnection(socket, initialBuffer);
+  }
+
+  /**
    * Handle RTSP connection from a client.
    */
-  private handleRtspConnection(socket: net.Socket): void {
+  private handleRtspConnection(socket: net.Socket, initialBuffer?: Buffer): void {
     const clientId = `${socket.remoteAddress}:${socket.remotePort}`;
     const connectTime = Date.now();
     this.logger.info(
@@ -712,7 +737,7 @@ export class BaichuanRtspServer extends EventEmitter<{
     );
 
     let sessionId = "";
-    let buffer = Buffer.alloc(0);
+    let buffer = initialBuffer ?? Buffer.alloc(0);
     let clientFfmpeg: ReturnType<typeof spawn> | undefined;
     let useTcpInterleaved = false;
     let clientUdpSocket: dgram.Socket | null = null;
@@ -2703,5 +2728,45 @@ export class BaichuanRtspServer extends EventEmitter<{
    */
   getClientCount(): number {
     return this.connectedClients.size;
+  }
+
+  /**
+   * Subscribe to the raw native stream for diagnostic purposes.
+   * The subscriber receives the same frames as RTSP clients.
+   * Counts as a "consumer" for lifecycle — prevents auto-stop while subscribed.
+   * If the native stream is not active, starts it automatically.
+   */
+  async subscribeDiagnostic(id: string): Promise<AsyncGenerator<{
+    audio: boolean;
+    data: Buffer;
+    codec: string | null;
+    sampleRate: number | null;
+    microseconds: number | null;
+    videoType?: "H264" | "H265";
+  }, void, unknown>> {
+    this.connectedClients.add(`diag:${id}`);
+    if (!this.nativeStreamActive) {
+      await this.startNativeStream();
+    }
+    return this.nativeFanout!.subscribe(`diag:${id}`);
+  }
+
+  /**
+   * Unsubscribe a diagnostic session.
+   */
+  unsubscribeDiagnostic(id: string): void {
+    this.removeClient(`diag:${id}`);
+  }
+
+  /**
+   * Returns detected audio metadata (available after first audio frame).
+   */
+  getAudioInfo(): {
+    codec: "aac-adts";
+    sampleRate: number;
+    channels: number;
+    configHex: string;
+  } | null {
+    return this.audioInfo;
   }
 }
