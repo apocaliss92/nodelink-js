@@ -16,6 +16,8 @@ interface CameraDetailPanelProps {
   onStartStream: (profile: string) => void;
   onStopStream: (profile: string) => void;
   onOpenPreview: (state: PreviewModalState) => void;
+  savingAutoStart: boolean;
+  onToggleAutoStart: () => void;
 }
 
 export function CameraDetailPanel({
@@ -31,6 +33,8 @@ export function CameraDetailPanel({
   onStartStream,
   onStopStream,
   onOpenPreview,
+  savingAutoStart,
+  onToggleAutoStart,
 }: CameraDetailPanelProps) {
   const isConnected = camera.status === 'connected';
 
@@ -68,6 +72,7 @@ export function CameraDetailPanel({
               return (
                 <StreamProfileCard
                   key={stream.profile}
+                  cameraId={camera.id}
                   stream={stream}
                   rtspServer={server}
                   onStartStream={() => onStartStream(stream.profile)}
@@ -99,6 +104,9 @@ export function CameraDetailPanel({
         onDebug={onSetDebug}
         isConnected={isConnected}
         connecting={connecting}
+        autoStart={camera.autoStart}
+        savingAutoStart={savingAutoStart}
+        onToggleAutoStart={onToggleAutoStart}
       />
     </div>
   );

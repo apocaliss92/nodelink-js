@@ -22,7 +22,7 @@ export function EventsDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent width="md" className="max-h-[80vh] overflow-y-auto">
+      <DialogContent width="md" className="max-h-[80vh] overflow-y-auto bg-[var(--color-background-elevated)] text-[var(--color-foreground)] border-[var(--color-border)]">
         <DialogHeader>
           <DialogTitle>Events – {cameraName}</DialogTitle>
         </DialogHeader>

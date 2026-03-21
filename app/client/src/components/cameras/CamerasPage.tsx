@@ -15,7 +15,7 @@ import type { CameraInfo } from './types';
 
 export function CamerasPage() {
   const camerasHook = useCameras();
-  const { cameras, connectingByCamera, rtspServers, streamsByCamera } = camerasHook;
+  const { cameras, connectingByCamera, rtspServers, streamsByCamera, savingAutoStart, setAutoStartForCamera } = camerasHook;
   const { selectedCamera, selectCamera } = useSelectedCamera(cameras);
   const navigate = useNavigate();
 
@@ -94,6 +94,8 @@ export function CamerasPage() {
                 onStartStream={(_profile) => { /* tRPC start stream - wire later */ }}
                 onStopStream={(_profile) => { /* tRPC stop stream - wire later */ }}
                 onOpenPreview={(state) => camerasHook.setPreviewModal(state)}
+                savingAutoStart={savingAutoStart[selectedCamera.id] ?? false}
+                onToggleAutoStart={() => void setAutoStartForCamera(selectedCamera, !selectedCamera.autoStart)}
               />
             )}
           </div>

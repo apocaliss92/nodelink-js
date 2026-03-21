@@ -4,6 +4,7 @@ import { DeviceInfoSection } from './DeviceInfoSection';
 import { StreamProfileCard } from './StreamProfileCard';
 import { ActionsGrid } from './ActionsGrid';
 import { useCamerasContext } from './CamerasContext';
+import { trpcMutation } from '../../api';
 
 export function CameraDetailPage() {
   const { cameraName } = useParams<{ cameraName: string }>();
@@ -17,6 +18,8 @@ export function CameraDetailPage() {
     disconnect,
     setCameraDebug,
     setPreviewModal,
+    savingAutoStart,
+    setAutoStartForCamera,
   } = useCamerasContext();
 
   const camera = cameras.find((c) => (c.name || c.host) === cameraName);
@@ -59,10 +62,11 @@ export function CameraDetailPage() {
               return (
                 <StreamProfileCard
                   key={stream.profile}
+                  cameraId={camera.id}
                   stream={stream}
                   rtspServer={server}
-                  onStartStream={() => {}}
-                  onStopStream={() => {}}
+                  onStartStream={() => void trpcMutation('rtsp.start', { cameraId: camera.id, profile: stream.profile, channel: stream.channel })}
+                  onStopStream={() => void trpcMutation('rtsp.stop', { cameraId: camera.id, profile: stream.profile, channel: stream.channel })}
                   onPreview={() =>
                     setPreviewModal({
                       open: true,
@@ -85,6 +89,9 @@ export function CameraDetailPage() {
           onDebug={() => setCameraDebug(camera.id, !camera.debugLogs)}
           isConnected={isConnected}
           connecting={connectingByCamera[camera.id] ?? false}
+          autoStart={camera.autoStart}
+          savingAutoStart={savingAutoStart[camera.id] ?? false}
+          onToggleAutoStart={() => void setAutoStartForCamera(camera, !camera.autoStart)}
         />
       </div>
     </div>

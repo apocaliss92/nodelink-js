@@ -28,7 +28,7 @@ export function PtzDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent width="sm">
+      <DialogContent width="sm" className="bg-[var(--color-background-elevated)] text-[var(--color-foreground)] border-[var(--color-border)]">
         <DialogHeader>
           <DialogTitle>PTZ – {cameraName}</DialogTitle>
         </DialogHeader>

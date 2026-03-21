@@ -23,7 +23,7 @@ export function AddCameraDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent width="lg">
+      <DialogContent width="lg" className="bg-[var(--color-background-elevated)] text-[var(--color-foreground)] border-[var(--color-border)]">
         <DialogHeader>
           <DialogTitle>Add camera</DialogTitle>
         </DialogHeader>
