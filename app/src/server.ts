@@ -832,18 +832,18 @@ server.listen(PORT, async () => {
   // Init Home Assistant MQTT device discovery
   initHomeAssistantMqtt();
 
-  // Start go2rtc if enabled
+  // Step 1: Start go2rtc (if enabled)
   // Environment variables override settings for Docker/deployment flexibility.
   if (settings.go2rtc?.enabled) {
-    const go2rtcConfig = {
-      binaryPath: process.env.GO2RTC_PATH || settings.go2rtc.binaryPath,
-      apiPort: Number(process.env.GO2RTC_API_PORT) || settings.go2rtc.apiPort,
-      rtspPort: Number(process.env.GO2RTC_RTSP_PORT) || settings.go2rtc.rtspPort,
-      webrtcPort: Number(process.env.GO2RTC_WEBRTC_PORT) || settings.go2rtc.webrtcPort,
-      iceServers: settings.go2rtc.iceServers,
-      rtspSource: settings.go2rtc.rtspSource,
-    };
     try {
+      const go2rtcConfig = {
+        binaryPath: process.env.GO2RTC_PATH || settings.go2rtc.binaryPath,
+        apiPort: Number(process.env.GO2RTC_API_PORT) || settings.go2rtc.apiPort,
+        rtspPort: Number(process.env.GO2RTC_RTSP_PORT) || settings.go2rtc.rtspPort,
+        webrtcPort: Number(process.env.GO2RTC_WEBRTC_PORT) || settings.go2rtc.webrtcPort,
+        iceServers: settings.go2rtc.iceServers,
+        rtspSource: settings.go2rtc.rtspSource,
+      };
       await initGo2rtc(go2rtcConfig);
       appLogger.info(
         `go2rtc started (API: http://localhost:${go2rtcConfig.apiPort}, RTSP: ${go2rtcConfig.rtspPort}, WebRTC: ${go2rtcConfig.webrtcPort})`,
@@ -852,48 +852,49 @@ server.listen(PORT, async () => {
       // Register listener to auto-start streams when cameras connect on the fly
       enableGo2rtcAutoStreams();
     } catch (error) {
-      appLogger.error(`Failed to start go2rtc: ${error}`, {
-        source: "go2rtc",
+      appLogger.error(`Error initializing go2rtc: ${error}`, {
+        source: "server",
       });
     }
   }
 
-  // When go2rtc is enabled, always auto-start streams (they become Go2rtcTcpServer
-  // instances registered with go2rtc — the RTSP proxy is not needed since go2rtc
-  // provides its own RTSP/WebRTC/HLS output).
-  if (settings.go2rtc?.enabled) {
+  // Step 2: Auto-start streams (always, regardless of mode)
+  try {
+    await autoStartRtspServers();
+    appLogger.info("Auto-started camera streams", { source: "server" });
+  } catch (error) {
+    appLogger.error(`Error auto-starting streams: ${error}`, {
+      source: "server",
+    });
+  }
+
+  // Step 3: Start RtspProxyServer when needed
+  const rtspSource = settings.go2rtc?.rtspSource ?? "go2rtc";
+  if (settings.go2rtc?.enabled && rtspSource === "local") {
+    // Local mode: proxy on go2rtc's RTSP port with directHandoff
     try {
-      await autoStartRtspServers();
+      const rtspPort =
+        Number(process.env.GO2RTC_RTSP_PORT) ||
+        (settings.go2rtc?.rtspPort ?? 18554);
+      await startRtspProxy({ port: rtspPort, directHandoff: true });
       appLogger.info(
-        "Auto-started camera streams via go2rtc (RTSP proxy skipped — go2rtc provides output)",
+        `RTSP proxy (directHandoff) started on port ${rtspPort}`,
         { source: "server" },
       );
-    } catch (error) {
-      appLogger.error(`Error auto-starting go2rtc streams: ${error}`, {
-        source: "server",
-      });
-    }
-  } else if (settings.rtspProxyEnabled) {
-    // Classic mode: RTSP proxy starts servers on-demand
-    try {
-      await startRtspProxy();
-      appLogger.info(`RTSP Proxy started on port ${RTSP_PORT}`, {
-        source: "server",
-      });
-      appLogger.info(`RTSP servers will be started on-demand by the proxy`, {
-        source: "server",
-      });
     } catch (error) {
       appLogger.error(`Error starting RTSP proxy: ${error}`, {
         source: "server",
       });
     }
-  } else {
-    // No proxy, no go2rtc: auto-start individual RTSP servers
+  } else if (!settings.go2rtc?.enabled && settings.rtspProxyEnabled) {
+    // Legacy proxy mode (no go2rtc)
     try {
-      await autoStartRtspServers();
+      await startRtspProxy();
+      appLogger.info(`RTSP Proxy started on port ${RTSP_PORT}`, {
+        source: "server",
+      });
     } catch (error) {
-      appLogger.error(`Error auto-starting RTSP servers: ${error}`, {
+      appLogger.error(`Error starting RTSP proxy: ${error}`, {
         source: "server",
       });
     }

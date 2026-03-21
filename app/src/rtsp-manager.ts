@@ -13,6 +13,7 @@ import { getGo2rtcManager } from "./go2rtc-manager.js";
 import * as net from "net";
 import * as crypto from "crypto";
 import { releaseStreamsByCamera } from "./stream-pool.js";
+import { getRtspProxy } from "./rtsp-proxy.js";
 
 // Helper: sanitize camera name for URL path (Camera Studio => camera_studio)
 export function sanitizeCameraName(name: string): string {
@@ -114,8 +115,8 @@ export interface RtspServerInfo {
   go2rtcStreamName?: string;
   /** When using go2rtc: the tcp:// source URL. */
   go2rtcSourceUrl?: string;
-  /** Server mode: "rtsp" (BaichuanRtspServer) or "go2rtc" (BaichuanRtspServer). */
-  mode?: "rtsp" | "go2rtc";
+  /** Server mode: "rtsp" (direct), "go2rtc" (via go2rtc RTSP source), or "local" (direct handoff via RtspProxyServer). */
+  mode?: "rtsp" | "go2rtc" | "local";
 }
 
 export interface CameraInfo {
@@ -948,44 +949,89 @@ export async function startRtspServer(
     const api = await getOrCreateApiConnection(cameraId);
     const go2rtcMgr = getGo2rtcManager();
     const useGo2rtc = settings.go2rtc?.enabled === true && go2rtcMgr?.isRunning;
+    const rtspSource = settings.go2rtc?.rtspSource ?? "go2rtc";
 
     logger.info(
-      `Stream mode decision: go2rtc.enabled=${settings.go2rtc?.enabled}, manager=${!!go2rtcMgr}, running=${go2rtcMgr?.isRunning}, useGo2rtc=${useGo2rtc}`,
+      `Stream mode decision: go2rtc.enabled=${settings.go2rtc?.enabled}, manager=${!!go2rtcMgr}, running=${go2rtcMgr?.isRunning}, useGo2rtc=${useGo2rtc}, rtspSource=${rtspSource}`,
     );
 
-    // BaichuanRtspServer is always used as the internal stream source.
-    // It handles audio+video via RTP over TCP (interleaved).
-    // When go2rtc is enabled, the RTSP URL is registered as a source in go2rtc
-    // which provides the external output (WebRTC/HLS/MJPEG/MSE).
-    logger.info(
-      `Starting RTSP server on port ${port} (${profile}, ch${channel})${useGo2rtc ? " → go2rtc" : ""}`,
-    );
-
-    const server = new BaichuanRtspServer({
-      api,
-      profile,
-      channel,
-      listenPort: port,
-      listenHost: useGo2rtc ? "127.0.0.1" : "0.0.0.0",
-      path: rtspPath,
-      deviceId: cameraId,
-      logger: {
-        log: (msg: unknown) => logger.info(String(msg)),
-        info: (msg: string) => logger.info(msg),
-        warn: (msg: string) => logger.warn(msg),
-        error: (msg: string) => logger.error(msg),
-        debug: (msg: string) => logger.debug(msg),
-      },
-    });
-
-    await server.start();
+    const rtspLogger = {
+      log: (msg: unknown) => logger.info(String(msg)),
+      info: (msg: string) => logger.info(msg),
+      warn: (msg: string) => logger.warn(msg),
+      error: (msg: string) => logger.error(msg),
+      debug: (msg: string) => logger.debug(msg),
+    };
 
     const serviceIp = settings.serviceIp || "localhost";
-    const localRtspUrl = `rtsp://127.0.0.1:${port}${rtspPath}`;
 
-    if (useGo2rtc) {
-      // Register the internal RTSP server as a source in go2rtc.
+    if (useGo2rtc && rtspSource === "local") {
+      // LOCAL MODE: BaichuanRtspServer with externalListener, registered in RtspProxyServer.
+      // The RtspProxyServer listens on go2rtc's RTSP port and hands off connections directly
+      // to BaichuanRtspServer instances, avoiding a double RTSP hop.
+      logger.info(
+        `Starting local RTSP server (${profile}, ch${channel}) with externalListener → go2rtc`,
+      );
+
+      const server = new BaichuanRtspServer({
+        api,
+        profile,
+        channel,
+        listenPort: 0,
+        listenHost: "0.0.0.0",
+        path: rtspPath,
+        deviceId: cameraId,
+        externalListener: true,
+        requireAuth: false, // auth handled by RtspProxyServer
+        logger: rtspLogger,
+      });
+
+      await server.start();
+
+      // Register in RtspProxyServer for direct handoff
+      const proxy = getRtspProxy();
+      if (proxy) {
+        proxy.registerServer(rtspPath, server);
+      }
+
+      // Still register with go2rtc for WebRTC/HLS/MJPEG output
+      const go2rtcName = buildGo2rtcStreamName(camera.name, profile, channel);
+      const go2rtcRtspPort = Number(process.env.GO2RTC_RTSP_PORT) || (settings.go2rtc?.rtspPort ?? 18554);
+      const proxyRtspUrl = `rtsp://127.0.0.1:${go2rtcRtspPort}${rtspPath}`;
+      await go2rtcMgr!.addStream(go2rtcName, proxyRtspUrl);
+
+      info.status = "running";
+      info.mode = "local";
+      info.go2rtcStreamName = go2rtcName;
+      info.go2rtcSourceUrl = proxyRtspUrl;
+      info.port = go2rtcRtspPort;
+      info.startedAt = new Date();
+      info.rtspUrl = `rtsp://${serviceIp}:${go2rtcRtspPort}${rtspPath}`;
+
+      rtspServers.set(streamKey, { server, info, go2rtcStreamName: go2rtcName });
+
+      logger.info(`Local RTSP stream: ${info.rtspUrl} (go2rtc source: ${proxyRtspUrl})`);
+    } else if (useGo2rtc) {
+      // GO2RTC MODE: BaichuanRtspServer on localhost, registered as go2rtc source.
       // go2rtc ingests via RTSP (audio+video) and re-exports as WebRTC/HLS/MJPEG/MSE/RTSP.
+      logger.info(
+        `Starting RTSP server on port ${port} (${profile}, ch${channel}) → go2rtc`,
+      );
+
+      const server = new BaichuanRtspServer({
+        api,
+        profile,
+        channel,
+        listenPort: port,
+        listenHost: "127.0.0.1",
+        path: rtspPath,
+        deviceId: cameraId,
+        logger: rtspLogger,
+      });
+
+      await server.start();
+
+      const localRtspUrl = `rtsp://127.0.0.1:${port}${rtspPath}`;
       const go2rtcName = buildGo2rtcStreamName(camera.name, profile, channel);
       await go2rtcMgr!.addStream(go2rtcName, localRtspUrl);
 
@@ -1005,6 +1051,23 @@ export async function startRtspServer(
       logger.info(`RTSP via go2rtc: ${info.rtspUrl}`);
     } else {
       // Classic mode: BaichuanRtspServer exposed directly.
+      logger.info(
+        `Starting RTSP server on port ${port} (${profile}, ch${channel})`,
+      );
+
+      const server = new BaichuanRtspServer({
+        api,
+        profile,
+        channel,
+        listenPort: port,
+        listenHost: "0.0.0.0",
+        path: rtspPath,
+        deviceId: cameraId,
+        logger: rtspLogger,
+      });
+
+      await server.start();
+
       info.status = "running";
       info.mode = "rtsp";
       info.rtspUrl = `rtsp://${serviceIp}:${port}${rtspPath}`;
@@ -1083,8 +1146,16 @@ export async function stopRtspServer(
       }
     }
 
+    // Unregister from RtspProxyServer if this was a local-mode stream
+    if (entry.info.mode === "local" && entry.info.path) {
+      const proxy = getRtspProxy();
+      if (proxy) {
+        proxy.unregisterServer(entry.info.path);
+      }
+    }
+
     if (entry.server) {
-      logger.info(`Stopping ${entry.info.mode === "go2rtc" ? "Go2rtc TCP" : "RTSP"} server`);
+      logger.info(`Stopping ${entry.info.mode === "go2rtc" ? "Go2rtc TCP" : entry.info.mode === "local" ? "Local RTSP" : "RTSP"} server`);
       await entry.server.stop();
     }
     entry.info.status = "stopped";
