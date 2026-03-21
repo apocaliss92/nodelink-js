@@ -15,8 +15,8 @@ function buildStreamName(
   channel: number,
 ): string {
   return channel > 0
-    ? `${sanitizedCameraName}_${profile}_ch${channel}`
-    : `${sanitizedCameraName}_${profile}`;
+    ? `${sanitizedCameraName}/${profile}/${channel}`
+    : `${sanitizedCameraName}/${profile}`;
 }
 
 export function StreamCard({
