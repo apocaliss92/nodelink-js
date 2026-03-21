@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 import { DeviceInfoSection } from './DeviceInfoSection';
@@ -7,8 +7,9 @@ import { ActionsGrid } from './ActionsGrid';
 import { PtzPanel } from './PtzPanel';
 import { EventsPanel } from './EventsPanel';
 import { useCamerasContext } from './CamerasContext';
-import { trpcMutation } from '../../api';
-import type { ControlsState } from './types';
+import { trpcQuery, trpcMutation } from '../../api';
+import { withAuthTokenQuery } from './utils';
+import type { ControlsState, CameraEvent } from './types';
 
 export function CameraDetailPage() {
   const { cameraName } = useParams<{ cameraName: string }>();
@@ -30,8 +31,73 @@ export function CameraDetailPage() {
 
   const [showPtz, setShowPtz] = useState(false);
   const [showEvents, setShowEvents] = useState(false);
+  const [controlsState, setControlsState] = useState<ControlsState>(null);
+  const [events, setEvents] = useState<CameraEvent[]>([]);
+  const [eventsLoading, setEventsLoading] = useState(false);
 
   const camera = cameras.find((c) => (c.name || c.host) === cameraName);
+  const isConnected = camera?.status === 'connected';
+
+  // Fetch controls state when camera is connected and awake
+  useEffect(() => {
+    if (!camera || !isConnected || camera.sleepStatus === 'sleeping') return;
+    trpcQuery<ControlsState>('cameras.getControlsState', { id: camera.id })
+      .then((st) => setControlsState(st ?? null))
+      .catch(() => setControlsState(null));
+  }, [camera?.id, isConnected, camera?.sleepStatus]);
+
+  // Fetch events when events panel opens
+  useEffect(() => {
+    if (!camera || !showEvents || !isConnected) return;
+    setEventsLoading(true);
+    trpcQuery<CameraEvent[]>('events.getRecent', { cameraId: camera.id })
+      .then((list) => setEvents(list ?? []))
+      .catch(() => setEvents([]))
+      .finally(() => setEventsLoading(false));
+  }, [showEvents, camera?.id, isConnected]);
+
+  // SSE for real-time events
+  useEffect(() => {
+    if (!camera || !showEvents || !isConnected) return;
+    const cameraId = camera.id;
+    const sseUrl = withAuthTokenQuery(`${window.location.origin}/api/events/sse`);
+    const es = new EventSource(sseUrl);
+    es.onmessage = (ev) => {
+      try {
+        const payload = JSON.parse(ev.data as string) as CameraEvent;
+        if (payload.cameraId === cameraId) {
+          setEvents((prev) => [payload, ...prev].slice(0, 50));
+        }
+      } catch {
+        // ignore malformed events
+      }
+    };
+    return () => es.close();
+  }, [showEvents, camera?.id, isConnected]);
+
+  const handlePtzStart = useCallback(
+    (cmd: string) => {
+      if (!camera) return;
+      void trpcMutation('cameras.ptzStart', { id: camera.id, command: cmd });
+    },
+    [camera?.id],
+  );
+
+  const handlePtzStop = useCallback(
+    (cmd: string) => {
+      if (!camera) return;
+      void trpcMutation('cameras.ptzStop', { id: camera.id, command: cmd });
+    },
+    [camera?.id],
+  );
+
+  const handleGotoPreset = useCallback(
+    (presetId: number) => () => {
+      if (!camera) return;
+      void trpcMutation('cameras.gotoPreset', { id: camera.id, presetId });
+    },
+    [camera?.id],
+  );
 
   if (!camera) {
     return (
@@ -42,17 +108,6 @@ export function CameraDetailPage() {
   }
 
   const streams = streamsByCamera[camera.id] ?? [];
-  const isConnected = camera.status === 'connected';
-
-  const ptzControlsState: ControlsState = {
-    hasPtz: false,
-    hasFloodlight: false,
-    hasSiren: false,
-    hasPresets: false,
-    hasAutotracking: false,
-    hasPir: false,
-    ptzPresets: [],
-  };
 
   return (
     <div className="flex flex-col h-full">
@@ -91,8 +146,11 @@ export function CameraDetailPage() {
                       open: true,
                       kind: 'webrtc' as const,
                       title: `${camera.name || camera.host} - ${stream.profile}`,
-                      cameraName: camera.name || camera.host,
+                      cameraName: camera.sanitizedName ?? camera.name ?? camera.host,
                       profile: stream.profile,
+                      streamName: `${camera.sanitizedName ?? camera.name ?? camera.host}_${stream.profile}`,
+                      go2rtcApiPort,
+                      serviceIp,
                     })
                   }
                   cameraName={camera.sanitizedName ?? camera.name ?? camera.host}
@@ -119,10 +177,10 @@ export function CameraDetailPage() {
         {showPtz && (
           <PtzPanel
             cameraName={camera.name || camera.host}
-            controlsState={ptzControlsState}
-            onPtzStart={() => {}}
-            onPtzStop={() => {}}
-            onGotoPreset={() => () => {}}
+            controlsState={controlsState}
+            onPtzStart={handlePtzStart}
+            onPtzStop={handlePtzStop}
+            onGotoPreset={handleGotoPreset}
             onClose={() => setShowPtz(false)}
           />
         )}
@@ -130,8 +188,8 @@ export function CameraDetailPage() {
         {showEvents && (
           <EventsPanel
             cameraName={camera.name || camera.host}
-            events={[]}
-            loading={false}
+            events={events}
+            loading={eventsLoading}
             onClose={() => setShowEvents(false)}
           />
         )}
