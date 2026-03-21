@@ -835,9 +835,7 @@ export class BaichuanRtspServer extends EventEmitter<{
       cleanup();
     });
 
-    socket.on("data", async (data: Buffer) => {
-      buffer = Buffer.concat([buffer, data]);
-
+    const processBuffer = async () => {
       while (buffer.includes("\r\n\r\n")) {
         const endIndex = buffer.indexOf("\r\n\r\n");
         const requestText = buffer.subarray(0, endIndex).toString();
@@ -1192,7 +1190,17 @@ export class BaichuanRtspServer extends EventEmitter<{
           sendResponse(501, "Not Implemented");
         }
       }
+    };
+
+    socket.on("data", (data: Buffer) => {
+      buffer = Buffer.concat([buffer, data]);
+      void processBuffer();
     });
+
+    // Process any complete requests already present in initialBuffer
+    if (buffer.includes("\r\n\r\n")) {
+      void processBuffer();
+    }
   }
 
   /**
