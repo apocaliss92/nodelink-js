@@ -19,7 +19,7 @@ export function PreviewDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent width="lg" className="max-w-[960px] bg-[var(--color-background-elevated)] text-[var(--color-foreground)] border-[var(--color-border)]">
+      <DialogContent width="lg" className="m-auto max-w-[960px] bg-[var(--color-background-elevated)] text-[var(--color-foreground)] border-[var(--color-border)]">
         {open && (
           <>
             <DialogHeader>

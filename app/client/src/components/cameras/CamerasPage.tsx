@@ -1,13 +1,10 @@
 import { Plus, Camera } from 'lucide-react';
-import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { CameraGrid } from './CameraGrid';
 import { CameraDetailPanel } from './CameraDetailPanel';
 import { CamerasProvider } from './CamerasContext';
 import { AddCameraDialog } from './AddCameraDialog';
 import { AddNvrDialog } from './AddNvrDialog';
-import { PtzDialog } from './PtzDialog';
-import { EventsDialog } from './EventsDialog';
 import { PreviewDialog } from './PreviewDialog';
 import { useCameras } from './hooks/useCameras';
 import { useSelectedCamera } from './hooks/useSelectedCamera';
@@ -18,9 +15,6 @@ export function CamerasPage() {
   const { cameras, connectingByCamera, rtspServers, streamsByCamera, savingAutoStart, setAutoStartForCamera } = camerasHook;
   const { selectedCamera, selectCamera } = useSelectedCamera(cameras);
   const navigate = useNavigate();
-
-  const [showPtz, setShowPtz] = useState(false);
-  const [showEvents, setShowEvents] = useState(false);
 
   const onlineCount = cameras.filter((c) => c.status === 'connected').length;
 
@@ -89,8 +83,6 @@ export function CamerasPage() {
                 onConnect={() => camerasHook.connect(selectedCamera.id)}
                 onDisconnect={() => camerasHook.disconnect(selectedCamera.id)}
                 onSetDebug={() => camerasHook.setCameraDebug(selectedCamera.id, !selectedCamera.debugLogs)}
-                onOpenPtz={() => setShowPtz(true)}
-                onOpenEvents={() => setShowEvents(true)}
                 onStartStream={(_profile) => { /* tRPC start stream - wire later */ }}
                 onStopStream={(_profile) => { /* tRPC stop stream - wire later */ }}
                 onOpenPreview={(state) => camerasHook.setPreviewModal(state)}
@@ -118,26 +110,6 @@ export function CamerasPage() {
           void camerasHook.refresh();
         }}
       />
-      {showPtz && selectedCamera && (
-        <PtzDialog
-          open={showPtz}
-          onOpenChange={setShowPtz}
-          cameraName={selectedCamera.name || selectedCamera.host}
-          controlsState={{ hasPtz: false, hasFloodlight: false, hasSiren: false, hasPresets: false, hasAutotracking: false, hasPir: false, ptzPresets: [] }}
-          onPtzStart={() => {}}
-          onPtzStop={() => {}}
-          onGotoPreset={() => () => {}}
-        />
-      )}
-      {showEvents && selectedCamera && (
-        <EventsDialog
-          open={showEvents}
-          onOpenChange={setShowEvents}
-          cameraName={selectedCamera.name || selectedCamera.host}
-          events={[]}
-          loading={false}
-        />
-      )}
       {camerasHook.previewModal.open && (
         <PreviewDialog
           state={camerasHook.previewModal}

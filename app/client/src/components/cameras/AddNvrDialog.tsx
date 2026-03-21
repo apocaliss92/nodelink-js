@@ -168,7 +168,7 @@ export function AddNvrDialog({
 
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!next) handleClose(); }}>
-      <DialogContent width="lg" className={`bg-[var(--color-background-elevated)] text-[var(--color-foreground)] border-[var(--color-border)]${step === "channels" ? " max-w-3xl" : ""}`}>
+      <DialogContent width="lg" className={`m-auto bg-[var(--color-background-elevated)] text-[var(--color-foreground)] border-[var(--color-border)]${step === "channels" ? " max-w-3xl" : ""}`}>
         <DialogHeader>
           <DialogTitle>
             {step === "channels"

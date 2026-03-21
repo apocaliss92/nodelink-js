@@ -14,5 +14,7 @@ export { AddCameraDialog } from "./AddCameraDialog";
 export { AddNvrDialog } from "./AddNvrDialog";
 export { PtzDialog } from "./PtzDialog";
 export { EventsDialog } from "./EventsDialog";
+export { PtzPanel } from "./PtzPanel";
+export { EventsPanel } from "./EventsPanel";
 export { PreviewDialog } from "./PreviewDialog";
 export { CamerasProvider, useCamerasContext } from "./CamerasContext";

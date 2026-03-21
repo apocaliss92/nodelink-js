@@ -1,7 +1,10 @@
+import { useState } from 'react';
 import { DeviceInfoSection } from './DeviceInfoSection';
 import { StreamProfileCard } from './StreamProfileCard';
 import { ActionsGrid } from './ActionsGrid';
-import type { CameraInfo, AvailableStream, StreamProfile, PreviewModalState } from './types';
+import { PtzPanel } from './PtzPanel';
+import { EventsPanel } from './EventsPanel';
+import type { CameraInfo, AvailableStream, StreamProfile, PreviewModalState, ControlsState } from './types';
 
 interface CameraDetailPanelProps {
   camera: CameraInfo;
@@ -11,8 +14,6 @@ interface CameraDetailPanelProps {
   onConnect: () => void;
   onDisconnect: () => void;
   onSetDebug: () => void;
-  onOpenPtz: () => void;
-  onOpenEvents: () => void;
   onStartStream: (profile: string) => void;
   onStopStream: (profile: string) => void;
   onOpenPreview: (state: PreviewModalState) => void;
@@ -28,8 +29,6 @@ export function CameraDetailPanel({
   onConnect,
   onDisconnect,
   onSetDebug,
-  onOpenPtz,
-  onOpenEvents,
   onStartStream,
   onStopStream,
   onOpenPreview,
@@ -37,6 +36,18 @@ export function CameraDetailPanel({
   onToggleAutoStart,
 }: CameraDetailPanelProps) {
   const isConnected = camera.status === 'connected';
+  const [showPtz, setShowPtz] = useState(false);
+  const [showEvents, setShowEvents] = useState(false);
+
+  const ptzControlsState: ControlsState = {
+    hasPtz: false,
+    hasFloodlight: false,
+    hasSiren: false,
+    hasPresets: false,
+    hasAutotracking: false,
+    hasPir: false,
+    ptzPresets: [],
+  };
 
   return (
     <div className="w-[340px] min-w-[340px] border-l border-[var(--color-border)] bg-[var(--color-background)]/50 overflow-y-auto p-4 hidden md:block">
@@ -98,8 +109,8 @@ export function CameraDetailPanel({
       </div>
 
       <ActionsGrid
-        onPtz={onOpenPtz}
-        onEvents={onOpenEvents}
+        onPtz={() => setShowPtz((v) => !v)}
+        onEvents={() => setShowEvents((v) => !v)}
         onConnect={isConnected ? onDisconnect : onConnect}
         onDebug={onSetDebug}
         isConnected={isConnected}
@@ -108,6 +119,26 @@ export function CameraDetailPanel({
         savingAutoStart={savingAutoStart}
         onToggleAutoStart={onToggleAutoStart}
       />
+
+      {showPtz && (
+        <PtzPanel
+          cameraName={camera.name || camera.host}
+          controlsState={ptzControlsState}
+          onPtzStart={() => {}}
+          onPtzStop={() => {}}
+          onGotoPreset={() => () => {}}
+          onClose={() => setShowPtz(false)}
+        />
+      )}
+
+      {showEvents && (
+        <EventsPanel
+          cameraName={camera.name || camera.host}
+          events={[]}
+          loading={false}
+          onClose={() => setShowEvents(false)}
+        />
+      )}
     </div>
   );
 }

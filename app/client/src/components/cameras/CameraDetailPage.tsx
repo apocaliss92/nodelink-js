@@ -1,10 +1,14 @@
+import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 import { DeviceInfoSection } from './DeviceInfoSection';
 import { StreamProfileCard } from './StreamProfileCard';
 import { ActionsGrid } from './ActionsGrid';
+import { PtzPanel } from './PtzPanel';
+import { EventsPanel } from './EventsPanel';
 import { useCamerasContext } from './CamerasContext';
 import { trpcMutation } from '../../api';
+import type { ControlsState } from './types';
 
 export function CameraDetailPage() {
   const { cameraName } = useParams<{ cameraName: string }>();
@@ -22,6 +26,9 @@ export function CameraDetailPage() {
     setAutoStartForCamera,
   } = useCamerasContext();
 
+  const [showPtz, setShowPtz] = useState(false);
+  const [showEvents, setShowEvents] = useState(false);
+
   const camera = cameras.find((c) => (c.name || c.host) === cameraName);
 
   if (!camera) {
@@ -34,6 +41,16 @@ export function CameraDetailPage() {
 
   const streams = streamsByCamera[camera.id] ?? [];
   const isConnected = camera.status === 'connected';
+
+  const ptzControlsState: ControlsState = {
+    hasPtz: false,
+    hasFloodlight: false,
+    hasSiren: false,
+    hasPresets: false,
+    hasAutotracking: false,
+    hasPir: false,
+    ptzPresets: [],
+  };
 
   return (
     <div className="flex flex-col h-full">
@@ -83,8 +100,8 @@ export function CameraDetailPage() {
         </div>
 
         <ActionsGrid
-          onPtz={() => {}}
-          onEvents={() => {}}
+          onPtz={() => setShowPtz((v) => !v)}
+          onEvents={() => setShowEvents((v) => !v)}
           onConnect={isConnected ? () => disconnect(camera.id) : () => connect(camera.id)}
           onDebug={() => setCameraDebug(camera.id, !camera.debugLogs)}
           isConnected={isConnected}
@@ -93,6 +110,26 @@ export function CameraDetailPage() {
           savingAutoStart={savingAutoStart[camera.id] ?? false}
           onToggleAutoStart={() => void setAutoStartForCamera(camera, !camera.autoStart)}
         />
+
+        {showPtz && (
+          <PtzPanel
+            cameraName={camera.name || camera.host}
+            controlsState={ptzControlsState}
+            onPtzStart={() => {}}
+            onPtzStop={() => {}}
+            onGotoPreset={() => () => {}}
+            onClose={() => setShowPtz(false)}
+          />
+        )}
+
+        {showEvents && (
+          <EventsPanel
+            cameraName={camera.name || camera.host}
+            events={[]}
+            loading={false}
+            onClose={() => setShowEvents(false)}
+          />
+        )}
       </div>
     </div>
   );
