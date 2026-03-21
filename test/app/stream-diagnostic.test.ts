@@ -2,6 +2,16 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DIAG_FIXTURES_DIR = path.join(__dirname, "..", "fixtures", "diagnostics");
+
+function hasDiagFixtures(): boolean {
+  return fs.existsSync(path.join(DIAG_FIXTURES_DIR, "main-stream.h265"));
+}
 
 /**
  * Tests for stream-diagnostic.ts logic.
@@ -564,4 +574,176 @@ describe("Report storage", () => {
     expect(reports).toHaveLength(1);
     expect(reports[0]!.reportId).toBe("good");
   });
+});
+
+// ---------------------------------------------------------------------------
+// Diagnostic pipeline with real H.265 fixtures
+// ---------------------------------------------------------------------------
+
+describe("Diagnostic pipeline with real H.265 fixtures", () => {
+  it.skipIf(!hasDiagFixtures())(
+    "ffmpeg analyzes H.265 main stream without errors",
+    async () => {
+      const { spawn } = await import("node:child_process");
+      const streamPath = path.join(DIAG_FIXTURES_DIR, "main-stream.h265");
+      const streamData = fs.readFileSync(streamPath);
+
+      await new Promise<void>((resolve, reject) => {
+        const ffmpeg = spawn("ffmpeg", [
+          "-f", "hevc",
+          "-i", "pipe:0",
+          "-vf", "blackdetect=d=0.5:pic_th=0.90,freezedetect=n=0.003:d=2,showinfo",
+          "-f", "null",
+          "-",
+        ]);
+
+        let stderr = "";
+        ffmpeg.stderr.on("data", (chunk: Buffer) => {
+          stderr += chunk.toString();
+        });
+
+        ffmpeg.on("close", (code) => {
+          if (code !== 0) {
+            reject(new Error(`ffmpeg exited with code ${code}. stderr:\n${stderr}`));
+            return;
+          }
+          expect(stderr).toContain("[Parsed_showinfo");
+          resolve();
+        });
+
+        ffmpeg.on("error", (err) => {
+          reject(new Error(`Failed to spawn ffmpeg: ${err.message}`));
+        });
+
+        ffmpeg.stdin.write(streamData);
+        ffmpeg.stdin.end();
+      });
+    },
+    60_000,
+  );
+
+  it.skipIf(!hasDiagFixtures())(
+    "frame metadata matches expected structure",
+    () => {
+      const framesPath = path.join(DIAG_FIXTURES_DIR, "main-frames.json");
+      const frames = JSON.parse(fs.readFileSync(framesPath, "utf-8")) as Array<{
+        audio: boolean;
+        videoType?: string;
+        isKeyframe?: boolean;
+        dataLength: number;
+        microseconds?: number;
+      }>;
+
+      expect(Array.isArray(frames)).toBe(true);
+      expect(frames.length).toBeGreaterThan(100);
+
+      const videoFrames = frames.filter((f) => !f.audio);
+      const audioFrames = frames.filter((f) => f.audio);
+
+      // Video frames have expected fields
+      for (const vf of videoFrames.slice(0, 20)) {
+        expect(vf).toHaveProperty("videoType");
+        expect(vf).toHaveProperty("isKeyframe");
+        expect(vf).toHaveProperty("dataLength");
+        expect(vf).toHaveProperty("microseconds");
+      }
+
+      // At least one keyframe present
+      const keyframes = videoFrames.filter((f) => f.isKeyframe);
+      expect(keyframes.length).toBeGreaterThan(0);
+
+      // At least some audio frames present
+      expect(audioFrames.length).toBeGreaterThan(0);
+    },
+  );
+
+  it.skipIf(!hasDiagFixtures())(
+    "protocol metrics can be computed from frame metadata",
+    () => {
+      const framesPath = path.join(DIAG_FIXTURES_DIR, "main-frames.json");
+      const frames = JSON.parse(fs.readFileSync(framesPath, "utf-8")) as Array<{
+        audio: boolean;
+        dataLength: number;
+        microseconds?: number;
+      }>;
+
+      const videoFrames = frames.filter((f) => !f.audio && f.microseconds !== undefined);
+      expect(videoFrames.length).toBeGreaterThan(1);
+
+      // Compute inter-frame gaps in milliseconds
+      const gaps: number[] = [];
+      for (let i = 1; i < videoFrames.length; i++) {
+        const prev = videoFrames[i - 1]!.microseconds!;
+        const curr = videoFrames[i]!.microseconds!;
+        const gapMs = (curr - prev) / 1000;
+        if (gapMs > 0) {
+          gaps.push(gapMs);
+        }
+      }
+
+      expect(gaps.length).toBeGreaterThan(0);
+
+      const avgGap = gaps.reduce((s, g) => s + g, 0) / gaps.length;
+      const maxGap = Math.max(...gaps);
+
+      // Average inter-frame gap should be reasonable (10–200 ms for typical streams)
+      expect(avgGap).toBeGreaterThan(10);
+      expect(avgGap).toBeLessThan(200);
+
+      // No single gap should exceed 5 seconds
+      expect(maxGap).toBeLessThan(5000);
+
+      // Frame sizes should be meaningful
+      for (const vf of videoFrames.slice(0, 10)) {
+        expect(vf.dataLength).toBeGreaterThan(100);
+      }
+    },
+  );
+
+  it.skipIf(!hasDiagFixtures())(
+    "sub profile summary file exists and has valid data",
+    () => {
+      const summaryPath = path.join(DIAG_FIXTURES_DIR, "sub-summary.json");
+      expect(fs.existsSync(summaryPath)).toBe(true);
+
+      const summary = JSON.parse(fs.readFileSync(summaryPath, "utf-8")) as {
+        profile: string;
+        captureMs: number;
+        totalFrames: number;
+        videoFrames: number;
+        audioFrames: number;
+        keyframes: number;
+        h265Bytes: number;
+        codec: string | null;
+      };
+
+      expect(summary.profile).toBe("sub");
+      expect(typeof summary.captureMs).toBe("number");
+      expect(summary.captureMs).toBeGreaterThan(0);
+      expect(typeof summary.totalFrames).toBe("number");
+      expect(summary.totalFrames).toBeGreaterThan(0);
+      expect(summary.keyframes).toBeGreaterThan(0);
+    },
+  );
+
+  it.skipIf(!hasDiagFixtures())(
+    "ext profile summary file exists and has valid data",
+    () => {
+      const summaryPath = path.join(DIAG_FIXTURES_DIR, "ext-summary.json");
+      // ext stream may not be available on all cameras; if absent, skip gracefully
+      if (!fs.existsSync(summaryPath)) {
+        return;
+      }
+
+      const summary = JSON.parse(fs.readFileSync(summaryPath, "utf-8")) as {
+        profile: string;
+        captureMs: number;
+        totalFrames: number;
+        error?: string;
+      };
+
+      expect(summary.profile).toBe("ext");
+      expect(typeof summary.captureMs).toBe("number");
+    },
+  );
 });
