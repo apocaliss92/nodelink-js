@@ -2,12 +2,13 @@ import { useState, useEffect, useCallback } from "react";
 import { trpcQuery, trpcMutation } from "../api";
 
 interface ReportEntry {
-  id: string;
+  reportId: string;
   cameraId: string;
   profile: string;
   channel: number;
   startedAt: string;
-  filename: string;
+  completedAt: string;
+  durationSeconds: number;
 }
 
 export default function ReportsPage() {
@@ -65,7 +66,7 @@ export default function ReportsPage() {
     setDeleting(id);
     try {
       await trpcMutation("diagnostics.delete", { reportId: id });
-      setReports((prev) => prev.filter((r) => r.id !== id));
+      setReports((prev) => prev.filter((r) => r.reportId !== id));
       if (expandedReport === id) setExpandedReport(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -99,7 +100,7 @@ export default function ReportsPage() {
       )}
 
       {reports.map((r) => (
-        <div key={r.id} className="card" style={{ marginBottom: 8 }}>
+        <div key={r.reportId} className="card" style={{ marginBottom: 8 }}>
           <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
             <div>
               <span style={{ fontWeight: 600 }}>{r.cameraId}</span>
@@ -110,32 +111,32 @@ export default function ReportsPage() {
               </span>
             </div>
             <div className="row" style={{ gap: 6 }}>
-              <button className="btn" style={{ fontSize: 11 }} onClick={() => void viewReport(r.id)}>
-                {expandedReport === r.id ? "Hide" : "View"}
+              <button className="btn" style={{ fontSize: 11 }} onClick={() => void viewReport(r.reportId)}>
+                {expandedReport === r.reportId ? "Hide" : "View"}
               </button>
               <button
                 className="btn"
                 style={{ fontSize: 11 }}
-                disabled={!reportData[r.id]}
-                onClick={() => downloadReport(r.id)}
+                disabled={!reportData[r.reportId]}
+                onClick={() => downloadReport(r.reportId)}
               >
                 Download
               </button>
               <button
                 className="btn danger"
                 style={{ fontSize: 11 }}
-                disabled={deleting === r.id}
-                onClick={() => void deleteReport(r.id)}
+                disabled={deleting === r.reportId}
+                onClick={() => void deleteReport(r.reportId)}
               >
-                {deleting === r.id ? "..." : "Delete"}
+                {deleting === r.reportId ? "..." : "Delete"}
               </button>
             </div>
           </div>
 
-          {expandedReport === r.id && reportData[r.id] && (
+          {expandedReport === r.reportId && reportData[r.reportId] && (
             <div style={{ marginTop: 12, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
               {(() => {
-                const d = reportData[r.id];
+                const d = reportData[r.reportId];
                 return (
                   <>
                     <div className="grid cols2" style={{ fontSize: 12, gap: 8 }}>

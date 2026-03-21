@@ -25,8 +25,15 @@ export const diagnosticsRouter = router({
     )
     .mutation(async ({ input }) => {
       const key = sessionKey(input.cameraId, input.profile, input.channel);
-      if (getActiveSession(key)) {
-        throw new Error(`Diagnostic already running for ${key}`);
+      const existing = getActiveSession(key);
+      if (existing) {
+        const st = existing.getStatus();
+        if (st === "running") {
+          // Already running — return existing session instead of error
+          return { sessionId: key };
+        }
+        // Stale session (completed/error) — stop and remove
+        try { await existing.stop(); } catch { /* ignore */ }
       }
       if (getActiveSessions().size >= MAX_CONCURRENT_SESSIONS) {
         throw new Error(
