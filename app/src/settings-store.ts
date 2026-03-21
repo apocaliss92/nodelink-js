@@ -148,6 +148,8 @@ export const SettingsSchema = z.object({
   go2rtc: z
     .object({
       enabled: z.boolean().default(true),
+      /** RTSP output source: "go2rtc" uses go2rtc's RTSP, "local" uses BaichuanRtspServer directly. */
+      rtspSource: z.enum(["go2rtc", "local"]).default("go2rtc"),
       /** Path to go2rtc binary (e.g. "./bin/go2rtc" or "go2rtc"). */
       binaryPath: z.string().default("go2rtc"),
       /** go2rtc API port (default 11984). */
