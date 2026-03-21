@@ -9,6 +9,7 @@ import { logsRouter } from "./routers/logs.js";
 import { eventsRouter } from "./routers/events.js";
 import { go2rtcRouter } from "./routers/go2rtc.js";
 import { frigateRouter } from "./routers/frigate.js";
+import { diagnosticsRouter } from "./routers/diagnostics.js";
 export const appRouter = router({
   config: configRouter,
   baichuan: baichuanRouter,
@@ -20,6 +21,7 @@ export const appRouter = router({
   events: eventsRouter,
   go2rtc: go2rtcRouter,
   frigate: frigateRouter,
+  diagnostics: diagnosticsRouter,
 });
 
 export type AppRouter = typeof appRouter;

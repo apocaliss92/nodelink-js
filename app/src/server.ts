@@ -48,6 +48,7 @@ import {
   disconnectMqtt,
 } from "./events-manager.js";
 import { initGo2rtc, stopGo2rtc, getGo2rtcManager } from "./go2rtc-manager.js";
+import { getActiveSessions } from "./stream-diagnostic.js";
 import {
   initHomeAssistantMqtt,
   updateHomeAssistantPolling,
@@ -747,6 +748,24 @@ async function shutdown() {
     await disconnectMqtt();
   } catch (error) {
     appLogger.error(`Error disconnecting MQTT: ${error}`, {
+      source: "server",
+    });
+  }
+
+  // Stop all diagnostic sessions (kills ffmpeg processes)
+  try {
+    const sessions = getActiveSessions();
+    if (sessions.size > 0) {
+      appLogger.info(
+        `Stopping ${sessions.size} active diagnostic session(s)`,
+        { source: "server" },
+      );
+      await Promise.allSettled(
+        Array.from(sessions.values()).map((s) => s.stop()),
+      );
+    }
+  } catch (error) {
+    appLogger.error(`Error stopping diagnostic sessions: ${error}`, {
       source: "server",
     });
   }
