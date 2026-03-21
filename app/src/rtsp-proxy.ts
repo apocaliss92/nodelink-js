@@ -34,6 +34,7 @@ const BACKEND_IDLE_TIMEOUT_MS = 30_000;
 interface RtspProxyOptions {
   port: number;
   host?: string;
+  directHandoff?: boolean;
 }
 
 interface AuthSession {
@@ -62,10 +63,24 @@ export class RtspProxyServer extends EventEmitter {
   /** Track idle timers per backend */
   private backendIdleTimers = new Map<string, NodeJS.Timeout>();
 
+  private directHandoff: boolean;
+  private registeredServers = new Map<string, { acceptConnection: (socket: net.Socket, initialBuffer?: Buffer) => void }>();
+
   constructor(options: RtspProxyOptions) {
     super();
     this.port = options.port;
     this.host = options.host || "0.0.0.0";
+    this.directHandoff = options.directHandoff ?? false;
+  }
+
+  registerServer(path: string, server: { acceptConnection: (socket: net.Socket, initialBuffer?: Buffer) => void }): void {
+    this.registeredServers.set(path, server);
+    logger.info(`Registered direct server for path: ${path}`);
+  }
+
+  unregisterServer(path: string): void {
+    this.registeredServers.delete(path);
+    logger.info(`Unregistered direct server for path: ${path}`);
   }
 
   /**
@@ -605,6 +620,25 @@ export class RtspProxyServer extends EventEmitter {
         return;
       }
 
+      // Direct handoff mode: pass socket to registered BaichuanRtspServer
+      if (this.directHandoff) {
+        const serverPath = parsed.channel > 0
+          ? `/${parsed.cameraName}/${parsed.profile}/${parsed.channel}`
+          : `/${parsed.cameraName}/${parsed.profile}`;
+        const directServer = this.registeredServers.get(serverPath);
+        if (directServer) {
+          clientSocket.removeListener("data", onInitialData);
+          directServer.acceptConnection(clientSocket, initialBuffer);
+          // Track for lifecycle
+          const backendKey = this.getBackendKey(parsed.cameraName, parsed.profile, parsed.channel);
+          const conn = this.connections.get(clientId);
+          if (conn) conn.backendKey = backendKey;
+          this.registerBackendClient(backendKey, clientId);
+          return;
+        }
+        // Fall through to existing 404/proxy logic if not registered
+      }
+
       // Remove initial data handler
       clientSocket.removeListener("data", onInitialData);
 
@@ -793,16 +827,20 @@ export function getRtspProxy(): RtspProxyServer | null {
 /**
  * Start the RTSP proxy with settings
  */
-export async function startRtspProxy(): Promise<RtspProxyServer> {
+export async function startRtspProxy(options?: {
+  port?: number;
+  directHandoff?: boolean;
+}): Promise<RtspProxyServer> {
   if (proxyInstance) {
     return proxyInstance;
   }
 
-  const port = Number(process.env.RTSP_PORT) || 8554;
+  const port = options?.port ?? Number(process.env.RTSP_PORT) || 8554;
 
   proxyInstance = new RtspProxyServer({
     port,
     host: "0.0.0.0",
+    directHandoff: options?.directHandoff,
   });
 
   await proxyInstance.start();
