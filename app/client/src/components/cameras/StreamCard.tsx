@@ -214,9 +214,6 @@ export function StreamCard({
       <div className="streamActionsRow">
         <DropdownButton label="URLs" items={urlItems} />
         <DropdownButton label="Preview" items={previewItems} />
-      </div>
-
-      <div className="streamActionsRow" style={{ marginTop: 4 }}>
         {diagStatus === "idle" && (
           <button className="btn" onClick={() => void startAnalysis()} title="Analyze stream for 5 minutes">
             Analyze
@@ -224,9 +221,9 @@ export function StreamCard({
         )}
         {diagStatus === "running" && (
           <>
-            <span style={{ fontSize: 11, color: "var(--muted)" }}>
+            <span style={{ fontSize: 11, color: "var(--muted)", display: "inline-flex", alignItems: "center" }}>
               <span className="spinner" style={{ width: 10, height: 10, marginRight: 4 }} />
-              Analyzing: {diagProgress}%
+              {diagProgress}%
             </span>
             <button className="btn danger" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => void stopAnalysis()}>
               Stop
@@ -234,13 +231,10 @@ export function StreamCard({
           </>
         )}
         {diagStatus === "complete" && (
-          <span className="badge ok">Analysis complete</span>
+          <span className="badge ok">Done</span>
         )}
         {diagStatus === "error" && (
-          <span className="badge err" title={diagError ?? undefined}>Analysis failed</span>
-        )}
-        {diagError && diagStatus === "idle" && (
-          <span style={{ fontSize: 11, color: "var(--danger)" }}>{diagError}</span>
+          <span className="badge err" title={diagError ?? undefined}>Failed</span>
         )}
       </div>
     </div>
