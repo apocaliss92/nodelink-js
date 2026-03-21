@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { router, publicProcedure } from "../trpc.js";
 import {
+  StreamDiagnostic,
   getActiveSession,
   getActiveSessions,
   sessionKey,
@@ -9,6 +10,8 @@ import {
   deleteReport,
   MAX_CONCURRENT_SESSIONS,
 } from "../stream-diagnostic.js";
+import { getRtspServerInstance } from "../rtsp-manager.js";
+import { getConfig } from "../settings-store.js";
 
 export const diagnosticsRouter = router({
   start: publicProcedure
@@ -30,7 +33,33 @@ export const diagnosticsRouter = router({
           `Maximum concurrent sessions (${MAX_CONCURRENT_SESSIONS}) reached`,
         );
       }
-      // Note: actual start requires BaichuanRtspServer reference - will be wired in integration
+
+      // Get the BaichuanRtspServer instance for this stream
+      const server = getRtspServerInstance(
+        input.cameraId,
+        input.profile,
+        input.channel,
+      );
+      if (!server) {
+        throw new Error(
+          `No running RTSP server for ${input.cameraId}/${input.profile}/ch${input.channel}. Start the stream first.`,
+        );
+      }
+
+      // Resolve camera name
+      const config = getConfig();
+      const camera = config.cameras.find((c: { id: string }) => c.id === input.cameraId);
+      const cameraName = camera?.name ?? input.cameraId;
+
+      // Create and start the diagnostic session
+      const diagnostic = new StreamDiagnostic(server, cameraName, {
+        cameraId: input.cameraId,
+        profile: input.profile,
+        channel: input.channel,
+        durationMinutes: input.durationMinutes,
+      });
+
+      await diagnostic.start();
       return { sessionId: key };
     }),
 

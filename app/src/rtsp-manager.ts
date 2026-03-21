@@ -1174,6 +1174,16 @@ export async function stopRtspServer(
 }
 
 // Get RTSP server info by streamKey or cameraId
+/** Get the BaichuanRtspServer instance for a stream (used by diagnostics). */
+export function getRtspServerInstance(
+  cameraId: string,
+  profile: "main" | "sub" | "ext",
+  channel: number,
+): BaichuanRtspServer | undefined {
+  const key = getRtspServerKey(cameraId, profile, channel);
+  return rtspServers.get(key)?.server;
+}
+
 export function getRtspServerInfo(
   streamKeyOrCameraId: string,
   options?: { profile?: "main" | "sub" | "ext"; channel?: number },
