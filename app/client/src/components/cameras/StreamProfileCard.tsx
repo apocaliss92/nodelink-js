@@ -1,20 +1,34 @@
 import { useState } from 'react';
-import { Play, Square, Eye, Activity } from 'lucide-react';
+import { Play, Square, Eye, Activity, Link, Copy } from 'lucide-react';
 import { trpcMutation } from '../../api';
 import type { AvailableStream } from './types';
 
 interface StreamProfileCardProps {
   cameraId: string;
   stream: AvailableStream;
-  rtspServer?: { status?: string; connections?: number };
+  rtspServer?: { status?: string; connections?: number; rtspUrl?: string };
   onStartStream: () => void;
   onStopStream: () => void;
   onPreview: () => void;
+  cameraName: string;
+  go2rtcApiPort: number | null;
+  serviceIp: string;
 }
 
-export function StreamProfileCard({ cameraId, stream, rtspServer, onStartStream, onStopStream, onPreview }: StreamProfileCardProps) {
+export function StreamProfileCard({ cameraId, stream, rtspServer, onStartStream, onStopStream, onPreview, cameraName, go2rtcApiPort, serviceIp }: StreamProfileCardProps) {
   const isActive = rtspServer?.status === 'running';
   const [diagStatus, setDiagStatus] = useState<'idle' | 'running' | 'complete' | 'error'>('idle');
+  const [urlsOpen, setUrlsOpen] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+
+  const streamName = `${cameraName}_${stream.profile}`;
+  const go2rtcHost = serviceIp || window.location.hostname;
+  const go2rtcBase = go2rtcApiPort ? `${window.location.protocol}//${go2rtcHost}:${go2rtcApiPort}` : null;
+  const src = encodeURIComponent(streamName);
+  const hlsUrl = go2rtcBase ? `${go2rtcBase}/api/stream.m3u8?src=${src}` : '';
+  const snapshotUrl = go2rtcBase ? `${go2rtcBase}/api/frame.jpeg?src=${src}` : '';
+  const mp4Url = go2rtcBase ? `${go2rtcBase}/api/stream.mp4?src=${src}` : '';
+  const mseUrl = go2rtcBase ? `${go2rtcBase}/stream.html?src=${src}&mode=mse` : '';
 
   const startAnalysis = async () => {
     setDiagStatus('running');
@@ -47,9 +61,34 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onStartStream,
       <div className="flex flex-wrap gap-1 mt-1.5">
         {isActive ? (
           <>
-            <button onClick={onPreview} className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] bg-[var(--color-surface-hover)] hover:bg-[var(--color-surface)] transition-colors">
-              <Eye size={10} /> Preview
-            </button>
+            {/* Preview dropdown */}
+            <div className="relative">
+              <button
+                onClick={() => { setPreviewOpen(!previewOpen); setUrlsOpen(false); }}
+                className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] bg-[var(--color-surface-hover)] hover:bg-[var(--color-surface)] transition-colors"
+              >
+                <Eye size={10} /> Preview ▾
+              </button>
+              {previewOpen && (
+                <div className="absolute bottom-full left-0 mb-1 z-10 rounded-md border border-[var(--color-border)] bg-[var(--color-background-elevated)] shadow-lg py-1 min-w-[160px]">
+                  <button
+                    onClick={() => { onPreview(); setPreviewOpen(false); }}
+                    className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)]"
+                  >
+                    WebRTC Preview
+                  </button>
+                  {mseUrl && (
+                    <button
+                      onClick={() => { window.open(mseUrl, '_blank'); setPreviewOpen(false); }}
+                      className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)]"
+                    >
+                      MSE Stream
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
             <button onClick={onStopStream} className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] bg-[var(--color-danger)]/15 text-[var(--color-danger)] hover:bg-[var(--color-danger)]/25 transition-colors">
               <Square size={10} /> Stop
             </button>
@@ -59,6 +98,55 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onStartStream,
             <Play size={10} /> Start
           </button>
         )}
+
+        {/* URLs dropdown */}
+        {go2rtcBase && (
+          <div className="relative">
+            <button
+              onClick={() => { setUrlsOpen(!urlsOpen); setPreviewOpen(false); }}
+              className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] bg-[var(--color-surface-hover)] hover:bg-[var(--color-surface)] transition-colors"
+            >
+              <Link size={10} /> URLs
+            </button>
+            {urlsOpen && (
+              <div className="absolute bottom-full left-0 mb-1 z-10 rounded-md border border-[var(--color-border)] bg-[var(--color-background-elevated)] shadow-lg py-1 min-w-[160px]">
+                {rtspServer?.rtspUrl && (
+                  <button
+                    onClick={() => { void navigator.clipboard.writeText(rtspServer.rtspUrl!); setUrlsOpen(false); }}
+                    className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)] flex items-center gap-1.5"
+                  >
+                    <Copy size={9} /> Copy RTSP URL
+                  </button>
+                )}
+                {hlsUrl && (
+                  <button
+                    onClick={() => { void navigator.clipboard.writeText(hlsUrl); setUrlsOpen(false); }}
+                    className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)] flex items-center gap-1.5"
+                  >
+                    <Copy size={9} /> Copy HLS URL
+                  </button>
+                )}
+                {mp4Url && (
+                  <button
+                    onClick={() => { void navigator.clipboard.writeText(mp4Url); setUrlsOpen(false); }}
+                    className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)] flex items-center gap-1.5"
+                  >
+                    <Copy size={9} /> Copy MP4 URL
+                  </button>
+                )}
+                {snapshotUrl && (
+                  <button
+                    onClick={() => { void navigator.clipboard.writeText(snapshotUrl); setUrlsOpen(false); }}
+                    className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)] flex items-center gap-1.5"
+                  >
+                    <Copy size={9} /> Copy Snapshot URL
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {diagStatus === 'idle' && (
           <button onClick={() => void startAnalysis()} className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] bg-[var(--color-surface-hover)] hover:bg-[var(--color-surface)] transition-colors">
             <Activity size={10} /> Analyze

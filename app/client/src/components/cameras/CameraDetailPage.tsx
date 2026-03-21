@@ -24,6 +24,8 @@ export function CameraDetailPage() {
     setPreviewModal,
     savingAutoStart,
     setAutoStartForCamera,
+    go2rtcApiPort,
+    serviceIp,
   } = useCamerasContext();
 
   const [showPtz, setShowPtz] = useState(false);
@@ -93,6 +95,9 @@ export function CameraDetailPage() {
                       profile: stream.profile,
                     })
                   }
+                  cameraName={camera.sanitizedName ?? camera.name ?? camera.host}
+                  go2rtcApiPort={go2rtcApiPort}
+                  serviceIp={serviceIp}
                 />
               );
             })}

@@ -9,7 +9,7 @@ import type { CameraInfo, AvailableStream, StreamProfile, PreviewModalState, Con
 interface CameraDetailPanelProps {
   camera: CameraInfo;
   streams: AvailableStream[];
-  rtspServers: Array<{ cameraId: string; profile: StreamProfile; channel: number; status?: string; connections?: number }>;
+  rtspServers: Array<{ cameraId: string; profile: StreamProfile; channel: number; status?: string; connections?: number; rtspUrl?: string }>;
   connecting: boolean;
   onConnect: () => void;
   onDisconnect: () => void;
@@ -19,6 +19,8 @@ interface CameraDetailPanelProps {
   onOpenPreview: (state: PreviewModalState) => void;
   savingAutoStart: boolean;
   onToggleAutoStart: () => void;
+  go2rtcApiPort: number | null;
+  serviceIp: string;
 }
 
 export function CameraDetailPanel({
@@ -34,6 +36,8 @@ export function CameraDetailPanel({
   onOpenPreview,
   savingAutoStart,
   onToggleAutoStart,
+  go2rtcApiPort,
+  serviceIp,
 }: CameraDetailPanelProps) {
   const isConnected = camera.status === 'connected';
   const [showPtz, setShowPtz] = useState(false);
@@ -97,6 +101,9 @@ export function CameraDetailPanel({
                       profile: stream.profile,
                     })
                   }
+                  cameraName={camera.sanitizedName ?? camera.name ?? camera.host}
+                  go2rtcApiPort={go2rtcApiPort}
+                  serviceIp={serviceIp}
                 />
               );
             })
