@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
 
 export default defineConfig(({ mode }) => {
@@ -7,7 +8,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     root: path.resolve(__dirname, "client"),
-    plugins: [react()],
+    plugins: [react(), tailwindcss()],
     base: isDev ? "/" : "/static/",
     build: {
       outDir: path.resolve(__dirname, "dist/public"),

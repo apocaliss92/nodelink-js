@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
 import "./styles.css";
+import "./app.css";
 
 // Register Service Worker for PWA support
 if ("serviceWorker" in navigator) {
