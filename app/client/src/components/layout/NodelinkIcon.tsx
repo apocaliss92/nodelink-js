@@ -1,0 +1,36 @@
+interface NodelinkIconProps {
+  size?: number;
+  className?: string;
+}
+
+export function NodelinkIcon({ size = 28, className }: NodelinkIconProps) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 64 64"
+      fill="none"
+      width={size}
+      height={size}
+      className={className}
+    >
+      <rect x="8" y="28" width="48" height="28" rx="6" fill="#292524" />
+      <rect x="12" y="16" width="40" height="28" rx="6" fill="#44403c" />
+      <rect x="16" y="4" width="32" height="28" rx="6" fill="#3b82f6" />
+      <circle cx="32" cy="18" r="3" fill="#fafaf9" opacity="0.8" />
+      <path
+        d="M 25 12 A 10 10 0 0 1 25 24"
+        fill="none"
+        stroke="#0c0a09"
+        strokeWidth="1.5"
+        opacity="0.25"
+      />
+      <path
+        d="M 39 12 A 10 10 0 0 0 39 24"
+        fill="none"
+        stroke="#0c0a09"
+        strokeWidth="1.5"
+        opacity="0.25"
+      />
+    </svg>
+  );
+}
