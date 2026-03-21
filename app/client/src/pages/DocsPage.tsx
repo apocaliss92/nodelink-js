@@ -43,30 +43,20 @@ export default function DocsPage() {
   }
 
   return (
-    <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+    <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] overflow-hidden">
       {cameras.length > 0 ? (
-        <div
-          style={{
-            padding: "12px 16px",
-            borderBottom: "1px solid var(--border)",
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-            flexWrap: "wrap",
-          }}
-        >
+        <div className="flex flex-wrap items-center gap-3 px-4 py-3 border-b border-[var(--border)]">
           <label
             htmlFor="docs-camera-select"
-            style={{ color: "var(--muted)", fontSize: 14 }}
+            className="text-sm text-[var(--muted)]"
           >
             Camera for Baichuan procedures:
           </label>
           <select
             id="docs-camera-select"
-            className="input"
             value={selectedId}
             onChange={(e) => setSelectedId(e.target.value)}
-            style={{ minWidth: 200, maxWidth: 320 }}
+            className="min-w-[200px] max-w-xs rounded-lg border border-[var(--border)] bg-[var(--input-bg,var(--card))] px-3 py-1.5 text-sm text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]"
           >
             {cameras.map((cam) => (
               <option key={cam.id} value={cam.id}>
@@ -77,10 +67,9 @@ export default function DocsPage() {
           {selected ? (
             <button
               type="button"
-              className="btn primary"
               onClick={copyId}
-              style={{ padding: "4px 10px", fontSize: 12 }}
               title={`Copy camera ID: ${selected.id}`}
+              className="rounded-lg bg-[var(--color-primary)] px-3 py-1 text-xs font-medium text-white hover:opacity-90 active:opacity-80 transition-opacity"
             >
               {copied ? "Copied!" : "Copy ID"}
             </button>
@@ -90,10 +79,9 @@ export default function DocsPage() {
       <iframe
         src="/panel"
         title="API Docs"
+        className="w-full border-none"
         style={{
-          width: "100%",
           height: cameras.length > 0 ? "calc(100vh - 140px)" : "calc(100vh - 80px)",
-          border: "none",
         }}
       />
     </div>
