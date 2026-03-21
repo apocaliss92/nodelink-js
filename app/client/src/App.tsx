@@ -106,14 +106,7 @@ function AppInner() {
             </div>
           }
         />
-        <Route
-          path="/reports"
-          element={
-            <div className="legacy">
-              <ReportsPage />
-            </div>
-          }
-        />
+        <Route path="/reports" element={<ReportsPage />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />
