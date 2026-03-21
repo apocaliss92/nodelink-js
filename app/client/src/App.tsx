@@ -21,7 +21,7 @@ function RequireAuth({ children }: { children: ReactNode }) {
   const { state } = useAuth();
   const location = useLocation();
   if (!state.enabled) return <>{children}</>;
-  if (!state.checked) return <div className="card">Loading…</div>;
+  if (!state.checked) return <div className="flex items-center justify-center p-8 text-muted-foreground">Loading…</div>;
   if (!state.user) {
     return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   }
@@ -82,11 +82,7 @@ function AppInner() {
       >
         <Route
           index
-          element={
-            <div className="legacy">
-              <CamerasPage />
-            </div>
-          }
+          element={<CamerasPage />}
         />
         <Route path="/cameras/:cameraName" element={<CameraDetailPage />} />
         <Route path="/logs" element={<LogsPage />} />

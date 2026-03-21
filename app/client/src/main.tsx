@@ -3,7 +3,6 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import { ThemeProvider } from "camstack-ui/theme";
 import App from "./App";
-import "./styles.css";
 import "./app.css";
 import { nodelinkThemeCss } from "./theme/nodelink-theme";
 
