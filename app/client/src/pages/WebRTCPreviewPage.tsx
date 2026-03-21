@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import { getStoredAuthToken } from "../authToken";
 
 type StreamProfile = "main" | "sub" | "ext";
@@ -18,6 +18,7 @@ function apiFetch(input: RequestInfo | URL, init?: RequestInit) {
 
 export default function WebRTCPreviewPage() {
   const { cameraName, profile } = useParams();
+  const navigate = useNavigate();
   const [status, setStatus] = useState<string>("Initializing…");
   const [error, setError] = useState<string | null>(null);
 
@@ -136,39 +137,47 @@ export default function WebRTCPreviewPage() {
   }, [cameraName, safeProfile]);
 
   return (
-    <div className="card">
-      <div className="row" style={{ justifyContent: "space-between" }}>
-        <div>
-          <div style={{ fontWeight: 800 }}>WebRTC Preview</div>
-          <div style={{ color: "var(--muted)", fontSize: 12, marginTop: 2 }}>
-            {cameraName} · {safeProfile ?? "invalid profile"}
+    <div className="flex flex-col h-screen bg-black text-[var(--color-foreground)]">
+      {/* Top bar */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border)] bg-[var(--color-background-elevated)]">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => navigate(-1)}
+            className="flex items-center gap-1.5 border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-foreground)] px-3 py-1.5 rounded-[10px] cursor-pointer text-xs hover:bg-[var(--color-surface-hover)] transition-colors"
+          >
+            ← Back
+          </button>
+          <div>
+            <div className="font-extrabold text-sm">WebRTC Preview</div>
+            <div className="text-[var(--color-foreground-muted)] text-[11px] mt-0.5">
+              {cameraName} · {safeProfile ?? "invalid profile"}
+            </div>
           </div>
         </div>
-        <div className="badge">{status}</div>
+        <span className="text-xs px-2 py-1 rounded-full border border-[var(--color-border)] bg-white/[0.04] text-[var(--color-foreground-muted)]">
+          {status}
+        </span>
       </div>
 
-      {error ? (
-        <div style={{ marginTop: 10, color: "#fecaca" }}>{error}</div>
-      ) : null}
+      {/* Error message */}
+      {error && (
+        <div className="px-4 py-2 text-red-200 text-sm bg-red-500/10 border-b border-red-500/20">
+          {error}
+        </div>
+      )}
 
-      <div
-        style={{
-          marginTop: 12,
-          borderRadius: 12,
-          overflow: "hidden",
-          border: "1px solid var(--border)",
-          background: "rgba(0,0,0,0.35)",
-          aspectRatio: "16/9",
-        }}
-      >
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted
-          controls
-          style={{ width: "100%", height: "100%", display: "block" }}
-        />
+      {/* Video area */}
+      <div className="flex-1 flex items-center justify-center bg-black min-h-0">
+        <div className="w-full h-full aspect-video max-h-full overflow-hidden rounded-xl border border-[var(--color-border)] bg-black">
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            controls
+            className="w-full h-full block object-contain"
+          />
+        </div>
       </div>
     </div>
   );
