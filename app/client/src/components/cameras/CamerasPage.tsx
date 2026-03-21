@@ -5,7 +5,7 @@ import { CameraDetailPanel } from './CameraDetailPanel';
 import { CamerasProvider } from './CamerasContext';
 import { AddCameraDialog } from './AddCameraDialog';
 import { AddNvrDialog } from './AddNvrDialog';
-import { PreviewDialog } from './PreviewDialog';
+import { PreviewPanel } from './PreviewPanel';
 import { useCameras } from './hooks/useCameras';
 import { useSelectedCamera } from './hooks/useSelectedCamera';
 import type { CameraInfo } from './types';
@@ -137,9 +137,9 @@ export function CamerasPage() {
         }}
       />
       {camerasHook.previewModal.open && (
-        <PreviewDialog
+        <PreviewPanel
           state={camerasHook.previewModal}
-          onOpenChange={(open) => { if (!open) camerasHook.setPreviewModal({ open: false }); }}
+          onClose={() => camerasHook.setPreviewModal({ open: false })}
         />
       )}
     </CamerasProvider>

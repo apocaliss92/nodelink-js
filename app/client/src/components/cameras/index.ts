@@ -17,4 +17,5 @@ export { EventsDialog } from "./EventsDialog";
 export { PtzPanel } from "./PtzPanel";
 export { EventsPanel } from "./EventsPanel";
 export { PreviewDialog } from "./PreviewDialog";
+export { PreviewPanel } from "./PreviewPanel";
 export { CamerasProvider, useCamerasContext } from "./CamerasContext";
