@@ -13,3 +13,18 @@ export { WebRTCInlinePlayer } from "./WebRTCInlinePlayer";
 export { useCamerasPage } from "./useCamerasPage";
 export * from "./types";
 export * from "./utils";
+
+// New refactored components
+export { CamerasPage } from "./CamerasPage";
+export { CameraDetailPage } from "./CameraDetailPage";
+export { CameraGrid } from "./CameraGrid";
+export { CameraDetailPanel } from "./CameraDetailPanel";
+export { DeviceInfoSection } from "./DeviceInfoSection";
+export { StreamProfileCard } from "./StreamProfileCard";
+export { ActionsGrid } from "./ActionsGrid";
+export { AddCameraDialog } from "./AddCameraDialog";
+export { AddNvrDialog } from "./AddNvrDialog";
+export { PtzDialog } from "./PtzDialog";
+export { EventsDialog } from "./EventsDialog";
+export { PreviewDialog } from "./PreviewDialog";
+export { CamerasProvider, useCamerasContext } from "./CamerasContext";

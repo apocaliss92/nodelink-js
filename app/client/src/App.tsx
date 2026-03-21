@@ -6,7 +6,8 @@ import {
   useLocation,
 } from "react-router-dom";
 import { AuthProvider, useAuth } from "./auth";
-import CamerasPage from "./pages/CamerasPage";
+import { CamerasPage } from "./components/cameras/CamerasPage";
+import { CameraDetailPage } from "./components/cameras/CameraDetailPage";
 import LogsPage from "./pages/LogsPage";
 import SettingsPage from "./pages/SettingsPage";
 import DocsPage from "./pages/DocsPage";
@@ -87,6 +88,7 @@ function AppInner() {
             </div>
           }
         />
+        <Route path="/cameras/:cameraName" element={<CameraDetailPage />} />
         <Route
           path="/logs"
           element={

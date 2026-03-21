@@ -39,8 +39,11 @@ export function useCameras() {
       cameraId: string;
       profile: StreamProfile;
       channel: number;
-      status?: string;
-      connections?: number;
+      status: string | undefined;
+      connections: number | undefined;
+      go2rtcStreamName: string | undefined;
+      rtspUrl: string | undefined;
+      mode: string | undefined;
     }>
   >([]);
   const [rtspProxyStatus, setRtspProxyStatus] = useState<null | {

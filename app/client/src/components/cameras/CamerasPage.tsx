@@ -1,0 +1,147 @@
+import { Plus, Camera } from 'lucide-react';
+import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { CameraGrid } from './CameraGrid';
+import { CameraDetailPanel } from './CameraDetailPanel';
+import { CamerasProvider } from './CamerasContext';
+import { AddCameraDialog } from './AddCameraDialog';
+import { AddNvrDialog } from './AddNvrDialog';
+import { PtzDialog } from './PtzDialog';
+import { EventsDialog } from './EventsDialog';
+import { PreviewDialog } from './PreviewDialog';
+import { useCameras } from './hooks/useCameras';
+import { useSelectedCamera } from './hooks/useSelectedCamera';
+import type { CameraInfo } from './types';
+
+export function CamerasPage() {
+  const camerasHook = useCameras();
+  const { cameras, connectingByCamera, rtspServers, streamsByCamera } = camerasHook;
+  const { selectedCamera, selectCamera } = useSelectedCamera(cameras);
+  const navigate = useNavigate();
+
+  const [showPtz, setShowPtz] = useState(false);
+  const [showEvents, setShowEvents] = useState(false);
+
+  const onlineCount = cameras.filter((c) => c.status === 'connected').length;
+
+  const handleSelectCamera = (camera: CameraInfo) => {
+    if (window.innerWidth < 768) {
+      navigate(`/cameras/${encodeURIComponent(camera.name || camera.host)}`);
+    } else {
+      selectCamera(camera);
+    }
+  };
+
+  return (
+    <CamerasProvider value={camerasHook}>
+      {cameras.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center p-8">
+          <div className="text-center">
+            <Camera size={48} className="mx-auto mb-4 text-[var(--color-foreground-subtle)]" />
+            <h2 className="text-lg font-semibold mb-2">No cameras configured</h2>
+            <p className="text-sm text-[var(--color-foreground-muted)] mb-4">Add your first Reolink camera to get started</p>
+            <button
+              onClick={() => camerasHook.setAddOpen(true)}
+              className="inline-flex items-center gap-1 rounded-md bg-[var(--color-primary)] px-4 py-2 text-sm text-white"
+            >
+              <Plus size={14} /> Add Camera
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-col h-full">
+          {/* Page Header */}
+          <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--color-border)]">
+            <div>
+              <h1 className="text-base font-semibold">Cameras</h1>
+              <p className="text-[11px] text-[var(--color-foreground-muted)] mt-0.5">{cameras.length} cameras · {onlineCount} online</p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => camerasHook.setAddOpen(true)}
+                className="inline-flex items-center gap-1 rounded-md bg-[var(--color-primary)] px-3 py-1.5 text-xs text-white"
+              >
+                <Plus size={12} /> Add Camera
+              </button>
+              <button
+                onClick={() => camerasHook.setAddNvrOpen(true)}
+                className="inline-flex items-center gap-1 rounded-md bg-[var(--color-surface-hover)] px-3 py-1.5 text-xs"
+              >
+                <Plus size={12} /> Add NVR
+              </button>
+            </div>
+          </div>
+
+          {/* Grid + Detail Panel */}
+          <div className="flex flex-1 min-h-0">
+            <CameraGrid
+              cameras={cameras}
+              streamsByCamera={streamsByCamera}
+              selectedCamera={selectedCamera}
+              onSelectCamera={handleSelectCamera}
+            />
+            {selectedCamera && (
+              <CameraDetailPanel
+                camera={selectedCamera}
+                streams={streamsByCamera[selectedCamera.id] ?? []}
+                rtspServers={rtspServers}
+                connecting={connectingByCamera[selectedCamera.id] ?? false}
+                onConnect={() => camerasHook.connect(selectedCamera.id)}
+                onDisconnect={() => camerasHook.disconnect(selectedCamera.id)}
+                onSetDebug={() => camerasHook.setCameraDebug(selectedCamera.id, !selectedCamera.debugLogs)}
+                onOpenPtz={() => setShowPtz(true)}
+                onOpenEvents={() => setShowEvents(true)}
+                onStartStream={(_profile) => { /* tRPC start stream - wire later */ }}
+                onStopStream={(_profile) => { /* tRPC stop stream - wire later */ }}
+                onOpenPreview={(state) => camerasHook.setPreviewModal(state)}
+              />
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Dialogs */}
+      <AddCameraDialog
+        open={camerasHook.addOpen}
+        onOpenChange={camerasHook.setAddOpen}
+        adding={camerasHook.adding}
+        setAdding={camerasHook.setAdding}
+        onAdd={camerasHook.addCamera}
+      />
+      <AddNvrDialog
+        open={camerasHook.addNvrOpen}
+        onOpenChange={camerasHook.setAddNvrOpen}
+        onDone={() => {
+          camerasHook.setAddNvrOpen(false);
+          void camerasHook.refresh();
+        }}
+      />
+      {showPtz && selectedCamera && (
+        <PtzDialog
+          open={showPtz}
+          onOpenChange={setShowPtz}
+          cameraName={selectedCamera.name || selectedCamera.host}
+          controlsState={{ hasPtz: false, hasFloodlight: false, hasSiren: false, hasPresets: false, hasAutotracking: false, hasPir: false, ptzPresets: [] }}
+          onPtzStart={() => {}}
+          onPtzStop={() => {}}
+          onGotoPreset={() => () => {}}
+        />
+      )}
+      {showEvents && selectedCamera && (
+        <EventsDialog
+          open={showEvents}
+          onOpenChange={setShowEvents}
+          cameraName={selectedCamera.name || selectedCamera.host}
+          events={[]}
+          loading={false}
+        />
+      )}
+      {camerasHook.previewModal.open && (
+        <PreviewDialog
+          state={camerasHook.previewModal}
+          onOpenChange={(open) => { if (!open) camerasHook.setPreviewModal({ open: false }); }}
+        />
+      )}
+    </CamerasProvider>
+  );
+}
