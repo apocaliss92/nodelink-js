@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version_type:
-        description: "Version increment type"
+        description: "Version increment type (ignored for pre-release if already on same base)"
         required: true
         type: choice
         options:
@@ -22,8 +22,8 @@ on:
         required: true
         type: boolean
         default: true
-      docker_tag:
-        description: "Docker tag — 'latest' for stable release, or beta/rc/dev for pre-release"
+      release_channel:
+        description: "Release channel — 'latest' for stable, or beta/rc/dev for pre-release"
         required: true
         type: choice
         options:
@@ -59,6 +59,8 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
+      npm_tag: ${{ steps.version.outputs.npm_tag }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
       affected_lib: ${{ steps.affected.outputs.affected_lib }}
       affected_manager: ${{ steps.affected.outputs.affected_manager }}
       affected_projects: ${{ steps.affected.outputs.affected_projects }}
@@ -77,55 +79,97 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: "https://registry.npmjs.org"
 
-      - name: Get and increment version
+      - name: Compute version
         id: version
         run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            # Get current version from package.json, strip any pre-release suffix (e.g. 0.3.9-beta → 0.3.9)
-            RAW_VERSION=$(node -p "require('./package.json').version")
-            CURRENT_VERSION="${RAW_VERSION%%-*}"
-            VERSION_TYPE="${{ github.event.inputs.version_type }}"
+          RAW_VERSION=$(node -p "require('./package.json').version")
+          CHANNEL="${{ github.event.inputs.release_channel || 'latest' }}"
+          VERSION_TYPE="${{ github.event.inputs.version_type || 'patch' }}"
 
-            # Calculate new version
-            IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
-            case "$VERSION_TYPE" in
-              major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-              minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-              patch) PATCH=$((PATCH + 1)) ;;
-            esac
-            VERSION="${MAJOR}.${MINOR}.${PATCH}"
-            
-            echo "Incremented version: ${CURRENT_VERSION} → ${VERSION} (${VERSION_TYPE})"
-          elif [ "${{ github.event_name }}" == "push" ] && [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            # Use tag from push event (remove 'refs/tags/v' prefix)
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            # ── Extract base version (strip any pre-release suffix) ──
+            BASE_VERSION="${RAW_VERSION%%-*}"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
+
+            if [ "$CHANNEL" == "latest" ]; then
+              # ── STABLE RELEASE ──
+              # Always bump the base version
+              case "$VERSION_TYPE" in
+                major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+                minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+                patch) PATCH=$((PATCH + 1)) ;;
+              esac
+              VERSION="${MAJOR}.${MINOR}.${PATCH}"
+              NPM_TAG="latest"
+              IS_PRERELEASE="false"
+            else
+              # ── PRE-RELEASE (beta/rc/dev) ──
+              # Check if current version already has this channel suffix
+              CURRENT_CHANNEL=""
+              CURRENT_BUILD="-1"
+              if [[ "$RAW_VERSION" == *"-${CHANNEL}."* ]]; then
+                # e.g. 0.5.0-beta.3 → channel=beta, build=3
+                CURRENT_CHANNEL="${CHANNEL}"
+                CURRENT_BUILD=$(echo "$RAW_VERSION" | sed "s/.*-${CHANNEL}\.\([0-9]*\).*/\1/")
+              fi
+
+              if [ "$CURRENT_CHANNEL" == "$CHANNEL" ]; then
+                # Same channel: increment build number only (e.g. beta.3 → beta.4)
+                NEW_BUILD=$((CURRENT_BUILD + 1))
+                VERSION="${BASE_VERSION}-${CHANNEL}.${NEW_BUILD}"
+              else
+                # Different channel or first pre-release: bump base + start at .0
+                case "$VERSION_TYPE" in
+                  major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+                  minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+                  patch) PATCH=$((PATCH + 1)) ;;
+                esac
+                VERSION="${MAJOR}.${MINOR}.${PATCH}-${CHANNEL}.0"
+              fi
+              NPM_TAG="${CHANNEL}"
+              IS_PRERELEASE="true"
+            fi
+
+            echo "Version: ${RAW_VERSION} → ${VERSION} (channel=${CHANNEL}, type=${VERSION_TYPE})"
+
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            # Tag push: use tag version
             TAG="${{ github.ref }}"
             VERSION=${TAG#refs/tags/v}
-            echo "Using version from tag: ${VERSION}"
+            if [[ "$VERSION" == *"-"* ]]; then
+              NPM_TAG=$(echo "$VERSION" | sed 's/.*-\([a-z]*\).*/\1/')
+              IS_PRERELEASE="true"
+            else
+              NPM_TAG="latest"
+              IS_PRERELEASE="false"
+            fi
           else
-            # Fallback to package.json version
-            VERSION=$(node -p "require('./package.json').version")
-            echo "Using current version: ${VERSION}"
-          fi
-
-          # Append pre-release suffix if docker_tag is not 'latest'
-          DOCKER_TAG="${{ github.event.inputs.docker_tag }}"
-          if [ -n "$DOCKER_TAG" ] && [ "$DOCKER_TAG" != "latest" ]; then
-            VERSION="${VERSION}-${DOCKER_TAG}"
+            # Push to main with [publish]: use current version
+            VERSION="$RAW_VERSION"
+            if [[ "$VERSION" == *"-"* ]]; then
+              NPM_TAG=$(echo "$VERSION" | sed 's/.*-\([a-z]*\).*/\1/')
+              IS_PRERELEASE="true"
+            else
+              NPM_TAG="latest"
+              IS_PRERELEASE="false"
+            fi
           fi
 
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "tag=v${VERSION}" >> $GITHUB_OUTPUT
-          echo "Final version: ${VERSION}"
+          echo "npm_tag=${NPM_TAG}" >> $GITHUB_OUTPUT
+          echo "is_prerelease=${IS_PRERELEASE}" >> $GITHUB_OUTPUT
+          echo "Final: ${VERSION} (npm tag: ${NPM_TAG}, prerelease: ${IS_PRERELEASE})"
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Apply version bump (after npm ci to avoid overwrite)
+      - name: Apply version to package.json
         if: github.event_name == 'workflow_dispatch'
         run: |
-          BASE_VERSION=$(echo "${{ steps.version.outputs.version }}" | sed 's/-.*//')
-          npm version ${BASE_VERSION} --no-git-tag-version --allow-same-version
-          cd app && npm version ${BASE_VERSION} --no-git-tag-version --allow-same-version || true
+          VERSION="${{ steps.version.outputs.version }}"
+          npm version "${VERSION}" --no-git-tag-version --allow-same-version
+          cd app && npm version "${VERSION}" --no-git-tag-version --allow-same-version || true
 
       - name: Nx affected since last release
         id: affected
@@ -197,8 +241,8 @@ jobs:
             LICENSE
           retention-days: 1
 
-      - name: Commit version bump (stable releases only)
-        if: github.event_name == 'workflow_dispatch' && (github.event.inputs.docker_tag == 'latest' || github.event.inputs.docker_tag == '')
+      - name: Commit version bump
+        if: github.event_name == 'workflow_dispatch'
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
@@ -250,7 +294,10 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Publish to NPM
-        run: npm publish --access public
+        run: |
+          NPM_TAG="${{ needs.build-library.outputs.npm_tag }}"
+          echo "Publishing with tag: ${NPM_TAG}"
+          npm publish --access public --tag "${NPM_TAG}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -275,8 +322,6 @@ jobs:
         with:
           ref: ${{ github.event_name == 'push' && github.ref || 'main' }}
 
-      # QEMU removed — builder stage runs amd64 only, production stage uses
-      # COPY from builder (no emulation needed for node:22-alpine base image pull).
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -293,17 +338,18 @@ jobs:
           OWNER_LC=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
           IMG="${{ env.REGISTRY }}/${OWNER_LC}/nodelink-js-manager"
           VERSION="${{ needs.build-library.outputs.version }}"
-          TAG="${{ github.event.inputs.docker_tag || 'latest' }}"
+          IS_PRERELEASE="${{ needs.build-library.outputs.is_prerelease }}"
+          CHANNEL="${{ github.event.inputs.release_channel || 'latest' }}"
 
           # Always tag with version number
           TAGS="${IMG}:${VERSION}"
 
-          if [ "$TAG" = "latest" ]; then
+          if [ "$IS_PRERELEASE" == "true" ]; then
+            # Pre-release: version + channel tag (beta/rc/dev), NOT latest
+            TAGS="${TAGS},${IMG}:${CHANNEL}"
+          else
             # Stable release: version + latest
             TAGS="${TAGS},${IMG}:latest"
-          else
-            # Pre-release: version + tag (beta/rc/dev), NOT latest
-            TAGS="${TAGS},${IMG}:${TAG}"
           fi
 
           echo "image=${IMG}" >> $GITHUB_OUTPUT
@@ -333,7 +379,7 @@ jobs:
   create-release:
     needs: [build-library, publish-npm, publish-docker]
     if: |
-      always() && 
+      always() &&
       needs.build-library.result == 'success' &&
       (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))) &&
       (needs.publish-docker.result == 'success' || needs.publish-docker.result == 'skipped')
@@ -350,6 +396,7 @@ jobs:
         run: |
           TAG="${{ needs.build-library.outputs.tag }}"
           VERSION="${{ needs.build-library.outputs.version }}"
+          IS_PRERELEASE="${{ needs.build-library.outputs.is_prerelease }}"
 
           if gh release view "${TAG}" >/dev/null 2>&1; then
             echo "Release ${TAG} already exists"
@@ -427,12 +474,19 @@ jobs:
           echo "docker-compose up -d" >> release_notes.md
           echo "\`\`\`" >> release_notes.md
 
+          # Create release (mark as pre-release if applicable)
+          PRERELEASE_FLAG=""
+          if [ "$IS_PRERELEASE" == "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
           gh release create "${TAG}" \
             --title "Release ${TAG}" \
-            --notes-file release_notes.md
+            --notes-file release_notes.md \
+            ${PRERELEASE_FLAG}
 
-      - name: Archive changelog
-        if: success()
+      - name: Archive changelog (stable releases only)
+        if: success() && needs.build-library.outputs.is_prerelease == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
