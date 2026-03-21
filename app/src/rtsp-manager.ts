@@ -27,14 +27,14 @@ export function generateStreamToken(): string {
   return crypto.randomBytes(8).toString("hex");
 }
 
-// Helper: build go2rtc-safe stream name (e.g. "camera_studio_main")
+// Helper: build go2rtc-safe stream name (e.g. "camera_studio/main")
 export function buildGo2rtcStreamName(
   cameraName: string,
   profile: string,
   channel: number,
 ): string {
   const base = sanitizeCameraName(cameraName);
-  return channel > 0 ? `${base}_${profile}_ch${channel}` : `${base}_${profile}`;
+  return channel > 0 ? `${base}/${profile}/${channel}` : `${base}/${profile}`;
 }
 
 // Helper: generate RTSP server key for multi-stream support

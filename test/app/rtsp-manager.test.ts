@@ -52,16 +52,22 @@ describe("RTSP Manager helpers", () => {
 
     function buildGo2rtcStreamName(name: string, profile: string, channel: number): string {
       const base = sanitize(name);
-      return channel > 0 ? `${base}_${profile}_ch${channel}` : `${base}_${profile}`;
+      return channel > 0 ? `${base}/${profile}/${channel}` : `${base}/${profile}`;
     }
 
     it("matches the pattern for go2rtc stream registration", () => {
-      expect(buildGo2rtcStreamName("Studio", "main", 0)).toBe("studio_main");
-      expect(buildGo2rtcStreamName("Cameretta Daniel", "sub", 0)).toBe("cameretta_daniel_sub");
+      expect(buildGo2rtcStreamName("Studio", "main", 0)).toBe("studio/main");
+      expect(buildGo2rtcStreamName("Cameretta Daniel", "sub", 0)).toBe("cameretta_daniel/sub");
     });
 
     it("includes channel for NVR/multifocal", () => {
-      expect(buildGo2rtcStreamName("TrackMix", "main", 1)).toBe("trackmix_main_ch1");
+      expect(buildGo2rtcStreamName("TrackMix", "main", 1)).toBe("trackmix/main/1");
+    });
+
+    it("uses slash separator between name and profile", () => {
+      expect(buildGo2rtcStreamName("Living Room", "main", 0)).toBe("living_room/main");
+      expect(buildGo2rtcStreamName("Garage", "main", 1)).toBe("garage/main/1");
+      expect(buildGo2rtcStreamName("Front Door Camera", "sub", 0)).toBe("front_door_camera/sub");
     });
   });
 
