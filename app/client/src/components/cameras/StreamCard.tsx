@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import type {
   AvailableStream,
   CameraInfo,
@@ -7,6 +8,7 @@ import type {
 } from "./types";
 import { copyToClipboard } from "./utils";
 import { DropdownButton } from "./DropdownButton";
+import { trpcQuery, trpcMutation } from "../../api";
 
 /** Build the stream name matching rtsp-manager's buildGo2rtcStreamName(). */
 function buildStreamName(
@@ -50,6 +52,69 @@ export function StreamCard({
     stream.profile,
     stream.channel,
   );
+
+  // --- Stream diagnostics state ---
+  const [diagSessionId, setDiagSessionId] = useState<string | null>(null);
+  const [diagStatus, setDiagStatus] = useState<string>("idle");
+  const [diagProgress, setDiagProgress] = useState(0);
+  const [diagError, setDiagError] = useState<string | null>(null);
+
+  const startAnalysis = async () => {
+    setDiagError(null);
+    try {
+      const res = await trpcMutation<{ sessionId: string }>("diagnostics.start", {
+        cameraId: camera.id,
+        profile: stream.profile,
+        channel: stream.channel,
+        durationMinutes: 5,
+      });
+      setDiagSessionId(res.sessionId);
+      setDiagStatus("running");
+      setDiagProgress(0);
+    } catch (e) {
+      setDiagError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const stopAnalysis = async () => {
+    if (!diagSessionId) return;
+    try {
+      await trpcMutation("diagnostics.stop", { sessionId: diagSessionId });
+      setDiagStatus("complete");
+      setDiagSessionId(null);
+    } catch (e) {
+      setDiagError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  // Poll diagnostics status while running
+  useEffect(() => {
+    if (diagStatus !== "running" || !diagSessionId) return;
+    const poll = setInterval(async () => {
+      try {
+        const st = await trpcQuery<{ status: string; progress: number }>(
+          "diagnostics.status",
+          { sessionId: diagSessionId },
+        );
+        setDiagProgress(st.progress);
+        if (st.status === "complete" || st.status === "error" || st.status === "not_found") {
+          setDiagStatus(st.status === "error" ? "error" : "complete");
+          setDiagSessionId(null);
+          clearInterval(poll);
+        }
+      } catch {
+        // ignore polling errors
+      }
+    }, 2000);
+    return () => clearInterval(poll);
+  }, [diagStatus, diagSessionId]);
+
+  // Auto-clear "complete" status after 5s
+  useEffect(() => {
+    if (diagStatus !== "complete") return;
+    const t = setTimeout(() => setDiagStatus("idle"), 5000);
+    return () => clearTimeout(t);
+  }, [diagStatus]);
 
   // Build go2rtc base URL from the port returned by the server (via go2rtc.status)
   const go2rtcHost = serviceIp || window.location.hostname;
@@ -149,6 +214,34 @@ export function StreamCard({
       <div className="streamActionsRow">
         <DropdownButton label="URLs" items={urlItems} />
         <DropdownButton label="Preview" items={previewItems} />
+      </div>
+
+      <div className="streamActionsRow" style={{ marginTop: 4 }}>
+        {diagStatus === "idle" && (
+          <button className="btn" onClick={() => void startAnalysis()} title="Analyze stream for 5 minutes">
+            Analyze
+          </button>
+        )}
+        {diagStatus === "running" && (
+          <>
+            <span style={{ fontSize: 11, color: "var(--muted)" }}>
+              <span className="spinner" style={{ width: 10, height: 10, marginRight: 4 }} />
+              Analyzing: {diagProgress}%
+            </span>
+            <button className="btn danger" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => void stopAnalysis()}>
+              Stop
+            </button>
+          </>
+        )}
+        {diagStatus === "complete" && (
+          <span className="badge ok">Analysis complete</span>
+        )}
+        {diagStatus === "error" && (
+          <span className="badge err" title={diagError ?? undefined}>Analysis failed</span>
+        )}
+        {diagError && diagStatus === "idle" && (
+          <span style={{ fontSize: 11, color: "var(--danger)" }}>{diagError}</span>
+        )}
       </div>
     </div>
   );
