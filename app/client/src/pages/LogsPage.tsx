@@ -20,11 +20,16 @@ type LogFile = {
   modified: string;
 };
 
-function levelBadge(level: LogEntry["level"]) {
-  if (level === "error") return "badge err";
-  if (level === "warn") return "badge warn";
-  if (level === "info") return "badge ok";
-  return "badge";
+function levelBadgeClass(level: LogEntry["level"]): string {
+  const base =
+    "text-xs px-2 py-0.5 rounded-full border bg-white/[.04] text-[var(--muted)] border-[var(--border)]";
+  if (level === "error")
+    return `${base} !text-[#fecaca] !border-[rgba(239,68,68,0.4)]`;
+  if (level === "warn")
+    return `${base} !text-[#fde68a] !border-[rgba(245,158,11,0.4)]`;
+  if (level === "info")
+    return `${base} !text-[#bbf7d0] !border-[rgba(34,197,94,0.4)]`;
+  return base;
 }
 
 function formatLocalTime(ts?: string): string {
@@ -74,6 +79,20 @@ function formatFileSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
+
+// ---------------------------------------------------------------------------
+// Shared input / select style
+// ---------------------------------------------------------------------------
+const inputCls =
+  "bg-black/25 border border-[var(--border)] text-[var(--text)] px-2.5 py-2 rounded-xl text-sm outline-none min-w-[120px]";
+
+// ---------------------------------------------------------------------------
+// Shared button styles
+// ---------------------------------------------------------------------------
+const btnCls =
+  "border border-[var(--border)] bg-white/[.06] text-[var(--text)] rounded-xl cursor-pointer text-[11px] px-2 py-0.5 disabled:opacity-60 disabled:cursor-not-allowed";
+const btnDangerCls =
+  "border border-[rgba(239,68,68,0.5)] bg-[rgba(239,68,68,0.18)] text-[var(--text)] rounded-xl cursor-pointer text-[11px] px-2 py-0.5 disabled:opacity-60 disabled:cursor-not-allowed";
 
 export default function LogsPage() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -169,15 +188,15 @@ export default function LogsPage() {
   }, []);
 
   const handleCopy = useCallback(async () => {
-    const text = filtered.map(formatLogLine).join("\n");
+    const copyText = filtered.map(formatLogLine).join("\n");
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(copyText);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
       // fallback
       const ta = document.createElement("textarea");
-      ta.value = text;
+      ta.value = copyText;
       document.body.appendChild(ta);
       ta.select();
       document.execCommand("copy");
@@ -187,52 +206,56 @@ export default function LogsPage() {
     }
   }, [filtered]);
 
-  const handleLoadFile = useCallback(
-    async (filename: string) => {
-      if (!filename) {
-        // Switch back to live logs
-        setSelectedFile("");
-        return;
+  const handleLoadFile = useCallback(async (filename: string) => {
+    if (!filename) {
+      setSelectedFile("");
+      return;
+    }
+    setSelectedFile(filename);
+    setLoadingFile(true);
+    try {
+      const result = await trpcQuery<{
+        logs: LogEntry[];
+        totalLines: number;
+        hasMore: boolean;
+      }>("logs.readFile", { filename, lines: 2000 });
+      if (result?.logs) {
+        setLogs(result.logs);
       }
-      setSelectedFile(filename);
-      setLoadingFile(true);
-      try {
-        const result = await trpcQuery<{
-          logs: LogEntry[];
-          totalLines: number;
-          hasMore: boolean;
-        }>("logs.readFile", { filename, lines: 2000 });
-        if (result?.logs) {
-          setLogs(result.logs);
-        }
-      } catch {
-        // ignore
-      } finally {
-        setLoadingFile(false);
-      }
-    },
-    [],
-  );
+    } catch {
+      // ignore
+    } finally {
+      setLoadingFile(false);
+    }
+  }, []);
 
   return (
     <>
-      <div className="header">
-        <h1 className="h1">Logs</h1>
-        <div className="row" style={{ gap: 8 }}>
-          <span className={connected ? "badge ok" : "badge warn"}>
+      {/* Header */}
+      <div className="flex items-center justify-between gap-3 mb-3.5">
+        <h1 className="text-lg font-bold m-0">Logs</h1>
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <span
+            className={
+              connected
+                ? "text-xs px-2 py-0.5 rounded-full border bg-white/[.04] !text-[#bbf7d0] !border-[rgba(34,197,94,0.4)]"
+                : "text-xs px-2 py-0.5 rounded-full border bg-white/[.04] !text-[#fde68a] !border-[rgba(245,158,11,0.4)]"
+            }
+          >
             {connected ? "Live" : "Disconnected"}
           </span>
         </div>
       </div>
 
-      <div className="card logsFilters">
-        <div className="logsFiltersRow">
-          <label className="logsFilterItem">
-            <span className="label" style={{ margin: 0 }}>
-              Source
-            </span>
+      {/* Filters card */}
+      <div className="bg-[var(--panel)] border border-[var(--border)] rounded-2xl p-3.5 mb-3">
+        {/* Filters row */}
+        <div className="flex items-center gap-3 flex-wrap max-sm:flex-col max-sm:items-stretch max-sm:gap-2.5">
+          {/* Log source (file picker) */}
+          <label className="flex items-center gap-2">
+            <span className="text-xs text-[var(--muted)]">Source</span>
             <select
-              className="input"
+              className={inputCls}
               value={selectedFile}
               onChange={(e) => void handleLoadFile(e.target.value)}
             >
@@ -245,12 +268,11 @@ export default function LogsPage() {
             </select>
           </label>
 
-          <label className="logsFilterItem">
-            <span className="label" style={{ margin: 0 }}>
-              Level
-            </span>
+          {/* Level filter */}
+          <label className="flex items-center gap-2">
+            <span className="text-xs text-[var(--muted)]">Level</span>
             <select
-              className="input"
+              className={inputCls}
               value={level}
               onChange={(e) => setLevel(e.target.value as any)}
             >
@@ -262,12 +284,11 @@ export default function LogsPage() {
             </select>
           </label>
 
-          <label className="logsFilterItem">
-            <span className="label" style={{ margin: 0 }}>
-              Source
-            </span>
+          {/* Source filter */}
+          <label className="flex items-center gap-2">
+            <span className="text-xs text-[var(--muted)]">Source</span>
             <select
-              className="input"
+              className={inputCls}
               value={source}
               onChange={(e) => setSource(e.target.value)}
             >
@@ -280,36 +301,37 @@ export default function LogsPage() {
             </select>
           </label>
 
-          <div className="logsFilterItem logsFilterSearch">
+          {/* Text search */}
+          <div className="flex items-center flex-1 min-w-[180px] max-sm:min-w-0">
             <input
-              className="input"
+              className={`${inputCls} w-full`}
               placeholder="Search…"
               value={text}
               onChange={(e) => setText(e.target.value)}
             />
           </div>
 
-          <label className="logsFilterItem logsFilterCheck">
+          {/* Auto-scroll checkbox */}
+          <label className="flex items-center gap-2 cursor-pointer whitespace-nowrap">
             <input
               type="checkbox"
               checked={autoScroll}
               onChange={(e) => setAutoScroll(e.target.checked)}
             />
-            <span>Auto-scroll</span>
+            <span className="text-sm">Auto-scroll</span>
           </label>
 
-          <div className="logsFilterItem" style={{ display: "flex", gap: 4 }}>
+          {/* Action buttons */}
+          <div className="flex items-center gap-1">
             <button
-              className="btn"
-              style={{ fontSize: 11, padding: "2px 8px" }}
+              className={btnCls}
               onClick={() => void handleCopy()}
               title="Copy filtered logs to clipboard"
             >
               {copied ? "Copied!" : "Copy"}
             </button>
             <button
-              className="btn danger"
-              style={{ fontSize: 11, padding: "2px 8px" }}
+              className={btnDangerCls}
               onClick={() => void handleClear()}
               title="Clear in-memory log buffer"
             >
@@ -317,55 +339,97 @@ export default function LogsPage() {
             </button>
           </div>
         </div>
+
+        {/* Loading indicator */}
         {loadingFile && (
-          <div className="row" style={{ color: "var(--muted)", fontSize: 12, marginTop: 6 }}>
-            <span className="spinner" aria-hidden="true" style={{ width: 12, height: 12 }} />
+          <div className="flex items-center gap-1.5 text-[var(--muted)] text-xs mt-1.5">
+            <span
+              className="inline-block w-3 h-3 rounded-full border-2 border-white/20 border-t-white/80 animate-spin"
+              aria-hidden="true"
+            />
             <span>Loading log file…</span>
           </div>
         )}
-        <div style={{ color: "var(--muted)", fontSize: 11, marginTop: 4 }}>
+
+        {/* Entry count */}
+        <div className="text-[var(--muted)] text-[11px] mt-1">
           {filtered.length} log{filtered.length !== 1 ? "s" : ""}
           {selectedFile ? ` from ${selectedFile}` : " (live)"}
         </div>
       </div>
 
-      <div ref={boxRef} className="card logsContainer">
-        {/* Desktop: table view */}
-        <table className="table compact logsTable">
+      {/* Log output card */}
+      <div
+        ref={boxRef}
+        className="bg-[var(--panel)] border border-[var(--border)] rounded-2xl p-3.5 overflow-auto"
+        style={{ height: "calc(100vh - 190px)" }}
+      >
+        {/* Desktop: table view (hidden on mobile) */}
+        <table className="w-full border-collapse table-fixed hidden sm:table">
           <thead>
             <tr>
-              <th style={{ width: 100 }}>Time</th>
-              <th style={{ width: 120 }}>Source</th>
-              <th style={{ width: 80 }}>Level</th>
-              <th>Message</th>
+              <th
+                className="text-left text-xs text-[var(--muted)] font-semibold px-2 py-1.5 border-b border-[var(--border)]"
+                style={{ width: 100 }}
+              >
+                Time
+              </th>
+              <th
+                className="text-left text-xs text-[var(--muted)] font-semibold px-2 py-1.5 border-b border-[var(--border)]"
+                style={{ width: 120 }}
+              >
+                Source
+              </th>
+              <th
+                className="text-left text-xs text-[var(--muted)] font-semibold px-2 py-1.5 border-b border-[var(--border)]"
+                style={{ width: 80 }}
+              >
+                Level
+              </th>
+              <th className="text-left text-xs text-[var(--muted)] font-semibold px-2 py-1.5 border-b border-[var(--border)]">
+                Message
+              </th>
             </tr>
           </thead>
           <tbody>
             {filtered.map((l, idx) => (
               <tr key={idx}>
-                <td className="mono">{formatLocalTime(l.timestamp)}</td>
-                <td className="mono">{l.source ?? ""}</td>
-                <td>
-                  <span className={levelBadge(l.level)}>{l.level}</span>
+                <td className="font-mono text-xs px-2 py-1 border-b border-[var(--border)] align-top">
+                  {formatLocalTime(l.timestamp)}
                 </td>
-                <td className="logRest">{formatRest(l)}</td>
+                <td className="font-mono text-xs px-2 py-1 border-b border-[var(--border)] align-top">
+                  {l.source ?? ""}
+                </td>
+                <td className="text-xs px-2 py-1 border-b border-[var(--border)] align-top">
+                  <span className={levelBadgeClass(l.level)}>{l.level}</span>
+                </td>
+                <td className="text-xs px-2 py-1 border-b border-[var(--border)] align-top whitespace-pre-wrap break-words leading-snug">
+                  {formatRest(l)}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
 
-        {/* Mobile: card view */}
-        <div className="logsList">
+        {/* Mobile: card view (hidden on sm+) */}
+        <div className="sm:hidden">
           {filtered.map((l, idx) => (
-            <div key={idx} className="logCard">
-              <div className="logCardHeader">
-                <span className={levelBadge(l.level)}>{l.level}</span>
-                <span className="logCardSource">{l.source ?? ""}</span>
-                <span className="logCardTime mono">
+            <div
+              key={idx}
+              className="px-3 py-2.5 border-b border-[var(--border)] last:border-b-0"
+            >
+              <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                <span className={levelBadgeClass(l.level)}>{l.level}</span>
+                <span className="font-mono text-[11px] text-[var(--muted)]">
+                  {l.source ?? ""}
+                </span>
+                <span className="font-mono text-[11px] text-[var(--muted)] ml-auto">
                   {formatLocalTime(l.timestamp)}
                 </span>
               </div>
-              <div className="logCardMessage">{formatRest(l)}</div>
+              <div className="text-[11px] leading-[1.4] break-words whitespace-pre-wrap">
+                {formatRest(l)}
+              </div>
             </div>
           ))}
         </div>
