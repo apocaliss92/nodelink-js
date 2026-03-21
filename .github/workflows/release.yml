@@ -117,16 +117,15 @@ jobs:
           echo "tag=v${VERSION}" >> $GITHUB_OUTPUT
           echo "Final version: ${VERSION}"
 
-      - name: Update package.json version
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply version bump (after npm ci to avoid overwrite)
         if: github.event_name == 'workflow_dispatch'
         run: |
-          # Use base version (without pre-release suffix) for package.json
           BASE_VERSION=$(echo "${{ steps.version.outputs.version }}" | sed 's/-.*//')
           npm version ${BASE_VERSION} --no-git-tag-version --allow-same-version
           cd app && npm version ${BASE_VERSION} --no-git-tag-version --allow-same-version || true
-
-      - name: Install dependencies
-        run: npm ci
 
       - name: Nx affected since last release
         id: affected
