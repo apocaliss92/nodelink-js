@@ -23,6 +23,9 @@ export default function CamerasPage() {
     serviceIp,
     go2rtcRunning,
     go2rtcToggling,
+    rtspSource,
+    rtspSourceSaving,
+    setRtspSource,
     streamsByCamera,
     streamsLoadingByCamera,
     streamsDiscoveryAttemptsByCamera,
@@ -153,6 +156,18 @@ export default function CamerasPage() {
               <>Restreamer: {go2rtcRunning ? "ON" : "OFF"}</>
             )}
           </button>
+
+          <select
+            className="btn master"
+            value={rtspSource}
+            disabled={rtspSourceSaving}
+            onChange={(e) => void setRtspSource(e.target.value as "go2rtc" | "local")}
+            title="RTSP source: go2rtc (passthrough) or local (BaichuanRtspServer direct)"
+            style={{ cursor: "pointer", minWidth: 120 }}
+          >
+            <option value="go2rtc">RTSP: go2rtc</option>
+            <option value="local">RTSP: local</option>
+          </select>
 
           <button className="btn primary" onClick={() => setAddOpen(true)}>
             + Add Camera

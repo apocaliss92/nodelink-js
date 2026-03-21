@@ -85,15 +85,17 @@ export function useCamerasPage() {
       setError(null);
     }
     try {
-      const [list, proxy, rtspList, nvrList, go2rtcSt, settingsRes] = await Promise.all([
+      const [list, proxy, rtspList, nvrList, go2rtcSt, settingsRes, go2rtcSettings] = await Promise.all([
         trpcQuery<CameraInfo[]>("cameras.list"),
         trpcQuery<any>("rtspProxy.getStatus").catch(() => null),
         trpcQuery<any[]>("rtsp.list").catch(() => []),
         trpcQuery<NvrInfo[]>("cameras.listNvrs").catch(() => []),
         trpcQuery<{ apiUrl: string | null; running: boolean }>("go2rtc.status").catch(() => null),
         trpcQuery<{ serviceIp?: string }>("settings.get").catch(() => null),
+        trpcQuery<{ rtspSource?: "go2rtc" | "local" }>("go2rtc.getSettings").catch(() => null),
       ]);
       if (settingsRes?.serviceIp) setServiceIp(settingsRes.serviceIp);
+      if (go2rtcSettings?.rtspSource) setRtspSourceState(go2rtcSettings.rtspSource);
       if (go2rtcSt) {
         setGo2rtcRunning(go2rtcSt.running);
         if (go2rtcSt.apiUrl) {
@@ -285,6 +287,8 @@ export function useCamerasPage() {
 
   const [go2rtcRunning, setGo2rtcRunning] = useState(false);
   const [go2rtcToggling, setGo2rtcToggling] = useState(false);
+  const [rtspSource, setRtspSourceState] = useState<"go2rtc" | "local">("go2rtc");
+  const [rtspSourceSaving, setRtspSourceSaving] = useState(false);
 
   const toggleGo2rtc = useCallback(async () => {
     setGo2rtcToggling(true);
@@ -304,6 +308,18 @@ export function useCamerasPage() {
       setGo2rtcToggling(false);
     }
   }, [go2rtcRunning, refresh]);
+
+  const setRtspSource = useCallback(async (value: "go2rtc" | "local") => {
+    setRtspSourceSaving(true);
+    try {
+      await trpcMutation("go2rtc.updateSettings", { rtspSource: value });
+      setRtspSourceState(value);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setRtspSourceSaving(false);
+    }
+  }, []);
 
   const deleteCamera = useCallback(
     async (id: string) => {
@@ -398,6 +414,9 @@ export function useCamerasPage() {
     serviceIp,
     go2rtcRunning,
     go2rtcToggling,
+    rtspSource,
+    rtspSourceSaving,
+    setRtspSource,
     streamsByCamera,
     streamsLoadingByCamera,
     streamsDiscoveryAttemptsByCamera,

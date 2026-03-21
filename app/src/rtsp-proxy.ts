@@ -835,7 +835,7 @@ export async function startRtspProxy(options?: {
     return proxyInstance;
   }
 
-  const port = options?.port ?? Number(process.env.RTSP_PORT) || 8554;
+  const port = options?.port ?? (Number(process.env.RTSP_PORT) || 8554);
 
   proxyInstance = new RtspProxyServer({
     port,

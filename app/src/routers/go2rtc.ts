@@ -38,6 +38,7 @@ export const go2rtcRouter = router({
     .input(
       z.object({
         enabled: z.boolean().optional(),
+        rtspSource: z.enum(["go2rtc", "local"]).optional(),
         binaryPath: z.string().optional(),
         apiPort: z.number().int().min(1).max(65535).optional(),
         rtspPort: z.number().int().min(1).max(65535).optional(),
