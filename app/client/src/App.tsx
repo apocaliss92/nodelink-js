@@ -175,6 +175,7 @@ function AppInner() {
   }
 
   return (
+    <div className="legacy">
     <div className="layout">
       <aside className="sidebar">
         <div className="brand">
@@ -388,6 +389,7 @@ function AppInner() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
+    </div>
     </div>
   );
 }
