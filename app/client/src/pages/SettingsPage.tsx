@@ -178,6 +178,29 @@ type Metrics = {
   };
 };
 
+// ---------------------------------------------------------------------------
+// Shared Tailwind class strings
+// ---------------------------------------------------------------------------
+const cardCls =
+  "rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4";
+
+const labelCls =
+  "text-xs font-medium text-[var(--color-foreground-muted)] uppercase tracking-wider mb-1.5 block";
+
+const inputCls =
+  "w-full rounded-md border border-[var(--color-border)] bg-[var(--color-background)] px-3 py-2 text-sm text-[var(--color-foreground)] outline-none";
+
+const btnCls =
+  "border border-[var(--color-border)] bg-white/[.06] text-[var(--color-foreground)] rounded-md cursor-pointer text-xs px-3 py-1.5 disabled:opacity-60 disabled:cursor-not-allowed";
+
+const btnPrimaryCls =
+  "border border-[rgba(59,130,246,0.55)] bg-[rgba(59,130,246,0.28)] text-[var(--color-foreground)] rounded-md cursor-pointer text-xs px-3 py-1.5 disabled:opacity-60 disabled:cursor-not-allowed";
+
+const btnDangerCls =
+  "border border-[rgba(239,68,68,0.5)] bg-[rgba(239,68,68,0.18)] text-[var(--color-foreground)] rounded-md cursor-pointer text-xs px-3 py-1.5 disabled:opacity-60 disabled:cursor-not-allowed";
+
+const monoCls = "font-mono";
+
 export default function SettingsPage() {
   const { state: authState, refresh: refreshAuth } = useAuth();
 
@@ -598,10 +621,11 @@ export default function SettingsPage() {
 
   return (
     <>
-      <div className="header">
-        <h1 className="h1">Settings</h1>
+      {/* Page header */}
+      <div className="flex items-center justify-between gap-3 mb-4">
+        <h1 className="text-lg font-bold m-0">Settings</h1>
         <button
-          className="btn primary"
+          className={btnPrimaryCls}
           disabled={!dirty || saving || !canEditSettings}
           onClick={save}
         >
@@ -610,24 +634,17 @@ export default function SettingsPage() {
       </div>
 
       {error ? (
-        <div className="card" style={{ borderColor: "rgba(239,68,68,0.5)" }}>
-          <div style={{ color: "#fecaca" }}>Error: {error}</div>
+        <div className="rounded-lg border border-[rgba(239,68,68,0.5)] bg-[var(--color-surface)] p-4 mb-3">
+          <div className="text-[#fecaca]">Error: {error}</div>
         </div>
       ) : null}
 
       {!settings ? (
-        <div className="card">Loading…</div>
+        <div className={cardCls}>Loading…</div>
       ) : (
         <>
-          <div
-            className="row"
-            style={{
-              gap: 4,
-              marginBottom: 12,
-              borderBottom: "1px solid var(--border)",
-              paddingBottom: 8,
-            }}
-          >
+          {/* Tab bar */}
+          <div className="flex gap-1 border-b border-[var(--color-border)] mb-4 flex-wrap">
             {(
               [
                 ["general", "General"],
@@ -642,602 +659,595 @@ export default function SettingsPage() {
             ).map(([id, label]) => (
               <button
                 key={id}
-                className={`btn ${activeTab === id ? "primary" : ""}`}
+                className={
+                  activeTab === id
+                    ? "px-3 py-2 text-xs font-medium transition-colors border-b-2 border-[var(--color-primary)] text-[var(--color-foreground)] cursor-pointer bg-transparent"
+                    : "px-3 py-2 text-xs font-medium transition-colors text-[var(--color-foreground-muted)] hover:text-[var(--color-foreground)] cursor-pointer bg-transparent border-b-2 border-transparent"
+                }
                 onClick={() => setActiveTab(id)}
-                style={{ padding: "8px 14px" }}
               >
                 {label}
               </button>
             ))}
           </div>
 
+          {/* General tab */}
           {activeTab === "general" ? (
-            <div className="card">
-            <div className="label">Runtime (read-only)</div>
-            <div className="grid cols2" style={{ marginTop: 10 }}>
-              <div>
-                <div className="label">HTTP port</div>
-                <input
-                  className="input"
-                  readOnly
-                  value={runtime ? String(runtime.httpPort) : ""}
-                />
-              </div>
-              <div>
-                <div className="label">RTSP port</div>
-                <input
-                  className="input"
-                  readOnly
-                  value={runtime ? String(runtime.rtspPort) : ""}
-                />
-              </div>
-            </div>
-
-            <div style={{ marginTop: 12 }}>
-              <div className="label">App version</div>
-              <input
-                className="input"
-                readOnly
-                value={runtime?.appVersion ? String(runtime.appVersion) : ""}
-              />
-              <div
-                style={{ color: "var(--muted)", fontSize: 12, marginTop: 6 }}
-              >
-                {updateInfo?.updateAvailable && updateInfo.latestVersion ? (
-                  <>
-                    Update available:{" "}
-                    <a
-                      href={updateInfo.releaseUrl ?? "#"}
-                      target={updateInfo.releaseUrl ? "_blank" : undefined}
-                      rel={updateInfo.releaseUrl ? "noreferrer" : undefined}
-                      style={{ textDecoration: "underline" }}
-                    >
-                      v{updateInfo.latestVersion}
-                    </a>
-                  </>
-                ) : updateInfo?.error ? (
-                  <>Update check unavailable</>
-                ) : updateInfo ? (
-                  <>Up to date</>
-                ) : (
-                  <>Checking updates…</>
-                )}
-              </div>
-            </div>
-
-            <div style={{ marginTop: 12 }}>
-              <div className="label">Data folder</div>
-              <input
-                className="input"
-                readOnly
-                value={runtime ? runtime.dataPath : ""}
-              />
-            </div>
-
-            <div style={{ marginTop: 12 }}>
-              <div className="label">Service IP (for RTSP/MJPEG URLs)</div>
-              <input
-                className="input"
-                value={settings.serviceIp ?? "localhost"}
-                disabled={!canEditSettings}
-                onChange={(e) =>
-                  setSettings({ ...settings, serviceIp: e.target.value })
-                }
-              />
-            </div>
-
-            <div className="label" style={{ marginTop: 18 }}>Logging</div>
-            <div className="grid cols2" style={{ marginTop: 10 }}>
-              <div>
-                <div className="label">Log level</div>
-                <select
-                  className="input"
-                  value={settings.logLevel}
-                  disabled={!canEditSettings}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      logLevel: e.target.value as Settings["logLevel"],
-                    })
-                  }
-                >
-                  <option value="error">error</option>
-                  <option value="warn">warn</option>
-                  <option value="info">info</option>
-                  <option value="debug">debug</option>
-                </select>
-              </div>
-              <div>
-                <div className="label">Log retention days</div>
-                <input
-                  className="input"
-                  type="number"
-                  value={settings.logRetentionDays}
-                  disabled={!canEditSettings}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      logRetentionDays: Number(e.target.value),
-                    })
-                  }
-                />
-              </div>
-            </div>
-
-            {isAuthEnabled ? (
-              <div className="row" style={{ marginTop: 12 }}>
-                <label className="row" style={{ cursor: "pointer" }}>
+            <div className={cardCls}>
+              <span className={labelCls}>Runtime (read-only)</span>
+              <div className="grid grid-cols-2 gap-3 mt-2.5">
+                <div>
+                  <span className={labelCls}>HTTP port</span>
                   <input
-                    type="checkbox"
-                    checked={settings.rtspRequireAuth}
+                    className={inputCls}
+                    readOnly
+                    value={runtime ? String(runtime.httpPort) : ""}
+                  />
+                </div>
+                <div>
+                  <span className={labelCls}>RTSP port</span>
+                  <input
+                    className={inputCls}
+                    readOnly
+                    value={runtime ? String(runtime.rtspPort) : ""}
+                  />
+                </div>
+              </div>
+
+              <div className="mt-3">
+                <span className={labelCls}>App version</span>
+                <input
+                  className={inputCls}
+                  readOnly
+                  value={runtime?.appVersion ? String(runtime.appVersion) : ""}
+                />
+                <div className="text-[var(--color-foreground-muted)] text-xs mt-1.5">
+                  {updateInfo?.updateAvailable && updateInfo.latestVersion ? (
+                    <>
+                      Update available:{" "}
+                      <a
+                        href={updateInfo.releaseUrl ?? "#"}
+                        target={updateInfo.releaseUrl ? "_blank" : undefined}
+                        rel={updateInfo.releaseUrl ? "noreferrer" : undefined}
+                        className="underline"
+                      >
+                        v{updateInfo.latestVersion}
+                      </a>
+                    </>
+                  ) : updateInfo?.error ? (
+                    <>Update check unavailable</>
+                  ) : updateInfo ? (
+                    <>Up to date</>
+                  ) : (
+                    <>Checking updates…</>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-3">
+                <span className={labelCls}>Data folder</span>
+                <input
+                  className={inputCls}
+                  readOnly
+                  value={runtime ? runtime.dataPath : ""}
+                />
+              </div>
+
+              <div className="mt-3">
+                <span className={labelCls}>Service IP (for RTSP/MJPEG URLs)</span>
+                <input
+                  className={inputCls}
+                  value={settings.serviceIp ?? "localhost"}
+                  disabled={!canEditSettings}
+                  onChange={(e) =>
+                    setSettings({ ...settings, serviceIp: e.target.value })
+                  }
+                />
+              </div>
+
+              <span className={`${labelCls} mt-4`}>Logging</span>
+              <div className="grid grid-cols-2 gap-3 mt-2.5">
+                <div>
+                  <span className={labelCls}>Log level</span>
+                  <select
+                    className={inputCls}
+                    value={settings.logLevel}
                     disabled={!canEditSettings}
                     onChange={(e) =>
                       setSettings({
                         ...settings,
-                        rtspRequireAuth: e.target.checked,
+                        logLevel: e.target.value as Settings["logLevel"],
+                      })
+                    }
+                  >
+                    <option value="error">error</option>
+                    <option value="warn">warn</option>
+                    <option value="info">info</option>
+                    <option value="debug">debug</option>
+                  </select>
+                </div>
+                <div>
+                  <span className={labelCls}>Log retention days</span>
+                  <input
+                    className={inputCls}
+                    type="number"
+                    value={settings.logRetentionDays}
+                    disabled={!canEditSettings}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        logRetentionDays: Number(e.target.value),
                       })
                     }
                   />
-                  <span>
-                    Require auth for RTSP connections (uses the Users list)
-                  </span>
-                </label>
+                </div>
               </div>
-            ) : null}
-          </div>
+
+              {isAuthEnabled ? (
+                <div className="flex items-center gap-2.5 flex-wrap mt-3">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={settings.rtspRequireAuth}
+                      disabled={!canEditSettings}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          rtspRequireAuth: e.target.checked,
+                        })
+                      }
+                    />
+                    <span>
+                      Require auth for RTSP connections (uses the Users list)
+                    </span>
+                  </label>
+                </div>
+              ) : null}
+            </div>
           ) : null}
 
+          {/* Auth tab */}
           {activeTab === "auth" ? (
-            <div className="card">
-            <div className="label">Dashboard authentication</div>
-            {authState.enabled && authState.user ? (
-              <>
-                <div style={{ marginTop: 12 }}>
-                  <div className="label">Personal token</div>
-                  <div style={{ color: "var(--muted)", fontSize: 12 }}>
-                    Generate a long-lived token for streaming endpoints (MJPEG/HLS
-                    via <span className="mono">?token=</span>, WebRTC via
-                    <span className="mono"> Authorization: Bearer</span>). This
-                    token does not expire.
+            <div className={cardCls}>
+              <span className={labelCls}>Dashboard authentication</span>
+              {authState.enabled && authState.user ? (
+                <>
+                  <div className="mt-3">
+                    <span className={labelCls}>Personal token</span>
+                    <div className="text-[var(--color-foreground-muted)] text-xs">
+                      Generate a long-lived token for streaming endpoints (MJPEG/HLS
+                      via <span className={monoCls}>?token=</span>, WebRTC via
+                      <span className={monoCls}> Authorization: Bearer</span>). This
+                      token does not expire.
+                    </div>
+
+                    <div className="flex items-center justify-end gap-2.5 mt-2.5">
+                      <button
+                        className={btnPrimaryCls}
+                        disabled={creatingPersonalToken}
+                        onClick={() => void createPersonalToken()}
+                      >
+                        Generate personal token
+                      </button>
+                    </div>
+
+                    {personalToken ? (
+                      <div className="mt-2.5">
+                        <div className="flex items-center gap-2.5 mt-2">
+                          <input
+                            className={`${inputCls} ${monoCls} flex-1 min-w-0`}
+                            readOnly
+                            value={personalToken}
+                          />
+                          <button
+                            className={btnCls}
+                            onClick={() =>
+                              void navigator.clipboard
+                                .writeText(personalToken)
+                                .catch(() => {})
+                            }
+                          >
+                            Copy
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
 
-                  <div
-                    className="row"
-                    style={{ marginTop: 10, justifyContent: "flex-end" }}
-                  >
-                    <button
-                      className="btn primary"
-                      disabled={creatingPersonalToken}
-                      onClick={() => void createPersonalToken()}
-                    >
-                      Generate personal token
-                    </button>
-                  </div>
+                  {authState.user?.role === "admin" ? (
+                    <div className="mt-4">
+                      <span className={labelCls}>Users</span>
+                      <div className="text-[var(--color-foreground-muted)] text-xs">
+                        Users that can access this web dashboard and authenticate to
+                        the RTSP proxy (Digest).
+                      </div>
 
-                  {personalToken ? (
-                    <div style={{ marginTop: 10 }}>
-                      <div className="row" style={{ marginTop: 8 }}>
-                        <input
-                          className="input mono"
-                          readOnly
-                          value={personalToken}
-                          style={{ flex: 1, minWidth: 0 }}
-                        />
+                      <div className="flex items-center justify-end gap-2.5 mt-2.5">
                         <button
-                          className="btn"
-                          onClick={() =>
-                            void navigator.clipboard
-                              .writeText(personalToken)
-                              .catch(() => {})
-                          }
+                          className={btnCls}
+                          disabled={savingDashUsers}
+                          onClick={() => void refreshDashboardUsers()}
                         >
-                          Copy
+                          Refresh users
+                        </button>
+                        <button
+                          className={btnPrimaryCls}
+                          disabled={savingDashUsers}
+                          onClick={() => {
+                            setDashUserDraft({
+                              username: "",
+                              password: "",
+                              role: "user",
+                            });
+                            setAddDashUserOpen(true);
+                          }}
+                        >
+                          Add user
                         </button>
                       </div>
-                    </div>
-                  ) : null}
-                </div>
 
-                {authState.user?.role === "admin" ? (
-                  <div style={{ marginTop: 18 }}>
-                    <div className="label">Users</div>
-                    <div style={{ color: "var(--muted)", fontSize: 12 }}>
-                      Users that can access this web dashboard and authenticate to
-                      the RTSP proxy (Digest).
-                    </div>
-
-                    <div
-                      className="row"
-                      style={{ marginTop: 10, justifyContent: "flex-end" }}
-                    >
-                      <button
-                        className="btn"
-                        disabled={savingDashUsers}
-                        onClick={() => void refreshDashboardUsers()}
-                      >
-                        Refresh users
-                      </button>
-                      <button
-                        className="btn primary"
-                        disabled={savingDashUsers}
-                        onClick={() => {
-                          setDashUserDraft({
-                            username: "",
-                            password: "",
-                            role: "user",
-                          });
-                          setAddDashUserOpen(true);
-                        }}
-                      >
-                        Add user
-                      </button>
-                    </div>
-
-                    {dashUsers.length === 0 ? (
-                      <div
-                        style={{
-                          color: "var(--muted)",
-                          fontSize: 13,
-                          marginTop: 10,
-                        }}
-                      >
-                        No dashboard users configured.
-                      </div>
-                    ) : (
-                      <table className="table" style={{ marginTop: 10 }}>
-                        <thead>
-                          <tr>
-                            <th style={{ width: 220 }}>Username</th>
-                            <th style={{ width: 110 }}>Role</th>
-                            <th />
-                            <th style={{ width: 220 }} />
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {dashUsers.map((u) => (
-                            <tr key={u.username}>
-                              <td className="mono">{u.username}</td>
-                              <td>{u.role}</td>
-                              <td />
-                              <td style={{ textAlign: "right" }}>
-                                <button
-                                  className="btn"
-                                  disabled={savingDashUsers}
-                                  onClick={() =>
-                                    void resetDashboardUserPassword(u.username)
-                                  }
-                                >
-                                  Reset password
-                                </button>
-                                <button
-                                  className="btn danger"
-                                  disabled={savingDashUsers}
-                                  onClick={() =>
-                                    void deleteDashboardUser(u.username)
-                                  }
-                                >
-                                  Delete
-                                </button>
-                              </td>
+                      {dashUsers.length === 0 ? (
+                        <div className="text-[var(--color-foreground-muted)] text-sm mt-2.5">
+                          No dashboard users configured.
+                        </div>
+                      ) : (
+                        <table className="w-full text-sm mt-2.5">
+                          <thead>
+                            <tr>
+                              <th className="text-left px-2.5 py-2 border-b border-[var(--color-border)] text-[var(--color-foreground-muted)] text-xs font-semibold" style={{ width: 220 }}>Username</th>
+                              <th className="text-left px-2.5 py-2 border-b border-[var(--color-border)] text-[var(--color-foreground-muted)] text-xs font-semibold" style={{ width: 110 }}>Role</th>
+                              <th className="text-left px-2.5 py-2 border-b border-[var(--color-border)] text-[var(--color-foreground-muted)] text-xs font-semibold" />
+                              <th className="text-left px-2.5 py-2 border-b border-[var(--color-border)] text-[var(--color-foreground-muted)] text-xs font-semibold" style={{ width: 220 }} />
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    )}
-                  </div>
-                ) : (
-                  <div style={{ marginTop: 18 }}>
-                    <div className="label">Users</div>
-                    <div style={{ color: "var(--muted)", fontSize: 12 }}>
-                      Only admins can manage dashboard users.
+                          </thead>
+                          <tbody>
+                            {dashUsers.map((u) => (
+                              <tr key={u.username}>
+                                <td className={`${monoCls} px-2.5 py-2 border-b border-[var(--color-border)] align-top`}>{u.username}</td>
+                                <td className="px-2.5 py-2 border-b border-[var(--color-border)] align-top">{u.role}</td>
+                                <td className="px-2.5 py-2 border-b border-[var(--color-border)] align-top" />
+                                <td className="px-2.5 py-2 border-b border-[var(--color-border)] align-top text-right">
+                                  <button
+                                    className={btnCls}
+                                    disabled={savingDashUsers}
+                                    onClick={() =>
+                                      void resetDashboardUserPassword(u.username)
+                                    }
+                                  >
+                                    Reset password
+                                  </button>
+                                  <button
+                                    className={`${btnDangerCls} ml-1`}
+                                    disabled={savingDashUsers}
+                                    onClick={() =>
+                                      void deleteDashboardUser(u.username)
+                                    }
+                                  >
+                                    Delete
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
                     </div>
-                  </div>
-                )}
-              </>
-            ) : (
-              <div style={{ color: "var(--muted)", fontSize: 12 }}>
-                Auth is disabled. Set AUTH_ENABLED=1 to secure the dashboard.
-              </div>
-            )}
-          </div>
-          ) : null}
-
-          {activeTab === "mqtt" ? (
-            <div className="card">
-            <div className="label">MQTT (events publishing)</div>
-            <div style={{ color: "var(--muted)", fontSize: 12 }}>
-              Publish camera events to an MQTT broker for SSE, JSON stream, and
-              Home Assistant integration.
-            </div>
-
-            {(() => {
-              const mqtt = settings.mqtt ?? {
-                enabled: false,
-                brokerUrl: "mqtt://localhost:1883",
-                username: "",
-                password: "",
-                clientId: "",
-                topicPrefix: "nodelink-js",
-                qos: 0 as 0 | 1 | 2,
-                reconnectPeriod: 5000,
-              };
-
-              return (
-                <>
-                  <div className="row" style={{ marginTop: 12 }}>
-                    <label className="row" style={{ cursor: "pointer" }}>
-                      <input
-                        type="checkbox"
-                        checked={mqtt.enabled}
-                        disabled={!canEditSettings}
-                        onChange={(e) =>
-                          setSettings({
-                            ...settings,
-                            mqtt: { ...mqtt, enabled: e.target.checked },
-                          })
-                        }
-                      />
-                      <span>Enable MQTT</span>
-                    </label>
-                  </div>
-
-                  <div className="grid cols2" style={{ marginTop: 10 }}>
-                    <div style={{ gridColumn: "1 / -1" }}>
-                      <div className="label">Broker URL</div>
-                      <input
-                        className="input mono"
-                        placeholder="mqtt://localhost:1883"
-                        value={mqtt.brokerUrl}
-                        disabled={!canEditSettings}
-                        onChange={(e) =>
-                          setSettings({
-                            ...settings,
-                            mqtt: { ...mqtt, brokerUrl: e.target.value },
-                          })
-                        }
-                      />
+                  ) : (
+                    <div className="mt-4">
+                      <span className={labelCls}>Users</span>
+                      <div className="text-[var(--color-foreground-muted)] text-xs">
+                        Only admins can manage dashboard users.
+                      </div>
                     </div>
-                    <div>
-                      <div className="label">Username</div>
-                      <input
-                        className="input"
-                        value={mqtt.username ?? ""}
-                        disabled={!canEditSettings}
-                        onChange={(e) =>
-                          setSettings({
-                            ...settings,
-                            mqtt: { ...mqtt, username: e.target.value || undefined },
-                          })
-                        }
-                      />
-                    </div>
-                    <div>
-                      <div className="label">Password</div>
-                      <input
-                        className="input"
-                        type="password"
-                        value={mqtt.password ?? ""}
-                        disabled={!canEditSettings}
-                        onChange={(e) =>
-                          setSettings({
-                            ...settings,
-                            mqtt: { ...mqtt, password: e.target.value || undefined },
-                          })
-                        }
-                      />
-                    </div>
-                    <div>
-                      <div className="label">Client ID</div>
-                      <input
-                        className="input mono"
-                        placeholder="auto"
-                        value={mqtt.clientId ?? ""}
-                        disabled={!canEditSettings}
-                        onChange={(e) =>
-                          setSettings({
-                            ...settings,
-                            mqtt: { ...mqtt, clientId: e.target.value || undefined },
-                          })
-                        }
-                      />
-                    </div>
-                    <div>
-                      <div className="label">Topic prefix</div>
-                      <input
-                        className="input mono"
-                        value={mqtt.topicPrefix}
-                        disabled={!canEditSettings}
-                        onChange={(e) =>
-                          setSettings({
-                            ...settings,
-                            mqtt: { ...mqtt, topicPrefix: e.target.value },
-                          })
-                        }
-                      />
-                    </div>
-                    <div>
-                      <div className="label">QoS</div>
-                      <select
-                        className="input"
-                        value={mqtt.qos}
-                        disabled={!canEditSettings}
-                        onChange={(e) =>
-                          setSettings({
-                            ...settings,
-                            mqtt: {
-                              ...mqtt,
-                              qos: Number(e.target.value) as 0 | 1 | 2,
-                            },
-                          })
-                        }
-                      >
-                        <option value={0}>0</option>
-                        <option value={1}>1</option>
-                        <option value={2}>2</option>
-                      </select>
-                    </div>
-                  </div>
+                  )}
                 </>
-              );
-            })()}
-
-            <div className="label" style={{ marginTop: 18 }}>Home Assistant</div>
-            <div style={{ color: "var(--muted)", fontSize: 12 }}>
-              Forward camera device state to Home Assistant via MQTT discovery.
-            </div>
-
-            {(() => {
-              const ha = settings.homeassistant ?? {
-                enabled: false,
-                discoveryPrefix: "homeassistant",
-                pollIntervalSeconds: 60,
-                stateTopicPrefix: "nodelink-js",
-              };
-
-              return (
-                <>
-                  <div className="row" style={{ marginTop: 12 }}>
-                    <label className="row" style={{ cursor: "pointer" }}>
-                      <input
-                        type="checkbox"
-                        checked={ha.enabled}
-                        disabled={!canEditSettings}
-                        onChange={(e) =>
-                          setSettings({
-                            ...settings,
-                            homeassistant: { ...ha, enabled: e.target.checked },
-                          })
-                        }
-                      />
-                      <span>Enable Home Assistant MQTT discovery</span>
-                    </label>
-                  </div>
-
-                  <div className="grid cols2" style={{ marginTop: 10 }}>
-                    <div>
-                      <div className="label">Discovery prefix</div>
-                      <input
-                        className="input mono"
-                        value={ha.discoveryPrefix}
-                        disabled={!canEditSettings}
-                        onChange={(e) =>
-                          setSettings({
-                            ...settings,
-                            homeassistant: {
-                              ...ha,
-                              discoveryPrefix: e.target.value,
-                            },
-                          })
-                        }
-                      />
-                    </div>
-                    <div>
-                      <div className="label">Poll interval (seconds)</div>
-                      <input
-                        className="input"
-                        type="number"
-                        min={10}
-                        max={3600}
-                        value={ha.pollIntervalSeconds}
-                        disabled={!canEditSettings}
-                        onChange={(e) =>
-                          setSettings({
-                            ...settings,
-                            homeassistant: {
-                              ...ha,
-                              pollIntervalSeconds: Number(e.target.value),
-                            },
-                          })
-                        }
-                      />
-                    </div>
-                    <div>
-                      <div className="label">State topic prefix</div>
-                      <input
-                        className="input mono"
-                        value={ha.stateTopicPrefix}
-                        disabled={!canEditSettings}
-                        onChange={(e) =>
-                          setSettings({
-                            ...settings,
-                            homeassistant: {
-                              ...ha,
-                              stateTopicPrefix: e.target.value,
-                            },
-                          })
-                        }
-                      />
-                    </div>
-                  </div>
-                </>
-              );
-            })()}
-          </div>
-          ) : null}
-
-          {activeTab === "webrtc" ? (
-            <div className="card">
-            <div className="label">WebRTC (ICE)</div>
-            <div style={{ color: "var(--muted)", fontSize: 12 }}>
-              Useful in Docker bridge mode. Configure the ICE UDP port range and
-              the additional host IPs/hostnames to advertise.
-            </div>
-
-            {(() => {
-              const webrtc = settings.webrtc ?? {
-                icePortRange: "",
-                iceAdditionalHostAddresses: "",
-              };
-
-              return (
-                <div className="grid cols2" style={{ marginTop: 10 }}>
-                  <div>
-                    <div className="label">ICE UDP port range</div>
-                    <input
-                      className="input mono"
-                      placeholder="10000-10100"
-                      value={webrtc.icePortRange}
-                      disabled={!canEditSettings}
-                      onChange={(e) =>
-                        setSettings({
-                          ...settings,
-                          webrtc: {
-                            ...webrtc,
-                            icePortRange: e.target.value,
-                          },
-                        })
-                      }
-                    />
-                  </div>
-
-                  <div>
-                    <div className="label">Additional host addresses (CSV)</div>
-                    <input
-                      className="input mono"
-                      placeholder="192.168.1.10, my-ddns.example.com"
-                      value={webrtc.iceAdditionalHostAddresses}
-                      disabled={!canEditSettings}
-                      onChange={(e) =>
-                        setSettings({
-                          ...settings,
-                          webrtc: {
-                            ...webrtc,
-                            iceAdditionalHostAddresses: e.target.value,
-                          },
-                        })
-                      }
-                    />
-                  </div>
+              ) : (
+                <div className="text-[var(--color-foreground-muted)] text-xs mt-2">
+                  Auth is disabled. Set AUTH_ENABLED=1 to secure the dashboard.
                 </div>
-              );
-            })()}
-          </div>
+              )}
+            </div>
           ) : null}
 
+          {/* MQTT tab */}
+          {activeTab === "mqtt" ? (
+            <div className={cardCls}>
+              <span className={labelCls}>MQTT (events publishing)</span>
+              <div className="text-[var(--color-foreground-muted)] text-xs">
+                Publish camera events to an MQTT broker for SSE, JSON stream, and
+                Home Assistant integration.
+              </div>
+
+              {(() => {
+                const mqtt = settings.mqtt ?? {
+                  enabled: false,
+                  brokerUrl: "mqtt://localhost:1883",
+                  username: "",
+                  password: "",
+                  clientId: "",
+                  topicPrefix: "nodelink-js",
+                  qos: 0 as 0 | 1 | 2,
+                  reconnectPeriod: 5000,
+                };
+
+                return (
+                  <>
+                    <div className="flex items-center gap-2.5 flex-wrap mt-3">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={mqtt.enabled}
+                          disabled={!canEditSettings}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              mqtt: { ...mqtt, enabled: e.target.checked },
+                            })
+                          }
+                        />
+                        <span>Enable MQTT</span>
+                      </label>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3 mt-2.5">
+                      <div style={{ gridColumn: "1 / -1" }}>
+                        <span className={labelCls}>Broker URL</span>
+                        <input
+                          className={`${inputCls} ${monoCls}`}
+                          placeholder="mqtt://localhost:1883"
+                          value={mqtt.brokerUrl}
+                          disabled={!canEditSettings}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              mqtt: { ...mqtt, brokerUrl: e.target.value },
+                            })
+                          }
+                        />
+                      </div>
+                      <div>
+                        <span className={labelCls}>Username</span>
+                        <input
+                          className={inputCls}
+                          value={mqtt.username ?? ""}
+                          disabled={!canEditSettings}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              mqtt: { ...mqtt, username: e.target.value || undefined },
+                            })
+                          }
+                        />
+                      </div>
+                      <div>
+                        <span className={labelCls}>Password</span>
+                        <input
+                          className={inputCls}
+                          type="password"
+                          value={mqtt.password ?? ""}
+                          disabled={!canEditSettings}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              mqtt: { ...mqtt, password: e.target.value || undefined },
+                            })
+                          }
+                        />
+                      </div>
+                      <div>
+                        <span className={labelCls}>Client ID</span>
+                        <input
+                          className={`${inputCls} ${monoCls}`}
+                          placeholder="auto"
+                          value={mqtt.clientId ?? ""}
+                          disabled={!canEditSettings}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              mqtt: { ...mqtt, clientId: e.target.value || undefined },
+                            })
+                          }
+                        />
+                      </div>
+                      <div>
+                        <span className={labelCls}>Topic prefix</span>
+                        <input
+                          className={`${inputCls} ${monoCls}`}
+                          value={mqtt.topicPrefix}
+                          disabled={!canEditSettings}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              mqtt: { ...mqtt, topicPrefix: e.target.value },
+                            })
+                          }
+                        />
+                      </div>
+                      <div>
+                        <span className={labelCls}>QoS</span>
+                        <select
+                          className={inputCls}
+                          value={mqtt.qos}
+                          disabled={!canEditSettings}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              mqtt: {
+                                ...mqtt,
+                                qos: Number(e.target.value) as 0 | 1 | 2,
+                              },
+                            })
+                          }
+                        >
+                          <option value={0}>0</option>
+                          <option value={1}>1</option>
+                          <option value={2}>2</option>
+                        </select>
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
+
+              <span className={`${labelCls} mt-4`}>Home Assistant</span>
+              <div className="text-[var(--color-foreground-muted)] text-xs">
+                Forward camera device state to Home Assistant via MQTT discovery.
+              </div>
+
+              {(() => {
+                const ha = settings.homeassistant ?? {
+                  enabled: false,
+                  discoveryPrefix: "homeassistant",
+                  pollIntervalSeconds: 60,
+                  stateTopicPrefix: "nodelink-js",
+                };
+
+                return (
+                  <>
+                    <div className="flex items-center gap-2.5 flex-wrap mt-3">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={ha.enabled}
+                          disabled={!canEditSettings}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              homeassistant: { ...ha, enabled: e.target.checked },
+                            })
+                          }
+                        />
+                        <span>Enable Home Assistant MQTT discovery</span>
+                      </label>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3 mt-2.5">
+                      <div>
+                        <span className={labelCls}>Discovery prefix</span>
+                        <input
+                          className={`${inputCls} ${monoCls}`}
+                          value={ha.discoveryPrefix}
+                          disabled={!canEditSettings}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              homeassistant: {
+                                ...ha,
+                                discoveryPrefix: e.target.value,
+                              },
+                            })
+                          }
+                        />
+                      </div>
+                      <div>
+                        <span className={labelCls}>Poll interval (seconds)</span>
+                        <input
+                          className={inputCls}
+                          type="number"
+                          min={10}
+                          max={3600}
+                          value={ha.pollIntervalSeconds}
+                          disabled={!canEditSettings}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              homeassistant: {
+                                ...ha,
+                                pollIntervalSeconds: Number(e.target.value),
+                              },
+                            })
+                          }
+                        />
+                      </div>
+                      <div>
+                        <span className={labelCls}>State topic prefix</span>
+                        <input
+                          className={`${inputCls} ${monoCls}`}
+                          value={ha.stateTopicPrefix}
+                          disabled={!canEditSettings}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              homeassistant: {
+                                ...ha,
+                                stateTopicPrefix: e.target.value,
+                              },
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          ) : null}
+
+          {/* WebRTC tab */}
+          {activeTab === "webrtc" ? (
+            <div className={cardCls}>
+              <span className={labelCls}>WebRTC (ICE)</span>
+              <div className="text-[var(--color-foreground-muted)] text-xs">
+                Useful in Docker bridge mode. Configure the ICE UDP port range and
+                the additional host IPs/hostnames to advertise.
+              </div>
+
+              {(() => {
+                const webrtc = settings.webrtc ?? {
+                  icePortRange: "",
+                  iceAdditionalHostAddresses: "",
+                };
+
+                return (
+                  <div className="grid grid-cols-2 gap-3 mt-2.5">
+                    <div>
+                      <span className={labelCls}>ICE UDP port range</span>
+                      <input
+                        className={`${inputCls} ${monoCls}`}
+                        placeholder="10000-10100"
+                        value={webrtc.icePortRange}
+                        disabled={!canEditSettings}
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            webrtc: {
+                              ...webrtc,
+                              icePortRange: e.target.value,
+                            },
+                          })
+                        }
+                      />
+                    </div>
+
+                    <div>
+                      <span className={labelCls}>Additional host addresses (CSV)</span>
+                      <input
+                        className={`${inputCls} ${monoCls}`}
+                        placeholder="192.168.1.10, my-ddns.example.com"
+                        value={webrtc.iceAdditionalHostAddresses}
+                        disabled={!canEditSettings}
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            webrtc: {
+                              ...webrtc,
+                              iceAdditionalHostAddresses: e.target.value,
+                            },
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          ) : null}
+
+          {/* go2rtc tab */}
           {activeTab === "go2rtc" ? (
-            <div className="card">
-              <div className="label">go2rtc Restreamer</div>
-              <div style={{ color: "var(--muted)", fontSize: 12 }}>
+            <div className={cardCls}>
+              <span className={labelCls}>go2rtc Restreamer</span>
+              <div className="text-[var(--color-foreground-muted)] text-xs">
                 When enabled, camera streams are fed as raw video to go2rtc via TCP
                 instead of running individual RTSP servers. go2rtc then provides
                 WebRTC, HLS, MJPEG, and RTSP output automatically.
@@ -1285,8 +1295,8 @@ export default function SettingsPage() {
 
                 return (
                   <>
-                    <div style={{ marginTop: 12, marginBottom: 12 }}>
-                      <label className="row" style={{ cursor: "pointer", gap: 8 }}>
+                    <div className="mt-3 mb-3">
+                      <label className="flex items-center gap-2 cursor-pointer">
                         <input
                           type="checkbox"
                           checked={go2rtc.enabled}
@@ -1304,32 +1314,26 @@ export default function SettingsPage() {
 
                     {go2rtcStatus && (
                       <div
-                        className="row"
+                        className="flex items-center gap-2 mb-3 px-3 py-2 rounded-lg"
                         style={{
-                          gap: 8,
-                          marginBottom: 12,
-                          padding: "8px 12px",
-                          borderRadius: 8,
                           background: go2rtcStatus.running
                             ? "rgba(34,197,94,0.1)"
                             : "rgba(239,68,68,0.1)",
                         }}
                       >
                         <span
+                          className="w-2 h-2 rounded-full flex-shrink-0"
                           style={{
-                            width: 8,
-                            height: 8,
-                            borderRadius: "50%",
                             background: go2rtcStatus.running ? "#22c55e" : "#ef4444",
                           }}
                         />
-                        <span style={{ flex: 1, fontSize: 13 }}>
+                        <span className="flex-1 text-sm">
                           {go2rtcStatus.running
                             ? `Running — API: ${go2rtcStatus.apiUrl}`
                             : "Stopped"}
                         </span>
                         <button
-                          className={`btn ${go2rtcStatus.running ? "" : "primary"}`}
+                          className={go2rtcStatus.running ? btnCls : btnPrimaryCls}
                           style={{ padding: "4px 12px", fontSize: 12 }}
                           disabled={go2rtcLoading}
                           onClick={handleStartStop}
@@ -1341,7 +1345,7 @@ export default function SettingsPage() {
                               : "Start"}
                         </button>
                         <button
-                          className="btn"
+                          className={btnCls}
                           style={{ padding: "4px 12px", fontSize: 12 }}
                           onClick={refreshStatus}
                         >
@@ -1357,7 +1361,7 @@ export default function SettingsPage() {
                                 href={href}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="btn"
+                                className={btnCls}
                                 style={{ padding: "4px 12px", fontSize: 12, textDecoration: "none" }}
                               >
                                 Dashboard
@@ -1372,15 +1376,15 @@ export default function SettingsPage() {
 
                     {go2rtcStatus?.running &&
                       Object.keys(go2rtcStatus.streams).length > 0 && (
-                        <div style={{ marginBottom: 12 }}>
-                          <div className="label" style={{ fontSize: 12, marginBottom: 4 }}>
+                        <div className="mb-3">
+                          <span className={labelCls} style={{ fontSize: 12 }}>
                             Registered streams
-                          </div>
+                          </span>
                           <div
+                            className={monoCls}
                             style={{
                               fontSize: 12,
-                              fontFamily: "monospace",
-                              background: "var(--bg-secondary)",
+                              background: "var(--color-surface)",
                               padding: "8px 10px",
                               borderRadius: 6,
                               maxHeight: 150,
@@ -1394,29 +1398,28 @@ export default function SettingsPage() {
                         </div>
                       )}
 
-                    {/* Ports are configured via environment variables, shown read-only */}
                     {go2rtcStatus?.running && go2rtcStatus.apiUrl && (
                       <div
+                        className={monoCls}
                         style={{
                           marginTop: 8,
                           padding: "8px 12px",
                           borderRadius: 6,
-                          background: "var(--bg-secondary)",
+                          background: "var(--color-surface)",
                           fontSize: 12,
-                          fontFamily: "monospace",
                         }}
                       >
-                        <div style={{ color: "var(--muted)", fontSize: 10, marginBottom: 4 }}>
+                        <div className="text-[var(--color-foreground-muted)]" style={{ fontSize: 10, marginBottom: 4 }}>
                           Ports (configured via environment variables)
                         </div>
                         <div>API: {go2rtcStatus.apiUrl}</div>
                       </div>
                     )}
 
-                    <div style={{ marginTop: 10 }}>
-                      <div className="label">ICE servers (one per line)</div>
+                    <div className="mt-2.5">
+                      <span className={labelCls}>ICE servers (one per line)</span>
                       <textarea
-                        className="input mono"
+                        className={`${inputCls} ${monoCls}`}
                         rows={3}
                         placeholder={"stun:stun.l.google.com:19302"}
                         value={(go2rtc.iceServers ?? []).join("\n")}
@@ -1433,7 +1436,7 @@ export default function SettingsPage() {
                             },
                           })
                         }
-                        style={{ width: "100%", resize: "vertical" }}
+                        style={{ resize: "vertical" }}
                       />
                     </div>
 
@@ -1443,10 +1446,11 @@ export default function SettingsPage() {
             </div>
           ) : null}
 
+          {/* Frigate tab */}
           {activeTab === "frigate" ? (
-            <div className="card">
-              <div className="label">Frigate Integration</div>
-              <div style={{ color: "var(--muted)", fontSize: 12, marginBottom: 12 }}>
+            <div className={cardCls}>
+              <span className={labelCls}>Frigate Integration</span>
+              <div className="text-[var(--color-foreground-muted)] text-xs mb-3">
                 Connect to a Frigate instance to push camera configurations directly.
                 Streams are auto-assigned to detect/record/audio based on resolution.
               </div>
@@ -1592,11 +1596,11 @@ export default function SettingsPage() {
                 return (
                   <>
                     {/* Connection settings */}
-                    <div className="grid cols2" style={{ marginBottom: 12 }}>
+                    <div className="grid grid-cols-2 gap-3 mb-3">
                       <div style={{ gridColumn: "1 / -1" }}>
-                        <div className="label">Frigate URL</div>
+                        <span className={labelCls}>Frigate URL</span>
                         <input
-                          className="input mono"
+                          className={`${inputCls} ${monoCls}`}
                           placeholder="http://192.168.1.100:5000"
                           value={fg.host}
                           onChange={(e) =>
@@ -1608,9 +1612,9 @@ export default function SettingsPage() {
                         />
                       </div>
                       <div>
-                        <div className="label">Username (optional)</div>
+                        <span className={labelCls}>Username (optional)</span>
                         <input
-                          className="input"
+                          className={inputCls}
                           placeholder="admin"
                           value={fg.username}
                           onChange={(e) =>
@@ -1622,9 +1626,9 @@ export default function SettingsPage() {
                         />
                       </div>
                       <div>
-                        <div className="label">Password (optional)</div>
+                        <span className={labelCls}>Password (optional)</span>
                         <input
-                          className="input"
+                          className={inputCls}
                           type="password"
                           value={fg.password}
                           onChange={(e) =>
@@ -1638,20 +1642,23 @@ export default function SettingsPage() {
                     </div>
 
                     {/* Connection status + refresh */}
-                    <div className="row" style={{ gap: 8, marginBottom: 12, alignItems: "center" }}>
+                    <div className="flex items-center gap-2 mb-3 flex-wrap">
                       {frigateConnected && (
-                        <span style={{ fontSize: 12, color: frigateConnected.ok ? "#22c55e" : "#ef4444" }}>
+                        <span
+                          className="text-xs"
+                          style={{ color: frigateConnected.ok ? "#22c55e" : "#ef4444" }}
+                        >
                           {frigateConnected.ok
                             ? `Connected (Frigate ${frigateConnected.version})${frigateSystemInfo?.hwaccelFamily ? ` · hwaccel: ${frigateSystemInfo.hwaccelFamily}` : ""}`
                             : `Error: ${frigateConnected.error}`}
                         </span>
                       )}
                       {frigateLoading && !frigateConnected && (
-                        <span style={{ fontSize: 12, color: "var(--muted)" }}>Connecting...</span>
+                        <span className="text-xs text-[var(--color-foreground-muted)]">Connecting...</span>
                       )}
                       {frigateConnected?.ok && (
                         <button
-                          className="btn"
+                          className={btnCls}
                           style={{ padding: "2px 8px", fontSize: 10, marginLeft: "auto" }}
                           disabled={frigateLoading}
                           onClick={() => {
@@ -1673,40 +1680,33 @@ export default function SettingsPage() {
                       const renderRow = (fc: any) => (
                         <div
                           key={fc.frigateName}
+                          className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border border-[var(--color-border)] text-xs"
                           style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 8,
-                            padding: "6px 10px",
-                            borderRadius: 6,
-                            border: "1px solid var(--border)",
-                            fontSize: 12,
                             background: frigateRemoveNames.has(fc.frigateName)
                               ? "rgba(239,68,68,0.06)"
                               : "transparent",
                           }}
                         >
                           <span
+                            className="w-2 h-2 rounded-full flex-shrink-0"
                             style={{
-                              width: 8, height: 8, borderRadius: "50%",
                               background: fc.frigateEnabled ? "#22c55e" : "#6b7280",
-                              flexShrink: 0,
                             }}
                           />
-                          <strong style={{ minWidth: 120 }}>{fc.frigateName}</strong>
+                          <strong className="min-w-[120px]">{fc.frigateName}</strong>
                           {fc.matchedNodelinkCamera ? (
-                            <span style={{ color: "var(--muted)", fontSize: 11 }}>
+                            <span className="text-[var(--color-foreground-muted)]" style={{ fontSize: 11 }}>
                               → {fc.matchedNodelinkCamera.name}
                             </span>
                           ) : (
-                            <span style={{ color: "var(--muted)", fontSize: 11 }}>
+                            <span className="text-[var(--color-foreground-muted)]" style={{ fontSize: 11 }}>
                               (unmanaged)
                             </span>
                           )}
-                          <span style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+                          <span className="ml-auto flex gap-1">
                             {fc.matchedNodelinkCamera && (
                               <button
-                                className="btn"
+                                className={btnCls}
                                 style={{ padding: "2px 8px", fontSize: 10 }}
                                 onClick={async () => {
                                   // Load the EXISTING Frigate config for this camera
@@ -1788,7 +1788,7 @@ export default function SettingsPage() {
                               </button>
                             )}
                             <button
-                              className={`btn ${frigateRemoveNames.has(fc.frigateName) ? "primary" : ""}`}
+                              className={frigateRemoveNames.has(fc.frigateName) ? btnPrimaryCls : btnCls}
                               style={{ padding: "2px 8px", fontSize: 10 }}
                               onClick={() => {
                                 setFrigateRemoveNames((prev) => {
@@ -1806,28 +1806,28 @@ export default function SettingsPage() {
                       );
 
                       return (
-                        <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12, marginTop: 4, marginBottom: 12 }}>
+                        <div className="border-t border-[var(--color-border)] pt-3 mt-1 mb-3">
                           {managed.length > 0 && (
-                            <div style={{ marginBottom: 12 }}>
-                              <div className="label">Managed cameras (imported from Nodelink)</div>
-                              <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 6 }}>
+                            <div className="mb-3">
+                              <span className={labelCls}>Managed cameras (imported from Nodelink)</span>
+                              <div className="flex flex-col gap-1 mt-1.5">
                                 {managed.map(renderRow)}
                               </div>
                             </div>
                           )}
                           {other.length > 0 && (
                             <div>
-                              <div className="label">Other Frigate cameras</div>
-                              <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 6 }}>
+                              <span className={labelCls}>Other Frigate cameras</span>
+                              <div className="flex flex-col gap-1 mt-1.5">
                                 {other.map(renderRow)}
                               </div>
                             </div>
                           )}
 
                           {frigateRemoveNames.size > 0 && (
-                            <div className="row" style={{ gap: 8, marginTop: 10 }}>
+                            <div className="flex items-center gap-2 flex-wrap mt-2.5">
                               <button
-                                className="btn"
+                                className={btnCls}
                                 style={{ fontSize: 11, color: "#ef4444" }}
                                 disabled={frigateApplying}
                                 onClick={async () => {
@@ -1859,7 +1859,7 @@ export default function SettingsPage() {
                                 {frigateApplying ? "Removing..." : `Remove ${frigateRemoveNames.size} camera(s) + Save`}
                               </button>
                               <button
-                                className="btn"
+                                className={btnCls}
                                 style={{ fontSize: 11, color: "#ef4444" }}
                                 disabled={frigateApplying}
                                 onClick={async () => {
@@ -1895,19 +1895,13 @@ export default function SettingsPage() {
                     {/* Camera selection */}
                     {frigateConnected?.ok && (
                       <>
-                        <div
-                          style={{
-                            borderTop: "1px solid var(--border)",
-                            paddingTop: 12,
-                            marginTop: 4,
-                          }}
-                        >
-                          <div className="label">Camera</div>
-                          <div style={{ color: "var(--muted)", fontSize: 11, marginBottom: 4 }}>
+                        <div className="border-t border-[var(--color-border)] pt-3 mt-1">
+                          <span className={labelCls}>Camera</span>
+                          <div className="text-[var(--color-foreground-muted)] mb-1" style={{ fontSize: 11 }}>
                             Select a camera to configure and push to Frigate
                           </div>
                           <select
-                            className="input"
+                            className={inputCls}
                             value={frigateSelectedId}
                             onChange={(e) => selectCamera(e.target.value)}
                           >
@@ -1921,7 +1915,7 @@ export default function SettingsPage() {
                         </div>
 
                         {frigatePreview?.cameras && (
-                          <div style={{ marginTop: 12 }}>
+                          <div className="mt-3">
                             {(frigatePreview.cameras as any[]).map((c: any, idx: number) => {
                               const isManualEdit = c._manualEdit === true;
                               const streamInfoList: any[] = c.streamInfo ?? c.streams ?? [];
@@ -1968,28 +1962,17 @@ export default function SettingsPage() {
                               return (
                                 <div
                                   key={c.cameraId}
-                                  style={{
-                                    marginBottom: 16,
-                                    border: "1px solid var(--border)",
-                                    borderRadius: 8,
-                                    overflow: "hidden",
-                                  }}
+                                  className="mb-4 border border-[var(--color-border)] rounded-lg overflow-hidden"
                                 >
                                   {/* Header */}
                                   <div
-                                    style={{
-                                      padding: "8px 12px",
-                                      background: "var(--bg-secondary)",
-                                      borderBottom: "1px solid var(--border)",
-                                      display: "flex",
-                                      alignItems: "center",
-                                      gap: 8,
-                                    }}
+                                    className="flex items-center gap-2 px-3 py-2 border-b border-[var(--color-border)]"
+                                    style={{ background: "var(--color-surface)" }}
                                   >
                                     <strong style={{ fontSize: 13 }}>{c.cameraName}</strong>
-                                    <span style={{ color: "var(--muted)", fontSize: 12 }}>→</span>
+                                    <span className="text-[var(--color-foreground-muted)] text-xs">→</span>
                                     <input
-                                      className="input"
+                                      className={inputCls}
                                       value={c.frigateName}
                                       onChange={(e) => {
                                         const raw = e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "_").replace(/_{2,}/g, "_");
@@ -1998,11 +1981,11 @@ export default function SettingsPage() {
                                       style={{ fontSize: 12, padding: "2px 6px", width: 160 }}
                                     />
                                     {c.alreadyInFrigate && (
-                                      <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 4, background: "rgba(245,158,11,0.15)", color: "#f59e0b" }}>
+                                      <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "rgba(245,158,11,0.15)", color: "#f59e0b" }}>
                                         update
                                       </span>
                                     )}
-                                    <label style={{ marginLeft: "auto", fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
+                                    <label className="ml-auto flex items-center gap-1 cursor-pointer" style={{ fontSize: 11 }}>
                                       <input
                                         type="checkbox"
                                         checked={isManualEdit}
@@ -2015,24 +1998,24 @@ export default function SettingsPage() {
                                   {isManualEdit ? (
                                     /* Manual YAML editor — full control */
                                     <textarea
-                                      className="input mono"
+                                      className={`${inputCls} ${monoCls}`}
                                       value={c.yaml}
                                       onChange={(e) => updateCam({ yaml: e.target.value })}
                                       rows={Math.max(8, c.yaml.split("\n").length)}
                                       style={{
                                         width: "100%", border: "none", borderRadius: 0, resize: "vertical",
-                                        fontSize: 11, lineHeight: 1.5, fontFamily: "monospace",
-                                        whiteSpace: "pre", tabSize: 2, padding: "8px 12px", background: "var(--bg)",
+                                        fontSize: 11, lineHeight: 1.5,
+                                        whiteSpace: "pre", tabSize: 2, padding: "8px 12px", background: "var(--color-background)",
                                       }}
                                       spellCheck={false}
                                     />
                                   ) : (
                                     <>
                                       {/* Stream table with role assignment */}
-                                      <div style={{ padding: "8px 12px" }}>
+                                      <div className="px-3 py-2">
                                         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
                                           <thead>
-                                            <tr style={{ color: "var(--muted)", textAlign: "left" }}>
+                                            <tr className="text-[var(--color-foreground-muted)] text-left">
                                               <th style={{ padding: "3px 6px" }}>Profile</th>
                                               <th style={{ padding: "3px 6px" }}>Codec</th>
                                               <th style={{ padding: "3px 6px" }}>Resolution</th>
@@ -2045,7 +2028,7 @@ export default function SettingsPage() {
                                           </thead>
                                           <tbody>
                                             {streamInfoList.map((s: any, sIdx: number) => (
-                                              <tr key={s.go2rtcName || sIdx} style={{ borderTop: "1px solid var(--border)" }}>
+                                              <tr key={s.go2rtcName || sIdx} className="border-t border-[var(--color-border)]">
                                                 <td style={{ padding: "4px 6px", fontWeight: 600 }}>{s.profile}</td>
                                                 <td style={{ padding: "4px 6px" }}>
                                                   {s.codec ? (
@@ -2056,9 +2039,9 @@ export default function SettingsPage() {
                                                       color: (s.codec ?? "").toLowerCase().includes("h265") || (s.codec ?? "").toLowerCase().includes("hevc")
                                                         ? "#a855f7" : "#3b82f6",
                                                     }}>{s.codec}</span>
-                                                  ) : <span style={{ color: "var(--muted)" }}>—</span>}
+                                                  ) : <span className="text-[var(--color-foreground-muted)]">—</span>}
                                                 </td>
-                                                <td style={{ padding: "4px 6px", fontFamily: "monospace", fontSize: 10 }}>{s.resolution || "—"}</td>
+                                                <td className={monoCls} style={{ padding: "4px 6px", fontSize: 10 }}>{s.resolution || "—"}</td>
                                                 {["record", "detect", "audio"].map((role) => (
                                                   <td key={role} style={{ padding: "4px 6px", textAlign: "center" }}>
                                                     <input
@@ -2070,7 +2053,7 @@ export default function SettingsPage() {
                                                 ))}
                                                 <td style={{ padding: "4px 4px" }}>
                                                   <select
-                                                    className="input"
+                                                    className={inputCls}
                                                     style={{ fontSize: 10, padding: "2px 4px", width: "100%" }}
                                                     value={s._inputArgs ?? "preset-rtsp-restream"}
                                                     onChange={(e) => updateStreamPreset(sIdx, "_inputArgs", e.target.value)}
@@ -2082,7 +2065,7 @@ export default function SettingsPage() {
                                                 </td>
                                                 <td style={{ padding: "4px 4px" }}>
                                                   <select
-                                                    className="input"
+                                                    className={inputCls}
                                                     style={{ fontSize: 10, padding: "2px 4px", width: "100%" }}
                                                     value={s._hwaccelArgs ?? ""}
                                                     onChange={(e) => updateStreamPreset(sIdx, "_hwaccelArgs", e.target.value)}
@@ -2099,8 +2082,8 @@ export default function SettingsPage() {
                                       </div>
 
                                       {/* Feature toggles */}
-                                      <div style={{ padding: "6px 12px 8px", borderTop: "1px solid var(--border)", display: "flex", flexWrap: "wrap", gap: 12 }}>
-                                        <label style={{ fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
+                                      <div className="flex flex-wrap gap-3 px-3 py-2 border-t border-[var(--color-border)]">
+                                        <label className="flex items-center gap-1 cursor-pointer" style={{ fontSize: 11 }}>
                                           <input
                                             type="checkbox"
                                             checked={c._recordEnabled !== false}
@@ -2108,7 +2091,7 @@ export default function SettingsPage() {
                                           />
                                           Record
                                         </label>
-                                        <label style={{ fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
+                                        <label className="flex items-center gap-1 cursor-pointer" style={{ fontSize: 11 }}>
                                           <input
                                             type="checkbox"
                                             checked={c._detectEnabled !== false}
@@ -2116,7 +2099,7 @@ export default function SettingsPage() {
                                           />
                                           Detect
                                         </label>
-                                        <label style={{ fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
+                                        <label className="flex items-center gap-1 cursor-pointer" style={{ fontSize: 11 }}>
                                           <input
                                             type="checkbox"
                                             checked={c._snapshotsEnabled !== false}
@@ -2124,7 +2107,7 @@ export default function SettingsPage() {
                                           />
                                           Snapshots
                                         </label>
-                                        <label style={{ fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
+                                        <label className="flex items-center gap-1 cursor-pointer" style={{ fontSize: 11 }}>
                                           <input
                                             type="checkbox"
                                             checked={c._audioEnabled !== false}
@@ -2132,7 +2115,7 @@ export default function SettingsPage() {
                                           />
                                           Audio
                                         </label>
-                                        <label style={{ fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
+                                        <label className="flex items-center gap-1 cursor-pointer" style={{ fontSize: 11 }}>
                                           <input
                                             type="checkbox"
                                             checked={c._useFrigateGo2rtc === true}
@@ -2144,15 +2127,15 @@ export default function SettingsPage() {
 
                                       {/* Readonly YAML preview */}
                                       <textarea
-                                        className="input mono"
+                                        className={`${inputCls} ${monoCls}`}
                                         value={c.yaml}
                                         readOnly
                                         rows={Math.max(4, c.yaml.split("\n").length)}
                                         style={{
                                           width: "100%", border: "none", borderRadius: 0, resize: "none",
-                                          fontSize: 10, lineHeight: 1.4, fontFamily: "monospace",
+                                          fontSize: 10, lineHeight: 1.4,
                                           whiteSpace: "pre", tabSize: 2, padding: "6px 12px",
-                                          background: "var(--bg-secondary)", color: "var(--muted)",
+                                          background: "var(--color-surface)", color: "var(--color-foreground-muted)",
                                         }}
                                         spellCheck={false}
                                       />
@@ -2166,16 +2149,16 @@ export default function SettingsPage() {
 
                         {/* Action buttons */}
                         {frigatePreview?.cameras?.length > 0 && (
-                          <div className="row" style={{ gap: 8, marginTop: 12 }}>
+                          <div className="flex items-center gap-2 flex-wrap mt-3">
                             <button
-                              className="btn primary"
+                              className={btnPrimaryCls}
                               disabled={frigateApplying}
                               onClick={() => applyToFrigate(false)}
                             >
                               {frigateApplying ? "Saving..." : "Save to Frigate"}
                             </button>
                             <button
-                              className="btn primary"
+                              className={btnPrimaryCls}
                               disabled={frigateApplying}
                               onClick={() => applyToFrigate(true)}
                             >
@@ -2187,11 +2170,8 @@ export default function SettingsPage() {
                         {/* Status message */}
                         {frigateMessage && (
                           <div
+                            className="mt-2.5 px-3 py-2 rounded-md text-xs"
                             style={{
-                              marginTop: 10,
-                              padding: "8px 12px",
-                              borderRadius: 6,
-                              fontSize: 12,
                               background: frigateMessage.startsWith("Error")
                                 ? "rgba(239,68,68,0.1)"
                                 : "rgba(34,197,94,0.1)",
@@ -2208,35 +2188,26 @@ export default function SettingsPage() {
 
                     {/* Config backups */}
                     {frigateConnected?.ok && frigateBackups.length > 0 && (
-                      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12, marginTop: 12 }}>
-                        <div
-                          className="label"
-                          style={{ cursor: "pointer", userSelect: "none" }}
+                      <div className="border-t border-[var(--color-border)] pt-3 mt-3">
+                        <span
+                          className={`${labelCls} cursor-pointer select-none`}
                           onClick={() => setFrigateBackupsOpen(!frigateBackupsOpen)}
                         >
                           Config Backups ({frigateBackups.length}) {frigateBackupsOpen ? "▾" : "▸"}
-                        </div>
+                        </span>
                         {frigateBackupsOpen && (
-                          <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
+                          <div className="mt-1.5 flex flex-col gap-1">
                             {frigateBackups.map((b) => (
                               <div
                                 key={b.id}
-                                style={{
-                                  display: "flex",
-                                  alignItems: "center",
-                                  gap: 8,
-                                  padding: "4px 8px",
-                                  borderRadius: 6,
-                                  border: "1px solid var(--border)",
-                                  fontSize: 11,
-                                }}
+                                className="flex items-center gap-2 px-2 py-1 rounded-md border border-[var(--color-border)] text-xs"
                               >
-                                <span style={{ color: "var(--muted)", minWidth: 140 }}>
+                                <span className="text-[var(--color-foreground-muted)] min-w-[140px]">
                                   {new Date(b.timestamp).toLocaleString()}
                                 </span>
-                                <span style={{ flex: 1 }}>{b.summary}</span>
+                                <span className="flex-1">{b.summary}</span>
                                 <button
-                                  className="btn"
+                                  className={btnCls}
                                   style={{ padding: "1px 8px", fontSize: 10 }}
                                   disabled={frigateApplying}
                                   onClick={async () => {
@@ -2278,325 +2249,320 @@ export default function SettingsPage() {
             </div>
           ) : null}
 
+          {/* Proxy tab */}
           {activeTab === "proxy" ? (
-            <div className="card">
-            <div className="label">Trusted proxy (Authentik / NPM)</div>
-            <div style={{ color: "var(--muted)", fontSize: 12 }}>
-              Enable header-based authentication when running behind a trusted
-              reverse proxy (e.g. Nginx Proxy Manager + Authentik).
-            </div>
-
-            {!isAuthEnabled ? (
-              <div
-                style={{ marginTop: 10, color: "var(--muted)", fontSize: 13 }}
-              >
-                Auth is disabled. Set{" "}
-                <span className="mono">AUTH_ENABLED=1</span>
-                (and <span className="mono">ADMIN_PASSWORD</span>) to secure the
-                dashboard.
+            <div className={cardCls}>
+              <span className={labelCls}>Trusted proxy (Authentik / NPM)</span>
+              <div className="text-[var(--color-foreground-muted)] text-xs">
+                Enable header-based authentication when running behind a trusted
+                reverse proxy (e.g. Nginx Proxy Manager + Authentik).
               </div>
-            ) : (
-              (() => {
-                const tp = settings.auth?.trustedProxy ?? {
-                  enabled: false,
-                  allowedIps: ["127.0.0.1", "::1"],
-                  usernameHeader: "x-authentik-username",
-                  groupsHeader: "x-authentik-groups",
-                  adminGroup: "admin",
-                };
 
-                return (
-                  <>
-                    <div className="row" style={{ marginTop: 12 }}>
-                      <label className="row" style={{ cursor: "pointer" }}>
-                        <input
-                          type="checkbox"
-                          checked={tp.enabled}
-                          disabled={!canEditSettings}
-                          onChange={(e) =>
-                            setSettings({
-                              ...settings,
-                              auth: {
-                                ...settings.auth,
-                                trustedProxy: {
-                                  ...tp,
-                                  enabled: e.target.checked,
-                                },
-                              },
-                            })
-                          }
-                        />
-                        <span>Enable trusted proxy auth</span>
-                      </label>
-                    </div>
+              {!isAuthEnabled ? (
+                <div className="mt-2.5 text-[var(--color-foreground-muted)] text-sm">
+                  Auth is disabled. Set{" "}
+                  <span className={monoCls}>AUTH_ENABLED=1</span>
+                  (and <span className={monoCls}>ADMIN_PASSWORD</span>) to secure the
+                  dashboard.
+                </div>
+              ) : (
+                (() => {
+                  const tp = settings.auth?.trustedProxy ?? {
+                    enabled: false,
+                    allowedIps: ["127.0.0.1", "::1"],
+                    usernameHeader: "x-authentik-username",
+                    groupsHeader: "x-authentik-groups",
+                    adminGroup: "admin",
+                  };
 
-                    <div className="grid cols2" style={{ marginTop: 10 }}>
-                      <div style={{ gridColumn: "1 / -1" }}>
-                        <div className="label">Allowed proxy IPs (CSV)</div>
-                        <input
-                          className="input mono"
-                          placeholder="127.0.0.1, ::1"
-                          value={tp.allowedIps.join(", ")}
-                          disabled={!canEditSettings}
-                          onChange={(e) =>
-                            setSettings({
-                              ...settings,
-                              auth: {
-                                ...settings.auth,
-                                trustedProxy: {
-                                  ...tp,
-                                  allowedIps: e.target.value
-                                    .split(",")
-                                    .map((s) => s.trim())
-                                    .filter(Boolean),
+                  return (
+                    <>
+                      <div className="flex items-center gap-2.5 flex-wrap mt-3">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={tp.enabled}
+                            disabled={!canEditSettings}
+                            onChange={(e) =>
+                              setSettings({
+                                ...settings,
+                                auth: {
+                                  ...settings.auth,
+                                  trustedProxy: {
+                                    ...tp,
+                                    enabled: e.target.checked,
+                                  },
                                 },
-                              },
-                            })
-                          }
-                        />
-                        <div
-                          style={{
-                            color: "var(--muted)",
-                            fontSize: 12,
-                            marginTop: 6,
-                          }}
-                        >
-                          Must match the IP of your reverse proxy as seen by the
-                          app (often the Docker bridge IP or the host).
+                              })
+                            }
+                          />
+                          <span>Enable trusted proxy auth</span>
+                        </label>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3 mt-2.5">
+                        <div style={{ gridColumn: "1 / -1" }}>
+                          <span className={labelCls}>Allowed proxy IPs (CSV)</span>
+                          <input
+                            className={`${inputCls} ${monoCls}`}
+                            placeholder="127.0.0.1, ::1"
+                            value={tp.allowedIps.join(", ")}
+                            disabled={!canEditSettings}
+                            onChange={(e) =>
+                              setSettings({
+                                ...settings,
+                                auth: {
+                                  ...settings.auth,
+                                  trustedProxy: {
+                                    ...tp,
+                                    allowedIps: e.target.value
+                                      .split(",")
+                                      .map((s) => s.trim())
+                                      .filter(Boolean),
+                                  },
+                                },
+                              })
+                            }
+                          />
+                          <div className="text-[var(--color-foreground-muted)] text-xs mt-1.5">
+                            Must match the IP of your reverse proxy as seen by the
+                            app (often the Docker bridge IP or the host).
+                          </div>
+                        </div>
+
+                        <div>
+                          <span className={labelCls}>Username header</span>
+                          <input
+                            className={`${inputCls} ${monoCls}`}
+                            value={tp.usernameHeader}
+                            disabled={!canEditSettings}
+                            onChange={(e) =>
+                              setSettings({
+                                ...settings,
+                                auth: {
+                                  ...settings.auth,
+                                  trustedProxy: {
+                                    ...tp,
+                                    usernameHeader: e.target.value,
+                                  },
+                                },
+                              })
+                            }
+                          />
+                        </div>
+
+                        <div>
+                          <span className={labelCls}>Groups header</span>
+                          <input
+                            className={`${inputCls} ${monoCls}`}
+                            value={tp.groupsHeader}
+                            disabled={!canEditSettings}
+                            onChange={(e) =>
+                              setSettings({
+                                ...settings,
+                                auth: {
+                                  ...settings.auth,
+                                  trustedProxy: {
+                                    ...tp,
+                                    groupsHeader: e.target.value,
+                                  },
+                                },
+                              })
+                            }
+                          />
+                        </div>
+
+                        <div style={{ gridColumn: "1 / -1" }}>
+                          <span className={labelCls}>Admin group name</span>
+                          <input
+                            className={inputCls}
+                            value={tp.adminGroup}
+                            disabled={!canEditSettings}
+                            onChange={(e) =>
+                              setSettings({
+                                ...settings,
+                                auth: {
+                                  ...settings.auth,
+                                  trustedProxy: {
+                                    ...tp,
+                                    adminGroup: e.target.value,
+                                  },
+                                },
+                              })
+                            }
+                          />
                         </div>
                       </div>
+                    </>
+                  );
+                })()
+              )}
+            </div>
+          ) : null}
 
+          {/* Metrics tab */}
+          {activeTab === "metrics" ? (
+            <div className={cardCls}>
+              <span className={labelCls}>Resource usage</span>
+              {!canViewMetrics ? (
+                <div className="text-[var(--color-foreground-muted)] text-xs">
+                  Only admins can view metrics.
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center gap-2.5 flex-wrap mt-2.5">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={metricsAutoRefresh}
+                        onChange={(e) => setMetricsAutoRefresh(e.target.checked)}
+                      />
+                      <span>Auto refresh</span>
+                    </label>
+
+                    <div className="flex-1" />
+
+                    <button
+                      className={btnCls}
+                      disabled={metricsLoading}
+                      onClick={() => void fetchMetricsOnce()}
+                    >
+                      {metricsLoading ? "Refreshing…" : "Refresh"}
+                    </button>
+                  </div>
+
+                  {!metrics ? (
+                    <div className="text-[var(--color-foreground-muted)] text-xs mt-2.5">
+                      {metricsError ? `Error: ${metricsError}` : "No data yet."}
+                    </div>
+                  ) : null}
+
+                  {metrics ? (
+                    <div className="grid grid-cols-2 gap-3 mt-2.5">
                       <div>
-                        <div className="label">Username header</div>
+                        <span className={labelCls}>Uptime</span>
                         <input
-                          className="input mono"
-                          value={tp.usernameHeader}
-                          disabled={!canEditSettings}
-                          onChange={(e) =>
-                            setSettings({
-                              ...settings,
-                              auth: {
-                                ...settings.auth,
-                                trustedProxy: {
-                                  ...tp,
-                                  usernameHeader: e.target.value,
-                                },
-                              },
-                            })
+                          className={inputCls}
+                          readOnly
+                          value={formatSeconds(metrics.process.uptimeSeconds)}
+                        />
+                      </div>
+                      <div>
+                        <span className={labelCls}>CPU</span>
+                        <input
+                          className={inputCls}
+                          readOnly
+                          value={
+                            metrics.process.cpu.percent === null
+                              ? "(warming up…)"
+                              : `${metrics.process.cpu.percent.toFixed(1)}%`
                           }
                         />
                       </div>
 
                       <div>
-                        <div className="label">Groups header</div>
+                        <span className={labelCls}>RSS</span>
                         <input
-                          className="input mono"
-                          value={tp.groupsHeader}
-                          disabled={!canEditSettings}
-                          onChange={(e) =>
-                            setSettings({
-                              ...settings,
-                              auth: {
-                                ...settings.auth,
-                                trustedProxy: {
-                                  ...tp,
-                                  groupsHeader: e.target.value,
-                                },
-                              },
-                            })
-                          }
+                          className={inputCls}
+                          readOnly
+                          value={formatBytes(metrics.process.memory.rss)}
+                        />
+                      </div>
+                      <div>
+                        <span className={labelCls}>Heap used</span>
+                        <input
+                          className={inputCls}
+                          readOnly
+                          value={`${formatBytes(metrics.process.memory.heapUsed)} / ${formatBytes(metrics.process.memory.heapTotal)}`}
+                        />
+                      </div>
+
+                      <div>
+                        <span className={labelCls}>Event loop utilization</span>
+                        <input
+                          className={inputCls}
+                          readOnly
+                          value={`${(metrics.process.eventLoop.utilization * 100).toFixed(1)}%`}
+                        />
+                      </div>
+                      <div>
+                        <span className={labelCls}>Host memory</span>
+                        <input
+                          className={inputCls}
+                          readOnly
+                          value={`${formatBytes(metrics.system.totalMem - metrics.system.freeMem)} / ${formatBytes(metrics.system.totalMem)}`}
+                        />
+                      </div>
+
+                      <div>
+                        <span className={labelCls}>Load avg</span>
+                        <input
+                          className={inputCls}
+                          readOnly
+                          value={metrics.system.loadAvg
+                            .slice(0, 3)
+                            .map((n) => n.toFixed(2))
+                            .join(" ")}
+                        />
+                      </div>
+                      <div>
+                        <span className={labelCls}>Node</span>
+                        <input
+                          className={`${inputCls} ${monoCls}`}
+                          readOnly
+                          value={`${metrics.process.nodeVersion} (pid ${metrics.process.pid})`}
                         />
                       </div>
 
                       <div style={{ gridColumn: "1 / -1" }}>
-                        <div className="label">Admin group name</div>
-                        <input
-                          className="input"
-                          value={tp.adminGroup}
-                          disabled={!canEditSettings}
-                          onChange={(e) =>
-                            setSettings({
-                              ...settings,
-                              auth: {
-                                ...settings.auth,
-                                trustedProxy: {
-                                  ...tp,
-                                  adminGroup: e.target.value,
-                                },
-                              },
-                            })
-                          }
-                        />
+                        <div className="text-[var(--color-foreground-muted)] text-xs">
+                          Updated: {new Date(metrics.timestamp).toLocaleString()}
+                        </div>
                       </div>
                     </div>
-                  </>
-                );
-              })()
-            )}
-          </div>
+                  ) : null}
+                </>
+              )}
+            </div>
           ) : null}
-
-          {activeTab === "metrics" ? (
-            <div className="card">
-            <div className="label">Resource usage</div>
-            {!canViewMetrics ? (
-              <div style={{ color: "var(--muted)", fontSize: 12 }}>
-                Only admins can view metrics.
-              </div>
-            ) : (
-              <>
-                <div className="row" style={{ marginTop: 10 }}>
-                  <label className="row" style={{ cursor: "pointer" }}>
-                    <input
-                      type="checkbox"
-                      checked={metricsAutoRefresh}
-                      onChange={(e) => setMetricsAutoRefresh(e.target.checked)}
-                    />
-                    <span>Auto refresh</span>
-                  </label>
-
-                  <div style={{ flex: 1 }} />
-
-                  <button
-                    className="btn"
-                    disabled={metricsLoading}
-                    onClick={() => void fetchMetricsOnce()}
-                  >
-                    {metricsLoading ? "Refreshing…" : "Refresh"}
-                  </button>
-                </div>
-
-                {!metrics ? (
-                  <div
-                    style={{
-                      color: "var(--muted)",
-                      fontSize: 12,
-                      marginTop: 10,
-                    }}
-                  >
-                    {metricsError ? `Error: ${metricsError}` : "No data yet."}
-                  </div>
-                ) : null}
-
-                {metrics ? (
-                  <div className="grid cols2" style={{ marginTop: 10 }}>
-                    <div>
-                      <div className="label">Uptime</div>
-                      <input
-                        className="input"
-                        readOnly
-                        value={formatSeconds(metrics.process.uptimeSeconds)}
-                      />
-                    </div>
-                    <div>
-                      <div className="label">CPU</div>
-                      <input
-                        className="input"
-                        readOnly
-                        value={
-                          metrics.process.cpu.percent === null
-                            ? "(warming up…)"
-                            : `${metrics.process.cpu.percent.toFixed(1)}%`
-                        }
-                      />
-                    </div>
-
-                    <div>
-                      <div className="label">RSS</div>
-                      <input
-                        className="input"
-                        readOnly
-                        value={formatBytes(metrics.process.memory.rss)}
-                      />
-                    </div>
-                    <div>
-                      <div className="label">Heap used</div>
-                      <input
-                        className="input"
-                        readOnly
-                        value={`${formatBytes(metrics.process.memory.heapUsed)} / ${formatBytes(metrics.process.memory.heapTotal)}`}
-                      />
-                    </div>
-
-                    <div>
-                      <div className="label">Event loop utilization</div>
-                      <input
-                        className="input"
-                        readOnly
-                        value={`${(metrics.process.eventLoop.utilization * 100).toFixed(1)}%`}
-                      />
-                    </div>
-                    <div>
-                      <div className="label">Host memory</div>
-                      <input
-                        className="input"
-                        readOnly
-                        value={`${formatBytes(metrics.system.totalMem - metrics.system.freeMem)} / ${formatBytes(metrics.system.totalMem)}`}
-                      />
-                    </div>
-
-                    <div>
-                      <div className="label">Load avg</div>
-                      <input
-                        className="input"
-                        readOnly
-                        value={metrics.system.loadAvg
-                          .slice(0, 3)
-                          .map((n) => n.toFixed(2))
-                          .join(" ")}
-                      />
-                    </div>
-                    <div>
-                      <div className="label">Node</div>
-                      <input
-                        className="input mono"
-                        readOnly
-                        value={`${metrics.process.nodeVersion} (pid ${metrics.process.pid})`}
-                      />
-                    </div>
-
-                    <div style={{ gridColumn: "1 / -1" }}>
-                      <div style={{ color: "var(--muted)", fontSize: 12 }}>
-                        Updated: {new Date(metrics.timestamp).toLocaleString()}
-                      </div>
-                    </div>
-                  </div>
-                ) : null}
-              </>
-            )}
-          </div>
-        ) : null}
         </>
       )}
 
+      {/* Add dashboard user modal */}
       {addDashUserOpen ? (
         <div
           role="dialog"
           aria-modal="true"
-          className="modalOverlay"
+          className="fixed inset-0 z-50 p-4 grid place-items-center bg-black/[.66] backdrop-blur-sm"
           onMouseDown={(e) => {
             if (e.target === e.currentTarget) setAddDashUserOpen(false);
           }}
         >
-          <div className="modalPanel" style={{ width: "min(720px, 100%)" }}>
-            <div className="row" style={{ justifyContent: "space-between" }}>
+          <div
+            className="border border-[var(--color-border)] rounded-xl p-4 shadow-2xl"
+            style={{
+              width: "min(720px, 100%)",
+              background: "rgba(15, 23, 42, 0.96)",
+            }}
+          >
+            <div className="flex items-center justify-between gap-2.5">
               <div>
-                <div style={{ fontWeight: 800 }}>Add dashboard user</div>
-                <div className="subtitle">
+                <div className="font-extrabold">Add dashboard user</div>
+                <div className="text-xs text-[var(--color-foreground-muted)] mt-0.5">
                   User/password used to access the web dashboard.
                 </div>
               </div>
-              <button className="btn" onClick={() => setAddDashUserOpen(false)}>
+              <button className={btnCls} onClick={() => setAddDashUserOpen(false)}>
                 Close
               </button>
             </div>
 
-            <div className="grid" style={{ marginTop: 10 }}>
-              <div className="grid cols2">
+            <div className="grid gap-3 mt-2.5">
+              <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <div className="label">Username</div>
+                  <span className={labelCls}>Username</span>
                   <input
-                    className="input"
+                    className={inputCls}
                     value={dashUserDraft.username}
                     onChange={(e) =>
                       setDashUserDraft({
@@ -2607,9 +2573,9 @@ export default function SettingsPage() {
                   />
                 </div>
                 <div>
-                  <div className="label">Password</div>
+                  <span className={labelCls}>Password</span>
                   <input
-                    className="input"
+                    className={inputCls}
                     type="password"
                     value={dashUserDraft.password}
                     onChange={(e) =>
@@ -2623,9 +2589,9 @@ export default function SettingsPage() {
               </div>
 
               <div>
-                <div className="label">Role</div>
+                <span className={labelCls}>Role</span>
                 <select
-                  className="input"
+                  className={inputCls}
                   value={dashUserDraft.role}
                   onChange={(e) =>
                     setDashUserDraft({
@@ -2639,15 +2605,15 @@ export default function SettingsPage() {
                 </select>
               </div>
 
-              <div className="row" style={{ justifyContent: "flex-end" }}>
+              <div className="flex items-center justify-end gap-2.5">
                 <button
-                  className="btn"
+                  className={btnCls}
                   onClick={() => setAddDashUserOpen(false)}
                 >
                   Cancel
                 </button>
                 <button
-                  className="btn primary"
+                  className={btnPrimaryCls}
                   disabled={
                     savingDashUsers ||
                     !dashUserDraft.username ||

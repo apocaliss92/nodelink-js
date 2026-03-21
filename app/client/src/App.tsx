@@ -90,14 +90,7 @@ function AppInner() {
         />
         <Route path="/cameras/:cameraName" element={<CameraDetailPage />} />
         <Route path="/logs" element={<LogsPage />} />
-        <Route
-          path="/settings"
-          element={
-            <div className="legacy">
-              <SettingsPage />
-            </div>
-          }
-        />
+        <Route path="/settings" element={<SettingsPage />} />
         <Route path="/docs" element={<DocsPage />} />
         <Route path="/reports" element={<ReportsPage />} />
       </Route>
