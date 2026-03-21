@@ -23,7 +23,7 @@ describe("RtspProxyServer directHandoff mode", () => {
   });
 
   it("register and unregister work correctly", () => {
-    const registry = new Map<string, { acceptConnection: Function }>();
+    const registry = new Map<string, { acceptConnection: (...args: unknown[]) => void }>();
     const mockServer = { acceptConnection: vi.fn() };
 
     registry.set("/camera/main", mockServer);
