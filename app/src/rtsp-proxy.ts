@@ -600,7 +600,29 @@ export class RtspProxyServer extends EventEmitter {
         `Client ${clientId} requesting: ${parsed.cameraName}/${parsed.profile}${parsed.channel > 0 ? `/${parsed.channel}` : ""}`,
       );
 
-      // Find or start backend
+      // Direct handoff mode: pass socket to registered BaichuanRtspServer
+      // This must run BEFORE findOrStartBackend because in local mode the
+      // BaichuanRtspServer uses externalListener (no own port), so the
+      // backend lookup would fail to find it.
+      if (this.directHandoff) {
+        const serverPath = parsed.channel > 0
+          ? `/${parsed.cameraName}/${parsed.profile}/${parsed.channel}`
+          : `/${parsed.cameraName}/${parsed.profile}`;
+        const directServer = this.registeredServers.get(serverPath);
+        if (directServer) {
+          clientSocket.removeListener("data", onInitialData);
+          directServer.acceptConnection(clientSocket, initialBuffer);
+          // Track for lifecycle
+          const backendKey = this.getBackendKey(parsed.cameraName, parsed.profile, parsed.channel);
+          const conn = this.connections.get(clientId);
+          if (conn) conn.backendKey = backendKey;
+          this.registerBackendClient(backendKey, clientId);
+          return;
+        }
+        // Fall through to TCP proxy if not registered in direct registry
+      }
+
+      // Find or start backend (TCP proxy mode)
       const backend = await this.findOrStartBackend(
         parsed.cameraName,
         parsed.profile,
@@ -618,25 +640,6 @@ export class RtspProxyServer extends EventEmitter {
           },
         );
         return;
-      }
-
-      // Direct handoff mode: pass socket to registered BaichuanRtspServer
-      if (this.directHandoff) {
-        const serverPath = parsed.channel > 0
-          ? `/${parsed.cameraName}/${parsed.profile}/${parsed.channel}`
-          : `/${parsed.cameraName}/${parsed.profile}`;
-        const directServer = this.registeredServers.get(serverPath);
-        if (directServer) {
-          clientSocket.removeListener("data", onInitialData);
-          directServer.acceptConnection(clientSocket, initialBuffer);
-          // Track for lifecycle
-          const backendKey = this.getBackendKey(parsed.cameraName, parsed.profile, parsed.channel);
-          const conn = this.connections.get(clientId);
-          if (conn) conn.backendKey = backendKey;
-          this.registerBackendClient(backendKey, clientId);
-          return;
-        }
-        // Fall through to existing 404/proxy logic if not registered
       }
 
       // Remove initial data handler
