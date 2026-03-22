@@ -1,12 +1,14 @@
 import { cn } from '@apocaliss92/camstack-ui';
-import { Move, Bell, Lightbulb, Play } from 'lucide-react';
+import { Move, Bell, Lightbulb, Play, Plug } from 'lucide-react';
 import type { CameraInfo, AvailableStream } from './types';
 
 interface CameraCardProps {
   camera: CameraInfo;
   streams: AvailableStream[];
   selected: boolean;
+  connecting: boolean;
   onClick: () => void;
+  onConnect?: () => void;
   onOpenPtz?: () => void;
   onOpenEvents?: () => void;
   onOpenDeviceControls?: () => void;
@@ -17,7 +19,9 @@ export function CameraCard({
   camera,
   streams,
   selected,
+  connecting,
   onClick,
+  onConnect,
   onOpenPtz,
   onOpenEvents,
   onOpenDeviceControls,
@@ -76,47 +80,37 @@ export function CameraCard({
         </div>
       )}
 
-      {/* Quick action icons — only shown for online cameras */}
-      {isOnline && (onOpenPtz || onOpenDeviceControls || onOpenEvents) && (
-        <div className="flex items-center gap-0.5 mt-2 -mb-1">
-          {onOpenPtz && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onOpenPtz();
-              }}
-              className={iconBtnClass}
-              title="PTZ Controls"
-            >
-              <Move size={12} />
-            </button>
-          )}
-          {onOpenDeviceControls && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onOpenDeviceControls();
-              }}
-              className={iconBtnClass}
-              title="Device Controls"
-            >
-              <Lightbulb size={12} />
-            </button>
-          )}
-          {onOpenEvents && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onOpenEvents();
-              }}
-              className={iconBtnClass}
-              title="Events"
-            >
-              <Bell size={12} />
-            </button>
-          )}
-        </div>
-      )}
+      {/* Quick actions */}
+      {isOnline ? (
+        (onOpenPtz || onOpenDeviceControls || onOpenEvents) && (
+          <div className="flex items-center gap-0.5 mt-2 -mb-1">
+            {onOpenPtz && (
+              <button onClick={(e) => { e.stopPropagation(); onOpenPtz(); }} className={iconBtnClass} title="PTZ Controls">
+                <Move size={12} />
+              </button>
+            )}
+            {onOpenDeviceControls && (
+              <button onClick={(e) => { e.stopPropagation(); onOpenDeviceControls(); }} className={iconBtnClass} title="Device Controls">
+                <Lightbulb size={12} />
+              </button>
+            )}
+            {onOpenEvents && (
+              <button onClick={(e) => { e.stopPropagation(); onOpenEvents(); }} className={iconBtnClass} title="Events">
+                <Bell size={12} />
+              </button>
+            )}
+          </div>
+        )
+      ) : onConnect ? (
+        <button
+          onClick={(e) => { e.stopPropagation(); onConnect(); }}
+          disabled={connecting}
+          className="flex items-center gap-1.5 mt-2 rounded-md bg-[var(--color-primary)]/15 text-[var(--color-primary)] px-2.5 py-1 text-[10px] font-medium hover:bg-[var(--color-primary)]/25 transition-colors disabled:opacity-50"
+        >
+          <Plug size={10} />
+          {connecting ? 'Connecting...' : 'Connect'}
+        </button>
+      ) : null}
     </div>
   );
 }

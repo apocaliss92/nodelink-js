@@ -4,8 +4,10 @@ import type { CameraInfo, AvailableStream } from './types';
 interface CameraGridProps {
   cameras: CameraInfo[];
   streamsByCamera: Record<string, AvailableStream[]>;
+  connectingByCamera: Record<string, boolean>;
   selectedCamera: CameraInfo | null;
   onSelectCamera: (camera: CameraInfo) => void;
+  onConnect?: (camera: CameraInfo) => void;
   onOpenPtz?: (camera: CameraInfo) => void;
   onOpenEvents?: (camera: CameraInfo) => void;
   onOpenDeviceControls?: (camera: CameraInfo) => void;
@@ -15,8 +17,10 @@ interface CameraGridProps {
 export function CameraGrid({
   cameras,
   streamsByCamera,
+  connectingByCamera,
   selectedCamera,
   onSelectCamera,
+  onConnect,
   onOpenPtz,
   onOpenEvents,
   onOpenDeviceControls,
@@ -30,7 +34,9 @@ export function CameraGrid({
           camera={camera}
           streams={streamsByCamera[camera.id] ?? []}
           selected={selectedCamera?.id === camera.id}
+          connecting={connectingByCamera[camera.id] ?? false}
           onClick={() => onSelectCamera(camera)}
+          onConnect={onConnect ? () => onConnect(camera) : undefined}
           onOpenPtz={onOpenPtz ? () => onOpenPtz(camera) : undefined}
           onOpenEvents={onOpenEvents ? () => onOpenEvents(camera) : undefined}
           onOpenDeviceControls={onOpenDeviceControls ? () => onOpenDeviceControls(camera) : undefined}

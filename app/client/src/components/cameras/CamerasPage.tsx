@@ -142,8 +142,10 @@ export function CamerasPage() {
             <CameraGrid
               cameras={cameras}
               streamsByCamera={streamsByCamera}
+              connectingByCamera={connectingByCamera}
               selectedCamera={selectedCamera}
               onSelectCamera={handleSelectCamera}
+              onConnect={(cam) => camerasHook.connect(cam.id)}
               onOpenPtz={handleOpenPtz}
               onOpenEvents={handleOpenEvents}
               onOpenDeviceControls={handleOpenDeviceControls}
