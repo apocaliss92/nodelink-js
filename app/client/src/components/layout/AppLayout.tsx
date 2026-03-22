@@ -1,5 +1,5 @@
 import { Outlet } from 'react-router-dom';
-import { LogOut, Github, Moon, Sun, Monitor } from 'lucide-react';
+import { LogOut, Github, Moon, Sun, Monitor, Coffee } from 'lucide-react';
 import { useThemeMode } from '@apocaliss92/camstack-ui';
 import { useAuth } from '../../auth';
 import { NodelinkIcon } from './NodelinkIcon';
@@ -53,25 +53,42 @@ export function AppLayout({ version, updateAvailable }: AppLayoutProps) {
               <span>{THEME_LABELS[theme?.mode ?? 'system']}</span>
             </button>
 
-            {/* User + logout */}
-            <button
-              onClick={() => { if (state.enabled) logout(); }}
-              className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[12px] text-[var(--color-foreground-subtle)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-danger)] transition-colors"
-            >
-              <LogOut className="h-3.5 w-3.5" />
+            {/* User + logout on same row */}
+            <div className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[12px] text-[var(--color-foreground-subtle)]">
               <span className="truncate">{state.user?.username ?? 'User'}</span>
-            </button>
+              {state.enabled && (
+                <button
+                  onClick={logout}
+                  className="text-[var(--color-foreground-subtle)] hover:text-[var(--color-danger)] transition-colors shrink-0"
+                  title="Sign out"
+                >
+                  <LogOut className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
 
             {/* Footer links + version */}
             <div className="flex items-center justify-between px-2.5 pt-1">
-              <a
-                href="https://github.com/ApoCaliss92/reolink-baichuan-js"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[var(--color-foreground-subtle)] hover:text-[var(--color-foreground)] transition-colors"
-              >
-                <Github size={12} />
-              </a>
+              <div className="flex items-center gap-2">
+                <a
+                  href="https://github.com/ApoCaliss92/reolink-baichuan-js"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[var(--color-foreground-subtle)] hover:text-[var(--color-foreground)] transition-colors"
+                  title="GitHub"
+                >
+                  <Github size={12} />
+                </a>
+                <a
+                  href="https://buymeacoffee.com/apocaliss92"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[var(--color-foreground-subtle)] hover:text-[var(--color-warning)] transition-colors"
+                  title="Buy me a coffee"
+                >
+                  <Coffee size={12} />
+                </a>
+              </div>
               {version && (
                 <span className="text-[10px] text-[var(--color-foreground-subtle)]">
                   {version}
