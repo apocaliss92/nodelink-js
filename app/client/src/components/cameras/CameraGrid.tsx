@@ -1,9 +1,10 @@
 import { CameraCard } from './CameraCard';
-import type { CameraInfo, AvailableStream } from './types';
+import type { CameraInfo, AvailableStream, StreamProfile } from './types';
 
 interface CameraGridProps {
   cameras: CameraInfo[];
   streamsByCamera: Record<string, AvailableStream[]>;
+  rtspServers: Array<{ cameraId: string; profile: StreamProfile; status?: string; connections?: number }>;
   connectingByCamera: Record<string, boolean>;
   selectedCamera: CameraInfo | null;
   onSelectCamera: (camera: CameraInfo) => void;
@@ -18,6 +19,7 @@ interface CameraGridProps {
 export function CameraGrid({
   cameras,
   streamsByCamera,
+  rtspServers,
   connectingByCamera,
   selectedCamera,
   onSelectCamera,
@@ -35,6 +37,7 @@ export function CameraGrid({
           key={camera.id}
           camera={camera}
           streams={streamsByCamera[camera.id] ?? []}
+          rtspServers={rtspServers}
           selected={selectedCamera?.id === camera.id}
           connecting={connectingByCamera[camera.id] ?? false}
           onClick={() => onSelectCamera(camera)}

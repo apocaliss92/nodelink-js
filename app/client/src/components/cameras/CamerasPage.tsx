@@ -148,6 +148,7 @@ export function CamerasPage() {
             <CameraGrid
               cameras={cameras}
               streamsByCamera={streamsByCamera}
+              rtspServers={rtspServers}
               connectingByCamera={connectingByCamera}
               selectedCamera={selectedCamera}
               onSelectCamera={handleSelectCamera}

@@ -1,10 +1,11 @@
 import { cn } from '@apocaliss92/camstack-ui';
-import { Move, Bell, Users, Lightbulb, Play, Plug } from 'lucide-react';
-import type { CameraInfo, AvailableStream } from './types';
+import { Move, Bell, Users, Lightbulb, Play, Plug, Eye } from 'lucide-react';
+import type { CameraInfo, AvailableStream, StreamProfile } from './types';
 
 interface CameraCardProps {
   camera: CameraInfo;
   streams: AvailableStream[];
+  rtspServers: Array<{ cameraId: string; profile: StreamProfile; status?: string; connections?: number }>;
   selected: boolean;
   connecting: boolean;
   onClick: () => void;
@@ -19,6 +20,7 @@ interface CameraCardProps {
 export function CameraCard({
   camera,
   streams,
+  rtspServers,
   selected,
   connecting,
   onClick,
@@ -59,26 +61,35 @@ export function CameraCard({
         {camera.host}
       </div>
 
-      {/* Stream badges — clickable to open a stream floating panel */}
+      {/* Stream badges — clickable to open stream, show viewer count */}
       {streams.length > 0 && (
         <div className="flex gap-1 mt-2">
-          {streams.map((s) => (
-            <button
-              key={s.profile}
-              onClick={(e) => {
-                e.stopPropagation();
-                onOpenStream?.(s);
-              }}
-              className={cn(
-                'rounded px-1.5 py-0.5 text-[10px] hover:opacity-80 transition-opacity flex items-center gap-0.5',
-                selected ? 'bg-[var(--color-primary)]/20' : 'bg-[var(--color-surface-hover)]',
-              )}
-              title={`Open ${s.profile} stream`}
-            >
-              <Play size={8} />
-              {s.profile}
-            </button>
-          ))}
+          {streams.map((s) => {
+            const server = rtspServers.find(r => r.cameraId === camera.id && r.profile === s.profile);
+            const viewers = server?.status === 'running' ? (server.connections ?? 0) : 0;
+            return (
+              <button
+                key={s.profile}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenStream?.(s);
+                }}
+                className={cn(
+                  'rounded px-1.5 py-0.5 text-[10px] hover:opacity-80 transition-opacity flex items-center gap-0.5',
+                  selected ? 'bg-[var(--color-primary)]/20' : 'bg-[var(--color-surface-hover)]',
+                )}
+                title={`Open ${s.profile} stream${viewers > 0 ? ` (${viewers} viewer${viewers > 1 ? 's' : ''})` : ''}`}
+              >
+                <Play size={8} />
+                {s.profile}
+                {viewers > 0 && (
+                  <span className="flex items-center gap-0.5 ml-0.5 text-[var(--color-foreground-subtle)]">
+                    <Eye size={7} />{viewers}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
       )}
 

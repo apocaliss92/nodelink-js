@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Eye, Activity, Link, Copy } from 'lucide-react';
+import { Eye, Activity, Link, Copy, Users } from 'lucide-react';
 import { trpcMutation } from '../../api';
 import type { AvailableStream } from './types';
 
@@ -19,6 +19,7 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, cam
   const [urlsOpen, setUrlsOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
 
+  const viewers = isActive ? (rtspServer?.connections ?? 0) : 0;
   const streamName = rtspServer?.go2rtcStreamName ?? `${cameraName}_${stream.profile}`;
   const go2rtcHost = serviceIp || window.location.hostname;
   const go2rtcBase = go2rtcApiPort ? `${window.location.protocol}//${go2rtcHost}:${go2rtcApiPort}` : null;
@@ -47,9 +48,16 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, cam
     <div className="rounded-md border border-[var(--color-border)] p-2">
       <div className="flex items-center justify-between mb-1">
         <span className="text-xs font-medium capitalize">{stream.profile} Stream</span>
-        <span className={`rounded px-1.5 py-0.5 text-[10px] ${isActive ? 'bg-[var(--color-success)]/15 text-[var(--color-success)]' : 'bg-[var(--color-surface-hover)] text-[var(--color-foreground-muted)]'}`}>
-          {isActive ? 'active' : 'idle'}
-        </span>
+        <div className="flex items-center gap-1.5">
+          {isActive && viewers > 0 && (
+            <span className="flex items-center gap-0.5 text-[10px] text-[var(--color-foreground-subtle)]" title={`${viewers} viewer${viewers > 1 ? 's' : ''}`}>
+              <Users size={9} />{viewers}
+            </span>
+          )}
+          <span className={`rounded px-1.5 py-0.5 text-[10px] ${isActive ? 'bg-[var(--color-success)]/15 text-[var(--color-success)]' : 'bg-[var(--color-surface-hover)] text-[var(--color-foreground-muted)]'}`}>
+            {isActive ? 'active' : 'idle'}
+          </span>
+        </div>
       </div>
       {stream.resolution && (
         <div className="text-[11px] text-[var(--color-foreground-muted)]">
