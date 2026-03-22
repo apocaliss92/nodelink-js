@@ -68,24 +68,24 @@ export function AppLayout({ version, updateAvailable }: AppLayoutProps) {
             </div>
 
             {/* GitHub + Coffee */}
-            <div className="flex items-center gap-2.5 px-2 py-1">
+            <div className="flex items-center">
               <a
                 href="https://github.com/ApoCaliss92/reolink-baichuan-js"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-[var(--color-foreground-subtle)] hover:text-[var(--color-foreground)] transition-colors"
+                className="flex flex-1 items-center justify-center py-1.5 text-[var(--color-foreground-subtle)] hover:text-[var(--color-foreground)] hover:bg-[var(--color-surface-hover)] rounded-md transition-colors"
                 title="GitHub"
               >
-                <Github size={13} />
+                <Github size={14} />
               </a>
               <a
                 href="https://buymeacoffee.com/apocaliss92"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-[var(--color-foreground-subtle)] hover:text-[var(--color-warning)] transition-colors"
+                className="flex flex-1 items-center justify-center py-1.5 text-[var(--color-foreground-subtle)] hover:text-[var(--color-warning)] hover:bg-[var(--color-surface-hover)] rounded-md transition-colors"
                 title="Buy me a coffee"
               >
-                <Coffee size={13} />
+                <Coffee size={14} />
               </a>
             </div>
 
