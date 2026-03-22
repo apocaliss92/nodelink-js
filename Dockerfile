@@ -39,11 +39,11 @@ RUN rm -rf node_modules && npm install --ignore-scripts --omit=dev
 
 # Download go2rtc binaries for all target architectures
 RUN apk add --no-cache curl && \
-    GO2RTC_VERSION="1.9.4" && \
+    GO2RTC_VERSION="1.9.14" && \
     mkdir -p /go2rtc && \
-    curl -fsSL -o /go2rtc/go2rtc-amd64 \
+    curl -fSL --retry 3 -o /go2rtc/go2rtc-amd64 \
       "https://github.com/AlexxIT/go2rtc/releases/download/v${GO2RTC_VERSION}/go2rtc_linux_amd64" && \
-    curl -fsSL -o /go2rtc/go2rtc-arm64 \
+    curl -fSL --retry 3 -o /go2rtc/go2rtc-arm64 \
       "https://github.com/AlexxIT/go2rtc/releases/download/v${GO2RTC_VERSION}/go2rtc_linux_arm64" && \
     chmod +x /go2rtc/go2rtc-*
 
