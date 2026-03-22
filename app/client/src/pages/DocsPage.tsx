@@ -7,6 +7,18 @@ type CameraInfo = {
   status: string;
 };
 
+const cardCls =
+  "rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4";
+
+const labelCls =
+  "text-xs font-medium text-[var(--color-foreground-muted)] uppercase tracking-wider mb-1.5 block";
+
+const inputCls =
+  "w-full max-w-md rounded-md border border-[var(--color-border)] bg-[var(--color-background)] px-3 py-2 text-sm text-[var(--color-foreground)] outline-none";
+
+const btnPrimaryCls =
+  "border border-[rgba(59,130,246,0.55)] bg-[rgba(59,130,246,0.28)] text-[var(--color-foreground)] rounded-md cursor-pointer text-xs px-3 py-2 font-medium disabled:opacity-60 disabled:cursor-not-allowed hover:opacity-95 transition-opacity";
+
 export default function DocsPage() {
   const [cameras, setCameras] = useState<CameraInfo[]>([]);
   const [selectedId, setSelectedId] = useState<string>("");
@@ -37,53 +49,71 @@ export default function DocsPage() {
 
   function copyId() {
     if (!selected) return;
-    navigator.clipboard.writeText(selected.id);
+    void navigator.clipboard.writeText(selected.id);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   }
 
+  /** Most of the viewport for the tRPC panel; small subtract = header + padding + optional camera bar. */
+  const iframeHeight =
+    cameras.length > 0 ? "calc(100dvh - 132px)" : "calc(100dvh - 62px)";
+
   return (
-    <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] overflow-hidden">
-      {cameras.length > 0 ? (
-        <div className="flex flex-wrap items-center gap-3 px-4 py-3 border-b border-[var(--border)]">
-          <label
-            htmlFor="docs-camera-select"
-            className="text-sm text-[var(--muted)]"
-          >
-            Camera for Baichuan procedures:
-          </label>
-          <select
-            id="docs-camera-select"
-            value={selectedId}
-            onChange={(e) => setSelectedId(e.target.value)}
-            className="min-w-[200px] max-w-xs rounded-lg border border-[var(--border)] bg-[var(--input-bg,var(--card))] px-3 py-1.5 text-sm text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]"
-          >
-            {cameras.map((cam) => (
-              <option key={cam.id} value={cam.id}>
-                {cam.name || cam.id}
-              </option>
-            ))}
-          </select>
-          {selected ? (
-            <button
-              type="button"
-              onClick={copyId}
-              title={`Copy camera ID: ${selected.id}`}
-              className="rounded-lg bg-[var(--color-primary)] px-3 py-1 text-xs font-medium text-white hover:opacity-90 active:opacity-80 transition-opacity"
-            >
-              {copied ? "Copied!" : "Copy ID"}
-            </button>
-          ) : null}
+    <div className="p-5">
+      <div className="mb-2">
+        <h1 className="text-lg font-bold m-0">API documentation</h1>
+        <p className="text-xs text-[var(--color-foreground-muted)] mt-1 m-0 leading-snug">
+          Interactive tRPC panel — select a camera when procedures need a device id.
+        </p>
+      </div>
+
+      <div className={`${cardCls} p-0 overflow-hidden`}>
+        {cameras.length > 0 ? (
+          <div className="px-3 py-2 border-b border-[var(--color-border)]">
+            <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-end gap-3">
+              <div className="flex-1 min-w-0 max-w-md">
+                <label htmlFor="docs-camera-select" className={labelCls}>
+                  Camera for Baichuan procedures
+                </label>
+                <select
+                  id="docs-camera-select"
+                  value={selectedId}
+                  onChange={(e) => setSelectedId(e.target.value)}
+                  className={inputCls}
+                >
+                  {cameras.map((cam) => (
+                    <option key={cam.id} value={cam.id}>
+                      {cam.name || cam.id}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {selected ? (
+                <button
+                  type="button"
+                  onClick={copyId}
+                  title={`Copy camera ID: ${selected.id}`}
+                  className={btnPrimaryCls}
+                >
+                  {copied ? "Copied!" : "Copy camera ID"}
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
+        <div className="bg-[var(--color-background)]">
+          <iframe
+            src="/panel"
+            title="API Docs"
+            className="w-full border-0 block"
+            style={{
+              height: iframeHeight,
+              minHeight: 560,
+            }}
+          />
         </div>
-      ) : null}
-      <iframe
-        src="/panel"
-        title="API Docs"
-        className="w-full border-none"
-        style={{
-          height: cameras.length > 0 ? "calc(100vh - 140px)" : "calc(100vh - 80px)",
-        }}
-      />
+      </div>
     </div>
   );
 }

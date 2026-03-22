@@ -22,14 +22,14 @@ type LogFile = {
 
 function levelBadgeClass(level: LogEntry["level"]): string {
   const base =
-    "text-xs px-2 py-0.5 rounded-full border bg-white/[.04] text-[var(--muted)] border-[var(--border)]";
+    "text-[10px] px-2 py-0.5 rounded-md border font-medium capitalize";
   if (level === "error")
-    return `${base} !text-[#fecaca] !border-[rgba(239,68,68,0.4)]`;
+    return `${base} bg-[var(--color-danger)]/15 text-[var(--color-danger)] border-[var(--color-danger)]/30`;
   if (level === "warn")
-    return `${base} !text-[#fde68a] !border-[rgba(245,158,11,0.4)]`;
+    return `${base} bg-[var(--color-warning)]/15 text-[var(--color-warning)] border-[var(--color-warning)]/30`;
   if (level === "info")
-    return `${base} !text-[#bbf7d0] !border-[rgba(34,197,94,0.4)]`;
-  return base;
+    return `${base} bg-[var(--color-success)]/15 text-[var(--color-success)] border-[var(--color-success)]/30`;
+  return `${base} bg-[var(--color-surface-hover)] text-[var(--color-foreground-muted)] border-[var(--color-border)]`;
 }
 
 function formatLocalTime(ts?: string): string {
@@ -81,18 +81,28 @@ function formatFileSize(bytes: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Shared input / select style
+// Match SettingsPage surface / form tokens
 // ---------------------------------------------------------------------------
-const inputCls =
-  "bg-black/25 border border-[var(--border)] text-[var(--text)] px-2.5 py-2 rounded-xl text-sm outline-none min-w-[120px]";
+const cardCls =
+  "rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4";
 
-// ---------------------------------------------------------------------------
-// Shared button styles
-// ---------------------------------------------------------------------------
+const labelCls =
+  "text-xs font-medium text-[var(--color-foreground-muted)] uppercase tracking-wider mb-1.5 block";
+
+const inputCls =
+  "w-full min-w-0 rounded-md border border-[var(--color-border)] bg-[var(--color-background)] px-3 py-2 text-sm text-[var(--color-foreground)] outline-none";
+
 const btnCls =
-  "border border-[var(--border)] bg-white/[.06] text-[var(--text)] rounded-xl cursor-pointer text-[11px] px-2 py-0.5 disabled:opacity-60 disabled:cursor-not-allowed";
+  "border border-[var(--color-border)] bg-white/[.06] text-[var(--color-foreground)] rounded-md cursor-pointer text-xs px-3 py-1.5 disabled:opacity-60 disabled:cursor-not-allowed";
+
 const btnDangerCls =
-  "border border-[rgba(239,68,68,0.5)] bg-[rgba(239,68,68,0.18)] text-[var(--text)] rounded-xl cursor-pointer text-[11px] px-2 py-0.5 disabled:opacity-60 disabled:cursor-not-allowed";
+  "border border-[rgba(239,68,68,0.5)] bg-[rgba(239,68,68,0.18)] text-[var(--color-foreground)] rounded-md cursor-pointer text-xs px-3 py-1.5 disabled:opacity-60 disabled:cursor-not-allowed";
+
+const thCls =
+  "text-left px-2.5 py-2 border-b border-[var(--color-border)] text-[var(--color-foreground-muted)] text-xs font-semibold";
+
+const tdCls =
+  "text-xs px-2.5 py-2 border-b border-[var(--color-border)] align-top text-[var(--color-foreground)]";
 
 export default function LogsPage() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -230,16 +240,15 @@ export default function LogsPage() {
   }, []);
 
   return (
-    <>
-      {/* Header */}
-      <div className="flex items-center justify-between gap-3 mb-3.5">
+    <div className="p-5">
+      <div className="flex items-center justify-between gap-3 mb-4">
         <h1 className="text-lg font-bold m-0">Logs</h1>
         <div className="flex items-center gap-2.5 flex-wrap">
           <span
             className={
               connected
-                ? "text-xs px-2 py-0.5 rounded-full border bg-white/[.04] !text-[#bbf7d0] !border-[rgba(34,197,94,0.4)]"
-                : "text-xs px-2 py-0.5 rounded-full border bg-white/[.04] !text-[#fde68a] !border-[rgba(245,158,11,0.4)]"
+                ? "text-[10px] px-2 py-0.5 rounded-md border font-medium bg-[var(--color-success)]/15 text-[var(--color-success)] border-[var(--color-success)]/30"
+                : "text-[10px] px-2 py-0.5 rounded-md border font-medium bg-[var(--color-warning)]/15 text-[var(--color-warning)] border-[var(--color-warning)]/30"
             }
           >
             {connected ? "Live" : "Disconnected"}
@@ -247,13 +256,11 @@ export default function LogsPage() {
         </div>
       </div>
 
-      {/* Filters card */}
-      <div className="bg-[var(--panel)] border border-[var(--border)] rounded-2xl p-3.5 mb-3">
-        {/* Filters row */}
-        <div className="flex items-center gap-3 flex-wrap max-sm:flex-col max-sm:items-stretch max-sm:gap-2.5">
-          {/* Log source (file picker) */}
-          <label className="flex items-center gap-2">
-            <span className="text-xs text-[var(--muted)]">Source</span>
+      <div className={cardCls}>
+        <span className={labelCls}>Filters</span>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mt-2">
+          <div>
+            <span className={labelCls}>Log file</span>
             <select
               className={inputCls}
               value={selectedFile}
@@ -266,64 +273,60 @@ export default function LogsPage() {
                 </option>
               ))}
             </select>
-          </label>
-
-          {/* Level filter */}
-          <label className="flex items-center gap-2">
-            <span className="text-xs text-[var(--muted)]">Level</span>
+          </div>
+          <div>
+            <span className={labelCls}>Level</span>
             <select
               className={inputCls}
               value={level}
-              onChange={(e) => setLevel(e.target.value as any)}
+              onChange={(e) => setLevel(e.target.value as "all" | LogEntry["level"])}
             >
-              <option value="all">all</option>
+              <option value="all">All</option>
               <option value="error">error</option>
               <option value="warn">warn</option>
               <option value="info">info</option>
               <option value="debug">debug</option>
             </select>
-          </label>
-
-          {/* Source filter */}
-          <label className="flex items-center gap-2">
-            <span className="text-xs text-[var(--muted)]">Source</span>
+          </div>
+          <div>
+            <span className={labelCls}>Component</span>
             <select
               className={inputCls}
               value={source}
               onChange={(e) => setSource(e.target.value)}
             >
-              <option value="">all</option>
+              <option value="">All</option>
               {sources.map((s) => (
                 <option key={s} value={s}>
                   {s}
                 </option>
               ))}
             </select>
-          </label>
-
-          {/* Text search */}
-          <div className="flex items-center flex-1 min-w-[180px] max-sm:min-w-0">
+          </div>
+          <div className="sm:col-span-2 lg:col-span-1">
+            <span className={labelCls}>Search</span>
             <input
-              className={`${inputCls} w-full`}
-              placeholder="Search…"
+              className={inputCls}
+              placeholder="Filter messages…"
               value={text}
               onChange={(e) => setText(e.target.value)}
             />
           </div>
+        </div>
 
-          {/* Auto-scroll checkbox */}
-          <label className="flex items-center gap-2 cursor-pointer whitespace-nowrap">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mt-4 pt-3 border-t border-[var(--color-border)]">
+          <label className="flex items-center gap-2 cursor-pointer">
             <input
               type="checkbox"
+              className="rounded border-[var(--color-border)]"
               checked={autoScroll}
               onChange={(e) => setAutoScroll(e.target.checked)}
             />
-            <span className="text-sm">Auto-scroll</span>
+            <span className="text-sm text-[var(--color-foreground)]">Auto-scroll new entries</span>
           </label>
-
-          {/* Action buttons */}
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-2 flex-wrap">
             <button
+              type="button"
               className={btnCls}
               onClick={() => void handleCopy()}
               title="Copy filtered logs to clipboard"
@@ -331,6 +334,7 @@ export default function LogsPage() {
               {copied ? "Copied!" : "Copy"}
             </button>
             <button
+              type="button"
               className={btnDangerCls}
               onClick={() => void handleClear()}
               title="Clear in-memory log buffer"
@@ -340,100 +344,88 @@ export default function LogsPage() {
           </div>
         </div>
 
-        {/* Loading indicator */}
         {loadingFile && (
-          <div className="flex items-center gap-1.5 text-[var(--muted)] text-xs mt-1.5">
+          <div className="flex items-center gap-2 text-[var(--color-foreground-muted)] text-xs mt-3">
             <span
-              className="inline-block w-3 h-3 rounded-full border-2 border-white/20 border-t-white/80 animate-spin"
+              className="inline-block size-3.5 rounded-full border-2 border-[var(--color-border)] border-t-[var(--color-primary)] animate-spin"
               aria-hidden="true"
             />
             <span>Loading log file…</span>
           </div>
         )}
 
-        {/* Entry count */}
-        <div className="text-[var(--muted)] text-[11px] mt-1">
+        <div className="text-[var(--color-foreground-muted)] text-xs mt-3">
           {filtered.length} log{filtered.length !== 1 ? "s" : ""}
           {selectedFile ? ` from ${selectedFile}` : " (live)"}
         </div>
       </div>
 
-      {/* Log output card */}
       <div
-        ref={boxRef}
-        className="bg-[var(--panel)] border border-[var(--border)] rounded-2xl p-3.5 overflow-auto"
-        style={{ height: "calc(100vh - 190px)" }}
+        className={`${cardCls} mt-3 p-0 flex flex-col overflow-hidden`}
+        style={{ height: "calc(100vh - 220px)", minHeight: 240 }}
       >
-        {/* Desktop: table view (hidden on mobile) */}
-        <table className="w-full border-collapse table-fixed hidden sm:table">
-          <thead>
-            <tr>
-              <th
-                className="text-left text-xs text-[var(--muted)] font-semibold px-2 py-1.5 border-b border-[var(--border)]"
-                style={{ width: 100 }}
-              >
-                Time
-              </th>
-              <th
-                className="text-left text-xs text-[var(--muted)] font-semibold px-2 py-1.5 border-b border-[var(--border)]"
-                style={{ width: 120 }}
-              >
-                Source
-              </th>
-              <th
-                className="text-left text-xs text-[var(--muted)] font-semibold px-2 py-1.5 border-b border-[var(--border)]"
-                style={{ width: 80 }}
-              >
-                Level
-              </th>
-              <th className="text-left text-xs text-[var(--muted)] font-semibold px-2 py-1.5 border-b border-[var(--border)]">
-                Message
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((l, idx) => (
-              <tr key={idx}>
-                <td className="font-mono text-xs px-2 py-1 border-b border-[var(--border)] align-top">
-                  {formatLocalTime(l.timestamp)}
-                </td>
-                <td className="font-mono text-xs px-2 py-1 border-b border-[var(--border)] align-top">
-                  {l.source ?? ""}
-                </td>
-                <td className="text-xs px-2 py-1 border-b border-[var(--border)] align-top">
-                  <span className={levelBadgeClass(l.level)}>{l.level}</span>
-                </td>
-                <td className="text-xs px-2 py-1 border-b border-[var(--border)] align-top whitespace-pre-wrap break-words leading-snug">
-                  {formatRest(l)}
-                </td>
+        <div className="px-4 py-2.5 border-b border-[var(--color-border)] text-xs text-[var(--color-foreground-muted)]">
+          Log output
+        </div>
+        <div
+          ref={boxRef}
+          className="flex-1 overflow-auto p-3 bg-[var(--color-background)]"
+        >
+          <table className="w-full border-collapse table-fixed hidden sm:table text-sm">
+            <thead>
+              <tr>
+                <th className={thCls} style={{ width: 100 }}>
+                  Time
+                </th>
+                <th className={thCls} style={{ width: 120 }}>
+                  Source
+                </th>
+                <th className={thCls} style={{ width: 88 }}>
+                  Level
+                </th>
+                <th className={thCls}>Message</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {filtered.map((l, idx) => (
+                <tr key={idx}>
+                  <td className={`${tdCls} font-mono text-[var(--color-foreground-muted)]`}>
+                    {formatLocalTime(l.timestamp)}
+                  </td>
+                  <td className={`${tdCls} font-mono text-[var(--color-foreground-muted)]`}>
+                    {l.source ?? ""}
+                  </td>
+                  <td className={tdCls}>
+                    <span className={levelBadgeClass(l.level)}>{l.level}</span>
+                  </td>
+                  <td className={`${tdCls} whitespace-pre-wrap break-words leading-snug`}>
+                    {formatRest(l)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
 
-        {/* Mobile: card view (hidden on sm+) */}
-        <div className="sm:hidden">
-          {filtered.map((l, idx) => (
-            <div
-              key={idx}
-              className="px-3 py-2.5 border-b border-[var(--border)] last:border-b-0"
-            >
-              <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                <span className={levelBadgeClass(l.level)}>{l.level}</span>
-                <span className="font-mono text-[11px] text-[var(--muted)]">
-                  {l.source ?? ""}
-                </span>
-                <span className="font-mono text-[11px] text-[var(--muted)] ml-auto">
-                  {formatLocalTime(l.timestamp)}
-                </span>
+          <div className="sm:hidden divide-y divide-[var(--color-border)]">
+            {filtered.map((l, idx) => (
+              <div key={idx} className="py-3 first:pt-0">
+                <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                  <span className={levelBadgeClass(l.level)}>{l.level}</span>
+                  <span className="font-mono text-[11px] text-[var(--color-foreground-muted)]">
+                    {l.source ?? ""}
+                  </span>
+                  <span className="font-mono text-[11px] text-[var(--color-foreground-muted)] ml-auto">
+                    {formatLocalTime(l.timestamp)}
+                  </span>
+                </div>
+                <div className="text-xs leading-snug break-words whitespace-pre-wrap text-[var(--color-foreground)]">
+                  {formatRest(l)}
+                </div>
               </div>
-              <div className="text-[11px] leading-[1.4] break-words whitespace-pre-wrap">
-                {formatRest(l)}
-              </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       </div>
-    </>
+    </div>
   );
 }
