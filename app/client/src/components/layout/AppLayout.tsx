@@ -43,23 +43,23 @@ export function AppLayout({ version, updateAvailable }: AppLayoutProps) {
           <div className="flex-1" />
 
           {/* Bottom controls */}
-          <div className="flex flex-col gap-0.5 border-t border-[var(--color-border)] pt-2 mt-2">
+          <div className="flex flex-col gap-1 border-t border-[var(--color-border)] pt-3 mt-2 px-2.5">
             {/* Theme toggle */}
             <button
               onClick={() => theme?.toggleMode()}
-              className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[12px] text-[var(--color-foreground-subtle)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-foreground)] transition-colors"
+              className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-[11px] text-[var(--color-foreground-subtle)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-foreground)] transition-colors"
             >
               <ThemeIcon className="h-3.5 w-3.5" />
               <span>{THEME_LABELS[theme?.mode ?? 'system']}</span>
             </button>
 
-            {/* User + logout on same row */}
-            <div className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[12px] text-[var(--color-foreground-subtle)]">
+            {/* User + logout */}
+            <div className="flex items-center justify-between px-2 py-1.5 text-[11px] text-[var(--color-foreground-subtle)]">
               <span className="truncate">{state.user?.username ?? 'User'}</span>
               {state.enabled && (
                 <button
                   onClick={logout}
-                  className="text-[var(--color-foreground-subtle)] hover:text-[var(--color-danger)] transition-colors shrink-0"
+                  className="hover:text-[var(--color-danger)] transition-colors shrink-0"
                   title="Sign out"
                 >
                   <LogOut className="h-3.5 w-3.5" />
@@ -67,37 +67,37 @@ export function AppLayout({ version, updateAvailable }: AppLayoutProps) {
               )}
             </div>
 
-            {/* Footer links + version */}
-            <div className="flex items-center justify-between px-2.5 pt-1">
-              <div className="flex items-center gap-2">
-                <a
-                  href="https://github.com/ApoCaliss92/reolink-baichuan-js"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-[var(--color-foreground-subtle)] hover:text-[var(--color-foreground)] transition-colors"
-                  title="GitHub"
-                >
-                  <Github size={12} />
-                </a>
-                <a
-                  href="https://buymeacoffee.com/apocaliss92"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-[var(--color-foreground-subtle)] hover:text-[var(--color-warning)] transition-colors"
-                  title="Buy me a coffee"
-                >
-                  <Coffee size={12} />
-                </a>
-              </div>
-              {version && (
-                <span className="text-[10px] text-[var(--color-foreground-subtle)]">
-                  {version}
-                  {updateAvailable && (
-                    <span className="ml-1 text-[var(--color-warning)]">update</span>
-                  )}
-                </span>
-              )}
+            {/* GitHub + Coffee */}
+            <div className="flex items-center gap-2.5 px-2 py-1">
+              <a
+                href="https://github.com/ApoCaliss92/reolink-baichuan-js"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[var(--color-foreground-subtle)] hover:text-[var(--color-foreground)] transition-colors"
+                title="GitHub"
+              >
+                <Github size={13} />
+              </a>
+              <a
+                href="https://buymeacoffee.com/apocaliss92"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[var(--color-foreground-subtle)] hover:text-[var(--color-warning)] transition-colors"
+                title="Buy me a coffee"
+              >
+                <Coffee size={13} />
+              </a>
             </div>
+
+            {/* Version */}
+            {version && (
+              <div className="px-2 pb-1 text-[11px] text-[var(--color-foreground-muted)]">
+                {version}
+                {updateAvailable && (
+                  <span className="ml-1.5 text-[var(--color-warning)]">update available</span>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </aside>
