@@ -141,18 +141,18 @@ export function CameraDetailPage() {
                   rtspServer={server}
                   onStartStream={() => void trpcMutation('rtsp.start', { cameraId: camera.id, profile: stream.profile, channel: stream.channel })}
                   onStopStream={() => void trpcMutation('rtsp.stop', { cameraId: camera.id, profile: stream.profile, channel: stream.channel })}
-                  onPreview={() =>
+                  onPreview={() => {
                     setPreviewModal({
                       open: true,
                       kind: 'webrtc' as const,
                       title: `${camera.name || camera.host} - ${stream.profile}`,
                       cameraName: camera.sanitizedName ?? camera.name ?? camera.host,
                       profile: stream.profile,
-                      streamName: `${camera.sanitizedName ?? camera.name ?? camera.host}_${stream.profile}`,
+                      streamName: server?.go2rtcStreamName ?? `${camera.sanitizedName ?? camera.name ?? camera.host}_${stream.profile}`,
                       go2rtcApiPort,
                       serviceIp,
-                    })
-                  }
+                    });
+                  }}
                   cameraName={camera.sanitizedName ?? camera.name ?? camera.host}
                   go2rtcApiPort={go2rtcApiPort}
                   serviceIp={serviceIp}

@@ -144,17 +144,19 @@ export function CameraDetailPanel({
                   rtspServer={server}
                   onStartStream={() => onStartStream(stream.profile)}
                   onStopStream={() => onStopStream(stream.profile)}
-                  onPreview={() =>
+                  onPreview={() => {
+                    const server = rtspServers.find(s => s.cameraId === camera.id && s.profile === stream.profile);
                     onOpenPreview({
                       open: true,
                       kind: 'webrtc',
                       title: `${camera.name || camera.host} - ${stream.profile}`,
                       cameraName: camera.sanitizedName ?? camera.name ?? camera.host,
                       profile: stream.profile,
-                      streamName: `${camera.sanitizedName ?? camera.name ?? camera.host}_${stream.profile}`,
+                      streamName: server?.go2rtcStreamName ?? `${camera.sanitizedName ?? camera.name ?? camera.host}_${stream.profile}`,
                       go2rtcApiPort,
                       serviceIp,
-                    })
+                    });
+                  }}
                   }
                   cameraName={camera.sanitizedName ?? camera.name ?? camera.host}
                   go2rtcApiPort={go2rtcApiPort}

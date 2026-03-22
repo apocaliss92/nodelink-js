@@ -6,7 +6,7 @@ import type { AvailableStream } from './types';
 interface StreamProfileCardProps {
   cameraId: string;
   stream: AvailableStream;
-  rtspServer?: { status?: string; connections?: number; rtspUrl?: string };
+  rtspServer?: { status?: string; connections?: number; rtspUrl?: string; go2rtcStreamName?: string };
   onStartStream: () => void;
   onStopStream: () => void;
   onPreview: () => void;
@@ -21,7 +21,7 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onStartStream,
   const [urlsOpen, setUrlsOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
 
-  const streamName = `${cameraName}_${stream.profile}`;
+  const streamName = rtspServer?.go2rtcStreamName ?? `${cameraName}_${stream.profile}`;
   const go2rtcHost = serviceIp || window.location.hostname;
   const go2rtcBase = go2rtcApiPort ? `${window.location.protocol}//${go2rtcHost}:${go2rtcApiPort}` : null;
   const src = encodeURIComponent(streamName);
