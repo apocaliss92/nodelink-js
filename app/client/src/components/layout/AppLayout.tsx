@@ -1,10 +1,14 @@
 import { Outlet } from 'react-router-dom';
-import { LogOut, Github } from 'lucide-react';
+import { LogOut, Github, Moon, Sun, Monitor } from 'lucide-react';
+import { useThemeMode } from '@apocaliss92/camstack-ui';
 import { useAuth } from '../../auth';
 import { NodelinkIcon } from './NodelinkIcon';
 import { NavSidebarItem } from './NavSidebarItem';
 import { BottomNav } from './BottomNav';
 import { navItems } from './nav-items';
+
+const THEME_ICONS = { dark: Moon, light: Sun, system: Monitor } as const;
+const THEME_LABELS = { dark: 'Dark', light: 'Light', system: 'System' } as const;
 
 interface AppLayoutProps {
   version?: string;
@@ -13,6 +17,9 @@ interface AppLayoutProps {
 
 export function AppLayout({ version, updateAvailable }: AppLayoutProps) {
   const { state, logout } = useAuth();
+  const theme = useThemeMode();
+
+  const ThemeIcon = THEME_ICONS[theme?.mode ?? 'system'];
 
   return (
     <div className="flex h-screen bg-[var(--color-background)] text-[var(--color-foreground)]">
@@ -35,40 +42,45 @@ export function AppLayout({ version, updateAvailable }: AppLayoutProps) {
           {/* Spacer */}
           <div className="flex-1" />
 
-          {/* Footer */}
-          <div className="flex flex-col gap-1 border-t border-[var(--color-border)] pt-2 mt-2">
-            {state.user && (
-              <div className="px-2 text-[11px] text-[var(--color-foreground-muted)] truncate">
-                {state.user.username}
-              </div>
-            )}
-            <div className="flex items-center gap-1 px-2">
+          {/* Bottom controls */}
+          <div className="flex flex-col gap-0.5 border-t border-[var(--color-border)] pt-2 mt-2">
+            {/* Theme toggle */}
+            <button
+              onClick={() => theme?.toggleMode()}
+              className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[12px] text-[var(--color-foreground-subtle)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-foreground)] transition-colors"
+            >
+              <ThemeIcon className="h-3.5 w-3.5" />
+              <span>{THEME_LABELS[theme?.mode ?? 'system']}</span>
+            </button>
+
+            {/* User + logout */}
+            <button
+              onClick={() => { if (state.enabled) logout(); }}
+              className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[12px] text-[var(--color-foreground-subtle)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-danger)] transition-colors"
+            >
+              <LogOut className="h-3.5 w-3.5" />
+              <span className="truncate">{state.user?.username ?? 'User'}</span>
+            </button>
+
+            {/* Footer links + version */}
+            <div className="flex items-center justify-between px-2.5 pt-1">
               <a
                 href="https://github.com/ApoCaliss92/reolink-baichuan-js"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-[var(--color-foreground-subtle)] hover:text-[var(--color-foreground)] transition-colors"
               >
-                <Github size={14} />
+                <Github size={12} />
               </a>
-              {state.enabled && (
-                <button
-                  onClick={logout}
-                  className="text-[var(--color-foreground-subtle)] hover:text-[var(--color-danger)] transition-colors"
-                  title="Sign out"
-                >
-                  <LogOut size={14} />
-                </button>
+              {version && (
+                <span className="text-[10px] text-[var(--color-foreground-subtle)]">
+                  {version}
+                  {updateAvailable && (
+                    <span className="ml-1 text-[var(--color-warning)]">update</span>
+                  )}
+                </span>
               )}
             </div>
-            {version && (
-              <div className="px-2 text-[10px] text-[var(--color-foreground-subtle)]">
-                {version}
-                {updateAvailable && (
-                  <span className="ml-1 text-[var(--color-warning)]">update</span>
-                )}
-              </div>
-            )}
           </div>
         </div>
       </aside>
