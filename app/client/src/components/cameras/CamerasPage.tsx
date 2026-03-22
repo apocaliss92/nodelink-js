@@ -44,8 +44,11 @@ export function CamerasPage() {
 
   const openFloatingPanel = (entry: FloatingPanelEntry) => {
     setFloatingPanels((prev) => {
+      // Same exact panel already open — skip
       if (prev.some((p) => p.id === entry.id)) return prev;
-      return [...prev, entry];
+      // Replace existing panel of same type (only one PTZ, one events, one controls, one stream at a time)
+      const filtered = prev.filter((p) => p.type !== entry.type);
+      return [...filtered, entry];
     });
   };
 
