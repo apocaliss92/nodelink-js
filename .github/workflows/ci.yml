@@ -60,5 +60,8 @@ jobs:
       - name: Install app dependencies
         run: cd app && npm ci
 
+      - name: Type-check app
+        run: cd app && npx tsc --noEmit
+
       - name: Build app UI
         run: cd app && npx vite build
