@@ -1,0 +1,143 @@
+name: Release — Docker Image
+run-name: "Docker ${{ github.ref_name || github.event.inputs.version_type }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_type:
+        description: "Version increment type"
+        required: true
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      release_channel:
+        description: "Release channel"
+        required: true
+        type: choice
+        options: [latest, beta, rc, dev]
+        default: latest
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  NODE_VERSION: "22"
+  REGISTRY: ghcr.io
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'push' && github.ref || 'main' }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION="${{ github.ref_name }}"
+            VERSION="${VERSION#v}"
+          elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            CURRENT=$(node -p "require('./package.json').version")
+            BASE="${CURRENT%%-*}"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE"
+            CHANNEL="${{ github.event.inputs.release_channel }}"
+            case "${{ github.event.inputs.version_type }}" in
+              major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+              minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+              patch) PATCH=$((PATCH + 1)) ;;
+            esac
+            if [ "$CHANNEL" == "latest" ]; then
+              VERSION="${MAJOR}.${MINOR}.${PATCH}"
+            else
+              VERSION="${MAJOR}.${MINOR}.${PATCH}-${CHANNEL}.0"
+            fi
+          else
+            VERSION=$(node -p "require('./package.json').version")
+          fi
+
+          IS_PRERELEASE="false"
+          [[ "$VERSION" == *"-"* ]] && IS_PRERELEASE="true"
+
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "is_prerelease=${IS_PRERELEASE}" >> $GITHUB_OUTPUT
+          echo "Version: ${VERSION}"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: all
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute Docker tags
+        id: tags
+        run: |
+          OWNER_LC=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          IMG="${{ env.REGISTRY }}/${OWNER_LC}/nodelink-js-manager"
+          VERSION="${{ steps.version.outputs.version }}"
+          IS_PRERELEASE="${{ steps.version.outputs.is_prerelease }}"
+          CHANNEL="${{ github.event.inputs.release_channel || 'latest' }}"
+
+          TAGS="${IMG}:${VERSION}"
+          if [ "$IS_PRERELEASE" == "true" ]; then
+            TAGS="${TAGS},${IMG}:${CHANNEL}"
+          else
+            TAGS="${TAGS},${IMG}:latest"
+          fi
+
+          echo "image=${IMG}" >> $GITHUB_OUTPUT
+          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.title=Nodelink.js Manager
+            org.opencontainers.image.description=Web dashboard for Reolink cameras with go2rtc streaming
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      - name: Job Summary
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          IMG="${{ steps.tags.outputs.image }}"
+          echo "## Docker Image Published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| | |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Version** | \`${VERSION}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Image** | \`${IMG}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Platforms** | linux/amd64, linux/arm64 |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${IMG}:${VERSION}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
