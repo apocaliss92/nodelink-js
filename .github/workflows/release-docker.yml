@@ -20,7 +20,7 @@ on:
     tags: ["v*.*.*"]
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 env:
@@ -36,6 +36,7 @@ jobs:
         with:
           ref: ${{ github.event_name == 'push' && github.ref || 'main' }}
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -45,26 +46,51 @@ jobs:
       - name: Determine version
         id: version
         run: |
+          # Use app/package.json for Docker versioning (independent from library)
+          RAW_VERSION=$(node -p "require('./app/package.json').version")
+          CHANNEL="${{ github.event.inputs.release_channel || 'latest' }}"
+          VERSION_TYPE="${{ github.event.inputs.version_type || 'patch' }}"
+
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             VERSION="${{ github.ref_name }}"
             VERSION="${VERSION#v}"
           elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            CURRENT=$(node -p "require('./package.json').version")
-            BASE="${CURRENT%%-*}"
-            IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE"
-            CHANNEL="${{ github.event.inputs.release_channel }}"
-            case "${{ github.event.inputs.version_type }}" in
-              major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-              minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-              patch) PATCH=$((PATCH + 1)) ;;
-            esac
+            BASE_VERSION="${RAW_VERSION%%-*}"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
+
             if [ "$CHANNEL" == "latest" ]; then
+              # Stable: always bump base version
+              case "$VERSION_TYPE" in
+                major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+                minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+                patch) PATCH=$((PATCH + 1)) ;;
+              esac
               VERSION="${MAJOR}.${MINOR}.${PATCH}"
             else
-              VERSION="${MAJOR}.${MINOR}.${PATCH}-${CHANNEL}.0"
+              # Pre-release: check if already on same channel, increment build number
+              CURRENT_CHANNEL=""
+              CURRENT_BUILD="-1"
+              if [[ "$RAW_VERSION" == *"-${CHANNEL}."* ]]; then
+                CURRENT_CHANNEL="${CHANNEL}"
+                CURRENT_BUILD=$(echo "$RAW_VERSION" | sed "s/.*-${CHANNEL}\.\([0-9]*\).*/\1/")
+              fi
+
+              if [ "$CURRENT_CHANNEL" == "$CHANNEL" ]; then
+                # Same channel: increment build number only (e.g. beta.2 → beta.3)
+                NEW_BUILD=$((CURRENT_BUILD + 1))
+                VERSION="${BASE_VERSION}-${CHANNEL}.${NEW_BUILD}"
+              else
+                # Different channel: bump base + start at .0
+                case "$VERSION_TYPE" in
+                  major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+                  minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+                  patch) PATCH=$((PATCH + 1)) ;;
+                esac
+                VERSION="${MAJOR}.${MINOR}.${PATCH}-${CHANNEL}.0"
+              fi
             fi
           else
-            VERSION=$(node -p "require('./package.json').version")
+            VERSION="$RAW_VERSION"
           fi
 
           IS_PRERELEASE="false"
@@ -73,6 +99,20 @@ jobs:
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "is_prerelease=${IS_PRERELEASE}" >> $GITHUB_OUTPUT
           echo "Version: ${VERSION}"
+
+      - name: Bump app version in package.json
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          cd app && npm version "${VERSION}" --no-git-tag-version --allow-same-version
+          cd ..
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add app/package.json
+          if ! git diff --staged --quiet; then
+            git commit -m "chore: bump app version to ${VERSION} [skip ci]"
+            git push
+          fi
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
