@@ -56,15 +56,13 @@ export function AppLayout({ version, updateAvailable }: AppLayoutProps) {
             {/* User + logout */}
             <div className="flex items-center justify-between px-2 py-1.5 text-[11px] text-[var(--color-foreground-subtle)]">
               <span className="truncate">{state.user?.username ?? 'User'}</span>
-              {state.enabled && (
-                <button
-                  onClick={logout}
-                  className="hover:text-[var(--color-danger)] transition-colors shrink-0"
-                  title="Sign out"
-                >
-                  <LogOut className="h-3.5 w-3.5" />
-                </button>
-              )}
+              <button
+                onClick={logout}
+                className="hover:text-[var(--color-danger)] transition-colors shrink-0"
+                title="Sign out"
+              >
+                <LogOut className="h-3.5 w-3.5" />
+              </button>
             </div>
 
             {/* GitHub + Coffee */}
