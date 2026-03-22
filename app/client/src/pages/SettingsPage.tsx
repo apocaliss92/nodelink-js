@@ -620,7 +620,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <>
+    <div className="p-5">
       {/* Page header */}
       <div className="flex items-center justify-between gap-3 mb-4">
         <h1 className="text-lg font-bold m-0">Settings</h1>
@@ -2628,6 +2628,6 @@ export default function SettingsPage() {
           </div>
         </div>
       ) : null}
-    </>
+    </div>
   );
 }
