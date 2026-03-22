@@ -157,7 +157,6 @@ export function CameraDetailPanel({
                       serviceIp,
                     });
                   }}
-                  }
                   cameraName={camera.sanitizedName ?? camera.name ?? camera.host}
                   go2rtcApiPort={go2rtcApiPort}
                   serviceIp={serviceIp}
