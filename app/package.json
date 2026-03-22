@@ -16,12 +16,12 @@
     "dev": "concurrently -k -n server,client -c green,cyan \"npm run dev:server\" \"npm run dev:client\""
   },
   "dependencies": {
+    "@apocaliss92/camstack-ui": "^0.1.23",
     "@apocaliss92/nodelink-js": "file:..",
     "@tailwindcss/vite": "^4.2.2",
     "@tanstack/react-table": "^8.21.3",
     "@trpc/server": "^10.45.0",
     "@types/uuid": "^10.0.0",
-    "camstack-ui": "file:../../camstack-js-proxy/packages/camstack-ui",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.18.2",

@@ -1,4 +1,4 @@
-import { cn } from 'camstack-ui';
+import { cn } from '@apocaliss92/camstack-ui';
 import type { CameraInfo, AvailableStream } from './types';
 
 interface CameraCardProps {

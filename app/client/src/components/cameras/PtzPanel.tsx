@@ -1,4 +1,4 @@
-import { Button } from "camstack-ui";
+import { Button } from '@apocaliss92/camstack-ui';
 import type { ControlsState } from "./types";
 
 type PtzCommand = "Up" | "Down" | "Left" | "Right" | "ZoomIn" | "ZoomOut";

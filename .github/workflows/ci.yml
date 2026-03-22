@@ -57,13 +57,6 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
-      - name: Checkout camstack-js-proxy (provides camstack-ui)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/camstack-js-proxy
-          path: ../camstack-js-proxy
-          token: ${{ secrets.CAMSTACK_PAT }}
-
       - name: Install root dependencies
         run: npm ci
 
@@ -71,7 +64,7 @@ jobs:
         run: npm run build
 
       - name: Install app dependencies
-        run: cd app && npm install
+        run: cd app && npm ci
 
       - name: Type-check app
         run: cd app && npx tsc --noEmit

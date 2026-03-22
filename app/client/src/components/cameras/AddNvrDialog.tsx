@@ -6,7 +6,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "camstack-ui";
+} from '@apocaliss92/camstack-ui';
 import { trpcMutation } from "../../api";
 import type { NvrChannel, NvrInfo } from "./types";
 
