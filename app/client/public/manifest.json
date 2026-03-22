@@ -1,11 +1,11 @@
 {
-  "name": "nodelink.js Manager",
-  "short_name": "nodelink.js",
+  "name": "Nodelink.js Manager",
+  "short_name": "Nodelink.js",
   "description": "Manage and stream from Reolink cameras using Baichuan protocol",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#1a1a1a",
+  "background_color": "#0c0a09",
   "theme_color": "#3b82f6",
   "orientation": "any",
   "icons": [

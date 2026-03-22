@@ -1,8 +1,8 @@
 <table>
   <tr>
-    <td><img src="app/client/public/icon-512x512.png" alt="nodelink.js" width="256" height="256"></td>
+    <td><img src="app/client/public/brand/logo-dark.svg" alt="Nodelink.js" width="200" height="48"></td>
     <td>
-      <h1>nodelink.js</h1>
+      <h1>Nodelink.js</h1>
       <p>A TypeScript library for interacting with Reolink IP cameras and NVRs using the proprietary Baichuan protocol and CGI API.</p>
     </td>
   </tr>

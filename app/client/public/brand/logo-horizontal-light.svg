@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 56" fill="none">
+  <g transform="translate(4, 2) scale(0.8)">
+    <rect x="8" y="28" width="48" height="28" rx="6" fill="#d6d3d1"/>
+    <rect x="12" y="16" width="40" height="28" rx="6" fill="#e7e5e4"/>
+    <rect x="16" y="4" width="32" height="28" rx="6" fill="#2563eb"/>
+    <circle cx="32" cy="18" r="3" fill="#1c1917" opacity="0.7"/>
+    <path d="M 25 12 A 10 10 0 0 1 25 24" fill="none" stroke="#fafaf9" stroke-width="1.5" opacity="0.4"/>
+    <path d="M 39 12 A 10 10 0 0 0 39 24" fill="none" stroke="#fafaf9" stroke-width="1.5" opacity="0.4"/>
+  </g>
+  <text x="62" y="30" font-family="system-ui, -apple-system, sans-serif" font-size="22" font-weight="700" letter-spacing="-0.5" fill="#1c1917">
+    Node<tspan fill="#2563eb">link.js</tspan>
+  </text>
+  <text x="63" y="44" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" letter-spacing="3" fill="#a8a29e">
+    MANAGER
+  </text>
+</svg>
