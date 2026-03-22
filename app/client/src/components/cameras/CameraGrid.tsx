@@ -6,9 +6,22 @@ interface CameraGridProps {
   streamsByCamera: Record<string, AvailableStream[]>;
   selectedCamera: CameraInfo | null;
   onSelectCamera: (camera: CameraInfo) => void;
+  onOpenPtz?: (camera: CameraInfo) => void;
+  onOpenEvents?: (camera: CameraInfo) => void;
+  onOpenDeviceControls?: (camera: CameraInfo) => void;
+  onOpenStream?: (camera: CameraInfo, stream: AvailableStream) => void;
 }
 
-export function CameraGrid({ cameras, streamsByCamera, selectedCamera, onSelectCamera }: CameraGridProps) {
+export function CameraGrid({
+  cameras,
+  streamsByCamera,
+  selectedCamera,
+  onSelectCamera,
+  onOpenPtz,
+  onOpenEvents,
+  onOpenDeviceControls,
+  onOpenStream,
+}: CameraGridProps) {
   return (
     <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-3 p-4 overflow-y-auto flex-1 content-start">
       {cameras.map((camera) => (
@@ -18,6 +31,10 @@ export function CameraGrid({ cameras, streamsByCamera, selectedCamera, onSelectC
           streams={streamsByCamera[camera.id] ?? []}
           selected={selectedCamera?.id === camera.id}
           onClick={() => onSelectCamera(camera)}
+          onOpenPtz={onOpenPtz ? () => onOpenPtz(camera) : undefined}
+          onOpenEvents={onOpenEvents ? () => onOpenEvents(camera) : undefined}
+          onOpenDeviceControls={onOpenDeviceControls ? () => onOpenDeviceControls(camera) : undefined}
+          onOpenStream={onOpenStream ? (stream) => onOpenStream(camera, stream) : undefined}
         />
       ))}
     </div>

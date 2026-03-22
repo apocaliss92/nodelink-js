@@ -18,4 +18,8 @@ export { PtzPanel } from "./PtzPanel";
 export { EventsPanel } from "./EventsPanel";
 export { PreviewDialog } from "./PreviewDialog";
 export { PreviewPanel } from "./PreviewPanel";
+export { FloatingPanel } from "./FloatingPanel";
+export { PtzFloatingContent } from "./PtzFloatingContent";
+export { EventsFloatingContent } from "./EventsFloatingContent";
+export { DeviceControlsContent } from "./DeviceControlsContent";
 export { CamerasProvider, useCamerasContext } from "./CamerasContext";

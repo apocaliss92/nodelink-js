@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Plus, Camera } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { CameraGrid } from './CameraGrid';
@@ -6,15 +7,28 @@ import { CamerasProvider } from './CamerasContext';
 import { AddCameraDialog } from './AddCameraDialog';
 import { AddNvrDialog } from './AddNvrDialog';
 import { PreviewPanel } from './PreviewPanel';
+import { FloatingPanel } from './FloatingPanel';
+import { PtzFloatingContent } from './PtzFloatingContent';
+import { EventsFloatingContent } from './EventsFloatingContent';
+import { DeviceControlsContent } from './DeviceControlsContent';
+import { WebRTCInlinePlayer } from './WebRTCInlinePlayer';
 import { useCameras } from './hooks/useCameras';
 import { useSelectedCamera } from './hooks/useSelectedCamera';
-import type { CameraInfo } from './types';
+import type { CameraInfo, AvailableStream } from './types';
+
+type FloatingPanelEntry =
+  | { id: string; type: 'ptz'; camera: CameraInfo }
+  | { id: string; type: 'events'; camera: CameraInfo }
+  | { id: string; type: 'controls'; camera: CameraInfo }
+  | { id: string; type: 'stream'; camera: CameraInfo; stream: AvailableStream };
 
 export function CamerasPage() {
   const camerasHook = useCameras();
   const { cameras, connectingByCamera, rtspServers, streamsByCamera, savingAutoStart, setAutoStartForCamera } = camerasHook;
   const { selectedCamera, selectCamera } = useSelectedCamera(cameras);
   const navigate = useNavigate();
+
+  const [floatingPanels, setFloatingPanels] = useState<FloatingPanelEntry[]>([]);
 
   const onlineCount = cameras.filter((c) => c.status === 'connected').length;
 
@@ -26,6 +40,34 @@ export function CamerasPage() {
     } else {
       selectCamera(camera);
     }
+  };
+
+  const openFloatingPanel = (entry: FloatingPanelEntry) => {
+    setFloatingPanels((prev) => {
+      if (prev.some((p) => p.id === entry.id)) return prev;
+      return [...prev, entry];
+    });
+  };
+
+  const closeFloatingPanel = (id: string) => {
+    setFloatingPanels((prev) => prev.filter((p) => p.id !== id));
+  };
+
+  const handleOpenPtz = (camera: CameraInfo) => {
+    openFloatingPanel({ id: `${camera.id}-ptz`, type: 'ptz', camera });
+  };
+
+  const handleOpenEvents = (camera: CameraInfo) => {
+    openFloatingPanel({ id: `${camera.id}-events`, type: 'events', camera });
+  };
+
+  const handleOpenDeviceControls = (camera: CameraInfo) => {
+    openFloatingPanel({ id: `${camera.id}-controls`, type: 'controls', camera });
+  };
+
+  const handleOpenStream = (camera: CameraInfo, stream: AvailableStream) => {
+    const id = `${camera.id}-stream-${stream.profile}`;
+    openFloatingPanel({ id, type: 'stream', camera, stream });
   };
 
   return (
@@ -99,6 +141,10 @@ export function CamerasPage() {
               streamsByCamera={streamsByCamera}
               selectedCamera={selectedCamera}
               onSelectCamera={handleSelectCamera}
+              onOpenPtz={handleOpenPtz}
+              onOpenEvents={handleOpenEvents}
+              onOpenDeviceControls={handleOpenDeviceControls}
+              onOpenStream={handleOpenStream}
             />
             {selectedCamera && (
               <CameraDetailPanel
@@ -145,6 +191,85 @@ export function CamerasPage() {
           onClose={() => camerasHook.setPreviewModal({ open: false })}
         />
       )}
+
+      {/* Floating panels */}
+      {floatingPanels.map((panel, i) => {
+        if (panel.type === 'ptz') {
+          return (
+            <FloatingPanel
+              key={panel.id}
+              title={`PTZ — ${panel.camera.name || panel.camera.host}`}
+              onClose={() => closeFloatingPanel(panel.id)}
+              offsetIndex={i}
+              defaultWidth={280}
+              defaultHeight={300}
+            >
+              <PtzFloatingContent cameraId={panel.camera.id} />
+            </FloatingPanel>
+          );
+        }
+
+        if (panel.type === 'events') {
+          return (
+            <FloatingPanel
+              key={panel.id}
+              title={`Events — ${panel.camera.name || panel.camera.host}`}
+              onClose={() => closeFloatingPanel(panel.id)}
+              offsetIndex={i}
+              defaultWidth={360}
+              defaultHeight={320}
+            >
+              <EventsFloatingContent cameraId={panel.camera.id} />
+            </FloatingPanel>
+          );
+        }
+
+        if (panel.type === 'controls') {
+          return (
+            <FloatingPanel
+              key={panel.id}
+              title={`Controls — ${panel.camera.name || panel.camera.host}`}
+              onClose={() => closeFloatingPanel(panel.id)}
+              offsetIndex={i}
+              defaultWidth={300}
+              defaultHeight={250}
+            >
+              <DeviceControlsContent cameraId={panel.camera.id} />
+            </FloatingPanel>
+          );
+        }
+
+        if (panel.type === 'stream') {
+          const server = rtspServers.find(
+            (s) => s.cameraId === panel.camera.id && s.profile === panel.stream.profile,
+          );
+          return (
+            <FloatingPanel
+              key={panel.id}
+              title={`${panel.camera.name || panel.camera.host} — ${panel.stream.profile}`}
+              onClose={() => closeFloatingPanel(panel.id)}
+              offsetIndex={i}
+              defaultWidth={480}
+              defaultHeight={310}
+              minWidth={320}
+              minHeight={200}
+            >
+              <div className="h-full bg-black">
+                <WebRTCInlinePlayer
+                  streamName={
+                    server?.go2rtcStreamName ??
+                    `${panel.camera.sanitizedName}_${panel.stream.profile}`
+                  }
+                  go2rtcApiPort={camerasHook.go2rtcApiPort}
+                  serviceIp={camerasHook.serviceIp}
+                />
+              </div>
+            </FloatingPanel>
+          );
+        }
+
+        return null;
+      })}
     </CamerasProvider>
   );
 }
