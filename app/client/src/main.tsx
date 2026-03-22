@@ -1,7 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
-import { ThemeProvider } from "camstack-ui/theme";
+import { ThemeProvider } from "camstack-ui";
 import App from "./App";
 import "./app.css";
 import { nodelinkThemeCss } from "./theme/nodelink-theme";

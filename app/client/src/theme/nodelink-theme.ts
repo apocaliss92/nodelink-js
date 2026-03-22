@@ -1,4 +1,4 @@
-import { createTheme, themeToCss } from 'camstack-ui/theme';
+import { createTheme, themeToCss } from 'camstack-ui';
 
 export const nodelinkTheme = createTheme({
   colors: {
