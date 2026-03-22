@@ -21,6 +21,8 @@ export function CamerasPage() {
   const handleSelectCamera = (camera: CameraInfo) => {
     if (window.innerWidth < 768) {
       navigate(`/cameras/${encodeURIComponent(camera.name || camera.host)}`);
+    } else if (selectedCamera?.id === camera.id) {
+      selectCamera(null);
     } else {
       selectCamera(camera);
     }
@@ -114,6 +116,7 @@ export function CamerasPage() {
                 onToggleAutoStart={() => void setAutoStartForCamera(selectedCamera, !selectedCamera.autoStart)}
                 go2rtcApiPort={camerasHook.go2rtcApiPort}
                 serviceIp={camerasHook.serviceIp}
+                onClose={() => selectCamera(null)}
               />
             )}
           </div>

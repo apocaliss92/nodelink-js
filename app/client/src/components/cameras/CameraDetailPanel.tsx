@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { X } from 'lucide-react';
 import { DeviceInfoSection } from './DeviceInfoSection';
 import { StreamProfileCard } from './StreamProfileCard';
 import { ActionsGrid } from './ActionsGrid';
@@ -23,6 +24,7 @@ interface CameraDetailPanelProps {
   onToggleAutoStart: () => void;
   go2rtcApiPort: number | null;
   serviceIp: string;
+  onClose: () => void;
 }
 
 export function CameraDetailPanel({
@@ -40,6 +42,7 @@ export function CameraDetailPanel({
   onToggleAutoStart,
   go2rtcApiPort,
   serviceIp,
+  onClose,
 }: CameraDetailPanelProps) {
   const isConnected = camera.status === 'connected';
   const [showPtz, setShowPtz] = useState(false);
@@ -108,17 +111,26 @@ export function CameraDetailPanel({
   return (
     <div className="w-[340px] min-w-[340px] border-l border-[var(--color-border)] bg-[var(--color-background)]/50 overflow-y-auto p-4 hidden md:block">
       {/* Header */}
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-4 gap-2">
         <h2 className="text-[15px] font-semibold truncate">{camera.name || camera.host}</h2>
-        <span
-          className={`rounded-full px-2 py-0.5 text-[11px] ${
-            isConnected
-              ? 'bg-[var(--color-success)]/15 text-[var(--color-success)]'
-              : 'bg-[var(--color-danger)]/15 text-[var(--color-danger)]'
-          }`}
-        >
-          {isConnected ? 'Online' : 'Offline'}
-        </span>
+        <div className="flex items-center gap-2 shrink-0">
+          <span
+            className={`rounded-full px-2 py-0.5 text-[11px] ${
+              isConnected
+                ? 'bg-[var(--color-success)]/15 text-[var(--color-success)]'
+                : 'bg-[var(--color-danger)]/15 text-[var(--color-danger)]'
+            }`}
+          >
+            {isConnected ? 'Online' : 'Offline'}
+          </span>
+          <button
+            onClick={onClose}
+            className="p-0.5 rounded hover:bg-[var(--color-surface-hover)] text-[var(--color-foreground-muted)] hover:text-[var(--color-foreground)] transition-colors"
+            title="Close panel"
+          >
+            <X size={14} />
+          </button>
+        </div>
       </div>
 
       <div className="mb-3">
