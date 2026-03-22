@@ -1,23 +1,20 @@
 name: Release — Docker Image
-run-name: "Docker ${{ github.ref_name || github.event.inputs.version_type }}"
+run-name: "Docker ${{ github.event.inputs.increment || 'patch' }}"
 
 on:
   workflow_dispatch:
     inputs:
-      version_type:
-        description: "Version increment type"
+      increment:
+        description: "Version increment"
         required: true
         type: choice
-        options: [patch, minor, major]
+        options:
+          - beta
+          - rc
+          - patch
+          - minor
+          - major
         default: patch
-      release_channel:
-        description: "Release channel"
-        required: true
-        type: choice
-        options: [latest, beta, rc, dev]
-        default: latest
-  push:
-    tags: ["v*.*.*"]
 
 permissions:
   contents: write
@@ -34,7 +31,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'push' && github.ref || 'main' }}
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -43,65 +39,61 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Determine version
+      - name: Compute version
         id: version
         run: |
-          # Use app/package.json for Docker versioning (independent from library)
-          RAW_VERSION=$(node -p "require('./app/package.json').version")
-          CHANNEL="${{ github.event.inputs.release_channel || 'latest' }}"
-          VERSION_TYPE="${{ github.event.inputs.version_type || 'patch' }}"
+          RAW=$(node -p "require('./app/package.json').version")
+          INCREMENT="${{ github.event.inputs.increment }}"
 
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            VERSION="${{ github.ref_name }}"
-            VERSION="${VERSION#v}"
-          elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            BASE_VERSION="${RAW_VERSION%%-*}"
-            IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
-
-            if [ "$CHANNEL" == "latest" ]; then
-              # Stable: always bump base version
-              case "$VERSION_TYPE" in
-                major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-                minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-                patch) PATCH=$((PATCH + 1)) ;;
-              esac
-              VERSION="${MAJOR}.${MINOR}.${PATCH}"
-            else
-              # Pre-release: check if already on same channel, increment build number
-              CURRENT_CHANNEL=""
-              CURRENT_BUILD="-1"
-              if [[ "$RAW_VERSION" == *"-${CHANNEL}."* ]]; then
-                CURRENT_CHANNEL="${CHANNEL}"
-                CURRENT_BUILD=$(echo "$RAW_VERSION" | sed "s/.*-${CHANNEL}\.\([0-9]*\).*/\1/")
-              fi
-
-              if [ "$CURRENT_CHANNEL" == "$CHANNEL" ]; then
-                # Same channel: increment build number only (e.g. beta.2 → beta.3)
-                NEW_BUILD=$((CURRENT_BUILD + 1))
-                VERSION="${BASE_VERSION}-${CHANNEL}.${NEW_BUILD}"
-              else
-                # Different channel: bump base + start at .0
-                case "$VERSION_TYPE" in
-                  major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-                  minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-                  patch) PATCH=$((PATCH + 1)) ;;
-                esac
-                VERSION="${MAJOR}.${MINOR}.${PATCH}-${CHANNEL}.0"
-              fi
-            fi
-          else
-            VERSION="$RAW_VERSION"
+          # Parse current version
+          BASE="${RAW%%-*}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE"
+          CURRENT_CHANNEL=""
+          CURRENT_BUILD="-1"
+          if [[ "$RAW" == *"-"* ]]; then
+            CURRENT_CHANNEL=$(echo "$RAW" | sed 's/[^-]*-\([a-z]*\)\..*/\1/')
+            CURRENT_BUILD=$(echo "$RAW" | sed 's/.*\.\([0-9]*\)$/\1/')
           fi
 
-          IS_PRERELEASE="false"
-          [[ "$VERSION" == *"-"* ]] && IS_PRERELEASE="true"
+          case "$INCREMENT" in
+            beta|rc)
+              if [ "$CURRENT_CHANNEL" == "$INCREMENT" ]; then
+                VERSION="${BASE}-${INCREMENT}.$((CURRENT_BUILD + 1))"
+              elif [ -n "$CURRENT_CHANNEL" ]; then
+                VERSION="${BASE}-${INCREMENT}.0"
+              else
+                VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))-${INCREMENT}.0"
+              fi
+              IS_PRERELEASE="true"
+              DOCKER_CHANNEL="$INCREMENT"
+              ;;
+            patch)
+              if [ -n "$CURRENT_CHANNEL" ]; then
+                VERSION="${BASE}"
+              else
+                VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
+              fi
+              IS_PRERELEASE="false"
+              DOCKER_CHANNEL="latest"
+              ;;
+            minor)
+              VERSION="${MAJOR}.$((MINOR + 1)).0"
+              IS_PRERELEASE="false"
+              DOCKER_CHANNEL="latest"
+              ;;
+            major)
+              VERSION="$((MAJOR + 1)).0.0"
+              IS_PRERELEASE="false"
+              DOCKER_CHANNEL="latest"
+              ;;
+          esac
 
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "is_prerelease=${IS_PRERELEASE}" >> $GITHUB_OUTPUT
-          echo "Version: ${VERSION}"
+          echo "docker_channel=${DOCKER_CHANNEL}" >> $GITHUB_OUTPUT
+          echo "${RAW} → ${VERSION} (increment=${INCREMENT})"
 
-      - name: Bump app version in package.json
-        if: github.event_name == 'workflow_dispatch'
+      - name: Bump app version
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           cd app && npm version "${VERSION}" --no-git-tag-version --allow-same-version
@@ -135,14 +127,13 @@ jobs:
           OWNER_LC=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
           IMG="${{ env.REGISTRY }}/${OWNER_LC}/nodelink-js-manager"
           VERSION="${{ steps.version.outputs.version }}"
-          IS_PRERELEASE="${{ steps.version.outputs.is_prerelease }}"
-          CHANNEL="${{ github.event.inputs.release_channel || 'latest' }}"
+          CHANNEL="${{ steps.version.outputs.docker_channel }}"
 
           TAGS="${IMG}:${VERSION}"
-          if [ "$IS_PRERELEASE" == "true" ]; then
-            TAGS="${TAGS},${IMG}:${CHANNEL}"
-          else
+          if [ "$CHANNEL" == "latest" ]; then
             TAGS="${TAGS},${IMG}:latest"
+          else
+            TAGS="${TAGS},${IMG}:${CHANNEL}"
           fi
 
           echo "image=${IMG}" >> $GITHUB_OUTPUT

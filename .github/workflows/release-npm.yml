@@ -1,23 +1,20 @@
 name: Release — NPM
-run-name: "NPM ${{ github.event.inputs.release_channel || 'latest' }} (${{ github.event.inputs.version_type || 'patch' }})"
+run-name: "NPM ${{ github.event.inputs.increment || 'patch' }}"
 
 on:
   workflow_dispatch:
     inputs:
-      version_type:
-        description: "Version increment type (ignored for pre-release if already on same base)"
+      increment:
+        description: "Version increment"
         required: true
         type: choice
-        options: [patch, minor, major]
+        options:
+          - beta
+          - rc
+          - patch
+          - minor
+          - major
         default: patch
-      release_channel:
-        description: "Release channel — 'latest' for stable, or beta/rc/dev for pre-release"
-        required: true
-        type: choice
-        options: [latest, beta, rc, dev]
-        default: latest
-  push:
-    tags: ["v*.*.*"]
 
 permissions:
   contents: write
@@ -32,7 +29,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'push' && github.ref || 'main' }}
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -45,90 +41,84 @@ jobs:
       - name: Compute version
         id: version
         run: |
-          RAW_VERSION=$(node -p "require('./package.json').version")
-          CHANNEL="${{ github.event.inputs.release_channel || 'latest' }}"
-          VERSION_TYPE="${{ github.event.inputs.version_type || 'patch' }}"
+          RAW=$(node -p "require('./package.json').version")
+          INCREMENT="${{ github.event.inputs.increment }}"
 
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            BASE_VERSION="${RAW_VERSION%%-*}"
-            IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
-
-            if [ "$CHANNEL" == "latest" ]; then
-              case "$VERSION_TYPE" in
-                major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-                minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-                patch) PATCH=$((PATCH + 1)) ;;
-              esac
-              VERSION="${MAJOR}.${MINOR}.${PATCH}"
-              NPM_TAG="latest"
-              IS_PRERELEASE="false"
-            else
-              CURRENT_CHANNEL=""
-              CURRENT_BUILD="-1"
-              if [[ "$RAW_VERSION" == *"-${CHANNEL}."* ]]; then
-                CURRENT_CHANNEL="${CHANNEL}"
-                CURRENT_BUILD=$(echo "$RAW_VERSION" | sed "s/.*-${CHANNEL}\.\([0-9]*\).*/\1/")
-              fi
-
-              if [ "$CURRENT_CHANNEL" == "$CHANNEL" ]; then
-                NEW_BUILD=$((CURRENT_BUILD + 1))
-                VERSION="${BASE_VERSION}-${CHANNEL}.${NEW_BUILD}"
-              else
-                case "$VERSION_TYPE" in
-                  major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-                  minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-                  patch) PATCH=$((PATCH + 1)) ;;
-                esac
-                VERSION="${MAJOR}.${MINOR}.${PATCH}-${CHANNEL}.0"
-              fi
-              NPM_TAG="${CHANNEL}"
-              IS_PRERELEASE="true"
-            fi
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            TAG="${{ github.ref }}"
-            VERSION=${TAG#refs/tags/v}
-            if [[ "$VERSION" == *"-"* ]]; then
-              NPM_TAG=$(echo "$VERSION" | sed 's/.*-\([a-z]*\).*/\1/')
-              IS_PRERELEASE="true"
-            else
-              NPM_TAG="latest"
-              IS_PRERELEASE="false"
-            fi
+          # Parse current version: BASE = X.Y.Z, CHANNEL = beta|rc|"", BUILD = N
+          BASE="${RAW%%-*}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE"
+          CURRENT_CHANNEL=""
+          CURRENT_BUILD="-1"
+          if [[ "$RAW" == *"-"* ]]; then
+            CURRENT_CHANNEL=$(echo "$RAW" | sed 's/[^-]*-\([a-z]*\)\..*/\1/')
+            CURRENT_BUILD=$(echo "$RAW" | sed 's/.*\.\([0-9]*\)$/\1/')
           fi
+
+          case "$INCREMENT" in
+            beta|rc)
+              if [ "$CURRENT_CHANNEL" == "$INCREMENT" ]; then
+                # Same channel: increment build (beta.2 → beta.3)
+                VERSION="${BASE}-${INCREMENT}.$((CURRENT_BUILD + 1))"
+              elif [ -n "$CURRENT_CHANNEL" ]; then
+                # Different pre-release channel: promote (beta.3 → rc.0)
+                VERSION="${BASE}-${INCREMENT}.0"
+              else
+                # Stable → new pre-release cycle: bump patch first (0.4.1 → 0.4.2-beta.0)
+                VERSION="$((MAJOR)).$((MINOR)).$((PATCH + 1))-${INCREMENT}.0"
+              fi
+              NPM_TAG="$INCREMENT"
+              IS_PRERELEASE="true"
+              ;;
+            patch)
+              if [ -n "$CURRENT_CHANNEL" ]; then
+                # Pre-release → stable: strip suffix (0.4.2-rc.1 → 0.4.2)
+                VERSION="${BASE}"
+              else
+                # Stable → stable: bump patch (0.4.1 → 0.4.2)
+                VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
+              fi
+              NPM_TAG="latest"
+              IS_PRERELEASE="false"
+              ;;
+            minor)
+              VERSION="${MAJOR}.$((MINOR + 1)).0"
+              NPM_TAG="latest"
+              IS_PRERELEASE="false"
+              ;;
+            major)
+              VERSION="$((MAJOR + 1)).0.0"
+              NPM_TAG="latest"
+              IS_PRERELEASE="false"
+              ;;
+          esac
 
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "tag=v${VERSION}" >> $GITHUB_OUTPUT
           echo "npm_tag=${NPM_TAG}" >> $GITHUB_OUTPUT
           echo "is_prerelease=${IS_PRERELEASE}" >> $GITHUB_OUTPUT
-          echo "Publishing: ${VERSION} (npm tag: ${NPM_TAG}, prerelease: ${IS_PRERELEASE})"
+          echo "${RAW} → ${VERSION} (increment=${INCREMENT}, npm_tag=${NPM_TAG})"
 
       - name: Install dependencies
         run: npm ci
 
       - name: Apply version
-        if: github.event_name == 'workflow_dispatch'
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           npm version "${VERSION}" --no-git-tag-version --allow-same-version
-          cd app && npm version "${VERSION}" --no-git-tag-version --allow-same-version || true
 
       - name: Build library
         run: npm run build
 
       - name: Publish to NPM
-        run: |
-          NPM_TAG="${{ steps.version.outputs.npm_tag }}"
-          echo "Publishing with tag: ${NPM_TAG}"
-          npm publish --access public --tag "${NPM_TAG}"
+        run: npm publish --access public --tag "${{ steps.version.outputs.npm_tag }}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Commit version bump + tag
-        if: github.event_name == 'workflow_dispatch'
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-          git add package.json app/package.json || git add package.json
+          git add package.json
           if ! git diff --staged --quiet; then
             git commit -m "chore: bump version to ${{ steps.version.outputs.version }} [skip ci]"
             git push
@@ -145,25 +135,18 @@ jobs:
         run: |
           TAG="${{ steps.version.outputs.tag }}"
           VERSION="${{ steps.version.outputs.version }}"
-          IS_PRERELEASE="${{ steps.version.outputs.is_prerelease }}"
 
           if gh release view "${TAG}" >/dev/null 2>&1; then
-            echo "Release ${TAG} already exists"
-            exit 0
+            echo "Release ${TAG} already exists"; exit 0
           fi
 
           PREV_TAG=$(git tag --list 'v*' --sort=-creatordate | grep -v "^${TAG}$" | head -n 1 || true)
-
-          if [ -n "$PREV_TAG" ]; then
-            NOTES=$(gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
-              -f tag_name="${TAG}" -f previous_tag_name="${PREV_TAG}" -f target_commitish="main" --jq .body)
-          else
-            NOTES=$(gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
-              -f tag_name="${TAG}" -f target_commitish="main" --jq .body)
-          fi
+          NOTES_ARGS=(-f tag_name="${TAG}" -f target_commitish="main")
+          [ -n "$PREV_TAG" ] && NOTES_ARGS+=(-f previous_tag_name="${PREV_TAG}")
+          NOTES=$(gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" "${NOTES_ARGS[@]}" --jq .body)
 
           printf "%s\n\n## Installation\n\n\`\`\`bash\nnpm install @apocaliss92/nodelink-js@%s\n\`\`\`\n" "$NOTES" "$VERSION" > release_notes.md
 
           PRERELEASE_FLAG=""
-          [ "$IS_PRERELEASE" == "true" ] && PRERELEASE_FLAG="--prerelease"
+          [ "${{ steps.version.outputs.is_prerelease }}" == "true" ] && PRERELEASE_FLAG="--prerelease"
           gh release create "${TAG}" --title "Release ${TAG}" --notes-file release_notes.md ${PRERELEASE_FLAG}
