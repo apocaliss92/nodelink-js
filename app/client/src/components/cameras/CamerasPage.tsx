@@ -10,6 +10,7 @@ import { PreviewPanel } from './PreviewPanel';
 import { FloatingPanel } from './FloatingPanel';
 import { PtzFloatingContent } from './PtzFloatingContent';
 import { EventsFloatingContent } from './EventsFloatingContent';
+import { SessionsFloatingContent } from './SessionsFloatingContent';
 import { DeviceControlsContent } from './DeviceControlsContent';
 import { WebRTCInlinePlayer } from './WebRTCInlinePlayer';
 import { useCameras } from './hooks/useCameras';
@@ -19,6 +20,7 @@ import type { CameraInfo, AvailableStream } from './types';
 type FloatingPanelEntry =
   | { id: string; type: 'ptz'; camera: CameraInfo }
   | { id: string; type: 'events'; camera: CameraInfo }
+  | { id: string; type: 'sessions'; camera: CameraInfo }
   | { id: string; type: 'controls'; camera: CameraInfo }
   | { id: string; type: 'stream'; camera: CameraInfo; stream: AvailableStream };
 
@@ -46,7 +48,7 @@ export function CamerasPage() {
     setFloatingPanels((prev) => {
       // Same exact panel already open — skip
       if (prev.some((p) => p.id === entry.id)) return prev;
-      // Replace existing panel of same type (only one PTZ, one events, one controls, one stream at a time)
+      // Replace existing panel of same type (only one PTZ, one events, one sessions, one controls, one stream at a time)
       const filtered = prev.filter((p) => p.type !== entry.type);
       return [...filtered, entry];
     });
@@ -62,6 +64,10 @@ export function CamerasPage() {
 
   const handleOpenEvents = (camera: CameraInfo) => {
     openFloatingPanel({ id: `${camera.id}-events`, type: 'events', camera });
+  };
+
+  const handleOpenSessions = (camera: CameraInfo) => {
+    openFloatingPanel({ id: `${camera.id}-sessions`, type: 'sessions', camera });
   };
 
   const handleOpenDeviceControls = (camera: CameraInfo) => {
@@ -148,6 +154,7 @@ export function CamerasPage() {
               onConnect={(cam) => camerasHook.connect(cam.id)}
               onOpenPtz={handleOpenPtz}
               onOpenEvents={handleOpenEvents}
+              onOpenSessions={handleOpenSessions}
               onOpenDeviceControls={handleOpenDeviceControls}
               onOpenStream={handleOpenStream}
             />
@@ -160,8 +167,6 @@ export function CamerasPage() {
                 onConnect={() => camerasHook.connect(selectedCamera.id)}
                 onDisconnect={() => camerasHook.disconnect(selectedCamera.id)}
                 onSetDebug={() => camerasHook.setCameraDebug(selectedCamera.id, !selectedCamera.debugLogs)}
-                onStartStream={(_profile) => { /* tRPC start stream - wire later */ }}
-                onStopStream={(_profile) => { /* tRPC stop stream - wire later */ }}
                 onOpenPreview={(state) => camerasHook.setPreviewModal(state)}
                 savingAutoStart={savingAutoStart[selectedCamera.id] ?? false}
                 onToggleAutoStart={() => void setAutoStartForCamera(selectedCamera, !selectedCamera.autoStart)}
@@ -225,6 +230,21 @@ export function CamerasPage() {
               defaultHeight={320}
             >
               <EventsFloatingContent cameraId={panel.camera.id} />
+            </FloatingPanel>
+          );
+        }
+
+        if (panel.type === 'sessions') {
+          return (
+            <FloatingPanel
+              key={panel.id}
+              title={`Sessions — ${panel.camera.name || panel.camera.host}`}
+              onClose={() => closeFloatingPanel(panel.id)}
+              offsetIndex={i}
+              defaultWidth={340}
+              defaultHeight={300}
+            >
+              <SessionsFloatingContent cameraId={panel.camera.id} />
             </FloatingPanel>
           );
         }

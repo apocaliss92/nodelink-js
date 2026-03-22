@@ -10,6 +10,7 @@ interface CameraGridProps {
   onConnect?: (camera: CameraInfo) => void;
   onOpenPtz?: (camera: CameraInfo) => void;
   onOpenEvents?: (camera: CameraInfo) => void;
+  onOpenSessions?: (camera: CameraInfo) => void;
   onOpenDeviceControls?: (camera: CameraInfo) => void;
   onOpenStream?: (camera: CameraInfo, stream: AvailableStream) => void;
 }
@@ -23,6 +24,7 @@ export function CameraGrid({
   onConnect,
   onOpenPtz,
   onOpenEvents,
+  onOpenSessions,
   onOpenDeviceControls,
   onOpenStream,
 }: CameraGridProps) {
@@ -39,6 +41,7 @@ export function CameraGrid({
           onConnect={onConnect ? () => onConnect(camera) : undefined}
           onOpenPtz={onOpenPtz ? () => onOpenPtz(camera) : undefined}
           onOpenEvents={onOpenEvents ? () => onOpenEvents(camera) : undefined}
+          onOpenSessions={onOpenSessions ? () => onOpenSessions(camera) : undefined}
           onOpenDeviceControls={onOpenDeviceControls ? () => onOpenDeviceControls(camera) : undefined}
           onOpenStream={onOpenStream ? (stream) => onOpenStream(camera, stream) : undefined}
         />

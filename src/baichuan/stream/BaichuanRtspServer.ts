@@ -3,8 +3,8 @@
  *
  * Structure:
  * - RTSP server uses ffmpeg -rtsp_flags listen to create RTSP server from stdin
- * - Native stream starts only when at least one client is connected
- * - Native stream stops when no clients are connected
+ * - Native stream starts when the first client needs video (e.g. DESCRIBE/PLAY path)
+ * - Native stream auto-stop when no clients is optional (see nativeStreamIdleStopMs)
  * - Tracks connected clients
  * - Passes native frames directly to ffmpeg without repacketization
  */
@@ -209,6 +209,19 @@ export interface BaichuanRtspServerOptions {
    * start() still performs metadata fetch and codec detection.
    */
   externalListener?: boolean;
+
+  /**
+   * Ms after the last RTSP client disconnects before stopping the native Baichuan stream.
+   * 0 = keep the native stream running (matches rtsp proxy idle timeout 0 / always-mounted sources).
+   * Default 30000.
+   */
+  nativeStreamIdleStopMs?: number;
+
+  /**
+   * If the native stream is primed (e.g. DESCRIBE) but no client SETUP/PLAYs, stop after this many ms.
+   * 0 = disable. Default 15000 when nativeStreamIdleStopMs > 0, else 0.
+   */
+  nativeStreamPrimeIdleStopMs?: number;
 }
 
 /**
@@ -219,8 +232,8 @@ export interface BaichuanRtspServerOptions {
  *
  * Lifecycle:
  * - Server starts immediately (ffmpeg RTSP server)
- * - Native stream starts only when first client connects
- * - Native stream stops when last client disconnects
+ * - Native stream starts when clients need media
+ * - Native stream may stay running with zero RTSP clients if nativeStreamIdleStopMs is 0
  */
 export class BaichuanRtspServer extends EventEmitter<{
   client: [string]; // Client connesso
@@ -339,6 +352,10 @@ export class BaichuanRtspServer extends EventEmitter<{
     videoType?: "H264" | "H265";
   }> | null = null;
   private noClientAutoStopTimer: NodeJS.Timeout | undefined;
+  /** After last RTSP client; 0 = never auto-stop native stream. */
+  private readonly nativeStreamIdleStopMs: number;
+  /** Primed-but-no-PLAY timeout; 0 = disabled. */
+  private readonly nativeStreamPrimeIdleStopMs: number;
 
   // Prebuffer: rolling ring of recent video frames for IDR-aligned fast startup.
   // When a new client connects while the stream is already running it does not need
@@ -497,6 +514,10 @@ export class BaichuanRtspServer extends EventEmitter<{
     this.tcpRtpFraming = options.tcpRtpFraming ?? "rfc4571";
     this.deviceId = options.deviceId;
     this.externalListener = options.externalListener ?? false;
+    this.nativeStreamIdleStopMs = options.nativeStreamIdleStopMs ?? 30_000;
+    this.nativeStreamPrimeIdleStopMs =
+      options.nativeStreamPrimeIdleStopMs ??
+      (this.nativeStreamIdleStopMs > 0 ? 15_000 : 0);
 
     // Authentication settings
     this.authCredentials = options.credentials ?? [];
@@ -2475,17 +2496,20 @@ export class BaichuanRtspServer extends EventEmitter<{
 
     // If DESCRIBE primes the stream but no RTSP client actually SETUP/PLAYs,
     // auto-stop after a short window so battery cams can go back to sleep.
+    // Disabled when nativeStreamPrimeIdleStopMs === 0 (always-mounted mode).
     this.clearNoClientAutoStopTimer();
-    this.noClientAutoStopTimer = setTimeout(() => {
-      if (this.connectedClients.size === 0) {
-        this.rtspDebugLog(
-          `Auto-stopping primed native stream (no clients connected)`,
-        );
-        void this.stopNativeStream();
-      }
-    }, 15_000);
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-    (this.noClientAutoStopTimer as any)?.unref?.();
+    if (this.nativeStreamPrimeIdleStopMs > 0) {
+      this.noClientAutoStopTimer = setTimeout(() => {
+        if (this.connectedClients.size === 0) {
+          this.rtspDebugLog(
+            `Auto-stopping primed native stream (no clients connected)`,
+          );
+          void this.stopNativeStream();
+        }
+      }, this.nativeStreamPrimeIdleStopMs);
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+      (this.noClientAutoStopTimer as any)?.unref?.();
+    }
   }
 
   private markFirstFrameReceived(): void {
@@ -2576,14 +2600,17 @@ export class BaichuanRtspServer extends EventEmitter<{
       this.emit("clientDisconnected", clientId);
 
       // Defer native stream stop to allow rapid reconnects to reuse the running stream.
+      // nativeStreamIdleStopMs === 0: keep Baichuan stream running for go2rtc / remount.
       if (this.connectedClients.size === 0) {
         this.clearNoClientAutoStopTimer();
-        this.noClientAutoStopTimer = setTimeout(() => {
-          if (this.connectedClients.size === 0) {
-            void this.stopNativeStream();
-          }
-        }, 30_000);
-        (this.noClientAutoStopTimer as any)?.unref?.();
+        if (this.nativeStreamIdleStopMs > 0) {
+          this.noClientAutoStopTimer = setTimeout(() => {
+            if (this.connectedClients.size === 0) {
+              void this.stopNativeStream();
+            }
+          }, this.nativeStreamIdleStopMs);
+          (this.noClientAutoStopTimer as any)?.unref?.();
+        }
       }
     }
   }

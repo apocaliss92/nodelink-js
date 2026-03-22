@@ -89,6 +89,13 @@ export const SettingsSchema = z.object({
   // RTSP Authentication
   rtspRequireAuth: z.boolean().default(false),
 
+  /**
+   * Ms with zero clients on the RTSP proxy before stopping a running per-path backend.
+   * 0 = never stop automatically (keeps Baichuan/go2rtc source mounted for reconnects).
+   * Set e.g. 30000 to restore previous “idle teardown” behaviour and save bandwidth.
+   */
+  rtspProxyBackendIdleTimeoutMs: z.number().int().min(0).default(0),
+
   // Cameras, NVRs, and RTSP servers
   cameras: z.array(CameraConfigSchema).default([]),
   nvrs: z.array(NvrConfigSchema).default([]),

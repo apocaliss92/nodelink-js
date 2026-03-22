@@ -97,11 +97,21 @@ describe("RTSP Manager helpers", () => {
     });
   });
 
-  describe("enableGo2rtcAutoStreams logic", () => {
-    it("skips cameras with autoStart=true (handled at startup)", () => {
-      const camera = { autoStart: true, name: "Test" };
-      const shouldSkip = camera.autoStart === true;
-      expect(shouldSkip).toBe(true);
+  describe("enableAutoStreamsOnConnect expectations", () => {
+    it("defers when go2rtc is enabled but manager is not running", () => {
+      const settings = { go2rtc: { enabled: true } };
+      const go2rtcMgr = null as { isRunning?: boolean } | null;
+      const shouldDefer =
+        settings.go2rtc?.enabled === true && !go2rtcMgr?.isRunning;
+      expect(shouldDefer).toBe(true);
+    });
+
+    it("does not defer when go2rtc is disabled (classic RTSP)", () => {
+      const settings = { go2rtc: { enabled: false } };
+      const go2rtcMgr = null;
+      const shouldDefer =
+        settings.go2rtc?.enabled === true && !go2rtcMgr?.isRunning;
+      expect(shouldDefer).toBe(false);
     });
 
     it("starts streams for on-the-fly connected cameras", () => {

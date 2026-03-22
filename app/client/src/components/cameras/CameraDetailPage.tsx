@@ -6,10 +6,14 @@ import { StreamProfileCard } from './StreamProfileCard';
 import { ActionsGrid } from './ActionsGrid';
 import { PtzPanel } from './PtzPanel';
 import { EventsPanel } from './EventsPanel';
+import { SessionsPanel } from './SessionsPanel';
+import { SessionsDialog } from './SessionsDialog';
 import { useCamerasContext } from './CamerasContext';
 import { trpcQuery, trpcMutation } from '../../api';
 import { withAuthTokenQuery } from './utils';
-import type { ControlsState, CameraEvent } from './types';
+import type { ControlsState, CameraEvent, DeviceSession } from './types';
+
+type SessionsPayload = { sessions: DeviceSession[]; total: number };
 
 export function CameraDetailPage() {
   const { cameraName } = useParams<{ cameraName: string }>();
@@ -31,9 +35,14 @@ export function CameraDetailPage() {
 
   const [showPtz, setShowPtz] = useState(false);
   const [showEvents, setShowEvents] = useState(false);
+  const [showSessions, setShowSessions] = useState(false);
+  const [sessionsDialogOpen, setSessionsDialogOpen] = useState(false);
   const [controlsState, setControlsState] = useState<ControlsState>(null);
   const [events, setEvents] = useState<CameraEvent[]>([]);
   const [eventsLoading, setEventsLoading] = useState(false);
+  const [deviceSessions, setDeviceSessions] = useState<DeviceSession[]>([]);
+  const [sessionsTotal, setSessionsTotal] = useState(0);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
 
   const camera = cameras.find((c) => (c.name || c.host) === cameraName);
   const isConnected = camera?.status === 'connected';
@@ -74,6 +83,26 @@ export function CameraDetailPage() {
     };
     return () => es.close();
   }, [showEvents, camera?.id, isConnected]);
+
+  const loadSessions = useCallback(() => {
+    if (!camera || !isConnected) return;
+    setSessionsLoading(true);
+    trpcQuery<SessionsPayload>('cameras.getSessions', { id: camera.id })
+      .then((data) => {
+        setDeviceSessions(data?.sessions ?? []);
+        setSessionsTotal(data?.total ?? 0);
+      })
+      .catch(() => {
+        setDeviceSessions([]);
+        setSessionsTotal(0);
+      })
+      .finally(() => setSessionsLoading(false));
+  }, [camera, isConnected]);
+
+  useEffect(() => {
+    if (!camera || (!showSessions && !sessionsDialogOpen) || !isConnected) return;
+    loadSessions();
+  }, [camera, showSessions, sessionsDialogOpen, isConnected, loadSessions]);
 
   const handlePtzStart = useCallback(
     (cmd: string) => {
@@ -139,8 +168,6 @@ export function CameraDetailPage() {
                   cameraId={camera.id}
                   stream={stream}
                   rtspServer={server}
-                  onStartStream={() => void trpcMutation('rtsp.start', { cameraId: camera.id, profile: stream.profile, channel: stream.channel })}
-                  onStopStream={() => void trpcMutation('rtsp.stop', { cameraId: camera.id, profile: stream.profile, channel: stream.channel })}
                   onPreview={() => {
                     setPreviewModal({
                       open: true,
@@ -165,6 +192,7 @@ export function CameraDetailPage() {
         <ActionsGrid
           onPtz={() => setShowPtz((v) => !v)}
           onEvents={() => setShowEvents((v) => !v)}
+          onSessions={() => setShowSessions((v) => !v)}
           onConnect={isConnected ? () => disconnect(camera.id) : () => connect(camera.id)}
           onDebug={() => setCameraDebug(camera.id, !camera.debugLogs)}
           isConnected={isConnected}
@@ -193,6 +221,30 @@ export function CameraDetailPage() {
             onClose={() => setShowEvents(false)}
           />
         )}
+
+        {showSessions && (
+          <SessionsPanel
+            cameraName={camera.name || camera.host}
+            sessions={deviceSessions}
+            total={sessionsTotal}
+            loading={sessionsLoading && deviceSessions.length === 0}
+            fetching={sessionsLoading}
+            onClose={() => setShowSessions(false)}
+            onRefresh={isConnected ? loadSessions : undefined}
+            onOpenDialog={() => setSessionsDialogOpen(true)}
+          />
+        )}
+
+        <SessionsDialog
+          open={sessionsDialogOpen}
+          onOpenChange={setSessionsDialogOpen}
+          cameraName={camera.name || camera.host}
+          sessions={deviceSessions}
+          total={sessionsTotal}
+          loading={sessionsLoading && deviceSessions.length === 0}
+          fetching={sessionsLoading}
+          onRefresh={isConnected ? loadSessions : undefined}
+        />
       </div>
     </div>
   );

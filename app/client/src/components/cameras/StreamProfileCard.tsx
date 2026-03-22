@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Play, Square, Eye, Activity, Link, Copy } from 'lucide-react';
+import { Eye, Activity, Link, Copy } from 'lucide-react';
 import { trpcMutation } from '../../api';
 import type { AvailableStream } from './types';
 
@@ -7,15 +7,13 @@ interface StreamProfileCardProps {
   cameraId: string;
   stream: AvailableStream;
   rtspServer?: { status?: string; connections?: number; rtspUrl?: string; go2rtcStreamName?: string };
-  onStartStream: () => void;
-  onStopStream: () => void;
   onPreview: () => void;
   cameraName: string;
   go2rtcApiPort: number | null;
   serviceIp: string;
 }
 
-export function StreamProfileCard({ cameraId, stream, rtspServer, onStartStream, onStopStream, onPreview, cameraName, go2rtcApiPort, serviceIp }: StreamProfileCardProps) {
+export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, cameraName, go2rtcApiPort, serviceIp }: StreamProfileCardProps) {
   const isActive = rtspServer?.status === 'running';
   const [diagStatus, setDiagStatus] = useState<'idle' | 'running' | 'complete' | 'error'>('idle');
   const [urlsOpen, setUrlsOpen] = useState(false);
@@ -58,46 +56,42 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onStartStream,
           {stream.resolution}{stream.codec ? ` · ${stream.codec}` : ''}
         </div>
       )}
+      {!isActive && (
+        <div className="text-[10px] text-[var(--color-foreground-muted)] mt-1">
+          Stream starts automatically when the camera is connected.
+        </div>
+      )}
+
       <div className="flex flex-wrap gap-1 mt-1.5">
-        {isActive ? (
-          <>
-            {/* Preview dropdown */}
-            <div className="relative">
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => { setPreviewOpen(!previewOpen); setUrlsOpen(false); }}
+            className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] bg-[var(--color-surface-hover)] hover:bg-[var(--color-surface)] transition-colors"
+          >
+            <Eye size={10} /> Preview ▾
+          </button>
+          {previewOpen && (
+            <div className="absolute bottom-full left-0 mb-1 z-10 rounded-md border border-[var(--color-border)] bg-[var(--color-background-elevated)] shadow-lg py-1 min-w-[160px]">
               <button
-                onClick={() => { setPreviewOpen(!previewOpen); setUrlsOpen(false); }}
-                className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] bg-[var(--color-surface-hover)] hover:bg-[var(--color-surface)] transition-colors"
+                type="button"
+                onClick={() => { onPreview(); setPreviewOpen(false); }}
+                className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)]"
               >
-                <Eye size={10} /> Preview ▾
+                WebRTC Preview
               </button>
-              {previewOpen && (
-                <div className="absolute bottom-full left-0 mb-1 z-10 rounded-md border border-[var(--color-border)] bg-[var(--color-background-elevated)] shadow-lg py-1 min-w-[160px]">
-                  <button
-                    onClick={() => { onPreview(); setPreviewOpen(false); }}
-                    className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)]"
-                  >
-                    WebRTC Preview
-                  </button>
-                  {mseUrl && (
-                    <button
-                      onClick={() => { window.open(mseUrl, '_blank'); setPreviewOpen(false); }}
-                      className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)]"
-                    >
-                      MSE Stream
-                    </button>
-                  )}
-                </div>
+              {mseUrl && (
+                <button
+                  type="button"
+                  onClick={() => { window.open(mseUrl, '_blank'); setPreviewOpen(false); }}
+                  className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)]"
+                >
+                  MSE Stream
+                </button>
               )}
             </div>
-
-            <button onClick={onStopStream} className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] bg-[var(--color-danger)]/15 text-[var(--color-danger)] hover:bg-[var(--color-danger)]/25 transition-colors">
-              <Square size={10} /> Stop
-            </button>
-          </>
-        ) : (
-          <button onClick={onStartStream} className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] bg-[var(--color-primary)]/15 text-[var(--color-primary)] hover:bg-[var(--color-primary)]/25 transition-colors">
-            <Play size={10} /> Start
-          </button>
-        )}
+          )}
+        </div>
 
         {/* URLs dropdown */}
         {go2rtcBase && (

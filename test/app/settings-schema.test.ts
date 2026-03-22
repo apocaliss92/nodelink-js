@@ -99,4 +99,28 @@ describe("Settings schema validation", () => {
       expect(result.streamMode).toBe("frigate");
     });
   });
+
+  describe("rtsp proxy backend idle", () => {
+    const RtspIdleSchema = z.object({
+      rtspProxyBackendIdleTimeoutMs: z.number().int().min(0).default(0),
+    });
+
+    it("defaults to 0 (keep backends mounted when no proxy clients)", () => {
+      const result = RtspIdleSchema.parse({});
+      expect(result.rtspProxyBackendIdleTimeoutMs).toBe(0);
+    });
+
+    it("accepts positive idle ms", () => {
+      const result = RtspIdleSchema.parse({
+        rtspProxyBackendIdleTimeoutMs: 30_000,
+      });
+      expect(result.rtspProxyBackendIdleTimeoutMs).toBe(30_000);
+    });
+
+    it("rejects negative values", () => {
+      expect(() =>
+        RtspIdleSchema.parse({ rtspProxyBackendIdleTimeoutMs: -1 }),
+      ).toThrow();
+    });
+  });
 });

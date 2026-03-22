@@ -32,7 +32,8 @@ import {
   autoConnectCameras,
   getCameraInfo,
   sanitizeCameraName,
-  enableGo2rtcAutoStreams,
+  enableAutoStreamsOnConnect,
+  startStreamsForAllConnectedCameras,
 } from "./rtsp-manager.js";
 import { startRtspProxy, stopRtspProxy } from "./rtsp-proxy.js";
 import { getSettings, loadSettings, getConfig } from "./settings-store.js";
@@ -832,6 +833,9 @@ server.listen(PORT, async () => {
     { source: "server" },
   );
 
+  // Start streams automatically whenever a camera connects (register before any connect)
+  enableAutoStreamsOnConnect();
+
   // Auto-connect to all configured cameras
   try {
     await autoConnectCameras();
@@ -868,8 +872,16 @@ server.listen(PORT, async () => {
         `go2rtc started (API: http://localhost:${go2rtcConfig.apiPort}, RTSP: ${go2rtcConfig.rtspPort}, WebRTC: ${go2rtcConfig.webrtcPort})`,
         { source: "go2rtc" },
       );
-      // Register listener to auto-start streams when cameras connect on the fly
-      enableGo2rtcAutoStreams();
+      try {
+        await startStreamsForAllConnectedCameras();
+        appLogger.info("Started streams for already-connected cameras", {
+          source: "go2rtc",
+        });
+      } catch (flushErr) {
+        appLogger.error(`Error starting streams after go2rtc: ${flushErr}`, {
+          source: "go2rtc",
+        });
+      }
     } catch (error) {
       appLogger.error(`Error initializing go2rtc: ${error}`, {
         source: "server",

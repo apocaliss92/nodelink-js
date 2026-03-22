@@ -13,8 +13,15 @@ import { emitStreamClientsChanged } from "./events-manager.js";
 
 const logger = createSourceLogger("rtsp-proxy");
 
-/** Time to wait before stopping a backend with no clients (ms) */
-const BACKEND_IDLE_TIMEOUT_MS = 30_000;
+/** Env override for backend idle stop (ms). Empty/unset → use settings. */
+function getBackendIdleTimeoutMs(): number {
+  const raw = process.env.RTSP_PROXY_BACKEND_IDLE_MS;
+  if (raw !== undefined && String(raw).trim() !== "") {
+    const n = parseInt(String(raw), 10);
+    if (!Number.isNaN(n) && n >= 0) return n;
+  }
+  return getSettings().rtspProxyBackendIdleTimeoutMs;
+}
 
 /**
  * RTSP Proxy Server - Simple TCP Pipe with Digest Authentication
@@ -353,10 +360,17 @@ export class RtspProxyServer extends EventEmitter {
     logger.debug(`Backend ${backendKey} now has ${clients.size} client(s)`);
     this.emitRtspStreamClientsChanged(backendKey, clients.size);
 
-    // If no more clients, start idle timer
+    // If no more clients, optionally start idle timer (0 = keep backend mounted)
     if (clients.size === 0) {
       this.backendClients.delete(backendKey);
-      this.startBackendIdleTimer(backendKey);
+      const idleMs = getBackendIdleTimeoutMs();
+      if (idleMs > 0) {
+        this.startBackendIdleTimer(backendKey);
+      } else {
+        logger.debug(
+          `Backend ${backendKey} has no clients; idle stop disabled (rtspProxyBackendIdleTimeoutMs=0)`,
+        );
+      }
     }
   }
 
@@ -364,6 +378,9 @@ export class RtspProxyServer extends EventEmitter {
    * Start idle timer for a backend with no clients
    */
   private startBackendIdleTimer(backendKey: string): void {
+    const idleMs = getBackendIdleTimeoutMs();
+    if (idleMs <= 0) return;
+
     // Clear any existing timer
     const existingTimer = this.backendIdleTimers.get(backendKey);
     if (existingTimer) {
@@ -371,7 +388,7 @@ export class RtspProxyServer extends EventEmitter {
     }
 
     logger.info(
-      `Backend ${backendKey} has no clients, starting ${BACKEND_IDLE_TIMEOUT_MS / 1000}s idle timer`,
+      `Backend ${backendKey} has no clients, starting ${idleMs / 1000}s idle timer`,
     );
 
     const timer = setTimeout(async () => {
@@ -393,7 +410,7 @@ export class RtspProxyServer extends EventEmitter {
       const channel =
         parts.length > 2 ? parseInt(parts[2]!, 10) : undefined;
       await this.stopBackendServer(cameraName, profile, channel);
-    }, BACKEND_IDLE_TIMEOUT_MS);
+    }, idleMs);
 
     // Don't prevent process exit
     timer.unref();

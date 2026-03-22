@@ -66,6 +66,14 @@ export type CameraEvent = {
   clientCount?: number;
 };
 
+/** Baichuan OnlineUserList row (cameras.getSessions). */
+export type DeviceSession = {
+  userName: string;
+  ip: string;
+  sessionId: number;
+  level: number;
+};
+
 export type PreviewKind = "mjpeg" | "webrtc" | "hls";
 
 export type PreviewModalState =

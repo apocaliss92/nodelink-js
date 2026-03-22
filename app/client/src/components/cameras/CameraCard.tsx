@@ -1,5 +1,5 @@
 import { cn } from '@apocaliss92/camstack-ui';
-import { Move, Bell, Lightbulb, Play, Plug } from 'lucide-react';
+import { Move, Bell, Users, Lightbulb, Play, Plug } from 'lucide-react';
 import type { CameraInfo, AvailableStream } from './types';
 
 interface CameraCardProps {
@@ -11,6 +11,7 @@ interface CameraCardProps {
   onConnect?: () => void;
   onOpenPtz?: () => void;
   onOpenEvents?: () => void;
+  onOpenSessions?: () => void;
   onOpenDeviceControls?: () => void;
   onOpenStream?: (stream: AvailableStream) => void;
 }
@@ -24,6 +25,7 @@ export function CameraCard({
   onConnect,
   onOpenPtz,
   onOpenEvents,
+  onOpenSessions,
   onOpenDeviceControls,
   onOpenStream,
 }: CameraCardProps) {
@@ -82,7 +84,7 @@ export function CameraCard({
 
       {/* Quick actions */}
       {isOnline ? (
-        (onOpenPtz || onOpenDeviceControls || onOpenEvents) && (
+        (onOpenPtz || onOpenDeviceControls || onOpenEvents || onOpenSessions) && (
           <div className="flex items-center gap-0.5 mt-2 -mb-1">
             {onOpenPtz && (
               <button onClick={(e) => { e.stopPropagation(); onOpenPtz(); }} className={iconBtnClass} title="PTZ Controls">
@@ -97,6 +99,11 @@ export function CameraCard({
             {onOpenEvents && (
               <button onClick={(e) => { e.stopPropagation(); onOpenEvents(); }} className={iconBtnClass} title="Events">
                 <Bell size={12} />
+              </button>
+            )}
+            {onOpenSessions && (
+              <button onClick={(e) => { e.stopPropagation(); onOpenSessions(); }} className={iconBtnClass} title="Device sessions">
+                <Users size={12} />
               </button>
             )}
           </div>
