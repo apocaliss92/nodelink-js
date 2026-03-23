@@ -302,15 +302,15 @@ const api = new ReolinkBaichuanApi({
 await api.login();
 
 // Get device info
-const deviceInfo = await api.getDeviceInfo();
-console.log("Camera:", deviceInfo.name, deviceInfo.model);
+const deviceInfo = await api.getInfo();
+console.log("Camera:", deviceInfo.name, deviceInfo.type);
 
 // Get stream info
-const streamInfo = await api.getStreamInfoList();
+const streamInfo = await api.getStreamInfoList(0);
 
-// Subscribe to events
-api.onMotionAlarm((event) => {
-  console.log("Motion detected:", event);
+// Subscribe to events (motion, doorbell, people, vehicle, animal, etc.)
+await api.onSimpleEvent((event) => {
+  console.log("Event:", event.type, "channel:", event.channel);
 });
 
 await api.close();
@@ -371,7 +371,7 @@ const rtspServer = new BaichuanRtspServer({
   api,
   profile: "main", // main, sub, or ext
   channel: 0,
-  port: 8554,
+  listenPort: 8554,
   logger: console,
 });
 
@@ -425,14 +425,14 @@ const api = new ReolinkBaichuanApi({
 
 await api.login();
 
-// Start talk session
-await api.startTalk();
+// Create a dedicated talk session (recommended)
+const session = await api.createDedicatedTalkSession(0);
 
-// Send audio data (raw PCM or G.711)
-await api.sendTalkAudio(audioBuffer);
+// Send audio data (ADPCM DVI4 with 4-byte predictor header per block)
+await session.sendAudio(adpcmBuffer);
 
 // Stop talk session
-await api.stopTalk();
+await session.stop();
 ```
 
 ## Video Clips & Recordings
@@ -452,18 +452,21 @@ const api = new ReolinkBaichuanApi({
 await api.login();
 
 // Search recordings by date
-const recordings = await api.searchRecordings({
+const recordings = await api.getVideoclips({
   channel: 0,
-  startTime: new Date("2024-01-01"),
-  endTime: new Date("2024-01-02"),
+  start: new Date("2024-01-01"),
+  end: new Date("2024-01-02"),
 });
 
 // Download a recording
-const stream = await api.downloadRecording(recordings[0].filename);
+const buffer = await api.downloadRecording({
+  channel: 0,
+  fileName: recordings[0].fileName,
+});
 
-// Pipe to file
-import { createWriteStream } from "node:fs";
-stream.pipe(createWriteStream("recording.mp4"));
+// Write to file
+import { writeFileSync } from "node:fs";
+writeFileSync("recording.mp4", buffer);
 ```
 
 ## Device Discovery
@@ -504,17 +507,17 @@ const api = new ReolinkBaichuanApi({
 await api.login();
 
 // Move camera
-await api.ptzControl({ channel: 0, command: "Right", speed: 32 });
-await api.ptzControl({ channel: 0, command: "Stop" });
+await api.ptz(0, { action: "start", command: "Right", speed: 32 });
+await api.ptz(0, { action: "stop", command: "Right" });
 
 // Go to preset
-await api.ptzGotoPreset({ channel: 0, preset: 1 });
+await api.moveToPtzPreset(0, 1);
 
 // Get current position
 const position = await api.getPtzPosition(0);
 
 // Zoom control
-await api.setZoomFocus({ channel: 0, zoom: { pos: 100 } });
+await api.zoomToFactor(0, 100);
 ```
 
 ## Events & Notifications
@@ -533,19 +536,21 @@ const api = new ReolinkBaichuanApi({
 
 await api.login();
 
-// Subscribe to motion events
-api.onMotionAlarm((event) => {
-  console.log("Motion:", event.state, "at channel", event.channel);
-});
-
-// Subscribe to AI events (person, vehicle, pet, etc.)
-api.onAiAlarm((event) => {
-  console.log("AI detection:", event.type, event.state);
-});
-
-// Subscribe to doorbell events
-api.onVisitor((event) => {
-  console.log("Visitor detected");
+// Subscribe to all events (motion, doorbell, people, vehicle, animal, face, package, etc.)
+await api.onSimpleEvent((event) => {
+  switch (event.type) {
+    case "motion":
+      console.log("Motion detected on channel", event.channel);
+      break;
+    case "people":
+    case "vehicle":
+    case "animal":
+      console.log("AI detection:", event.type, "on channel", event.channel);
+      break;
+    case "doorbell":
+      console.log("Visitor detected");
+      break;
+  }
 });
 ```
 
@@ -566,14 +571,14 @@ const api = new ReolinkBaichuanApi({
 await api.login();
 
 // Get all channels info
-const channels = await api.getChannelInfoAll();
+const channels = await api.getAllChannelsInfo();
 
 // Stream from a specific channel
 const rtspServer = new BaichuanRtspServer({
   api,
   profile: "main",
   channel: 2, // Channel index
-  port: 8554,
+  listenPort: 8554,
   logger: console,
 });
 ```
