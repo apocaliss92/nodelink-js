@@ -4,7 +4,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogDescription,
-} from '@apocaliss92/camstack-ui';
+} from '@camstack/ui-library';
 import type { PreviewModalState } from "./types";
 import { WebRTCInlinePlayer } from "./WebRTCInlinePlayer";
 

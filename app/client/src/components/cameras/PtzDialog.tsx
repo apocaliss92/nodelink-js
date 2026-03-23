@@ -4,7 +4,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
-} from '@apocaliss92/camstack-ui';
+} from '@camstack/ui-library';
 import type { ControlsState } from "./types";
 
 type PtzCommand = "Up" | "Down" | "Left" | "Right" | "ZoomIn" | "ZoomOut";

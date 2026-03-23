@@ -5,7 +5,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@apocaliss92/camstack-ui';
+} from '@camstack/ui-library';
 import type { AddCameraInput } from "./types";
 
 export function AddCameraDialog({

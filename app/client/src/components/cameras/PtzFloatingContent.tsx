@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Button } from '@apocaliss92/camstack-ui';
+import { Button } from '@camstack/ui-library';
 import { trpcQuery, trpcMutation } from '../../api';
 import type { ControlsState } from './types';
 

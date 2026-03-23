@@ -1,5 +1,5 @@
 @import "tailwindcss";
-@import "@apocaliss92/camstack-ui/tailwind/camstack-theme.css";
+@import "@camstack/ui-library/tailwind/camstack-theme.css";
 
 /* Nodelink.js theme overrides — blue primary instead of amber */
 .dark {

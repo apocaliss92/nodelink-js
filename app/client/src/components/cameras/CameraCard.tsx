@@ -1,4 +1,4 @@
-import { cn } from '@apocaliss92/camstack-ui';
+import { cn } from '@camstack/ui-library';
 import { Move, Bell, Users, Lightbulb, Play, Plug, Eye } from 'lucide-react';
 import type { CameraInfo, AvailableStream, StreamProfile } from './types';
 

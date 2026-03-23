@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Eye, EyeOff } from "lucide-react";
-import { useThemeMode } from "@apocaliss92/camstack-ui";
+import { useThemeMode } from "@camstack/ui-library";
 import { useAuth } from "../auth";
 
 export default function LoginPage() {

@@ -1,6 +1,6 @@
 import { Outlet } from 'react-router-dom';
 import { LogOut, Github, Moon, Sun, Monitor, Coffee } from 'lucide-react';
-import { useThemeMode } from '@apocaliss92/camstack-ui';
+import { useThemeMode } from '@camstack/ui-library';
 import { useAuth } from '../../auth';
 import { NodelinkIcon } from './NodelinkIcon';
 import { NavSidebarItem } from './NavSidebarItem';

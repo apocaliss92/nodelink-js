@@ -1,7 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
-import { ThemeProvider } from "@apocaliss92/camstack-ui";
+import { ThemeProvider } from "@camstack/ui-library";
 import App from "./App";
 import "./app.css";
 

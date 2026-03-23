@@ -4,7 +4,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
-} from '@apocaliss92/camstack-ui';
+} from '@camstack/ui-library';
 import type { DeviceSession } from './types';
 import { SessionsList } from './SessionsList';
 

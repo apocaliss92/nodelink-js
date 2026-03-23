@@ -1,4 +1,4 @@
-// TODO: Replace with `export { FloatingPanel } from '@apocaliss92/camstack-ui'`
+// TODO: Replace with `export { FloatingPanel } from '@camstack/ui-library'`
 // when camstack-ui is published with the new FloatingPanel component.
 // For now, this is a local copy.
 

@@ -3,7 +3,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
-} from '@apocaliss92/camstack-ui';
+} from '@camstack/ui-library';
 import type { CameraEvent } from "./types";
 import { eventBadgeColor } from "./utils";
 

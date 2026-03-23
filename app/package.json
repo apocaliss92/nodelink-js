@@ -16,7 +16,7 @@
     "dev": "concurrently -k -n server,client -c green,cyan \"npm run dev:server\" \"npm run dev:client\""
   },
   "dependencies": {
-    "@apocaliss92/camstack-ui": "^0.1.23",
+    "@camstack/ui-library": "^0.1.23",
     "@apocaliss92/nodelink-js": "file:..",
     "@tailwindcss/vite": "^4.2.2",
     "@tanstack/react-table": "^8.21.3",
