@@ -10,12 +10,6 @@
 
 A complete web-based management interface for camera configuration and live streaming — no code required. Docker deployment, go2rtc restreamer, real-time events, MQTT, Home Assistant integration.
 
-<p align="center">
-  <img src="docs/screenshots/manager-ui-camera-detail.png" alt="Manager UI — Camera detail panel with stream profiles, Analyze and Dump buttons" width="800">
-</p>
-
-From the camera detail panel you can **Analyze** a stream (codec, FPS, bitrate, keyframe interval analysis) or run a **Dump** of all API responses for capability diagnostics. Results from both are available in the **Reports** section.
-
 ### [Library (`@apocaliss92/nodelink-js`)](./documentation/baichuan-api/README.md)
 
 TypeScript library implementing the Reolink Baichuan binary protocol (port 9000) for direct camera/NVR communication. Streaming, events, PTZ, intercom, recordings, battery cameras, multifocal support.
@@ -49,7 +43,11 @@ Help improve device support by sharing the API responses from your camera model.
 
 There are three ways to generate a dump:
 
-**1. From the Manager UI** — Open a camera's detail panel and click the **"Dump"** button (next to Debug). The dump runs on the server and downloads a sanitized zip file automatically.
+**1. From the Manager UI** — Open a camera's detail panel and click the **"Dump"** button (next to Debug). The dump runs on the server and downloads a sanitized zip file automatically. Results are also available in the **Reports** section alongside stream analysis reports.
+
+<p align="center">
+  <img src="docs/screenshots/manager-ui-camera-detail.png" alt="Manager UI — Camera detail panel with Analyze and Dump buttons" width="800">
+</p>
 
 **2. Via CLI script** — For developers with a local clone:
 
