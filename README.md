@@ -46,7 +46,7 @@ There are three ways to generate a dump:
 **1. From the Manager UI** — Open a camera's detail panel and click the **"Dump"** button (next to Debug). The dump runs on the server and downloads a sanitized zip file automatically. Results are also available in the **Reports** section alongside stream analysis reports.
 
 <p align="center">
-  <img src="docs/screenshots/manager-ui-camera-detail.png" alt="Manager UI — Camera detail panel with Analyze and Dump buttons" width="800">
+  <img src="documentation/screenshots/manager-ui-camera-detail.png" alt="Manager UI — Camera detail panel with Analyze and Dump buttons" width="800">
 </p>
 
 **2. Via CLI script** — For developers with a local clone:

@@ -35,3 +35,4 @@ Full project overview, installation, and examples: **[Main README](../README.md)
 | [Streaming Servers](./streaming.md)                | RTSP, RFC4571, HTTP servers                  |
 | [Network Discovery](./discovery.md)                | UDP autodiscovery                            |
 | [Authentik + NGINX](./authentik-nginx.md)          | SSO / Trusted Proxy setup                   |
+| [Reverse Engineering](./reverse-engineering.md)    | Firmware analysis, protocol internals, troubleshooting |
