@@ -963,4 +963,42 @@ export const camerasRouter = router({
         summary: result.summary,
       };
     }),
+
+  /** List all model fixture dumps (zip files in DATA_PATH/dumps/). */
+  listDumps: publicProcedure.query(() => {
+    if (!fs.existsSync(DUMP_DIR)) return [];
+    return fs
+      .readdirSync(DUMP_DIR)
+      .filter((f) => f.endsWith(".zip"))
+      .map((f) => {
+        const stat = fs.statSync(path.join(DUMP_DIR, f));
+        return {
+          filename: f,
+          sizeBytes: stat.size,
+          createdAt: stat.birthtime.toISOString(),
+        };
+      })
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }),
+
+  /** Download a dump zip by filename (creates a temporary token). */
+  downloadDump: publicProcedure
+    .input(z.object({ filename: z.string() }))
+    .mutation(({ input }) => {
+      const zipPath = path.join(DUMP_DIR, input.filename);
+      if (!fs.existsSync(zipPath)) throw new Error("Dump not found");
+      const token = crypto.randomBytes(16).toString("hex");
+      dumpDownloads.set(token, { zipPath, expiresAt: Date.now() + 10 * 60 * 1000 });
+      return { token, filename: input.filename };
+    }),
+
+  /** Delete a dump zip by filename. */
+  deleteDump: publicProcedure
+    .input(z.object({ filename: z.string() }))
+    .mutation(({ input }) => {
+      const zipPath = path.join(DUMP_DIR, input.filename);
+      if (!fs.existsSync(zipPath)) throw new Error("Dump not found");
+      fs.unlinkSync(zipPath);
+      return { deleted: true };
+    }),
 });

@@ -1,0 +1,15 @@
+{
+  "isDualLens": false,
+  "model": "Argus 3E",
+  "streamChannelCount": 8,
+  "logicalChannelCount": 8,
+  "channels": [],
+  "capabilityChannels": {
+    "pan": [],
+    "tilt": [],
+    "zoom": [],
+    "motion": [],
+    "intercom": [],
+    "presets": []
+  }
+}

@@ -43,6 +43,7 @@ export function CameraDetailPage() {
   const [deviceSessions, setDeviceSessions] = useState<DeviceSession[]>([]);
   const [sessionsTotal, setSessionsTotal] = useState(0);
   const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [dumping, setDumping] = useState(false);
 
   const camera = cameras.find((c) => (c.name || c.host) === cameraName);
   const isConnected = camera?.status === 'connected';
@@ -128,6 +129,27 @@ export function CameraDetailPage() {
     [camera?.id],
   );
 
+  const handleDump = useCallback(async () => {
+    if (!camera) return;
+    setDumping(true);
+    try {
+      const result = await trpcMutation<{ token: string; filename: string }>(
+        "cameras.dump",
+        { cameraId: camera.id },
+      );
+      const link = document.createElement("a");
+      link.href = `/api/dump/${result.token}`;
+      link.download = result.filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (e) {
+      console.error("Dump failed:", e);
+    } finally {
+      setDumping(false);
+    }
+  }, [camera?.id]);
+
   if (!camera) {
     return (
       <div className="flex items-center justify-center h-full text-[var(--color-foreground-muted)]">
@@ -195,6 +217,8 @@ export function CameraDetailPage() {
           onSessions={() => setShowSessions((v) => !v)}
           onConnect={isConnected ? () => disconnect(camera.id) : () => connect(camera.id)}
           onDebug={() => setCameraDebug(camera.id, !camera.debugLogs)}
+          onDump={handleDump}
+          dumping={dumping}
           isConnected={isConnected}
           connecting={connectingByCamera[camera.id] ?? false}
           autoStart={camera.autoStart}

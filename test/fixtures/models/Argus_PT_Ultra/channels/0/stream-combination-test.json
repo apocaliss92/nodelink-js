@@ -1,0 +1,26 @@
+{
+  "isMultifocal": false,
+  "cameraChannels": [
+    1
+  ],
+  "results": [
+    {
+      "pair": "main+sub",
+      "ok": true,
+      "framesA": 203,
+      "framesB": 184
+    },
+    {
+      "pair": "main+ext",
+      "ok": false,
+      "framesA": 393,
+      "framesB": 0
+    },
+    {
+      "pair": "sub+ext",
+      "ok": true,
+      "framesA": 94,
+      "framesB": 198
+    }
+  ]
+}

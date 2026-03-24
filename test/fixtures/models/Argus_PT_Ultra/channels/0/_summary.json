@@ -1,11 +1,11 @@
 {
-  "collectedAt": "2026-03-19T21:22:26.028Z",
+  "collectedAt": "2026-03-24T09:49:17.576Z",
   "model": "Argus PT Ultra",
   "itemNo": "unknown",
   "firmwareVersion": "v3.0.0.3911_24080536",
   "channel": 1,
-  "total": 23,
-  "ok": 23,
+  "total": 24,
+  "ok": 24,
   "failed": 0,
   "errors": [],
   "calls": {
@@ -31,6 +31,7 @@
     "getWifiSignal": "ok",
     "getWhiteLedState": "ok",
     "getFloodlightOnMotion": "ok",
-    "buildVideoStreamOptions": "ok"
+    "buildVideoStreamOptions": "ok",
+    "getDualLensChannelInfo": "ok"
   }
 }

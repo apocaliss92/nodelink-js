@@ -1,86 +1,37 @@
-# Documentation
+# API Documentation
 
-Welcome to the `@apocaliss92/nodelink-js` API documentation.
+Full project overview, installation, and examples: **[Main README](../README.md)**
 
-This library provides two main APIs for interacting with Reolink cameras:
+## Baichuan Protocol API (port 9000)
 
----
+| Section                                      | Description                                  |
+| -------------------------------------------- | -------------------------------------------- |
+| [**Overview**](./baichuan-api/README.md)     | API reference, constructor, events           |
+| [Connection](./baichuan-api/connection.md)   | Login, logout, ping, reboot                  |
+| [Device Info](./baichuan-api/device-info.md) | Device information, channels, capabilities   |
+| [Streaming](./baichuan-api/streaming.md)     | Live video streams, codec configuration      |
+| [Recordings](./baichuan-api/recordings.md)   | Search, download, replay                     |
+| [PTZ Control](./baichuan-api/ptz.md)         | Pan, tilt, zoom, presets                     |
+| [Events](./baichuan-api/events.md)           | Motion, AI, doorbell event subscriptions     |
+| [Intercom](./baichuan-api/intercom.md)       | Two-way audio, talk sessions                 |
+| [Snapshots](./baichuan-api/snapshots.md)     | Capture images, thumbnails                   |
+| [Detection](./baichuan-api/detection.md)     | Motion, AI, PIR, autotracking settings       |
+| [Lights](./baichuan-api/lights.md)           | Spotlight, floodlight, siren, chime/DingDong |
+| [Battery](./baichuan-api/battery.md)         | Battery status, sleep/wake management        |
+| [OSD](./baichuan-api/osd.md)                 | On-screen display configuration              |
+| [Network](./baichuan-api/network.md)         | Network, WiFi, storage, system settings      |
 
-## APIs
+## CGI HTTP API (port 80)
 
-### 🔌 [Baichuan Protocol API](./baichuan-api/README.md)
+| Section                                       | Description                         |
+| --------------------------------------------- | ----------------------------------- |
+| [**CGI API Reference**](./cgi-api/README.md)  | Complete HTTP/CGI API documentation |
 
-The Baichuan API uses the proprietary binary protocol on port **9000**. It provides:
+## Additional
 
-- Real-time video streaming
-- Two-way audio (intercom)
-- PTZ control
-- Event subscriptions
-- Recording download
-- Battery camera support
-
-**Best for:** Real-time streaming, low-latency operations, intercom
-
-### 🌐 [CGI HTTP API](./cgi-api/README.md)
-
-The CGI API uses HTTP requests on port **80**. It provides:
-
-- Device configuration
-- Encoding settings
-- User management
-- Network settings
-- System administration
-
-**Best for:** Configuration, settings management, integrations
-
----
-
-## Additional Features
-
-### 🖥️ [Manager REST API](./manager-api.md)
-
-HTTP REST API exposed by the nodelink-manager web application: authentication, go2rtc restreamer management, events (SSE, JSON stream, MQTT), and metrics. All streaming (WebRTC, MSE, HLS, RTSP, snapshots) is handled by an embedded go2rtc process.
-
-### 📺 [Streaming Servers](./streaming.md)
-
-Create local streaming servers:
-
-- **RTSP Server** - Standard RTSP streaming
-- **RFC 4571 Server** - Low-latency TCP for home automation
-- **HTTP Server** - Browser-compatible streaming
-
-### 🔍 [Network Discovery](./discovery.md)
-
-Automatically discover Reolink devices on your network using UDP broadcast.
-
-### 🔐 [Authentik + NGINX (SSO / Trusted Proxy)](./authentik-nginx.md)
-
-Run the Manager UI behind Authentik SSO via NGINX `auth_request`, using the app's Trusted Proxy Authentication mode.
-
----
-
-## Baichuan API Documentation
-
-| Section                                      | Description                  |
-| -------------------------------------------- | ---------------------------- |
-| [Connection](./baichuan-api/connection.md)   | Login, logout, ping, reboot  |
-| [Device Info](./baichuan-api/device-info.md) | Device information, channels |
-| [Streaming](./baichuan-api/streaming.md)     | Live video streams           |
-| [Recordings](./baichuan-api/recordings.md)   | Search, download, replay     |
-| [PTZ Control](./baichuan-api/ptz.md)         | Pan, tilt, zoom, presets     |
-| [Events](./baichuan-api/events.md)           | Motion, AI, doorbell events  |
-| [Intercom](./baichuan-api/intercom.md)       | Two-way audio                |
-| [Snapshots](./baichuan-api/snapshots.md)     | Capture images               |
-| [Detection](./baichuan-api/detection.md)     | Motion, AI settings          |
-| [Lights](./baichuan-api/lights.md)           | Spotlight, siren             |
-| [Battery](./baichuan-api/battery.md)         | Battery status, sleep        |
-| [OSD](./baichuan-api/osd.md)                 | On-screen display            |
-| [Network](./baichuan-api/network.md)         | Network, WiFi, storage       |
-
----
-
-## Quick Links
-
-- [Main README](../README.md)
-- [npm package](https://www.npmjs.com/package/@apocaliss92/nodelink-js)
-- [GitHub Repository](https://github.com/apocaliss92/nodelink-js)
+| Section                                            | Description                                  |
+| -------------------------------------------------- | -------------------------------------------- |
+| [Manager REST API](./manager-api.md)               | Auth, streaming, events, metrics             |
+| [Streaming Servers](./streaming.md)                | RTSP, RFC4571, HTTP servers                  |
+| [Network Discovery](./discovery.md)                | UDP autodiscovery                            |
+| [Authentik + NGINX](./authentik-nginx.md)          | SSO / Trusted Proxy setup                   |

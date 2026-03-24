@@ -1,11 +1,11 @@
 {
-  "collectedAt": "2026-03-19T21:22:31.079Z",
+  "collectedAt": "2026-03-24T09:49:21.801Z",
   "model": "Argus 3E",
   "itemNo": "unknown",
   "firmwareVersion": "v3.0.0.3623_24060675",
   "channel": 2,
-  "total": 23,
-  "ok": 23,
+  "total": 24,
+  "ok": 24,
   "failed": 0,
   "errors": [],
   "calls": {
@@ -31,6 +31,7 @@
     "getWifiSignal": "ok",
     "getWhiteLedState": "ok",
     "getFloodlightOnMotion": "ok",
-    "buildVideoStreamOptions": "ok"
+    "buildVideoStreamOptions": "ok",
+    "getDualLensChannelInfo": "ok"
   }
 }

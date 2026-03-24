@@ -7,14 +7,15 @@
         "main",
         "sub"
       ],
-      "ok": true,
-      "framesA": 215,
-      "framesB": 177,
+      "ok": false,
+      "framesA": 1,
+      "framesB": 0,
       "mismatches": 0,
-      "durationMs": 4049,
+      "error": "Video stream request rejected (response_code 430). Expected response_code 200, camera returned 430",
+      "durationMs": 88,
       "expectedOk": true,
       "expectedReason": "different streamTypes (0 vs 1)",
-      "matchesExpected": true
+      "matchesExpected": false
     },
     {
       "pair": [
@@ -22,10 +23,11 @@
         "ext"
       ],
       "ok": false,
-      "framesA": 434,
+      "framesA": 1,
       "framesB": 0,
       "mismatches": 0,
-      "durationMs": 4041,
+      "error": "Video stream request rejected (response_code 430). Expected response_code 200, camera returned 430",
+      "durationMs": 39,
       "expectedOk": false,
       "expectedReason": "same streamType (0) on same channel",
       "matchesExpected": true
@@ -36,10 +38,10 @@
         "ext"
       ],
       "ok": true,
-      "framesA": 182,
-      "framesB": 221,
+      "framesA": 145,
+      "framesB": 222,
       "mismatches": 0,
-      "durationMs": 4043,
+      "durationMs": 4134,
       "expectedOk": true,
       "expectedReason": "different streamTypes (1 vs 0)",
       "matchesExpected": true
@@ -47,9 +49,11 @@
   ],
   "summary": {
     "total": 3,
-    "ok": 2,
-    "failed": 1,
-    "matchesExpected": 3,
-    "unexpected": []
+    "ok": 1,
+    "failed": 2,
+    "matchesExpected": 2,
+    "unexpected": [
+      "main+sub: got FAIL, expected OK"
+    ]
   }
 }

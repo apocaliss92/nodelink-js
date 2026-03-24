@@ -1,0 +1,15 @@
+{
+  "isDualLens": false,
+  "model": "Argus PT Ultra",
+  "streamChannelCount": 8,
+  "logicalChannelCount": 8,
+  "channels": [],
+  "capabilityChannels": {
+    "pan": [],
+    "tilt": [],
+    "zoom": [],
+    "motion": [],
+    "intercom": [],
+    "presets": []
+  }
+}

@@ -3284,6 +3284,8 @@ export async function captureModelFixtures(params: {
   outDir: string;
   /** Logger (defaults to console) */
   log?: (...args: unknown[]) => void;
+  /** Skip the stream combination test (useful for NVR channels where the test should be done separately per-camera) */
+  skipStreamCombinationTest?: boolean;
 }): Promise<ModelFixtureCaptureResult> {
   const { api, channel, outDir } = params;
   const log = params.log ?? console.log;
@@ -3451,7 +3453,10 @@ export async function captureModelFixtures(params: {
   // Multifocal:  also tests cross-channel pairs (ch0_main+ch1_sub, etc.) since
   //              multifocal cameras have strict constraints on which stream
   //              combinations are allowed per socket (see resolveSocketTag).
-  await capture("streamCombinationTest", async () => {
+  //
+  // Skipped when skipStreamCombinationTest is true (e.g. NVR channels where
+  // the caller manages per-camera stream testing separately).
+  if (!params.skipStreamCombinationTest) await capture("streamCombinationTest", async () => {
     // Detect multifocal
     let dualLensInfo: any;
     try { dualLensInfo = await api.getDualLensChannelInfo(channel); } catch { /* ignore */ }

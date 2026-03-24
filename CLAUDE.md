@@ -124,9 +124,11 @@ test/
 │   ├── protocol/           # XML response fixtures
 │   ├── nvr/                # NVR multi-channel fixtures
 │   └── *.json, *.bin       # Stream frames, keyframes
-├── capture-fixtures.ts     # Script to re-capture camera fixtures
-├── capture-protocol-fixtures.ts
-└── capture-nvr-fixtures.ts
+├── capture-fixtures.ts             # Re-capture stream fixtures
+├── capture-protocol-fixtures.ts    # Re-capture protocol XML fixtures
+├── capture-nvr-fixtures.ts         # Re-capture NVR multi-channel fixtures
+├── capture-model-fixtures.ts       # Full model capability dump (all cameras)
+└── capture-diagnostic-fixtures.ts  # H.265 stream diagnostic fixtures
 ```
 
 ### Commands
@@ -134,10 +136,33 @@ test/
 ```bash
 npm test              # Run all tests (must pass before any commit)
 npm run test:watch    # Watch mode during development
-npx tsx test/capture-fixtures.ts           # Re-capture camera fixtures
+npx tsx test/capture-fixtures.ts           # Re-capture stream fixtures
 npx tsx test/capture-protocol-fixtures.ts  # Re-capture protocol fixtures
 npx tsx test/capture-nvr-fixtures.ts       # Re-capture NVR fixtures
+npx tsx test/capture-model-fixtures.ts     # Full model dump (all cameras in .env)
+npx tsx test/capture-model-fixtures.ts --runs 3  # 3 runs for confirmation
 ```
+
+### Model Fixture Capture (Diagnostics Dump)
+
+Captures all API responses from every configured camera for capability detection, regression testing, and debugging. This is the same `captureModelFixtures()` function used by the Scrypted plugin's "Dump Model Fixtures" button.
+
+**Setup:** Configure cameras in `.env` (see `env.template`): `TCP_HOST`, `TCP265_HOST`, `NVR_HOST`, `HUB_HOST` with corresponding credentials.
+
+**What it does:**
+1. Connects to each camera/NVR in `.env`
+2. For standalone cameras: dumps all 25+ API methods + stream combination test (3 pairs)
+3. For NVR/Hub: detects active channels (skips empty/sleeping), dumps each camera's API, then runs per-camera stream combo test (NOT cross-camera — only that camera's own profiles)
+4. Outputs to `test/fixtures/models/<ModelName>/channels/0/`
+5. Sensitive data (IPs, MACs, serial numbers, credentials) is automatically sanitized
+
+**Output per camera:** `device-info.json`, `support-info.json`, `capabilities.json`, `stream-metadata.json`, `motion-alarm.json`, `ai-state.json`, `talk-ability.json`, `ptz-presets.json`, `stream-combination-test.json`, `_summary.json`, and more.
+
+**When to re-capture:**
+- After adding new API methods (to verify they work on real hardware)
+- After protocol changes that affect XML parsing
+- When supporting a new camera model
+- To update test fixtures with latest firmware responses
 
 ### CI
 

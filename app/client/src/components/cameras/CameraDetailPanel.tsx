@@ -71,6 +71,28 @@ export function CameraDetailPanel({
   const [deviceSessions, setDeviceSessions] = useState<DeviceSession[]>([]);
   const [sessionsTotal, setSessionsTotal] = useState(0);
   const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [dumping, setDumping] = useState(false);
+
+  const handleDump = useCallback(async () => {
+    setDumping(true);
+    try {
+      const result = await trpcMutation<{ token: string; filename: string }>(
+        "cameras.dump",
+        { cameraId: camera.id },
+      );
+      // Trigger browser download via the token endpoint
+      const link = document.createElement("a");
+      link.href = `/api/dump/${result.token}`;
+      link.download = result.filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (e) {
+      console.error("Dump failed:", e);
+    } finally {
+      setDumping(false);
+    }
+  }, [camera.id]);
 
   // Fetch controls state when camera is connected and awake
   useEffect(() => {
@@ -228,6 +250,8 @@ export function CameraDetailPanel({
         onSessions={() => setShowSessions((v) => !v)}
         onConnect={isConnected ? onDisconnect : onConnect}
         onDebug={onSetDebug}
+        onDump={handleDump}
+        dumping={dumping}
         isConnected={isConnected}
         connecting={connecting}
         autoStart={camera.autoStart}

@@ -1,11 +1,11 @@
 {
-  "collectedAt": "2026-03-19T21:22:07.062Z",
+  "collectedAt": "2026-03-24T09:48:23.640Z",
   "model": "unknown",
   "itemNo": "unknown",
   "firmwareVersion": "unknown",
   "channel": 0,
-  "total": 23,
-  "ok": 23,
+  "total": 25,
+  "ok": 25,
   "failed": 0,
   "errors": [],
   "calls": {
@@ -31,6 +31,8 @@
     "getWifiSignal": "ok",
     "getWhiteLedState": "ok",
     "getFloodlightOnMotion": "ok",
-    "buildVideoStreamOptions": "ok"
+    "buildVideoStreamOptions": "ok",
+    "getDualLensChannelInfo": "ok",
+    "streamCombinationTest": "ok"
   }
 }

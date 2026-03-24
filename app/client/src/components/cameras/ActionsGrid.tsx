@@ -1,4 +1,4 @@
-import { Move, Bell, Users, Plug, Bug, Power } from 'lucide-react';
+import { Move, Bell, Users, Plug, Bug, Download, Power } from 'lucide-react';
 
 interface ActionsGridProps {
   onPtz: () => void;
@@ -6,6 +6,8 @@ interface ActionsGridProps {
   onSessions: () => void;
   onConnect: () => void;
   onDebug: () => void;
+  onDump: () => void;
+  dumping: boolean;
   isConnected: boolean;
   connecting: boolean;
   autoStart: boolean;
@@ -19,6 +21,8 @@ export function ActionsGrid({
   onSessions,
   onConnect,
   onDebug,
+  onDump,
+  dumping,
   isConnected,
   connecting,
   autoStart,
@@ -39,7 +43,10 @@ export function ActionsGrid({
         <button className={btnClass} onClick={onConnect} disabled={connecting}>
           <Plug size={13} /> {isConnected ? 'Disconnect' : 'Connect'}
         </button>
-        <button className={`${btnClass} col-span-2`} onClick={onDebug}><Bug size={13} /> Debug</button>
+        <button className={btnClass} onClick={onDebug}><Bug size={13} /> Debug</button>
+        <button className={btnClass} onClick={onDump} disabled={dumping || !isConnected}>
+          <Download size={13} /> {dumping ? 'Dumping...' : 'Dump'}
+        </button>
         <button className={`${btnClass} col-span-2`} onClick={onToggleAutoStart} disabled={savingAutoStart || !isConnected}>
           <Power size={13} /> Auto-start: {autoStart ? 'ON' : 'OFF'}
         </button>
