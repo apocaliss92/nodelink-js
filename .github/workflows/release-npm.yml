@@ -118,9 +118,9 @@ jobs:
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-          git add package.json
+          git add package.json package-lock.json
           if ! git diff --staged --quiet; then
-            git commit -m "chore: bump version to ${{ steps.version.outputs.version }} [skip ci]"
+            git commit -m "chore: bump lib version to ${{ steps.version.outputs.version }} [skip ci]"
             git push
           fi
           TAG="${{ steps.version.outputs.tag }}"
