@@ -635,6 +635,33 @@ export class ReolinkBaichuanApi {
       this.dispatchSimpleEvent(mapped);
     });
 
+    // Handle battery info push (cmd_id 252 = BatteryInfoList)
+    client.on("batteryPush", (frame) => {
+      try {
+        const xml = this.client.tryDecryptXml(
+          frame.body,
+          frame.header.channelId,
+          this.client.enc,
+        );
+        if (!xml) return;
+        const channel = frame.header.channelId;
+        const battery = this.parseBatteryInfoXml(xml, channel);
+        if (battery.batteryPercent !== undefined || battery.chargeStatus !== undefined || battery.adapterStatus !== undefined) {
+          this.dispatchSimpleEvent({
+            type: "battery",
+            channel,
+            timestamp: Date.now(),
+            battery,
+          });
+        }
+      } catch (e: unknown) {
+        this.logger.debug?.(
+          "[ReolinkBaichuanApi] Error parsing battery push",
+          formatErrorForLog(e),
+        );
+      }
+    });
+
     // Handle channel info push from NVR (cmd_id 145)
     client.on("channelInfo", (xml: string) => {
       try {

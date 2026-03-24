@@ -645,12 +645,15 @@ export type ReolinkSimpleEventType =
   | "awake"
   | "online"
   | "offline"
+  | "battery"
   | "other";
 
 export interface ReolinkSimpleEvent {
   type: ReolinkSimpleEventType;
   channel: number;
   timestamp: number;
+  /** Present when type === "battery" — pushed by the camera via cmdId 252. */
+  battery?: Partial<BatteryInfo>;
 }
 
 export interface TwoWayAudioConfig {

@@ -140,6 +140,7 @@ export class BaichuanClient extends EventEmitter<{
   debug: [string, unknown?];
   event: [ReolinkEvent]; // Parsed events (motion/AI)
   channelInfo: [string]; // Channel info XML from cmd_id 145 push
+  batteryPush: [BaichuanFrame]; // Battery info push from cmd_id 252
 }> {
   /**
    * Process-wide streaming activity registry.
@@ -1931,6 +1932,15 @@ export class BaichuanClient extends EventEmitter<{
 
     // No subscription: behave as before (generic push)
     this.emit("push", frame);
+
+    // Parse battery info push (cmd_id 252 = BatteryInfoList)
+    if (frame.header.cmdId === 252 && frame.body.length > 0) {
+      try {
+        this.emit("batteryPush", frame);
+      } catch (error) {
+        this.logDebug("battery_push_error", error);
+      }
+    }
 
     // Parse events (cmd_id 33 = AlarmEventList push)
     if (frame.header.cmdId === 33) {
