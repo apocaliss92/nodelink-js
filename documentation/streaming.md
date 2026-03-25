@@ -35,7 +35,7 @@ const rtspServer = new BaichuanRtspServer({
   api,
   profile: "main",
   channel: 0,
-  port: 8554,
+  listenPort: 8554,
   logger: console,
 });
 
@@ -54,16 +54,14 @@ interface BaichuanRtspServerOptions {
   profile: StreamProfile;
   /** Channel number (default: 0) */
   channel?: number;
-  /** RTSP server port (default: 8554) */
-  port?: number;
-  /** Server bind host (default: "0.0.0.0") */
-  host?: string;
+  /** Port to listen on (default: 8554) */
+  listenPort?: number;
+  /** Host to listen on (default: "127.0.0.1") */
+  listenHost?: string;
   /** Logger instance */
   logger?: Console;
   /** For multifocal cameras (TrackMix, Duo) */
   variant?: NativeVideoStreamVariant;
-  /** FFmpeg path (if not in PATH) */
-  ffmpegPath?: string;
 }
 ```
 
@@ -120,9 +118,9 @@ const channelCount = await api.getChannelCount();
 for (let ch = 0; ch < channelCount; ch++) {
   const server = new BaichuanRtspServer({
     api,
-    profile: "sub", // Use sub for multiple streams
+    profile: "sub",
     channel: ch,
-    port: 8554 + ch,
+    listenPort: 8554 + ch,
     logger: console,
   });
   await server.start();
@@ -349,13 +347,13 @@ const subApi = await api.createDedicatedSession();
 const mainServer = new BaichuanRtspServer({
   api: mainApi,
   profile: "main",
-  port: 8554,
+  listenPort: 8554,
 });
 
 const subServer = new BaichuanRtspServer({
   api: subApi,
   profile: "sub",
-  port: 8555,
+  listenPort: 8555,
 });
 ```
 

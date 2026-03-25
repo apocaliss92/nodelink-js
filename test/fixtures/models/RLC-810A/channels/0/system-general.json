@@ -1,0 +1,26 @@
+{
+  "body": {
+    "SystemGeneral": {
+      "timeZone": -3600,
+      "osdFormat": "DMY",
+      "year": 2026,
+      "month": 3,
+      "day": 25,
+      "hour": 17,
+      "minute": 48,
+      "second": 57,
+      "deviceId": 0,
+      "timeFormat": 0,
+      "language": "English",
+      "deviceName": "Stodola",
+      "loginLock": 0,
+      "lockTime": 300,
+      "allowedTimes": 10,
+      "@_version": 1.1
+    },
+    "Norm": {
+      "norm": "NTSC",
+      "@_version": 1.1
+    }
+  }
+}

@@ -93,6 +93,8 @@ Devices with captured fixtures (verified API compatibility):
 | --- | --- | --- |
 | E1 Outdoor PoE | Wired camera | v3.1.0.5223 |
 | E1 Zoom | Wired camera (H.265, PTZ) | v3.2.0.4741 |
+| RLC-810A | Wired camera (8MP) | v3.1.0.1162 |
+| B400 | Wired camera (4MP) | v3.0.0.183 |
 | Argus 3E | Battery camera (via Home Hub) | v3.0.0.3623 |
 | Argus PT Ultra | Battery camera with PTZ (via Home Hub) | v3.0.0.3911 |
 | Reolink Home Hub | NVR / Hub | v3.3.0.456 |

@@ -1,0 +1,20 @@
+{
+  "server": {
+    "serverport": 9000
+  },
+  "http": {
+    "httpport": 80
+  },
+  "https": {
+    "httpsport": 443
+  },
+  "rtsp": {
+    "rtspport": 554
+  },
+  "rtmp": {
+    "rtmpport": 1935
+  },
+  "onvif": {
+    "onvifport": 8000
+  }
+}

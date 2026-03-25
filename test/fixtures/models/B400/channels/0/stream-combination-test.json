@@ -1,0 +1,55 @@
+{
+  "isMultifocal": false,
+  "channelCount": 1,
+  "results": [
+    {
+      "pair": [
+        "main",
+        "sub"
+      ],
+      "ok": true,
+      "framesA": 271,
+      "framesB": 116,
+      "mismatches": 0,
+      "durationMs": 4100,
+      "expectedOk": true,
+      "expectedReason": "different streamTypes (0 vs 1)",
+      "matchesExpected": true
+    },
+    {
+      "pair": [
+        "main",
+        "ext"
+      ],
+      "ok": false,
+      "framesA": 584,
+      "framesB": 0,
+      "mismatches": 0,
+      "durationMs": 4069,
+      "expectedOk": false,
+      "expectedReason": "same streamType (0) on same channel",
+      "matchesExpected": true
+    },
+    {
+      "pair": [
+        "sub",
+        "ext"
+      ],
+      "ok": true,
+      "framesA": 119,
+      "framesB": 301,
+      "mismatches": 0,
+      "durationMs": 4150,
+      "expectedOk": true,
+      "expectedReason": "different streamTypes (1 vs 0)",
+      "matchesExpected": true
+    }
+  ],
+  "summary": {
+    "total": 3,
+    "ok": 2,
+    "failed": 1,
+    "matchesExpected": 3,
+    "unexpected": []
+  }
+}

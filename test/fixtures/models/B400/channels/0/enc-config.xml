@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<Compression version="1.1">
+<channelId>0</channelId>
+<isNoTranslateFrame>1</isNoTranslateFrame>
+<mainStream>
+<audio>1</audio>
+<resolutionName>2560*1440</resolutionName>
+<width>2560</width>
+<height>1440</height>
+<encoderType>cbr</encoderType>
+<frame>25</frame>
+<bitRate>6144</bitRate>
+<encoderProfile>high</encoderProfile>
+</mainStream>
+<subStream>
+<audio>1</audio>
+<resolutionName>640*360</resolutionName>
+<width>640</width>
+<height>360</height>
+<encoderType>cbr</encoderType>
+<frame>7</frame>
+<bitRate>160</bitRate>
+<encoderProfile>high</encoderProfile>
+</subStream>
+<thirdStream>
+<audio>0</audio>
+<resolutionName></resolutionName>
+<width>0</width>
+<height>0</height>
+<encoderType>vbr</encoderType>
+<frame>0</frame>
+<bitRate>0</bitRate>
+<encoderProfile>default</encoderProfile>
+</thirdStream>
+</Compression>
+</body>

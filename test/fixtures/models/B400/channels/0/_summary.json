@@ -1,0 +1,42 @@
+{
+  "collectedAt": "2026-03-25T16:50:45.040Z",
+  "model": "unknown",
+  "itemNo": "unknown",
+  "firmwareVersion": "unknown",
+  "channel": 0,
+  "total": 25,
+  "ok": 22,
+  "failed": 3,
+  "errors": [
+    "getAiState: getAiState failed",
+    "getRecordCfg: Baichuan request failed (responseCode 400, empty body). Possible causes: expired session, invalid username/password, or unsupported command on NVR/Hub.",
+    "getWifiSignal: Baichuan request failed (responseCode 400, empty body). Possible causes: expired session, invalid username/password, or unsupported command on NVR/Hub."
+  ],
+  "calls": {
+    "getInfo": "ok",
+    "getSupportInfo": "ok",
+    "getAbilityInfo": "ok",
+    "getDeviceCapabilities": "ok",
+    "cmd289-WhiteLed": "ok",
+    "getStreamMetadata": "ok",
+    "getEncXml": "ok",
+    "getPorts": "ok",
+    "getTalkAbility": "ok",
+    "getTwoWayAudioConfig": "ok",
+    "getAiState": "FAILED: getAiState failed",
+    "getAiCfg": "ok",
+    "getOsd": "ok",
+    "getMotionAlarm": "ok",
+    "getRecordCfg": "FAILED: Baichuan request failed (responseCode 400, empty body). Possible causes: expired session, invalid username/password, or unsupported command on NVR/Hub.",
+    "getVideoInput": "ok",
+    "getPtzPresets": "ok",
+    "getNetworkInfo": "ok",
+    "getSystemGeneral": "ok",
+    "getWifiSignal": "FAILED: Baichuan request failed (responseCode 400, empty body). Possible causes: expired session, invalid username/password, or unsupported command on NVR/Hub.",
+    "getWhiteLedState": "ok",
+    "getFloodlightOnMotion": "ok",
+    "buildVideoStreamOptions": "ok",
+    "getDualLensChannelInfo": "ok",
+    "streamCombinationTest": "ok"
+  }
+}

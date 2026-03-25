@@ -1,0 +1,29 @@
+{
+  "channel": 0,
+  "streams": [
+    {
+      "profile": "main",
+      "audio": 1,
+      "width": 2560,
+      "height": 1440,
+      "videoEncType": "H.264",
+      "videoEncTypeInt": 0,
+      "frameRate": 25,
+      "bitRate": 6144,
+      "audioCodec": "aac"
+    },
+    {
+      "profile": "sub",
+      "audio": 1,
+      "width": 640,
+      "height": 360,
+      "videoEncType": "H.264",
+      "videoEncTypeInt": 0,
+      "frameRate": 7,
+      "bitRate": 160,
+      "audioCodec": "aac"
+    }
+  ],
+  "audioEnabled": true,
+  "rawXml": "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<body>\n<Compression version=\"1.1\">\n<channelId>0</channelId>\n<isNoTranslateFrame>1</isNoTranslateFrame>\n<mainStream>\n<audio>1</audio>\n<resolutionName>2560*1440</resolutionName>\n<width>2560</width>\n<height>1440</height>\n<encoderType>cbr</encoderType>\n<frame>25</frame>\n<bitRate>6144</bitRate>\n<encoderProfile>high</encoderProfile>\n</mainStream>\n<subStream>\n<audio>1</audio>\n<resolutionName>640*360</resolutionName>\n<width>640</width>\n<height>360</height>\n<encoderType>cbr</encoderType>\n<frame>7</frame>\n<bitRate>160</bitRate>\n<encoderProfile>high</encoderProfile>\n</subStream>\n<thirdStream>\n<audio>0</audio>\n<resolutionName></resolutionName>\n<width>0</width>\n<height>0</height>\n<encoderType>vbr</encoderType>\n<frame>0</frame>\n<bitRate>0</bitRate>\n<encoderProfile>default</encoderProfile>\n</thirdStream>\n</Compression>\n</body>\n"
+}

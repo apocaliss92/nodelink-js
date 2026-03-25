@@ -107,8 +107,8 @@ const rtspServer = await api.createRtspStream(channel: number, options: RtspStre
 | ----------------- | --------------- | -------- | ----------- | ------------------- |
 | `channel`         | `number`        | ❌       | `0`         | Channel number      |
 | `options.profile` | `StreamProfile` | ❌       | `"main"`    | Stream profile      |
-| `options.port`    | `number`        | ❌       | `8554`      | RTSP server port    |
-| `options.host`    | `string`        | ❌       | `"0.0.0.0"` | Server bind address |
+| `options.listenPort` | `number`     | ❌       | `8554`        | Port to listen on     |
+| `options.listenHost` | `string`     | ❌       | `"127.0.0.1"` | Host to listen on     |
 
 ### Returns
 
@@ -119,7 +119,7 @@ const rtspServer = await api.createRtspStream(channel: number, options: RtspStre
 ```typescript
 const rtspServer = await api.createRtspStream({
   profile: "main",
-  port: 8554,
+  listenPort: 8554,
 });
 
 await rtspServer.start();

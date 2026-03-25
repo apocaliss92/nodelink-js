@@ -1,0 +1,98 @@
+{
+  "body": {
+    "MD": {
+      "channelId": 0,
+      "enable": 1,
+      "usepir": 0,
+      "width": 120,
+      "height": 67,
+      "scope": {
+        "columns": 120,
+        "rows": 67,
+        "valueTable": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "sensitivityInfoList": {
+        "sensitivityInfo": [
+          {
+            "id": 0,
+            "sensitivity": 10,
+            "beginHour": 0,
+            "beginMinute": 0,
+            "endHour": 6,
+            "endMinute": 0
+          },
+          {
+            "id": 1,
+            "sensitivity": 10,
+            "beginHour": 6,
+            "beginMinute": 0,
+            "endHour": 12,
+            "endMinute": 0
+          },
+          {
+            "id": 2,
+            "sensitivity": 10,
+            "beginHour": 12,
+            "beginMinute": 0,
+            "endHour": 18,
+            "endMinute": 0
+          },
+          {
+            "id": 3,
+            "sensitivity": 10,
+            "beginHour": 18,
+            "beginMinute": 0,
+            "endHour": 23,
+            "endMinute": 59
+          }
+        ]
+      },
+      "sensInfoNew": {
+        "sensitivityDefault": 10,
+        "sensInfoList": {
+          "sensInfo": [
+            {
+              "priority": 4,
+              "sensitivity": 10,
+              "beginHour": 0,
+              "beginMinute": 0,
+              "endHour": 6,
+              "endMinute": 0
+            },
+            {
+              "priority": 3,
+              "sensitivity": 10,
+              "beginHour": 6,
+              "beginMinute": 0,
+              "endHour": 12,
+              "endMinute": 0
+            },
+            {
+              "priority": 2,
+              "sensitivity": 10,
+              "beginHour": 12,
+              "beginMinute": 0,
+              "endHour": 18,
+              "endMinute": 0
+            },
+            {
+              "priority": 1,
+              "sensitivity": 10,
+              "beginHour": 18,
+              "beginMinute": 0,
+              "endHour": 23,
+              "endMinute": 59
+            }
+          ]
+        }
+      },
+      "timeBlockList": "",
+      "handleException": {
+        "handleType": "none",
+        "chnHandleType": "",
+        "relAlarmOut": ""
+      },
+      "@_version": 1.1
+    }
+  }
+}

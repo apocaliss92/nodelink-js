@@ -1,0 +1,83 @@
+{
+  "body": {
+    "VideoInput": {
+      "channelId": 0,
+      "bright": 114,
+      "contrast": 147,
+      "saturation": 149,
+      "hue": 128,
+      "sharpen": 140,
+      "@_version": 1.1
+    },
+    "InputAdvanceCfg": {
+      "channelId": 0,
+      "digitalChannel": 1,
+      "PowerLineFrequency": {
+        "mode": "60hz",
+        "enable": 1
+      },
+      "Exposure": {
+        "mode": "auto",
+        "Gainctl": {
+          "defMin": 1,
+          "defMax": 100,
+          "curMin": 1,
+          "curMax": 62
+        },
+        "Shutterctl": {
+          "defMin": 0,
+          "defMax": 125,
+          "curMin": 0,
+          "curMax": 125
+        },
+        "shutterLevel": "1/30",
+        "gainLevel": 50
+      },
+      "Scene": {
+        "mode": "auto",
+        "modeList": "auto, manual",
+        "Redgain": {
+          "min": 0,
+          "max": 255,
+          "cur": 128
+        },
+        "Bluegain": {
+          "min": 0,
+          "max": 255,
+          "cur": 128
+        }
+      },
+      "DayNight": {
+        "mode": "auto",
+        "IrcutMode": "ir",
+        "Threshold": "medium"
+      },
+      "BLC": {
+        "enable": 1,
+        "mode": "dynamicRange",
+        "backlight": {
+          "min": 0,
+          "max": 255,
+          "cur": 2
+        },
+        "dynamicrange": {
+          "min": 0,
+          "max": 255,
+          "cur": 173
+        }
+      },
+      "mirror": 0,
+      "flip": 0,
+      "Iris": {
+        "enable": 0,
+        "state": "success",
+        "focusAutoiris": 0
+      },
+      "nr3d": {
+        "value": "off",
+        "enable": 1
+      },
+      "@_version": 1.1
+    }
+  }
+}

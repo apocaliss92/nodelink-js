@@ -1,0 +1,111 @@
+{
+  "body": {
+    "VideoInput": {
+      "channelId": 0,
+      "bright": 128,
+      "contrast": 128,
+      "saturation": 128,
+      "hue": 128,
+      "sharpen": 128,
+      "@_version": 1.1
+    },
+    "InputAdvanceCfg": {
+      "channelId": 0,
+      "digitalChannel": 1,
+      "PowerLineFrequency": {
+        "mode": "50hz",
+        "enable": 0
+      },
+      "Exposure": {
+        "mode": "auto",
+        "Gainctl": {
+          "defMin": 1,
+          "defMax": 100,
+          "curMin": 1,
+          "curMax": 62
+        },
+        "Shutterctl": {
+          "defMin": 0,
+          "defMax": 125,
+          "curMin": 0,
+          "curMax": 125
+        },
+        "shutterLevel": "1/30",
+        "gainLevel": 50
+      },
+      "Scene": {
+        "mode": "auto",
+        "modeList": "auto, manual",
+        "Redgain": {
+          "min": 0,
+          "max": 255,
+          "cur": 128
+        },
+        "Bluegain": {
+          "min": 0,
+          "max": 255,
+          "cur": 128
+        }
+      },
+      "DayNight": {
+        "mode": "auto",
+        "IrcutMode": "ir",
+        "Threshold": "medium"
+      },
+      "BLC": {
+        "enable": 0,
+        "mode": "backLight",
+        "backlight": {
+          "min": 0,
+          "max": 255,
+          "cur": 128
+        },
+        "dynamicrange": {
+          "min": 0,
+          "max": 255,
+          "cur": 128
+        }
+      },
+      "bdDayColor": {
+        "mode": "auto",
+        "bright": {
+          "min": 0,
+          "max": 255,
+          "cur": 128
+        },
+        "dark": {
+          "min": 0,
+          "max": 255,
+          "cur": 128
+        }
+      },
+      "bdNight": {
+        "mode": "auto",
+        "bright": {
+          "min": 0,
+          "max": 255,
+          "cur": 128
+        },
+        "dark": {
+          "min": 0,
+          "max": 255,
+          "cur": 128
+        }
+      },
+      "mirror": 0,
+      "flip": 0,
+      "Iris": {
+        "enable": 0,
+        "state": "success",
+        "focusAutoiris": 0
+      },
+      "nr3d": {
+        "value": "high",
+        "enable": 1
+      },
+      "firstFrameStrategy": 0,
+      "constantFrameRate": 0,
+      "@_version": 1.1
+    }
+  }
+}
