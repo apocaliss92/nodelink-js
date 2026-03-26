@@ -575,6 +575,7 @@ export class ReolinkBaichuanApi {
 
     // --- create new general socket ---
     const newClient = new BaichuanClient(this.clientOptions);
+    this.attachD2cDiscListener(newClient);
     this.socketPool.set("general", {
       client: newClient,
       refCount: 1, // general socket is always "in use"
@@ -831,6 +832,22 @@ export class ReolinkBaichuanApi {
   >();
   private rtspServers = new Set<BaichuanRtspServer>(); // Track all RTSP servers for cleanup
   private readonly activeVideoMsgNums = new Map<string, number>();
+
+  // ─── D2C_DISC grace period & storm detection ───────────────────────────────
+  // Tracked on the API instance (survives BaichuanClient recreation).
+  /** Timestamp of the most recent D2C_DISC from any client for this device. */
+  private lastD2cDiscAtMs = 0;
+  /** Sliding window of recent D2C_DISC timestamps for storm detection. */
+  private readonly d2cDiscTimestamps: number[] = [];
+  /** Grace period (ms) after D2C_DISC during which sleep inference returns "unknown". */
+  private static readonly D2C_DISC_SLEEP_GRACE_MS = 15_000;
+  /** Number of D2C_DISCs within the storm window to trigger extended cooldown. */
+  private static readonly D2C_DISC_STORM_THRESHOLD = 3;
+  /** Sliding window size (ms) for storm detection. */
+  private static readonly D2C_DISC_STORM_WINDOW_MS = 60_000;
+  /** Extended cooldown (ms) applied to socket pool when a D2C_DISC storm is detected. */
+  private static readonly D2C_DISC_STORM_COOLDOWN_MS = 90_000;
+
   private readonly nvrChannelsSummaryCache = new Map<
     string,
     NvrChannelsSummaryCacheEntry
@@ -1412,6 +1429,15 @@ export class ReolinkBaichuanApi {
   }
 
   /**
+   * Attach a D2C_DISC listener to a BaichuanClient so that the API-level
+   * grace period and storm detection are updated regardless of which
+   * pool socket receives the disconnect.
+   */
+  private attachD2cDiscListener(client: BaichuanClient): void {
+    client.on("d2c_disc", () => this.notifyD2cDisc());
+  }
+
+  /**
    * Acquire a socket from the pool by tag.
    * Creates a new socket if needed, or reuses an existing one.
    *
@@ -1573,15 +1599,28 @@ export class ReolinkBaichuanApi {
           ? { ...this.clientOptions, logger: log }
           : this.clientOptions;
         const newClient = new BaichuanClient(clientOpts);
+        this.attachD2cDiscListener(newClient);
 
         await newClient.login();
 
-        // Success: clear any cooldown state
-        if (this.socketPoolCooldowns.has(this.host)) {
-          log?.debug?.(
-            `[SocketPool] Clearing cooldown for host=${this.host} after successful login`,
-          );
-          this.socketPoolCooldowns.delete(this.host);
+        // Success: clear login-failure cooldown, but preserve D2C_DISC storm cooldown.
+        // D2C_DISC storms succeed at login but disconnect shortly after — clearing
+        // the cooldown would allow immediate re-creation and perpetuate the storm.
+        const existingCooldown = this.socketPoolCooldowns.get(this.host);
+        if (existingCooldown) {
+          const isStormCooldown =
+            existingCooldown.failureCount >=
+            ReolinkBaichuanApi.D2C_DISC_STORM_THRESHOLD;
+          if (!isStormCooldown) {
+            log?.debug?.(
+              `[SocketPool] Clearing cooldown for host=${this.host} after successful login`,
+            );
+            this.socketPoolCooldowns.delete(this.host);
+          } else {
+            log?.debug?.(
+              `[SocketPool] Preserving D2C_DISC storm cooldown for host=${this.host} (expires in ${Math.ceil((existingCooldown.cooldownUntil - Date.now()) / 1000)}s)`,
+            );
+          }
         }
 
         entry.client = newClient;
@@ -2009,6 +2048,7 @@ export class ReolinkBaichuanApi {
 
     // Create the "general" socket in the pool (primary socket for commands/events)
     const generalClient = new BaichuanClient(opts);
+    this.attachD2cDiscListener(generalClient);
     this.socketPool.set("general", {
       client: generalClient,
       refCount: 1, // Always keep general socket "in use"
@@ -9288,6 +9328,45 @@ export class ReolinkBaichuanApi {
   }
 
   /**
+   * Called when any BaichuanClient for this device receives a D2C_DISC.
+   * Updates the grace period timestamp and checks for storm conditions.
+   */
+  private notifyD2cDisc(): void {
+    const now = Date.now();
+    this.lastD2cDiscAtMs = now;
+
+    // ─── Storm detection ───
+    this.d2cDiscTimestamps.push(now);
+    // Prune entries outside the sliding window
+    const cutoff = now - ReolinkBaichuanApi.D2C_DISC_STORM_WINDOW_MS;
+    while (
+      this.d2cDiscTimestamps.length > 0 &&
+      this.d2cDiscTimestamps[0]! < cutoff
+    ) {
+      this.d2cDiscTimestamps.shift();
+    }
+
+    if (
+      this.d2cDiscTimestamps.length >=
+      ReolinkBaichuanApi.D2C_DISC_STORM_THRESHOLD
+    ) {
+      const stormCooldownUntil =
+        now + ReolinkBaichuanApi.D2C_DISC_STORM_COOLDOWN_MS;
+      const existing = this.socketPoolCooldowns.get(this.host);
+      if (!existing || existing.cooldownUntil < stormCooldownUntil) {
+        this.socketPoolCooldowns.set(this.host, {
+          failureCount: this.d2cDiscTimestamps.length,
+          lastFailureAt: now,
+          cooldownUntil: stormCooldownUntil,
+        });
+        this.logger?.warn?.(
+          `[D2C_DISC] Storm detected: ${this.d2cDiscTimestamps.length} disconnects in ${ReolinkBaichuanApi.D2C_DISC_STORM_WINDOW_MS / 1000}s → socket pool cooldown ${ReolinkBaichuanApi.D2C_DISC_STORM_COOLDOWN_MS / 1000}s`,
+        );
+      }
+    }
+  }
+
+  /**
    * Best-effort sleeping inference for battery/BCUDP cameras.
    *
    * This method does NOT send any request to the camera.
@@ -9338,6 +9417,15 @@ export class ReolinkBaichuanApi {
     const now = Date.now();
     const cutoff = now - windowMs;
 
+    // ─── D2C_DISC grace period ───
+    // After a D2C_DISC the client is recreated with empty RX/TX history,
+    // which would falsely trigger "sleeping". Suppress sleep inference for
+    // a grace period to allow reconnection before declaring sleep.
+    const msSinceD2cDisc = now - this.lastD2cDiscAtMs;
+    const inD2cDiscGrace =
+      this.lastD2cDiscAtMs > 0 &&
+      msSinceD2cDisc < ReolinkBaichuanApi.D2C_DISC_SLEEP_GRACE_MS;
+
     const rx = (this.client.getRxHistory?.() ?? []).filter(
       (h) => h.atMs >= cutoff,
     );
@@ -9348,6 +9436,12 @@ export class ReolinkBaichuanApi {
     // If we've had absolutely no activity in the window, treat as sleeping (best-effort).
     // This matches the intent: no waking commands observed recently.
     if (rx.length === 0 && tx.length === 0) {
+      if (inD2cDiscGrace) {
+        return {
+          state: "unknown",
+          reason: `recent D2C_DISC ${Math.round(msSinceD2cDisc / 1000)}s ago, reconnecting (grace ${ReolinkBaichuanApi.D2C_DISC_SLEEP_GRACE_MS / 1000}s)`,
+        };
+      }
       return {
         state: "sleeping",
         reason: `no rx/tx activity in last ${windowMs}ms${socketConnected ? "" : " (socket disconnected)"}`,
@@ -9371,6 +9465,13 @@ export class ReolinkBaichuanApi {
         state: "awake",
         reason: `waking tx cmdId=${firstWakingTx.cmdId} seen ${now - firstWakingTx.atMs}ms ago`,
         idleMs: now - firstWakingTx.atMs,
+      };
+    }
+
+    if (inD2cDiscGrace) {
+      return {
+        state: "unknown",
+        reason: `only non-waking cmdIds + recent D2C_DISC ${Math.round(msSinceD2cDisc / 1000)}s ago (grace ${ReolinkBaichuanApi.D2C_DISC_SLEEP_GRACE_MS / 1000}s)`,
       };
     }
 

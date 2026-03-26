@@ -141,6 +141,7 @@ export class BaichuanClient extends EventEmitter<{
   event: [ReolinkEvent]; // Parsed events (motion/AI)
   channelInfo: [string]; // Channel info XML from cmd_id 145 push
   batteryPush: [BaichuanFrame]; // Battery info push from cmd_id 252
+  d2c_disc: [{ host: string; atMs: number }]; // Camera-initiated session termination
 }> {
   /**
    * Process-wide streaming activity registry.
@@ -154,6 +155,18 @@ export class BaichuanClient extends EventEmitter<{
   private static readonly streamingRegistry = new Map<
     string,
     { activeStreamClients: number }
+  >();
+
+  /**
+   * Per-host D2C_DISC backoff state that persists across client instance recreation.
+   *
+   * Why: when a D2C_DISC kills a client, the socket pool destroys the old instance
+   * and creates a new one. Instance-level backoff variables would reset to zero,
+   * allowing immediate reconnection and perpetuating the storm.
+   */
+  private static readonly d2cDiscBackoff = new Map<
+    string,
+    { backoffMs: number; lastAtMs: number; cooldownUntilMs: number }
   >();
 
   /**
@@ -1170,7 +1183,13 @@ export class BaichuanClient extends EventEmitter<{
 
   private async waitForUdpReconnectCooldown(): Promise<void> {
     const now = Date.now();
-    const waitMs = this.udpReconnectCooldownUntilMs - now;
+    // Check both instance-level and static per-host cooldown (whichever is longer).
+    const staticEntry = BaichuanClient.d2cDiscBackoff.get(this.opts.host);
+    const effectiveCooldownUntil = Math.max(
+      this.udpReconnectCooldownUntilMs,
+      staticEntry?.cooldownUntilMs ?? 0,
+    );
+    const waitMs = effectiveCooldownUntil - now;
     if (waitMs <= 0) return;
     const sid = this.socketSessionId;
     const shortUid = this.opts.uid ? this.opts.uid.substring(0, 5) : undefined;
@@ -1180,6 +1199,7 @@ export class BaichuanClient extends EventEmitter<{
       sid,
       uid: shortUid,
       waitMs,
+      persistent: staticEntry != null,
     });
     await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
   }
@@ -1499,8 +1519,11 @@ export class BaichuanClient extends EventEmitter<{
         });
 
         // Apply exponential backoff to avoid reconnect storms.
-        // If D2C_DISC repeats frequently, ramp up cooldown to give the camera time.
-        const withinWindow = now - this.udpReconnectLastD2cDiscAtMs < 60_000;
+        // Use the static per-host map so backoff survives client recreation.
+        const hostKey = this.opts.host;
+        const prev = BaichuanClient.d2cDiscBackoff.get(hostKey);
+        const withinWindow =
+          prev != null && now - prev.lastAtMs < 60_000;
         const baseMs = 2_000;
         const maxMs = 30_000;
         const nextBackoffMs = withinWindow
@@ -1508,17 +1531,23 @@ export class BaichuanClient extends EventEmitter<{
               maxMs,
               Math.max(
                 baseMs,
-                this.udpReconnectBackoffMs > 0
-                  ? this.udpReconnectBackoffMs * 2
-                  : baseMs,
+                prev.backoffMs > 0 ? prev.backoffMs * 2 : baseMs,
               ),
             )
           : baseMs;
-        this.udpReconnectLastD2cDiscAtMs = now;
-        this.udpReconnectBackoffMs = nextBackoffMs;
+        const cooldownUntilMs = Math.max(
+          prev?.cooldownUntilMs ?? 0,
+          now + nextBackoffMs,
+        );
+        BaichuanClient.d2cDiscBackoff.set(hostKey, {
+          backoffMs: nextBackoffMs,
+          lastAtMs: now,
+          cooldownUntilMs,
+        });
+        // Also set instance-level for waitForUdpReconnectCooldown (same client)
         this.udpReconnectCooldownUntilMs = Math.max(
           this.udpReconnectCooldownUntilMs,
-          now + nextBackoffMs,
+          cooldownUntilMs,
         );
         this.logDebug("d2c_disc_backoff", {
           transport: "udp",
@@ -1526,7 +1555,8 @@ export class BaichuanClient extends EventEmitter<{
           sid,
           uid: shortUid,
           backoffMs: nextBackoffMs,
-          cooldownUntilMs: this.udpReconnectCooldownUntilMs,
+          cooldownUntilMs,
+          persistent: true,
         });
 
         this.stopKeepAlive();
@@ -1537,6 +1567,10 @@ export class BaichuanClient extends EventEmitter<{
           this.videoSubscriptions.clear();
           this.recomputeGlobalStreamingContribution();
         }
+
+        // Emit dedicated event so the API layer can track D2C_DISC timing
+        // independently of client instance lifecycle.
+        this.emit("d2c_disc", { host: this.opts.host, atMs: now });
       }
       this.emit("error", err);
     });
