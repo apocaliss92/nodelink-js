@@ -833,20 +833,21 @@ export class ReolinkBaichuanApi {
   private rtspServers = new Set<BaichuanRtspServer>(); // Track all RTSP servers for cleanup
   private readonly activeVideoMsgNums = new Map<string, number>();
 
-  // ─── D2C_DISC grace period & storm detection ───────────────────────────────
+  // ─── D2C_DISC cooldown & storm detection ────────────────────────────────────
   // Tracked on the API instance (survives BaichuanClient recreation).
   /** Timestamp of the most recent D2C_DISC from any client for this device. */
   private lastD2cDiscAtMs = 0;
   /** Sliding window of recent D2C_DISC timestamps for storm detection. */
   private readonly d2cDiscTimestamps: number[] = [];
-  /** Grace period (ms) after D2C_DISC during which sleep inference returns "unknown". */
-  private static readonly D2C_DISC_SLEEP_GRACE_MS = 15_000;
+  /** Immediate cooldown (ms) applied to socket pool on every D2C_DISC.
+   *  Prevents reconnect attempts while the camera is transitioning to sleep. */
+  private static readonly D2C_DISC_IMMEDIATE_COOLDOWN_MS = 10_000;
   /** Number of D2C_DISCs within the storm window to trigger extended cooldown. */
   private static readonly D2C_DISC_STORM_THRESHOLD = 3;
   /** Sliding window size (ms) for storm detection. */
   private static readonly D2C_DISC_STORM_WINDOW_MS = 60_000;
   /** Extended cooldown (ms) applied to socket pool when a D2C_DISC storm is detected. */
-  private static readonly D2C_DISC_STORM_COOLDOWN_MS = 90_000;
+  private static readonly D2C_DISC_STORM_COOLDOWN_MS = 120_000;
 
   private readonly nvrChannelsSummaryCache = new Map<
     string,
@@ -1455,7 +1456,7 @@ export class ReolinkBaichuanApi {
     const log = logger ?? this.logger;
     const now = Date.now();
 
-    // ─── Cooldown check: prevent session spam when login repeatedly fails ───
+    // ─── Cooldown check: prevent session spam (login failures or D2C_DISC) ───
     const cooldownEntry = this.socketPoolCooldowns.get(this.host);
     if (cooldownEntry) {
       // Reset failure count if enough time has passed since last failure
@@ -1470,10 +1471,16 @@ export class ReolinkBaichuanApi {
       } else if (now < cooldownEntry.cooldownUntil) {
         // Still in cooldown - reject immediately
         const remainingMs = cooldownEntry.cooldownUntil - now;
+        const isD2cDisc =
+          this.lastD2cDiscAtMs > 0 &&
+          now - this.lastD2cDiscAtMs < 120_000;
+        const reason = isD2cDisc
+          ? "D2C_DISC (camera sleeping)"
+          : "repeated login failures";
         const error = new Error(
-          `[SocketPool] Host ${this.host} is in cooldown for ${Math.ceil(remainingMs / 1000)}s due to repeated login failures. tag=${tag}`,
+          `[SocketPool] Host ${this.host} is in cooldown for ${Math.ceil(remainingMs / 1000)}s due to ${reason}. tag=${tag}`,
         );
-        log?.warn?.(error.message);
+        log?.debug?.(error.message);
         throw error;
       }
     }
@@ -9329,15 +9336,33 @@ export class ReolinkBaichuanApi {
 
   /**
    * Called when any BaichuanClient for this device receives a D2C_DISC.
-   * Updates the grace period timestamp and checks for storm conditions.
+   *
+   * Two-tier response:
+   *  1. **Immediate**: every D2C_DISC applies a short socket pool cooldown
+   *     (10 s) to prevent reconnect attempts while the camera transitions to sleep.
+   *  2. **Storm**: ≥3 D2C_DISCs within 60 s triggers extended cooldown (120 s).
    */
   private notifyD2cDisc(): void {
     const now = Date.now();
     this.lastD2cDiscAtMs = now;
 
-    // ─── Storm detection ───
+    // ─── Tier 1: immediate cooldown on every D2C_DISC ───
+    const immediateCooldownUntil =
+      now + ReolinkBaichuanApi.D2C_DISC_IMMEDIATE_COOLDOWN_MS;
+    const existing = this.socketPoolCooldowns.get(this.host);
+    if (!existing || existing.cooldownUntil < immediateCooldownUntil) {
+      this.socketPoolCooldowns.set(this.host, {
+        failureCount: existing?.failureCount ?? 1,
+        lastFailureAt: now,
+        cooldownUntil: immediateCooldownUntil,
+      });
+      this.logger?.log?.(
+        `[D2C_DISC] Immediate cooldown: socket pool blocked for ${ReolinkBaichuanApi.D2C_DISC_IMMEDIATE_COOLDOWN_MS / 1000}s`,
+      );
+    }
+
+    // ─── Tier 2: storm detection ───
     this.d2cDiscTimestamps.push(now);
-    // Prune entries outside the sliding window
     const cutoff = now - ReolinkBaichuanApi.D2C_DISC_STORM_WINDOW_MS;
     while (
       this.d2cDiscTimestamps.length > 0 &&
@@ -9352,8 +9377,8 @@ export class ReolinkBaichuanApi {
     ) {
       const stormCooldownUntil =
         now + ReolinkBaichuanApi.D2C_DISC_STORM_COOLDOWN_MS;
-      const existing = this.socketPoolCooldowns.get(this.host);
-      if (!existing || existing.cooldownUntil < stormCooldownUntil) {
+      const currentEntry = this.socketPoolCooldowns.get(this.host);
+      if (!currentEntry || currentEntry.cooldownUntil < stormCooldownUntil) {
         this.socketPoolCooldowns.set(this.host, {
           failureCount: this.d2cDiscTimestamps.length,
           lastFailureAt: now,
@@ -9417,14 +9442,12 @@ export class ReolinkBaichuanApi {
     const now = Date.now();
     const cutoff = now - windowMs;
 
-    // ─── D2C_DISC grace period ───
-    // After a D2C_DISC the client is recreated with empty RX/TX history,
-    // which would falsely trigger "sleeping". Suppress sleep inference for
-    // a grace period to allow reconnection before declaring sleep.
+    // ─── D2C_DISC → sleeping ───
+    // D2C_DISC is the camera explicitly terminating the session (going to sleep).
+    // Treat as sleeping immediately so consumers don't attempt new streams.
     const msSinceD2cDisc = now - this.lastD2cDiscAtMs;
-    const inD2cDiscGrace =
-      this.lastD2cDiscAtMs > 0 &&
-      msSinceD2cDisc < ReolinkBaichuanApi.D2C_DISC_SLEEP_GRACE_MS;
+    const recentD2cDisc =
+      this.lastD2cDiscAtMs > 0 && msSinceD2cDisc < 30_000;
 
     const rx = (this.client.getRxHistory?.() ?? []).filter(
       (h) => h.atMs >= cutoff,
@@ -9434,12 +9457,11 @@ export class ReolinkBaichuanApi {
     );
 
     // If we've had absolutely no activity in the window, treat as sleeping (best-effort).
-    // This matches the intent: no waking commands observed recently.
     if (rx.length === 0 && tx.length === 0) {
-      if (inD2cDiscGrace) {
+      if (recentD2cDisc) {
         return {
-          state: "unknown",
-          reason: `recent D2C_DISC ${Math.round(msSinceD2cDisc / 1000)}s ago, reconnecting (grace ${ReolinkBaichuanApi.D2C_DISC_SLEEP_GRACE_MS / 1000}s)`,
+          state: "sleeping",
+          reason: `D2C_DISC ${Math.round(msSinceD2cDisc / 1000)}s ago, camera terminated session`,
         };
       }
       return {
@@ -9468,10 +9490,10 @@ export class ReolinkBaichuanApi {
       };
     }
 
-    if (inD2cDiscGrace) {
+    if (recentD2cDisc) {
       return {
-        state: "unknown",
-        reason: `only non-waking cmdIds + recent D2C_DISC ${Math.round(msSinceD2cDisc / 1000)}s ago (grace ${ReolinkBaichuanApi.D2C_DISC_SLEEP_GRACE_MS / 1000}s)`,
+        state: "sleeping",
+        reason: `only non-waking cmdIds + D2C_DISC ${Math.round(msSinceD2cDisc / 1000)}s ago, camera terminated session`,
       };
     }
 
