@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -r \"alert\\\\|unavailable\" /Users/gianlucaruocco/Documents/Git/scrypted-reolink-native/src/*.ts)"
+    ]
+  }
+}

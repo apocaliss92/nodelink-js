@@ -855,6 +855,18 @@ async function createRfc4571TcpServerInternal(
           "videoAccessUnit" as any,
           onAu as any,
         );
+
+        // If the camera already rejected the stream request during start()
+        // (e.g. response_code 400), the error was stashed because no listener
+        // existed yet. Consume it now to fail fast instead of waiting for the
+        // full keyframe timeout.
+        const pendingErr = (
+          videoStream as BaichuanVideoStream
+        ).consumePendingStartupError?.();
+        if (pendingErr) {
+          cleanup();
+          reject(pendingErr);
+        }
       });
     }
   };
@@ -871,29 +883,44 @@ async function createRfc4571TcpServerInternal(
       // ignore
     }
 
-    if (closeApiOnTeardown) {
-      await Promise.allSettled(
-        Array.from(apisToClose).map(async (a) => {
+    // Release dedicated session if one was created (prevents session leak).
+    if (dedicatedSession) {
+      try {
+        await dedicatedSession.release();
+      } catch {
+        // ignore
+      }
+    }
+
+    // When a dedicated session was used, the baseApi is shared with other streams
+    // (events, main/sub). Closing or idle-disconnecting it here would cascade-kill
+    // unrelated streams. Only release the dedicated session (above) and leave the
+    // shared API untouched.
+    if (!dedicatedSession) {
+      if (closeApiOnTeardown) {
+        await Promise.allSettled(
+          Array.from(apisToClose).map(async (a) => {
+            try {
+              await a.close();
+            } catch {
+              // ignore
+            }
+          }),
+        );
+      } else {
+        // For shared connections (common on battery/BCUDP), we cannot force-close the API here.
+        // Instead, ask the underlying client to drop the UDP session soon *if* it is truly idle.
+        // This reduces the chance of keeping the camera awake while remaining safe.
+        const graceMs = isComposite ? 5_000 : 0;
+        for (const a of Array.from(apisToClose)) {
           try {
-            await a.close();
+            (a as any)?.client?.requestIdleDisconnectSoon?.(
+              "rfc4571_teardown",
+              graceMs,
+            );
           } catch {
             // ignore
           }
-        }),
-      );
-    } else {
-      // For shared connections (common on battery/BCUDP), we cannot force-close the API here.
-      // Instead, ask the underlying client to drop the UDP session soon *if* it is truly idle.
-      // This reduces the chance of keeping the camera awake while remaining safe.
-      const graceMs = isComposite ? 5_000 : 0;
-      for (const a of Array.from(apisToClose)) {
-        try {
-          (a as any)?.client?.requestIdleDisconnectSoon?.(
-            "rfc4571_teardown",
-            graceMs,
-          );
-        } catch {
-          // ignore
         }
       }
     }
@@ -1248,7 +1275,10 @@ async function createRfc4571TcpServerInternal(
       }
     }
 
-    if (closeApiOnTeardown) {
+    // When a dedicated session was used, the baseApi is shared with other streams
+    // (events, main/sub). Closing it here would cascade-kill unrelated streams.
+    // Only close APIs when no dedicated session was used (API is owned by this server).
+    if (closeApiOnTeardown && !dedicatedSession) {
       await Promise.allSettled(
         Array.from(apisToClose).map(async (a) => {
           try {

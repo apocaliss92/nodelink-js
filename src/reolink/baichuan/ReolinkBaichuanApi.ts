@@ -1309,6 +1309,22 @@ export class ReolinkBaichuanApi {
   }
 
   /**
+   * Stream profiles that the device explicitly rejected (response_code 400).
+   * Keyed by `"ch:profile"` (e.g. `"0:ext"`). Once a profile is in this set
+   * it is excluded from `buildVideoStreamOptions()` results and no further
+   * start attempts are made until the API instance is recreated.
+   */
+  private readonly _rejectedStreamProfiles = new Set<string>();
+
+  /**
+   * Check whether a stream profile was rejected by the device at runtime
+   * (e.g. ext returned response_code 400).
+   */
+  isStreamProfileRejected(channel: number, profile: StreamProfile): boolean {
+    return this._rejectedStreamProfiles.has(`${channel}:${profile}`);
+  }
+
+  /**
    * Cache for buildVideoStreamOptions.
    *
    * IMPORTANT: only the first non-empty result is cached per key.
@@ -8608,6 +8624,21 @@ export class ReolinkBaichuanApi {
         // }
 
         if (frame.header.responseCode !== 200) {
+          // Mark the profile as rejected so buildVideoStreamOptions can
+          // exclude it and callers don't retry pointlessly.
+          if (frame.header.responseCode === 400) {
+            const rejKey = `${ch}:${profile}`;
+            if (!this._rejectedStreamProfiles.has(rejKey)) {
+              this._rejectedStreamProfiles.add(rejKey);
+              // Invalidate cached stream options so the next call reflects the change.
+              this.videoStreamOptionsCache.clear();
+              this.logger?.warn?.(
+                `[ReolinkBaichuanApi] Stream profile rejected by device: channel=${ch} profile=${profile} (response_code 400). ` +
+                  `This profile will be excluded from available streams. ` +
+                  `The camera may not support this stream profile with the current firmware.`,
+              );
+            }
+          }
           throw new Error(
             `Video stream request rejected (response_code ${frame.header.responseCode}). Expected response_code 200, camera returned ${frame.header.responseCode}`,
           );
@@ -11658,6 +11689,10 @@ export class ReolinkBaichuanApi {
 
         // Preserve existing behavior: multifocal skips ext (and generally exposes only main/sub).
         if (isMultiFocal && profile === "ext") continue;
+
+        // Skip profiles that the device has explicitly rejected (e.g. ext returning 400).
+        if (this._rejectedStreamProfiles.has(`${params.channel}:${profile}`))
+          continue;
 
         if (params.includeRtsp && profile !== "ext") {
           const streamName = profile === "main" ? "main" : "sub";

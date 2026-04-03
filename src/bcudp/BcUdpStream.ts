@@ -174,6 +174,10 @@ export class BcUdpStream extends EventEmitter<{
   private hbTimer: NodeJS.Timeout | undefined;
   private discoveryTid: number | undefined;
 
+  // Track discovery-phase timers so close() can cancel them even if
+  // discovery is still in progress (prevents ERR_SOCKET_DGRAM_NOT_RUNNING).
+  private discoveryTimers: NodeJS.Timeout[] = [];
+
   private acceptSent = false;
   private lastAcceptAtMs: number | undefined;
 
@@ -235,9 +239,36 @@ export class BcUdpStream extends EventEmitter<{
     sock.on("error", (e) => this.emit("error", e));
     sock.on("close", () => this.emit("close"));
 
-    await new Promise<void>((resolve) =>
-      sock.bind(0, "0.0.0.0", () => resolve()),
-    );
+    // Bind to a port in the 53500-54000 range (matching neolink behavior).
+    // Shuffle the range and try each port until one succeeds.
+    const portRange = Array.from({ length: 500 }, (_, i) => 53500 + i);
+    for (let i = portRange.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [portRange[i], portRange[j]] = [portRange[j]!, portRange[i]!];
+    }
+
+    let bound = false;
+    for (const port of portRange) {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          sock.once("error", reject);
+          sock.bind(port, "0.0.0.0", () => {
+            sock.removeListener("error", reject);
+            resolve();
+          });
+        });
+        bound = true;
+        break;
+      } catch {
+        // Port in use, try next
+      }
+    }
+    if (!bound) {
+      // Fallback: let the OS assign any available port
+      await new Promise<void>((resolve) =>
+        sock.bind(0, "0.0.0.0", () => resolve()),
+      );
+    }
 
     if (this.opts.mode === "direct") {
       this.remote = { host: this.opts.host, port: this.opts.port };
@@ -808,7 +839,28 @@ export class BcUdpStream extends EventEmitter<{
       BCUDP_DISCOVERY_PORT_LOCAL_ANY,
       BCUDP_DISCOVERY_PORT_LOCAL_UID,
     ];
-    const broadcastHost = "255.255.255.255";
+    // Collect per-interface broadcast addresses (like neolink) + global broadcast.
+    const broadcastHosts: string[] = ["255.255.255.255"];
+    const ifaces = networkInterfaces();
+    for (const name of Object.keys(ifaces)) {
+      const entries = ifaces[name];
+      if (!entries) continue;
+      for (const addr of entries) {
+        if (addr.family === "IPv4" && !addr.internal && addr.cidr) {
+          // Compute broadcast from address + netmask
+          const ipParts = addr.address.split(".").map(Number);
+          const maskParts = addr.netmask.split(".").map(Number);
+          if (ipParts.length === 4 && maskParts.length === 4) {
+            const bcast = ipParts
+              .map((octet, i) => (octet! | (~maskParts[i]! & 0xff)))
+              .join(".");
+            if (!broadcastHosts.includes(bcast)) {
+              broadcastHosts.push(bcast);
+            }
+          }
+        }
+      }
+    }
     const directHost = (this.opts.directHost ?? "").trim();
     const localMode = opts?.localMode ?? "local-broadcast";
     const directFirstWindowMs =
@@ -850,6 +902,8 @@ export class BcUdpStream extends EventEmitter<{
           ),
         );
       }, discoveryTimeout);
+      // Track the timeout so close() can cancel it.
+      this.discoveryTimers.push(timeout);
 
       let retryTimer: NodeJS.Timeout | undefined;
       let retryCount = 0;
@@ -1067,13 +1121,13 @@ export class BcUdpStream extends EventEmitter<{
               // Prefer direct unicast first, then add broadcast as fallback.
               if (directFirstWindowMs > 0 && elapsedMs < directFirstWindowMs)
                 return [directHost];
-              return [directHost, broadcastHost];
+              return [directHost, ...broadcastHosts];
             }
             // No direct host -> degrade gracefully to broadcast.
-            return [broadcastHost];
+            return broadcastHosts;
           }
           // local-broadcast: broadcast only.
-          return [broadcastHost];
+          return broadcastHosts;
         })();
 
         for (const host of Array.from(new Set(hosts))) {
@@ -1082,8 +1136,9 @@ export class BcUdpStream extends EventEmitter<{
               sock.send(packet, port, host);
               retryCount++;
               this.emit("debug", "discovery_send", { retryCount, host, port });
-            } catch (e) {
-              this.emit("error", e instanceof Error ? e : new Error(String(e)));
+            } catch {
+              // Socket may have been closed; silently ignore send errors during discovery.
+              // Previously this emitted "error" which became an uncaughtException.
             }
           }
         }
@@ -1096,6 +1151,9 @@ export class BcUdpStream extends EventEmitter<{
       retryTimer = setIntervalNode(() => {
         sendDiscovery();
       }, retryInterval);
+
+      // Track this timer so close() can cancel it even if discovery is still pending.
+      this.discoveryTimers.push(retryTimer);
     });
 
     this.clientId = reply.cid;
@@ -1531,6 +1589,12 @@ export class BcUdpStream extends EventEmitter<{
     this.ackTimer = undefined;
     this.resendTimer = undefined;
     this.hbTimer = undefined;
+
+    // Cancel any discovery-phase timers still running.
+    for (const t of this.discoveryTimers) {
+      clearInterval(t);
+    }
+    this.discoveryTimers = [];
 
     const s = this.sock;
     this.sock = undefined;

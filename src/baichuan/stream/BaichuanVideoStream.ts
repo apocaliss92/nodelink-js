@@ -258,6 +258,21 @@ export class BaichuanVideoStream extends EventEmitter<{
   // In CFB mode, continuation frames must use the cipher state from previous frames.
   private aesStreamDecryptor: AesStreamDecryptor | null = null;
 
+  /**
+   * Pending startup error stashed when emitSafeError is called before any
+   * "error" listener is registered (e.g. camera returns 400 during start()).
+   * The rfc4571-server's waitForKeyframe can consume this immediately instead
+   * of waiting for the full keyframe timeout.
+   */
+  private _pendingStartupError: Error | undefined;
+
+  /** Consume and clear any pending startup error. */
+  consumePendingStartupError(): Error | undefined {
+    const err = this._pendingStartupError;
+    this._pendingStartupError = undefined;
+    return err;
+  }
+
   private emitSafeError(err: Error): void {
     // If we're no longer active, this is almost always a late/rejected in-flight request.
     // Emitting 'error' with no listeners will crash the process, so guard both cases.
@@ -272,6 +287,9 @@ export class BaichuanVideoStream extends EventEmitter<{
       this.logger?.warn?.(
         `[BaichuanVideoStream] Unhandled stream error: ${err.message}`,
       );
+      // Stash the error so the rfc4571-server can consume it immediately
+      // instead of waiting for the full keyframe timeout.
+      this._pendingStartupError = err;
       return;
     }
 
