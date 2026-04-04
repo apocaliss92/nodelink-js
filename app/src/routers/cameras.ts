@@ -3,7 +3,8 @@ import { z } from "zod";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
-import { captureModelFixtures, zipDirectory } from "@apocaliss92/nodelink-js";
+import { captureModelFixtures, zipDirectory, autoDetectDeviceType } from "@apocaliss92/nodelink-js";
+import type { AutoDetectResult } from "@apocaliss92/nodelink-js";
 import {
   getConfig,
   addCamera,
@@ -28,6 +29,10 @@ import {
   startAllCameraStreams,
   stopAllCameraStreams,
   sanitizeCameraName,
+  registerPreConnectedApi,
+  createCameraConnLogger,
+  clearConnLogs,
+  appendConnLog,
 } from "../rtsp-manager.js";
 import { getCameraSleepStatus } from "../events-manager.js";
 import { RtspStreamConfigSchema } from "../types.js";
@@ -109,6 +114,11 @@ export const camerasRouter = router({
         isNvr: z.boolean().default(false),
         debugLogs: z.boolean().default(false),
         rtspStreams: z.array(RtspStreamConfigSchema).default([]),
+        uid: z.string().optional(),
+        transport: z.enum(["tcp", "udp", "auto"]).optional().default("auto"),
+        udpDiscoveryMethod: z
+          .enum(["local-broadcast", "local-direct", "remote", "map", "relay"])
+          .optional(),
         // Legacy support
         rtspEnabled: z.boolean().default(false),
         rtspPort: z.number().optional(),
@@ -117,49 +127,92 @@ export const camerasRouter = router({
       }),
     )
     .mutation(async ({ input }) => {
-      let cameraName = input.name;
+      // Generate camera ID early so we can stream logs during detection via SSE.
+      // The camera is NOT saved to config yet — only on successful detection.
+      const cameraId = crypto.randomUUID();
+      const logger = createCameraConnLogger(cameraId, input.host);
 
-      // Auto-detect name if not provided
-      if (!cameraName) {
+      // Run autodetect in background so the mutation returns the temp ID
+      // immediately and the UI can stream logs in real time.
+      const detectAndRegister = async () => {
+        const mode = input.transport === "tcp"
+          ? "tcp" as const
+          : input.transport === "udp"
+            ? "udp" as const
+            : "auto" as const;
+
+        let detection: AutoDetectResult;
         try {
-          // Don't pass channel for auto-detect - use host device info (cmdId 80)
-          // Channel would use cmdId 318 which returns empty on standalone cameras
-          const result = await testCameraConnection(
-            input.host,
-            input.port,
-            input.username,
-            input.password,
-            // Don't pass channel here
-          );
-          if (result.success && result.info?.name) {
-            cameraName = result.info.name;
-          } else if (result.success && result.info?.type) {
-            // Fallback to device type if name not available
-            cameraName = result.info.type;
-          } else {
-            // Ultimate fallback to host
-            cameraName = input.host;
-          }
-        } catch {
-          // If connection test fails, use host as fallback
-          cameraName = input.host;
+          detection = await autoDetectDeviceType({
+            host: input.host,
+            username: input.username,
+            password: input.password,
+            uid: input.uid,
+            logger,
+            mode,
+            maxRetries: mode === "auto" ? 2 : 10,
+            ...(input.udpDiscoveryMethod ? { udpDiscoveryMethod: input.udpDiscoveryMethod } : {}),
+          });
+        } catch (e) {
+          const msg = (e as any)?.message || String(e);
+          logger.error(`Auto-detect failed: ${msg}`);
+          // Sentinel so the UI knows detection is done and failed
+          appendConnLog(cameraId, "error", "__detection_failed__");
+          return;
         }
-      }
 
-      const camera = addCamera({
-        ...input,
-        name: cameraName ?? input.host,
-        autoStart: false,
-        isBattery: false,
-        batteryMode: "streamOnly" as const,
+        // Derive camera properties from detection result
+        const deviceInfo = detection.deviceInfo ?? {};
+        const cameraName = input.name || deviceInfo.name || deviceInfo.type || input.host;
+        const isNvr = detection.type === "nvr" || input.isNvr;
+        const isBattery = detection.hasBattery === true || detection.type === "battery-cam";
+        const channelCount = detection.channelNum ?? 1;
+
+        // Configure NVR/multifocal flags on the API before registering
+        detection.api.setIsNvr(isNvr);
+        if (detection.type === "multifocal") {
+          detection.api.setIsMultiFocal(true);
+        }
+
+        logger.info(
+          `Detected: type=${detection.type}, transport=${detection.transport}, ` +
+          `channels=${channelCount}, battery=${isBattery}, model=${deviceInfo.type ?? "unknown"}`,
+        );
+
+        // NOW save the camera to config (only on success)
+        addCamera({
+          ...input,
+          id: cameraId,
+          name: cameraName,
+          channels: channelCount,
+          isNvr,
+          isBattery,
+          batteryMode: "streamOnly" as const,
+          transport: detection.transport,
+          uid: detection.uid || input.uid,
+          udpDiscoveryMethod: detection.udpDiscoveryMethod ?? input.udpDiscoveryMethod,
+          autoStart: false,
+        });
+
+        // Register the already-connected API (no redundant login)
+        try {
+          await registerPreConnectedApi(cameraId, detection.api);
+        } catch (e) {
+          logger.error(`Failed to register pre-connected API: ${(e as any)?.message || e}`);
+        }
+
+        // Sentinel so the UI knows detection succeeded
+        appendConnLog(cameraId, "info", "__detection_success__");
+      };
+
+      // Fire and forget — errors are logged to the SSE stream
+      detectAndRegister().catch((e) => {
+        logger.error(`Unexpected error during detect: ${(e as any)?.message || e}`);
+        appendConnLog(cameraId, "error", "__detection_failed__");
       });
 
-      // Connect to camera immediately after adding (don't await - let it happen in background)
-      getOrCreateApiConnection(camera.id).catch(() => {
-        // Ignore connection errors - the UI will show the disconnected state
-      });
-
-      return camera;
+      // Return the temp ID (camera NOT yet in config — will be added on success)
+      return { id: cameraId };
     }),
 
   // Update camera
@@ -234,6 +287,87 @@ export const camerasRouter = router({
         input.password,
         input.channel,
       );
+    }),
+
+  // Retry auto-detection for an existing camera (clears old connection, re-runs autoDetectDeviceType)
+  retryDetect: publicProcedure
+    .meta({ description: "Retry auto-detection for a camera" })
+    .input(z.object({ id: z.string() }))
+    .mutation(async ({ input }) => {
+      const config = getConfig();
+      const camera = config.cameras.find((c) => c.id === input.id);
+      if (!camera) throw new Error(`Camera not found: ${input.id}`);
+
+      // Close existing connection if any
+      await closeApiConnection(input.id);
+      clearConnLogs(input.id);
+
+      const logger = createCameraConnLogger(input.id, camera.host);
+
+      const mode = camera.transport === "tcp"
+        ? "tcp" as const
+        : camera.transport === "udp"
+          ? "udp" as const
+          : "auto" as const;
+
+      // Fire and forget — logs stream via SSE
+      const detectAndRegister = async () => {
+        let detection: AutoDetectResult;
+        try {
+          detection = await autoDetectDeviceType({
+            host: camera.host,
+            username: camera.username,
+            password: camera.password,
+            uid: camera.uid,
+            logger,
+            mode,
+            maxRetries: mode === "auto" ? 2 : 10,
+            ...(camera.udpDiscoveryMethod ? { udpDiscoveryMethod: camera.udpDiscoveryMethod } : {}),
+          });
+        } catch (e) {
+          const msg = (e as any)?.message || String(e);
+          logger.error(`Auto-detect failed: ${msg}`);
+          return;
+        }
+
+        const deviceInfo = detection.deviceInfo ?? {};
+        const isNvr = detection.type === "nvr" || camera.isNvr;
+        const isBattery = detection.hasBattery === true || detection.type === "battery-cam";
+        const channelCount = detection.channelNum ?? 1;
+
+        detection.api.setIsNvr(isNvr);
+        if (detection.type === "multifocal") {
+          detection.api.setIsMultiFocal(true);
+        }
+
+        logger.info(
+          `Detected: type=${detection.type}, transport=${detection.transport}, ` +
+          `channels=${channelCount}, battery=${isBattery}, model=${deviceInfo.type ?? "unknown"}`,
+        );
+
+        updateCamera(input.id, {
+          name: camera.name === camera.host ? (deviceInfo.name || deviceInfo.type || camera.host) : camera.name,
+          channels: channelCount,
+          isNvr,
+          isBattery,
+          batteryMode: "streamOnly" as const,
+          transport: detection.transport,
+          uid: detection.uid || camera.uid,
+          udpDiscoveryMethod: detection.udpDiscoveryMethod ?? camera.udpDiscoveryMethod,
+        });
+
+        try {
+          await registerPreConnectedApi(input.id, detection.api);
+        } catch (e) {
+          logger.error(`Failed to register pre-connected API: ${(e as any)?.message || e}`);
+        }
+      };
+
+      detectAndRegister().catch((e) => {
+        logger.error(`Unexpected error during detect: ${(e as any)?.message || e}`);
+      });
+
+      return { success: true };
     }),
 
   // Connect to camera
@@ -908,6 +1042,7 @@ export const camerasRouter = router({
         autoStart: false,
         channels: 1,
         batteryMode: "streamOnly" as const,
+        transport: "auto" as const,
         debugLogs: false,
         rtspStreams: [],
         rtspEnabled: false,

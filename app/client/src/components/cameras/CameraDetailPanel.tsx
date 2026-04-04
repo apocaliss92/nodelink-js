@@ -36,6 +36,7 @@ interface CameraDetailPanelProps {
   connecting: boolean;
   onConnect: () => void;
   onDisconnect: () => void;
+  onDelete: () => void;
   onSetDebug: () => void;
   onOpenPreview: (state: PreviewModalState) => void;
   savingAutoStart: boolean;
@@ -52,6 +53,7 @@ export function CameraDetailPanel({
   connecting,
   onConnect,
   onDisconnect,
+  onDelete,
   onSetDebug,
   onOpenPreview,
   savingAutoStart,
@@ -251,6 +253,7 @@ export function CameraDetailPanel({
         onConnect={isConnected ? onDisconnect : onConnect}
         onDebug={onSetDebug}
         onDump={handleDump}
+        onDelete={onDelete}
         dumping={dumping}
         isConnected={isConnected}
         connecting={connecting}

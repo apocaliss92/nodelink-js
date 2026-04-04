@@ -167,6 +167,7 @@ export function CamerasPage() {
                 connecting={connectingByCamera[selectedCamera.id] ?? false}
                 onConnect={() => camerasHook.connect(selectedCamera.id)}
                 onDisconnect={() => camerasHook.disconnect(selectedCamera.id)}
+                onDelete={() => { void camerasHook.deleteCamera(selectedCamera.id); selectCamera(null); }}
                 onSetDebug={() => camerasHook.setCameraDebug(selectedCamera.id, !selectedCamera.debugLogs)}
                 onOpenPreview={(state) => camerasHook.setPreviewModal(state)}
                 savingAutoStart={savingAutoStart[selectedCamera.id] ?? false}
@@ -187,6 +188,8 @@ export function CamerasPage() {
         adding={camerasHook.adding}
         setAdding={camerasHook.setAdding}
         onAdd={camerasHook.addCamera}
+        connectedCameraId={camerasHook.addedCameraId}
+        onRefresh={() => void camerasHook.refresh()}
       />
       <AddNvrDialog
         open={camerasHook.addNvrOpen}

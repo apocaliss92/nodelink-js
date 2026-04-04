@@ -100,6 +100,7 @@ export type AddCameraInput = {
   port?: number;
   username: string;
   password: string;
+  uid?: string;
   isNvr: boolean;
   nvrChannel: number;
 };

@@ -31,6 +31,15 @@ export const CameraConfigSchema = z.object({
   // Battery behavior: "alwaysOn" keeps camera awake while connected,
   // "streamOnly" wakes on stream and sleeps after last client disconnects
   batteryMode: z.enum(["alwaysOn", "streamOnly"]).optional().default("streamOnly"),
+  // UID for BCUDP discovery (battery/wireless cameras). Required for UDP transport.
+  // When omitted and transport is "auto", local-direct UDP discovery is attempted using the host IP.
+  uid: z.string().optional(),
+  // Transport protocol. Default "auto": tries TCP first, falls back to UDP if TCP fails.
+  transport: z.enum(["tcp", "udp", "auto"]).optional().default("auto"),
+  // UDP discovery method. Default "local-direct" when no UID is set.
+  udpDiscoveryMethod: z
+    .enum(["local-broadcast", "local-direct", "remote", "map", "relay"])
+    .optional(),
   // Debug logging for this camera
   debugLogs: z.boolean().default(false),
   // Auto-connect and auto-start streams on server startup

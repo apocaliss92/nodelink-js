@@ -1,4 +1,5 @@
-import { Move, Bell, Users, Plug, Bug, Download, Power } from 'lucide-react';
+import { useState } from 'react';
+import { Move, Bell, Users, Plug, Bug, Download, Power, Trash2 } from 'lucide-react';
 
 interface ActionsGridProps {
   onPtz: () => void;
@@ -7,6 +8,7 @@ interface ActionsGridProps {
   onConnect: () => void;
   onDebug: () => void;
   onDump: () => void;
+  onDelete: () => void;
   dumping: boolean;
   isConnected: boolean;
   connecting: boolean;
@@ -22,6 +24,7 @@ export function ActionsGrid({
   onConnect,
   onDebug,
   onDump,
+  onDelete,
   dumping,
   isConnected,
   connecting,
@@ -29,6 +32,7 @@ export function ActionsGrid({
   savingAutoStart,
   onToggleAutoStart,
 }: ActionsGridProps) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const btnClass = "flex items-center justify-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[11px] hover:bg-[var(--color-surface-hover)] transition-colors disabled:opacity-50";
 
   return (
@@ -50,6 +54,26 @@ export function ActionsGrid({
         <button className={`${btnClass} col-span-2`} onClick={onToggleAutoStart} disabled={savingAutoStart || !isConnected}>
           <Power size={13} /> Auto-start: {autoStart ? 'ON' : 'OFF'}
         </button>
+        {confirmDelete ? (
+          <div className="col-span-2 flex gap-1.5">
+            <button
+              className={`${btnClass} flex-1 border-[var(--color-danger)]/50 text-[var(--color-danger)] hover:bg-[var(--color-danger)]/10`}
+              onClick={() => { setConfirmDelete(false); onDelete(); }}
+            >
+              <Trash2 size={13} /> Confirm delete
+            </button>
+            <button className={`${btnClass} flex-1`} onClick={() => setConfirmDelete(false)}>
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            className={`${btnClass} col-span-2 border-[var(--color-danger)]/30 text-[var(--color-danger)] hover:bg-[var(--color-danger)]/10`}
+            onClick={() => setConfirmDelete(true)}
+          >
+            <Trash2 size={13} /> Delete camera
+          </button>
+        )}
       </div>
     </div>
   );

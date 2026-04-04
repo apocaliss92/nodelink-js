@@ -2,6 +2,7 @@ import {
   ReolinkBaichuanApi,
   BaichuanRtspServer,
 } from "@apocaliss92/nodelink-js";
+import { EventEmitter } from "events";
 import { createSourceLogger } from "./logger.js";
 import {
   getConfig,
@@ -15,6 +16,38 @@ import * as crypto from "crypto";
 import { releaseStreamsByCamera } from "./stream-pool.js";
 import { getRtspProxy } from "./rtsp-proxy.js";
 
+// ---------------------------------------------------------------------------
+// Per-camera connection log buffer
+// ---------------------------------------------------------------------------
+const CONN_LOG_MAX = 200;
+
+export type ConnLogLevel = "info" | "warn" | "error" | "debug";
+export type ConnLogEntry = { ts: number; level: ConnLogLevel; msg: string };
+
+const connLogBuffers = new Map<string, ConnLogEntry[]>();
+export const connLogEmitter = new EventEmitter();
+
+export function appendConnLog(cameraId: string, level: ConnLogLevel, msg: string): void {
+  let buf = connLogBuffers.get(cameraId);
+  if (!buf) {
+    buf = [];
+    connLogBuffers.set(cameraId, buf);
+  }
+  const entry: ConnLogEntry = { ts: Date.now(), level, msg };
+  buf.push(entry);
+  if (buf.length > CONN_LOG_MAX) buf.shift();
+  connLogEmitter.emit(`log:${cameraId}`, entry);
+}
+
+export function getConnLogs(cameraId: string): ConnLogEntry[] {
+  return connLogBuffers.get(cameraId) ?? [];
+}
+
+export function clearConnLogs(cameraId: string): void {
+  connLogBuffers.delete(cameraId);
+}
+
+// ---------------------------------------------------------------------------
 // Helper: sanitize camera name for URL path (Camera Studio => camera_studio)
 export function sanitizeCameraName(name: string): string {
   return name
@@ -534,13 +567,19 @@ export async function getOrCreateApiConnection(
       port,
       username,
       password,
+      ...(camera.uid ? { uid: camera.uid } : {}),
+      // Battery cameras must use UDP directly — "auto" mode won't help because the
+      // camera accepts the TCP socket handshake but never responds to Baichuan protocol,
+      // so connectTcp() resolves without throwing and the UDP fallback never triggers.
+      transport: camera.isBattery ? "udp" : (camera.transport ?? "auto"),
+      ...(camera.udpDiscoveryMethod ? { udpDiscoveryMethod: camera.udpDiscoveryMethod } : {}),
       debugOptions,
       logger: {
-        log: (msg: unknown) => cameraLogger.info(String(msg)),
-        info: (msg: string) => cameraLogger.info(msg),
-        warn: (msg: string) => cameraLogger.warn(msg),
-        error: (msg: string) => cameraLogger.error(msg),
-        debug: (msg: string) => cameraLogger.debug(msg),
+        log: (msg: unknown) => { cameraLogger.info(String(msg)); appendConnLog(cameraId, "info", String(msg)); },
+        info: (msg: string) => { cameraLogger.info(msg); appendConnLog(cameraId, "info", msg); },
+        warn: (msg: string) => { cameraLogger.warn(msg); appendConnLog(cameraId, "warn", msg); },
+        error: (msg: string) => { cameraLogger.error(msg); appendConnLog(cameraId, "error", msg); },
+        debug: (msg: string) => { cameraLogger.debug(msg); appendConnLog(cameraId, "debug", msg); },
       },
     });
 
@@ -1524,6 +1563,77 @@ export async function testCameraConnection(
     logger.error(`Connection test failed: ${error}`);
     return { success: false, error: String(error) };
   }
+}
+
+/**
+ * Register a pre-connected API (e.g. from autoDetectDeviceType()) into the
+ * managed connection pool. This avoids a redundant login — the API is already
+ * authenticated and probed.
+ *
+ * Sets up the same lifecycle as getOrCreateApiConnection(): error/close
+ * listeners, ping keepalive, info cache, and connection listeners.
+ */
+export async function registerPreConnectedApi(
+  cameraId: string,
+  api: ReolinkBaichuanApi,
+): Promise<void> {
+  const connKey = getConnectionKey(cameraId);
+  const cameraLogger = createSourceLogger(`camera:${connKey}`);
+
+  // If there's already a live connection for this key, close the old one
+  const existing = apiConnections.get(connKey);
+  if (existing) {
+    cameraLogger.info("Replacing existing connection with pre-connected API");
+    apiConnections.delete(connKey);
+    await cleanupManagedConnection(connKey, existing);
+  }
+
+  const conn: ManagedConnection = {
+    api,
+    cameraId: connKey,
+    connectionTime: Date.now(),
+    lastDisconnectTime: 0,
+    consecutivePingFailures: 0,
+    cleanupInProgress: false,
+  };
+
+  // Attach lifecycle management (same as getOrCreateApiConnection)
+  attachConnectionListeners(connKey, conn);
+  startPingKeepalive(connKey, conn);
+  apiConnections.set(connKey, conn);
+
+  // Notify listeners for all affected cameras
+  const affectedIds = getAffectedCameraIds(connKey);
+  for (const camId of affectedIds) {
+    for (const cb of apiConnectionListeners) {
+      try {
+        cb(camId, api);
+      } catch (e) {
+        createSourceLogger("rtsp-manager").error(
+          `apiConnectionListener error: ${e}`,
+        );
+      }
+    }
+  }
+
+  // Update camera info cache
+  await updateCameraInfo(connKey, api);
+  cameraLogger.info("Pre-connected API registered successfully");
+}
+
+/**
+ * Create a logger that forwards to both the system logger and the per-camera
+ * connection log buffer (for SSE streaming to the UI).
+ */
+export function createCameraConnLogger(cameraId: string, label: string) {
+  const cameraLogger = createSourceLogger(`camera:${label}`);
+  return {
+    log: (msg: unknown) => { cameraLogger.info(String(msg)); appendConnLog(cameraId, "info", String(msg)); },
+    info: (msg: string) => { cameraLogger.info(msg); appendConnLog(cameraId, "info", msg); },
+    warn: (msg: string) => { cameraLogger.warn(msg); appendConnLog(cameraId, "warn", msg); },
+    error: (msg: string) => { cameraLogger.error(msg); appendConnLog(cameraId, "error", msg); },
+    debug: (msg: string) => { cameraLogger.debug(msg); appendConnLog(cameraId, "debug", msg); },
+  };
 }
 
 /**

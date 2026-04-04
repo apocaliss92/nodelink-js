@@ -64,6 +64,7 @@ export function useCameras() {
     open: false,
   });
   const [addOpen, setAddOpen] = useState(false);
+  const [addedCameraId, setAddedCameraId] = useState<string | null>(null);
   const [adding, setAdding] = useState<AddCameraInput>({
     host: "",
     port: 9000,
@@ -253,26 +254,19 @@ export function useCameras() {
   const addCamera = useCallback(async () => {
     setError(null);
     try {
-      await trpcMutation("cameras.add", {
+      const created = await trpcMutation("cameras.add", {
         name: adding.name || undefined,
         host: adding.host,
         port: adding.port ?? 9000,
         username: adding.username,
         password: adding.password,
+        uid: adding.uid || undefined,
         channels: 1,
         isNvr: adding.isNvr,
         rtspChannel: adding.isNvr ? Number(adding.nvrChannel || 0) : 0,
       });
-      setAdding({
-        host: "",
-        port: 9000,
-        username: "",
-        password: "",
-        name: "",
-        isNvr: false,
-        nvrChannel: 0,
-      });
-      setAddOpen(false);
+      // Keep dialog open to show connection log; user closes manually
+      setAddedCameraId((created as { id: string } | null)?.id ?? null);
       await refresh();
     } catch (e) {
       setError(String(e));
@@ -326,7 +320,6 @@ export function useCameras() {
 
   const deleteCamera = useCallback(
     async (id: string) => {
-      if (!confirm("Delete camera?")) return;
       await trpcMutation("cameras.delete", { id });
       await refresh();
     },
@@ -426,9 +419,13 @@ export function useCameras() {
     previewModal,
     addOpen,
     adding,
+    addedCameraId,
     savingAutoStart,
     setAdding,
-    setAddOpen,
+    setAddOpen: (open: boolean) => {
+      if (!open) setAddedCameraId(null);
+      setAddOpen(open);
+    },
     setPreviewModal,
     refresh,
     connect,

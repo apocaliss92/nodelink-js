@@ -34,6 +34,8 @@ import {
   sanitizeCameraName,
   enableAutoStreamsOnConnect,
   startStreamsForAllConnectedCameras,
+  getConnLogs,
+  connLogEmitter,
 } from "./rtsp-manager.js";
 import { startRtspProxy, stopRtspProxy } from "./rtsp-proxy.js";
 import { getSettings, loadSettings, getConfig } from "./settings-store.js";
@@ -642,6 +644,40 @@ app.get("/api/events/sse", (req, res) => {
   }, 30000);
 
   req.on("close", () => clearInterval(keepAlive));
+});
+
+// SSE: per-camera connection log stream
+// GET /api/cameras/:id/logs
+app.get("/api/cameras/:id/logs", requireAuth, (req, res) => {
+  const cameraId = req.params.id as string;
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+
+  // Send buffered history immediately
+  const history = getConnLogs(cameraId);
+  if (history.length > 0) {
+    res.write(`data: ${JSON.stringify({ type: "history", logs: history })}\n\n`);
+  }
+
+  const onLog = (entry: import("./rtsp-manager.js").ConnLogEntry) => {
+    if (!res.writableEnded) {
+      res.write(`data: ${JSON.stringify({ type: "log", ...entry })}\n\n`);
+    }
+  };
+  connLogEmitter.on(`log:${cameraId}`, onLog);
+
+  const keepAlive = setInterval(() => {
+    if (!res.writableEnded) res.write(": keepalive\n\n");
+  }, 30000);
+
+  req.on("close", () => {
+    clearInterval(keepAlive);
+    connLogEmitter.off(`log:${cameraId}`, onLog);
+  });
 });
 
 // JSON stream (NDJSON): one event per line

@@ -193,8 +193,8 @@ async function pingHost(
   host: string,
   timeoutMs: number = 3000,
 ): Promise<boolean> {
-  return new Promise((resolve) => {
-    const { exec } = require("child_process");
+  return new Promise(async (resolve) => {
+    const { exec } = await import("node:child_process");
     const platform = process.platform;
     const pingCmd =
       platform === "win32"
