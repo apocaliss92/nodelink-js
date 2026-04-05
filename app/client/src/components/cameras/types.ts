@@ -129,6 +129,9 @@ export type ControlsState = {
   hasFloodlight: boolean;
   hasSiren: boolean;
   hasPtz: boolean;
+  hasPan: boolean;
+  hasTilt: boolean;
+  hasZoom: boolean;
   hasPresets: boolean;
   hasAutotracking: boolean;
   hasPir: boolean;

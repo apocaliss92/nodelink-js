@@ -608,6 +608,9 @@ export const camerasRouter = router({
         (support?.ptzMode &&
           support.ptzMode.toLowerCase() !== "none" &&
           support.ptzMode !== "0");
+      const hasPan = cap.hasPan === true;
+      const hasTilt = cap.hasTilt === true;
+      const hasZoom = cap.hasZoom === true;
       const hasPresets = cap.hasPresets === true;
       const hasAutotracking = cap.hasAutotracking === true;
       const hasPir = cap.hasPir === true;
@@ -676,6 +679,9 @@ export const camerasRouter = router({
         hasFloodlight,
         hasSiren,
         hasPtz,
+        hasPan,
+        hasTilt,
+        hasZoom,
         hasPresets,
         hasAutotracking,
         hasPir,

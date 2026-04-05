@@ -974,7 +974,18 @@ export async function startRtspServer(
 
   const logger = createSourceLogger(`rtsp:${camera.name}:${profile}`);
   const settings = getSettings();
-  const nativeIdleMs = settings.rtspProxyBackendIdleTimeoutMs;
+  // For battery cameras we force a short idle timeout (15s) so the native
+  // Baichuan stream is torn down when no RTSP consumer is connected, letting
+  // the camera go back to sleep. Without this, one-off probes (UI preview,
+  // go2rtc registration) keep the stream alive forever and the camera
+  // drains its battery. AC-powered cameras use the user setting
+  // (rtspProxyBackendIdleTimeoutMs, default 0 = always-on).
+  const baseNativeIdleMs = settings.rtspProxyBackendIdleTimeoutMs;
+  const nativeIdleMs = camera.isBattery
+    ? baseNativeIdleMs > 0
+      ? Math.min(baseNativeIdleMs, 15_000)
+      : 15_000
+    : baseNativeIdleMs;
   const rtspNativeIdleOpts = {
     nativeStreamIdleStopMs: nativeIdleMs,
     nativeStreamPrimeIdleStopMs: nativeIdleMs > 0 ? 15_000 : 0,
@@ -1743,6 +1754,17 @@ export function enableAutoStreamsOnConnect(): void {
     const config = getConfig();
     const camera = config.cameras.find((c) => c.id === cameraId);
     if (!camera) return;
+
+    // Skip battery cameras in streamOnly mode: they must start streams
+    // only on-demand (when a client actually requests playback), otherwise
+    // we hold the Baichuan video socket open and the camera never sleeps.
+    // Users who want permanent streams can switch batteryMode to "alwaysOn".
+    if (camera.isBattery && (camera.batteryMode ?? "streamOnly") === "streamOnly") {
+      logger.info(
+        `Skip auto-streams for battery camera ${camera.name} (batteryMode=streamOnly)`,
+      );
+      return;
+    }
 
     const channel = camera.rtspChannel ?? 0;
     const profiles = await getAvailableProfiles(cameraId);

@@ -63,7 +63,7 @@ export function PtzFloatingContent({ cameraId }: PtzFloatingContentProps) {
 
   return (
     <div className="p-3 flex flex-col gap-3">
-      {controlsState.hasPtz && (
+      {(controlsState.hasPan || controlsState.hasTilt) && (
         <div
           style={{
             display: 'grid',
@@ -116,7 +116,7 @@ export function PtzFloatingContent({ cameraId }: PtzFloatingContentProps) {
         </div>
       )}
 
-      {controlsState.hasPtz && (
+      {controlsState.hasZoom && (
         <div className="flex gap-1.5">
           <Button
             variant="secondary"

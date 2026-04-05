@@ -636,7 +636,11 @@ export class ReolinkBaichuanApi {
       this.dispatchSimpleEvent(mapped);
     });
 
-    // Handle battery info push (cmd_id 252 = BatteryInfoList)
+    // Handle battery info push (cmd_id 252 = BatteryInfoList).
+    // Cameras emit these repeatedly while streaming (often every few
+    // seconds). Deduplicate: only forward when percent/charge/adapter
+    // actually changes, so downstream consumers (SSE, MQTT, UI event
+    // log) don't get flooded.
     client.on("batteryPush", (frame) => {
       try {
         const xml = this.client.tryDecryptXml(
@@ -647,14 +651,24 @@ export class ReolinkBaichuanApi {
         if (!xml) return;
         const channel = frame.header.channelId;
         const battery = this.parseBatteryInfoXml(xml, channel);
-        if (battery.batteryPercent !== undefined || battery.chargeStatus !== undefined || battery.adapterStatus !== undefined) {
-          this.dispatchSimpleEvent({
-            type: "battery",
-            channel,
-            timestamp: Date.now(),
-            battery,
-          });
+        if (
+          battery.batteryPercent === undefined &&
+          battery.chargeStatus === undefined &&
+          battery.adapterStatus === undefined
+        ) {
+          return;
         }
+        const key = `${battery.batteryPercent ?? ""}|${battery.chargeStatus ?? ""}|${battery.adapterStatus ?? ""}`;
+        if (this.lastBatteryPushKey.get(channel) === key) {
+          return;
+        }
+        this.lastBatteryPushKey.set(channel, key);
+        this.dispatchSimpleEvent({
+          type: "battery",
+          channel,
+          timestamp: Date.now(),
+          battery,
+        });
       } catch (e: unknown) {
         this.logger.debug?.(
           "[ReolinkBaichuanApi] Error parsing battery push",
@@ -863,6 +877,15 @@ export class ReolinkBaichuanApi {
     DeviceCapabilitiesCacheEntry
   >();
   private static readonly CAPABILITIES_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+  /**
+   * Dedupe key for battery push events (cmd_id 252), per channel.
+   * Cameras emit BatteryInfoList frequently while streaming (every few
+   * seconds). We only forward an event when the meaningful fields change
+   * (percent, chargeStatus, adapterStatus) to avoid flooding SSE/MQTT
+   * consumers and the UI event log.
+   */
+  private readonly lastBatteryPushKey = new Map<number, string>();
 
   // ─────────────────────────────────────────────────────────────────────────────
   // SOCKET POOL CONSTANTS
