@@ -1,0 +1,23 @@
+{
+  "body": {
+    "SystemGeneral": {
+      "timeZone": -3600,
+      "osdFormat": "DMY",
+      "year": 2026,
+      "month": 4,
+      "day": 5,
+      "hour": 8,
+      "minute": 37,
+      "second": 1,
+      "deviceId": 0,
+      "timeFormat": 0,
+      "language": "English",
+      "deviceName": "reolink-a",
+      "@_version": 1.1
+    },
+    "Norm": {
+      "norm": "NTSC",
+      "@_version": 1.1
+    }
+  }
+}

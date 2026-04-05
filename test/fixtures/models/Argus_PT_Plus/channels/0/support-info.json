@@ -1,0 +1,61 @@
+{
+  "items": [
+    {
+      "chnID": 0,
+      "name": "googleHome",
+      "ver": 1
+    },
+    {
+      "chnID": 0,
+      "name": "amazonAlexa",
+      "ver": 1
+    },
+    {
+      "chnID": 0,
+      "ptzType": 6,
+      "rfCfg": 0,
+      "noAudio": 0,
+      "autoFocus": 0,
+      "videoClip": 1,
+      "battery": 2,
+      "ispCfg": 195,
+      "osdCfg": 1,
+      "batAnalysis": 0,
+      "dynamicReso": 1,
+      "audioVersion": 63,
+      "ledCtrl": 1,
+      "ptzControl": 2,
+      "newIspCfg": 55235,
+      "ptzPreset": 0,
+      "ptzPatrol": 0,
+      "ptzTattern": 0,
+      "autoPt": 0,
+      "h264Profile": 7,
+      "motion": 0,
+      "aitype": 3687,
+      "timelapse": 3,
+      "snap": 1,
+      "encCtrl": 0,
+      "zfBacklash": 0
+    }
+  ],
+  "ptzMode": "pt",
+  "IOInputPortNum": 0,
+  "IOOutputPortNum": 0,
+  "diskNum": 1,
+  "channelNum": 1,
+  "audioNum": 1,
+  "ptzCfg": 0,
+  "B485": 0,
+  "autoUpdate": 1,
+  "pushAlarm": 3,
+  "ftp": 0,
+  "ftpTest": 1,
+  "email": 1,
+  "wifi": 9,
+  "record": 3,
+  "wifiTest": 1,
+  "rtsp": 0,
+  "onvif": 0,
+  "audioTalk": 1
+}

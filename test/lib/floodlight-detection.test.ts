@@ -237,4 +237,110 @@ describe("computeDeviceCapabilities — from model fixtures", () => {
       expect(caps?.capabilities?.hasBattery).toBe(true);
     });
   });
+
+  // Argus PT Plus — battery-powered pan/tilt (no zoom, no presets),
+  // H.264 main 2560x1440 + sub 896x512, floodlight + siren + PIR + intercom,
+  // AI: people + vehicle, no wireless chime, no autotracking.
+  describe("Argus PT Plus", () => {
+    const caps = loadModelJson("Argus_PT_Plus", 0, "capabilities.json");
+
+    it("fixture exists", () => {
+      expect(caps).toBeDefined();
+    });
+
+    it("computeDeviceCapabilities from support+abilities returns expected values", () => {
+      // Round-trip validation: computing capabilities from the raw
+      // SupportInfo + DeviceAbilities must produce the expected detection
+      // for this camera class. Note: `hasFloodlight` is NOT checked here
+      // because the Argus PT Plus SupportItem has no `lightType` — the
+      // final value is determined at runtime by a cmd 289 probe
+      // (see ReolinkBaichuanApi.getDeviceCapabilities). The stored
+      // capabilities.json reflects that post-processed value and is
+      // asserted in the next test.
+      const result = computeDeviceCapabilities({
+        channel: 0,
+        support: caps?.support,
+        abilities: caps?.abilities,
+      });
+      expect(result.hasPtz).toBe(true);
+      expect(result.hasPan).toBe(true);
+      expect(result.hasTilt).toBe(true);
+      expect(result.hasZoom).toBe(false);
+      expect(result.hasPresets).toBe(false);
+      expect(result.hasBattery).toBe(true);
+      expect(result.hasSiren).toBe(true);
+      expect(result.hasPir).toBe(true);
+      expect(result.hasIntercom).toBe(true);
+      expect(result.isDoorbell).toBe(false);
+      expect(result.hasAutotracking).toBe(false);
+      expect(result.hasWirelessChime).toBe(false);
+      expect(result.ptzMode).toBe("pt");
+    });
+
+    it("stored capabilities reflect battery + pan/tilt + floodlight", () => {
+      expect(caps?.capabilities?.hasBattery).toBe(true);
+      expect(caps?.capabilities?.hasPtz).toBe(true);
+      expect(caps?.capabilities?.hasZoom).toBe(false);
+      expect(caps?.capabilities?.hasFloodlight).toBe(true);
+      expect(caps?.capabilities?.hasPir).toBe(true);
+    });
+
+    it("supports people + vehicle AI detection (aitype 3687)", () => {
+      const supportItem = caps?.support?.items?.find(
+        (i: any) => i?.chnID === 0 && i?.aitype !== undefined,
+      );
+      expect(supportItem?.aitype).toBe(3687);
+      expect(caps?.objects).toContain("people");
+      expect(caps?.objects).toContain("vehicle");
+    });
+
+    it("exposes main + sub H.264 streams with expected resolutions", () => {
+      const meta = loadModelJson("Argus_PT_Plus", 0, "stream-metadata.json");
+      expect(meta).toBeDefined();
+      const main = meta.streams.find((s: any) => s.profile === "main");
+      const sub = meta.streams.find((s: any) => s.profile === "sub");
+      expect(main).toMatchObject({
+        width: 2560,
+        height: 1440,
+        videoEncType: "H.264",
+      });
+      expect(sub).toMatchObject({
+        width: 896,
+        height: 512,
+        videoEncType: "H.264",
+      });
+    });
+
+    it("stream combination test behaves as expected on a single-lens battery PT", () => {
+      const combo = loadModelJson("Argus_PT_Plus", 0, "stream-combination-test.json");
+      expect(combo).toBeDefined();
+      expect(combo.isMultifocal).toBe(false);
+      expect(combo.channelCount).toBe(1);
+      // Library invariant: different streamTypes may run concurrently,
+      // same streamType on the same channel must not. Every captured pair
+      // must match its predicted outcome.
+      expect(combo.summary.matchesExpected).toBe(combo.summary.total);
+      expect(combo.summary.unexpected).toEqual([]);
+
+      const byPair = (a: string, b: string) =>
+        combo.results.find(
+          (r: any) => (r.pair?.[0] === a && r.pair?.[1] === b) || (r.pair?.[0] === b && r.pair?.[1] === a),
+        );
+      expect(byPair("main", "sub")?.ok).toBe(true);
+      expect(byPair("sub", "ext")?.ok).toBe(true);
+      expect(byPair("main", "ext")?.ok).toBe(false);
+    });
+
+    it("is not a dual-lens device", () => {
+      const dual = loadModelJson("Argus_PT_Plus", 0, "dual-lens-info.json");
+      expect(dual?.isDualLens).toBe(false);
+      expect(dual?.streamChannelCount).toBe(1);
+    });
+
+    it("has cmd289 WhiteLed XML that indicates floodlight", () => {
+      const xml = loadModelFixture("Argus_PT_Plus", 0, "cmd289-white-led.xml");
+      expect(xml).toBeDefined();
+      expect(xmlIndicatesFloodlight(xml!)).toBe(true);
+    });
+  });
 });
