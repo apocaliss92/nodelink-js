@@ -1,5 +1,5 @@
 import { cn } from '@camstack/ui-library';
-import { Move, Bell, Users, Lightbulb, Play, Plug, Eye } from 'lucide-react';
+import { Move, Bell, Users, Lightbulb, Play, Plug, Eye, Moon } from 'lucide-react';
 import type { CameraInfo, AvailableStream, StreamProfile } from './types';
 
 interface CameraCardProps {
@@ -32,6 +32,7 @@ export function CameraCard({
   onOpenStream,
 }: CameraCardProps) {
   const isOnline = camera.status === 'connected';
+  const isSleeping = isOnline && camera.sleepStatus === 'sleeping';
 
   const iconBtnClass =
     'p-1 rounded hover:bg-[var(--color-surface-hover)] text-[var(--color-foreground-subtle)] hover:text-[var(--color-foreground)] transition-colors';
@@ -47,14 +48,29 @@ export function CameraCard({
         !isOnline && !selected && 'opacity-50',
       )}
     >
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex items-center justify-between mb-2 gap-2">
         <span className="text-sm font-medium truncate">{camera.name || camera.host}</span>
-        <span
-          className={cn(
-            'h-2 w-2 rounded-full shrink-0',
-            isOnline ? 'bg-[var(--color-success)]' : 'bg-[var(--color-danger)]',
+        <div className="flex items-center gap-1 shrink-0">
+          {isSleeping && (
+            <span
+              className="flex items-center gap-0.5 rounded px-1 py-0.5 text-[9px] font-medium bg-[var(--color-surface-hover)] text-[var(--color-foreground-subtle)]"
+              title="Camera is sleeping (idle)"
+            >
+              <Moon size={8} />
+              sleeping
+            </span>
           )}
-        />
+          <span
+            className={cn(
+              'h-2 w-2 rounded-full',
+              isOnline
+                ? isSleeping
+                  ? 'bg-[var(--color-foreground-subtle)]'
+                  : 'bg-[var(--color-success)]'
+                : 'bg-[var(--color-danger)]',
+            )}
+          />
+        </div>
       </div>
       <div className="text-[11px] text-[var(--color-foreground-muted)]">
         {camera.deviceInfo?.model && `${camera.deviceInfo.model} · `}
