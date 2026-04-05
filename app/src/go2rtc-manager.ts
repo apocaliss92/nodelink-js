@@ -92,7 +92,7 @@ export interface Go2rtcOptions {
 // ---- YAML config generation ----
 
 function generateGo2rtcYaml(
-  streams: Map<string, string>,
+  streams: Map<string, readonly string[]>,
   options: Go2rtcOptions,
 ): string {
   const lines: string[] = [];
@@ -130,8 +130,15 @@ function generateGo2rtcYaml(
   if (streams.size === 0) {
     lines.push("  # No streams registered yet");
   } else {
-    for (const [name, source] of streams) {
-      lines.push(`  ${name}: "${source}"`);
+    for (const [name, sources] of streams) {
+      if (sources.length === 1) {
+        lines.push(`  ${name}: "${sources[0]}"`);
+      } else {
+        lines.push(`  ${name}:`);
+        for (const src of sources) {
+          lines.push(`    - "${src}"`);
+        }
+      }
     }
   }
   lines.push("");
@@ -144,7 +151,7 @@ function generateGo2rtcYaml(
 export class Go2rtcManager {
   private process: ChildProcess | null = null;
   private configPath: string | null = null;
-  private readonly streams = new Map<string, string>();
+  private readonly streams = new Map<string, readonly string[]>();
   private restartCount = 0;
   private stopping = false;
   private readonly options: Go2rtcOptions;
@@ -265,24 +272,35 @@ export class Go2rtcManager {
   /**
    * Add or update a stream via go2rtc REST API (hot, no restart needed).
    * @param name — stream name (e.g. "camera_studio_main")
-   * @param sourceUrl — source URL (e.g. "tcp://127.0.0.1:9100")
+   * @param sourceUrl — source URL or array of sources. When multiple sources
+   *   are provided, go2rtc picks the best one that matches the client's
+   *   requested codecs (e.g. an `ffmpeg:...#video=h264` fallback enables
+   *   WebRTC playback for H265 cameras while keeping the native RTSP source
+   *   for RTSP/HLS/MSE clients).
    */
-  async addStream(name: string, sourceUrl: string): Promise<void> {
-    this.streams.set(name, sourceUrl);
+  async addStream(name: string, sourceUrl: string | readonly string[]): Promise<void> {
+    const sources = Array.isArray(sourceUrl)
+      ? (sourceUrl as readonly string[])
+      : [sourceUrl as string];
+    this.streams.set(name, sources);
 
     if (!this.isRunning) {
       logger.warn(`Cannot add stream "${name}" — go2rtc is not running`);
       return;
     }
 
-    const url = `${this.apiUrl}/api/streams?name=${encodeURIComponent(name)}&src=${encodeURIComponent(sourceUrl)}`;
+    const query = new URLSearchParams();
+    query.set("name", name);
+    for (const src of sources) query.append("src", src);
+
+    const url = `${this.apiUrl}/api/streams?${query.toString()}`;
     const res = await fetch(url, { method: "PUT" });
     if (!res.ok) {
       const body = await res.text();
       logger.error(`Failed to add stream "${name}": HTTP ${res.status} — ${body}`);
       throw new Error(`go2rtc PUT failed (${res.status}): ${body}`);
     }
-    logger.info(`Stream added: ${name} → ${sourceUrl}`);
+    logger.info(`Stream added: ${name} → [${sources.join(", ")}]`);
   }
 
   /** Remove a stream via go2rtc REST API. */
@@ -309,7 +327,9 @@ export class Go2rtcManager {
     } catch {
       // fallback
     }
-    return Object.fromEntries(this.streams);
+    return Object.fromEntries(
+      Array.from(this.streams, ([name, sources]) => [name, sources] as const),
+    );
   }
 
   /** Proxy a request to go2rtc API. */

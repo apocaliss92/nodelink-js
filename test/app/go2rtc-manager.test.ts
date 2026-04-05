@@ -5,7 +5,7 @@ describe("go2rtc YAML config generation", () => {
   // which has side-effects like createRequire)
 
   function generateYaml(
-    streams: Map<string, string>,
+    streams: Map<string, readonly string[]>,
     options: { apiPort: number; rtspPort: number; webrtcPort: number; iceServers?: string[]; rtspSource?: "go2rtc" | "local" },
   ): string {
     const lines: string[] = [];
@@ -34,8 +34,15 @@ describe("go2rtc YAML config generation", () => {
     if (streams.size === 0) {
       lines.push("  # No streams registered yet");
     } else {
-      for (const [name, source] of streams) {
-        lines.push(`  ${name}: "${source}"`);
+      for (const [name, sources] of streams) {
+        if (sources.length === 1) {
+          lines.push(`  ${name}: "${sources[0]}"`);
+        } else {
+          lines.push(`  ${name}:`);
+          for (const src of sources) {
+            lines.push(`    - "${src}"`);
+          }
+        }
       }
     }
     lines.push("");
@@ -56,9 +63,9 @@ describe("go2rtc YAML config generation", () => {
   });
 
   it("includes streams", () => {
-    const streams = new Map([
-      ["camera_main", "rtsp://127.0.0.1:8556/camera/main"],
-      ["camera_sub", "rtsp://127.0.0.1:8557/camera/sub"],
+    const streams = new Map<string, readonly string[]>([
+      ["camera_main", ["rtsp://127.0.0.1:8556/camera/main"]],
+      ["camera_sub", ["rtsp://127.0.0.1:8557/camera/sub"]],
     ]);
     const yaml = generateYaml(streams, {
       apiPort: 1984,
@@ -68,6 +75,28 @@ describe("go2rtc YAML config generation", () => {
     expect(yaml).toContain("camera_main:");
     expect(yaml).toContain("camera_sub:");
     expect(yaml).toContain("rtsp://127.0.0.1:8556/camera/main");
+  });
+
+  it("emits list form for multi-source streams (H265 + ffmpeg h264 fallback)", () => {
+    const streams = new Map<string, readonly string[]>([
+      [
+        "camera_main",
+        [
+          "rtsp://127.0.0.1:8556/camera/main",
+          "ffmpeg:camera_main#video=h264#hardware",
+        ],
+      ],
+    ]);
+    const yaml = generateYaml(streams, {
+      apiPort: 1984,
+      rtspPort: 8554,
+      webrtcPort: 8555,
+    });
+    // Multi-source entries must use YAML list form — a single scalar would
+    // make go2rtc discard the fallback and WebRTC WHEP would fail for H265.
+    expect(yaml).toContain("  camera_main:\n    - \"rtsp://127.0.0.1:8556/camera/main\"");
+    expect(yaml).toContain("    - \"ffmpeg:camera_main#video=h264#hardware\"");
+    expect(yaml).not.toContain('camera_main: "rtsp://');
   });
 
   it("includes ICE servers", () => {

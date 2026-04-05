@@ -228,6 +228,13 @@ export interface Go2rtcTcpServerOptions {
   /** Maximum write buffer per client before dropping the connection (default: 100 MB). */
   maxBufferBytes?: number;
   /**
+   * Stream inactivity timeout in ms. If no frames arrive from the native
+   * stream for this duration, the stream is considered dead and will be
+   * torn down + restarted (similar to go2rtc's per-packet read deadline).
+   * Default: 15 000 (15s). Set to 0 to disable.
+   */
+  streamTimeoutMs?: number;
+  /**
    * When true, the native camera stream is started immediately on start()
    * rather than waiting for the first TCP client. This ensures frames are
    * already flowing (and the prebuffer is warm) when go2rtc connects.
@@ -258,6 +265,7 @@ export class Go2rtcTcpServer extends EventEmitter<{
   private readonly gracePeriodMs: number;
   private readonly prebufferMaxMs: number;
   private readonly maxBufferBytes: number;
+  private readonly streamTimeoutMs: number;
   private readonly prestartStream: boolean;
 
   private active = false;
@@ -275,6 +283,12 @@ export class Go2rtcTcpServer extends EventEmitter<{
   private clientSockets = new Map<string, net.Socket>();
   private stopGraceTimer: ReturnType<typeof setTimeout> | undefined;
 
+  // Stream health monitoring
+  private lastFrameAt = 0;
+  private streamHealthTimer: ReturnType<typeof setInterval> | undefined;
+  private totalFramesReceived = 0;
+  private totalVideoFramesWritten = 0;
+
   // Prebuffer
   private prebuffer: PrebufferEntry[] = [];
 
@@ -291,6 +305,7 @@ export class Go2rtcTcpServer extends EventEmitter<{
     this.gracePeriodMs = options.gracePeriodMs ?? 30_000;
     this.prebufferMaxMs = options.prebufferMs ?? 3_000;
     this.maxBufferBytes = options.maxBufferBytes ?? 100_000_000;
+    this.streamTimeoutMs = options.streamTimeoutMs ?? 15_000;
     this.prestartStream = options.prestartStream ?? true;
   }
 
@@ -337,6 +352,7 @@ export class Go2rtcTcpServer extends EventEmitter<{
     if (!this.active) return;
     this.active = false;
     clearTimeout(this.stopGraceTimer);
+    this.stopStreamHealthMonitor();
 
     // Close all client sockets
     for (const [id, sock] of this.clientSockets) {
@@ -410,12 +426,12 @@ export class Go2rtcTcpServer extends EventEmitter<{
       );
     });
 
-    const cleanup = () => {
-      this.removeClient(clientId);
+    const cleanup = (reason?: string) => {
+      this.removeClient(clientId, reason);
       socket.destroy();
     };
-    socket.on("error", cleanup);
-    socket.on("close", cleanup);
+    socket.on("error", (err) => cleanup(`error: ${err.message}`));
+    socket.on("close", (hadError) => cleanup(hadError ? "close (with error)" : "close (clean)"));
   }
 
   private async feedClient(clientId: string, socket: net.Socket): Promise<void> {
@@ -489,6 +505,7 @@ export class Go2rtcTcpServer extends EventEmitter<{
 
         socket.write(annexB);
         liveVideoWritten++;
+        this.totalVideoFramesWritten++;
 
         // Periodic log every 10 seconds
         if (Date.now() - lastLogAt > 10_000) {
@@ -652,6 +669,10 @@ export class Go2rtcTcpServer extends EventEmitter<{
           ...(dedicatedClient ? { client: dedicatedClient } : {}),
         }),
       onFrame: (frame) => {
+        // Update stream health tracking
+        this.lastFrameAt = Date.now();
+        this.totalFramesReceived++;
+
         // Detect video type
         if (!frame.audio && (frame.videoType === "H264" || frame.videoType === "H265")) {
           this.detectedVideoType = frame.videoType;
@@ -684,6 +705,19 @@ export class Go2rtcTcpServer extends EventEmitter<{
         if (!this.nativeStreamActive) return;
         this.nativeStreamActive = false;
         this.nativeFanout = null;
+        this.stopStreamHealthMonitor();
+
+        const silenceMs = this.lastFrameAt > 0 ? Date.now() - this.lastFrameAt : -1;
+        const diagnosis = silenceMs > this.streamTimeoutMs
+          ? "camera stopped sending frames"
+          : silenceMs >= 0
+            ? "stream source closed"
+            : "no frames were ever received";
+        this.logger.warn?.(
+          `[Go2rtcTcpServer] native stream ended  diagnosis="${diagnosis}" ` +
+          `lastFrame=${silenceMs >= 0 ? `${(silenceMs / 1000).toFixed(1)}s ago` : "never"} ` +
+          `totalRx=${this.totalFramesReceived} clients=${this.connectedClients.size}`,
+        );
 
         // Release dedicated session
         if (this.dedicatedSessionRelease) {
@@ -694,7 +728,7 @@ export class Go2rtcTcpServer extends EventEmitter<{
         // Auto-restart if clients are connected or prestart mode is active
         if (this.active && (this.connectedClients.size > 0 || this.prestartStream)) {
           this.logger.info?.(
-            `[Go2rtcTcpServer] native stream ended, restarting (clients=${this.connectedClients.size}, prestart=${this.prestartStream})`,
+            `[Go2rtcTcpServer] restarting native stream (clients=${this.connectedClients.size}, prestart=${this.prestartStream})`,
           );
           this.startNativeStream();
         }
@@ -702,10 +736,12 @@ export class Go2rtcTcpServer extends EventEmitter<{
     });
 
     this.nativeFanout.start();
+    this.startStreamHealthMonitor();
   }
 
   private async stopNativeStream(): Promise<void> {
     this.nativeStreamActive = false;
+    this.stopStreamHealthMonitor();
     const fanout = this.nativeFanout;
     this.nativeFanout = null;
     if (fanout) {
@@ -720,15 +756,61 @@ export class Go2rtcTcpServer extends EventEmitter<{
   }
 
   // -----------------------------------------------------------------------
+  // Stream health monitoring
+  // -----------------------------------------------------------------------
+
+  private startStreamHealthMonitor(): void {
+    this.stopStreamHealthMonitor();
+    if (this.streamTimeoutMs <= 0) return;
+
+    this.lastFrameAt = Date.now();
+    this.streamHealthTimer = setInterval(() => {
+      if (!this.nativeStreamActive || !this.active) {
+        this.stopStreamHealthMonitor();
+        return;
+      }
+
+      const silenceMs = Date.now() - this.lastFrameAt;
+      if (silenceMs > this.streamTimeoutMs) {
+        this.logger.warn?.(
+          `[Go2rtcTcpServer] stream inactivity timeout: no frames for ${(silenceMs / 1000).toFixed(1)}s (threshold=${this.streamTimeoutMs}ms), ` +
+          `totalReceived=${this.totalFramesReceived} clients=${this.connectedClients.size} — forcing stream restart`,
+        );
+        this.stopStreamHealthMonitor();
+
+        // Force-stop the native stream; the onEnd callback will auto-restart
+        // if clients are connected or prestartStream is enabled.
+        const fanout = this.nativeFanout;
+        if (fanout) {
+          this.nativeStreamActive = false;
+          this.nativeFanout = null;
+          fanout.stop().catch(() => {});
+        }
+      }
+    }, Math.min(this.streamTimeoutMs / 2, 5_000));
+  }
+
+  private stopStreamHealthMonitor(): void {
+    if (this.streamHealthTimer) {
+      clearInterval(this.streamHealthTimer);
+      this.streamHealthTimer = undefined;
+    }
+  }
+
+  // -----------------------------------------------------------------------
   // Client lifecycle
   // -----------------------------------------------------------------------
 
-  private removeClient(clientId: string): void {
+  private removeClient(clientId: string, reason?: string): void {
     if (!this.connectedClients.has(clientId)) return;
     this.connectedClients.delete(clientId);
     this.clientSockets.delete(clientId);
+
+    const silenceMs = this.lastFrameAt > 0 ? Date.now() - this.lastFrameAt : -1;
+    const silenceInfo = silenceMs >= 0 ? ` lastFrame=${(silenceMs / 1000).toFixed(1)}s ago` : "";
     this.logger.info?.(
-      `[Go2rtcTcpServer] client disconnected  id=${clientId} remaining=${this.connectedClients.size}`,
+      `[Go2rtcTcpServer] client disconnected  id=${clientId} reason=${reason ?? "unknown"}` +
+      `  remaining=${this.connectedClients.size}  totalRx=${this.totalFramesReceived} totalTx=${this.totalVideoFramesWritten}${silenceInfo}`,
     );
     this.emit("clientDisconnected", clientId);
 

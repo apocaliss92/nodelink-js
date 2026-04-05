@@ -621,6 +621,16 @@ export async function getOrCreateApiConnection(
       cameraLogger.info("setIsMultiFocal(true) — dual-lens device detected");
     }
 
+    // Enable library-level idle disconnect for battery cameras so the UDP
+    // socket is released when idle, allowing the camera to enter deep sleep.
+    // Without this the camera is constantly woken up by external pings and
+    // drains the battery even with a solar panel attached.
+    // (Mirrors scrypted-reolink-native/src/baichuan-base.ts.)
+    if (camera.isBattery) {
+      api.setIdleDisconnect(true);
+      cameraLogger.info("setIdleDisconnect(true) — battery camera");
+    }
+
     // Verify socket is connected
     if (!api.client.isSocketConnected()) {
       throw new Error("Socket not connected after login");
@@ -634,8 +644,15 @@ export async function getOrCreateApiConnection(
     // Attach error/close listeners for auto-cleanup (keyed by connKey)
     attachConnectionListeners(connKey, conn);
 
-    // Start ping keepalive
-    startPingKeepalive(connKey, conn);
+    // Start ping keepalive — skipped for battery cameras: pings would
+    // force-wake the camera every PING_INTERVAL_MS, defeating idle disconnect
+    // and draining the battery. The library's internal watchdog handles
+    // event subscription recovery for UDP/battery cameras.
+    if (!camera.isBattery) {
+      startPingKeepalive(connKey, conn);
+    } else {
+      cameraLogger.info("Ping keepalive disabled — battery camera");
+    }
 
     // Store in map
     apiConnections.set(connKey, conn);
@@ -1047,6 +1064,31 @@ export async function startRtspServer(
     const useGo2rtc = settings.go2rtc?.enabled === true && go2rtcMgr?.isRunning;
     const rtspSource = settings.go2rtc?.rtspSource ?? "go2rtc";
 
+    // Browsers cannot play H.265 over WebRTC. For H.265 profiles we register
+    // a secondary ffmpeg source that transcodes to H.264 so go2rtc can satisfy
+    // WHEP negotiations. The primary source (native RTSP) is still used for
+    // RTSP/HLS/MSE clients that handle H.265 natively — go2rtc picks whichever
+    // source matches the client's requested codecs.
+    const buildGo2rtcSources = async (
+      streamName: string,
+      primarySource: string,
+    ): Promise<string[]> => {
+      try {
+        const isNvr = camera.isNvr || !!camera.nvrId;
+        const opts = await api.buildVideoStreamOptions({ channel, onNvr: isNvr });
+        const match = opts.nativeStreams.find(
+          (s) => s.profile === profile && (s.channel ?? 0) === channel,
+        );
+        const codec = match?.metadata?.videoEncType;
+        if (codec === "H.265") {
+          return [primarySource, `ffmpeg:${streamName}#video=h264#hardware`];
+        }
+      } catch (e) {
+        logger.debug(`Codec detection failed for ${profile} ch${channel}: ${e}`);
+      }
+      return [primarySource];
+    };
+
     logger.info(
       `Stream mode decision: go2rtc.enabled=${settings.go2rtc?.enabled}, manager=${!!go2rtcMgr}, running=${go2rtcMgr?.isRunning}, useGo2rtc=${useGo2rtc}, rtspSource=${rtspSource}`,
     );
@@ -1095,7 +1137,8 @@ export async function startRtspServer(
       const go2rtcName = buildGo2rtcStreamName(camera.name, profile, channel);
       const go2rtcRtspPort = Number(process.env.GO2RTC_RTSP_PORT) || (settings.go2rtc?.rtspPort ?? 18554);
       const proxyRtspUrl = `rtsp://127.0.0.1:${go2rtcRtspPort}${rtspPath}`;
-      await go2rtcMgr!.addStream(go2rtcName, proxyRtspUrl);
+      const sources = await buildGo2rtcSources(go2rtcName, proxyRtspUrl);
+      await go2rtcMgr!.addStream(go2rtcName, sources);
 
       info.status = "running";
       info.mode = "local";
@@ -1131,7 +1174,8 @@ export async function startRtspServer(
 
       const localRtspUrl = `rtsp://127.0.0.1:${port}${rtspPath}`;
       const go2rtcName = buildGo2rtcStreamName(camera.name, profile, channel);
-      await go2rtcMgr!.addStream(go2rtcName, localRtspUrl);
+      const sources = await buildGo2rtcSources(go2rtcName, localRtspUrl);
+      await go2rtcMgr!.addStream(go2rtcName, sources);
 
       info.status = "running";
       info.mode = "go2rtc";

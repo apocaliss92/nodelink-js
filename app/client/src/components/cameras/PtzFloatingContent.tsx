@@ -20,21 +20,29 @@ export function PtzFloatingContent({ cameraId }: PtzFloatingContentProps) {
 
   const handlePtzStart = useCallback(
     (cmd: PtzCommand) => {
-      void trpcMutation('cameras.ptzStart', { id: cameraId, command: cmd });
+      void trpcMutation('cameras.ptzControl', {
+        id: cameraId,
+        command: cmd,
+        action: 'start',
+      });
     },
     [cameraId],
   );
 
   const handlePtzStop = useCallback(
     (cmd: PtzCommand) => {
-      void trpcMutation('cameras.ptzStop', { id: cameraId, command: cmd });
+      void trpcMutation('cameras.ptzControl', {
+        id: cameraId,
+        command: cmd,
+        action: 'stop',
+      });
     },
     [cameraId],
   );
 
   const handleGotoPreset = useCallback(
     (presetId: number) => () => {
-      void trpcMutation('cameras.gotoPreset', { id: cameraId, presetId });
+      void trpcMutation('cameras.ptzGotoPreset', { id: cameraId, preset: presetId });
     },
     [cameraId],
   );

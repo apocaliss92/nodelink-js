@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Eye, Activity, Link, Copy, Users } from 'lucide-react';
 import { trpcMutation } from '../../api';
 import type { AvailableStream } from './types';
+import { copyToClipboard } from './utils';
 
 interface StreamProfileCardProps {
   cameraId: string;
@@ -114,7 +115,7 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, cam
               <div className="absolute bottom-full left-0 mb-1 z-10 rounded-md border border-[var(--color-border)] bg-[var(--color-background-elevated)] shadow-lg py-1 min-w-[160px]">
                 {rtspServer?.rtspUrl && (
                   <button
-                    onClick={() => { void navigator.clipboard.writeText(rtspServer.rtspUrl!); setUrlsOpen(false); }}
+                    onClick={() => { void copyToClipboard(rtspServer.rtspUrl!); setUrlsOpen(false); }}
                     className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)] flex items-center gap-1.5"
                   >
                     <Copy size={9} /> Copy RTSP URL
@@ -122,7 +123,7 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, cam
                 )}
                 {hlsUrl && (
                   <button
-                    onClick={() => { void navigator.clipboard.writeText(hlsUrl); setUrlsOpen(false); }}
+                    onClick={() => { void copyToClipboard(hlsUrl); setUrlsOpen(false); }}
                     className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)] flex items-center gap-1.5"
                   >
                     <Copy size={9} /> Copy HLS URL
@@ -130,7 +131,7 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, cam
                 )}
                 {mp4Url && (
                   <button
-                    onClick={() => { void navigator.clipboard.writeText(mp4Url); setUrlsOpen(false); }}
+                    onClick={() => { void copyToClipboard(mp4Url); setUrlsOpen(false); }}
                     className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)] flex items-center gap-1.5"
                   >
                     <Copy size={9} /> Copy MP4 URL
@@ -138,7 +139,7 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, cam
                 )}
                 {snapshotUrl && (
                   <button
-                    onClick={() => { void navigator.clipboard.writeText(snapshotUrl); setUrlsOpen(false); }}
+                    onClick={() => { void copyToClipboard(snapshotUrl); setUrlsOpen(false); }}
                     className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)] flex items-center gap-1.5"
                   >
                     <Copy size={9} /> Copy Snapshot URL
