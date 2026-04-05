@@ -193,19 +193,19 @@ async function pingHost(
   host: string,
   timeoutMs: number = 3000,
 ): Promise<boolean> {
-  return new Promise(async (resolve) => {
-    const { exec } = await import("node:child_process");
-    const platform = process.platform;
-    const pingCmd =
-      platform === "win32"
-        ? `ping -n 1 -w ${timeoutMs} ${host}`
-        : platform === "darwin"
-          ? // macOS: -W is in milliseconds (Linux: seconds)
-            `ping -c 1 -W ${timeoutMs} ${host}`
-          : // Linux/BSD-ish: -W is in seconds on most distros
-            `ping -c 1 -W ${Math.max(1, Math.floor(timeoutMs / 1000))} ${host}`;
+  const { exec } = await import("node:child_process");
+  const platform = process.platform;
+  const pingCmd =
+    platform === "win32"
+      ? `ping -n 1 -w ${timeoutMs} ${host}`
+      : platform === "darwin"
+        ? // macOS: -W is in milliseconds (Linux: seconds)
+          `ping -c 1 -W ${timeoutMs} ${host}`
+        : // Linux/BSD-ish: -W is in seconds on most distros
+          `ping -c 1 -W ${Math.max(1, Math.floor(timeoutMs / 1000))} ${host}`;
 
-    exec(pingCmd, (error: any) => {
+  return new Promise((resolve) => {
+    exec(pingCmd, (error: unknown) => {
       resolve(!error);
     });
   });
