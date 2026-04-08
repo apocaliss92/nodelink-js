@@ -9,19 +9,18 @@ interface StreamProfileCardProps {
   stream: AvailableStream;
   rtspServer?: { status?: string; connections?: number; rtspUrl?: string; go2rtcStreamName?: string };
   onPreview: () => void;
-  cameraName: string;
+  streamName: string;
   go2rtcApiPort: number | null;
   serviceIp: string;
 }
 
-export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, cameraName, go2rtcApiPort, serviceIp }: StreamProfileCardProps) {
+export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, streamName, go2rtcApiPort, serviceIp }: StreamProfileCardProps) {
   const isActive = rtspServer?.status === 'running';
   const [diagStatus, setDiagStatus] = useState<'idle' | 'running' | 'complete' | 'error'>('idle');
   const [urlsOpen, setUrlsOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
 
   const viewers = isActive ? (rtspServer?.connections ?? 0) : 0;
-  const streamName = rtspServer?.go2rtcStreamName ?? `${cameraName}_${stream.profile}`;
   const go2rtcHost = serviceIp || window.location.hostname;
   const go2rtcBase = go2rtcApiPort ? `${window.location.protocol}//${go2rtcHost}:${go2rtcApiPort}` : null;
   const src = encodeURIComponent(streamName);

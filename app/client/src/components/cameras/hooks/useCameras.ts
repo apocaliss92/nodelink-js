@@ -111,6 +111,42 @@ export function useCameras() {
       }
       updateIfChanged(setCameras, list);
 
+      // Clear discovered streams for cameras that are no longer connected,
+      // so the UI removes stale stream profiles and action buttons.
+      const disconnectedIds = (list ?? [])
+        .filter((c: CameraInfo) => c.status === "disconnected" || c.status === "error")
+        .map((c: CameraInfo) => c.id);
+
+      if (disconnectedIds.length > 0) {
+        // Clear discovered streams for cameras that are no longer connected,
+        // so the UI removes stale stream profiles and action buttons.
+        setStreamsByCamera((prev) => {
+          const next = { ...prev };
+          let changed = false;
+          for (const id of disconnectedIds) {
+            if (next[id] && next[id].length > 0) {
+              delete next[id];
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
+
+        // Also reset discovery attempt counters so stream discovery
+        // runs again when the camera reconnects (e.g. via auto-reconnect).
+        setStreamsDiscoveryAttemptsByCamera((prev) => {
+          const next = { ...prev };
+          let changed = false;
+          for (const id of disconnectedIds) {
+            if (next[id] !== undefined) {
+              delete next[id];
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
+      }
+
       updateIfChanged(
         setRtspServers,
         (rtspList ?? []).map((x: any) => ({

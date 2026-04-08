@@ -387,6 +387,19 @@ export const camerasRouter = router({
       } else {
         await getOrCreateApiConnection(input.id);
       }
+
+      // For battery cameras in streamOnly mode, the auto-stream listener
+      // skips stream creation to avoid waking the camera on startup.
+      // Manual connect is an explicit user action, so start streams now
+      // to re-register go2rtc sources (prevents 404 on MP4/HLS URLs).
+      if (camera?.isBattery) {
+        const { getGo2rtcManager } = await import("../go2rtc-manager.js");
+        const go2rtcMgr = getGo2rtcManager();
+        if (go2rtcMgr?.isRunning) {
+          await startAllCameraStreams(input.id).catch(() => {});
+        }
+      }
+
       return { success: true };
     }),
 

@@ -10,7 +10,7 @@ import { SessionsPanel } from './SessionsPanel';
 import { SessionsDialog } from './SessionsDialog';
 import { useCamerasContext } from './CamerasContext';
 import { trpcQuery, trpcMutation } from '../../api';
-import { withAuthTokenQuery } from './utils';
+import { withAuthTokenQuery, getCameraDisplayName, getStreamName } from './utils';
 import type { ControlsState, CameraEvent, DeviceSession } from './types';
 
 type SessionsPayload = { sessions: DeviceSession[]; total: number };
@@ -184,6 +184,7 @@ export function CameraDetailPage() {
               const server = rtspServers.find(
                 (s) => s.cameraId === camera.id && s.profile === stream.profile,
               );
+              const name = getStreamName(camera, stream.profile, server);
               return (
                 <StreamProfileCard
                   key={stream.profile}
@@ -195,14 +196,14 @@ export function CameraDetailPage() {
                       open: true,
                       kind: 'webrtc' as const,
                       title: `${camera.name || camera.host} - ${stream.profile}`,
-                      cameraName: camera.sanitizedName ?? camera.name ?? camera.host,
+                      cameraName: getCameraDisplayName(camera),
                       profile: stream.profile,
-                      streamName: server?.go2rtcStreamName ?? `${camera.sanitizedName ?? camera.name ?? camera.host}_${stream.profile}`,
+                      streamName: name,
                       go2rtcApiPort,
                       serviceIp,
                     });
                   }}
-                  cameraName={camera.sanitizedName ?? camera.name ?? camera.host}
+                  streamName={name}
                   go2rtcApiPort={go2rtcApiPort}
                   serviceIp={serviceIp}
                 />

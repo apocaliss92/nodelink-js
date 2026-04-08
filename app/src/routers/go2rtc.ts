@@ -46,10 +46,36 @@ export const go2rtcRouter = router({
         iceServers: z.array(z.string()).optional(),
       }),
     )
-    .mutation(({ input }) => {
+    .mutation(async ({ input }) => {
       const settings = getSettings();
+      const oldRtspSource = settings.go2rtc?.rtspSource ?? "go2rtc";
       const updated = { ...settings.go2rtc, ...input };
       saveSettings({ ...settings, go2rtc: updated });
+
+      // When rtspSource changes at runtime, restart streams with the new mode.
+      // go2rtc needs a restart to regenerate its YAML config (RTSP listen
+      // behaviour differs between "go2rtc" and "local" modes).
+      if (input.rtspSource && input.rtspSource !== oldRtspSource) {
+        const mgr = getGo2rtcManager();
+        if (mgr?.isRunning) {
+          const { stopAllRtspServers, startStreamsForAllConnectedCameras } =
+            await import("../rtsp-manager.js");
+          const { stopRtspProxy, startRtspProxy } =
+            await import("../rtsp-proxy.js");
+
+          await stopAllRtspServers();
+          await stopRtspProxy();
+          await mgr.restart();
+
+          if (input.rtspSource === "local") {
+            const rtspPort = updated.rtspPort ?? 18554;
+            await startRtspProxy({ port: rtspPort, directHandoff: true });
+          }
+
+          await startStreamsForAllConnectedCameras();
+        }
+      }
+
       return updated;
     }),
 
@@ -74,6 +100,7 @@ export const go2rtcRouter = router({
         rtspPort: go2rtcSettings.rtspPort,
         webrtcPort: go2rtcSettings.webrtcPort,
         iceServers: go2rtcSettings.iceServers,
+        rtspSource: go2rtcSettings.rtspSource,
       });
 
       return { success: true };

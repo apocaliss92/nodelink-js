@@ -407,6 +407,17 @@ function attachConnectionListeners(
 
     await cleanupManagedConnection(cameraId, conn);
     notifyDisconnection(cameraId);
+
+    // Stop all streams that held a reference to the now-closed API so they
+    // can be cleanly re-created with a fresh connection on next use.
+    // Without this, BaichuanRtspServer instances keep a dead API reference
+    // and throw "API has been closed" on the next client connection.
+    const affectedIds = getAffectedCameraIds(cameraId);
+    for (const camId of affectedIds) {
+      stopAllCameraStreams(camId).catch((e) => {
+        cameraLogger.debug(`Error stopping streams after close: ${e}`);
+      });
+    }
   });
 }
 
@@ -568,11 +579,13 @@ export async function getOrCreateApiConnection(
       username,
       password,
       ...(camera.uid ? { uid: camera.uid } : {}),
-      // Battery cameras must use UDP directly — "auto" mode won't help because the
+      // NVR/Hub connections always use TCP on port 9000 — never UDP, even if the
+      // child camera is a battery device. The battery flag applies to standalone connections only.
+      // For standalone battery cameras, use UDP directly — "auto" mode won't help because the
       // camera accepts the TCP socket handshake but never responds to Baichuan protocol,
       // so connectTcp() resolves without throwing and the UDP fallback never triggers.
-      transport: camera.isBattery ? "udp" : (camera.transport ?? "auto"),
-      ...(camera.udpDiscoveryMethod ? { udpDiscoveryMethod: camera.udpDiscoveryMethod } : {}),
+      transport: isNvrConnection ? "tcp" : (camera.isBattery ? "udp" : (camera.transport ?? "auto")),
+      ...(!isNvrConnection && camera.udpDiscoveryMethod ? { udpDiscoveryMethod: camera.udpDiscoveryMethod } : {}),
       debugOptions,
       logger: {
         log: (msg: unknown) => { cameraLogger.info(String(msg)); appendConnLog(cameraId, "info", String(msg)); },
@@ -1440,8 +1453,10 @@ export async function startAllCameraStreams(
   const results: RtspServerInfo[] = [];
   const streams = camera.rtspStreams?.filter((s) => s.enabled) || [];
 
-  // If no streams configured, start main by default
-  if (streams.length === 0 && camera.rtspEnabled) {
+  // If no streams configured, start main by default.
+  // For battery cameras, also fall back even if rtspEnabled is false —
+  // the caller (e.g. manual connect) explicitly requested stream start.
+  if (streams.length === 0 && (camera.rtspEnabled || camera.isBattery)) {
     const info = await startRtspServer(cameraId, {
       profile: camera.rtspProfile || "main",
       channel: camera.rtspChannel ?? 0,

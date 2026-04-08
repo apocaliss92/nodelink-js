@@ -51,6 +51,23 @@ export function streamKey(
   return `${cameraId}:${profile}:${channel}`;
 }
 
+/** Canonical display name for a camera (used in stream names and UI labels). */
+export function getCameraDisplayName(camera: CameraInfo): string {
+  return camera.sanitizedName ?? camera.name ?? camera.host;
+}
+
+/**
+ * Resolve the go2rtc stream name for a given camera + profile.
+ * Uses the server-reported name when available, falls back to `displayName/profile`.
+ */
+export function getStreamName(
+  camera: CameraInfo,
+  profile: StreamProfile,
+  rtspServer?: { go2rtcStreamName?: string },
+): string {
+  return rtspServer?.go2rtcStreamName ?? `${getCameraDisplayName(camera)}/${profile}`;
+}
+
 export function eventBadgeColor(type: string): string {
   const colors: Record<string, string> = {
     motion: "rgba(34, 197, 94, 0.25)",

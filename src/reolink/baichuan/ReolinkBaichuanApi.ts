@@ -462,6 +462,14 @@ export class ReolinkBaichuanApi {
     }
   >();
 
+  /**
+   * Consecutive stream-start (cmdId=3) timeout counter per socket tag.
+   * When a streaming socket has N consecutive timeouts, the socket is force-closed
+   * so the next attempt creates a fresh connection. Resets on success.
+   */
+  private readonly consecutiveStreamTimeouts = new Map<string, number>();
+  private static readonly MAX_CONSECUTIVE_STREAM_TIMEOUTS = 3;
+
   /** BaichuanClientOptions to use when creating new sockets */
   private readonly clientOptions: BaichuanClientOptions;
 
@@ -8673,7 +8681,8 @@ export class ReolinkBaichuanApi {
           frame.header.msgNum,
         );
 
-        // Success.
+        // Success — reset consecutive timeout counter for this socket.
+        this.resetStreamTimeoutCounter(targetClient);
         return;
       } catch (error) {
         lastError = error;
@@ -8691,6 +8700,13 @@ export class ReolinkBaichuanApi {
           continue;
         }
       }
+    }
+
+    // All attempts exhausted — track consecutive timeout and force-close stale socket.
+    const isTimeout =
+      lastError instanceof Error && lastError.message?.includes("timeout");
+    if (isTimeout) {
+      this.trackStreamTimeout(targetClient);
     }
 
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
@@ -9400,6 +9416,23 @@ export class ReolinkBaichuanApi {
     const now = Date.now();
     this.lastD2cDiscAtMs = now;
 
+    // ─── Force-close all streaming sockets ───
+    // After D2C_DISC, the camera is going to sleep. Streaming sockets may appear
+    // connected (loggedIn=true) but the camera will ignore cmdId=3 (stream start)
+    // commands, causing an infinite retry loop. Force-close them so the next stream
+    // attempt creates a fresh socket after the cooldown expires.
+    const streamingTags = Array.from(this.socketPool.keys()).filter(
+      (tag) => tag.startsWith("streaming:"),
+    );
+    if (streamingTags.length > 0) {
+      this.logger?.log?.(
+        `[D2C_DISC] Force-closing ${streamingTags.length} streaming socket(s): ${streamingTags.join(", ")}`,
+      );
+      for (const tag of streamingTags) {
+        this.forceClosePooledSocket(tag, this.logger).catch(() => {});
+      }
+    }
+
     // ─── Tier 1: immediate cooldown on every D2C_DISC ───
     const immediateCooldownUntil =
       now + ReolinkBaichuanApi.D2C_DISC_IMMEDIATE_COOLDOWN_MS;
@@ -9442,6 +9475,47 @@ export class ReolinkBaichuanApi {
           `[D2C_DISC] Storm detected: ${this.d2cDiscTimestamps.length} disconnects in ${ReolinkBaichuanApi.D2C_DISC_STORM_WINDOW_MS / 1000}s → socket pool cooldown ${ReolinkBaichuanApi.D2C_DISC_STORM_COOLDOWN_MS / 1000}s`,
         );
       }
+    }
+  }
+
+  /**
+   * Find the socket pool tag for a given BaichuanClient instance.
+   * Returns undefined if the client is not in the pool (e.g. it's the general socket used directly).
+   */
+  private findSocketTagForClient(client: BaichuanClient): string | undefined {
+    for (const [tag, entry] of this.socketPool) {
+      if (entry.client === client) return tag;
+    }
+    return undefined;
+  }
+
+  /**
+   * Reset the consecutive stream-start timeout counter for a streaming socket.
+   * Called on successful stream start.
+   */
+  private resetStreamTimeoutCounter(client: BaichuanClient): void {
+    const tag = this.findSocketTagForClient(client);
+    if (tag) this.consecutiveStreamTimeouts.delete(tag);
+  }
+
+  /**
+   * Track a stream-start timeout on a streaming socket.
+   * After MAX_CONSECUTIVE_STREAM_TIMEOUTS consecutive timeouts, force-close the
+   * socket so the next attempt creates a fresh connection.
+   */
+  private trackStreamTimeout(client: BaichuanClient): void {
+    const tag = this.findSocketTagForClient(client);
+    if (!tag || !tag.startsWith("streaming:")) return;
+
+    const count = (this.consecutiveStreamTimeouts.get(tag) ?? 0) + 1;
+    this.consecutiveStreamTimeouts.set(tag, count);
+
+    if (count >= ReolinkBaichuanApi.MAX_CONSECUTIVE_STREAM_TIMEOUTS) {
+      this.logger?.warn?.(
+        `[SocketPool] ${count} consecutive stream timeouts on tag=${tag}, force-closing socket`,
+      );
+      this.consecutiveStreamTimeouts.delete(tag);
+      this.forceClosePooledSocket(tag, this.logger).catch(() => {});
     }
   }
 
