@@ -304,8 +304,22 @@ export class BaichuanRtspServer extends EventEmitter<{
   >();
 
   private isRtspDebugEnabled(): boolean {
-    const dbg = this.api.client.getDebugConfig();
-    return dbg.debugRtsp || envBool(process.env.BAICHUAN_DEBUG_RTSP, false);
+    // Access api.client via a try/catch so that the debug log path stays
+    // usable after the ReolinkBaichuanApi has been closed (for example when
+    // a battery camera's idle_disconnect fires while an RTSP client socket
+    // still has buffered bytes in flight). Without this guard the `get client`
+    // getter throws "[ReolinkBaichuanApi] API has been closed" in the middle
+    // of processBuffer(), spamming the server log and preventing the socket
+    // from closing cleanly.
+    try {
+      if (this.api.isClosed) {
+        return envBool(process.env.BAICHUAN_DEBUG_RTSP, false);
+      }
+      const dbg = this.api.client.getDebugConfig();
+      return dbg.debugRtsp || envBool(process.env.BAICHUAN_DEBUG_RTSP, false);
+    } catch {
+      return envBool(process.env.BAICHUAN_DEBUG_RTSP, false);
+    }
   }
 
   private rtspDebugLog(message: string): void {
@@ -1213,14 +1227,30 @@ export class BaichuanRtspServer extends EventEmitter<{
       }
     };
 
+    // Catch any rejection from processBuffer so a stale/closed API does not
+    // crash the server with an "Unhandled rejection" (see `get client` in
+    // ReolinkBaichuanApi which throws "API has been closed").
+    const runProcessBuffer = () => {
+      processBuffer().catch((err) => {
+        this.logger.debug(
+          `[BaichuanRtspServer] processBuffer failed for ${clientId}: ${(err as Error)?.message ?? err}`,
+        );
+        try {
+          socket.destroy();
+        } catch {
+          // ignore
+        }
+      });
+    };
+
     socket.on("data", (data: Buffer) => {
       buffer = Buffer.concat([buffer, data]);
-      void processBuffer();
+      runProcessBuffer();
     });
 
     // Process any complete requests already present in initialBuffer
     if (buffer.includes("\r\n\r\n")) {
-      void processBuffer();
+      runProcessBuffer();
     }
   }
 

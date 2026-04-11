@@ -465,7 +465,15 @@ export class RtspProxyServer extends EventEmitter {
   }
 
   /**
-   * Find or start backend RTSP server
+   * Find or start backend RTSP server.
+   *
+   * NOTE: this method is only for classic TCP-proxy mode. Local-mode servers
+   * ("mode=local") do NOT bind their own TCP port — they rely on
+   * directHandoff via `registerServer`. We must never return a local-mode
+   * server here because its `info.port` points at the proxy itself, which
+   * would cause the proxy to connect to itself and either spin in an
+   * infinite loop or double-hop the RTSP traffic. Callers in local mode must
+   * handle direct handoff via the registered server registry.
    */
   private async findOrStartBackend(
     cameraName: string,
@@ -478,6 +486,8 @@ export class RtspProxyServer extends EventEmitter {
     let servers = getAllRtspServersInfo();
     for (const server of servers) {
       if (server.status !== "running") continue;
+      // Skip local-mode servers — they must be routed via directHandoff
+      if (server.mode === "local") continue;
       const serverCameraName = sanitizeCameraName(
         server.cameraName || server.cameraId,
       );
@@ -526,6 +536,15 @@ export class RtspProxyServer extends EventEmitter {
           server.profile === normalizedProfile &&
           (server.channel ?? 0) === channel
         ) {
+          // Skip local-mode servers: their port points at the proxy itself,
+          // reaching them via TCP would loop. Caller (directHandoff path)
+          // will pick them up from the direct registry instead.
+          if (server.mode === "local") {
+            logger.info(
+              `On-demand backend started in local mode: ${cameraName}/${profile} (directHandoff)`,
+            );
+            return null;
+          }
           logger.info(`On-demand backend started: ${server.port}`);
           return { host: "127.0.0.1", port: server.port };
         }
@@ -625,7 +644,38 @@ export class RtspProxyServer extends EventEmitter {
         const serverPath = parsed.channel > 0
           ? `/${parsed.cameraName}/${parsed.profile}/${parsed.channel}`
           : `/${parsed.cameraName}/${parsed.profile}`;
-        const directServer = this.registeredServers.get(serverPath);
+        let directServer = this.registeredServers.get(serverPath);
+
+        // If not registered, start the stream on-demand — this path triggers
+        // when a previously idle battery camera needs to wake up for the
+        // first client. Starting via startRtspServer causes the new
+        // BaichuanRtspServer to call registerServer back into this map.
+        if (!directServer) {
+          try {
+            const cfg = getConfig();
+            const camera = cfg.cameras.find((c) => {
+              const sanitized = sanitizeCameraName(c.name);
+              return sanitized === parsed.cameraName || c.id === parsed.cameraName;
+            });
+            if (camera) {
+              logger.info(
+                `No direct server for ${serverPath}, starting on-demand...`,
+              );
+              await startRtspServer(camera.id, {
+                profile: parsed.profile as "main" | "sub" | "ext",
+                channel: parsed.channel,
+              });
+              // Give the server a moment to register
+              await new Promise((resolve) => setTimeout(resolve, 300));
+              directServer = this.registeredServers.get(serverPath);
+            }
+          } catch (error) {
+            logger.error(
+              `Failed to start on-demand direct server for ${serverPath}: ${error}`,
+            );
+          }
+        }
+
         if (directServer) {
           clientSocket.removeListener("data", onInitialData);
           directServer.acceptConnection(clientSocket, initialBuffer);
@@ -636,7 +686,23 @@ export class RtspProxyServer extends EventEmitter {
           this.registerBackendClient(backendKey, clientId);
           return;
         }
-        // Fall through to TCP proxy if not registered in direct registry
+
+        // Local mode is the only supported mode for directHandoff — if the
+        // direct server still isn't registered after the on-demand start
+        // attempt, there is no classic TCP proxy to fall back to (that would
+        // connect to the proxy's own port and loop).
+        logger.warn(
+          `No direct server available for ${serverPath}; rejecting client`,
+        );
+        const cseq = this.extractCSeq(initialBuffer);
+        clientSocket.write(
+          `RTSP/1.0 404 Not Found\r\nCSeq: ${cseq}\r\n\r\n`,
+          () => {
+            clientSocket.end();
+            cleanup();
+          },
+        );
+        return;
       }
 
       // Find or start backend (TCP proxy mode)

@@ -65,6 +65,20 @@ export const go2rtcRouter = router({
 
           await stopAllRtspServers();
           await stopRtspProxy();
+
+          // Push the updated options into the manager BEFORE restart so the
+          // regenerated go2rtc.yaml reflects the new rtspSource. Without this
+          // the manager keeps the construction-time options and the YAML is
+          // unchanged — making the setting appear to have no effect.
+          mgr.updateOptions({
+            rtspSource: input.rtspSource,
+            rtspPort: updated.rtspPort,
+            apiPort: updated.apiPort,
+            webrtcPort: updated.webrtcPort,
+            iceServers: updated.iceServers,
+            binaryPath: updated.binaryPath,
+          });
+
           await mgr.restart();
 
           if (input.rtspSource === "local") {

@@ -126,18 +126,25 @@ function generateGo2rtcYaml(
   lines.push("  mjpeg: -hide_banner -an -vf \"scale=-1:720\" -q:v 5 -f mjpeg -");
   lines.push("");
 
+  // NOTE about the empty-streams case:
+  // - A placeholder comment (`# No streams registered yet`) breaks go2rtc's
+  //   in-process YAML editor: when it later adds a stream via the REST API,
+  //   it rewrites the file with 8-space/tab indentation and leaves the stale
+  //   comment at the wrong indent level, producing a malformed YAML that
+  //   fails subsequent PUTs with "could not find expected ':'".
+  // - `streams: {}` (flow-style empty map) also fails: go2rtc's YAML editor
+  //   refuses to merge new keys into a flow-style empty map, producing
+  //   "line N: did not find expected key" on PUT.
+  // - A bare `streams:` (null value) is the only format go2rtc's editor can
+  //   round-trip cleanly when adding streams via PUT.
   lines.push("streams:");
-  if (streams.size === 0) {
-    lines.push("  # No streams registered yet");
-  } else {
-    for (const [name, sources] of streams) {
-      if (sources.length === 1) {
-        lines.push(`  ${name}: "${sources[0]}"`);
-      } else {
-        lines.push(`  ${name}:`);
-        for (const src of sources) {
-          lines.push(`    - "${src}"`);
-        }
+  for (const [name, sources] of streams) {
+    if (sources.length === 1) {
+      lines.push(`  ${name}: "${sources[0]}"`);
+    } else {
+      lines.push(`  ${name}:`);
+      for (const src of sources) {
+        lines.push(`    - "${src}"`);
       }
     }
   }
@@ -154,11 +161,21 @@ export class Go2rtcManager {
   private readonly streams = new Map<string, readonly string[]>();
   private restartCount = 0;
   private stopping = false;
-  private readonly options: Go2rtcOptions;
+  private options: Go2rtcOptions;
   private resolvedBinaryPath: string | null = null;
 
   constructor(options: Go2rtcOptions) {
     this.options = options;
+  }
+
+  /**
+   * Update the manager options in-place. Does NOT restart the process.
+   * Call `restart()` (or `stop()`+`start()`) afterwards to apply changes
+   * that affect the generated go2rtc.yaml (api/rtsp/webrtc port, rtspSource,
+   * iceServers, binaryPath).
+   */
+  updateOptions(patch: Partial<Go2rtcOptions>): void {
+    this.options = { ...this.options, ...patch };
   }
 
   get apiUrl(): string {
@@ -294,7 +311,29 @@ export class Go2rtcManager {
     for (const src of sources) query.append("src", src);
 
     const url = `${this.apiUrl}/api/streams?${query.toString()}`;
-    const res = await fetch(url, { method: "PUT" });
+
+    // go2rtc's in-process YAML editor has a latent bug: after repeated
+    // add/remove cycles it can leave the on-disk go2rtc.yaml in a state its
+    // own parser refuses, making subsequent PUTs fail with 400 "could not
+    // find expected key" or "line N: did not find expected ':'". The fix is
+    // to rewrite the file cleanly from our authoritative in-memory state
+    // and retry once. We already hold the latest streams map here.
+    let res = await fetch(url, { method: "PUT" });
+    if (!res.ok && res.status === 400) {
+      const body = await res.text();
+      if (/yaml:|could not find expected|did not find expected/i.test(body)) {
+        logger.warn(
+          `addStream "${name}": go2rtc YAML corrupted (${body.trim()}); rewriting and retrying`,
+        );
+        try {
+          await this.rewriteYamlFromState();
+          res = await fetch(url, { method: "PUT" });
+        } catch (err) {
+          logger.warn(`Failed to rewrite YAML: ${(err as Error).message}`);
+        }
+      }
+    }
+
     if (!res.ok) {
       const body = await res.text();
       logger.error(`Failed to add stream "${name}": HTTP ${res.status} — ${body}`);
@@ -311,10 +350,37 @@ export class Go2rtcManager {
 
     const url = `${this.apiUrl}/api/streams?src=${encodeURIComponent(name)}`;
     const res = await fetch(url, { method: "DELETE" });
+
+    // HTTP 400 on DELETE is almost always the go2rtc YAML editor bug (see
+    // addStream). The stream is already gone from our in-memory state so
+    // this is non-fatal; we rewrite the YAML to unstick future operations.
+    if (!res.ok && res.status === 400) {
+      logger.warn(
+        `Failed to remove stream "${name}": HTTP 400 (likely go2rtc YAML editor bug); rewriting YAML`,
+      );
+      try {
+        await this.rewriteYamlFromState();
+      } catch (err) {
+        logger.warn(`Failed to rewrite YAML: ${(err as Error).message}`);
+      }
+      return;
+    }
     if (!res.ok && res.status !== 404) {
       logger.error(`Failed to remove stream "${name}": HTTP ${res.status}`);
     }
     logger.info(`Stream removed: ${name}`);
+  }
+
+  /**
+   * Rewrite go2rtc.yaml from our authoritative in-memory streams + options.
+   * Used to recover from go2rtc's YAML editor leaving stray fragments after
+   * add/remove cycles. Safe to call while go2rtc is running: go2rtc re-reads
+   * the file lazily when it next needs to persist state.
+   */
+  private async rewriteYamlFromState(): Promise<void> {
+    if (!this.configPath) return;
+    const yaml = generateGo2rtcYaml(this.streams, this.options);
+    writeFileSync(this.configPath, yaml, "utf-8");
   }
 
   /** Get registered streams (from go2rtc API if running, otherwise from local cache). */
