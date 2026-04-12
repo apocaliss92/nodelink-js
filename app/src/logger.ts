@@ -11,6 +11,37 @@ export const logEmitter = new EventEmitter();
 const LOG_BUFFER_SIZE = 1000;
 const logBuffer: LogEntry[] = [];
 
+// ---------------------------------------------------------------------------
+// Per-camera connection log buffer (used by the UI camera logs panel)
+// ---------------------------------------------------------------------------
+const CONN_LOG_MAX = 200;
+
+export type ConnLogLevel = "info" | "warn" | "error" | "debug";
+export type ConnLogEntry = { ts: number; level: ConnLogLevel; msg: string };
+
+const connLogBuffers = new Map<string, ConnLogEntry[]>();
+export const connLogEmitter = new EventEmitter();
+
+export function appendConnLog(cameraId: string, level: ConnLogLevel, msg: string): void {
+  let buf = connLogBuffers.get(cameraId);
+  if (!buf) {
+    buf = [];
+    connLogBuffers.set(cameraId, buf);
+  }
+  const entry: ConnLogEntry = { ts: Date.now(), level, msg };
+  buf.push(entry);
+  if (buf.length > CONN_LOG_MAX) buf.shift();
+  connLogEmitter.emit(`log:${cameraId}`, entry);
+}
+
+export function getConnLogs(cameraId: string): ConnLogEntry[] {
+  return connLogBuffers.get(cameraId) ?? [];
+}
+
+export function clearConnLogs(cameraId: string): void {
+  connLogBuffers.delete(cameraId);
+}
+
 export interface LogEntry {
   timestamp: string;
   level: string;
@@ -262,17 +293,21 @@ export const appLogger = {
   ) => log("debug", message, meta),
 };
 
-// Create a logger for a specific source (camera, rtsp, etc.)
-export function createSourceLogger(source: string) {
+// Create a logger for a specific source (camera, rtsp, etc.).
+// When cameraId is provided, all log entries are also forwarded to the
+// per-camera connection log buffer so the UI camera logs panel shows them.
+export function createSourceLogger(source: string, cameraId?: string) {
+  const makeLog = (level: ConnLogLevel) =>
+    (message: string, meta?: Record<string, unknown>) => {
+      log(level, message, { ...meta, source });
+      if (cameraId) appendConnLog(cameraId, level, message);
+    };
+
   return {
-    info: (message: string, meta?: Record<string, unknown>) =>
-      log("info", message, { ...meta, source }),
-    warn: (message: string, meta?: Record<string, unknown>) =>
-      log("warn", message, { ...meta, source }),
-    error: (message: string, meta?: Record<string, unknown>) =>
-      log("error", message, { ...meta, source }),
-    debug: (message: string, meta?: Record<string, unknown>) =>
-      log("debug", message, { ...meta, source }),
+    info: makeLog("info"),
+    warn: makeLog("warn"),
+    error: makeLog("error"),
+    debug: makeLog("debug"),
   };
 }
 

@@ -2,8 +2,15 @@ import {
   ReolinkBaichuanApi,
   BaichuanRtspServer,
 } from "@apocaliss92/nodelink-js";
-import { EventEmitter } from "events";
-import { createSourceLogger } from "./logger.js";
+import {
+  createSourceLogger,
+  appendConnLog,
+  connLogEmitter,
+  getConnLogs,
+  clearConnLogs,
+} from "./logger.js";
+export { appendConnLog, connLogEmitter, getConnLogs, clearConnLogs };
+export type { ConnLogLevel, ConnLogEntry } from "./logger.js";
 import {
   getConfig,
   getSettings,
@@ -16,36 +23,6 @@ import * as crypto from "crypto";
 import { releaseStreamsByCamera } from "./stream-pool.js";
 import { getRtspProxy } from "./rtsp-proxy.js";
 
-// ---------------------------------------------------------------------------
-// Per-camera connection log buffer
-// ---------------------------------------------------------------------------
-const CONN_LOG_MAX = 200;
-
-export type ConnLogLevel = "info" | "warn" | "error" | "debug";
-export type ConnLogEntry = { ts: number; level: ConnLogLevel; msg: string };
-
-const connLogBuffers = new Map<string, ConnLogEntry[]>();
-export const connLogEmitter = new EventEmitter();
-
-export function appendConnLog(cameraId: string, level: ConnLogLevel, msg: string): void {
-  let buf = connLogBuffers.get(cameraId);
-  if (!buf) {
-    buf = [];
-    connLogBuffers.set(cameraId, buf);
-  }
-  const entry: ConnLogEntry = { ts: Date.now(), level, msg };
-  buf.push(entry);
-  if (buf.length > CONN_LOG_MAX) buf.shift();
-  connLogEmitter.emit(`log:${cameraId}`, entry);
-}
-
-export function getConnLogs(cameraId: string): ConnLogEntry[] {
-  return connLogBuffers.get(cameraId) ?? [];
-}
-
-export function clearConnLogs(cameraId: string): void {
-  connLogBuffers.delete(cameraId);
-}
 
 // ---------------------------------------------------------------------------
 // Helper: sanitize camera name for URL path (Camera Studio => camera_studio)
@@ -310,7 +287,7 @@ async function cleanupManagedConnection(
   if (conn.cleanupInProgress) return;
   conn.cleanupInProgress = true;
 
-  const cameraLogger = createSourceLogger(`camera:${cameraId}`);
+  const cameraLogger = createSourceLogger(`camera:${cameraId}`, cameraId);
 
   try {
     // Stop ping interval
@@ -374,7 +351,7 @@ function attachConnectionListeners(
   cameraId: string,
   conn: ManagedConnection,
 ): void {
-  const cameraLogger = createSourceLogger(`camera:${cameraId}`);
+  const cameraLogger = createSourceLogger(`camera:${cameraId}`, cameraId);
 
   conn.api.client.on("error", (err: unknown) => {
     const msg =
@@ -452,7 +429,7 @@ function attachConnectionListeners(
  * Start ping keepalive for a managed connection.
  */
 function startPingKeepalive(cameraId: string, conn: ManagedConnection): void {
-  const cameraLogger = createSourceLogger(`camera:${cameraId}`);
+  const cameraLogger = createSourceLogger(`camera:${cameraId}`, cameraId);
 
   if (conn.pingInterval) {
     clearInterval(conn.pingInterval);
@@ -529,14 +506,14 @@ export async function getOrCreateApiConnection(
 
     // API was explicitly closed → cleanup and recreate
     if (existing.api.isClosed) {
-      const cameraLogger = createSourceLogger(`camera:${connKey}`);
+      const cameraLogger = createSourceLogger(`camera:${connKey}`, connKey);
       cameraLogger.info("API is closed, recreating connection");
       apiConnections.delete(connKey);
       await cleanupManagedConnection(connKey, existing);
       notifyDisconnection(connKey);
     } else {
       // Socket disconnected but API still valid → try library-side reconnect
-      const cameraLogger = createSourceLogger(`camera:${connKey}`);
+      const cameraLogger = createSourceLogger(`camera:${connKey}`, connKey);
       try {
         cameraLogger.info("Socket lost, attempting ensureConnected()");
         await existing.api.ensureConnected();
@@ -566,7 +543,7 @@ export async function getOrCreateApiConnection(
     logLabel = camera.name;
   }
 
-  const cameraLogger = createSourceLogger(`camera:${logLabel}`);
+  const cameraLogger = createSourceLogger(`camera:${logLabel}`, cameraId);
   const isNvrConnection = !!camera.nvrId;
 
   // Create a managed connection entry with the connect promise to serialize access
@@ -615,11 +592,11 @@ export async function getOrCreateApiConnection(
       ...(!isNvrConnection && camera.udpDiscoveryMethod ? { udpDiscoveryMethod: camera.udpDiscoveryMethod } : {}),
       debugOptions,
       logger: {
-        log: (msg: unknown) => { cameraLogger.info(String(msg)); appendConnLog(cameraId, "info", String(msg)); },
-        info: (msg: string) => { cameraLogger.info(msg); appendConnLog(cameraId, "info", msg); },
-        warn: (msg: string) => { cameraLogger.warn(msg); appendConnLog(cameraId, "warn", msg); },
-        error: (msg: string) => { cameraLogger.error(msg); appendConnLog(cameraId, "error", msg); },
-        debug: (msg: string) => { cameraLogger.debug(msg); appendConnLog(cameraId, "debug", msg); },
+        log: (msg: unknown) => cameraLogger.info(String(msg)),
+        info: (msg: string) => cameraLogger.info(msg),
+        warn: (msg: string) => cameraLogger.warn(msg),
+        error: (msg: string) => cameraLogger.error(msg),
+        debug: (msg: string) => cameraLogger.debug(msg),
       },
     });
 
@@ -1017,7 +994,7 @@ export async function startRtspServer(
     return existing.info;
   }
 
-  const logger = createSourceLogger(`rtsp:${camera.name}:${profile}`);
+  const logger = createSourceLogger(`rtsp:${camera.name}:${profile}`, camera.id);
   const settings = getSettings();
   // For battery cameras we force a short idle timeout (15s) so the native
   // Baichuan stream is torn down when no RTSP consumer is connected, letting
@@ -1334,6 +1311,7 @@ export async function stopRtspServer(
 
   const logger = createSourceLogger(
     `rtsp:${entry.info.cameraName}:${entry.info.profile}`,
+    entry.info.cameraId,
   );
 
   try {
@@ -1728,13 +1706,13 @@ export async function registerPreConnectedApi(
  * connection log buffer (for SSE streaming to the UI).
  */
 export function createCameraConnLogger(cameraId: string, label: string) {
-  const cameraLogger = createSourceLogger(`camera:${label}`);
+  const l = createSourceLogger(`camera:${label}`, cameraId);
   return {
-    log: (msg: unknown) => { cameraLogger.info(String(msg)); appendConnLog(cameraId, "info", String(msg)); },
-    info: (msg: string) => { cameraLogger.info(msg); appendConnLog(cameraId, "info", msg); },
-    warn: (msg: string) => { cameraLogger.warn(msg); appendConnLog(cameraId, "warn", msg); },
-    error: (msg: string) => { cameraLogger.error(msg); appendConnLog(cameraId, "error", msg); },
-    debug: (msg: string) => { cameraLogger.debug(msg); appendConnLog(cameraId, "debug", msg); },
+    log: (msg: unknown) => l.info(String(msg)),
+    info: l.info,
+    warn: l.warn,
+    error: l.error,
+    debug: l.debug,
   };
 }
 
@@ -1757,7 +1735,7 @@ export async function startStreamsForAllConnectedCameras(): Promise<void> {
 
     const connKey = getConnectionKey(camera.id);
     const conn = apiConnections.get(connKey);
-    if (!conn?.api.isReady) continue;
+    if (!conn?.api?.isReady) continue;
 
     const channel = camera.rtspChannel ?? 0;
     const profiles = await getAvailableProfiles(camera.id);

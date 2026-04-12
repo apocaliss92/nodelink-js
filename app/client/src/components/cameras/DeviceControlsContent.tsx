@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Lightbulb, AlertTriangle, Crosshair, Eye } from 'lucide-react';
+import { Lightbulb, AlertTriangle, Crosshair, Eye, Moon } from 'lucide-react';
 import { trpcQuery, trpcMutation } from '../../api';
 import type { ControlsState } from './types';
 
@@ -9,12 +9,16 @@ interface DeviceControlsContentProps {
 
 export function DeviceControlsContent({ cameraId }: DeviceControlsContentProps) {
   const [controls, setControls] = useState<ControlsState>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const [toggling, setToggling] = useState<string | null>(null);
 
   useEffect(() => {
+    setLoading(true);
+    setError(false);
     trpcQuery<ControlsState>('cameras.getControlsState', { id: cameraId })
-      .then((st) => setControls(st ?? null))
-      .catch(() => setControls(null));
+      .then((st) => { setControls(st ?? null); setLoading(false); })
+      .catch(() => { setControls(null); setLoading(false); setError(true); });
   }, [cameraId]);
 
   const toggle = useCallback(
@@ -32,9 +36,17 @@ export function DeviceControlsContent({ cameraId }: DeviceControlsContentProps) 
     [cameraId],
   );
 
-  if (!controls) {
+  if (loading) {
     return (
       <div className="p-3 text-xs text-[var(--color-foreground-muted)]">Loading controls...</div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="p-3 text-xs text-[var(--color-danger)]">
+        Failed to load controls. Is the camera connected?
+      </div>
     );
   }
 
@@ -85,8 +97,16 @@ export function DeviceControlsContent({ cameraId }: DeviceControlsContentProps) 
     );
   }
 
+  const sleeping = controls.isSleeping === true;
+
   return (
     <div className="p-3 flex flex-col gap-2">
+      {sleeping && (
+        <div className="flex items-center gap-1.5 px-2 py-1.5 rounded-md bg-[var(--color-surface)] text-[10px] text-[var(--color-foreground-subtle)]">
+          <Moon size={10} />
+          Camera is sleeping — current state unknown. Toggles will apply when it wakes.
+        </div>
+      )}
       {items.map((item) => (
         <div
           key={item.key}
@@ -105,11 +125,15 @@ export function DeviceControlsContent({ cameraId }: DeviceControlsContentProps) 
           </div>
           <button
             onClick={() => void toggle(item.key, item.mutation, item.field, !!item.on)}
-            disabled={toggling === item.key}
+            disabled={toggling === item.key || sleeping}
             className={`relative w-8 h-[18px] rounded-full transition-colors ${
-              item.on ? 'bg-[var(--color-primary)]' : 'bg-[var(--color-border)]'
+              sleeping
+                ? 'bg-[var(--color-border)] opacity-40 cursor-not-allowed'
+                : item.on
+                  ? 'bg-[var(--color-primary)]'
+                  : 'bg-[var(--color-border)]'
             }`}
-            title={item.on ? `Turn off ${item.label}` : `Turn on ${item.label}`}
+            title={sleeping ? 'Camera is sleeping' : item.on ? `Turn off ${item.label}` : `Turn on ${item.label}`}
           >
             <span
               className={`absolute top-[2px] h-[14px] w-[14px] rounded-full bg-white transition-transform ${

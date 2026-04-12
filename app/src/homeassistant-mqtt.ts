@@ -593,8 +593,9 @@ function publishCameraDiscovery(
         icon: "mdi:battery",
         state_topic: stateTopic,
         value_template:
-          "{{ value_json.batteryInfo.battery | default(value_json.batteryInfo.percent) | default('unknown') }}",
+          "{{ value_json.batteryInfo.battery | default(value_json.batteryInfo.percent) | default(none) }}",
         device_class: "battery",
+        state_class: "measurement",
         unit_of_measurement: "%",
         device,
         json_attributes_topic: stateTopic,
@@ -671,8 +672,9 @@ function publishCameraDiscovery(
         icon: "mdi:wifi",
         state_topic: stateTopic,
         value_template:
-          "{{ value_json.wifiSignal.signal | default(value_json.wifiSignal.rssi) | default('unknown') }}",
+          "{{ value_json.wifiSignal.signal | default(value_json.wifiSignal.rssi) | default(none) }}",
         device_class: "signal_strength",
+        state_class: "measurement",
         unit_of_measurement: "dBm",
         device,
         json_attributes_topic: stateTopic,
@@ -738,7 +740,7 @@ function publishCameraDiscovery(
         icon: "mdi:magnify",
         state_topic: stateTopic,
         value_template:
-          "{{ value_json.zoomFocus.zoom.curPos if value_json.zoomFocus and value_json.zoomFocus.zoom else 'unknown' }}",
+          "{{ value_json.zoomFocus.zoom.curPos if value_json.zoomFocus and value_json.zoomFocus.zoom else none }}",
         device,
         json_attributes_topic: stateTopic,
         json_attributes_template:

@@ -56,9 +56,10 @@ export function CameraDetailPage() {
   const [localLogs, setLocalLogs] = useState(connLogs);
   useEffect(() => { setLocalLogs(connLogs); }, [connLogs]);
 
-  // Fetch controls state when camera is connected and awake
+  // Fetch controls state when camera is connected (works even when sleeping — capabilities
+  // come from cache; live state will be undefined until the camera wakes)
   useEffect(() => {
-    if (!camera || !isConnected || camera.sleepStatus === 'sleeping') return;
+    if (!camera || !isConnected) return;
     trpcQuery<ControlsState>('cameras.getControlsState', { id: camera.id })
       .then((st) => setControlsState(st ?? null))
       .catch(() => setControlsState(null));

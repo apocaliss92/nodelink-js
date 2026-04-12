@@ -1018,6 +1018,21 @@ export class BaichuanRtspServer extends EventEmitter<{
             }
           }
 
+          // Brief audio priming: after video SPS/PPS is ready, wait a short window
+          // for the first ADTS AAC frame to arrive. If audio is present the camera
+          // interleaves it with video, so 300 ms is enough; cameras with no audio
+          // will simply time out and SDP will be video-only (unchanged behavior).
+          if (!this.hasAudio && this.firstAudioPromise) {
+            try {
+              await Promise.race([
+                this.firstAudioPromise,
+                new Promise((resolve) => setTimeout(resolve, 300)),
+              ]);
+            } catch {
+              // ignore
+            }
+          }
+
           // Generate SDP (parameter sets will be included if available)
           {
             const { fmtp, hasParamSets } = this.flow.getFmtp();
@@ -2428,10 +2443,9 @@ export class BaichuanRtspServer extends EventEmitter<{
         }),
       onFrame: (frame) => {
         if (frame.audio) {
-          // TCP-only audio detection: only advertise audio if we see ADTS AAC.
+          // Detect audio from any transport (TCP or UDP/BCUDP both carry ADTS AAC).
           if (
             !this.hasAudio &&
-            this.api.client.getTransport() === "tcp" &&
             BaichuanRtspServer.isAdtsAacFrame(frame.data)
           ) {
             const info = BaichuanRtspServer.parseAdtsSamplingInfo(frame.data);

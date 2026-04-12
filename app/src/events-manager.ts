@@ -75,6 +75,14 @@ const recentEventsByCamera = new Map<string, AnyEventPayload[]>();
 /** Per-camera sleep/wake status (tracked from sleeping/awake events) */
 const cameraSleepStatus = new Map<string, "awake" | "sleeping">();
 
+/** Per-camera latest battery info (tracked from battery push events) */
+export interface CameraBatteryState {
+  percent: number;
+  chargeStatus?: string;
+  adapterStatus?: string;
+}
+const cameraBatteryState = new Map<string, CameraBatteryState>();
+
 /** Callback invoked when MQTT client connects (for Home Assistant discovery re-publish) */
 let onMqttConnectedCb: (() => void) | null = null;
 
@@ -169,6 +177,22 @@ function handleCameraEvent(cameraId: string, event: ReolinkSimpleEvent): void {
     }
   }
 
+  // Track latest battery level from push events
+  if (event.type === "battery" && event.battery) {
+    const { batteryPercent, chargeStatus, adapterStatus } = event.battery as {
+      batteryPercent?: number;
+      chargeStatus?: string;
+      adapterStatus?: string;
+    };
+    if (batteryPercent !== undefined) {
+      cameraBatteryState.set(cameraId, {
+        percent: batteryPercent,
+        chargeStatus,
+        adapterStatus,
+      });
+    }
+  }
+
   broadcastEventPayload(payload);
 }
 
@@ -253,6 +277,28 @@ export function initEventsManager(): void {
   onApiConnected((cameraId, api) => {
     registerCameraEvents(cameraId, api);
     emitSystemEvent(cameraId, "camera_connected");
+
+    // For battery cameras: do a one-time battery query right after connect
+    // while the camera is still awake, to seed the initial % before it sleeps.
+    // getBatteryStatus() has a built-in sleeping guard and won't wake a camera
+    // that already went to sleep before this runs.
+    const config = getConfig();
+    const camera = config.cameras.find((c) => c.id === cameraId);
+    if (camera?.isBattery) {
+      const ch = camera.rtspChannel ?? 0;
+      void api.getBatteryStatus(ch).then((battery) => {
+        if (battery.batteryPercent !== undefined) {
+          seedCameraBatteryState(cameraId, {
+            percent: battery.batteryPercent,
+            chargeStatus: battery.chargeStatus,
+            adapterStatus: battery.adapterStatus,
+          });
+          logger.debug(`Seeded battery state for ${cameraId}: ${battery.batteryPercent}%`);
+        }
+      }).catch(() => {
+        // best-effort — camera may have already gone to sleep
+      });
+    }
   });
   onApiDisconnected((cameraId) => {
     emitSystemEvent(cameraId, "camera_disconnected");
@@ -375,6 +421,29 @@ export function getMqttClient(): import("mqtt").MqttClient | null {
  */
 export function getCameraSleepStatus(cameraId: string): "awake" | "sleeping" | undefined {
   return cameraSleepStatus.get(cameraId);
+}
+
+/**
+ * Get the latest battery state of a camera.
+ * Returns undefined if no battery push event has been received yet.
+ */
+export function getCameraBatteryState(cameraId: string): CameraBatteryState | undefined {
+  return cameraBatteryState.get(cameraId);
+}
+
+/**
+ * Seed the battery state for a camera from a one-time query (e.g. at connect time).
+ * Only updates if the new value is more informative (has a percent).
+ * Existing push-event data takes precedence over a polled seed.
+ */
+export function seedCameraBatteryState(
+  cameraId: string,
+  state: CameraBatteryState,
+): void {
+  // Don't overwrite a value already populated by a push event
+  if (cameraBatteryState.has(cameraId)) return;
+  if (state.percent === undefined) return;
+  cameraBatteryState.set(cameraId, state);
 }
 
 /**

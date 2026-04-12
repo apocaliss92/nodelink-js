@@ -2391,6 +2391,12 @@ export class ReolinkBaichuanApi {
    * Only counts sessions from our own IP address.
    */
   private async maybeRebootOnTooManySessions(): Promise<void> {
+    // Skip if the socket is not connected (e.g. battery camera after idle disconnect).
+    // The timer remains running so it can check again on the next tick, but we must
+    // not call getOnlineUserList because that would trigger ensureConnected() and
+    // wake the camera unnecessarily.
+    if (!this.client.isSocketConnected?.()) return;
+
     // Calculate threshold: use explicit value or default to 10 sessions
     const threshold = this.maxDedicatedSessionsBeforeReboot ?? 10;
 
@@ -2982,6 +2988,8 @@ export class ReolinkBaichuanApi {
 
   private async renewSimpleEventSubscription(): Promise<void> {
     if (this.simpleEventListeners.size === 0) return;
+    // Skip if disconnected (e.g. battery camera idle disconnect) — don't force a reconnect.
+    if (!this.client.isSocketConnected?.()) return;
     if (this.simpleEventResubscribeInFlight)
       return await this.simpleEventResubscribeInFlight;
 

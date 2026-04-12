@@ -42,6 +42,7 @@ export type CameraInfo = {
   isBattery?: boolean;
   batteryMode?: "alwaysOn" | "streamOnly";
   sleepStatus?: "awake" | "sleeping";
+  batteryState?: { percent: number; chargeStatus?: string; adapterStatus?: string };
   debugLogs: boolean;
   autoStart: boolean;
   rtspStreams: RtspStreamConfig[];
@@ -142,4 +143,5 @@ export type ControlsState = {
   autotrackingOn?: boolean;
   pirOn?: boolean;
   ptzPresets: Array<{ id: number; name: string }>;
+  isSleeping?: boolean;
 } | null;

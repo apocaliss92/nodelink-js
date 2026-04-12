@@ -23,7 +23,14 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, str
 
   const viewers = isActive ? (rtspServer?.connections ?? 0) : 0;
   const go2rtcHost = serviceIp || window.location.hostname;
-  const go2rtcBase = go2rtcApiPort ? `${window.location.protocol}//${go2rtcHost}:${go2rtcApiPort}` : null;
+  // When served over HTTPS (nginx reverse proxy) go2rtc's port is plain HTTP —
+  // direct https://host:port requests fail with ERR_SSL_PROTOCOL_ERROR.
+  // Route through the Express /go2rtc/* proxy instead so the same-origin HTTPS
+  // path is used. On HTTP, hit go2rtc directly.
+  const isHttps = window.location.protocol === 'https:';
+  const go2rtcBase = go2rtcApiPort
+    ? (isHttps ? `${window.location.origin}/go2rtc` : `http://${go2rtcHost}:${go2rtcApiPort}`)
+    : null;
   const src = encodeURIComponent(streamName);
   const hlsUrl = go2rtcBase ? `${go2rtcBase}/api/stream.m3u8?src=${src}` : '';
   const snapshotUrl = go2rtcBase ? `${go2rtcBase}/api/frame.jpeg?src=${src}` : '';
@@ -77,38 +84,41 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, str
       )}
 
       <div className="flex flex-wrap gap-1 mt-1.5">
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => { setPreviewOpen(!previewOpen); setUrlsOpen(false); }}
-            className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] bg-[var(--color-surface-hover)] hover:bg-[var(--color-surface)] transition-colors"
-          >
-            <Eye size={10} /> Preview ▾
-          </button>
-          {previewOpen && (
-            <div className="absolute bottom-full left-0 mb-1 z-10 rounded-md border border-[var(--color-border)] bg-[var(--color-background-elevated)] shadow-lg py-1 min-w-[160px]">
-              <button
-                type="button"
-                onClick={() => { onPreview(); setPreviewOpen(false); }}
-                className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)]"
-              >
-                WebRTC Preview
-              </button>
-              {mseUrl && (
+        {/* Preview — only when stream is active */}
+        {isActive && (
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => { setPreviewOpen(!previewOpen); setUrlsOpen(false); }}
+              className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] bg-[var(--color-surface-hover)] hover:bg-[var(--color-surface)] transition-colors"
+            >
+              <Eye size={10} /> Preview ▾
+            </button>
+            {previewOpen && (
+              <div className="absolute bottom-full left-0 mb-1 z-10 rounded-md border border-[var(--color-border)] bg-[var(--color-background-elevated)] shadow-lg py-1 min-w-[160px]">
                 <button
                   type="button"
-                  onClick={() => { window.open(mseUrl, '_blank'); setPreviewOpen(false); }}
+                  onClick={() => { onPreview(); setPreviewOpen(false); }}
                   className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)]"
                 >
-                  MSE Stream
+                  WebRTC Preview
                 </button>
-              )}
-            </div>
-          )}
-        </div>
+                {mseUrl && (
+                  <button
+                    type="button"
+                    onClick={() => { window.open(mseUrl, '_blank'); setPreviewOpen(false); }}
+                    className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)]"
+                  >
+                    MSE Stream
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
-        {/* URLs dropdown */}
-        {go2rtcBase && (
+        {/* URLs dropdown — RTSP always available; go2rtc URLs only when active */}
+        {(rtspUrl || (go2rtcBase && isActive)) && (
           <div className="relative">
             <button
               onClick={() => { setUrlsOpen(!urlsOpen); setPreviewOpen(false); }}
@@ -126,7 +136,7 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, str
                     <Copy size={9} /> Copy RTSP URL
                   </button>
                 )}
-                {hlsUrl && (
+                {isActive && hlsUrl && (
                   <button
                     onClick={() => { void copyToClipboard(hlsUrl); setUrlsOpen(false); }}
                     className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)] flex items-center gap-1.5"
@@ -134,7 +144,7 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, str
                     <Copy size={9} /> Copy HLS URL
                   </button>
                 )}
-                {mp4Url && (
+                {isActive && mp4Url && (
                   <button
                     onClick={() => { void copyToClipboard(mp4Url); setUrlsOpen(false); }}
                     className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)] flex items-center gap-1.5"
@@ -142,7 +152,7 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, str
                     <Copy size={9} /> Copy MP4 URL
                   </button>
                 )}
-                {snapshotUrl && (
+                {isActive && snapshotUrl && (
                   <button
                     onClick={() => { void copyToClipboard(snapshotUrl); setUrlsOpen(false); }}
                     className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)] flex items-center gap-1.5"

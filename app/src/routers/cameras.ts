@@ -34,7 +34,7 @@ import {
   clearConnLogs,
   appendConnLog,
 } from "../rtsp-manager.js";
-import { getCameraSleepStatus } from "../events-manager.js";
+import { getCameraSleepStatus, getCameraBatteryState } from "../events-manager.js";
 import { RtspStreamConfigSchema } from "../types.js";
 
 // In-memory map for dump download tokens (token → zip path, expires after 10 min)
@@ -71,6 +71,7 @@ export const camerasRouter = router({
           isBattery: camConfig?.isBattery ?? false,
           batteryMode: camConfig?.batteryMode ?? "streamOnly",
           sleepStatus: getCameraSleepStatus(cam.id),
+          batteryState: getCameraBatteryState(cam.id),
           debugLogs: camConfig?.debugLogs ?? false,
           autoStart: camConfig?.autoStart ?? false,
           rtspStreams: camConfig?.rtspStreams ?? [],
@@ -97,6 +98,7 @@ export const camerasRouter = router({
         isBattery: camConfig?.isBattery ?? false,
         batteryMode: camConfig?.batteryMode ?? "streamOnly",
         sleepStatus: getCameraSleepStatus(input.id),
+        batteryState: getCameraBatteryState(input.id),
         debugLogs: camConfig?.debugLogs ?? false,
         autoStart: camConfig?.autoStart ?? false,
         rtspStreams: camConfig?.rtspStreams ?? [],
@@ -194,7 +196,7 @@ export const camerasRouter = router({
           transport: detection.transport,
           uid: detection.uid || input.uid,
           udpDiscoveryMethod: detection.udpDiscoveryMethod ?? input.udpDiscoveryMethod,
-          autoStart: false,
+          autoStart: true,
         });
 
         // Register the already-connected API (no redundant login)
@@ -636,7 +638,12 @@ export const camerasRouter = router({
       let pirOn: boolean | undefined;
       let ptzPresets: Array<{ id: number; name: string }> | undefined;
 
-      if (hasFloodlight) {
+      // Skip live-state queries for sleeping battery cameras — they would wake the camera.
+      // Capabilities (hasFloodlight, hasSiren, etc.) come from the capabilities cache so
+      // they are safe to read. Current on/off state will be undefined until the camera wakes.
+      const isSleeping = getCameraSleepStatus(input.id) === "sleeping";
+
+      if (!isSleeping && hasFloodlight) {
         try {
           const st = await api.getWhiteLedState(channel);
           lightOn = st?.enabled === true;
@@ -650,7 +657,7 @@ export const camerasRouter = router({
           // ignore
         }
       }
-      if (hasSiren) {
+      if (!isSleeping && hasSiren) {
         try {
           const st = await api.getSiren(channel);
           sirenOn = st?.enabled === true;
@@ -664,7 +671,7 @@ export const camerasRouter = router({
           // ignore
         }
       }
-      if (hasAutotracking) {
+      if (!isSleeping && hasAutotracking) {
         try {
           const at = await api.getAutotracking(channel);
           autotrackingOn = at?.enabled === true;
@@ -672,7 +679,7 @@ export const camerasRouter = router({
           // ignore
         }
       }
-      if (hasPir) {
+      if (!isSleeping && hasPir) {
         try {
           const pir = await api.getPirInfo(channel);
           pirOn = (pir as any)?.enable === 1;
@@ -680,7 +687,7 @@ export const camerasRouter = router({
           // ignore
         }
       }
-      if (hasPresets || hasPtz) {
+      if (!isSleeping && (hasPresets || hasPtz)) {
         try {
           ptzPresets = await api.getPtzPresets(channel);
         } catch {
@@ -705,6 +712,7 @@ export const camerasRouter = router({
         autotrackingOn,
         pirOn,
         ptzPresets: ptzPresets ?? [],
+        isSleeping,
       };
     }),
 
@@ -1061,7 +1069,7 @@ export const camerasRouter = router({
         nvrId: input.nvrId,
         rtspChannel: input.channelNumber,
         isBattery: input.isBattery ?? false,
-        autoStart: false,
+        autoStart: true,
         channels: 1,
         batteryMode: "streamOnly" as const,
         transport: "auto" as const,

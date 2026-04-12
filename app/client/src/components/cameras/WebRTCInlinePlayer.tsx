@@ -70,12 +70,19 @@ export function WebRTCInlinePlayer({
         if (closed) return;
         setStatus("Signaling...");
 
-        // WHEP: POST SDP offer directly to go2rtc API (CORS enabled via origin:"*").
-        // Port comes from go2rtc.status tRPC query — no hardcoded fallback.
+        // WHEP: POST SDP offer to go2rtc.
+        // Over HTTPS (nginx reverse proxy) we must route through the Express /go2rtc/* proxy
+        // because go2rtc itself only speaks plain HTTP — a direct https://host:port request
+        // would fail with ERR_SSL_PROTOCOL_ERROR. Over HTTP (local) we can hit go2rtc directly.
         if (!go2rtcApiPort) throw new Error("go2rtc API port not available yet");
-        const go2rtcHost = serviceIp || window.location.hostname;
-        const go2rtcBase = `${window.location.protocol}//${go2rtcHost}:${go2rtcApiPort}`;
-        const whepUrl = `${go2rtcBase}/api/webrtc?src=${encodeURIComponent(streamName)}`;
+        const isHttps = window.location.protocol === "https:";
+        let whepUrl: string;
+        if (isHttps) {
+          whepUrl = `/go2rtc/api/webrtc?src=${encodeURIComponent(streamName)}`;
+        } else {
+          const go2rtcHost = serviceIp || window.location.hostname;
+          whepUrl = `http://${go2rtcHost}:${go2rtcApiPort}/api/webrtc?src=${encodeURIComponent(streamName)}`;
+        }
         const res = await fetch(whepUrl, {
           method: "POST",
           headers: { "Content-Type": "application/sdp" },
