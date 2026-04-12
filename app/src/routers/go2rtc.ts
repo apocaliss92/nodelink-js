@@ -20,6 +20,7 @@ export const go2rtcRouter = router({
         enabled: settings.go2rtc?.enabled ?? false,
         running: mgr?.isRunning ?? false,
         apiUrl: mgr?.apiUrl ?? null,
+        rtspPort: Number(process.env.GO2RTC_RTSP_PORT) || (settings.go2rtc?.rtspPort ?? 18554),
         streams,
       };
     }),

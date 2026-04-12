@@ -7,6 +7,8 @@ import { PtzPanel } from './PtzPanel';
 import { EventsPanel } from './EventsPanel';
 import { SessionsPanel } from './SessionsPanel';
 import { SessionsDialog } from './SessionsDialog';
+import { CameraLogsPanel } from './CameraLogsPanel';
+import { useConnectionLogs } from './hooks/useConnectionLogs';
 import { trpcQuery, trpcMutation } from '../../api';
 import { withAuthTokenQuery, getCameraDisplayName, getStreamName } from './utils';
 import type {
@@ -42,6 +44,7 @@ interface CameraDetailPanelProps {
   savingAutoStart: boolean;
   onToggleAutoStart: () => void;
   go2rtcApiPort: number | null;
+  go2rtcRtspPort: number | null;
   serviceIp: string;
   onClose: () => void;
 }
@@ -59,6 +62,7 @@ export function CameraDetailPanel({
   savingAutoStart,
   onToggleAutoStart,
   go2rtcApiPort,
+  go2rtcRtspPort,
   serviceIp,
   onClose,
 }: CameraDetailPanelProps) {
@@ -66,7 +70,13 @@ export function CameraDetailPanel({
   const [showPtz, setShowPtz] = useState(false);
   const [showEvents, setShowEvents] = useState(false);
   const [showSessions, setShowSessions] = useState(false);
+  const [showLogs, setShowLogs] = useState(false);
   const [sessionsDialogOpen, setSessionsDialogOpen] = useState(false);
+
+  const connLogs = useConnectionLogs(showLogs ? camera.id : null);
+  const [localLogs, setLocalLogs] = useState(connLogs);
+  // Sync incoming SSE logs into local state so Clear can wipe them client-side
+  useEffect(() => { setLocalLogs(connLogs); }, [connLogs]);
   const [controlsState, setControlsState] = useState<ControlsState>(null);
   const [events, setEvents] = useState<CameraEvent[]>([]);
   const [eventsLoading, setEventsLoading] = useState(false);
@@ -234,6 +244,7 @@ export function CameraDetailPanel({
                   }}
                   streamName={name}
                   go2rtcApiPort={go2rtcApiPort}
+                  go2rtcRtspPort={go2rtcRtspPort}
                   serviceIp={serviceIp}
                 />
               );
@@ -250,6 +261,7 @@ export function CameraDetailPanel({
         onPtz={() => setShowPtz((v) => !v)}
         onEvents={() => setShowEvents((v) => !v)}
         onSessions={() => setShowSessions((v) => !v)}
+        onLogs={() => setShowLogs((v) => !v)}
         onConnect={isConnected ? onDisconnect : onConnect}
         onDebug={onSetDebug}
         onDump={handleDump}
@@ -279,6 +291,15 @@ export function CameraDetailPanel({
           events={events}
           loading={eventsLoading}
           onClose={() => setShowEvents(false)}
+        />
+      )}
+
+      {showLogs && (
+        <CameraLogsPanel
+          cameraName={camera.name || camera.host}
+          logs={localLogs}
+          onClose={() => setShowLogs(false)}
+          onClear={() => setLocalLogs([])}
         />
       )}
 

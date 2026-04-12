@@ -8,6 +8,8 @@ import { PtzPanel } from './PtzPanel';
 import { EventsPanel } from './EventsPanel';
 import { SessionsPanel } from './SessionsPanel';
 import { SessionsDialog } from './SessionsDialog';
+import { CameraLogsPanel } from './CameraLogsPanel';
+import { useConnectionLogs } from './hooks/useConnectionLogs';
 import { useCamerasContext } from './CamerasContext';
 import { trpcQuery, trpcMutation } from '../../api';
 import { withAuthTokenQuery, getCameraDisplayName, getStreamName } from './utils';
@@ -30,12 +32,14 @@ export function CameraDetailPage() {
     savingAutoStart,
     setAutoStartForCamera,
     go2rtcApiPort,
+    go2rtcRtspPort,
     serviceIp,
   } = useCamerasContext();
 
   const [showPtz, setShowPtz] = useState(false);
   const [showEvents, setShowEvents] = useState(false);
   const [showSessions, setShowSessions] = useState(false);
+  const [showLogs, setShowLogs] = useState(false);
   const [sessionsDialogOpen, setSessionsDialogOpen] = useState(false);
   const [controlsState, setControlsState] = useState<ControlsState>(null);
   const [events, setEvents] = useState<CameraEvent[]>([]);
@@ -47,6 +51,10 @@ export function CameraDetailPage() {
 
   const camera = cameras.find((c) => (c.name || c.host) === cameraName);
   const isConnected = camera?.status === 'connected';
+
+  const connLogs = useConnectionLogs(showLogs ? (camera?.id ?? null) : null);
+  const [localLogs, setLocalLogs] = useState(connLogs);
+  useEffect(() => { setLocalLogs(connLogs); }, [connLogs]);
 
   // Fetch controls state when camera is connected and awake
   useEffect(() => {
@@ -205,6 +213,7 @@ export function CameraDetailPage() {
                   }}
                   streamName={name}
                   go2rtcApiPort={go2rtcApiPort}
+                  go2rtcRtspPort={go2rtcRtspPort}
                   serviceIp={serviceIp}
                 />
               );
@@ -216,6 +225,7 @@ export function CameraDetailPage() {
           onPtz={() => setShowPtz((v) => !v)}
           onEvents={() => setShowEvents((v) => !v)}
           onSessions={() => setShowSessions((v) => !v)}
+          onLogs={() => setShowLogs((v) => !v)}
           onConnect={isConnected ? () => disconnect(camera.id) : () => connect(camera.id)}
           onDebug={() => setCameraDebug(camera.id, !camera.debugLogs)}
           onDump={handleDump}
@@ -244,6 +254,15 @@ export function CameraDetailPage() {
             events={events}
             loading={eventsLoading}
             onClose={() => setShowEvents(false)}
+          />
+        )}
+
+        {showLogs && (
+          <CameraLogsPanel
+            cameraName={camera.name || camera.host}
+            logs={localLogs}
+            onClose={() => setShowLogs(false)}
+            onClear={() => setLocalLogs([])}
           />
         )}
 

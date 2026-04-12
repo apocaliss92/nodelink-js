@@ -400,6 +400,33 @@ function attachConnectionListeners(
     }
 
     conn.lastDisconnectTime = Date.now();
+
+    // Battery camera idle disconnect: keep the API and streams alive for on-demand reconnect.
+    // Check BEFORE any cleanup — api.isClosed is only true when api.close() was explicitly
+    // called (hard/user-initiated disconnect). An idle_disconnect only closes the socket,
+    // leaving api.isClosed = false. Calling cleanupManagedConnection first would call
+    // api.close() and flip isClosed to true, making the check always false.
+    const currentConfig = getConfig();
+    const isBatteryIdleDisconnect = getAffectedCameraIds(cameraId).some((camId) => {
+      const cam = currentConfig.cameras.find((c) => c.id === camId);
+      return cam?.isBattery && !conn.api.isClosed;
+    });
+
+    if (isBatteryIdleDisconnect) {
+      // Stop the ping keepalive (no active socket to ping), but leave the API
+      // object and apiConnections entry intact. getOrCreateApiConnection will
+      // call ensureConnected() when next needed, transparently reopening the
+      // socket without waking the camera prematurely.
+      if (conn.pingInterval) {
+        clearInterval(conn.pingInterval);
+        conn.pingInterval = undefined;
+      }
+      cameraLogger.info(
+        "Battery camera idle disconnect — keeping streams alive for on-demand reconnect",
+      );
+      return;
+    }
+
     cameraLogger.warn("Socket closed, cleaning up for reconnection on next use");
 
     // Remove from map FIRST to prevent getOrCreateApiConnection from returning dead conn
@@ -600,9 +627,12 @@ export async function getOrCreateApiConnection(
     await api.login();
     cameraLogger.info("Connected successfully");
 
-    // Detect device type and set flags BEFORE any streaming (critical for socket pooling)
-    const channelCount = await api.getChannelCount();
-    const info = await api.getInfo();
+    // Detect device type and set flags BEFORE any streaming (critical for socket pooling).
+    // getChannelCount and getInfo use independent cmdIds — run in parallel.
+    const [channelCount, info] = await Promise.all([
+      api.getChannelCount(),
+      api.getInfo(),
+    ]);
     const modelLower = (info?.type ?? "").toLowerCase();
     const isNvr =
       isNvrConnection ||
@@ -614,10 +644,12 @@ export async function getOrCreateApiConnection(
     api.setIsNvr(isNvr);
     cameraLogger.info(`setIsNvr(${isNvr}) — model=${info?.type}, channels=${channelCount}`);
 
-    // Detect multifocal/dual-lens (TrackMix, Duo)
+    // Detect multifocal/dual-lens (TrackMix, Duo).
+    // Skipped for battery cameras: they're never dual-lens and this call would
+    // unnecessarily wake the camera during reconnection.
     const channel = camera.rtspChannel ?? 0;
     let isMultifocal = false;
-    if (!isNvrConnection) {
+    if (!isNvrConnection && !camera.isBattery) {
       try {
         const dualLensAnalysis = await api.getDualLensChannelInfo(
           isNvr ? channel : 0,

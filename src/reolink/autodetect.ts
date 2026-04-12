@@ -459,11 +459,11 @@ export async function autoDetectDeviceType(
         );
 
         // Reuse the same detection logic used by the fallback path.
-        const deviceInfo = await udpApi.getInfo();
-        const capabilities = await udpApi.getDeviceCapabilities();
-        const hostNetworkInfo = await udpApi
-          .getNetworkInfo(undefined, { timeoutMs: 1200 })
-          .catch(() => undefined);
+        const [deviceInfo, capabilities, hostNetworkInfo] = await Promise.all([
+          udpApi.getInfo(),
+          udpApi.getDeviceCapabilities(),
+          udpApi.getNetworkInfo(undefined, { timeoutMs: 1200 }).catch(() => undefined),
+        ]);
         const channelNum = capabilities?.support?.channelNum ?? 1;
         const model = deviceInfo.type?.trim();
 
@@ -598,62 +598,65 @@ export async function autoDetectDeviceType(
     // - Host cmd_id 80 (GetDevInfo)
     // - Channel cmd_id 318 (GetDevInfo per channel)
     // Some older devices respond to one but not the other.
-    const infoProbe = await runProbeVariants<Partial<ReolinkDeviceInfo>>(
-      "getInfo",
-      [
+    // Run infoProbe and supportProbe in parallel — they use independent cmdIds
+    // and the Baichuan protocol supports concurrent requests on the same socket.
+    const [infoProbe, supportProbe] = await Promise.all([
+      runProbeVariants<Partial<ReolinkDeviceInfo>>(
+        "getInfo",
+        [
+          {
+            variant: "cmd80 class=0x6414",
+            op: () =>
+              api.getInfo(undefined, {
+                timeoutMs: 2500,
+                messageClass: BC_CLASS_MODERN_24,
+              }),
+          },
+          {
+            variant: "cmd80 class=0x6614",
+            op: () =>
+              api.getInfo(undefined, {
+                timeoutMs: 3000,
+                messageClass: BC_CLASS_MODERN_20,
+              }),
+          },
+          {
+            variant: "cmd318(ch0) class=0x6414",
+            op: () =>
+              api.getInfo(0, {
+                timeoutMs: 3000,
+                messageClass: BC_CLASS_MODERN_24,
+              }),
+          },
+          {
+            variant: "cmd318(ch0) class=0x6614",
+            op: () =>
+              api.getInfo(0, {
+                timeoutMs: 3500,
+                messageClass: BC_CLASS_MODERN_20,
+              }),
+          },
+        ],
+      ),
+      // Support probes (cmd 199). Some firmwares may not support it or are slow.
+      runProbeVariants<any>("getSupportInfo", [
         {
-          variant: "cmd80 class=0x6414",
+          variant: "cmd199 class=0x6414",
           op: () =>
-            api.getInfo(undefined, {
+            api.getSupportInfo({
               timeoutMs: 2500,
               messageClass: BC_CLASS_MODERN_24,
             }),
         },
         {
-          variant: "cmd80 class=0x6614",
+          variant: "cmd199 class=0x6614",
           op: () =>
-            api.getInfo(undefined, {
-              timeoutMs: 3000,
-              messageClass: BC_CLASS_MODERN_20,
-            }),
-        },
-        {
-          variant: "cmd318(ch0) class=0x6414",
-          op: () =>
-            api.getInfo(0, {
-              timeoutMs: 3000,
-              messageClass: BC_CLASS_MODERN_24,
-            }),
-        },
-        {
-          variant: "cmd318(ch0) class=0x6614",
-          op: () =>
-            api.getInfo(0, {
+            api.getSupportInfo({
               timeoutMs: 3500,
               messageClass: BC_CLASS_MODERN_20,
             }),
         },
-      ],
-    );
-
-    // Support probes (cmd 199). Some firmwares may not support it or are slow.
-    const supportProbe = await runProbeVariants<any>("getSupportInfo", [
-      {
-        variant: "cmd199 class=0x6414",
-        op: () =>
-          api.getSupportInfo({
-            timeoutMs: 2500,
-            messageClass: BC_CLASS_MODERN_24,
-          }),
-      },
-      {
-        variant: "cmd199 class=0x6614",
-        op: () =>
-          api.getSupportInfo({
-            timeoutMs: 3500,
-            messageClass: BC_CLASS_MODERN_20,
-          }),
-      },
+      ]),
     ]);
 
     const deviceInfo = infoProbe?.value;
@@ -788,11 +791,11 @@ export async function autoDetectDeviceType(
           BaichuanClientOptions["udpDiscoveryMethod"]
         >,
       ): Promise<AutoDetectResult> => {
-        const deviceInfo = await udpApi.getInfo();
-        const capabilities = await udpApi.getDeviceCapabilities();
-        const hostNetworkInfo = await udpApi
-          .getNetworkInfo(undefined, { timeoutMs: 1200 })
-          .catch(() => undefined);
+        const [deviceInfo, capabilities, hostNetworkInfo] = await Promise.all([
+          udpApi.getInfo(),
+          udpApi.getDeviceCapabilities(),
+          udpApi.getNetworkInfo(undefined, { timeoutMs: 1200 }).catch(() => undefined),
+        ]);
         const channelNum = capabilities?.support?.channelNum ?? 1;
         const model = deviceInfo.type?.trim();
 

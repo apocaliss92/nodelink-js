@@ -635,6 +635,31 @@ export class Go2rtcTcpServer extends EventEmitter<{
 
   private async startNativeStream(): Promise<void> {
     if (this.nativeStreamActive) return;
+
+    // Ensure the API's control socket is connected. Battery cameras use
+    // idle_disconnect: the control socket closes between stream sessions but
+    // the API object stays valid (isClosed = false). ensureConnected()
+    // reconnects transparently on-demand.
+    if (!this.api.isReady) {
+      if (this.api.isClosed) {
+        this.logger.warn?.(
+          `[Go2rtcTcpServer] API has been explicitly closed — stream cannot start`,
+        );
+        return;
+      }
+      try {
+        this.logger.info?.(
+          `[Go2rtcTcpServer] API not ready (idle disconnect?), calling ensureConnected`,
+        );
+        await this.api.ensureConnected();
+      } catch (e) {
+        this.logger.warn?.(
+          `[Go2rtcTcpServer] ensureConnected failed, aborting stream start: ${e}`,
+        );
+        return;
+      }
+    }
+
     this.nativeStreamActive = true;
 
     // Acquire dedicated session if deviceId is set

@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { Move, Bell, Users, Plug, Bug, Download, Power, Trash2 } from 'lucide-react';
+import { Move, Bell, Users, Plug, Bug, Download, Power, Trash2, ScrollText } from 'lucide-react';
 
 interface ActionsGridProps {
   onPtz: () => void;
   onEvents: () => void;
   onSessions: () => void;
+  onLogs: () => void;
   onConnect: () => void;
   onDebug: () => void;
   onDump: () => void;
@@ -21,6 +22,7 @@ export function ActionsGrid({
   onPtz,
   onEvents,
   onSessions,
+  onLogs,
   onConnect,
   onDebug,
   onDump,
@@ -44,6 +46,7 @@ export function ActionsGrid({
         <button className={btnClass} onClick={onPtz}><Move size={13} /> PTZ</button>
         <button className={btnClass} onClick={onEvents}><Bell size={13} /> Events</button>
         <button className={btnClass} onClick={onSessions}><Users size={13} /> Sessions</button>
+        <button className={btnClass} onClick={onLogs}><ScrollText size={13} /> Logs</button>
         <button className={btnClass} onClick={onConnect} disabled={connecting}>
           <Plug size={13} /> {isConnected ? 'Disconnect' : 'Connect'}
         </button>

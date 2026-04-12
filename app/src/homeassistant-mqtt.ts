@@ -122,8 +122,24 @@ async function fetchCameraState(
 
   await safeCall(() => api.getInfo(channel), "info");
   await safeCall(() => api.getChannelCount(), "channelCount");
-  await safeCall(() => api.getBatteryInfo(channel), "batteryInfo");
-  await safeCall(() => api.getMotionAlarm(channel), "motionAlarm");
+  await safeCall(async () => {
+    const raw = await api.getBatteryInfo(channel);
+    if (!raw || typeof raw !== "object") return raw;
+    // Strip large binary fields (valueTable is a 96×64 base64 grid, body is raw frame data)
+    // that cause Home Assistant "Value error while updating state" when serialized.
+    const { valueTable: _vt, body: _body, ...sanitized } = raw as Record<string, unknown>;
+    return sanitized;
+  }, "batteryInfo");
+  await safeCall(async () => {
+    const raw = await api.getMotionAlarm(channel);
+    // Strip the 96×64 base64 sensitivity grid — large binary, not useful in HA.
+    const scope = (raw as any)?.body?.MD?.scope;
+    if (scope && typeof scope === "object" && "valueTable" in scope) {
+      const { valueTable: _vt, ...scopeWithout } = scope as Record<string, unknown>;
+      (raw as any).body.MD.scope = scopeWithout;
+    }
+    return raw;
+  }, "motionAlarm");
   await safeCall(() => api.getAiState(channel), "aiState");
 
   // Fetch AI state per detection type (people, vehicle, dog_cat, face, package)
@@ -159,7 +175,17 @@ async function fetchCameraState(
   await safeCall(() => api.getWifi(channel), "wifi");
   await safeCall(() => api.getNetworkInfo(), "networkInfo");
   await safeCall(() => api.getRecordCfg(channel), "recordCfg");
-  await safeCall(() => api.getRecordSchedule(channel), "recordSchedule");
+  await safeCall(async () => {
+    const raw = await api.getRecordSchedule(channel);
+    // Strip valueTable (base64 schedule grid) from each schedule type entry.
+    if (Array.isArray(raw?.typeScheduleList)) {
+      return {
+        ...raw,
+        typeScheduleList: raw.typeScheduleList.map(({ valueTable: _vt, ...rest }) => rest),
+      };
+    }
+    return raw;
+  }, "recordSchedule");
   await safeCall(() => api.getSystemGeneral(), "systemGeneral");
   await safeCall(() => api.getPirInfo(channel), "pirInfo");
   await safeCall(() => api.getPtzPosition(channel), "ptzPosition");
@@ -168,7 +194,17 @@ async function fetchCameraState(
 
   // Siren on motion (when hasSiren)
   if (state.capabilities?.hasSiren) {
-    await safeCall(() => api.getSirenOnMotion(channel), "sirenOnMotion");
+    await safeCall(async () => {
+      const raw = await api.getSirenOnMotion(channel);
+      // Strip valueTable (base64 schedule grids) from AudioTask schedule items.
+      const items = raw?.body?.AudioTask?.typeScheduleList?.item;
+      if (Array.isArray(items)) {
+        (raw as any).body.AudioTask.typeScheduleList.item = items.map(
+          ({ valueTable: _vt, ...rest }: Record<string, unknown>) => rest,
+        );
+      }
+      return raw;
+    }, "sirenOnMotion");
   }
   // Floodlight on motion (when hasFloodlight)
   if (state.capabilities?.hasFloodlight) {

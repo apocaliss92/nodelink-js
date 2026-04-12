@@ -11,10 +11,11 @@ interface StreamProfileCardProps {
   onPreview: () => void;
   streamName: string;
   go2rtcApiPort: number | null;
+  go2rtcRtspPort: number | null;
   serviceIp: string;
 }
 
-export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, streamName, go2rtcApiPort, serviceIp }: StreamProfileCardProps) {
+export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, streamName, go2rtcApiPort, go2rtcRtspPort, serviceIp }: StreamProfileCardProps) {
   const isActive = rtspServer?.status === 'running';
   const [diagStatus, setDiagStatus] = useState<'idle' | 'running' | 'complete' | 'error'>('idle');
   const [urlsOpen, setUrlsOpen] = useState(false);
@@ -28,6 +29,11 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, str
   const snapshotUrl = go2rtcBase ? `${go2rtcBase}/api/frame.jpeg?src=${src}` : '';
   const mp4Url = go2rtcBase ? `${go2rtcBase}/api/stream.mp4?src=${src}` : '';
   const mseUrl = go2rtcBase ? `${go2rtcBase}/stream.html?src=${src}&mode=mse` : '';
+  // RTSP URL is deterministic from the stream name and RTSP port — show it even when stream is idle.
+  // Falls back to the running server's URL if available (e.g., legacy non-go2rtc mode).
+  const rtspUrl = go2rtcRtspPort
+    ? `rtsp://${go2rtcHost}:${go2rtcRtspPort}/${streamName}`
+    : rtspServer?.rtspUrl ?? '';
 
   const startAnalysis = async () => {
     setDiagStatus('running');
@@ -112,9 +118,9 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, str
             </button>
             {urlsOpen && (
               <div className="absolute bottom-full left-0 mb-1 z-10 rounded-md border border-[var(--color-border)] bg-[var(--color-background-elevated)] shadow-lg py-1 min-w-[160px]">
-                {rtspServer?.rtspUrl && (
+                {rtspUrl && (
                   <button
-                    onClick={() => { void copyToClipboard(rtspServer.rtspUrl!); setUrlsOpen(false); }}
+                    onClick={() => { void copyToClipboard(rtspUrl); setUrlsOpen(false); }}
                     className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)] flex items-center gap-1.5"
                   >
                     <Copy size={9} /> Copy RTSP URL

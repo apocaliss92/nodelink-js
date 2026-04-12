@@ -2349,6 +2349,31 @@ export class BaichuanRtspServer extends EventEmitter<{
       return;
     }
 
+    // Ensure the API's control socket is connected before starting the stream.
+    // Battery cameras use idle_disconnect: the control socket closes after a
+    // period of inactivity but the API object stays valid (isClosed = false).
+    // ensureConnected() reconnects transparently so the stream can start
+    // without requiring a full reconnect at the manager level.
+    if (!this.api.isReady) {
+      if (this.api.isClosed) {
+        this.logger.warn?.(
+          `[rebroadcast] API has been explicitly closed — stream cannot start  profile=${this.profile}`,
+        );
+        return;
+      }
+      try {
+        this.logger.info?.(
+          `[rebroadcast] API not ready (idle disconnect?), calling ensureConnected  profile=${this.profile}`,
+        );
+        await this.api.ensureConnected();
+      } catch (e) {
+        this.logger.warn?.(
+          `[rebroadcast] ensureConnected failed, aborting stream start: ${e}`,
+        );
+        return;
+      }
+    }
+
     this.nativeStreamActive = true;
     this.firstFrameReceived = false;
     this.firstAudioDetected = false;

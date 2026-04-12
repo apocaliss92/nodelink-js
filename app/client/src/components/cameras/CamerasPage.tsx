@@ -174,6 +174,7 @@ export function CamerasPage() {
                 savingAutoStart={savingAutoStart[selectedCamera.id] ?? false}
                 onToggleAutoStart={() => void setAutoStartForCamera(selectedCamera, !selectedCamera.autoStart)}
                 go2rtcApiPort={camerasHook.go2rtcApiPort}
+                go2rtcRtspPort={camerasHook.go2rtcRtspPort}
                 serviceIp={camerasHook.serviceIp}
                 onClose={() => selectCamera(null)}
               />

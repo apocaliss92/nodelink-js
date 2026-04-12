@@ -54,6 +54,7 @@ export function useCameras() {
     connections: number;
   }>(null);
   const [go2rtcApiPort, setGo2rtcApiPort] = useState<number | null>(null);
+  const [go2rtcRtspPort, setGo2rtcRtspPort] = useState<number | null>(null);
   const [serviceIp, setServiceIp] = useState<string>("");
   const [streamsLoadingByCamera, setStreamsLoadingByCamera] = useState<
     Record<string, boolean>
@@ -94,7 +95,7 @@ export function useCameras() {
         trpcQuery<any>("rtspProxy.getStatus").catch(() => null),
         trpcQuery<any[]>("rtsp.list").catch(() => []),
         trpcQuery<NvrInfo[]>("cameras.listNvrs").catch(() => []),
-        trpcQuery<{ apiUrl: string | null; running: boolean }>("go2rtc.status").catch(() => null),
+        trpcQuery<{ apiUrl: string | null; running: boolean; rtspPort?: number }>("go2rtc.status").catch(() => null),
         trpcQuery<{ serviceIp?: string }>("settings.get").catch(() => null),
         trpcQuery<{ rtspSource?: "go2rtc" | "local" }>("go2rtc.getSettings").catch(() => null),
       ]);
@@ -108,6 +109,7 @@ export function useCameras() {
             if (port) setGo2rtcApiPort(Number(port));
           } catch { /* ignore */ }
         }
+        if (go2rtcSt.rtspPort) setGo2rtcRtspPort(go2rtcSt.rtspPort);
       }
       updateIfChanged(setCameras, list);
 
@@ -443,6 +445,7 @@ export function useCameras() {
     rtspServers,
     rtspProxyStatus,
     go2rtcApiPort,
+    go2rtcRtspPort,
     serviceIp,
     go2rtcRunning,
     go2rtcToggling,
