@@ -1684,7 +1684,10 @@ export async function registerPreConnectedApi(
   api: ReolinkBaichuanApi,
 ): Promise<void> {
   const connKey = getConnectionKey(cameraId);
-  const cameraLogger = createSourceLogger(`camera:${connKey}`);
+  const config = getConfig();
+  const camera = config.cameras.find((c) => c.id === cameraId);
+  const cameraName = camera?.name || camera?.host || cameraId;
+  const cameraLogger = createSourceLogger(`camera:${cameraName}`, cameraId);
 
   // If there's already a live connection for this key, close the old one
   const existing = apiConnections.get(connKey);
@@ -1705,7 +1708,13 @@ export async function registerPreConnectedApi(
 
   // Attach lifecycle management (same as getOrCreateApiConnection)
   attachConnectionListeners(connKey, conn);
-  startPingKeepalive(connKey, conn);
+  // Skip ping keepalive for battery cameras — pings would force-wake the camera
+  // every PING_INTERVAL_MS, defeating idle disconnect and draining the battery.
+  if (!camera?.isBattery) {
+    startPingKeepalive(connKey, conn);
+  } else {
+    cameraLogger.info("Ping keepalive disabled — battery camera");
+  }
   apiConnections.set(connKey, conn);
 
   // Notify listeners for all affected cameras
