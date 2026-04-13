@@ -13,6 +13,7 @@ export default [
       "app/node_modules/**",
       "_refs/**",
       ".tmp/**",
+      ".nx/**",
       ".venv/**",
       "**/.venv/**",
       ".venv*/**",

@@ -117,7 +117,6 @@ export function CameraDetailPanel({
     trpcQuery<ControlsState>('cameras.getControlsState', { id: camera.id })
       .then((st) => setControlsState(st ?? null))
       .catch(() => setControlsState(null));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [camera.id, isConnected]);
 
   // Fetch events when events panel opens
