@@ -9,6 +9,7 @@ import { EventsPanel } from './EventsPanel';
 import { SessionsPanel } from './SessionsPanel';
 import { SessionsDialog } from './SessionsDialog';
 import { CameraLogsPanel } from './CameraLogsPanel';
+import { ConnectionPanel } from './ConnectionPanel';
 import { useConnectionLogs } from './hooks/useConnectionLogs';
 import { useCamerasContext } from './CamerasContext';
 import { trpcQuery, trpcMutation } from '../../api';
@@ -40,6 +41,7 @@ export function CameraDetailPage() {
   const [showEvents, setShowEvents] = useState(false);
   const [showSessions, setShowSessions] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
+  const [showConnection, setShowConnection] = useState(false);
   const [sessionsDialogOpen, setSessionsDialogOpen] = useState(false);
   const [controlsState, setControlsState] = useState<ControlsState>(null);
   const [events, setEvents] = useState<CameraEvent[]>([]);
@@ -56,14 +58,17 @@ export function CameraDetailPage() {
   const [localLogs, setLocalLogs] = useState(connLogs);
   useEffect(() => { setLocalLogs(connLogs); }, [connLogs]);
 
-  // Fetch controls state when camera is connected (works even when sleeping — capabilities
-  // come from cache; live state will be undefined until the camera wakes)
+  // Fetch controls state when camera connects.
+  // sleepStatus intentionally excluded: server returns isSleeping=true with cached
+  // capabilities when the camera is idle-disconnected, so polling on sleep transitions
+  // would create a reconnect loop. The state refreshes on the next connect event.
   useEffect(() => {
     if (!camera || !isConnected) return;
     trpcQuery<ControlsState>('cameras.getControlsState', { id: camera.id })
       .then((st) => setControlsState(st ?? null))
       .catch(() => setControlsState(null));
-  }, [camera?.id, isConnected, camera?.sleepStatus]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [camera?.id, isConnected]);
 
   // Fetch events when events panel opens
   useEffect(() => {
@@ -216,6 +221,7 @@ export function CameraDetailPage() {
                   go2rtcApiPort={go2rtcApiPort}
                   go2rtcRtspPort={go2rtcRtspPort}
                   serviceIp={serviceIp}
+                  isBattery={camera.isBattery}
                 />
               );
             })}
@@ -227,6 +233,7 @@ export function CameraDetailPage() {
           onEvents={() => setShowEvents((v) => !v)}
           onSessions={() => setShowSessions((v) => !v)}
           onLogs={() => setShowLogs((v) => !v)}
+          onConnection={() => setShowConnection((v) => !v)}
           onConnect={isConnected ? () => disconnect(camera.id) : () => connect(camera.id)}
           onDebug={() => setCameraDebug(camera.id, !camera.debugLogs)}
           onDump={handleDump}
@@ -264,6 +271,13 @@ export function CameraDetailPage() {
             logs={localLogs}
             onClose={() => setShowLogs(false)}
             onClear={() => setLocalLogs([])}
+          />
+        )}
+
+        {showConnection && (
+          <ConnectionPanel
+            camera={camera}
+            onClose={() => setShowConnection(false)}
           />
         )}
 

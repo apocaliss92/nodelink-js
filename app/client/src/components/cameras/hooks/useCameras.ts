@@ -372,9 +372,10 @@ export function useCameras() {
 
   useEffect(() => {
     // Discover streams for connected cameras that don't have cached streams yet.
-    // Skip sleeping cameras — they'll be discovered when they wake up.
+    // Sleeping battery cameras are included: the server returns a lightweight cached
+    // profile list without waking the camera, so the UI can show preview/URL buttons.
     const connected = cameras.filter(
-      (c) => c.status === "connected" && !streamsByCamera[c.id] && c.sleepStatus !== "sleeping",
+      (c) => c.status === "connected" && !streamsByCamera[c.id],
     );
     if (connected.length === 0) return;
 
@@ -412,7 +413,7 @@ export function useCameras() {
 
   useEffect(() => {
     const t = window.setInterval(() => {
-      const connected = cameras.filter((c) => c.status === "connected" && c.sleepStatus !== "sleeping");
+      const connected = cameras.filter((c) => c.status === "connected");
       for (const cam of connected) {
         const streams = streamsByCamera[cam.id];
         const attempts = streamsDiscoveryAttemptsByCamera[cam.id] ?? 0;

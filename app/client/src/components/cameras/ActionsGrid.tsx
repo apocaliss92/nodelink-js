@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Move, Bell, Users, Plug, Bug, Download, Power, Trash2, ScrollText } from 'lucide-react';
+import { Move, Bell, Users, Plug, Bug, Download, Power, Trash2, ScrollText, Network } from 'lucide-react';
 
 interface ActionsGridProps {
   onPtz: () => void;
@@ -9,7 +9,8 @@ interface ActionsGridProps {
   onConnect: () => void;
   onDebug: () => void;
   onDump: () => void;
-  onDelete: () => void;
+  onDelete?: () => void;
+  onConnection: () => void;
   dumping: boolean;
   isConnected: boolean;
   connecting: boolean;
@@ -27,6 +28,7 @@ export function ActionsGrid({
   onDebug,
   onDump,
   onDelete,
+  onConnection,
   dumping,
   isConnected,
   connecting,
@@ -47,6 +49,7 @@ export function ActionsGrid({
         <button className={btnClass} onClick={onEvents}><Bell size={13} /> Events</button>
         <button className={btnClass} onClick={onSessions}><Users size={13} /> Sessions</button>
         <button className={btnClass} onClick={onLogs}><ScrollText size={13} /> Logs</button>
+        <button className={`${btnClass} col-span-2`} onClick={onConnection}><Network size={13} /> Connection mode</button>
         <button className={btnClass} onClick={onConnect} disabled={connecting}>
           <Plug size={13} /> {isConnected ? 'Disconnect' : 'Connect'}
         </button>
@@ -57,7 +60,7 @@ export function ActionsGrid({
         <button className={`${btnClass} col-span-2`} onClick={onToggleAutoStart} disabled={savingAutoStart || !isConnected}>
           <Power size={13} /> Auto-start: {autoStart ? 'ON' : 'OFF'}
         </button>
-        {confirmDelete ? (
+        {onDelete && (confirmDelete ? (
           <div className="col-span-2 flex gap-1.5">
             <button
               className={`${btnClass} flex-1 border-[var(--color-danger)]/50 text-[var(--color-danger)] hover:bg-[var(--color-danger)]/10`}
@@ -76,7 +79,7 @@ export function ActionsGrid({
           >
             <Trash2 size={13} /> Delete camera
           </button>
-        )}
+        ))}
       </div>
     </div>
   );

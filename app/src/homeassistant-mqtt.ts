@@ -1,1220 +1,785 @@
 /**
- * Home Assistant MQTT integration: forwards camera device state to MQTT
- * for Home Assistant discovery, state updates, and control entities.
- * Uses getDeviceCapabilities to determine which entities to expose.
+ * Home Assistant MQTT integration for Reolink cameras.
+ *
+ * Architecture:
+ *   - One state topic per entity (no Jinja2 templating).
+ *   - Device-based MQTT discovery: a single retained message per camera
+ *     at `homeassistant/device/nodelink-js-{cameraId}/config` carrying
+ *     all entities under `cmps`.
+ *   - Event-driven: camera events are forwarded to per-entity state
+ *     topics as they happen (motion, visitor, battery, sleeping, ...).
+ *   - Minimal polling: control state (floodlight/siren/PIR/autotracking)
+ *     is fetched once at connect time to seed initial switch states.
+ *
+ * The standalone discovery primitives live in `./mqtt-ha/`. This file
+ * is the application-specific glue between Reolink APIs and that
+ * library.
  */
 
 import type {
   ReolinkBaichuanApi,
+  ReolinkSimpleEvent,
   DeviceCapabilities,
-  DeviceCapabilitiesResult,
 } from "@apocaliss92/nodelink-js";
-import { getMqttClient, setOnMqttConnected } from "./events-manager.js";
+
 import {
   onApiConnected,
   onApiDisconnected,
   getCameraInfo,
-  sanitizeCameraName,
 } from "./rtsp-manager.js";
 import { getConfig, getSettings } from "./settings-store.js";
 import { readAppVersion } from "./app-version.js";
 import { createSourceLogger } from "./logger.js";
 
+import {
+  MqttClient as HaMqttClient,
+  publishMqttDeviceDiscovery,
+  clearMqttDevice,
+  getMqttTopics,
+  getControlEntities,
+  getDetectionEntities,
+  getStatusEntities,
+  getBatteryEntities,
+  getWifiEntities,
+  PAYLOAD_ON,
+  PAYLOAD_OFF,
+  type MqttDeviceInfo,
+  type MqttEntity,
+  type IHaClient,
+} from "./mqtt-ha/index.js";
+
 const logger = createSourceLogger("homeassistant-mqtt");
 
-const BRIDGE_DEVICE_ID = "nodelink_manager";
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
 
-/** Cameras to poll: cameraId -> api */
-const camerasToPoll = new Map<string, ReolinkBaichuanApi>();
-let pollTimer: ReturnType<typeof setInterval> | null = null;
-let mqttSubscribeSetup = false;
-let mqttMessageHandlerSetup = false;
+const ID_PREFIX = "nodelink-js";
+const NAME_PREFIX = "Nodelink.js";
+const ORIGIN_URL = "https://github.com/apocaliss92/nodelink-js";
+const BRIDGE_DEVICE_ID = "nodelink-manager";
 
-interface CameraDeviceState {
+/** How long a momentary detection event stays "on" before auto-resetting. */
+const DETECTION_RESET_MS = 30_000;
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+
+let haClient: IHaClient | undefined;
+let bridgePublished = false;
+
+interface RegisteredCamera {
   cameraId: string;
-  cameraName: string;
-  cameraNameSlug: string;
+  api: ReolinkBaichuanApi;
   channel: number;
-  timestamp: number;
-  capabilities?: DeviceCapabilities;
-  info?: Record<string, unknown>;
-  batteryInfo?: Record<string, unknown>;
-  motionAlarm?: Record<string, unknown>;
-  aiState?: Record<string, unknown>;
-  /** Per-type AI detection state: { people: { enabled: 1 }, vehicle: { enabled: 0 }, ... } */
-  aiStatePerType?: Record<string, { enabled: number }>;
-  whiteLedState?: Record<string, unknown>;
-  siren?: Record<string, unknown>;
-  ledState?: Record<string, unknown>;
-  sleepState?: Record<string, unknown>;
-  wifiSignal?: Record<string, unknown>;
-  wifi?: Record<string, unknown>;
-  networkInfo?: Record<string, unknown>;
-  recordCfg?: Record<string, unknown>;
-  recordSchedule?: Record<string, unknown>;
-  systemGeneral?: Record<string, unknown>;
-  pirInfo?: Record<string, unknown>;
-  ptzPosition?: Record<string, unknown>;
-  zoomFocus?: Record<string, unknown>;
-  channelCount?: number;
-  channelInfo?: Record<string, unknown>[];
-  ptzPresets?: Array<{ id: number; name: string }>;
-  currentPresetName?: string;
-  /** AudioTask: body.AudioTask.enable (0/1) */
-  sirenOnMotion?: Record<string, unknown>;
-  floodlightOnMotion?: { floodlightOnMotion: boolean; enabled?: boolean };
-  autotracking?: {
-    enabled: boolean;
-    smartTrackType?: string;
-    smartTrackObjectStopDelay?: number;
-    smartTrackObjectDisappearDelay?: number;
-  };
-  error?: string;
+  entities: MqttEntity[];
+  deviceInfo: MqttDeviceInfo;
+  /** Topics currently subscribed (for cleanup on disconnect). */
+  commandTopics: Set<string>;
+  /** Pending detection-reset timers, keyed by entity name. */
+  detectionResetTimers: Map<string, NodeJS.Timeout>;
+  /** Listener registered with `api.onSimpleEvent` — kept for `offSimpleEvent`. */
+  eventListener?: (event: ReolinkSimpleEvent) => void;
 }
 
-function getCameraUniqueId(cameraId: string): string {
-  return `nodelink_${cameraId.replace(/[^a-zA-Z0-9]/g, "_")}`;
+const cameras = new Map<string, RegisteredCamera>();
+
+// ---------------------------------------------------------------------------
+// Settings helpers
+// ---------------------------------------------------------------------------
+
+interface HaConnectionContext {
+  brokerUrl: string;
+  username?: string;
+  password?: string;
+  clientId?: string;
 }
 
-async function fetchCameraState(
-  cameraId: string,
-  api: ReolinkBaichuanApi,
-  channel: number,
-): Promise<CameraDeviceState> {
-  const config = getConfig();
-  const camera = config.cameras.find((c) => c.id === cameraId);
-  const info = getCameraInfo(cameraId);
-  const cameraName = camera?.name ?? info?.name ?? cameraId;
-  const cameraNameSlug = sanitizeCameraName(cameraName);
-
-  const state: CameraDeviceState = {
-    cameraId,
-    cameraName,
-    cameraNameSlug,
-    channel,
-    timestamp: Date.now(),
-  };
-
-  const safeCall = async <T>(
-    fn: () => Promise<T>,
-    key: keyof CameraDeviceState,
-  ): Promise<void> => {
-    try {
-      const result = await fn();
-      const stateRecord = state as unknown as Record<string, unknown>;
-      stateRecord[key as string] =
-        result && typeof result === "object"
-          ? (result as Record<string, unknown>)
-          : result;
-    } catch {
-      // Omit failed calls
-    }
-  };
-
-  // Get device capabilities first to guide which APIs to call
-  let capsResult: DeviceCapabilitiesResult | undefined;
-  try {
-    capsResult = await api.getDeviceCapabilities(channel);
-    state.capabilities = capsResult.capabilities;
-  } catch {
-    // Continue without capabilities - will expose entities based on data availability
-  }
-
-  await safeCall(() => api.getInfo(channel), "info");
-  await safeCall(() => api.getChannelCount(), "channelCount");
-  await safeCall(async () => {
-    const raw = await api.getBatteryInfo(channel);
-    if (!raw || typeof raw !== "object") return raw;
-    // Strip large binary fields (valueTable is a 96×64 base64 grid, body is raw frame data)
-    // that cause Home Assistant "Value error while updating state" when serialized.
-    const { valueTable: _vt, body: _body, ...sanitized } = raw as Record<string, unknown>;
-    return sanitized;
-  }, "batteryInfo");
-  await safeCall(async () => {
-    const raw = await api.getMotionAlarm(channel);
-    // Strip the 96×64 base64 sensitivity grid — large binary, not useful in HA.
-    const scope = (raw as any)?.body?.MD?.scope;
-    if (scope && typeof scope === "object" && "valueTable" in scope) {
-      const { valueTable: _vt, ...scopeWithout } = scope as Record<string, unknown>;
-      (raw as any).body.MD.scope = scopeWithout;
-    }
-    return raw;
-  }, "motionAlarm");
-  await safeCall(() => api.getAiState(channel), "aiState");
-
-  // Fetch AI state per detection type (people, vehicle, dog_cat, face, package)
-  try {
-    const aiTypes =
-      capsResult?.objects ??
-      (await api.getAiDetectTypes(channel, { timeoutMs: 1500 })) ??
-      ["people", "vehicle", "dog_cat", "face", "package"];
-    const aiStatePerType: Record<string, { enabled: number }> = {};
-    for (const type of aiTypes) {
-      try {
-        const raw = await api.getAiAlarmRaw(channel, type, { timeoutMs: 2000 });
-        const enabled = raw?.body?.AiAlarm?.enabled;
-        if (enabled !== undefined) {
-          aiStatePerType[type] = { enabled: Number(enabled) };
-        }
-      } catch {
-        // Skip unsupported types
-      }
-    }
-    if (Object.keys(aiStatePerType).length > 0) {
-      state.aiStatePerType = aiStatePerType;
-    }
-  } catch {
-    // Omit if all fail
-  }
-
-  await safeCall(() => api.getWhiteLedState(channel), "whiteLedState");
-  await safeCall(() => api.getSiren(channel), "siren");
-  await safeCall(() => api.getLedState(channel), "ledState");
-  await safeCall(() => api.getSleepState(channel), "sleepState");
-  await safeCall(() => api.getWifiSignal(channel), "wifiSignal");
-  await safeCall(() => api.getWifi(channel), "wifi");
-  await safeCall(() => api.getNetworkInfo(), "networkInfo");
-  await safeCall(() => api.getRecordCfg(channel), "recordCfg");
-  await safeCall(async () => {
-    const raw = await api.getRecordSchedule(channel);
-    // Strip valueTable (base64 schedule grid) from each schedule type entry.
-    if (Array.isArray(raw?.typeScheduleList)) {
-      return {
-        ...raw,
-        typeScheduleList: raw.typeScheduleList.map(({ valueTable: _vt, ...rest }) => rest),
-      };
-    }
-    return raw;
-  }, "recordSchedule");
-  await safeCall(() => api.getSystemGeneral(), "systemGeneral");
-  await safeCall(() => api.getPirInfo(channel), "pirInfo");
-  await safeCall(() => api.getPtzPosition(channel), "ptzPosition");
-  await safeCall(() => api.getZoomFocus(channel), "zoomFocus");
-  await safeCall(() => api.getPtzPresets(channel), "ptzPresets");
-
-  // Siren on motion (when hasSiren)
-  if (state.capabilities?.hasSiren) {
-    await safeCall(async () => {
-      const raw = await api.getSirenOnMotion(channel);
-      // Strip valueTable (base64 schedule grids) from AudioTask schedule items.
-      const items = raw?.body?.AudioTask?.typeScheduleList?.item;
-      if (Array.isArray(items)) {
-        (raw as any).body.AudioTask.typeScheduleList.item = items.map(
-          ({ valueTable: _vt, ...rest }: Record<string, unknown>) => rest,
-        );
-      }
-      return raw;
-    }, "sirenOnMotion");
-  }
-  // Floodlight on motion (when hasFloodlight)
-  if (state.capabilities?.hasFloodlight) {
-    await safeCall(() => api.getFloodlightOnMotion(channel), "floodlightOnMotion");
-  }
-  // Autotracking (when hasAutotracking)
-  if (state.capabilities?.hasAutotracking) {
-    try {
-      const at = await api.getAutotracking(channel, { timeoutMs: 2000 });
-      const raw = (at as unknown as { raw?: Record<string, unknown> }).raw;
-      const body = raw?.body as Record<string, unknown> | undefined;
-      const cfg =
-        body?.AiCfg ?? (raw as Record<string, unknown>)?.AiCfg ?? {};
-      const cfgObj = cfg as Record<string, unknown>;
-      state.autotracking = {
-        enabled: at.enabled,
-        smartTrackType: (at.smartTrackType ?? cfgObj.smartTrackType) as
-          | string
-          | undefined,
-        smartTrackObjectStopDelay:
-          cfgObj.smartTrackObjectStopDelay != null
-            ? Number(cfgObj.smartTrackObjectStopDelay)
-            : undefined,
-        smartTrackObjectDisappearDelay:
-          cfgObj.smartTrackObjectDisappearDelay != null
-            ? Number(cfgObj.smartTrackObjectDisappearDelay)
-            : undefined,
-      };
-    } catch {
-      // Omit if unsupported
-    }
-  }
-
-  try {
-    const channelCount = await api.getChannelCount();
-    if (channelCount > 1) {
-      const infos: Record<string, unknown>[] = [];
-      for (let ch = 0; ch < channelCount; ch++) {
-        try {
-          const chInfo = await api.getChannelInfo(ch);
-          infos.push(chInfo as Record<string, unknown>);
-        } catch {
-          // skip
-        }
-      }
-      state.channelInfo = infos;
-    }
-  } catch {
-    // skip
-  }
-
-  // Compute current preset name for PTZ select state
-  if (
-    state.ptzPresets?.length &&
-    state.ptzPosition &&
-    (state.ptzPosition as Record<string, unknown>).preset !== undefined
-  ) {
-    const presetId = (state.ptzPosition as Record<string, unknown>).preset;
-    const preset = state.ptzPresets.find(
-      (p) => p.id === presetId || String(p.id) === String(presetId),
-    );
-    state.currentPresetName = preset?.name ?? "";
-  }
-
-  return state;
-}
-
-/** Publish bridge device first so via_device references an existing device */
-function publishBridgeDiscovery(): void {
-  const client = getMqttClient();
-  if (!client?.connected) return;
-
+function getHaContext(): HaConnectionContext | null {
   const settings = getSettings();
   const ha = settings.homeassistant;
   const mqtt = settings.mqtt;
-  if (!ha?.enabled || !mqtt?.enabled) return;
+  if (!ha?.enabled || !mqtt?.enabled) return null;
+  if (!mqtt.brokerUrl) return null;
+  return {
+    brokerUrl: mqtt.brokerUrl,
+    username: mqtt.username,
+    password: mqtt.password,
+    clientId: mqtt.clientId
+      ? `${mqtt.clientId}-ha`
+      : `nodelink-ha-${Date.now()}`,
+  };
+}
 
-  const prefix = ha.discoveryPrefix;
-  const statePrefix = ha.stateTopicPrefix ?? mqtt.topicPrefix ?? "nodelink-js";
-  const appVersion = readAppVersion() ?? "0.0.0";
+function isEnabled(): boolean {
+  return getHaContext() !== null;
+}
 
-  const config = {
+// ---------------------------------------------------------------------------
+// Device builders
+// ---------------------------------------------------------------------------
+
+function buildBridgeDevice(appVersion: string): MqttDeviceInfo {
+  return {
+    id: BRIDGE_DEVICE_ID,
     name: "Nodelink Manager",
-    unique_id: BRIDGE_DEVICE_ID,
-    icon: "mdi:server",
-    state_topic: `${statePrefix}/bridge/status`,
-    value_template: "{{ value_json.status }}",
-    device: {
-      identifiers: [BRIDGE_DEVICE_ID],
-      name: "Nodelink Manager",
-      manufacturer: "Nodelink.js",
-      model: "Manager",
-      sw_version: appVersion,
-    },
-    origin: {
-      name: "nodelink-js",
-      sw: appVersion,
-      url: "https://github.com/apocaliss92/nodelink-js",
-    },
+    manufacturer: NAME_PREFIX,
+    model: "Manager",
+    swVersion: appVersion,
   };
-
-  client.publish(
-    `${prefix}/sensor/${BRIDGE_DEVICE_ID}/config`,
-    JSON.stringify(config),
-    { qos: mqtt.qos ?? 0, retain: true },
-  );
-
-  client.publish(
-    `${statePrefix}/bridge/status`,
-    JSON.stringify({ status: "online", cameras: camerasToPoll.size }),
-    { qos: mqtt.qos ?? 0, retain: true },
-  );
-  logger.debug("Published bridge discovery");
 }
 
-function publishCameraDiscovery(
+function buildCameraDevice(
   cameraId: string,
-  cameraNameSlug: string,
-  state: CameraDeviceState,
-): void {
-  const client = getMqttClient();
-  if (!client?.connected) return;
-
-  const settings = getSettings();
-  const ha = settings.homeassistant;
-  const mqtt = settings.mqtt;
-  if (!ha?.enabled || !mqtt?.enabled) return;
-
-  const prefix = ha.discoveryPrefix;
-  const statePrefix = ha.stateTopicPrefix ?? mqtt.topicPrefix ?? "nodelink-js";
-  const cmdPrefix = `${statePrefix}/camera/${cameraNameSlug}/cmd`;
-  const uniqueId = getCameraUniqueId(cameraId);
-  const stateTopic = `${statePrefix}/camera/${cameraNameSlug}/state`;
-  const appVersion = readAppVersion() ?? "0.0.0";
-  const caps = state.capabilities;
-
-  const device = {
-    identifiers: [`nodelink_cam_${cameraId.replace(/[^a-zA-Z0-9]/g, "_")}`],
-    name: `Reolink ${cameraNameSlug}`,
-    manufacturer: "Nodelink.js",
-    model: "Camera",
-    sw_version: appVersion,
-    via_device: BRIDGE_DEVICE_ID,
+  cameraName: string,
+  appVersion: string,
+  cameraInfo?: ReturnType<typeof getCameraInfo>,
+): MqttDeviceInfo {
+  const model =
+    cameraInfo?.deviceInfo?.model ??
+    cameraInfo?.deviceInfo?.hubModel ??
+    cameraInfo?.name ??
+    "Camera";
+  return {
+    id: cameraId,
+    name: cameraName,
+    manufacturer: "Reolink",
+    model,
+    swVersion: appVersion,
+    viaDevice: BRIDGE_DEVICE_ID,
   };
-
-  const publish = (entityType: string, entityId: string, config: object) => {
-    client.publish(
-      `${prefix}/${entityType}/${entityId}/config`,
-      JSON.stringify(config),
-      { qos: mqtt.qos ?? 0, retain: true },
-    );
-  };
-
-  // 1. Online sensor (always)
-  publish(
-    "sensor",
-    `${uniqueId}_status`,
-    {
-      name: "Status",
-      object_id: "status",
-      unique_id: `${uniqueId}_status`,
-      icon: "mdi:connection",
-      state_topic: stateTopic,
-      value_template: "{{ 'online' if value_json else 'offline' }}",
-      device,
-      json_attributes_topic: stateTopic,
-      json_attributes_template: "{{ value_json | tojson }}",
-    },
-  );
-
-  // 2. Spotlight switch (when hasFloodlight capability or whiteLedState data)
-  const showSpotlight =
-    (caps?.hasFloodlight ?? false) || state.whiteLedState !== undefined;
-  if (showSpotlight && state.whiteLedState !== undefined) {
-    publish(
-      "switch",
-      `${uniqueId}_spotlight`,
-      {
-        name: "Spotlight",
-        object_id: "spotlight",
-        unique_id: `${uniqueId}_spotlight`,
-        icon: "mdi:light-flood-down",
-        state_topic: stateTopic,
-        state_template:
-          "{{ 'ON' if value_json.whiteLedState and value_json.whiteLedState.enabled else 'OFF' }}",
-        command_topic: `${cmdPrefix}/spotlight`,
-        payload_on: "ON",
-        payload_off: "OFF",
-        device,
-      },
-    );
-  }
-
-  // 3. Siren switch (when hasSiren capability or siren data)
-  const showSiren =
-    (caps?.hasSiren ?? false) || state.siren !== undefined;
-  if (showSiren && state.siren !== undefined) {
-    publish(
-      "switch",
-      `${uniqueId}_siren`,
-      {
-        name: "Siren",
-        object_id: "siren",
-        unique_id: `${uniqueId}_siren`,
-        icon: "mdi:alarm-light",
-        state_topic: stateTopic,
-        state_template:
-          "{{ 'ON' if value_json.siren and value_json.siren.enabled else 'OFF' }}",
-        command_topic: `${cmdPrefix}/siren`,
-        payload_on: "ON",
-        payload_off: "OFF",
-        device,
-      },
-    );
-  }
-
-  // 3b. Siren on motion switch (when hasSiren and sirenOnMotion data)
-  const showSirenOnMotion =
-    (caps?.hasSiren ?? false) && state.sirenOnMotion !== undefined;
-  if (showSirenOnMotion) {
-    publish(
-      "switch",
-      `${uniqueId}_siren_on_motion`,
-      {
-        name: "Siren on motion",
-        object_id: "siren_on_motion",
-        unique_id: `${uniqueId}_siren_on_motion`,
-        icon: "mdi:alarm-light-outline",
-        state_topic: stateTopic,
-        state_template:
-          "{{ 'ON' if (value_json.sirenOnMotion or {}).get('body', {}).get('AudioTask', {}).get('enable', 0) == 1 else 'OFF' }}",
-        command_topic: `${cmdPrefix}/siren_on_motion`,
-        payload_on: "ON",
-        payload_off: "OFF",
-        device,
-      },
-    );
-  }
-
-  // 3c. Light on motion switch (when hasFloodlight and floodlightOnMotion data)
-  const showLightOnMotion =
-    (caps?.hasFloodlight ?? false) && state.floodlightOnMotion !== undefined;
-  if (showLightOnMotion) {
-    publish(
-      "switch",
-      `${uniqueId}_light_on_motion`,
-      {
-        name: "Light on motion",
-        object_id: "light_on_motion",
-        unique_id: `${uniqueId}_light_on_motion`,
-        icon: "mdi:light-flood-down",
-        state_topic: stateTopic,
-        state_template:
-          "{{ 'ON' if value_json.floodlightOnMotion and value_json.floodlightOnMotion.floodlightOnMotion else 'OFF' }}",
-        command_topic: `${cmdPrefix}/light_on_motion`,
-        payload_on: "ON",
-        payload_off: "OFF",
-        device,
-      },
-    );
-  }
-
-  // 3d. Autotracking switch (when hasAutotracking and autotracking data)
-  const showAutotracking =
-    (caps?.hasAutotracking ?? false) && state.autotracking !== undefined;
-  if (showAutotracking) {
-    publish(
-      "switch",
-      `${uniqueId}_autotracking`,
-      {
-        name: "Autotracking",
-        object_id: "autotracking",
-        unique_id: `${uniqueId}_autotracking`,
-        icon: "mdi:radar",
-        state_topic: stateTopic,
-        state_template:
-          "{{ 'ON' if value_json.autotracking and value_json.autotracking.enabled else 'OFF' }}",
-        command_topic: `${cmdPrefix}/autotracking`,
-        payload_on: "ON",
-        payload_off: "OFF",
-        device,
-      },
-    );
-  }
-
-  // 3e. Autotracking config: sensor for type, number entities for delays
-  if (showAutotracking && state.autotracking) {
-    if (
-      state.autotracking.smartTrackType !== undefined &&
-      state.autotracking.smartTrackType !== ""
-    ) {
-      publish(
-        "sensor",
-        `${uniqueId}_autotracking_type`,
-        {
-          name: "Autotracking type",
-          object_id: "autotracking_type",
-          unique_id: `${uniqueId}_autotracking_type`,
-          icon: "mdi:target",
-          state_topic: stateTopic,
-          value_template:
-            "{{ value_json.autotracking.smartTrackType | default('') }}",
-          device,
-        },
-      );
-    }
-    // Stop delay: show when we have autotracking (use default 20 if not in response)
-    publish(
-      "number",
-      `${uniqueId}_autotracking_stop_delay`,
-      {
-        name: "Autotracking stop delay",
-        object_id: "autotracking_stop_delay",
-        unique_id: `${uniqueId}_autotracking_stop_delay`,
-        icon: "mdi:timer-sand",
-        state_topic: stateTopic,
-        value_template:
-          "{{ value_json.autotracking.smartTrackObjectStopDelay | default(20) }}",
-        command_topic: `${cmdPrefix}/autotracking_stop_delay`,
-        unit_of_measurement: "s",
-        min: 0,
-        max: 120,
-        step: 1,
-        device,
-      },
-    );
-    // Disappear delay: show when we have autotracking (use default 10 if not in response)
-    publish(
-      "number",
-      `${uniqueId}_autotracking_disappear_delay`,
-      {
-        name: "Autotracking disappear delay",
-        object_id: "autotracking_disappear_delay",
-        unique_id: `${uniqueId}_autotracking_disappear_delay`,
-        icon: "mdi:timer-sand-empty",
-        state_topic: stateTopic,
-        value_template:
-          "{{ value_json.autotracking.smartTrackObjectDisappearDelay | default(10) }}",
-        command_topic: `${cmdPrefix}/autotracking_disappear_delay`,
-        unit_of_measurement: "s",
-        min: 0,
-        max: 60,
-        step: 1,
-        device,
-      },
-    );
-  }
-
-  // 4. PTZ preset select (preset names in options)
-  if (
-    state.ptzPresets &&
-    Array.isArray(state.ptzPresets) &&
-    state.ptzPresets.length > 0
-  ) {
-    const options = state.ptzPresets.map((p) => p.name);
-    publish(
-      "select",
-      `${uniqueId}_ptz_preset`,
-      {
-        name: "PTZ preset",
-        object_id: "ptz_preset",
-        unique_id: `${uniqueId}_ptz_preset`,
-        icon: "mdi:view-dashboard",
-        state_topic: stateTopic,
-        state_template:
-          "{{ value_json.currentPresetName | default('') }}",
-        command_topic: `${cmdPrefix}/ptz_preset`,
-        options,
-        device,
-      },
-    );
-  }
-
-  // 5. Battery sensor (when hasBattery or batteryInfo)
-  const showBattery =
-    (caps?.hasBattery ?? false) || state.batteryInfo !== undefined;
-  if (showBattery && state.batteryInfo !== undefined) {
-    const bat = state.batteryInfo as Record<string, unknown>;
-    publish(
-      "sensor",
-      `${uniqueId}_battery`,
-      {
-        name: "Battery",
-        object_id: "battery",
-        unique_id: `${uniqueId}_battery`,
-        icon: "mdi:battery",
-        state_topic: stateTopic,
-        value_template:
-          "{{ value_json.batteryInfo.battery | default(value_json.batteryInfo.percent) | default(none) }}",
-        device_class: "battery",
-        state_class: "measurement",
-        unit_of_measurement: "%",
-        device,
-        json_attributes_topic: stateTopic,
-        json_attributes_template:
-          "{{ value_json.batteryInfo | tojson }}",
-      },
-    );
-  }
-
-  // 6. Motion sensor
-  if (state.motionAlarm !== undefined) {
-    publish(
-      "sensor",
-      `${uniqueId}_motion`,
-      {
-        name: "Motion",
-        object_id: "motion",
-        unique_id: `${uniqueId}_motion`,
-        icon: "mdi:motion-sensor",
-        state_topic: stateTopic,
-        value_template:
-          "{{ 'on' if value_json.motionAlarm and value_json.motionAlarm.enable == 1 else 'off' }}",
-        device,
-        json_attributes_topic: stateTopic,
-        json_attributes_template:
-          "{{ value_json.motionAlarm | tojson }}",
-      },
-    );
-  }
-
-  // 7. AI detection binary_sensors (one per supported type)
-  const aiTypeLabels: Record<string, string> = {
-    people: "Person",
-    vehicle: "Vehicle",
-    dog_cat: "Pet",
-    face: "Face",
-    package: "Package",
-    other: "Other",
-  };
-  if (state.aiStatePerType && Object.keys(state.aiStatePerType).length > 0) {
-    for (const [aiType, data] of Object.entries(state.aiStatePerType)) {
-      const label = aiTypeLabels[aiType] ?? aiType;
-      const safeType = aiType.replace(/[^a-zA-Z0-9]/g, "_");
-      publish(
-        "binary_sensor",
-        `${uniqueId}_ai_${safeType}`,
-        {
-          name: `AI ${label}`,
-          object_id: `ai_${safeType}`,
-          unique_id: `${uniqueId}_ai_${safeType}`,
-          icon: "mdi:robot",
-          state_topic: stateTopic,
-          payload_on: "on",
-          payload_off: "off",
-          value_template: `{{ 'on' if ((value_json.aiStatePerType | default({}))['${aiType}'] | default({})).enabled | default(0) == 1 else 'off' }}`,
-          device,
-          json_attributes_topic: stateTopic,
-          json_attributes_template:
-            "{{ value_json.aiStatePerType | tojson }}",
-        },
-      );
-    }
-  }
-
-  // 8. WiFi signal sensor
-  if (state.wifiSignal !== undefined) {
-    publish(
-      "sensor",
-      `${uniqueId}_wifi_signal`,
-      {
-        name: "WiFi signal",
-        object_id: "wifi_signal",
-        unique_id: `${uniqueId}_wifi_signal`,
-        icon: "mdi:wifi",
-        state_topic: stateTopic,
-        value_template:
-          "{{ value_json.wifiSignal.signal | default(value_json.wifiSignal.rssi) | default(none) }}",
-        device_class: "signal_strength",
-        state_class: "measurement",
-        unit_of_measurement: "dBm",
-        device,
-        json_attributes_topic: stateTopic,
-        json_attributes_template:
-          "{{ value_json.wifiSignal | tojson }}",
-      },
-    );
-  }
-
-  // 9. Network sensor
-  if (state.networkInfo !== undefined) {
-    publish(
-      "sensor",
-      `${uniqueId}_network`,
-      {
-        name: "Network",
-        object_id: "network",
-        unique_id: `${uniqueId}_network`,
-        icon: "mdi:lan",
-        state_topic: stateTopic,
-        value_template:
-          "{{ value_json.networkInfo.ip | default(value_json.networkInfo.mac) | default('unknown') }}",
-        device,
-        json_attributes_topic: stateTopic,
-        json_attributes_template:
-          "{{ value_json.networkInfo | tojson }}",
-      },
-    );
-  }
-
-  // 10. PTZ position sensor (when hasPtz)
-  const showPtz = (caps?.hasPtz ?? false) || state.ptzPosition !== undefined;
-  if (showPtz && state.ptzPosition !== undefined) {
-    publish(
-      "sensor",
-      `${uniqueId}_ptz_position`,
-      {
-        name: "PTZ position",
-        object_id: "ptz_position",
-        unique_id: `${uniqueId}_ptz_position`,
-        icon: "mdi:axis-arrow",
-        state_topic: stateTopic,
-        value_template:
-          "{{ value_json.ptzPosition.pan | default(0) }},{{ value_json.ptzPosition.tilt | default(0) }}",
-        device,
-        json_attributes_topic: stateTopic,
-        json_attributes_template:
-          "{{ value_json.ptzPosition | tojson }}",
-      },
-    );
-  }
-
-  // 11. Zoom/focus sensor (when hasZoom)
-  const showZoom = (caps?.hasZoom ?? false) || state.zoomFocus !== undefined;
-  if (showZoom && state.zoomFocus !== undefined) {
-    publish(
-      "sensor",
-      `${uniqueId}_zoom_focus`,
-      {
-        name: "Zoom",
-        object_id: "zoom_focus",
-        unique_id: `${uniqueId}_zoom_focus`,
-        icon: "mdi:magnify",
-        state_topic: stateTopic,
-        value_template:
-          "{{ value_json.zoomFocus.zoom.curPos if value_json.zoomFocus and value_json.zoomFocus.zoom else none }}",
-        device,
-        json_attributes_topic: stateTopic,
-        json_attributes_template:
-          "{{ value_json.zoomFocus | tojson }}",
-      },
-    );
-  }
-
-  // 12. Record sensor
-  if (state.recordCfg !== undefined || state.recordSchedule !== undefined) {
-    publish(
-      "sensor",
-      `${uniqueId}_record`,
-      {
-        name: "Recording",
-        object_id: "record",
-        unique_id: `${uniqueId}_record`,
-        icon: "mdi:record-circle",
-        state_topic: stateTopic,
-        value_template:
-          "{{ 'on' if value_json.recordCfg and value_json.recordCfg.record != 0 else 'off' }}",
-        device,
-        json_attributes_topic: stateTopic,
-        json_attributes_template:
-          "{{ {'recordCfg': value_json.recordCfg, 'recordSchedule': value_json.recordSchedule} | tojson }}",
-      },
-    );
-  }
-
-  // 13. LED sensor (power/IR LED)
-  if (state.ledState !== undefined) {
-    publish(
-      "sensor",
-      `${uniqueId}_led`,
-      {
-        name: "LED",
-        object_id: "led",
-        unique_id: `${uniqueId}_led`,
-        icon: "mdi:led-on",
-        state_topic: stateTopic,
-        value_template:
-          "{{ value_json.ledState.mode | default(value_json.ledState.state) | default('unknown') }}",
-        device,
-        json_attributes_topic: stateTopic,
-        json_attributes_template:
-          "{{ value_json.ledState | tojson }}",
-      },
-    );
-  }
-
-  // 14. Sleep sensor (battery cameras)
-  const showSleep =
-    (caps?.hasBattery ?? false) || state.sleepState !== undefined;
-  if (showSleep && state.sleepState !== undefined) {
-    publish(
-      "sensor",
-      `${uniqueId}_sleep`,
-      {
-        name: "Sleep",
-        object_id: "sleep",
-        unique_id: `${uniqueId}_sleep`,
-        icon: "mdi:sleep",
-        state_topic: stateTopic,
-        value_template:
-          "{{ 'awake' if value_json.sleepState and value_json.sleepState.state == 0 else 'sleep' }}",
-        device,
-        json_attributes_topic: stateTopic,
-        json_attributes_template:
-          "{{ value_json.sleepState | tojson }}",
-      },
-    );
-  }
-
-  // 15. PIR sensor
-  const showPir = (caps?.hasPir ?? false) || state.pirInfo !== undefined;
-  if (showPir && state.pirInfo !== undefined) {
-    publish(
-      "sensor",
-      `${uniqueId}_pir`,
-      {
-        name: "PIR",
-        object_id: "pir",
-        unique_id: `${uniqueId}_pir`,
-        icon: "mdi:motion-sensor",
-        state_topic: stateTopic,
-        value_template:
-          "{{ 'on' if value_json.pirInfo and value_json.pirInfo.enable == 1 else 'off' }}",
-        device,
-        json_attributes_topic: stateTopic,
-        json_attributes_template:
-          "{{ value_json.pirInfo | tojson }}",
-      },
-    );
-  }
-
-  // 16. Device info sensor
-  if (state.info !== undefined) {
-    publish(
-      "sensor",
-      `${uniqueId}_info`,
-      {
-        name: "Device info",
-        object_id: "info",
-        unique_id: `${uniqueId}_info`,
-        icon: "mdi:information",
-        state_topic: stateTopic,
-        value_template:
-          "{{ value_json.info.model | default(value_json.info.name) | default('unknown') }}",
-        device,
-        json_attributes_topic: stateTopic,
-        json_attributes_template:
-          "{{ value_json.info | tojson }}",
-      },
-    );
-  }
-
-  // 17. Channel count sensor
-  if (state.channelCount !== undefined) {
-    publish(
-      "sensor",
-      `${uniqueId}_channel_count`,
-      {
-        name: "Channels",
-        object_id: "channel_count",
-        unique_id: `${uniqueId}_channel_count`,
-        icon: "mdi:view-grid",
-        state_topic: stateTopic,
-        value_template:
-          "{{ value_json.channelCount | default(1) }}",
-        device,
-      },
-    );
-  }
-
-  // 18. Channel info sensor (NVR multi-channel)
-  if (state.channelInfo && state.channelInfo.length > 0) {
-    publish(
-      "sensor",
-      `${uniqueId}_channel_info`,
-      {
-        name: "Channel info",
-        object_id: "channel_info",
-        unique_id: `${uniqueId}_channel_info`,
-        icon: "mdi:view-list",
-        state_topic: stateTopic,
-        value_template:
-          "{{ value_json.channelInfo | length }}",
-        device,
-        json_attributes_topic: stateTopic,
-        json_attributes_template:
-          "{{ value_json.channelInfo | tojson }}",
-      },
-    );
-  }
-
-  logger.debug(`Published HA discovery for ${cameraNameSlug}`);
 }
 
-function removeCameraDiscovery(cameraId: string, cameraNameSlug: string): void {
-  const client = getMqttClient();
-  if (!client?.connected) return;
+// ---------------------------------------------------------------------------
+// Bridge device
+// ---------------------------------------------------------------------------
 
-  const settings = getSettings();
-  const ha = settings.homeassistant;
-  if (!ha?.enabled) return;
+async function publishBridgeDiscovery(): Promise<void> {
+  if (!haClient || !isEnabled()) return;
 
-  const prefix = ha.discoveryPrefix;
-  const uniqueId = getCameraUniqueId(cameraId);
+  const appVersion = readAppVersion() ?? "0.0.0";
+  const deviceInfo = buildBridgeDevice(appVersion);
 
-  const aiTypes = ["people", "vehicle", "dog_cat", "face", "package", "other"];
-  const entityIds = [
-    `${uniqueId}_status`,
-    `${uniqueId}_spotlight`,
-    `${uniqueId}_siren`,
-    `${uniqueId}_siren_on_motion`,
-    `${uniqueId}_light_on_motion`,
-    `${uniqueId}_autotracking`,
-    `${uniqueId}_autotracking_type`,
-    `${uniqueId}_autotracking_stop_delay`,
-    `${uniqueId}_autotracking_disappear_delay`,
-    `${uniqueId}_ptz_preset`,
-    `${uniqueId}_battery`,
-    `${uniqueId}_motion`,
-    ...aiTypes.map((t) => `${uniqueId}_ai_${t.replace(/[^a-zA-Z0-9]/g, "_")}`),
-    `${uniqueId}_wifi_signal`,
-    `${uniqueId}_network`,
-    `${uniqueId}_ptz_position`,
-    `${uniqueId}_zoom_focus`,
-    `${uniqueId}_record`,
-    `${uniqueId}_led`,
-    `${uniqueId}_sleep`,
-    `${uniqueId}_pir`,
-    `${uniqueId}_info`,
-    `${uniqueId}_channel_count`,
-    `${uniqueId}_channel_info`,
+  // The bridge currently exposes no entities — its only purpose is to be
+  // referenced as `via_device` from camera devices. HA still requires us
+  // to publish at least one component, so we expose an "online" diagnostic
+  // binary sensor.
+  const entities: MqttEntity[] = [
+    {
+      entity: "online",
+      domain: "binary_sensor",
+      name: "Online",
+      deviceClass: "connectivity",
+      entityCategory: "diagnostic",
+      retain: true,
+      valueToDispatch: PAYLOAD_ON,
+    },
   ];
 
-  for (const eid of entityIds) {
-    const isSwitch =
-      eid.includes("spotlight") ||
-      eid.includes("siren") ||
-      eid.includes("light_on_motion") ||
-      (eid.includes("autotracking") &&
-        !eid.includes("autotracking_type") &&
-        !eid.includes("autotracking_stop") &&
-        !eid.includes("autotracking_disappear"));
-    const isNumber =
-      eid.includes("autotracking_stop_delay") ||
-      eid.includes("autotracking_disappear_delay");
-    const type = isSwitch
-      ? "switch"
-      : eid.includes("ptz_preset")
-        ? "select"
-        : eid.includes("_ai_")
-          ? "binary_sensor"
-          : isNumber
-            ? "number"
-            : "sensor";
-    client.publish(`${prefix}/${type}/${eid}/config`, "", {
-      qos: 0,
-      retain: true,
-    });
-  }
-  logger.debug(`Removed HA discovery for ${cameraId}`);
-}
-
-async function handleCommand(
-  cameraId: string,
-  command: string,
-  payload: string,
-): Promise<void> {
-  const api = camerasToPoll.get(cameraId);
-  if (!api) return;
-
-  const config = getConfig();
-  const camera = config.cameras.find((c) => c.id === cameraId);
-  const channel = camera?.rtspChannel ?? 0;
-
-  try {
-    if (command === "spotlight") {
-      await api.setWhiteLedState(channel, payload === "ON");
-    } else if (command === "siren") {
-      await api.setSiren(channel, payload === "ON");
-    } else if (command === "siren_on_motion") {
-      await api.setSirenOnMotion({ enable: payload === "ON" ? 1 : 0 }, channel);
-    } else if (command === "light_on_motion") {
-      await api.setFloodlightOnMotion(payload === "ON", channel);
-    } else if (command === "autotracking") {
-      await api.setAutotracking(payload === "ON", channel);
-    } else if (command === "autotracking_stop_delay") {
-      const val = parseInt(payload, 10);
-      if (!Number.isNaN(val) && val >= 0 && val <= 120) {
-        await api.setAutotrackingSettings(channel, {
-          smartTrackObjectStopDelay: val,
-        });
-      }
-    } else if (command === "autotracking_disappear_delay") {
-      const val = parseInt(payload, 10);
-      if (!Number.isNaN(val) && val >= 0 && val <= 60) {
-        await api.setAutotrackingSettings(channel, {
-          smartTrackObjectDisappearDelay: val,
-        });
-      }
-    } else if (command === "ptz_preset") {
-      // Payload is preset name - resolve to id
-      const presets = await api.getPtzPresets(channel);
-      const preset = presets.find(
-        (p) => p.name === payload || String(p.id) === payload,
-      );
-      if (preset) {
-        await api.moveToPtzPreset(channel, preset.id);
-      } else {
-        const presetId = parseInt(payload, 10);
-        if (!Number.isNaN(presetId)) {
-          await api.moveToPtzPreset(channel, presetId);
-        }
-      }
-    }
-  } catch (e) {
-    logger.error(`Command ${command} failed for ${cameraId}: ${e}`);
-  }
-}
-
-function setupMqttSubscriptions(): void {
-  const client = getMqttClient();
-  if (!client?.connected || mqttSubscribeSetup) return;
-
-  const settings = getSettings();
-  const ha = settings.homeassistant;
-  const mqtt = settings.mqtt;
-  if (!ha?.enabled || !mqtt?.enabled) return;
-
-  const statePrefix = ha.stateTopicPrefix ?? mqtt.topicPrefix ?? "nodelink-js";
-  const topic = `${statePrefix}/camera/+/cmd/#`;
-  client.subscribe(topic, (err) => {
-    if (err) {
-      logger.error(`MQTT subscribe failed: ${err}`);
-      return;
-    }
-    mqttSubscribeSetup = true;
-    logger.debug(`Subscribed to ${topic}`);
+  await publishMqttDeviceDiscovery({
+    client: haClient,
+    deviceInfo,
+    entities,
+    idPrefix: ID_PREFIX,
+    namePrefix: NAME_PREFIX,
+    originUrl: ORIGIN_URL,
   });
 
-  if (!mqttMessageHandlerSetup) {
-    mqttMessageHandlerSetup = true;
-    client.on("message", (topic, payload) => {
-      const prefix = settings.homeassistant?.stateTopicPrefix ??
-        settings.mqtt?.topicPrefix ?? "nodelink-js";
-      const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const match = topic.match(
-        new RegExp(`^${escaped}/camera/([^/]+)/cmd/([^/]+)$`),
-      );
-      if (!match) return;
-      const [, cameraNameSlug, command] = match;
-      const payloadStr = payload.toString();
-      const cfg = getConfig();
-      const camera = cfg.cameras.find(
-        (c) =>
-          sanitizeCameraName(c.name) === cameraNameSlug ||
-          c.id === cameraNameSlug,
-      );
-      if (camera) {
-        void handleCommand(camera.id, command, payloadStr);
-      }
-    });
-  }
+  bridgePublished = true;
+  logger.info("Published bridge discovery");
 }
 
-async function pollAllCameras(): Promise<void> {
-  const client = getMqttClient();
-  if (!client?.connected) return;
+// ---------------------------------------------------------------------------
+// Camera entity assembly
+// ---------------------------------------------------------------------------
 
-  const settings = getSettings();
-  const ha = settings.homeassistant;
-  const mqtt = settings.mqtt;
-  if (!ha?.enabled || !mqtt?.enabled) return;
+async function buildCameraEntities(
+  api: ReolinkBaichuanApi,
+  channel: number,
+  isBatteryCamera: boolean,
+): Promise<{ entities: MqttEntity[]; capabilities?: DeviceCapabilities }> {
+  let capabilities: DeviceCapabilities | undefined;
+  try {
+    const result = await api.getDeviceCapabilities(channel);
+    capabilities = result.capabilities;
+  } catch (e) {
+    logger.debug(
+      `Failed to fetch capabilities (continuing with defaults): ${e}`,
+    );
+  }
 
-  const statePrefix = ha.stateTopicPrefix ?? mqtt.topicPrefix ?? "nodelink-js";
+  const controlCaps = {
+    hasFloodlight: capabilities?.hasFloodlight ?? false,
+    hasSiren: capabilities?.hasSiren ?? false,
+    hasPir: capabilities?.hasPir ?? false,
+    hasAutotracking: capabilities?.hasAutotracking ?? false,
+    hasPresets: capabilities?.hasPtz ?? false,
+  };
 
-  for (const [cameraId, api] of camerasToPoll) {
+  const entities: MqttEntity[] = [
+    ...getDetectionEntities(),
+    ...getStatusEntities(),
+    ...getWifiEntities(),
+    ...getControlEntities(controlCaps),
+  ];
+
+  if (isBatteryCamera || (capabilities?.hasBattery ?? false)) {
+    entities.push(...getBatteryEntities());
+  }
+
+  // PTZ presets: replace the empty `options: []` with the real list.
+  if (controlCaps.hasPresets) {
     try {
-      const config = getConfig();
-      const camera = config.cameras.find((c) => c.id === cameraId);
-      const channel = camera?.rtspChannel ?? 0;
-
-      const state = await fetchCameraState(cameraId, api, channel);
-      const topic = `${statePrefix}/camera/${state.cameraNameSlug}/state`;
-      client.publish(topic, JSON.stringify(state), {
-        qos: mqtt.qos ?? 0,
-        retain: true,
-      });
+      const presets = await api.getPtzPresets(channel);
+      const presetEntity = entities.find((e) => e.entity === "ptz_preset");
+      if (presetEntity && presets.length > 0) {
+        presetEntity.options = presets.map((p) => p.name);
+      }
     } catch (e) {
-      logger.error(`Failed to poll camera ${cameraId}: ${e}`);
+      logger.debug(`Failed to fetch PTZ presets: ${e}`);
     }
   }
 
-  client.publish(
-    `${statePrefix}/bridge/status`,
-    JSON.stringify({ status: "online", cameras: camerasToPoll.size }),
-    { qos: mqtt.qos ?? 0, retain: true },
-  );
+  return { entities, capabilities };
 }
 
-function startPolling(): void {
-  if (pollTimer) return;
+// ---------------------------------------------------------------------------
+// Per-entity publish helper
+// ---------------------------------------------------------------------------
 
-  const settings = getSettings();
-  const ha = settings.homeassistant;
-  if (!ha?.enabled) return;
+async function publishEntityState(
+  cameraId: string,
+  entityName: string,
+  value: unknown,
+  retainOverride?: boolean,
+): Promise<void> {
+  const cam = cameras.get(cameraId);
+  if (!cam || !haClient || !isEnabled()) return;
 
-  const intervalMs = (ha.pollIntervalSeconds ?? 60) * 1000;
-  pollTimer = setInterval(() => void pollAllCameras(), intervalMs);
-  logger.info(
-    `Home Assistant polling started (interval: ${ha.pollIntervalSeconds}s)`,
-  );
-  void pollAllCameras();
+  const entity = cam.entities.find((e) => e.entity === entityName);
+  if (!entity) {
+    logger.debug(
+      `Entity ${entityName} not registered for camera ${cameraId}, skipping publish`,
+    );
+    return;
+  }
+
+  const { stateTopic } = getMqttTopics({
+    entity,
+    deviceId: cameraId,
+    idPrefix: ID_PREFIX,
+  });
+
+  const retain = retainOverride ?? entity.retain ?? true;
+  await haClient.publish(stateTopic, value, retain);
 }
 
-function stopPolling(): void {
-  if (pollTimer) {
-    clearInterval(pollTimer);
-    pollTimer = null;
-    logger.info("Home Assistant polling stopped");
+// ---------------------------------------------------------------------------
+// Initial control state seeding
+// ---------------------------------------------------------------------------
+
+async function seedControlStates(cam: RegisteredCamera): Promise<void> {
+  const { api, channel, cameraId, entities } = cam;
+  const has = (name: string) => entities.some((e) => e.entity === name);
+
+  if (has("floodlight")) {
+    try {
+      const state = await api.getWhiteLedState(channel);
+      const enabled =
+        ((state as unknown as { enabled?: boolean | number }).enabled ??
+          false) === true ||
+        Number((state as unknown as { enabled?: number }).enabled ?? 0) === 1;
+      await publishEntityState(
+        cameraId,
+        "floodlight",
+        enabled ? PAYLOAD_ON : PAYLOAD_OFF,
+      );
+    } catch (e) {
+      logger.debug(`Seed floodlight failed for ${cameraId}: ${e}`);
+    }
+  }
+
+  if (has("floodlight_on_motion")) {
+    try {
+      const state = await api.getFloodlightOnMotion(channel);
+      await publishEntityState(
+        cameraId,
+        "floodlight_on_motion",
+        state.floodlightOnMotion ? PAYLOAD_ON : PAYLOAD_OFF,
+      );
+    } catch (e) {
+      logger.debug(`Seed floodlight_on_motion failed for ${cameraId}: ${e}`);
+    }
+  }
+
+  if (has("siren")) {
+    try {
+      const state = await api.getSiren(channel);
+      await publishEntityState(
+        cameraId,
+        "siren",
+        state.enabled ? PAYLOAD_ON : PAYLOAD_OFF,
+      );
+    } catch (e) {
+      logger.debug(`Seed siren failed for ${cameraId}: ${e}`);
+    }
+  }
+
+  if (has("pir")) {
+    try {
+      const state = await api.getPirInfo(channel);
+      const enabled =
+        Number(
+          (state as unknown as { enable?: number; enabled?: boolean }).enable ??
+            ((state as unknown as { enabled?: boolean }).enabled ? 1 : 0),
+        ) === 1;
+      await publishEntityState(
+        cameraId,
+        "pir",
+        enabled ? PAYLOAD_ON : PAYLOAD_OFF,
+      );
+    } catch (e) {
+      logger.debug(`Seed pir failed for ${cameraId}: ${e}`);
+    }
+  }
+
+  if (has("autotracking")) {
+    try {
+      const state = await api.getAutotracking(channel);
+      await publishEntityState(
+        cameraId,
+        "autotracking",
+        state.enabled ? PAYLOAD_ON : PAYLOAD_OFF,
+      );
+    } catch (e) {
+      logger.debug(`Seed autotracking failed for ${cameraId}: ${e}`);
+    }
+  }
+
+  if (has("wifi_signal")) {
+    try {
+      const wifi = await api.getWifiSignal(channel);
+      if (wifi.signal != null) {
+        await publishEntityState(cameraId, "wifi_signal", wifi.signal);
+      }
+    } catch (e) {
+      logger.debug(`Seed wifi_signal failed for ${cameraId}: ${e}`);
+    }
+  }
+
+  // Online + sleeping defaults.
+  await publishEntityState(cameraId, "online", PAYLOAD_ON);
+  await publishEntityState(cameraId, "sleeping", PAYLOAD_OFF);
+}
+
+// ---------------------------------------------------------------------------
+// Command handling
+// ---------------------------------------------------------------------------
+
+async function handleCommand(
+  cam: RegisteredCamera,
+  entityName: string,
+  payload: string,
+): Promise<void> {
+  const { api, channel, cameraId } = cam;
+  const isOn = payload === PAYLOAD_ON;
+  logger.debug(`Command ${entityName} for ${cameraId}: ${payload}`);
+
+  try {
+    switch (entityName) {
+      case "floodlight":
+        await api.setWhiteLedState(channel, isOn);
+        await publishEntityState(
+          cameraId,
+          "floodlight",
+          isOn ? PAYLOAD_ON : PAYLOAD_OFF,
+        );
+        break;
+
+      case "floodlight_on_motion":
+        await api.setFloodlightOnMotion(isOn, channel);
+        await publishEntityState(
+          cameraId,
+          "floodlight_on_motion",
+          isOn ? PAYLOAD_ON : PAYLOAD_OFF,
+        );
+        break;
+
+      case "siren":
+        await api.setSiren(channel, isOn);
+        await publishEntityState(
+          cameraId,
+          "siren",
+          isOn ? PAYLOAD_ON : PAYLOAD_OFF,
+        );
+        break;
+
+      case "siren_on_motion":
+        await api.setSirenOnMotion({ enable: isOn ? 1 : 0 }, channel);
+        await publishEntityState(
+          cameraId,
+          "siren_on_motion",
+          isOn ? PAYLOAD_ON : PAYLOAD_OFF,
+        );
+        break;
+
+      case "pir":
+        await api.setPirInfo(channel, { enable: isOn ? 1 : 0 });
+        await publishEntityState(
+          cameraId,
+          "pir",
+          isOn ? PAYLOAD_ON : PAYLOAD_OFF,
+        );
+        break;
+
+      case "autotracking":
+        await api.setAutotracking(isOn, channel);
+        await publishEntityState(
+          cameraId,
+          "autotracking",
+          isOn ? PAYLOAD_ON : PAYLOAD_OFF,
+        );
+        break;
+
+      case "ptz_preset": {
+        const presets = await api.getPtzPresets(channel);
+        const preset =
+          presets.find((p) => p.name === payload) ??
+          presets.find((p) => String(p.id) === payload);
+        if (preset) {
+          await api.moveToPtzPreset(channel, preset.id);
+          await publishEntityState(cameraId, "ptz_preset", preset.name);
+        } else {
+          logger.warn(
+            `PTZ preset "${payload}" not found for camera ${cameraId}`,
+          );
+        }
+        break;
+      }
+
+      case "reboot":
+        await api.reboot();
+        break;
+
+      default:
+        logger.debug(`Unhandled command ${entityName} for ${cameraId}`);
+    }
+  } catch (e) {
+    logger.error(`Command ${entityName} failed for ${cameraId}: ${e}`);
   }
 }
+
+async function subscribeCommandTopics(cam: RegisteredCamera): Promise<void> {
+  if (!haClient) return;
+
+  const commandableDomains = new Set(["switch", "button", "select"]);
+  const topics: string[] = [];
+
+  for (const entity of cam.entities) {
+    if (!commandableDomains.has(entity.domain)) continue;
+    const { commandTopic } = getMqttTopics({
+      entity,
+      deviceId: cam.cameraId,
+      idPrefix: ID_PREFIX,
+    });
+    topics.push(commandTopic);
+    cam.commandTopics.add(commandTopic);
+  }
+
+  if (topics.length === 0) return;
+
+  await haClient.subscribe(topics, async (topic, message) => {
+    if (!message) return; // ignore retained reset publishes
+    const entity = cam.entities.find((e) => {
+      const { commandTopic } = getMqttTopics({
+        entity: e,
+        deviceId: cam.cameraId,
+        idPrefix: ID_PREFIX,
+      });
+      return commandTopic === topic;
+    });
+    if (!entity) return;
+    await handleCommand(cam, entity.entity, message);
+  });
+}
+
+async function unsubscribeCommandTopics(cam: RegisteredCamera): Promise<void> {
+  if (!haClient || cam.commandTopics.size === 0) return;
+  await haClient.unsubscribe(Array.from(cam.commandTopics));
+  cam.commandTopics.clear();
+}
+
+// ---------------------------------------------------------------------------
+// Camera event handling
+// ---------------------------------------------------------------------------
+
+/** Map a Reolink event type to a state-topic entity name (or undefined). */
+const EVENT_TO_ENTITY: Partial<Record<ReolinkSimpleEvent["type"], string>> = {
+  motion: "motion",
+  doorbell: "visitor",
+  people: "people",
+  vehicle: "vehicle",
+  animal: "animal",
+  face: "face",
+  package: "package",
+};
+
+function scheduleDetectionReset(
+  cam: RegisteredCamera,
+  entityName: string,
+): void {
+  const existing = cam.detectionResetTimers.get(entityName);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => {
+    cam.detectionResetTimers.delete(entityName);
+    void publishEntityState(cam.cameraId, entityName, PAYLOAD_OFF, false);
+  }, DETECTION_RESET_MS);
+  cam.detectionResetTimers.set(entityName, timer);
+}
+
+function handleSimpleEvent(
+  cam: RegisteredCamera,
+  event: ReolinkSimpleEvent,
+): void {
+  // Filter NVR cross-channel events.
+  if (event.channel !== undefined && event.channel !== cam.channel) return;
+
+  if (event.type === "sleeping") {
+    void publishEntityState(cam.cameraId, "sleeping", PAYLOAD_ON);
+    return;
+  }
+  if (event.type === "awake") {
+    void publishEntityState(cam.cameraId, "sleeping", PAYLOAD_OFF);
+    return;
+  }
+  if (event.type === "battery" && event.battery) {
+    const { batteryPercent, chargeStatus, adapterStatus } = event.battery;
+    if (batteryPercent != null) {
+      void publishEntityState(cam.cameraId, "battery", batteryPercent);
+    }
+    // Charger state: prefer adapterStatus ("charge" | "none" | ...) when present,
+    // otherwise fall back to chargeStatus.
+    const charging =
+      adapterStatus === "charge" ||
+      adapterStatus === "charging" ||
+      chargeStatus === "chargeComplete" ||
+      chargeStatus === "charging";
+    void publishEntityState(
+      cam.cameraId,
+      "charger",
+      charging ? PAYLOAD_ON : PAYLOAD_OFF,
+    );
+    return;
+  }
+
+  const entityName = EVENT_TO_ENTITY[event.type];
+  if (!entityName) return;
+  void publishEntityState(cam.cameraId, entityName, PAYLOAD_ON, false);
+  scheduleDetectionReset(cam, entityName);
+}
+
+// ---------------------------------------------------------------------------
+// Camera registration / cleanup
+// ---------------------------------------------------------------------------
 
 async function registerCamera(
   cameraId: string,
   api: ReolinkBaichuanApi,
 ): Promise<void> {
+  if (!isEnabled()) return;
+  await ensureClient();
+  if (!haClient) return;
+  if (!bridgePublished) await publishBridgeDiscovery();
+
   const config = getConfig();
   const camera = config.cameras.find((c) => c.id === cameraId);
   const info = getCameraInfo(cameraId);
   const cameraName = camera?.name ?? info?.name ?? cameraId;
-  const cameraNameSlug = sanitizeCameraName(cameraName);
+  const channel = camera?.rtspChannel ?? 0;
+  const isBattery = camera?.isBattery ?? false;
+  const appVersion = readAppVersion() ?? "0.0.0";
 
-  camerasToPoll.set(cameraId, api);
-  publishBridgeDiscovery();
-  setupMqttSubscriptions();
+  // Tear down any previous registration (e.g. after a reconnect).
+  await unregisterCamera(cameraId);
 
-  try {
-    const channel = camera?.rtspChannel ?? 0;
-    const state = await fetchCameraState(cameraId, api, channel);
-    publishCameraDiscovery(cameraId, cameraNameSlug, state);
-  } catch (e) {
-    logger.error(`Failed to fetch state for discovery ${cameraId}: ${e}`);
-    publishCameraDiscovery(cameraId, cameraNameSlug, {
-      cameraId,
-      cameraName: cameraName,
-      cameraNameSlug,
-      channel: camera?.rtspChannel ?? 0,
-      timestamp: Date.now(),
-    });
-  }
-  logger.info(`Registered camera ${cameraName} for Home Assistant`);
-}
+  const { entities } = await buildCameraEntities(api, channel, isBattery);
+  const deviceInfo = buildCameraDevice(cameraId, cameraName, appVersion, info);
 
-function unregisterCamera(cameraId: string): void {
-  const config = getConfig();
-  const camera = config.cameras.find((c) => c.id === cameraId);
-  const info = getCameraInfo(cameraId);
-  const cameraNameSlug = sanitizeCameraName(
-    camera?.name ?? info?.name ?? cameraId,
+  const cam: RegisteredCamera = {
+    cameraId,
+    api,
+    channel,
+    entities,
+    deviceInfo,
+    commandTopics: new Set(),
+    detectionResetTimers: new Map(),
+  };
+  cameras.set(cameraId, cam);
+
+  await publishMqttDeviceDiscovery({
+    client: haClient,
+    deviceInfo,
+    entities,
+    idPrefix: ID_PREFIX,
+    namePrefix: NAME_PREFIX,
+    originUrl: ORIGIN_URL,
+  });
+
+  await subscribeCommandTopics(cam);
+  await seedControlStates(cam);
+
+  const listener = (event: ReolinkSimpleEvent): void => {
+    handleSimpleEvent(cam, event);
+  };
+  cam.eventListener = listener;
+  void api.onSimpleEvent(listener);
+
+  logger.info(
+    `Registered camera ${cameraName} (${cameraId}) for Home Assistant: ${entities.length} entities`,
   );
-
-  camerasToPoll.delete(cameraId);
-  removeCameraDiscovery(cameraId, cameraNameSlug);
-  logger.debug(`Unregistered camera ${cameraId} from Home Assistant`);
 }
 
-function republishAllDiscovery(): void {
-  mqttSubscribeSetup = false;
-  publishBridgeDiscovery();
-  setupMqttSubscriptions();
+async function unregisterCamera(cameraId: string): Promise<void> {
+  const cam = cameras.get(cameraId);
+  if (!cam) return;
+  cameras.delete(cameraId);
 
-  for (const [cameraId, api] of camerasToPoll) {
-    const config = getConfig();
-    const camera = config.cameras.find((c) => c.id === cameraId);
-    const info = getCameraInfo(cameraId);
-    const cameraNameSlug = sanitizeCameraName(
-      camera?.name ?? info?.name ?? cameraId,
-    );
-    void fetchCameraState(cameraId, api, camera?.rtspChannel ?? 0).then(
-      (state) => publishCameraDiscovery(cameraId, cameraNameSlug, state),
-      () =>
-        publishCameraDiscovery(cameraId, cameraNameSlug, {
-          cameraId,
-          cameraName: camera?.name ?? info?.name ?? cameraId,
-          cameraNameSlug,
-          channel: camera?.rtspChannel ?? 0,
-          timestamp: Date.now(),
-        }),
-    );
+  for (const t of cam.detectionResetTimers.values()) clearTimeout(t);
+  cam.detectionResetTimers.clear();
+
+  if (cam.eventListener) {
+    void cam.api.offSimpleEvent(cam.eventListener).catch(() => {});
+    delete cam.eventListener;
+  }
+
+  await unsubscribeCommandTopics(cam).catch(() => {});
+
+  if (haClient && isEnabled()) {
+    // Mark the camera offline rather than deleting the device entirely:
+    // HA users may want to keep history, and the camera will rediscover
+    // automatically on next connect.
+    await publishEntityState(cameraId, "online", PAYLOAD_OFF).catch(() => {});
   }
 }
 
+async function handleCameraDisconnected(cameraId: string): Promise<void> {
+  const cam = cameras.get(cameraId);
+  if (!cam) return;
+  // Keep entities/discovery in place but mark offline + tear down event sub.
+  for (const t of cam.detectionResetTimers.values()) clearTimeout(t);
+  cam.detectionResetTimers.clear();
+  if (cam.eventListener) {
+    void cam.api.offSimpleEvent(cam.eventListener).catch(() => {});
+    delete cam.eventListener;
+  }
+  await publishEntityState(cameraId, "online", PAYLOAD_OFF).catch(() => {});
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle
+// ---------------------------------------------------------------------------
+
+async function ensureClient(): Promise<void> {
+  if (haClient) return;
+  const ctx = getHaContext();
+  if (!ctx) return;
+
+  haClient = new HaMqttClient({
+    host: ctx.brokerUrl,
+    username: ctx.username,
+    password: ctx.password,
+    clientId: ctx.clientId,
+    logger: console,
+    configTopicPattern: "homeassistant/device/+/config",
+    cache: true,
+    cacheTtlMs: 60_000,
+  });
+
+  // Force the connection to establish so subsequent publishes don't race.
+  try {
+    await (haClient as HaMqttClient).getMqttClient();
+  } catch (e) {
+    logger.error(`HA MQTT client failed to connect: ${e}`);
+  }
+}
+
+async function rediscoverAll(): Promise<void> {
+  bridgePublished = false;
+  if (!isEnabled()) return;
+  await ensureClient();
+  if (!haClient) return;
+  await publishBridgeDiscovery();
+  for (const cam of cameras.values()) {
+    try {
+      await publishMqttDeviceDiscovery({
+        client: haClient,
+        deviceInfo: cam.deviceInfo,
+        entities: cam.entities,
+        idPrefix: ID_PREFIX,
+        namePrefix: NAME_PREFIX,
+        originUrl: ORIGIN_URL,
+      });
+      await seedControlStates(cam);
+    } catch (e) {
+      logger.error(`Rediscovery failed for ${cam.cameraId}: ${e}`);
+    }
+  }
+}
+
+/**
+ * Initialize Home Assistant MQTT discovery integration. Safe to call
+ * once at startup; further calls re-trigger discovery.
+ */
 export function initHomeAssistantMqtt(): void {
-  onApiConnected(registerCamera);
-  onApiDisconnected(unregisterCamera);
-  setOnMqttConnected(republishAllDiscovery);
-
-  const settings = getSettings();
-  if (settings.homeassistant?.enabled) {
-    startPolling();
-  }
+  onApiConnected((cameraId, api) => {
+    void registerCamera(cameraId, api).catch((e) =>
+      logger.error(`registerCamera(${cameraId}) failed: ${e}`),
+    );
+  });
+  onApiDisconnected((cameraId) => {
+    void handleCameraDisconnected(cameraId).catch((e) =>
+      logger.error(`handleCameraDisconnected(${cameraId}) failed: ${e}`),
+    );
+  });
   logger.info("Home Assistant MQTT integration initialized");
 }
 
+/**
+ * Called by the settings router when HA-related settings change.
+ * Reconnects the client if needed and re-publishes discovery.
+ */
 export function updateHomeAssistantPolling(): void {
-  const settings = getSettings();
-  if (settings.homeassistant?.enabled) {
-    stopPolling();
-    startPolling();
-  } else {
-    stopPolling();
+  if (!isEnabled()) {
+    void shutdown();
+    return;
+  }
+  void rediscoverAll();
+}
+
+async function shutdown(): Promise<void> {
+  for (const cameraId of Array.from(cameras.keys())) {
+    const cam = cameras.get(cameraId);
+    if (!cam) continue;
+    if (haClient) {
+      // Publish offline + clear discovery so HA hides the device cleanly.
+      await publishEntityState(cameraId, "online", PAYLOAD_OFF).catch(() => {});
+      await clearMqttDevice({
+        client: haClient,
+        deviceInfo: cam.deviceInfo,
+        entities: cam.entities,
+        idPrefix: ID_PREFIX,
+      }).catch(() => {});
+    }
+    cameras.delete(cameraId);
+  }
+  if (haClient) {
+    try {
+      await haClient.disconnect();
+    } catch {
+      // ignore
+    }
+    haClient = undefined;
+    bridgePublished = false;
   }
 }

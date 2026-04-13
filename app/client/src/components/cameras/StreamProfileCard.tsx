@@ -13,10 +13,14 @@ interface StreamProfileCardProps {
   go2rtcApiPort: number | null;
   go2rtcRtspPort: number | null;
   serviceIp: string;
+  isBattery?: boolean;
 }
 
-export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, streamName, go2rtcApiPort, go2rtcRtspPort, serviceIp }: StreamProfileCardProps) {
+export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, streamName, go2rtcApiPort, go2rtcRtspPort, serviceIp, isBattery }: StreamProfileCardProps) {
   const isActive = rtspServer?.status === 'running';
+  // Battery cameras stream on-demand: show preview/URLs even when the native stream
+  // is not running (idle). Clicking Preview will wake the camera.
+  const showOnDemand = isBattery && !isActive;
   const [diagStatus, setDiagStatus] = useState<'idle' | 'running' | 'complete' | 'error'>('idle');
   const [urlsOpen, setUrlsOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -77,15 +81,20 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, str
           {stream.resolution}{stream.codec ? ` · ${stream.codec}` : ''}
         </div>
       )}
-      {!isActive && (
+      {!isActive && !isBattery && (
         <div className="text-[10px] text-[var(--color-foreground-muted)] mt-1">
           Stream starts automatically when the camera is connected.
         </div>
       )}
+      {showOnDemand && (
+        <div className="text-[10px] text-[var(--color-foreground-muted)] mt-1">
+          On-demand — clicking Preview will wake the camera.
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-1 mt-1.5">
-        {/* Preview — only when stream is active */}
-        {isActive && (
+        {/* Preview — always for battery cameras (on-demand), active-only otherwise */}
+        {(isActive || showOnDemand) && (
           <div className="relative">
             <button
               type="button"
@@ -117,8 +126,8 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, str
           </div>
         )}
 
-        {/* URLs dropdown — RTSP always available; go2rtc URLs only when active */}
-        {(rtspUrl || (go2rtcBase && isActive)) && (
+        {/* URLs dropdown — RTSP always available; go2rtc URLs when active or battery on-demand */}
+        {(rtspUrl || (go2rtcBase && (isActive || showOnDemand))) && (
           <div className="relative">
             <button
               onClick={() => { setUrlsOpen(!urlsOpen); setPreviewOpen(false); }}
@@ -136,7 +145,7 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, str
                     <Copy size={9} /> Copy RTSP URL
                   </button>
                 )}
-                {isActive && hlsUrl && (
+                {(isActive || showOnDemand) && hlsUrl && (
                   <button
                     onClick={() => { void copyToClipboard(hlsUrl); setUrlsOpen(false); }}
                     className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)] flex items-center gap-1.5"
@@ -144,7 +153,7 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, str
                     <Copy size={9} /> Copy HLS URL
                   </button>
                 )}
-                {isActive && mp4Url && (
+                {(isActive || showOnDemand) && mp4Url && (
                   <button
                     onClick={() => { void copyToClipboard(mp4Url); setUrlsOpen(false); }}
                     className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)] flex items-center gap-1.5"
@@ -152,7 +161,7 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, str
                     <Copy size={9} /> Copy MP4 URL
                   </button>
                 )}
-                {isActive && snapshotUrl && (
+                {(isActive || showOnDemand) && snapshotUrl && (
                   <button
                     onClick={() => { void copyToClipboard(snapshotUrl); setUrlsOpen(false); }}
                     className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)] flex items-center gap-1.5"

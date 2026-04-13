@@ -33,6 +33,7 @@ import {
   createCameraConnLogger,
   clearConnLogs,
   appendConnLog,
+  getExistingApiConnection,
 } from "../rtsp-manager.js";
 import { getCameraSleepStatus, getCameraBatteryState } from "../events-manager.js";
 import { RtspStreamConfigSchema } from "../types.js";
@@ -75,6 +76,8 @@ export const camerasRouter = router({
           debugLogs: camConfig?.debugLogs ?? false,
           autoStart: camConfig?.autoStart ?? false,
           rtspStreams: camConfig?.rtspStreams ?? [],
+          transport: camConfig?.transport ?? "auto",
+          udpDiscoveryMethod: camConfig?.udpDiscoveryMethod,
         };
       });
     }),
@@ -102,6 +105,8 @@ export const camerasRouter = router({
         debugLogs: camConfig?.debugLogs ?? false,
         autoStart: camConfig?.autoStart ?? false,
         rtspStreams: camConfig?.rtspStreams ?? [],
+        transport: camConfig?.transport ?? "auto",
+        udpDiscoveryMethod: camConfig?.udpDiscoveryMethod,
       };
     }),
 
@@ -375,6 +380,24 @@ export const camerasRouter = router({
       return { success: true };
     }),
 
+  // Save transport mode and optional UDP discovery method for a camera.
+  // Does NOT reconnect — call retryDetect afterwards to test the new settings.
+  setTransport: publicProcedure
+    .meta({ description: "Update connection transport mode for a camera" })
+    .input(z.object({
+      id: z.string(),
+      transport: z.enum(["auto", "tcp", "udp"]),
+      udpDiscoveryMethod: z.enum(["local-broadcast", "local-direct", "remote", "relay", "map"]).optional(),
+    }))
+    .mutation(({ input }) => {
+      const updated = updateCamera(input.id, {
+        transport: input.transport,
+        udpDiscoveryMethod: input.udpDiscoveryMethod,
+      });
+      if (!updated) throw new Error(`Camera not found: ${input.id}`);
+      return { success: true };
+    }),
+
   // Connect to camera
   // For NVR children: enables camera for restreaming (NVR socket stays shared)
   // For standalone cameras: opens the TCP connection
@@ -480,9 +503,29 @@ export const camerasRouter = router({
       }),
     )
     .query(async ({ input }) => {
-      const api = await getOrCreateApiConnection(input.id);
       const config = getConfig();
       const camera = config.cameras.find((c) => c.id === input.id);
+
+      // For sleeping battery cameras, skip the API call (which would wake the camera).
+      // Return a minimal stream list derived from the camera's configured rtspStreams,
+      // or a default [main, sub] set so the UI can show preview/URL buttons.
+      if (camera?.isBattery && getCameraSleepStatus(input.id) === "sleeping") {
+        const profiles: Array<"main" | "sub" | "ext"> =
+          (camera.rtspStreams ?? []).length > 0
+            ? (camera.rtspStreams.map((s) => s.profile).filter(Boolean) as Array<"main" | "sub" | "ext">)
+            : ["main", "sub"];
+        const channel = camera.rtspChannel ?? 0;
+        return {
+          nativeStreams: profiles.map((profile, i) => ({
+            id: `${profile}-ch${channel}`,
+            profile,
+            channel,
+          })),
+          rtspStreams: [],
+        };
+      }
+
+      const api = await getOrCreateApiConnection(input.id);
       const isNvr = camera?.isNvr ?? false;
 
       // Check if device is multifocal (dual-lens: TrackMix, Duo)
@@ -611,6 +654,53 @@ export const camerasRouter = router({
       if (!camera) return null;
       const channel = camera.rtspChannel ?? 0;
 
+      // For battery cameras: only proceed if the socket is already open and ready.
+      // Calling getOrCreateApiConnection on an idle-disconnected battery camera triggers
+      // ensureConnected() which wakes the camera. The UI queries getControlsState whenever
+      // isConnected/sleepStatus changes, so we must not cause a reconnect here.
+      if (camera.isBattery) {
+        const existingApi = getExistingApiConnection(input.id);
+        if (!existingApi?.isReady) {
+          // Camera is sleeping or idle-disconnected; return capabilities from cache if
+          // the API object exists, or an all-false skeleton if no connection exists yet.
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          let caps: any;
+          try {
+            if (existingApi) {
+              caps = await existingApi.getDeviceCapabilities(channel);
+            }
+          } catch {
+            // ignore
+          }
+          const cap = caps?.capabilities ?? {};
+          const support = caps?.support;
+          return {
+            hasFloodlight: cap.hasFloodlight === true,
+            hasSiren: cap.hasSiren === true,
+            hasPtz:
+              cap.hasPtz === true ||
+              (support?.ptzMode &&
+                support.ptzMode.toLowerCase() !== "none" &&
+                support.ptzMode !== "0") ||
+              false,
+            hasPan: cap.hasPan === true,
+            hasTilt: cap.hasTilt === true,
+            hasZoom: cap.hasZoom === true,
+            hasPresets: cap.hasPresets === true,
+            hasAutotracking: cap.hasAutotracking === true,
+            hasPir: cap.hasPir === true,
+            lightOn: undefined,
+            sirenOn: undefined,
+            floodlightOnMotion: undefined,
+            sirenOnMotion: undefined,
+            autotrackingOn: undefined,
+            pirOn: undefined,
+            ptzPresets: [],
+            isSleeping: true,
+          };
+        }
+      }
+
       const api = await getOrCreateApiConnection(input.id);
       const caps = await api.getDeviceCapabilities(channel);
       const cap = caps?.capabilities ?? {};
@@ -638,9 +728,8 @@ export const camerasRouter = router({
       let pirOn: boolean | undefined;
       let ptzPresets: Array<{ id: number; name: string }> | undefined;
 
-      // Skip live-state queries for sleeping battery cameras — they would wake the camera.
-      // Capabilities (hasFloodlight, hasSiren, etc.) come from the capabilities cache so
-      // they are safe to read. Current on/off state will be undefined until the camera wakes.
+      // isSleeping is false here since we already confirmed api.isReady above for battery
+      // cameras, and non-battery cameras don't have a sleep state.
       const isSleeping = getCameraSleepStatus(input.id) === "sleeping";
 
       if (!isSleeping && hasFloodlight) {
@@ -666,7 +755,7 @@ export const camerasRouter = router({
         }
         try {
           const sm = await api.getSirenOnMotion(channel);
-          sirenOnMotion = (sm as any)?.enable === 1;
+          sirenOnMotion = sm?.body?.AudioTask?.enable === 1;
         } catch {
           // ignore
         }
@@ -682,7 +771,7 @@ export const camerasRouter = router({
       if (!isSleeping && hasPir) {
         try {
           const pir = await api.getPirInfo(channel);
-          pirOn = (pir as any)?.enable === 1;
+          pirOn = pir?.enabled === true;
         } catch {
           // ignore
         }

@@ -351,7 +351,9 @@ function attachConnectionListeners(
   cameraId: string,
   conn: ManagedConnection,
 ): void {
-  const cameraLogger = createSourceLogger(`camera:${cameraId}`, cameraId);
+  const cam = getConfig().cameras.find((c) => c.id === cameraId);
+  const cameraName = cam?.name || cam?.host || cameraId;
+  const cameraLogger = createSourceLogger(`camera:${cameraName}`, cameraId);
 
   conn.api.client.on("error", (err: unknown) => {
     const msg =
@@ -390,17 +392,17 @@ function attachConnectionListeners(
     });
 
     if (isBatteryIdleDisconnect) {
-      // Stop the ping keepalive (no active socket to ping), but leave the API
-      // object and apiConnections entry intact. getOrCreateApiConnection will
-      // call ensureConnected() when next needed, transparently reopening the
-      // socket without waking the camera prematurely.
+      // Battery idle disconnect: the camera closed the TCP socket to save power.
+      // The streaming session to the camera has already closed (prestartStream=false
+      // + idle disconnect). The BaichuanRtspServer listener stays bound so that
+      // the next go2rtc client (e.g. WebRTC preview) can reconnect and wake the
+      // camera on demand. The apiConnections entry is kept so ensureConnected()
+      // can reopen the socket transparently without waking the camera prematurely.
       if (conn.pingInterval) {
         clearInterval(conn.pingInterval);
         conn.pingInterval = undefined;
       }
-      cameraLogger.info(
-        "Battery camera idle disconnect — keeping streams alive for on-demand reconnect",
-      );
+      cameraLogger.info("Battery camera idle disconnect — camera socket closed, RTSP listener retained for on-demand streaming");
       return;
     }
 
@@ -831,6 +833,20 @@ export function getCameraInfo(cameraId: string): CameraInfo | undefined {
   return cameraInfoCache.get(cameraId);
 }
 
+/**
+ * Returns the existing API connection for a camera WITHOUT triggering reconnect.
+ * Returns undefined if no connection exists or if the API is closed.
+ * Safe to call for sleeping battery cameras — it never wakes the camera.
+ */
+export function getExistingApiConnection(
+  cameraId: string,
+): ReolinkBaichuanApi | undefined {
+  const connKey = getConnectionKey(cameraId);
+  const conn = apiConnections.get(connKey);
+  if (!conn || conn.api.isClosed) return undefined;
+  return conn.api;
+}
+
 // Get all cameras info
 export function getAllCamerasInfo(): CameraInfo[] {
   const config = getConfig();
@@ -1097,15 +1113,18 @@ export async function startRtspServer(
     const useGo2rtc = settings.go2rtc?.enabled === true && go2rtcMgr?.isRunning;
     const rtspSource = settings.go2rtc?.rtspSource ?? "go2rtc";
 
-    // Browsers cannot play H.265 over WebRTC. For H.265 profiles we register
-    // a secondary ffmpeg source that transcodes to H.264 so go2rtc can satisfy
-    // WHEP negotiations. The primary source (native RTSP) is still used for
-    // RTSP/HLS/MSE clients that handle H.265 natively — go2rtc picks whichever
-    // source matches the client's requested codecs.
+    // For H265 cameras, register an ffmpeg-transcoded source in go2rtc so
+    // WebRTC clients (browsers that don't support H265) get H264.
+    // go2rtc's multi-source merge doesn't do per-codec routing, so we use
+    // the ffmpeg source as the SOLE go2rtc source for H265 streams.
+    // H264 cameras keep the native RTSP source (no transcoding overhead).
+    // Unknown codec (battery sleeping at registration time): use ffmpeg as a
+    // safety net — better to transcode than to silently fail WebRTC.
     const buildGo2rtcSources = async (
       streamName: string,
       primarySource: string,
     ): Promise<string[]> => {
+      const ffmpegSource = `ffmpeg:${primarySource}#video=h264`;
       try {
         const isNvr = camera.isNvr || !!camera.nvrId;
         const opts = await api.buildVideoStreamOptions({ channel, onNvr: isNvr });
@@ -1113,13 +1132,20 @@ export async function startRtspServer(
           (s) => s.profile === profile && (s.channel ?? 0) === channel,
         );
         const codec = match?.metadata?.videoEncType;
-        if (codec === "H.265") {
-          return [primarySource, `ffmpeg:${streamName}#video=h264#hardware`];
+        if (codec === "H.264") {
+          logger.info(`Codec for ${streamName} is H264 — using native source`);
+          return [primarySource];
         }
+        logger.info(
+          `Codec for ${streamName} is "${codec ?? "unknown"}" — using ffmpeg H264 transcoding for WebRTC`,
+        );
+        return [ffmpegSource];
       } catch (e) {
-        logger.debug(`Codec detection failed for ${profile} ch${channel}: ${e}`);
+        logger.info(
+          `Codec detection failed for ${streamName} (${e}); using ffmpeg H264 transcoding as safety net`,
+        );
+        return [ffmpegSource];
       }
-      return [primarySource];
     };
 
     logger.info(
@@ -1732,6 +1758,15 @@ export async function startStreamsForAllConnectedCameras(): Promise<void> {
   const config = getConfig();
   for (const camera of config.cameras) {
     if (camera.nvrId && disabledNvrCameras.has(camera.id)) continue;
+
+    // Skip battery cameras in streamOnly mode: auto-starting their streams
+    // registers the RTSP URL with go2rtc, which then reconnects every ~60s
+    // even when no client is watching — waking the camera continuously and
+    // draining the battery. Streams are started on-demand when a client connects.
+    if (camera.isBattery && (camera.batteryMode ?? "streamOnly") === "streamOnly") {
+      logger.info(`Flush: skip battery camera ${camera.name} (batteryMode=streamOnly)`);
+      continue;
+    }
 
     const connKey = getConnectionKey(camera.id);
     const conn = apiConnections.get(connKey);

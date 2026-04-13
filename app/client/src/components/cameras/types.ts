@@ -46,6 +46,8 @@ export type CameraInfo = {
   debugLogs: boolean;
   autoStart: boolean;
   rtspStreams: RtspStreamConfig[];
+  transport?: "auto" | "tcp" | "udp";
+  udpDiscoveryMethod?: "local-broadcast" | "local-direct" | "remote" | "relay" | "map";
 };
 
 export type DropdownItem = {

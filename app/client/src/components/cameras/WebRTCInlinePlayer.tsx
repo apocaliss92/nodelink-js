@@ -34,8 +34,23 @@ export function WebRTCInlinePlayer({
         });
         pcRef.current = pc;
 
-        // Receive video + audio
-        pc.addTransceiver("video", { direction: "recvonly" });
+        // Receive video + audio.
+        // Restrict video to H.264 only: Chrome cannot decode H.265 over WebRTC.
+        // By limiting codec preferences we force go2rtc to select the ffmpeg-transcoded
+        // H.264 source for H.265 cameras, rather than sending raw H.265 which the browser
+        // accepts in the SDP answer but cannot actually play.
+        const videoTransceiver = pc.addTransceiver("video", { direction: "recvonly" });
+        try {
+          const caps = RTCRtpReceiver.getCapabilities("video");
+          const h264Only = (caps?.codecs ?? []).filter(
+            (c) => c.mimeType.toLowerCase() === "video/h264",
+          );
+          if (h264Only.length > 0) {
+            videoTransceiver.setCodecPreferences(h264Only);
+          }
+        } catch {
+          // setCodecPreferences not supported — fall through with default offer
+        }
         pc.addTransceiver("audio", { direction: "recvonly" });
 
         // Attach media stream to video element

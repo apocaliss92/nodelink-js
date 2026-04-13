@@ -1,10 +1,21 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Lightbulb, AlertTriangle, Crosshair, Eye, Moon } from 'lucide-react';
+import { Lightbulb, AlertTriangle, Crosshair, Eye, Moon, Activity } from 'lucide-react';
 import { trpcQuery, trpcMutation } from '../../api';
 import type { ControlsState } from './types';
 
 interface DeviceControlsContentProps {
   cameraId: string;
+}
+
+interface ControlItem {
+  key: string;
+  label: string;
+  sublabel?: string;
+  icon: React.ElementType;
+  has: boolean;
+  on: boolean | undefined;
+  mutation: string;
+  field: string;
 }
 
 export function DeviceControlsContent({ cameraId }: DeviceControlsContentProps) {
@@ -42,7 +53,7 @@ export function DeviceControlsContent({ cameraId }: DeviceControlsContentProps) 
     );
   }
 
-  if (error) {
+  if (error || !controls) {
     return (
       <div className="p-3 text-xs text-[var(--color-danger)]">
         Failed to load controls. Is the camera connected?
@@ -50,7 +61,7 @@ export function DeviceControlsContent({ cameraId }: DeviceControlsContentProps) 
     );
   }
 
-  const items = [
+  const items: ControlItem[] = [
     {
       key: 'light',
       label: 'Floodlight',
@@ -61,6 +72,16 @@ export function DeviceControlsContent({ cameraId }: DeviceControlsContentProps) 
       field: 'lightOn',
     },
     {
+      key: 'lightOnMotion',
+      label: 'Floodlight on motion',
+      sublabel: 'Auto',
+      icon: Activity,
+      has: controls.hasFloodlight,
+      on: controls.floodlightOnMotion,
+      mutation: 'cameras.setFloodlightOnMotion',
+      field: 'floodlightOnMotion',
+    },
+    {
       key: 'siren',
       label: 'Siren',
       icon: AlertTriangle,
@@ -68,6 +89,16 @@ export function DeviceControlsContent({ cameraId }: DeviceControlsContentProps) 
       on: controls.sirenOn,
       mutation: 'cameras.setSiren',
       field: 'sirenOn',
+    },
+    {
+      key: 'sirenOnMotion',
+      label: 'Siren on motion',
+      sublabel: 'Auto',
+      icon: Activity,
+      has: controls.hasSiren,
+      on: controls.sirenOnMotion,
+      mutation: 'cameras.setSirenOnMotion',
+      field: 'sirenOnMotion',
     },
     {
       key: 'autotrack',
@@ -104,7 +135,7 @@ export function DeviceControlsContent({ cameraId }: DeviceControlsContentProps) 
       {sleeping && (
         <div className="flex items-center gap-1.5 px-2 py-1.5 rounded-md bg-[var(--color-surface)] text-[10px] text-[var(--color-foreground-subtle)]">
           <Moon size={10} />
-          Camera is sleeping — current state unknown. Toggles will apply when it wakes.
+          Camera is sleeping — current state unknown. Toggling will wake it.
         </div>
       )}
       {items.map((item) => (
@@ -121,19 +152,24 @@ export function DeviceControlsContent({ cameraId }: DeviceControlsContentProps) 
                   : 'text-[var(--color-foreground-subtle)]'
               }
             />
-            <span>{item.label}</span>
+            <div className="flex flex-col leading-tight">
+              <span>{item.label}</span>
+              {item.sublabel && (
+                <span className="text-[10px] text-[var(--color-foreground-subtle)]">
+                  {item.sublabel}
+                </span>
+              )}
+            </div>
           </div>
           <button
             onClick={() => void toggle(item.key, item.mutation, item.field, !!item.on)}
-            disabled={toggling === item.key || sleeping}
+            disabled={toggling === item.key}
             className={`relative w-8 h-[18px] rounded-full transition-colors ${
-              sleeping
-                ? 'bg-[var(--color-border)] opacity-40 cursor-not-allowed'
-                : item.on
-                  ? 'bg-[var(--color-primary)]'
-                  : 'bg-[var(--color-border)]'
+              item.on
+                ? 'bg-[var(--color-primary)]'
+                : 'bg-[var(--color-border)]'
             }`}
-            title={sleeping ? 'Camera is sleeping' : item.on ? `Turn off ${item.label}` : `Turn on ${item.label}`}
+            title={sleeping ? `Wake camera and toggle ${item.label}` : item.on ? `Turn off ${item.label}` : `Turn on ${item.label}`}
           >
             <span
               className={`absolute top-[2px] h-[14px] w-[14px] rounded-full bg-white transition-transform ${
