@@ -2,19 +2,22 @@ import { describe, it, expect } from "vitest";
 import {
   buildDeviceDiscoveryPayload,
   buildEntityConfig,
-  getControlEntities,
-  getDetectionEntities,
-  getDeviceDiscoveryTopic,
-  getMqttTopics,
-  getStatusEntities,
   PAYLOAD_OFF,
   PAYLOAD_ON,
+} from "../../app/src/mqtt-ha/discovery.js";
+import {
+  getControlEntities,
+  getDetectionEntities,
+  getStatusEntities,
+} from "../../app/src/mqtt-ha/entities.js";
+import {
+  getDeviceDiscoveryTopic,
+  getMqttTopics,
   toKebabCase,
   toSnakeCase,
   toTitleCase,
-  type MqttDeviceInfo,
-  type MqttEntity,
-} from "../../app/src/mqtt-ha/index.js";
+} from "../../app/src/mqtt-ha/topics.js";
+import type { MqttDeviceInfo, MqttEntity } from "../../app/src/mqtt-ha/types.js";
 
 const ID_PREFIX = "nodelink-js";
 const NAME_PREFIX = "Nodelink.js";
