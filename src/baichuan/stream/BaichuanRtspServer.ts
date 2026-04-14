@@ -366,10 +366,20 @@ export class BaichuanRtspServer extends EventEmitter<{
     videoType?: "H264" | "H265";
   }> | null = null;
   private noClientAutoStopTimer: NodeJS.Timeout | undefined;
+  /** Fires if camera never sends frames after stream start (sleeping), even with clients connected. */
+  private noFrameDeadlineTimer: NodeJS.Timeout | undefined;
   /** After last RTSP client; 0 = never auto-stop native stream. */
   private readonly nativeStreamIdleStopMs: number;
   /** Primed-but-no-PLAY timeout; 0 = disabled. */
   private readonly nativeStreamPrimeIdleStopMs: number;
+  /**
+   * Max time to wait for the first camera frame after stream start.
+   * If no frames arrive within this window, the native stream is stopped
+   * (camera is sleeping). Prevents the BaichuanVideoStream watchdog from
+   * firing and waking the camera when no real viewer is watching.
+   * 0 = disabled. Defaults to nativeStreamPrimeIdleStopMs * 2 when > 0.
+   */
+  private readonly nativeStreamNoFrameDeadlineMs: number;
 
   // Prebuffer: rolling ring of recent video frames for IDR-aligned fast startup.
   // When a new client connects while the stream is already running it does not need
@@ -532,6 +542,12 @@ export class BaichuanRtspServer extends EventEmitter<{
     this.nativeStreamPrimeIdleStopMs =
       options.nativeStreamPrimeIdleStopMs ??
       (this.nativeStreamIdleStopMs > 0 ? 15_000 : 0);
+    // No-frame deadline: 2× the prime timeout, capped at 30s.
+    // Fires when camera hasn't responded at all (sleeping), even if go2rtc is connected.
+    this.nativeStreamNoFrameDeadlineMs =
+      this.nativeStreamPrimeIdleStopMs > 0
+        ? Math.min(this.nativeStreamPrimeIdleStopMs * 2, 30_000)
+        : 0;
 
     // Authentication settings
     this.authCredentials = options.credentials ?? [];
@@ -666,6 +682,13 @@ export class BaichuanRtspServer extends EventEmitter<{
     if (this.noClientAutoStopTimer) {
       clearTimeout(this.noClientAutoStopTimer);
       this.noClientAutoStopTimer = undefined;
+    }
+  }
+
+  private clearNoFrameDeadlineTimer(): void {
+    if (this.noFrameDeadlineTimer) {
+      clearTimeout(this.noFrameDeadlineTimer);
+      this.noFrameDeadlineTimer = undefined;
     }
   }
 
@@ -2509,6 +2532,8 @@ export class BaichuanRtspServer extends EventEmitter<{
         // frames once the camera wakes back up.
         if (!this.nativeStreamActive) return; // already cleaned up
         this.nativeStreamActive = false;
+        this.clearNoFrameDeadlineTimer();
+        const hadFrames = this.firstFrameReceived;
         this.firstFrameReceived = false;
         this.firstFramePromise = null;
         this.firstFrameResolve = null;
@@ -2549,7 +2574,7 @@ export class BaichuanRtspServer extends EventEmitter<{
             this.dedicatedSessionRelease = undefined;
             try { await release(); } catch { /* ignore */ }
           }
-          if (this.connectedClients.size > 0) {
+          if (this.connectedClients.size > 0 && hadFrames) {
             this.logger.info(
               `[rebroadcast] restarting native stream for ${this.connectedClients.size} active client(s)`,
             );
@@ -2562,6 +2587,24 @@ export class BaichuanRtspServer extends EventEmitter<{
       },
     });
     this.nativeFanout.start();
+
+    // No-frame deadline: stop stream if the camera never responds (sleeping),
+    // even when go2rtc is connected. Without this, the BaichuanVideoStream
+    // watchdog fires after 60s idle and re-wakes the battery camera.
+    this.clearNoFrameDeadlineTimer();
+    if (this.nativeStreamNoFrameDeadlineMs > 0) {
+      this.noFrameDeadlineTimer = setTimeout(() => {
+        this.noFrameDeadlineTimer = undefined;
+        if (!this.firstFrameReceived && this.nativeStreamActive) {
+          this.logger.info(
+            `[rebroadcast] no frames within ${this.nativeStreamNoFrameDeadlineMs}ms — camera sleeping, stopping stream  profile=${this.profile} channel=${this.channel}`,
+          );
+          void this.stopNativeStream();
+        }
+      }, this.nativeStreamNoFrameDeadlineMs);
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+      (this.noFrameDeadlineTimer as any)?.unref?.();
+    }
 
     // If DESCRIBE primes the stream but no RTSP client actually SETUP/PLAYs,
     // auto-stop after a short window so battery cams can go back to sleep.
@@ -2584,6 +2627,8 @@ export class BaichuanRtspServer extends EventEmitter<{
   private markFirstFrameReceived(): void {
     if (!this.firstFrameReceived && this.firstFrameResolve) {
       this.firstFrameReceived = true;
+      // Camera is alive — cancel the sleeping-camera deadline.
+      this.clearNoFrameDeadlineTimer();
       this.rtspDebugLog(
         `First frame received from camera for profile ${this.profile}`,
       );
@@ -2615,6 +2660,7 @@ export class BaichuanRtspServer extends EventEmitter<{
     this.flow.stopKeepAlive();
 
     this.clearNoClientAutoStopTimer();
+    this.clearNoFrameDeadlineTimer();
 
     this.nativeStreamActive = false;
     this.firstFrameReceived = false;

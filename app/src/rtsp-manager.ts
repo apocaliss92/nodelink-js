@@ -1124,7 +1124,11 @@ export async function startRtspServer(
       streamName: string,
       primarySource: string,
     ): Promise<string[]> => {
-      const ffmpegSource = `ffmpeg:${primarySource}#video=h264`;
+      // ffmpeg transcodes FROM the go2rtc stream (not from the raw RTSP URL).
+      // Using the stream name lets go2rtc ingest natively (audio+video) and
+      // exposes a clean H.264 re-encode for WebRTC clients that cannot play H.265.
+      // #audio=copy preserves the AAC track so audio is not silently dropped.
+      const ffmpegSource = `ffmpeg:${streamName}#video=h264#audio=copy`;
       try {
         const isNvr = camera.isNvr || !!camera.nvrId;
         const opts = await api.buildVideoStreamOptions({ channel, onNvr: isNvr });
@@ -1136,15 +1140,18 @@ export async function startRtspServer(
           logger.info(`Codec for ${streamName} is H264 — using native source`);
           return [primarySource];
         }
+        // H.265 or unknown: register both the native source (for RTSP/HLS/MSE
+        // clients that handle H.265 natively) and the ffmpeg transcode source
+        // (for WebRTC clients that require H.264).
         logger.info(
-          `Codec for ${streamName} is "${codec ?? "unknown"}" — using ffmpeg H264 transcoding for WebRTC`,
+          `Codec for ${streamName} is "${codec ?? "unknown"}" — using native + ffmpeg H264 transcode`,
         );
-        return [ffmpegSource];
+        return [primarySource, ffmpegSource];
       } catch (e) {
         logger.info(
-          `Codec detection failed for ${streamName} (${e}); using ffmpeg H264 transcoding as safety net`,
+          `Codec detection failed for ${streamName} (${e}); using native + ffmpeg H264 transcode as safety net`,
         );
-        return [ffmpegSource];
+        return [primarySource, ffmpegSource];
       }
     };
 
