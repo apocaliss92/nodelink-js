@@ -11,7 +11,7 @@ import { CameraLogsPanel } from './CameraLogsPanel';
 import { ConnectionPanel } from './ConnectionPanel';
 import { useConnectionLogs } from './hooks/useConnectionLogs';
 import { trpcQuery, trpcMutation } from '../../api';
-import { withAuthTokenQuery, getCameraDisplayName, getStreamName } from './utils';
+import { withAuthTokenQuery, getCameraDisplayName, getStreamName, getWebrtcStreamName } from './utils';
 import type {
   CameraInfo,
   AvailableStream,
@@ -229,6 +229,7 @@ export function CameraDetailPanel({
                 (s) => s.cameraId === camera.id && s.profile === stream.profile,
               );
               const name = getStreamName(camera, stream.profile, server);
+              const webrtcName = getWebrtcStreamName(camera, stream.profile, server);
               return (
                 <StreamProfileCard
                   key={stream.profile}
@@ -242,7 +243,7 @@ export function CameraDetailPanel({
                       title: `${camera.name || camera.host} - ${stream.profile}`,
                       cameraName: getCameraDisplayName(camera),
                       profile: stream.profile,
-                      streamName: name,
+                      streamName: webrtcName,
                       go2rtcApiPort,
                       serviceIp,
                     });

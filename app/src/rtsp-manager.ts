@@ -144,6 +144,13 @@ export interface RtspServerInfo {
   path?: string;
   /** When using go2rtc: the stream name registered in go2rtc. */
   go2rtcStreamName?: string;
+  /**
+   * When using go2rtc: the companion stream name that exposes a WebRTC-
+   * compatible H.264 + OPUS transcode of the primary stream. WebRTC
+   * consumers must use this name instead of `go2rtcStreamName` since
+   * WebRTC cannot play H.265 and cannot accept AAC audio.
+   */
+  go2rtcWebrtcStreamName?: string;
   /** When using go2rtc: the tcp:// source URL. */
   go2rtcSourceUrl?: string;
   /** Server mode. Always "go2rtc" — kept for backward compatibility with
@@ -1113,31 +1120,11 @@ export async function startRtspServer(
     const useGo2rtc = go2rtcMgr?.isRunning === true;
 
     /**
-     * Build the go2rtc sources list for a stream.
-     *
-     * Camera audio is always ADTS AAC, but WebRTC cannot negotiate AAC — it
-     * accepts only OPUS / G722 / PCMU / PCMA / S16. Similarly WebRTC cannot
-     * play H.265. We therefore add ffmpeg transcode sources that expose
-     * WebRTC-friendly tracks on the SAME stream, and let go2rtc's codec
-     * negotiator pick the right track per client:
-     *
-     *   native TCP source  → H.265/H.264 video + AAC audio   (RTSP, HLS, MSE)
-     *   ffmpeg video source → H.264 track (only for H.265 cameras)  (WebRTC)
-     *   ffmpeg audio source → OPUS track                            (WebRTC)
-     *
-     * Two separate ffmpeg sources (not one combined) is the canonical go2rtc
-     * pattern — a single `ffmpeg:...#video=h264#audio=copy` chain makes
-     * ffmpeg try to copy AAC through the internal go2rtc→ffmpeg pipe, which
-     * fails to negotiate and kills the entire ffmpeg producer (taking the
-     * H.264 track with it). Splitting into independent processes makes each
-     * one fail-soft and allows per-track hardware acceleration later.
+     * Detect the camera's video codec so we can decide whether a WebRTC
+     * companion stream (H.264 + OPUS) is needed. Returns null when
+     * detection fails (e.g. battery camera sleeping at registration time).
      */
-    const buildGo2rtcSources = async (
-      streamName: string,
-      primarySource: string,
-    ): Promise<string[]> => {
-      const videoH264Source = `ffmpeg:${streamName}#video=h264`;
-      const audioOpusSource = `ffmpeg:${streamName}#audio=opus`;
+    const detectCodec = async (): Promise<"H.264" | "H.265" | null> => {
       try {
         const isNvr = camera.isNvr || !!camera.nvrId;
         const opts = await api.buildVideoStreamOptions({ channel, onNvr: isNvr });
@@ -1145,23 +1132,16 @@ export async function startRtspServer(
           (s) => s.profile === profile && (s.channel ?? 0) === channel,
         );
         const codec = match?.metadata?.videoEncType;
-        if (codec === "H.264") {
-          logger.info(
-            `Codec for ${streamName} is H264 — native source + opus audio transcode (for WebRTC audio)`,
-          );
-          return [primarySource, audioOpusSource];
-        }
-        logger.info(
-          `Codec for ${streamName} is "${codec ?? "unknown"}" — native + h264 video transcode + opus audio transcode (for WebRTC)`,
-        );
-        return [primarySource, videoH264Source, audioOpusSource];
-      } catch (e) {
-        logger.info(
-          `Codec detection failed for ${streamName} (${e}); using native + h264 + opus transcodes as safety net`,
-        );
-        return [primarySource, videoH264Source, audioOpusSource];
+        if (codec === "H.264") return "H.264";
+        if (codec === "H.265") return "H.265";
+        return null;
+      } catch {
+        return null;
       }
     };
+
+    const go2rtcRtspPortForSources =
+      Number(process.env.GO2RTC_RTSP_PORT) || (settings.go2rtc?.rtspPort ?? 18554);
 
     if (!useGo2rtc) {
       throw new Error(
@@ -1204,15 +1184,41 @@ export async function startRtspServer(
 
     const tcpSourceUrl = server.go2rtcSourceUrl!;
     const go2rtcName = buildGo2rtcStreamName(camera.name, profile, channel);
-    // The MPEG-TS source carries audio+video in one TCP stream, so go2rtc
-    // ingests it natively.  For H.265 cameras we still add the ffmpeg
-    // transcode source so WebRTC clients (which require H.264) are served.
-    const sources = await buildGo2rtcSources(go2rtcName, tcpSourceUrl);
-    await go2rtcMgr!.addStream(go2rtcName, sources);
+
+    // Primary stream: MPEG-TS from our Go2rtcTcpServer, carrying native
+    // H.264/H.265 video + AAC audio.  Ingested 1:1 for RTSP / HLS / MSE
+    // consumers that can handle the native codecs.
+    await go2rtcMgr!.addStream(go2rtcName, tcpSourceUrl);
+    logger.info(`Go2rtc primary stream registered: ${go2rtcName} → ${tcpSourceUrl}`);
+
+    // WebRTC companion stream: single-source ffmpeg transcode to H.264+OPUS.
+    // We register it as a SEPARATE stream (not an additional source on the
+    // primary) because go2rtc's `PUT /api/streams` silently keeps only the
+    // first `src` parameter — multi-source entries only work from the static
+    // YAML, which go2rtc does not hot-reload.  Combining video + audio into
+    // one ffmpeg chain is fine here because both tracks are transcoded
+    // (no `audio=copy` AAC-over-RTSP negotiation failure).
+    //
+    // H.264 cameras still need the audio transcoded for WebRTC (AAC is not
+    // a WebRTC audio codec), but can leave video untouched. The combined
+    // ffmpeg chain handles both cases — ffmpeg is smart enough to copy
+    // video when the filter keeps the same codec.
+    const detectedCodec = await detectCodec();
+    const webrtcStreamName = `${go2rtcName}/webrtc`;
+    const webrtcInputUrl = `rtsp://127.0.0.1:${go2rtcRtspPortForSources}/${go2rtcName}`;
+    const webrtcVideoFilter =
+      detectedCodec === "H.264" ? "video=copy" : "video=h264";
+    const webrtcSource = `ffmpeg:${webrtcInputUrl}#${webrtcVideoFilter}#audio=opus`;
+    await go2rtcMgr!.addStream(webrtcStreamName, webrtcSource);
+    logger.info(
+      `Go2rtc WebRTC companion stream registered: ${webrtcStreamName} → ${webrtcSource} ` +
+      `(detected codec: ${detectedCodec ?? "unknown"})`,
+    );
 
     info.status = "running";
     info.mode = "go2rtc";
     info.go2rtcStreamName = go2rtcName;
+    info.go2rtcWebrtcStreamName = webrtcStreamName;
     info.go2rtcSourceUrl = tcpSourceUrl;
     info.port = port;
     info.startedAt = new Date();
@@ -1222,7 +1228,6 @@ export async function startRtspServer(
 
     rtspServers.set(streamKey, { server, info, go2rtcStreamName: go2rtcName });
 
-    logger.info(`Go2rtc TCP stream registered: ${go2rtcName} → ${tcpSourceUrl}`);
     logger.info(`RTSP via go2rtc: ${info.rtspUrl}`);
 
     // Save stream configuration for auto-start on next server restart
@@ -1286,11 +1291,15 @@ export async function stopRtspServer(
   );
 
   try {
-    // Deregister from go2rtc if this was a go2rtc stream
+    // Deregister both the primary and the WebRTC companion streams from go2rtc
     if (entry.go2rtcStreamName) {
       const go2rtcMgr = getGo2rtcManager();
       if (go2rtcMgr?.isRunning) {
         await go2rtcMgr.removeStream(entry.go2rtcStreamName).catch(() => {});
+        const webrtcName = entry.info.go2rtcWebrtcStreamName;
+        if (webrtcName) {
+          await go2rtcMgr.removeStream(webrtcName).catch(() => {});
+        }
       }
     }
 
@@ -1302,6 +1311,7 @@ export async function stopRtspServer(
     entry.info.rtspUrl = undefined;
     entry.info.startedAt = undefined;
     entry.info.go2rtcStreamName = undefined;
+    entry.info.go2rtcWebrtcStreamName = undefined;
     entry.info.go2rtcSourceUrl = undefined;
 
     logger.info("Stream server stopped");

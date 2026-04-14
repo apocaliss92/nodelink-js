@@ -13,7 +13,7 @@ import { EventsFloatingContent } from './EventsFloatingContent';
 import { SessionsFloatingContent } from './SessionsFloatingContent';
 import { DeviceControlsContent } from './DeviceControlsContent';
 import { WebRTCInlinePlayer } from './WebRTCInlinePlayer';
-import { getStreamName } from './utils';
+import { getStreamName, getWebrtcStreamName } from './utils';
 import { useCameras } from './hooks/useCameras';
 import { useSelectedCamera } from './hooks/useSelectedCamera';
 import type { CameraInfo, AvailableStream } from './types';
@@ -263,7 +263,7 @@ export function CamerasPage() {
             >
               <div className="h-full bg-black">
                 <WebRTCInlinePlayer
-                  streamName={getStreamName(panel.camera, panel.stream.profile, server)}
+                  streamName={getWebrtcStreamName(panel.camera, panel.stream.profile, server)}
                   go2rtcApiPort={camerasHook.go2rtcApiPort}
                   serviceIp={camerasHook.serviceIp}
                 />

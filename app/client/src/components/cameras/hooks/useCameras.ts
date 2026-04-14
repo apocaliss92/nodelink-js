@@ -42,6 +42,7 @@ export function useCameras() {
       status: string | undefined;
       connections: number | undefined;
       go2rtcStreamName: string | undefined;
+      go2rtcWebrtcStreamName: string | undefined;
       rtspUrl: string | undefined;
       mode: string | undefined;
     }>
@@ -148,6 +149,7 @@ export function useCameras() {
           status: x.status ? String(x.status) : undefined,
           connections: x.connections === undefined ? undefined : Number(x.connections),
           go2rtcStreamName: x.go2rtcStreamName ? String(x.go2rtcStreamName) : undefined,
+          go2rtcWebrtcStreamName: x.go2rtcWebrtcStreamName ? String(x.go2rtcWebrtcStreamName) : undefined,
           rtspUrl: x.rtspUrl ? String(x.rtspUrl) : undefined,
           mode: x.mode ? String(x.mode) : undefined,
         })),
