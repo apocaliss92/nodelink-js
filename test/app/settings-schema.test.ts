@@ -6,7 +6,6 @@ import { z } from "zod";
 
 const Go2rtcSchema = z.object({
   enabled: z.boolean().default(true),
-  rtspSource: z.enum(["go2rtc", "local"]).default("go2rtc"),
   binaryPath: z.string().default("go2rtc"),
   apiPort: z.number().int().min(1).max(65535).default(11984),
   rtspPort: z.number().int().min(1).max(65535).default(18554),
@@ -51,23 +50,6 @@ describe("Settings schema validation", () => {
       expect(result.iceServers).toHaveLength(1);
     });
 
-    describe("rtspSource", () => {
-      it("defaults to go2rtc", () => {
-        const result = Go2rtcSchema.parse({});
-        expect(result.rtspSource).toBe("go2rtc");
-      });
-
-      it("accepts local", () => {
-        const result = Go2rtcSchema.parse({ rtspSource: "local" });
-        expect(result.rtspSource).toBe("local");
-      });
-
-      it("rejects invalid values", () => {
-        expect(() =>
-          Go2rtcSchema.parse({ rtspSource: "invalid" as any }),
-        ).toThrow();
-      });
-    });
   });
 
   describe("frigate", () => {

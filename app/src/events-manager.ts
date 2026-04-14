@@ -67,12 +67,13 @@ let mqttClient: import("mqtt").MqttClient | null = null;
 
 /**
  * Per-topic semantic state cache for the raw MQTT publish path.
- * Prevents re-publishing state events (sleeping/awake/battery) when the
- * camera is already in that state — avoids flooding the broker with
- * identical retained messages on every poll/reconnect cycle.
+ * Stores the last published semantic state (the event `type`) per topic
+ * so that repeated sleeping/awake events with the same state are skipped.
+ * Comparing raw JSON would not work because the payload includes
+ * `timestamp: Date.now()` which makes every payload unique.
  *
  * Key:   MQTT topic string
- * Value: last published payload string
+ * Value: last published event type (e.g. "sleeping", "awake")
  *
  * Note: the Home Assistant MQTT path (homeassistant-mqtt.ts) already
  * deduplicates inside MqttHaClient. This cache covers only the generic
@@ -170,18 +171,18 @@ function broadcastEventPayload(payload: AnyEventPayload): void {
 
       // State-based events (sleeping, awake) carry no new information when
       // the camera is already in that state. Skip the publish if the last
-      // value on this topic is identical to avoid hammering the broker with
-      // duplicate retained messages on every reconnect / poll cycle.
+      // emitted type on this topic is identical. Compare the event TYPE
+      // rather than the full JSON because payload.timestamp makes every
+      // JSON naturally unique — a JSON compare would never hit the cache.
       // Transient trigger events (motion, people, …) always publish because
-      // each occurrence is a distinct detection — and their timestamp makes
-      // the JSON payload naturally unique anyway.
+      // each occurrence is a distinct detection.
       const isStateEvent =
         payload.type === "sleeping" ||
         payload.type === "awake";
 
-      const cachedValue = isStateEvent ? mqttPublishCache.get(topic) : undefined;
-      if (cachedValue !== json) {
-        if (isStateEvent) mqttPublishCache.set(topic, json);
+      const lastType = isStateEvent ? mqttPublishCache.get(topic) : undefined;
+      if (!isStateEvent || lastType !== payload.type) {
+        if (isStateEvent) mqttPublishCache.set(topic, payload.type);
         mqttClient.publish(topic, json, { qos: mqtt.qos ?? 0 });
       }
 
@@ -192,15 +193,33 @@ function broadcastEventPayload(payload: AnyEventPayload): void {
   }
 }
 
-function handleCameraEvent(cameraId: string, event: ReolinkSimpleEvent): void {
+/**
+ * Handle a ReolinkSimpleEvent from a camera subscription.
+ *
+ * For `sleeping`/`awake` events this applies state-change deduplication:
+ * the underlying UDP sleep inference (ReolinkBaichuanApi.startUdpSleepInference)
+ * can flap between states as non-waking traffic ages in/out of its 10s
+ * observation window, producing rapid `awake → sleeping → awake → …`
+ * bursts even when the camera has had no actual interaction. Those flaps
+ * must not be broadcast downstream (SSE/JSON-stream/MQTT) or they flood
+ * Home Assistant automations and integrations with phantom state changes.
+ *
+ * Exported for unit testing.
+ */
+export function handleCameraEvent(
+  cameraId: string,
+  event: ReolinkSimpleEvent,
+): void {
   const payload = buildPayload(cameraId, event);
   logger.debug(
     `Event: ${payload.cameraName} ch${event.channel} ${event.type}`,
   );
 
-  // Track sleep/wake status for battery cameras
+  // Track sleep/wake status for battery cameras — and dedupe repeats
   if (event.type === "sleeping" || event.type === "awake") {
-    cameraSleepStatus.set(cameraId, event.type === "sleeping" ? "sleeping" : "awake");
+    const newStatus = event.type === "sleeping" ? "sleeping" : "awake";
+    const previousStatus = cameraSleepStatus.get(cameraId);
+
     // Auto-mark camera as battery if it receives sleep/awake events
     const config = getConfig();
     const cam = config.cameras.find((c) => c.id === cameraId);
@@ -208,6 +227,17 @@ function handleCameraEvent(cameraId: string, event: ReolinkSimpleEvent): void {
       updateCamera(cameraId, { isBattery: true });
       logger.info(`Auto-marked camera ${cameraId} as battery (received ${event.type} event)`);
     }
+
+    // Dedupe: skip broadcast when the state hasn't actually changed.
+    // This guards against UDP sleep-inference flapping described above.
+    if (previousStatus === newStatus) {
+      logger.debug(
+        `Deduped duplicate ${event.type} event for ${payload.cameraName} (already ${newStatus})`,
+      );
+      return;
+    }
+
+    cameraSleepStatus.set(cameraId, newStatus);
   }
 
   // Track latest battery level from push events
@@ -452,6 +482,20 @@ export function getMqttClient(): import("mqtt").MqttClient | null {
  * Get the sleep/wake status of a camera.
  * Returns undefined if no sleeping/awake event has been received yet.
  */
+/**
+ * Reset all in-memory event state. Test-only helper — callers in production
+ * code should not need this.
+ */
+export function _resetEventsStateForTests(): void {
+  cameraSleepStatus.clear();
+  cameraBatteryState.clear();
+  mqttPublishCache.clear();
+  recentEventsByCamera.clear();
+  sseClients.clear();
+  jsonStreamClients.clear();
+  registeredCameras.clear();
+}
+
 export function getCameraSleepStatus(cameraId: string): "awake" | "sleeping" | undefined {
   return cameraSleepStatus.get(cameraId);
 }

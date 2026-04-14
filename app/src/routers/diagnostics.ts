@@ -9,10 +9,26 @@ import {
   readReport,
   deleteReport,
   MAX_CONCURRENT_SESSIONS,
+  type DiagnosticStreamServer,
 } from "../stream-diagnostic.js";
 import { getRtspServerInstance } from "../rtsp-manager.js";
-import { BaichuanRtspServer } from "@apocaliss92/nodelink-js";
 import { getConfig } from "../settings-store.js";
+
+/**
+ * Duck-type check: any stream server that implements the three required
+ * diagnostic methods can drive the StreamDiagnostic session.
+ * Both BaichuanRtspServer (legacy) and Go2rtcTcpServer (current default)
+ * implement this surface.
+ */
+function implementsDiagnosticServer(s: unknown): s is DiagnosticStreamServer {
+  if (s == null || typeof s !== "object") return false;
+  const o = s as Record<string, unknown>;
+  return (
+    typeof o.subscribeDiagnostic === "function" &&
+    typeof o.unsubscribeDiagnostic === "function" &&
+    typeof o.getAudioInfo === "function"
+  );
+}
 
 export const diagnosticsRouter = router({
   start: publicProcedure
@@ -42,10 +58,9 @@ export const diagnosticsRouter = router({
         );
       }
 
-      // Get the stream server instance for this stream. Stream diagnostics
-      // require the BaichuanRtspServer implementation — Go2rtcTcpServer does
-      // not expose the diagnostic subscription API (go2rtc handles the stream
-      // itself, so use go2rtc's own debugging tools instead).
+      // Get the stream server instance for this stream. Both Go2rtcTcpServer
+      // and BaichuanRtspServer implement DiagnosticStreamServer (duck-typed),
+      // so the diagnostic session works regardless of the underlying backend.
       const server = getRtspServerInstance(
         input.cameraId,
         input.profile,
@@ -56,10 +71,10 @@ export const diagnosticsRouter = router({
           `No running stream server for ${input.cameraId}/${input.profile}/ch${input.channel}. Start the stream first.`,
         );
       }
-      if (!(server instanceof BaichuanRtspServer)) {
+      if (!implementsDiagnosticServer(server)) {
         throw new Error(
-          `Stream diagnostics are not supported for go2rtc-backed streams. ` +
-          `Disable go2rtc in settings to use the legacy RTSP server for diagnostics.`,
+          `The active stream server does not expose the diagnostic hooks ` +
+          `(subscribeDiagnostic/unsubscribeDiagnostic/getAudioInfo).`,
         );
       }
 

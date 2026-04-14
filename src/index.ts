@@ -16,6 +16,12 @@ export * from "./reolink/baichuan/types";
 export * from "./reolink/baichuan/recordingFileName";
 export * from "./reolink/baichuan/endpoints-server";
 export * from "./reolink/baichuan/capabilities";
+export {
+  decideSleepInferenceTransition,
+  type SleepInferencePending,
+  type SleepInferenceInput,
+  type SleepInferenceDecision,
+} from "./reolink/baichuan/utils/sleepInference";
 // DeviceAbilities is already exported via export * above
 export * from "./rtsp/urls";
 export * from "./rtsp/server";

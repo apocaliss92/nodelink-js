@@ -37,7 +37,6 @@ import {
   getConnLogs,
   connLogEmitter,
 } from "./rtsp-manager.js";
-import { startRtspProxy, stopRtspProxy } from "./rtsp-proxy.js";
 import { getSettings, loadSettings, getConfig } from "./settings-store.js";
 // Custom MJPEG/HLS/WebRTC servers removed — go2rtc provides all output formats.
 // Legacy modules (mjpeg-native, hls-native, webrtc-native, stream-pool) are still
@@ -67,7 +66,6 @@ const settings = getSettings();
 const app = express();
 const server = http.createServer(app);
 const PORT = Number(process.env.PORT) || 3000;
-const RTSP_PORT = Number(process.env.RTSP_PORT) || 8554;
 
 type UpdateCheckResult = {
   currentVersion: string | null;
@@ -771,15 +769,6 @@ app.get("*", (req, res, next) => {
 async function shutdown() {
   appLogger.info("Shutting down server...", { source: "server" });
 
-  // Stop RTSP proxy (if running in legacy mode)
-  try {
-    await stopRtspProxy();
-  } catch (error) {
-    appLogger.error(`Error stopping RTSP proxy: ${error}`, {
-      source: "server",
-    });
-  }
-
   // Disconnect MQTT
   try {
     await disconnectMqtt();
@@ -891,41 +880,38 @@ server.listen(PORT, async () => {
   // Init Home Assistant MQTT device discovery
   initHomeAssistantMqtt();
 
-  // Step 1: Start go2rtc (if enabled)
+  // Step 1: Start go2rtc (always — it is the only supported streaming backend).
   // Environment variables override settings for Docker/deployment flexibility.
-  if (settings.go2rtc?.enabled) {
+  try {
+    const go2rtcConfig = {
+      binaryPath: process.env.GO2RTC_PATH || settings.go2rtc.binaryPath,
+      apiPort: Number(process.env.GO2RTC_API_PORT) || settings.go2rtc.apiPort,
+      rtspPort: Number(process.env.GO2RTC_RTSP_PORT) || settings.go2rtc.rtspPort,
+      webrtcPort: Number(process.env.GO2RTC_WEBRTC_PORT) || settings.go2rtc.webrtcPort,
+      iceServers: settings.go2rtc.iceServers,
+    };
+    await initGo2rtc(go2rtcConfig);
+    appLogger.info(
+      `go2rtc started (API: http://localhost:${go2rtcConfig.apiPort}, RTSP: ${go2rtcConfig.rtspPort}, WebRTC: ${go2rtcConfig.webrtcPort})`,
+      { source: "go2rtc" },
+    );
     try {
-      const go2rtcConfig = {
-        binaryPath: process.env.GO2RTC_PATH || settings.go2rtc.binaryPath,
-        apiPort: Number(process.env.GO2RTC_API_PORT) || settings.go2rtc.apiPort,
-        rtspPort: Number(process.env.GO2RTC_RTSP_PORT) || settings.go2rtc.rtspPort,
-        webrtcPort: Number(process.env.GO2RTC_WEBRTC_PORT) || settings.go2rtc.webrtcPort,
-        iceServers: settings.go2rtc.iceServers,
-        rtspSource: settings.go2rtc.rtspSource,
-      };
-      await initGo2rtc(go2rtcConfig);
-      appLogger.info(
-        `go2rtc started (API: http://localhost:${go2rtcConfig.apiPort}, RTSP: ${go2rtcConfig.rtspPort}, WebRTC: ${go2rtcConfig.webrtcPort})`,
-        { source: "go2rtc" },
-      );
-      try {
-        await startStreamsForAllConnectedCameras();
-        appLogger.info("Started streams for already-connected cameras", {
-          source: "go2rtc",
-        });
-      } catch (flushErr) {
-        appLogger.error(`Error starting streams after go2rtc: ${flushErr}`, {
-          source: "go2rtc",
-        });
-      }
-    } catch (error) {
-      appLogger.error(`Error initializing go2rtc: ${error}`, {
-        source: "server",
+      await startStreamsForAllConnectedCameras();
+      appLogger.info("Started streams for already-connected cameras", {
+        source: "go2rtc",
+      });
+    } catch (flushErr) {
+      appLogger.error(`Error starting streams after go2rtc: ${flushErr}`, {
+        source: "go2rtc",
       });
     }
+  } catch (error) {
+    appLogger.error(`Error initializing go2rtc: ${error}`, {
+      source: "server",
+    });
   }
 
-  // Step 2: Auto-start streams (always, regardless of mode)
+  // Step 2: Auto-start streams for cameras configured with autoStart.
   try {
     await autoStartRtspServers();
     appLogger.info("Auto-started camera streams", { source: "server" });
@@ -933,38 +919,6 @@ server.listen(PORT, async () => {
     appLogger.error(`Error auto-starting streams: ${error}`, {
       source: "server",
     });
-  }
-
-  // Step 3: Start RtspProxyServer when needed
-  const rtspSource = settings.go2rtc?.rtspSource ?? "go2rtc";
-  if (settings.go2rtc?.enabled && rtspSource === "local") {
-    // Local mode: proxy on go2rtc's RTSP port with directHandoff
-    try {
-      const rtspPort =
-        Number(process.env.GO2RTC_RTSP_PORT) ||
-        (settings.go2rtc?.rtspPort ?? 18554);
-      await startRtspProxy({ port: rtspPort, directHandoff: true });
-      appLogger.info(
-        `RTSP proxy (directHandoff) started on port ${rtspPort}`,
-        { source: "server" },
-      );
-    } catch (error) {
-      appLogger.error(`Error starting RTSP proxy: ${error}`, {
-        source: "server",
-      });
-    }
-  } else if (!settings.go2rtc?.enabled && settings.rtspProxyEnabled) {
-    // Legacy proxy mode (no go2rtc)
-    try {
-      await startRtspProxy();
-      appLogger.info(`RTSP Proxy started on port ${RTSP_PORT}`, {
-        source: "server",
-      });
-    } catch (error) {
-      appLogger.error(`Error starting RTSP proxy: ${error}`, {
-        source: "server",
-      });
-    }
   }
 });
 

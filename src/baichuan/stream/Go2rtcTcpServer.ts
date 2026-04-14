@@ -296,6 +296,15 @@ export class Go2rtcTcpServer extends EventEmitter<{
   // Prebuffer
   private prebuffer: PrebufferEntry[] = [];
 
+  // Audio metadata — populated on first valid ADTS AAC frame.
+  // Exposed via getAudioInfo() for the stream-diagnostics feature.
+  private audioInfo: {
+    codec: "aac-adts";
+    sampleRate: number;
+    channels: number;
+    configHex: string;
+  } | null = null;
+
   constructor(options: Go2rtcTcpServerOptions) {
     super();
     this.api = options.api;
@@ -395,6 +404,56 @@ export class Go2rtcTcpServer extends EventEmitter<{
   /** Number of currently connected clients. */
   get clientCount(): number {
     return this.connectedClients.size;
+  }
+
+  // -----------------------------------------------------------------------
+  // Diagnostic subscription API (implements DiagnosticStreamServer)
+  //
+  // Matches the shape of BaichuanRtspServer's diagnostic API so the
+  // stream-diagnostic feature in the Manager app can drive either backend
+  // with identical code.
+  // -----------------------------------------------------------------------
+
+  /**
+   * Subscribe to the raw native stream for diagnostic purposes.
+   * The subscriber receives the same frames the MPEG-TS muxer consumes
+   * (pre-muxing). Counts as a "consumer" so the native stream is kept alive
+   * for the lifetime of the subscription. If the stream is not already
+   * running (battery camera, prestart=false), this starts it.
+   */
+  async subscribeDiagnostic(
+    id: string,
+  ): Promise<AsyncGenerator<NativeFrame, void, unknown>> {
+    this.connectedClients.add(`diag:${id}`);
+    if (!this.nativeStreamActive) {
+      await this.startNativeStream();
+    }
+    if (!this.nativeFanout) {
+      this.connectedClients.delete(`diag:${id}`);
+      throw new Error(
+        "Go2rtcTcpServer: native stream failed to start — cannot subscribe diagnostic",
+      );
+    }
+    return this.nativeFanout.subscribe(`diag:${id}`);
+  }
+
+  /** Unsubscribe a diagnostic session and release its consumer slot. */
+  unsubscribeDiagnostic(id: string): void {
+    this.removeClient(`diag:${id}`, "diagnostic unsubscribe");
+  }
+
+  /**
+   * Returns ADTS AAC audio metadata detected from the native stream, or
+   * null if no audio frame has been observed yet (e.g. video-only cameras
+   * or before the first audio packet arrives).
+   */
+  getAudioInfo(): {
+    codec: "aac-adts";
+    sampleRate: number;
+    channels: number;
+    configHex: string;
+  } | null {
+    return this.audioInfo;
   }
 
   // -----------------------------------------------------------------------
@@ -669,6 +728,46 @@ export class Go2rtcTcpServer extends EventEmitter<{
   }
 
   // -----------------------------------------------------------------------
+  // ADTS AAC parsing (used for audio metadata exposed via getAudioInfo)
+  // -----------------------------------------------------------------------
+
+  /** True if `b` starts with an ADTS AAC syncword (0xFFF). */
+  private static isAdtsAacFrame(b: Buffer): boolean {
+    return b.length >= 2 && b[0] === 0xff && (b[1]! & 0xf0) === 0xf0;
+  }
+
+  /**
+   * Parse an ADTS header into {sampleRate, channels, AudioSpecificConfig hex}.
+   * Returns null when the buffer is not a valid ADTS frame.
+   */
+  private static parseAdtsSamplingInfo(
+    b: Buffer,
+  ): { sampleRate: number; channels: number; configHex: string } | null {
+    if (b.length < 7) return null;
+    if (!Go2rtcTcpServer.isAdtsAacFrame(b)) return null;
+
+    const samplingIndex = (b[2]! >> 2) & 0x0f;
+    const sampleRates = [
+      96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000,
+      11025, 8000, 7350,
+    ];
+    const sampleRate = sampleRates[samplingIndex] ?? null;
+    if (!sampleRate) return null;
+
+    const channelConfig = ((b[2]! & 0x01) << 2) | ((b[3]! >> 6) & 0x03);
+    const channels = channelConfig === 0 ? 1 : channelConfig;
+
+    const profile = (b[2]! >> 6) & 0x03;
+    const audioObjectType = profile + 1;
+    const asc =
+      (audioObjectType << 11) | (samplingIndex << 7) | (channelConfig << 3);
+    const configHex = Buffer.from([(asc >> 8) & 0xff, asc & 0xff]).toString(
+      "hex",
+    );
+    return { sampleRate, channels, configHex };
+  }
+
+  // -----------------------------------------------------------------------
   // Native stream management
   // -----------------------------------------------------------------------
 
@@ -755,6 +854,14 @@ export class Go2rtcTcpServer extends EventEmitter<{
 
         if (frame.audio) {
           if (frame.data.length === 0) return;
+          // Populate audioInfo on the first valid ADTS frame so getAudioInfo()
+          // (used by the stream-diagnostic feature) can return metadata.
+          if (!this.audioInfo) {
+            const parsed = Go2rtcTcpServer.parseAdtsSamplingInfo(frame.data);
+            if (parsed) {
+              this.audioInfo = { codec: "aac-adts", ...parsed };
+            }
+          }
           prebufData = frame.data;
           isKeyframe = false;
         } else {

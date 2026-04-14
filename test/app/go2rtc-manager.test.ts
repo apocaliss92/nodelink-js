@@ -6,7 +6,7 @@ describe("go2rtc YAML config generation", () => {
 
   function generateYaml(
     streams: Map<string, readonly string[]>,
-    options: { apiPort: number; rtspPort: number; webrtcPort: number; iceServers?: string[]; rtspSource?: "go2rtc" | "local" },
+    options: { apiPort: number; rtspPort: number; webrtcPort: number; iceServers?: string[] },
   ): string {
     const lines: string[] = [];
     lines.push("api:");
@@ -14,11 +14,7 @@ describe("go2rtc YAML config generation", () => {
     lines.push('  origin: "*"');
     lines.push("");
     lines.push("rtsp:");
-    if (options.rtspSource === "local") {
-      lines.push('  listen: ""');
-    } else {
-      lines.push(`  listen: ":${options.rtspPort}"`);
-    }
+    lines.push(`  listen: ":${options.rtspPort}"`);
     lines.push("");
     lines.push("webrtc:");
     lines.push(`  listen: ":${options.webrtcPort}"`);
@@ -120,27 +116,13 @@ describe("go2rtc YAML config generation", () => {
     expect(yaml).toContain("# No streams registered yet");
   });
 
-  describe("RTSP listener disable", () => {
-    it("disables RTSP listener when rtspSource is local", () => {
-      const yaml = generateYaml(new Map(), {
-        apiPort: 11984,
-        rtspPort: 18554,
-        webrtcPort: 18555,
-        rtspSource: "local",
-      });
-      expect(yaml).toContain('listen: ""');
-      expect(yaml).not.toContain('listen: ":18554"');
+  it("always binds the RTSP listener on the configured port", () => {
+    const yaml = generateYaml(new Map(), {
+      apiPort: 11984,
+      rtspPort: 18554,
+      webrtcPort: 18555,
     });
-
-    it("enables RTSP listener when rtspSource is go2rtc", () => {
-      const yaml = generateYaml(new Map(), {
-        apiPort: 11984,
-        rtspPort: 18554,
-        webrtcPort: 18555,
-        rtspSource: "go2rtc",
-      });
-      expect(yaml).toContain('listen: ":18554"');
-    });
+    expect(yaml).toContain('listen: ":18554"');
   });
 });
 

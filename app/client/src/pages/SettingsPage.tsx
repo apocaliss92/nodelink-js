@@ -86,7 +86,6 @@ function buildFrigateYaml(
 type Settings = {
   logLevel: "error" | "warn" | "info" | "debug";
   logRetentionDays: number;
-  rtspProxyEnabled: boolean;
   rtspRequireAuth: boolean;
   serviceIp?: string;
   auth?: {
@@ -1272,22 +1271,6 @@ export default function SettingsPage() {
                   }
                 };
 
-                const handleStartStop = async () => {
-                  setGo2rtcLoading(true);
-                  try {
-                    if (go2rtcStatus?.running) {
-                      await trpcMutation("go2rtc.stop");
-                    } else {
-                      await trpcMutation("go2rtc.start");
-                    }
-                    await refreshStatus();
-                  } catch (e) {
-                    setError(String(e));
-                  } finally {
-                    setGo2rtcLoading(false);
-                  }
-                };
-
                 // Auto-refresh status when tab is active
                 if (!go2rtcStatus && !go2rtcLoading) {
                   refreshStatus();
@@ -1295,23 +1278,6 @@ export default function SettingsPage() {
 
                 return (
                   <>
-                    <div className="mt-3 mb-3">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={go2rtc.enabled}
-                          disabled={!canEditSettings}
-                          onChange={(e) =>
-                            setSettings({
-                              ...settings,
-                              go2rtc: { ...go2rtc, enabled: e.target.checked },
-                            })
-                          }
-                        />
-                        <span>Enable go2rtc restreamer</span>
-                      </label>
-                    </div>
-
                     {go2rtcStatus && (
                       <div
                         className="flex items-center gap-2 mb-3 px-3 py-2 rounded-lg"
@@ -1330,20 +1296,8 @@ export default function SettingsPage() {
                         <span className="flex-1 text-sm">
                           {go2rtcStatus.running
                             ? `Running — API: ${go2rtcStatus.apiUrl}`
-                            : "Stopped"}
+                            : "Not running (startup failed — check logs)"}
                         </span>
-                        <button
-                          className={go2rtcStatus.running ? btnCls : btnPrimaryCls}
-                          style={{ padding: "4px 12px", fontSize: 12 }}
-                          disabled={go2rtcLoading}
-                          onClick={handleStartStop}
-                        >
-                          {go2rtcLoading
-                            ? "..."
-                            : go2rtcStatus.running
-                              ? "Stop"
-                              : "Start"}
-                        </button>
                         <button
                           className={btnCls}
                           style={{ padding: "4px 12px", fontSize: 12 }}

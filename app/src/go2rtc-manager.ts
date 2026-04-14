@@ -86,7 +86,6 @@ export interface Go2rtcOptions {
   webrtcPort: number;
   iceServers?: string[];
   dataDir: string;
-  rtspSource?: "go2rtc" | "local";
 }
 
 // ---- YAML config generation ----
@@ -103,11 +102,7 @@ function generateGo2rtcYaml(
   lines.push("");
 
   lines.push("rtsp:");
-  if (options.rtspSource === "local") {
-    lines.push('  listen: ""');
-  } else {
-    lines.push(`  listen: ":${options.rtspPort}"`);
-  }
+  lines.push(`  listen: ":${options.rtspPort}"`);
   lines.push("");
 
   lines.push("webrtc:");
@@ -171,8 +166,8 @@ export class Go2rtcManager {
   /**
    * Update the manager options in-place. Does NOT restart the process.
    * Call `restart()` (or `stop()`+`start()`) afterwards to apply changes
-   * that affect the generated go2rtc.yaml (api/rtsp/webrtc port, rtspSource,
-   * iceServers, binaryPath).
+   * that affect the generated go2rtc.yaml (api/rtsp/webrtc port, iceServers,
+   * binaryPath).
    */
   updateOptions(patch: Partial<Go2rtcOptions>): void {
     this.options = { ...this.options, ...patch };
@@ -440,7 +435,6 @@ export async function initGo2rtc(settings: {
   rtspPort: number;
   webrtcPort: number;
   iceServers?: string[];
-  rtspSource?: "go2rtc" | "local";
 }): Promise<Go2rtcManager> {
   const dataDir = process.env.DATA_PATH || ".";
 
@@ -451,7 +445,6 @@ export async function initGo2rtc(settings: {
     webrtcPort: settings.webrtcPort,
     iceServers: settings.iceServers,
     dataDir,
-    rtspSource: settings.rtspSource,
   });
 
   await manager.start();

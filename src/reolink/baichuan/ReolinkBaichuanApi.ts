@@ -251,6 +251,7 @@ import type { ReolinkDeviceInfo, ReolinkDeviceInfoTag } from "../types";
 import { computeDeviceCapabilities, getSupportItemForChannel, parseSupportXml, xmlIndicatesFloodlight } from "./capabilities";
 import { parseAbilityInfoXml } from "./utils/abilityInfo";
 import { getAiStateViaGetAiAlarm } from "./utils/aiState";
+import { decideSleepInferenceTransition } from "./utils/sleepInference";
 import { parseChannelInfoPushBlocks } from "./utils/channelInfoPush";
 import {
   buildChannelPushDataLogSnapshot,
@@ -842,7 +843,20 @@ export class ReolinkBaichuanApi {
     number,
     SleepStatus["state"]
   >();
+  /**
+   * Per-channel pending sleep-state candidate for hysteresis.
+   * When the inference flips to a new state we require N consecutive polls
+   * of that same state before committing it — this filters out transient
+   * flapping caused by non-waking traffic drifting in/out of the 10 s
+   * getSleepStatus() observation window during stream teardown.
+   */
+  private readonly udpPendingSleepStateByChannel = new Map<
+    number,
+    { state: SleepStatus["state"]; count: number }
+  >();
   private readonly udpSleepInferenceIntervalMs = 2_000;
+  /** Consecutive inference polls required to commit a new sleeping/awake state. */
+  private readonly udpSleepInferenceHysteresisPolls = 2;
   private lastMotionState: boolean | undefined;
   private lastAiState: AIState | undefined;
   private aiStatePollingDisabled = false;
@@ -8358,24 +8372,29 @@ export class ReolinkBaichuanApi {
       const status = this.getSleepStatus({ channel });
       if (status.state === "unknown") return;
 
-      const prev = this.udpLastInferredSleepStateByChannel.get(channel);
-      this.udpLastInferredSleepStateByChannel.set(channel, status.state);
+      const committed = this.udpLastInferredSleepStateByChannel.get(channel);
+      const pending = this.udpPendingSleepStateByChannel.get(channel);
 
-      // On first observation, only emit if sleeping (awake is the default and would be noisy).
-      if (prev === undefined) {
-        if (status.state === "sleeping") {
-          this.dispatchSimpleEvent({
-            type: "sleeping",
-            channel,
-            timestamp: Date.now(),
-          });
-        }
-        return;
+      const decision = decideSleepInferenceTransition({
+        inferred: status.state,
+        committed,
+        pending,
+        hysteresisPolls: this.udpSleepInferenceHysteresisPolls,
+      });
+
+      this.udpLastInferredSleepStateByChannel.set(
+        channel,
+        decision.nextCommitted,
+      );
+      if (decision.nextPending === undefined) {
+        this.udpPendingSleepStateByChannel.delete(channel);
+      } else {
+        this.udpPendingSleepStateByChannel.set(channel, decision.nextPending);
       }
 
-      if (prev !== status.state) {
+      if (decision.emit) {
         this.dispatchSimpleEvent({
-          type: status.state === "sleeping" ? "sleeping" : "awake",
+          type: decision.emit,
           channel,
           timestamp: Date.now(),
         });
@@ -8403,6 +8422,7 @@ export class ReolinkBaichuanApi {
       this.udpSleepInferenceInterval = undefined;
     }
     this.udpLastInferredSleepStateByChannel.clear();
+    this.udpPendingSleepStateByChannel.clear();
   }
 
   /**

@@ -83,9 +83,6 @@ export const SettingsSchema = z.object({
   logLevel: z.enum(["error", "warn", "info", "debug"]).default("info"),
   logRetentionDays: z.number().default(14),
 
-  // RTSP Proxy (single entry point for all streams - port controlled by RTSP_PORT env var)
-  rtspProxyEnabled: z.boolean().default(true),
-
   // RTSP Authentication
   rtspRequireAuth: z.boolean().default(false),
 
@@ -151,12 +148,9 @@ export const SettingsSchema = z.object({
     })
     .default({}),
 
-  // go2rtc restreamer (default, provides WebRTC/HLS/MJPEG/RTSP output)
+  // go2rtc restreamer — always active, provides WebRTC/HLS/MJPEG/RTSP output
   go2rtc: z
     .object({
-      enabled: z.boolean().default(true),
-      /** RTSP output source: "go2rtc" uses go2rtc's RTSP, "local" uses BaichuanRtspServer directly. */
-      rtspSource: z.enum(["go2rtc", "local"]).default("go2rtc"),
       /** Path to go2rtc binary (e.g. "./bin/go2rtc" or "go2rtc"). */
       binaryPath: z.string().default("go2rtc"),
       /** go2rtc API port (default 11984). */
