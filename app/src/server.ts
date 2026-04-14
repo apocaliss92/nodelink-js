@@ -870,15 +870,24 @@ server.listen(PORT, async () => {
     });
   }
 
-  // Init events manager (SSE, JSON stream, MQTT)
-  initEventsManager();
+  // Init events manager (SSE, JSON stream, MQTT). Wrap in try/catch because
+  // a thrown error here used to take down the entire startup sequence,
+  // preventing go2rtc from ever starting.
+  try {
+    initEventsManager();
+  } catch (error) {
+    appLogger.error(`Error initializing events manager: ${error}`, { source: "server" });
+  }
   try {
     await connectMqtt();
   } catch (error) {
     appLogger.error(`Error connecting MQTT: ${error}`, { source: "server" });
   }
-  // Init Home Assistant MQTT device discovery
-  initHomeAssistantMqtt();
+  try {
+    initHomeAssistantMqtt();
+  } catch (error) {
+    appLogger.error(`Error initializing Home Assistant MQTT discovery: ${error}`, { source: "server" });
+  }
 
   // Step 1: Start go2rtc (always — it is the only supported streaming backend).
   // Environment variables override settings for Docker/deployment flexibility.

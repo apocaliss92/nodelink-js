@@ -241,8 +241,12 @@ export function onApiConnected(
   callback: (cameraId: string, api: ReolinkBaichuanApi) => void,
 ): void {
   apiConnectionListeners.push(callback);
+  // Flush for connections that are already ready. Use optional chaining:
+  // a ManagedConnection is inserted into the map with api=null before its
+  // connect-promise completes (so concurrent callers can find the in-flight
+  // promise), and the listener must not crash on those in-flight entries.
   for (const [cameraId, conn] of apiConnections) {
-    if (conn.api.isReady) {
+    if (conn.api?.isReady) {
       callback(cameraId, conn.api);
     }
   }
@@ -843,7 +847,9 @@ export function getExistingApiConnection(
 ): ReolinkBaichuanApi | undefined {
   const connKey = getConnectionKey(cameraId);
   const conn = apiConnections.get(connKey);
-  if (!conn || conn.api.isClosed) return undefined;
+  // conn.api is null during an in-flight connection (the map is populated
+  // before the connect promise resolves so concurrent callers share it).
+  if (!conn || !conn.api || conn.api.isClosed) return undefined;
   return conn.api;
 }
 
@@ -1106,22 +1112,32 @@ export async function startRtspServer(
     const go2rtcMgr = getGo2rtcManager();
     const useGo2rtc = go2rtcMgr?.isRunning === true;
 
-    // For H265 cameras, register an ffmpeg-transcoded source in go2rtc so
-    // WebRTC clients (browsers that don't support H265) get H264.
-    // go2rtc's multi-source merge doesn't do per-codec routing, so we use
-    // the ffmpeg source as the SOLE go2rtc source for H265 streams.
-    // H264 cameras keep the native RTSP source (no transcoding overhead).
-    // Unknown codec (battery sleeping at registration time): use ffmpeg as a
-    // safety net — better to transcode than to silently fail WebRTC.
+    /**
+     * Build the go2rtc sources list for a stream.
+     *
+     * Camera audio is always ADTS AAC, but WebRTC cannot negotiate AAC — it
+     * accepts only OPUS / G722 / PCMU / PCMA / S16. Similarly WebRTC cannot
+     * play H.265. We therefore add ffmpeg transcode sources that expose
+     * WebRTC-friendly tracks on the SAME stream, and let go2rtc's codec
+     * negotiator pick the right track per client:
+     *
+     *   native TCP source  → H.265/H.264 video + AAC audio   (RTSP, HLS, MSE)
+     *   ffmpeg video source → H.264 track (only for H.265 cameras)  (WebRTC)
+     *   ffmpeg audio source → OPUS track                            (WebRTC)
+     *
+     * Two separate ffmpeg sources (not one combined) is the canonical go2rtc
+     * pattern — a single `ffmpeg:...#video=h264#audio=copy` chain makes
+     * ffmpeg try to copy AAC through the internal go2rtc→ffmpeg pipe, which
+     * fails to negotiate and kills the entire ffmpeg producer (taking the
+     * H.264 track with it). Splitting into independent processes makes each
+     * one fail-soft and allows per-track hardware acceleration later.
+     */
     const buildGo2rtcSources = async (
       streamName: string,
       primarySource: string,
     ): Promise<string[]> => {
-      // ffmpeg transcodes FROM the go2rtc stream (not from the raw RTSP URL).
-      // Using the stream name lets go2rtc ingest natively (audio+video) and
-      // exposes a clean H.264 re-encode for WebRTC clients that cannot play H.265.
-      // #audio=copy preserves the AAC track so audio is not silently dropped.
-      const ffmpegSource = `ffmpeg:${streamName}#video=h264#audio=copy`;
+      const videoH264Source = `ffmpeg:${streamName}#video=h264`;
+      const audioOpusSource = `ffmpeg:${streamName}#audio=opus`;
       try {
         const isNvr = camera.isNvr || !!camera.nvrId;
         const opts = await api.buildVideoStreamOptions({ channel, onNvr: isNvr });
@@ -1130,21 +1146,20 @@ export async function startRtspServer(
         );
         const codec = match?.metadata?.videoEncType;
         if (codec === "H.264") {
-          logger.info(`Codec for ${streamName} is H264 — using native source`);
-          return [primarySource];
+          logger.info(
+            `Codec for ${streamName} is H264 — native source + opus audio transcode (for WebRTC audio)`,
+          );
+          return [primarySource, audioOpusSource];
         }
-        // H.265 or unknown: register both the native source (for RTSP/HLS/MSE
-        // clients that handle H.265 natively) and the ffmpeg transcode source
-        // (for WebRTC clients that require H.264).
         logger.info(
-          `Codec for ${streamName} is "${codec ?? "unknown"}" — using native + ffmpeg H264 transcode`,
+          `Codec for ${streamName} is "${codec ?? "unknown"}" — native + h264 video transcode + opus audio transcode (for WebRTC)`,
         );
-        return [primarySource, ffmpegSource];
+        return [primarySource, videoH264Source, audioOpusSource];
       } catch (e) {
         logger.info(
-          `Codec detection failed for ${streamName} (${e}); using native + ffmpeg H264 transcode as safety net`,
+          `Codec detection failed for ${streamName} (${e}); using native + h264 + opus transcodes as safety net`,
         );
-        return [primarySource, ffmpegSource];
+        return [primarySource, videoH264Source, audioOpusSource];
       }
     };
 
