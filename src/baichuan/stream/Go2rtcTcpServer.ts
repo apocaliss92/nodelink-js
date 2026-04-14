@@ -725,6 +725,11 @@ export class Go2rtcTcpServer extends EventEmitter<{
       `[Go2rtcTcpServer] native stream starting  channel=${this.channel} profile=${this.profile} dedicated=${!!dedicatedClient}`,
     );
 
+    // Per-session flag: true once at least one frame is received.
+    // Used in onEnd to distinguish "camera sleeping (never sent frames)" from
+    // "camera dropped mid-stream" — only the latter should trigger a restart.
+    let hadFrames = false;
+
     this.nativeFanout = new NativeStreamFanout({
       maxQueueItems: 200,
       createSource: () =>
@@ -734,6 +739,7 @@ export class Go2rtcTcpServer extends EventEmitter<{
         }),
       onFrame: (frame) => {
         // Update stream health tracking
+        hadFrames = true;
         this.lastFrameAt = Date.now();
         this.totalFramesReceived++;
 
@@ -802,8 +808,21 @@ export class Go2rtcTcpServer extends EventEmitter<{
           this.dedicatedSessionRelease = undefined;
         }
 
-        // Auto-restart if clients are connected or prestart mode is active
-        if (this.active && (this.connectedClients.size > 0 || this.prestartStream)) {
+        // Do not restart if this stream session never received a frame.
+        // That means the camera is permanently sleeping (battery camera that
+        // did not wake in time). Restarting would create a tight timeout loop
+        // that keeps go2rtc in a reconnect spin and prevents the camera from
+        // returning to sleep.
+        // Exception: prestartStream=true (AC-powered) cameras are always
+        // retried because they are expected to come back online eventually.
+        const skipRestart = !hadFrames && !this.prestartStream;
+
+        if (skipRestart) {
+          this.logger.warn?.(
+            `[Go2rtcTcpServer] camera appears to be sleeping (no frames in this session) — not restarting  ` +
+            `channel=${this.channel} profile=${this.profile}`,
+          );
+        } else if (this.active && (this.connectedClients.size > 0 || this.prestartStream)) {
           this.logger.info?.(
             `[Go2rtcTcpServer] restarting native stream (clients=${this.connectedClients.size}, prestart=${this.prestartStream})`,
           );

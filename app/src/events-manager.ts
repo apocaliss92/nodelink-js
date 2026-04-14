@@ -65,6 +65,21 @@ const registeredCameras = new Set<string>();
 /** MQTT client (lazy init) */
 let mqttClient: import("mqtt").MqttClient | null = null;
 
+/**
+ * Per-topic semantic state cache for the raw MQTT publish path.
+ * Prevents re-publishing state events (sleeping/awake/battery) when the
+ * camera is already in that state — avoids flooding the broker with
+ * identical retained messages on every poll/reconnect cycle.
+ *
+ * Key:   MQTT topic string
+ * Value: last published payload string
+ *
+ * Note: the Home Assistant MQTT path (homeassistant-mqtt.ts) already
+ * deduplicates inside MqttHaClient. This cache covers only the generic
+ * events-manager publish used for the raw topic stream.
+ */
+const mqttPublishCache = new Map<string, string>();
+
 /** Union of all event payloads (camera + system) */
 export type AnyEventPayload = CameraEventPayload | SystemEventPayload;
 
@@ -152,8 +167,26 @@ function broadcastEventPayload(payload: AnyEventPayload): void {
     const mqtt = settings.mqtt;
     if (mqtt?.enabled && mqtt?.topicPrefix) {
       const topic = `${mqtt.topicPrefix}/${payload.cameraNameSlug}/${payload.type}`;
-      mqttClient.publish(topic, json, { qos: mqtt.qos ?? 0 });
-      // Generic topic for all events
+
+      // State-based events (sleeping, awake) carry no new information when
+      // the camera is already in that state. Skip the publish if the last
+      // value on this topic is identical to avoid hammering the broker with
+      // duplicate retained messages on every reconnect / poll cycle.
+      // Transient trigger events (motion, people, …) always publish because
+      // each occurrence is a distinct detection — and their timestamp makes
+      // the JSON payload naturally unique anyway.
+      const isStateEvent =
+        payload.type === "sleeping" ||
+        payload.type === "awake";
+
+      const cachedValue = isStateEvent ? mqttPublishCache.get(topic) : undefined;
+      if (cachedValue !== json) {
+        if (isStateEvent) mqttPublishCache.set(topic, json);
+        mqttClient.publish(topic, json, { qos: mqtt.qos ?? 0 });
+      }
+
+      // Generic all-events topic: always publish (consumers rely on the
+      // event stream being complete regardless of deduplication above)
       mqttClient.publish(`${mqtt.topicPrefix}/all`, json, { qos: mqtt.qos ?? 0 });
     }
   }
