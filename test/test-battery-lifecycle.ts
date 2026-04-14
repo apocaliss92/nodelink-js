@@ -166,7 +166,6 @@ async function collectMpegTs(
 
     socket.on("data", (chunk: Buffer) => {
       if (firstByteMs === null) firstByteMs = Date.now() - connectAt;
-      stats.totalPackets; // keep ref
       const buf = Buffer.concat([residual, chunk]);
       const aligned = Math.floor(buf.length / TS_SIZE) * TS_SIZE;
       for (let off = 0; off < aligned; off += TS_SIZE) consumePacket(buf, off, stats);

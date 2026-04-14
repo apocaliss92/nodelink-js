@@ -32,6 +32,7 @@ vi.mock("../../src/rfc/helpers.js", () => ({
 
 /** Simulates a sleeping battery camera: starts but never delivers a frame. */
 function makeSleepingGenerator() {
+  // eslint-disable-next-line require-yield
   return (async function* () {
     await new Promise<never>(() => {}); // hangs forever
   })();
