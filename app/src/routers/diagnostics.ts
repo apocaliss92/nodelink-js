@@ -11,6 +11,7 @@ import {
   MAX_CONCURRENT_SESSIONS,
 } from "../stream-diagnostic.js";
 import { getRtspServerInstance } from "../rtsp-manager.js";
+import { BaichuanRtspServer } from "@apocaliss92/nodelink-js";
 import { getConfig } from "../settings-store.js";
 
 export const diagnosticsRouter = router({
@@ -41,7 +42,10 @@ export const diagnosticsRouter = router({
         );
       }
 
-      // Get the BaichuanRtspServer instance for this stream
+      // Get the stream server instance for this stream. Stream diagnostics
+      // require the BaichuanRtspServer implementation — Go2rtcTcpServer does
+      // not expose the diagnostic subscription API (go2rtc handles the stream
+      // itself, so use go2rtc's own debugging tools instead).
       const server = getRtspServerInstance(
         input.cameraId,
         input.profile,
@@ -49,7 +53,13 @@ export const diagnosticsRouter = router({
       );
       if (!server) {
         throw new Error(
-          `No running RTSP server for ${input.cameraId}/${input.profile}/ch${input.channel}. Start the stream first.`,
+          `No running stream server for ${input.cameraId}/${input.profile}/ch${input.channel}. Start the stream first.`,
+        );
+      }
+      if (!(server instanceof BaichuanRtspServer)) {
+        throw new Error(
+          `Stream diagnostics are not supported for go2rtc-backed streams. ` +
+          `Disable go2rtc in settings to use the legacy RTSP server for diagnostics.`,
         );
       }
 
