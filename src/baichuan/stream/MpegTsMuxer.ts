@@ -1,249 +1,51 @@
 /**
- * Simple MPEG-TS Muxer for H.264/H.265 video with PTS timestamps.
+ * MPEG-TS Muxer for H.264/H.265 video + ADTS AAC audio.
  *
- * This muxer creates MPEG-TS packets from raw Annex-B video frames,
- * preserving the original PTS timestamps. This allows ffmpeg to read
- * the stream with correct timing without needing -r (framerate) hints.
+ * Produces 188-byte MPEG-TS packets suitable for feeding to go2rtc via a
+ * plain TCP connection (`tcp://127.0.0.1:{port}`).  go2rtc auto-detects the
+ * container format from the 0x47 sync byte and extracts both video and audio.
  *
- * MPEG-TS format:
- * - 188-byte packets
- * - PAT (Program Association Table) - PID 0x0000
- * - PMT (Program Map Table) - PID 0x1000
- * - Video PES - PID 0x0100
+ * Stream layout:
+ *   PID 0x0000 — PAT (Program Association Table)
+ *   PID 0x1000 — PMT (Program Map Table)
+ *   PID 0x0100 — Video elementary stream (H.264 or H.265, Annex-B)
+ *   PID 0x0101 — Audio elementary stream (AAC-ADTS, stream type 0x0F)
  *
- * PTS timestamps are in 90kHz units (standard for MPEG-TS).
+ * Each `MpegTsMuxer` instance is independent: continuity counters are
+ * per-instance so multiple concurrent streams do not corrupt each other.
+ *
+ * Usage:
+ *   const muxer = new MpegTsMuxer({ videoType: "H265", includeAudio: true });
+ *   const tsBytes = muxer.muxVideo(annexBBuffer, ptsUs, isKeyframe);
+ *   const tsBytes = muxer.muxAudio(adtsBuffer, ptsUs);
  */
 
 const TS_PACKET_SIZE = 188;
 const TS_SYNC_BYTE = 0x47;
+const TS_PAYLOAD_SIZE = TS_PACKET_SIZE - 4; // 184
 
-// PIDs
-const PAT_PID = 0x0000;
-const PMT_PID = 0x1000;
-const VIDEO_PID = 0x0100;
+// Fixed PIDs
+const PID_PAT = 0x0000;
+const PID_PMT = 0x1000;
+const PID_VIDEO = 0x0100;
+const PID_AUDIO = 0x0101;
 
-// Stream types
+// MPEG-TS stream types
 const STREAM_TYPE_H264 = 0x1b;
 const STREAM_TYPE_H265 = 0x24;
+const STREAM_TYPE_AAC = 0x0f; // ISO/IEC 13818-7 ADTS AAC
 
-// Continuity counters (0-15, wrap around)
-let patCc = 0;
-let pmtCc = 0;
-let videoCc = 0;
+// PES stream IDs
+const PES_STREAM_ID_VIDEO = 0xe0;
+const PES_STREAM_ID_AUDIO = 0xc0;
 
-/**
- * Create a PAT (Program Association Table) packet.
- */
-function createPat(): Buffer {
-  const packet = Buffer.alloc(TS_PACKET_SIZE, 0xff);
+// Resend PAT+PMT at least every N video frames (and always on keyframes)
+const PAT_PMT_INTERVAL = 40;
 
-  // TS header (4 bytes)
-  packet[0] = TS_SYNC_BYTE;
-  packet[1] = 0x40 | ((PAT_PID >> 8) & 0x1f); // payload_unit_start=1, PID high
-  packet[2] = PAT_PID & 0xff; // PID low
-  packet[3] = 0x10 | (patCc & 0x0f); // no adaptation, payload only, CC
-  patCc = (patCc + 1) & 0x0f;
+// ---------------------------------------------------------------------------
+// CRC-32/MPEG-2
+// ---------------------------------------------------------------------------
 
-  // Pointer field (1 byte) - 0 means table starts immediately
-  packet[4] = 0x00;
-
-  // PAT section
-  let idx = 5;
-  packet[idx++] = 0x00; // table_id = 0 (PAT)
-  packet[idx++] = 0xb0; // section_syntax_indicator=1, private=0, reserved=11
-  packet[idx++] = 13; // section_length (includes CRC)
-  packet[idx++] = 0x00; // transport_stream_id high
-  packet[idx++] = 0x01; // transport_stream_id low
-  packet[idx++] = 0xc1; // reserved, version=0, current_next=1
-  packet[idx++] = 0x00; // section_number
-  packet[idx++] = 0x00; // last_section_number
-
-  // Program 1 -> PMT PID
-  packet[idx++] = 0x00; // program_number high
-  packet[idx++] = 0x01; // program_number low
-  packet[idx++] = 0xe0 | ((PMT_PID >> 8) & 0x1f); // reserved + PMT PID high
-  packet[idx++] = PMT_PID & 0xff; // PMT PID low
-
-  // CRC32 (calculated over section from table_id to last byte before CRC)
-  const crc = crc32Mpeg(packet.subarray(5, idx));
-  packet.writeUInt32BE(crc, idx);
-
-  return packet;
-}
-
-/**
- * Create a PMT (Program Map Table) packet.
- */
-function createPmt(streamType: number): Buffer {
-  const packet = Buffer.alloc(TS_PACKET_SIZE, 0xff);
-
-  // TS header
-  packet[0] = TS_SYNC_BYTE;
-  packet[1] = 0x40 | ((PMT_PID >> 8) & 0x1f);
-  packet[2] = PMT_PID & 0xff;
-  packet[3] = 0x10 | (pmtCc & 0x0f);
-  pmtCc = (pmtCc + 1) & 0x0f;
-
-  // Pointer field
-  packet[4] = 0x00;
-
-  // PMT section
-  let idx = 5;
-  packet[idx++] = 0x02; // table_id = 2 (PMT)
-  packet[idx++] = 0xb0; // section_syntax_indicator=1
-  packet[idx++] = 18; // section_length
-  packet[idx++] = 0x00; // program_number high
-  packet[idx++] = 0x01; // program_number low
-  packet[idx++] = 0xc1; // reserved, version=0, current_next=1
-  packet[idx++] = 0x00; // section_number
-  packet[idx++] = 0x00; // last_section_number
-  packet[idx++] = 0xe0 | ((VIDEO_PID >> 8) & 0x1f); // reserved + PCR_PID high
-  packet[idx++] = VIDEO_PID & 0xff; // PCR_PID low
-  packet[idx++] = 0xf0; // reserved + program_info_length high
-  packet[idx++] = 0x00; // program_info_length low
-
-  // Stream info (video)
-  packet[idx++] = streamType; // stream_type (H.264 or H.265)
-  packet[idx++] = 0xe0 | ((VIDEO_PID >> 8) & 0x1f); // reserved + elementary_PID high
-  packet[idx++] = VIDEO_PID & 0xff; // elementary_PID low
-  packet[idx++] = 0xf0; // reserved + ES_info_length high
-  packet[idx++] = 0x00; // ES_info_length low
-
-  // CRC32
-  const crc = crc32Mpeg(packet.subarray(5, idx));
-  packet.writeUInt32BE(crc, idx);
-
-  return packet;
-}
-
-/**
- * Create TS packets for a video PES (Packetized Elementary Stream).
- *
- * @param data - Annex-B video data (with start codes)
- * @param pts - Presentation timestamp in microseconds
- * @param isKeyframe - Whether this is a keyframe (for random access indicator)
- */
-function createVideoPes(
-  data: Buffer,
-  pts: number,
-  isKeyframe: boolean,
-): Buffer[] {
-  const packets: Buffer[] = [];
-
-  // Convert microseconds to 90kHz PTS
-  const pts90k = Math.floor((pts * 90000) / 1_000_000);
-
-  // Create PES header
-  // PES header: 6 bytes base + 3 bytes PTS header + 5 bytes PTS
-  const pesHeaderLen = 14;
-  const pesHeader = Buffer.alloc(pesHeaderLen);
-
-  let idx = 0;
-  // Start code prefix (3 bytes)
-  pesHeader[idx++] = 0x00;
-  pesHeader[idx++] = 0x00;
-  pesHeader[idx++] = 0x01;
-  // Stream ID (0xe0 = video)
-  pesHeader[idx++] = 0xe0;
-  // PES packet length (0 = unbounded for video)
-  pesHeader[idx++] = 0x00;
-  pesHeader[idx++] = 0x00;
-  // PES header flags
-  pesHeader[idx++] = 0x80; // '10' marker bits, no scrambling, no priority, no alignment, no copyright, no original
-  pesHeader[idx++] = 0x80; // PTS only, no DTS, no ESCR, no ES_rate, no DSM_trick_mode, no additional_copy_info, no CRC, no extension
-  // PES header data length
-  pesHeader[idx++] = 0x05; // 5 bytes for PTS
-
-  // PTS (5 bytes)
-  // Format: '0010' + PTS[32..30] + '1' + PTS[29..15] + '1' + PTS[14..0] + '1'
-  pesHeader[idx++] = 0x21 | ((pts90k >> 29) & 0x0e); // '0010' + PTS[32:30] + '1'
-  pesHeader[idx++] = (pts90k >> 22) & 0xff; // PTS[29:22]
-  pesHeader[idx++] = 0x01 | ((pts90k >> 14) & 0xfe); // PTS[21:15] + '1'
-  pesHeader[idx++] = (pts90k >> 7) & 0xff; // PTS[14:7]
-  pesHeader[idx++] = 0x01 | ((pts90k << 1) & 0xfe); // PTS[6:0] + '1'
-
-  // Combine PES header with payload
-  const pesData = Buffer.concat([pesHeader, data]);
-  let pesOffset = 0;
-
-  // Fragment into TS packets
-  let isFirst = true;
-  while (pesOffset < pesData.length) {
-    const packet = Buffer.alloc(TS_PACKET_SIZE, 0xff);
-    let pktIdx = 0;
-
-    // TS header
-    packet[pktIdx++] = TS_SYNC_BYTE;
-    packet[pktIdx++] = (isFirst ? 0x40 : 0x00) | ((VIDEO_PID >> 8) & 0x1f);
-    packet[pktIdx++] = VIDEO_PID & 0xff;
-
-    const remaining = pesData.length - pesOffset;
-    const maxPayload = TS_PACKET_SIZE - 4; // 184 bytes
-
-    if (remaining >= maxPayload) {
-      // Full payload, no adaptation field needed
-      packet[pktIdx++] = 0x10 | (videoCc & 0x0f);
-      videoCc = (videoCc + 1) & 0x0f;
-      pesData.copy(packet, pktIdx, pesOffset, pesOffset + maxPayload);
-      pesOffset += maxPayload;
-    } else {
-      // Need adaptation field for padding
-      const adaptLen = maxPayload - remaining - 1; // -1 for adaptation_field_length byte
-
-      if (adaptLen < 0) {
-        // Edge case: very small remaining data, use stuffing
-        packet[pktIdx++] = 0x30 | (videoCc & 0x0f); // adaptation + payload
-        videoCc = (videoCc + 1) & 0x0f;
-        packet[pktIdx++] = TS_PACKET_SIZE - 4 - 1 - remaining; // adaptation_field_length
-        if (isFirst && isKeyframe) {
-          packet[pktIdx++] = 0x40; // random_access_indicator
-          // Fill rest with stuffing
-          for (let i = pktIdx; i < TS_PACKET_SIZE - remaining; i++) {
-            packet[i] = 0xff;
-          }
-        } else {
-          packet[pktIdx++] = 0x00; // no flags
-          for (let i = pktIdx; i < TS_PACKET_SIZE - remaining; i++) {
-            packet[i] = 0xff;
-          }
-        }
-        pesData.copy(packet, TS_PACKET_SIZE - remaining, pesOffset);
-        pesOffset += remaining;
-      } else {
-        // Normal case with adaptation field
-        packet[pktIdx++] = 0x30 | (videoCc & 0x0f); // adaptation + payload
-        videoCc = (videoCc + 1) & 0x0f;
-
-        if (adaptLen === 0) {
-          packet[pktIdx++] = 0x00; // adaptation_field_length = 0
-        } else {
-          packet[pktIdx++] = adaptLen; // adaptation_field_length
-          if (isFirst && isKeyframe) {
-            packet[pktIdx++] = 0x40; // random_access_indicator
-          } else {
-            packet[pktIdx++] = 0x00; // no flags
-          }
-          // Stuffing bytes
-          for (let i = 0; i < adaptLen - 1; i++) {
-            packet[pktIdx++] = 0xff;
-          }
-        }
-
-        pesData.copy(packet, pktIdx, pesOffset, pesOffset + remaining);
-        pesOffset += remaining;
-      }
-    }
-
-    packets.push(packet);
-    isFirst = false;
-  }
-
-  return packets;
-}
-
-/**
- * CRC32 for MPEG-TS (polynomial 0x04c11db7).
- */
 function crc32Mpeg(data: Buffer): number {
   let crc = 0xffffffff;
   for (let i = 0; i < data.length; i++) {
@@ -259,65 +61,364 @@ function crc32Mpeg(data: Buffer): number {
   return crc >>> 0;
 }
 
-export interface MpegTsMuxerOptions {
-  /** Video codec type */
-  videoType: "H264" | "H265";
+// ---------------------------------------------------------------------------
+// PTS encoding (5 bytes, 90 kHz clock)
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert microseconds to a 90 kHz PTS value (MPEG-TS standard clock rate).
+ * Wraps at 2^33 (about 26 hours).
+ */
+function usToPts(us: number): number {
+  // 90 kHz = 90 000 ticks/second; microseconds → ticks = us * 90 / 1000
+  return Math.floor((us * 90) / 1000) & 0x1ffffffff; // 33-bit mask
 }
 
 /**
- * MPEG-TS Muxer class for streaming video with timestamps.
+ * Encode a PTS value into 5 bytes.
+ * prefix: 0b0010 for PTS-only, 0b0011 for PTS in a PTS+DTS pair.
+ */
+function encodePts(buf: Buffer, offset: number, pts: number, prefix: number): void {
+  buf[offset + 0] = (prefix << 4) | ((pts >>> 30) & 0x07) << 1 | 0x01;
+  buf[offset + 1] = (pts >>> 22) & 0xff;
+  buf[offset + 2] = ((pts >>> 15) & 0x7f) << 1 | 0x01;
+  buf[offset + 3] = (pts >>> 7) & 0xff;
+  buf[offset + 4] = (pts & 0x7f) << 1 | 0x01;
+}
+
+// ---------------------------------------------------------------------------
+// TS packet helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a TS packet header (4 bytes).
+ *
+ * @param buf        - destination buffer (>= 4 bytes)
+ * @param pid        - packet identifier (13 bits)
+ * @param pusi       - payload_unit_start_indicator (true for first TS of PES)
+ * @param cc         - continuity counter (4 bits, already incremented by caller)
+ * @param hasAdapt   - whether adaptation field is present
+ * @param hasPayload - whether payload is present
+ */
+function writeTsHeader(
+  buf: Buffer,
+  pid: number,
+  pusi: boolean,
+  cc: number,
+  hasAdapt: boolean,
+  hasPayload: boolean,
+): void {
+  buf[0] = TS_SYNC_BYTE;
+  buf[1] = (pusi ? 0x40 : 0x00) | ((pid >> 8) & 0x1f);
+  buf[2] = pid & 0xff;
+  buf[3] =
+    ((hasAdapt ? 0x20 : 0x00) | (hasPayload ? 0x10 : 0x00) | (cc & 0x0f));
+}
+
+/**
+ * Wrap a PES buffer into one or more 188-byte TS packets.
+ * The first packet sets PUSI; continuation packets do not.
+ * The last packet uses an adaptation field to pad to 188 bytes if needed.
+ *
+ * @param pesData     - Complete PES bytes (start code through payload)
+ * @param pid         - TS PID for the elementary stream
+ * @param ccRef       - Object wrapping the continuity counter so it is mutated in-place
+ * @param isKeyframe  - Set random_access_indicator in adaptation field of first packet
+ */
+function pesToTsPackets(
+  pesData: Buffer,
+  pid: number,
+  ccRef: { cc: number },
+  isKeyframe: boolean,
+): Buffer {
+  const totalPackets = Math.ceil(pesData.length / TS_PAYLOAD_SIZE);
+  const out = Buffer.allocUnsafe(totalPackets * TS_PACKET_SIZE);
+  let pesOffset = 0;
+  let outOffset = 0;
+  let isFirst = true;
+
+  while (pesOffset < pesData.length) {
+    const remaining = pesData.length - pesOffset;
+    const packet = out.subarray(outOffset, outOffset + TS_PACKET_SIZE);
+    outOffset += TS_PACKET_SIZE;
+
+    if (remaining >= TS_PAYLOAD_SIZE) {
+      // Full payload — no adaptation field needed
+      writeTsHeader(packet, pid, isFirst, ccRef.cc, false, true);
+      ccRef.cc = (ccRef.cc + 1) & 0x0f;
+      pesData.copy(packet, 4, pesOffset, pesOffset + TS_PAYLOAD_SIZE);
+      pesOffset += TS_PAYLOAD_SIZE;
+    } else {
+      // Last (or only) packet — pad with adaptation field
+      const paddingNeeded = TS_PAYLOAD_SIZE - remaining;
+
+      if (paddingNeeded === 1) {
+        // Adaptation field length byte = 0 (no flags, 0 stuffing bytes)
+        writeTsHeader(packet, pid, isFirst, ccRef.cc, true, true);
+        ccRef.cc = (ccRef.cc + 1) & 0x0f;
+        packet[4] = 0x00; // adaptation_field_length = 0
+        pesData.copy(packet, 5, pesOffset, pesOffset + remaining);
+      } else {
+        // paddingNeeded >= 2: adaptation_field_length byte + (paddingNeeded-2) stuffing + 1 flags byte
+        writeTsHeader(packet, pid, isFirst, ccRef.cc, true, true);
+        ccRef.cc = (ccRef.cc + 1) & 0x0f;
+        const adaptLen = paddingNeeded - 1; // excludes the adaptation_field_length byte itself
+        packet[4] = adaptLen;
+        // Flags byte: random_access_indicator on first video keyframe packet only
+        packet[5] = isFirst && isKeyframe ? 0x40 : 0x00;
+        // Stuffing bytes (0xff)
+        packet.fill(0xff, 6, 4 + paddingNeeded);
+        pesData.copy(packet, 4 + paddingNeeded, pesOffset, pesOffset + remaining);
+      }
+      pesOffset += remaining;
+    }
+
+    isFirst = false;
+  }
+
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// PAT / PMT builders (instance methods using per-instance CC)
+// ---------------------------------------------------------------------------
+
+function buildPat(cc: number): Buffer {
+  const pkt = Buffer.alloc(TS_PACKET_SIZE, 0xff);
+  pkt[0] = TS_SYNC_BYTE;
+  pkt[1] = 0x40 | ((PID_PAT >> 8) & 0x1f); // PUSI=1
+  pkt[2] = PID_PAT & 0xff;
+  pkt[3] = 0x10 | (cc & 0x0f);
+
+  pkt[4] = 0x00; // pointer_field
+
+  // PAT section (starts at byte 5)
+  const sectionStart = 5;
+  let i = sectionStart;
+  pkt[i++] = 0x00; // table_id = PAT
+  pkt[i++] = 0xb0; // section_syntax_indicator=1, '0'=0, reserved=11
+  pkt[i++] = 13;   // section_length (includes everything after this byte through CRC)
+  pkt[i++] = 0x00; // transport_stream_id high
+  pkt[i++] = 0x01; // transport_stream_id low
+  pkt[i++] = 0xc1; // reserved, version=0, current_next=1
+  pkt[i++] = 0x00; // section_number
+  pkt[i++] = 0x00; // last_section_number
+  // Program 1 → PMT PID
+  pkt[i++] = 0x00;
+  pkt[i++] = 0x01;
+  pkt[i++] = 0xe0 | ((PID_PMT >> 8) & 0x1f);
+  pkt[i++] = PID_PMT & 0xff;
+  // CRC32 covers table_id through last program entry
+  const crc = crc32Mpeg(pkt.subarray(sectionStart, i));
+  pkt.writeUInt32BE(crc, i);
+
+  return pkt;
+}
+
+function buildPmt(
+  videoStreamType: number,
+  includeAudio: boolean,
+  cc: number,
+): Buffer {
+  const pkt = Buffer.alloc(TS_PACKET_SIZE, 0xff);
+  pkt[0] = TS_SYNC_BYTE;
+  pkt[1] = 0x40 | ((PID_PMT >> 8) & 0x1f); // PUSI=1
+  pkt[2] = PID_PMT & 0xff;
+  pkt[3] = 0x10 | (cc & 0x0f);
+
+  pkt[4] = 0x00; // pointer_field
+
+  const sectionStart = 5;
+  let i = sectionStart;
+  pkt[i++] = 0x02; // table_id = PMT
+  pkt[i++] = 0xb0; // section_syntax_indicator=1
+
+  // section_length placeholder — filled in after we know the content
+  const sectionLenPos = i;
+  i += 1; // skip section_length (filled below)
+
+  pkt[i++] = 0x00; // program_number high
+  pkt[i++] = 0x01; // program_number low
+  pkt[i++] = 0xc1; // reserved, version=0, current_next=1
+  pkt[i++] = 0x00; // section_number
+  pkt[i++] = 0x00; // last_section_number
+  // PCR_PID = video PID
+  pkt[i++] = 0xe0 | ((PID_VIDEO >> 8) & 0x1f);
+  pkt[i++] = PID_VIDEO & 0xff;
+  // program_info_length = 0 (no descriptors)
+  pkt[i++] = 0xf0;
+  pkt[i++] = 0x00;
+
+  // Video stream entry
+  pkt[i++] = videoStreamType;
+  pkt[i++] = 0xe0 | ((PID_VIDEO >> 8) & 0x1f);
+  pkt[i++] = PID_VIDEO & 0xff;
+  pkt[i++] = 0xf0; // ES_info_length high
+  pkt[i++] = 0x00; // ES_info_length low
+
+  // Audio stream entry (optional)
+  if (includeAudio) {
+    pkt[i++] = STREAM_TYPE_AAC;
+    pkt[i++] = 0xe0 | ((PID_AUDIO >> 8) & 0x1f);
+    pkt[i++] = PID_AUDIO & 0xff;
+    pkt[i++] = 0xf0; // ES_info_length high
+    pkt[i++] = 0x00; // ES_info_length low
+  }
+
+  // section_length = bytes from program_number through CRC (i - sectionLenPos - 1 + 4 CRC bytes)
+  const sectionLen = (i - sectionStart - 3) + 4; // -3 for table_id, flags, section_length field itself
+  pkt[sectionLenPos] = sectionLen;
+
+  const crc = crc32Mpeg(pkt.subarray(sectionStart, i));
+  pkt.writeUInt32BE(crc, i);
+
+  return pkt;
+}
+
+// ---------------------------------------------------------------------------
+// PES builders
+// ---------------------------------------------------------------------------
+
+function buildVideoPes(annexBData: Buffer, ptsUs: number, isKeyframe: boolean): Buffer {
+  const pts = usToPts(ptsUs);
+
+  // PES header: 6-byte fixed + 3-byte optional header + 5-byte PTS = 14 bytes
+  const pesHeader = Buffer.allocUnsafe(14);
+  pesHeader[0] = 0x00; // start code prefix
+  pesHeader[1] = 0x00;
+  pesHeader[2] = 0x01;
+  pesHeader[3] = PES_STREAM_ID_VIDEO;
+  // PES_packet_length = 0 (unbounded — allowed for video elementary streams)
+  pesHeader[4] = 0x00;
+  pesHeader[5] = 0x00;
+  // Flags: marker='10', data_alignment_indicator=isKeyframe, PTS_DTS_flags=10 (PTS only)
+  pesHeader[6] = 0x80 | (isKeyframe ? 0x04 : 0x00);
+  pesHeader[7] = 0x80; // PTS_DTS_flags = 10 (PTS only)
+  pesHeader[8] = 0x05; // PES_header_data_length = 5 (one PTS field)
+  encodePts(pesHeader, 9, pts, 0b0010); // prefix 0b0010 = PTS only
+
+  return Buffer.concat([pesHeader, annexBData]);
+}
+
+function buildAudioPes(adtsData: Buffer, ptsUs: number): Buffer {
+  const pts = usToPts(ptsUs);
+
+  // For audio: PES_packet_length must be set (payload is bounded)
+  // PES_packet_length = 3 (flags+length) + 5 (PTS) + adtsData.length = 8 + adtsData.length
+  const pesPayloadLen = 8 + adtsData.length;
+
+  const pesHeader = Buffer.allocUnsafe(14);
+  pesHeader[0] = 0x00;
+  pesHeader[1] = 0x00;
+  pesHeader[2] = 0x01;
+  pesHeader[3] = PES_STREAM_ID_AUDIO;
+  pesHeader[4] = (pesPayloadLen >> 8) & 0xff;
+  pesHeader[5] = pesPayloadLen & 0xff;
+  pesHeader[6] = 0x80; // marker bits, no scrambling, no priority, no alignment
+  pesHeader[7] = 0x80; // PTS_DTS_flags = 10 (PTS only)
+  pesHeader[8] = 0x05; // PES_header_data_length
+  encodePts(pesHeader, 9, pts, 0b0010);
+
+  return Buffer.concat([pesHeader, adtsData]);
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+export interface MpegTsMuxerOptions {
+  /** Video codec type. */
+  videoType: "H264" | "H265";
+  /**
+   * Whether to include an audio PID (0x0101) in the PMT.
+   * When true, audio frames muxed via muxAudio() are wrapped in PES packets
+   * on PID 0x0101 (AAC-ADTS, stream type 0x0F).
+   * Default: true.
+   */
+  includeAudio?: boolean;
+}
+
+/**
+ * Stateful MPEG-TS muxer.  Each instance has its own continuity counters —
+ * create one per output stream (or per client connection for prebuffer replay).
  */
 export class MpegTsMuxer {
-  private readonly streamType: number;
-  private patSent = false;
-  private pmtSent = false;
-  private patPmtInterval = 0;
-  private readonly patPmtIntervalMax = 40; // Send PAT/PMT every ~40 frames
+  private readonly videoStreamType: number;
+  private readonly includeAudio: boolean;
+
+  // Per-instance continuity counters (4-bit, wrap at 16)
+  private patCc = 0;
+  private pmtCc = 0;
+  private videoCc = 0;
+  private audioCc = 0;
+
+  private framesSinceTableSend = 0;
+  private tablesSent = false;
 
   constructor(options: MpegTsMuxerOptions) {
-    this.streamType =
+    this.videoStreamType =
       options.videoType === "H265" ? STREAM_TYPE_H265 : STREAM_TYPE_H264;
+    this.includeAudio = options.includeAudio ?? true;
   }
 
   /**
-   * Reset continuity counters (call when starting a new stream).
-   */
-  static resetCounters(): void {
-    patCc = 0;
-    pmtCc = 0;
-    videoCc = 0;
-  }
-
-  /**
-   * Mux a video frame into MPEG-TS packets.
+   * Mux a video frame (Annex-B H.264 or H.265) into MPEG-TS packets.
+   * PAT and PMT are emitted before keyframes and periodically.
    *
-   * @param data - Annex-B video data (with start codes)
-   * @param microseconds - Frame timestamp in microseconds
-   * @param isKeyframe - Whether this is a keyframe
-   * @returns Buffer containing all TS packets for this frame
+   * @param annexBData - Annex-B video data (with start codes)
+   * @param ptsUs      - Presentation timestamp in microseconds
+   * @param isKeyframe - Whether this is an IDR / IRAP frame
    */
-  mux(data: Buffer, microseconds: number, isKeyframe: boolean): Buffer {
-    const packets: Buffer[] = [];
+  muxVideo(annexBData: Buffer, ptsUs: number, isKeyframe: boolean): Buffer {
+    const chunks: Buffer[] = [];
 
-    // Send PAT/PMT at start and periodically (especially before keyframes)
-    if (
-      !this.patSent ||
-      !this.pmtSent ||
+    const needTables =
+      !this.tablesSent ||
       isKeyframe ||
-      this.patPmtInterval >= this.patPmtIntervalMax
-    ) {
-      packets.push(createPat());
-      packets.push(createPmt(this.streamType));
-      this.patSent = true;
-      this.pmtSent = true;
-      this.patPmtInterval = 0;
+      this.framesSinceTableSend >= PAT_PMT_INTERVAL;
+
+    if (needTables) {
+      chunks.push(buildPat(this.patCc));
+      this.patCc = (this.patCc + 1) & 0x0f;
+      chunks.push(buildPmt(this.videoStreamType, this.includeAudio, this.pmtCc));
+      this.pmtCc = (this.pmtCc + 1) & 0x0f;
+      this.tablesSent = true;
+      this.framesSinceTableSend = 0;
     }
-    this.patPmtInterval++;
+    this.framesSinceTableSend++;
 
-    // Create video PES packets
-    const videoPackets = createVideoPes(data, microseconds, isKeyframe);
-    packets.push(...videoPackets);
+    const pes = buildVideoPes(annexBData, ptsUs, isKeyframe);
+    const ccRef = { cc: this.videoCc };
+    chunks.push(pesToTsPackets(pes, PID_VIDEO, ccRef, isKeyframe));
+    this.videoCc = ccRef.cc;
 
-    return Buffer.concat(packets);
+    return Buffer.concat(chunks);
+  }
+
+  /**
+   * Mux an audio frame (ADTS AAC) into MPEG-TS packets.
+   * Returns an empty Buffer when includeAudio is false.
+   *
+   * @param adtsData - Raw ADTS AAC frame (starting with 0xFF 0xF1/0xF9 syncword)
+   * @param ptsUs    - Presentation timestamp in microseconds
+   */
+  muxAudio(adtsData: Buffer, ptsUs: number): Buffer {
+    if (!this.includeAudio || adtsData.length === 0) return Buffer.alloc(0);
+
+    const pes = buildAudioPes(adtsData, ptsUs);
+    const ccRef = { cc: this.audioCc };
+    const result = pesToTsPackets(pes, PID_AUDIO, ccRef, false);
+    this.audioCc = ccRef.cc;
+    return result;
+  }
+
+  /** Reset all continuity counters and table state (e.g. after stream restart). */
+  reset(): void {
+    this.patCc = 0;
+    this.pmtCc = 0;
+    this.videoCc = 0;
+    this.audioCc = 0;
+    this.framesSinceTableSend = 0;
+    this.tablesSent = false;
   }
 }

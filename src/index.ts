@@ -36,6 +36,7 @@ export * from "./rfc/replay-http-server";
 export * from "./baichuan/stream/BaichuanVideoStream";
 export * from "./baichuan/stream/BaichuanRtspServer";
 export * from "./baichuan/stream/Go2rtcTcpServer";
+export * from "./baichuan/stream/MpegTsMuxer";
 export * from "./baichuan/stream/BaichuanHttpStreamServer";
 export * from "./baichuan/stream/BaichuanMjpegServer";
 export * from "./baichuan/stream/BaichuanWebRTCServer";

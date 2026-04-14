@@ -33,6 +33,7 @@ import {
   isH265Irap,
   splitAnnexBToNalPayloads,
 } from "./H265Converter";
+import { MpegTsMuxer } from "./MpegTsMuxer";
 
 // ---------------------------------------------------------------------------
 // Bounded queue (same as BaichuanRtspServer, kept local to avoid coupling)
@@ -189,11 +190,14 @@ class NativeStreamFanout {
 // ---------------------------------------------------------------------------
 
 interface PrebufferEntry {
-  /** Annex-B (video) or ADTS (audio) buffer ready to write on the wire. */
+  /** Annex-B (video) or raw ADTS (audio) — per-client MPEG-TS muxing happens in feedClient. */
   data: Buffer;
+  /** Wallclock ms (for prebuffer trimming). */
   time: number;
   isKeyframe: boolean;
   audio: boolean;
+  /** Camera presentation timestamp in microseconds (for MPEG-TS PTS). */
+  pts: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -437,7 +441,7 @@ export class Go2rtcTcpServer extends EventEmitter<{
   private async feedClient(clientId: string, socket: net.Socket): Promise<void> {
     // Wait for the fanout to be ready — for on-demand (battery) cameras this
     // may take several seconds while the camera wakes up and the stream starts.
-    const fanoutDeadline = Date.now() + 30_000; // 30s max wait
+    const fanoutDeadline = Date.now() + 30_000;
     while (this.active && !this.nativeFanout) {
       if (socket.destroyed) return;
       if (Date.now() > fanoutDeadline) {
@@ -452,7 +456,11 @@ export class Go2rtcTcpServer extends EventEmitter<{
 
     const subscription = this.nativeFanout.subscribe(clientId);
 
-    // ---- Prebuffer replay: send from last IDR onwards ----
+    // Per-client MPEG-TS muxer — created on first video keyframe so we know
+    // the video codec (H264/H265) and the muxer emits the correct PMT stream type.
+    let muxer: MpegTsMuxer | null = null;
+
+    // ---- Prebuffer replay: send from last video IDR onwards ----
     const prebufferSnap = this.prebuffer.slice();
     let lastIdrIdx = -1;
     for (let i = prebufferSnap.length - 1; i >= 0; i--) {
@@ -461,19 +469,33 @@ export class Go2rtcTcpServer extends EventEmitter<{
         break;
       }
     }
+
     if (lastIdrIdx >= 0) {
       const replay = prebufferSnap.slice(lastIdrIdx);
       this.logger.info?.(
         `[Go2rtcTcpServer] prebuffer replay  client=${clientId} frames=${replay.length}`,
       );
+      // Initialize muxer from the first (IDR) video frame in the prebuffer
+      if (!muxer) {
+        muxer = new MpegTsMuxer({
+          videoType: this.detectedVideoType ?? "H264",
+          includeAudio: true,
+        });
+      }
       for (const entry of replay) {
         if (socket.destroyed) return;
-        socket.write(entry.data);
+        let ts: Buffer;
+        if (!entry.audio) {
+          ts = muxer.muxVideo(entry.data, entry.pts, entry.isKeyframe);
+        } else {
+          ts = muxer.muxAudio(entry.data, entry.pts);
+        }
+        if (ts.length > 0) socket.write(ts);
       }
     }
 
     // ---- Live frames ----
-    let seenKeyframe = lastIdrIdx >= 0; // already replayed one if prebuffer had IDR
+    let seenKeyframe = lastIdrIdx >= 0;
     let liveFrameCount = 0;
     let liveVideoWritten = 0;
     let lastLogAt = Date.now();
@@ -491,19 +513,42 @@ export class Go2rtcTcpServer extends EventEmitter<{
 
         liveFrameCount++;
 
-        const annexB = this.convertFrame(frame);
+        if (frame.audio) {
+          // Audio: only write after muxer is ready (i.e. after first video keyframe)
+          if (muxer) {
+            const pts = frame.microseconds ?? Date.now() * 1000;
+            const ts = muxer.muxAudio(frame.data, pts);
+            if (ts.length > 0) socket.write(ts);
+          }
+          continue;
+        }
+
+        // Video frame — convert to Annex-B
+        const annexB = this.convertVideoFrame(frame);
         if (!annexB) continue;
+
+        const isKf = this.isAnnexBKeyframe(annexB, frame.videoType);
 
         // Gate on first keyframe so go2rtc doesn't get orphan P-frames
         if (!seenKeyframe) {
-          if (!this.isAnnexBKeyframe(annexB, frame.videoType)) continue;
+          if (!isKf) continue;
           seenKeyframe = true;
           this.logger.info?.(
             `[Go2rtcTcpServer] first live keyframe  client=${clientId} after ${liveFrameCount} frames`,
           );
+          // Initialize muxer now that we know the codec from the actual frame
+          if (!muxer) {
+            muxer = new MpegTsMuxer({
+              videoType: frame.videoType ?? this.detectedVideoType ?? "H264",
+              includeAudio: true,
+            });
+          }
         }
 
-        socket.write(annexB);
+        const pts = frame.microseconds ?? Date.now() * 1000;
+        const ts = muxer!.muxVideo(annexB, pts, isKf);
+        socket.write(ts);
+
         liveVideoWritten++;
         this.totalVideoFramesWritten++;
 
@@ -528,7 +573,6 @@ export class Go2rtcTcpServer extends EventEmitter<{
         `[Go2rtcTcpServer] live loop ended naturally  client=${clientId} received=${liveFrameCount} written=${liveVideoWritten}`,
       );
     } finally {
-      // Ensure subscription is cleaned up
       await subscription.return(undefined as any).catch(() => {});
     }
   }
@@ -538,16 +582,11 @@ export class Go2rtcTcpServer extends EventEmitter<{
   // -----------------------------------------------------------------------
 
   /**
-   * Convert a native frame to wire-ready Annex-B.
-   * Audio frames are skipped — raw TCP carries only video (Annex-B).
-   * go2rtc auto-detects the codec from SPS/PPS/VPS NALUs.
+   * Convert a native video frame to Annex-B.
+   * Returns null for audio frames (handled separately by muxAudio).
    */
-  private convertFrame(frame: NativeFrame): Buffer | null {
-    if (frame.audio) {
-      // Raw TCP can only carry video. Sending ADTS AAC bytes would corrupt
-      // the Annex-B bitstream and cause go2rtc to disconnect.
-      return null;
-    }
+  private convertVideoFrame(frame: NativeFrame): Buffer | null {
+    if (frame.audio) return null;
     if (frame.data.length === 0) return null;
     try {
       if (frame.videoType === "H264") {
@@ -698,24 +737,37 @@ export class Go2rtcTcpServer extends EventEmitter<{
         this.lastFrameAt = Date.now();
         this.totalFramesReceived++;
 
-        // Detect video type
+        // Detect video type from first video frame
         if (!frame.audio && (frame.videoType === "H264" || frame.videoType === "H265")) {
           this.detectedVideoType = frame.videoType;
         }
 
         // Convert and add to prebuffer
-        const wireData = this.convertFrame(frame);
-        if (!wireData || wireData.length === 0) return;
+        // Video: convert to Annex-B; Audio: store raw ADTS (muxing happens per-client)
+        let prebufData: Buffer;
+        let isKeyframe: boolean;
 
-        const isKeyframe = !frame.audio && this.isAnnexBKeyframe(wireData, frame.videoType);
+        if (frame.audio) {
+          if (frame.data.length === 0) return;
+          prebufData = frame.data;
+          isKeyframe = false;
+        } else {
+          const annexB = this.convertVideoFrame(frame);
+          if (!annexB || annexB.length === 0) return;
+          prebufData = annexB;
+          isKeyframe = this.isAnnexBKeyframe(annexB, frame.videoType);
+        }
+
+        const pts = frame.microseconds ?? Date.now() * 1000;
         this.prebuffer.push({
-          data: Buffer.from(wireData),
+          data: Buffer.from(prebufData),
           time: Date.now(),
           isKeyframe,
           audio: frame.audio,
+          pts,
         });
 
-        // Trim prebuffer
+        // Trim prebuffer to window
         const cutoff = Date.now() - this.prebufferMaxMs;
         let trimIdx = 0;
         while (trimIdx < this.prebuffer.length && this.prebuffer[trimIdx]!.time < cutoff) {

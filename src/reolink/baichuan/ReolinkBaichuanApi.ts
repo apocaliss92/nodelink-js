@@ -13727,8 +13727,8 @@ ${scheduleItems}
 
       if (useMpegTsMuxer) {
         // Initialize MPEG-TS muxer for this video type
-        MpegTsMuxer.resetCounters();
-        tsMuxer = new MpegTsMuxer({ videoType });
+        tsMuxer = new MpegTsMuxer({ videoType, includeAudio: false });
+        tsMuxer.reset();
 
         // ffmpeg reads MPEG-TS input (which has PTS) and outputs fMP4
         // Use frag_keyframe+empty_moov+default_base_moof for iOS compatibility
@@ -13926,7 +13926,7 @@ ${scheduleItems}
         frameCount++;
         if (useMpegTsMuxer && tsMuxer) {
           // Mux frame into MPEG-TS with correct PTS timestamp
-          const tsData = tsMuxer.mux(data, microseconds, isKeyframe);
+          const tsData = tsMuxer.muxVideo(data, microseconds, isKeyframe);
           input.write(tsData);
         } else {
           // Write raw Annex-B NAL units directly
@@ -14359,8 +14359,8 @@ ${scheduleItems}
       );
 
       // Initialize MPEG-TS muxer
-      MpegTsMuxer.resetCounters();
-      tsMuxer = new MpegTsMuxer({ videoType });
+      tsMuxer = new MpegTsMuxer({ videoType, includeAudio: false });
+      tsMuxer.reset();
 
       const args = [
         "-hide_banner",
@@ -14540,7 +14540,7 @@ ${scheduleItems}
         startFfmpeg(videoType);
         frameCount++;
         if (tsMuxer) {
-          const tsData = tsMuxer.mux(data, microseconds, isKeyframe);
+          const tsData = tsMuxer.muxVideo(data, microseconds, isKeyframe);
           input.write(tsData);
         }
 
