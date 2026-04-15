@@ -387,6 +387,12 @@ async function handleCommand(
   logger.debug(`Command ${entityName} for ${cameraId}: ${payload}`);
 
   try {
+    // Battery cameras may be in idle-disconnect when an MQTT command arrives.
+    // Reconnect before issuing any command so sendXml doesn't timeout.
+    if (!api.isReady && !api.isClosed) {
+      await api.ensureConnected();
+    }
+
     switch (entityName) {
       case "floodlight":
         await api.setWhiteLedState(channel, isOn);

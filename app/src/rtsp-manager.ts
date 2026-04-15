@@ -1166,6 +1166,41 @@ export async function startRtspServer(
       `Starting Go2rtcTcpServer (MPEG-TS) on port ${port} (${profile}, ch${channel}) → go2rtc`,
     );
 
+    const go2rtcName = buildGo2rtcStreamName(camera.name, profile, channel);
+
+    // Battery-camera probe protection: go2rtc periodically reconnects to the
+    // Go2rtcTcpServer TCP port (~every 60s) to check for available data even
+    // when no downstream client is watching. For battery cameras this would
+    // wake the camera from idle-disconnect just to service a probe, causing an
+    // indefinite awake→sleeping loop. Before starting the native stream we
+    // verify that go2rtc currently has real consumers on this stream.
+    const consumerCheck =
+      camera.isBattery && go2rtcMgr
+        ? async (): Promise<boolean> => {
+          try {
+            const streams = await go2rtcMgr.getStreams();
+            const streamInfo = streams[go2rtcName] as
+              | { consumers?: unknown[] }
+              | undefined;
+            const consumers = streamInfo?.consumers;
+            if (Array.isArray(consumers) && consumers.length > 0) return true;
+            // Retry once after 200ms to handle the race where go2rtc registers
+            // the consumer slightly after opening the TCP probe connection.
+            await new Promise((r) => setTimeout(r, 200));
+            const streams2 = await go2rtcMgr.getStreams();
+            const streamInfo2 = streams2[go2rtcName] as
+              | { consumers?: unknown[] }
+              | undefined;
+            return (
+              Array.isArray(streamInfo2?.consumers) &&
+              streamInfo2!.consumers!.length > 0
+            );
+          } catch {
+            return true; // fallback: allow on failure
+          }
+        }
+        : undefined;
+
     const server = new Go2rtcTcpServer({
       api,
       profile,
@@ -1178,12 +1213,12 @@ export async function startRtspServer(
       gracePeriodMs: rtspNativeIdleOpts.nativeStreamIdleStopMs > 0
         ? rtspNativeIdleOpts.nativeStreamIdleStopMs
         : 30_000,
+      go2rtcConsumerCheck: consumerCheck,
     });
 
     await server.start();
 
     const tcpSourceUrl = server.go2rtcSourceUrl!;
-    const go2rtcName = buildGo2rtcStreamName(camera.name, profile, channel);
 
     // Primary stream: MPEG-TS from our Go2rtcTcpServer, carrying native
     // H.264/H.265 video + AAC audio.  Ingested 1:1 for RTSP / HLS / MSE
