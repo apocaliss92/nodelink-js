@@ -245,16 +245,6 @@ export interface Go2rtcTcpServerOptions {
    * Default: true.
    */
   prestartStream?: boolean;
-  /**
-   * For battery cameras (prestartStream=false): optional async callback to check
-   * whether go2rtc has real downstream consumers before starting the native stream.
-   * Called when go2rtc connects to the TCP server.
-   *
-   * Returns true if there are consumers (start native stream).
-   * Returns false if no consumers (reject probe connection, don't wake camera).
-   * If not provided or throws, the native stream is started unconditionally (safe fallback).
-   */
-  go2rtcConsumerCheck?: () => Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------
@@ -281,7 +271,6 @@ export class Go2rtcTcpServer extends EventEmitter<{
   private readonly maxBufferBytes: number;
   private readonly streamTimeoutMs: number;
   private readonly prestartStream: boolean;
-  private readonly go2rtcConsumerCheck: (() => Promise<boolean>) | undefined;
 
   private active = false;
   private server: net.Server | undefined;
@@ -331,7 +320,6 @@ export class Go2rtcTcpServer extends EventEmitter<{
     this.maxBufferBytes = options.maxBufferBytes ?? 100_000_000;
     this.streamTimeoutMs = options.streamTimeoutMs ?? 15_000;
     this.prestartStream = options.prestartStream ?? true;
-    this.go2rtcConsumerCheck = options.go2rtcConsumerCheck;
   }
 
   // -----------------------------------------------------------------------
@@ -489,54 +477,13 @@ export class Go2rtcTcpServer extends EventEmitter<{
       this.stopGraceTimer = undefined;
     }
 
-    // Ensure native stream is running.
-    //
-    // Battery-camera probe protection: when prestartStream=false AND a consumer
-    // check callback was provided AND the API is currently idle-disconnected
-    // (isReady=false but not explicitly closed), assume this connection may be
-    // a go2rtc "probe" (go2rtc periodically reconnects to check for data even
-    // when no downstream client is watching). Waking the camera for a probe
-    // produces a ~60s awake→sleep loop forever, so we first verify there is
-    // at least one real downstream consumer before calling startNativeStream()
-    // (which would call ensureConnected() and wake the camera).
+    // Ensure native stream is running. Every TCP connection from go2rtc
+    // represents a real downstream consumer (go2rtc 1.9.x opens the producer
+    // connection on-demand when a client subscribes to the stream — it does
+    // not probe idle sources). Starting the native stream here will wake a
+    // sleeping battery camera.
     if (!this.nativeStreamActive) {
-      const needsConsumerCheck =
-        !this.prestartStream &&
-        this.go2rtcConsumerCheck !== undefined &&
-        !this.api.isReady &&
-        !this.api.isClosed;
-
-      if (needsConsumerCheck) {
-        // Run the check asynchronously; handleClient stays synchronous.
-        // feedClient (below) will wait up to 30s for nativeFanout to appear,
-        // and will bail out immediately if the socket is destroyed.
-        const check = this.go2rtcConsumerCheck!;
-        void (async () => {
-          let hasConsumers = true; // safe fallback: allow start on error
-          try {
-            hasConsumers = await check();
-          } catch (e) {
-            this.logger.warn?.(
-              `[Go2rtcTcpServer] go2rtcConsumerCheck threw, allowing stream start  id=${clientId}: ${e}`,
-            );
-            hasConsumers = true;
-          }
-          if (socket.destroyed) return;
-          if (!hasConsumers) {
-            this.logger.info?.(
-              `[Go2rtcTcpServer] go2rtc probe connection rejected (no downstream consumers)  id=${clientId} — not waking battery camera`,
-            );
-            socket.destroy();
-            return;
-          }
-          // Real consumer present — start the native stream (may wake camera).
-          if (!this.nativeStreamActive) {
-            this.startNativeStream();
-          }
-        })();
-      } else {
-        this.startNativeStream();
-      }
+      this.startNativeStream();
     }
 
     // Feed this client
@@ -972,21 +919,26 @@ export class Go2rtcTcpServer extends EventEmitter<{
           this.dedicatedSessionRelease = undefined;
         }
 
-        // Do not restart if this stream session never received a frame.
-        // That means the camera is permanently sleeping (battery camera that
-        // did not wake in time). Restarting would create a tight timeout loop
-        // that keeps go2rtc in a reconnect spin and prevents the camera from
-        // returning to sleep.
-        // Exception: prestartStream=true (AC-powered) cameras are always
-        // retried because they are expected to come back online eventually.
-        const skipRestart = !hadFrames && !this.prestartStream;
-
-        if (skipRestart) {
-          this.logger.warn?.(
-            `[Go2rtcTcpServer] camera appears to be sleeping (no frames in this session) — not restarting  ` +
-            `channel=${this.channel} profile=${this.profile}`,
+        // Auto-restart policy:
+        //  - AC-powered cameras (prestartStream=true): always restart to keep
+        //    the stream warm. They are expected to come back online quickly.
+        //  - Battery cameras (prestartStream=false): NEVER auto-restart. The
+        //    native stream ending for a battery camera means the camera went
+        //    back to sleep. Restarting would immediately wake the camera
+        //    again, creating an awake→sleep→awake loop for as long as a
+        //    downstream consumer (go2rtc RTSP client, HA snapshot poller,
+        //    etc.) holds the TCP connection open. Instead we drop all TCP
+        //    clients so go2rtc sees EOF and propagates the disconnect to its
+        //    consumers — they must explicitly reconnect to re-wake the camera.
+        if (!this.prestartStream) {
+          this.logger.info?.(
+            `[Go2rtcTcpServer] battery native stream ended  hadFrames=${hadFrames} ` +
+            `channel=${this.channel} profile=${this.profile} — dropping ${this.connectedClients.size} client(s) to prevent wake loop`,
           );
-        } else if (this.active && (this.connectedClients.size > 0 || this.prestartStream)) {
+          for (const [, sock] of this.clientSockets) {
+            sock.destroy();
+          }
+        } else if (this.active) {
           this.logger.info?.(
             `[Go2rtcTcpServer] restarting native stream (clients=${this.connectedClients.size}, prestart=${this.prestartStream})`,
           );

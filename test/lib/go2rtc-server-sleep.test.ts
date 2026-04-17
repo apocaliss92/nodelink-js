@@ -141,7 +141,9 @@ function buildServer(api: any) {
 describe("Go2rtcTcpServer – sleeping-camera restart-loop fix", () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    vi.clearAllMocks();
+    // resetAllMocks clears both call history AND queued mockReturnValueOnce /
+    // mockImplementation, so state never leaks between tests in this suite.
+    vi.resetAllMocks();
   });
 
   afterEach(async () => {
@@ -251,33 +253,35 @@ describe("Go2rtcTcpServer – sleeping-camera restart-loop fix", () => {
   });
 
   // -------------------------------------------------------------------------
-  // 4. Camera was awake (had frames), stream drops → RESTART (normal behavior)
+  // 4. Battery camera: had frames then stream drops → NO auto-restart
+  //    (new behavior — prevents the awake→sleep→awake loop reported in #8).
+  //    Instead, open TCP clients are dropped so go2rtc sees EOF and notifies
+  //    its consumers. Any future viewer request drives a fresh wake-up.
   // -------------------------------------------------------------------------
-  it("restarts the stream in onEnd when camera had been sending frames", async () => {
-    // First call: one frame then stream ends naturally (mid-session drop)
-    // Second call: immediate-end so the test can settle cleanly
-    vi.mocked(helpers.createNativeStream)
-      .mockReturnValueOnce(makeFrameThenEndGenerator() as any)
-      .mockReturnValueOnce(makeImmediateEndGenerator() as any);
+  it("does NOT auto-restart a battery stream when it drops mid-session (no wake loop)", async () => {
+    vi.mocked(helpers.createNativeStream).mockImplementation(
+      (() => makeFrameThenEndGenerator() as any) as any,
+    );
 
     const api = buildMockApi();
     const server = buildServer(api);
     const s = server as any;
     s.active = true;
 
+    const destroy = vi.fn();
     s.connectedClients.add("127.0.0.1:54321");
-    s.clientSockets.set("127.0.0.1:54321", { destroy: vi.fn() });
+    s.clientSockets.set("127.0.0.1:54321", { destroy });
 
     await s.startNativeStream();
 
-    // Let the first generator produce the frame then end → onEnd → restart
+    // Let the generator produce its frame and end; onEnd fires
     await vi.runAllTimersAsync();
 
-    // totalFramesReceived was incremented by onFrame → hadFrames=true in closure
     expect(s.totalFramesReceived).toBeGreaterThan(0);
-
-    // createNativeStream called twice: initial + restart (hadFrames=true → skipRestart=false)
-    expect(helpers.createNativeStream).toHaveBeenCalledTimes(2);
+    // Only one createNativeStream call — no restart for battery cameras
+    expect(helpers.createNativeStream).toHaveBeenCalledTimes(1);
+    // Open TCP clients were dropped so go2rtc propagates EOF downstream
+    expect(destroy).toHaveBeenCalled();
   });
 
   // -------------------------------------------------------------------------
@@ -285,11 +289,17 @@ describe("Go2rtcTcpServer – sleeping-camera restart-loop fix", () => {
   //    but SHOULD restart because AC cameras are always expected online
   // -------------------------------------------------------------------------
   it("restarts in onEnd for prestartStream=true even when no frames received (AC camera momentarily offline)", async () => {
-    // First call: ends immediately with no frames (AC camera unreachable at start)
-    // Second call: sleeping generator (hangs) so the test can assert without looping
-    vi.mocked(helpers.createNativeStream)
-      .mockReturnValueOnce(makeImmediateEndGenerator() as any)
-      .mockReturnValueOnce(makeSleepingGenerator() as any);
+    // mockImplementation (not mockReturnValueOnce) so every call returns a
+    // deterministic generator without accidentally leaking leftover queue
+    // entries to later tests via vi.clearAllMocks (which does not drain the
+    // mockReturnValueOnce queue — resetAllMocks in beforeEach also handles
+    // this as a belt-and-braces).
+    let counter = 0;
+    vi.mocked(helpers.createNativeStream).mockImplementation((() => {
+      counter++;
+      if (counter === 1) return makeImmediateEndGenerator() as any;
+      return makeSleepingGenerator() as any;
+    }) as any);
 
     const api = buildMockApi();
     const server = new Go2rtcTcpServer({
@@ -298,7 +308,7 @@ describe("Go2rtcTcpServer – sleeping-camera restart-loop fix", () => {
       profile: "main",
       listenHost: "127.0.0.1",
       listenPort: 0,
-      prestartStream: true, // AC camera — always retry
+      prestartStream: true,
       gracePeriodMs: 10_000,
       streamTimeoutMs: 20_000,
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -307,8 +317,6 @@ describe("Go2rtcTcpServer – sleeping-camera restart-loop fix", () => {
     s.active = true;
 
     await s.startNativeStream();
-
-    // Flush microtasks to let the immediate-end generator finish → onEnd fires
     for (let i = 0; i < 20; i++) await Promise.resolve();
 
     // prestartStream=true overrides the !hadFrames guard → restart must happen

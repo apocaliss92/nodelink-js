@@ -1,24 +1,30 @@
 /**
- * Tests for the battery-camera "probe wake loop" fix in Go2rtcTcpServer.
+ * Regression tests for the battery-camera "wake on real consumer" behavior
+ * in Go2rtcTcpServer.
  *
- * Problem:
- *   go2rtc periodically reconnects to the Go2rtcTcpServer TCP port (~every 60s)
- *   even when no downstream client is watching, to "probe" if the source has data.
- *   For battery cameras (prestartStream=false + idle disconnect), each probe
- *   triggered startNativeStream() → ensureConnected() → camera woken → streaming
- *   starts → grace period fires → stream stops → repeat forever.
+ * Context (issue #8 — beta.16 regression):
+ *   A previous version of this file tested a `go2rtcConsumerCheck` callback
+ *   that tried to distinguish "real viewer" from "go2rtc probe" by reading
+ *   go2rtc's `/api/streams` response and checking `streamInfo.consumers`.
+ *   That approach was fundamentally broken: real go2rtc 1.9.x always reports
+ *   `consumers: null` for TCP sources until media starts flowing, and media
+ *   never flows unless we wake the camera first — chicken-and-egg. The guard
+ *   therefore rejected *every* real viewer, leaving battery cameras
+ *   permanently unreachable.
  *
- * Fix:
- *   `go2rtcConsumerCheck` callback option. When set AND the API is idle-disconnected,
- *   handleClient calls the check before startNativeStream(). If no consumers exist
- *   (probe), the socket is destroyed immediately without waking the camera.
+ *   Two users confirmed the regression in issue #8 (comments
+ *   issuecomment-4262851152 and issuecomment-4263338206): real RTSP clients
+ *   would fail with `[rtsp] error="streams: EOF"` because our server
+ *   destroyed the connection before the camera could wake up.
  *
- * Test structure:
- *   1. BUG REPRODUCTION – without consumerCheck, every TCP connect wakes the camera
- *   2. FIX: probe rejected   – check returns false → socket destroyed, camera not woken
- *   3. FIX: real viewer      – check returns true  → stream starts, camera woken
- *   4. FIX: API already ready → check skipped, stream starts unconditionally
- *   5. FIX: check throws     → safe fallback, stream starts anyway
+ * Current contract (post-fix):
+ *   Every TCP connection from go2rtc represents a real downstream consumer.
+ *   Starting the native stream is therefore unconditional — the camera will
+ *   wake even when it was idle-disconnected. The awake→sleep→awake loop that
+ *   motivated the probe guard is addressed elsewhere: when the native stream
+ *   ends for a battery camera, we drop all TCP clients (propagating EOF to
+ *   go2rtc) instead of auto-restarting. This forces the next consumer to
+ *   open a *new* TCP connection, which is then handled as a fresh wake-up.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -44,6 +50,23 @@ function makeSleepingGenerator() {
   })();
 }
 
+/** Yields a single video frame then ends — simulates a camera that briefly
+ * streams (hadFrames=true) and then the native stream closes (as happens
+ * when a battery camera returns to sleep after the grace period). */
+function makeBriefGenerator() {
+  return (async function* () {
+    yield {
+      audio: false,
+      data: Buffer.alloc(0),
+      codec: null,
+      sampleRate: null,
+      microseconds: 0,
+      videoType: "H264" as const,
+      isKeyframe: true,
+    };
+  })();
+}
+
 /**
  * Minimal net.Socket mock for handleClient testing.
  * Tracks destroy() calls and exposes event handlers so tests can fire them.
@@ -59,9 +82,8 @@ function buildMockSocket() {
     remotePort: 54321,
     destroyed: false,
     destroy: vi.fn().mockImplementation(() => {
-      if (socket.destroyed) return; // prevent re-entrant calls
+      if (socket.destroyed) return;
       socket.destroyed = true;
-      // Trigger registered 'close' handlers so removeClient fires
       for (const h of handlers["close"] ?? []) h(false);
     }),
     on: vi.fn().mockImplementation((event: string, handler: (...args: unknown[]) => void) => {
@@ -81,7 +103,7 @@ function buildIdleApi() {
       getTransport: () => "tcp" as const,
       getDebugConfig: () => ({ debugRtsp: false }),
     },
-    isReady: false,   // idle-disconnected
+    isReady: false,
     isClosed: false,
     ensureConnected: vi.fn().mockResolvedValue(undefined),
     createDedicatedSession: vi.fn().mockResolvedValue({
@@ -102,20 +124,16 @@ function buildReadyApi() {
   return { ...buildIdleApi(), isReady: true } as any;
 }
 
-function buildBatteryServer(
-  api: any,
-  go2rtcConsumerCheck?: () => Promise<boolean>,
-) {
+function buildBatteryServer(api: any) {
   return new Go2rtcTcpServer({
     api,
     channel: 0,
     profile: "sub",
     listenHost: "127.0.0.1",
     listenPort: 0,
-    prestartStream: false,       // battery camera
+    prestartStream: false,
     gracePeriodMs: 5_000,
     streamTimeoutMs: 10_000,
-    go2rtcConsumerCheck,
     logger: {
       info: vi.fn(),
       warn: vi.fn(),
@@ -125,12 +143,6 @@ function buildBatteryServer(
   });
 }
 
-/**
- * Flush all pending microtasks.
- * The consumer-check path is a double-fire-and-forget
- * (handleClient → async lambda → startNativeStream), so we need enough
- * microtask ticks to drain the full promise chain.
- */
 async function flushAsync() {
   for (let i = 0; i < 30; i++) await Promise.resolve();
 }
@@ -139,11 +151,10 @@ async function flushAsync() {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("Go2rtcTcpServer – battery-camera probe guard (go2rtcConsumerCheck)", () => {
+describe("Go2rtcTcpServer – battery-camera wake-on-connect (issue #8 regression)", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
-    // Default: sleeping generator so startNativeStream doesn't crash
     vi.mocked(helpers.createNativeStream).mockReturnValue(
       makeSleepingGenerator() as any,
     );
@@ -155,118 +166,37 @@ describe("Go2rtcTcpServer – battery-camera probe guard (go2rtcConsumerCheck)",
   });
 
   // -------------------------------------------------------------------------
-  // 1. BUG REPRODUCTION: without consumerCheck, probe wakes camera
+  // 1. REGRESSION GUARD: every real TCP connect wakes an idle battery camera
+  //    (previously the probe guard rejected all connections because go2rtc's
+  //    consumers field is always null during the wake-up window)
   // -------------------------------------------------------------------------
-  it("(bug reproduction) wakes battery camera on every go2rtc probe when no consumerCheck is set", async () => {
+  it("wakes a sleeping battery camera on every incoming TCP connection", async () => {
     const api = buildIdleApi();
-    const server = buildBatteryServer(api, /* no check */ undefined);
+    const server = buildBatteryServer(api);
     const s = server as any;
-    s.active = true; // bypass real TCP bind
+    s.active = true;
 
     const socket = buildMockSocket();
     s.handleClient(socket);
 
-    // Let the async startNativeStream flow complete
     await flushAsync();
     await vi.runAllTimersAsync();
 
-    // Without the guard, startNativeStream() is called unconditionally →
-    // ensureConnected() fires → camera is woken.
+    // ensureConnected was called exactly once — the camera is being woken
     expect(api.ensureConnected).toHaveBeenCalledTimes(1);
+    // The socket was NOT destroyed (no probe rejection anymore)
     expect(socket.destroy).not.toHaveBeenCalled();
-  });
-
-  // -------------------------------------------------------------------------
-  // 2. FIX: consumerCheck returns false → socket destroyed, camera NOT woken
-  // -------------------------------------------------------------------------
-  it("rejects go2rtc probe connection without waking the camera when no consumers", async () => {
-    const api = buildIdleApi();
-    const consumerCheck = vi.fn().mockResolvedValue(false);
-    const server = buildBatteryServer(api, consumerCheck);
-    const s = server as any;
-    s.active = true;
-
-    const socket = buildMockSocket();
-    s.handleClient(socket);
-
-    // Let the consumer check resolve
-    await flushAsync();
-    await vi.runAllTimersAsync();
-
-    // Consumer check was called
-    expect(consumerCheck).toHaveBeenCalledTimes(1);
-
-    // Socket must be destroyed (probe rejected)
-    expect(socket.destroy).toHaveBeenCalled();
-
-    // Camera must NOT have been woken — ensureConnected never called
-    expect(api.ensureConnected).not.toHaveBeenCalled();
-
-    // Native stream must not have started
-    expect(s.nativeStreamActive).toBe(false);
-  });
-
-  // -------------------------------------------------------------------------
-  // 3. FIX: consumerCheck returns true → stream starts, camera woken (real viewer)
-  // -------------------------------------------------------------------------
-  it("starts native stream when consumer check confirms real downstream consumers", async () => {
-    const api = buildIdleApi();
-    const consumerCheck = vi.fn().mockResolvedValue(true);
-    const server = buildBatteryServer(api, consumerCheck);
-    const s = server as any;
-    s.active = true;
-
-    const socket = buildMockSocket();
-    s.handleClient(socket);
-
-    await flushAsync();
-    await vi.runAllTimersAsync();
-
-    // Consumer check was called
-    expect(consumerCheck).toHaveBeenCalledTimes(1);
-
-    // Socket should NOT have been destroyed (it's a real viewer)
-    expect(socket.destroy).not.toHaveBeenCalled();
-
-    // Camera IS woken — ensureConnected fired inside startNativeStream
-    // (api.isReady=false triggers ensureConnected call)
-    expect(api.ensureConnected).toHaveBeenCalledTimes(1);
-  });
-
-  // -------------------------------------------------------------------------
-  // 4. FIX: API already ready (camera awake) → check skipped, stream starts
-  // -------------------------------------------------------------------------
-  it("skips consumer check when API is already connected and starts stream immediately", async () => {
-    const api = buildReadyApi();             // isReady = true
-    const consumerCheck = vi.fn().mockResolvedValue(false); // would reject if called
-    const server = buildBatteryServer(api, consumerCheck);
-    const s = server as any;
-    s.active = true;
-
-    const socket = buildMockSocket();
-    s.handleClient(socket);
-
-    await flushAsync();
-    await vi.runAllTimersAsync();
-
-    // Check must NOT be called — API already ready, no probe concern
-    expect(consumerCheck).not.toHaveBeenCalled();
-
-    // Socket must not be destroyed (not a probe rejection)
-    expect(socket.destroy).not.toHaveBeenCalled();
-
-    // API was not re-connected (already ready), but startNativeStream was called
-    // — verified by createNativeStream being invoked (fanout created)
+    // Native stream started
     expect(helpers.createNativeStream).toHaveBeenCalled();
   });
 
   // -------------------------------------------------------------------------
-  // 5. FIX: consumerCheck throws → safe fallback, stream starts anyway
+  // 2. When API is already ready (camera awake), stream starts immediately
+  //    without re-connecting.
   // -------------------------------------------------------------------------
-  it("falls back to starting native stream when consumer check throws", async () => {
-    const api = buildIdleApi();
-    const consumerCheck = vi.fn().mockRejectedValue(new Error("go2rtc unreachable"));
-    const server = buildBatteryServer(api, consumerCheck);
+  it("starts native stream without reconnecting when API is already ready", async () => {
+    const api = buildReadyApi();
+    const server = buildBatteryServer(api);
     const s = server as any;
     s.active = true;
 
@@ -276,36 +206,110 @@ describe("Go2rtcTcpServer – battery-camera probe guard (go2rtcConsumerCheck)",
     await flushAsync();
     await vi.runAllTimersAsync();
 
-    expect(consumerCheck).toHaveBeenCalledTimes(1);
+    // API already ready → no ensureConnected needed
+    expect(api.ensureConnected).not.toHaveBeenCalled();
+    expect(socket.destroy).not.toHaveBeenCalled();
+    expect(helpers.createNativeStream).toHaveBeenCalled();
+  });
 
-    // Fallback: camera IS woken despite check throwing
-    expect(api.ensureConnected).toHaveBeenCalledTimes(1);
+  // -------------------------------------------------------------------------
+  // 3. When native stream is already active, a second connection reuses it
+  //    without spawning another native stream instance.
+  // -------------------------------------------------------------------------
+  it("reuses the running native stream for a concurrent second TCP client", async () => {
+    const api = buildIdleApi();
+    const server = buildBatteryServer(api);
+    const s = server as any;
+    s.active = true;
+    s.nativeStreamActive = true;
 
-    // Socket must not be destroyed (fallback allows streaming)
+    const socket = buildMockSocket();
+    s.handleClient(socket);
+
+    await flushAsync();
+    await vi.runAllTimersAsync();
+
+    // Stream was already running — no reconnect, no new createNativeStream call
+    expect(api.ensureConnected).not.toHaveBeenCalled();
+    expect(helpers.createNativeStream).not.toHaveBeenCalled();
     expect(socket.destroy).not.toHaveBeenCalled();
   });
 
   // -------------------------------------------------------------------------
-  // 6. Probe rejected while another client is already connected and streaming
-  //    (second probe while native stream is active → check skipped, stream reused)
+  // 4. AWAKE→SLEEP→AWAKE loop guard: when the battery native stream ends
+  //    (camera slept), all open TCP clients are dropped so go2rtc propagates
+  //    EOF to its consumers. Without this the old code would immediately
+  //    restart the native stream and re-wake the camera — creating the
+  //    ~60s loop reported in issue #8.
   // -------------------------------------------------------------------------
-  it("skips check if native stream is already active (second probe or concurrent viewer)", async () => {
+  it("drops open TCP clients when battery native stream ends (no auto-restart loop)", async () => {
+    // First call yields a frame then ends. Second call (shouldn't happen —
+    // that's the whole point of the test) returns a sleeping generator so
+    // the test can't OOM via infinite restart.
+    vi.mocked(helpers.createNativeStream)
+      .mockReturnValueOnce(makeBriefGenerator() as any)
+      .mockReturnValue(makeSleepingGenerator() as any);
+
     const api = buildIdleApi();
-    const consumerCheck = vi.fn().mockResolvedValue(false); // would block if checked
-    const server = buildBatteryServer(api, consumerCheck);
+    const server = buildBatteryServer(api);
     const s = server as any;
     s.active = true;
-    s.nativeStreamActive = true; // simulate stream already running
 
     const socket = buildMockSocket();
     s.handleClient(socket);
 
+    // Wait for the brief stream to emit its single frame and then end,
+    // triggering the onEnd callback that exercises the drop-clients path.
     await flushAsync();
     await vi.runAllTimersAsync();
+    await flushAsync();
 
-    // No check needed — stream already running
-    expect(consumerCheck).not.toHaveBeenCalled();
-    // Socket stays open (consumer gets fed by existing stream)
-    expect(socket.destroy).not.toHaveBeenCalled();
+    // createNativeStream was called exactly ONCE. No auto-restart.
+    expect(helpers.createNativeStream).toHaveBeenCalledTimes(1);
+
+    // The TCP client socket was destroyed by the onEnd handler so go2rtc
+    // sees EOF and won't hold its RTSP consumer open against a dead source.
+    expect(socket.destroy).toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // 5. AC camera (prestartStream=true) should still auto-restart on EOF
+  //    (the drop-client behavior is battery-only). Use mockReturnValueOnce
+  //    for the first (ending) generator, then a sleeping generator forever
+  //    so the restart eventually stabilizes and the test does not OOM.
+  // -------------------------------------------------------------------------
+  it("auto-restarts native stream on EOF for AC cameras (prestart=true)", async () => {
+    vi.mocked(helpers.createNativeStream)
+      .mockReturnValueOnce(makeBriefGenerator() as any)
+      .mockReturnValue(makeSleepingGenerator() as any);
+
+    const api = buildReadyApi();
+    const server = new Go2rtcTcpServer({
+      api,
+      channel: 0,
+      profile: "main",
+      listenHost: "127.0.0.1",
+      listenPort: 0,
+      prestartStream: true,
+      gracePeriodMs: 5_000,
+      streamTimeoutMs: 10_000,
+      logger: {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+      },
+    });
+    const s = server as any;
+    s.active = true;
+
+    // Kick off native stream (no client needed — prestart behavior)
+    await s.startNativeStream();
+    await flushAsync();
+    await vi.runAllTimersAsync();
+    await flushAsync();
+
+    // Exactly two calls: initial + single restart after EOF
+    expect(helpers.createNativeStream.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 });
