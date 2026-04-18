@@ -702,7 +702,11 @@ export class BaichuanVideoStream extends EventEmitter<{
         if (!allowMsgNum0Fallback) {
           const frameCount = ((this as any)._msgNumMismatchCount =
             ((this as any)._msgNumMismatchCount || 0) + 1);
-          if (frameCount <= 5) {
+          // Gated behind the general socket debug flag: on shared sockets
+          // (main+sub on the same TCP socket) it is by-design to receive
+          // frames for the other profile and discard them — this is not a
+          // bug and we don't want it polluting user logs.
+          if (frameCount <= 5 && this.client.getDebugConfig().general) {
             this.logger?.log(
               `[BaichuanVideoStream] Frame msgNum mismatch: received=${frame.header.msgNum}, expected=${this.activeMsgNum}, channel=${this.channel}, profile=${this.profile}, variant=${this.variant} (frame discarded)`,
             );
@@ -718,7 +722,9 @@ export class BaichuanVideoStream extends EventEmitter<{
       ) {
         const frameCount = ((this as any)._streamTypeMismatchCount =
           ((this as any)._streamTypeMismatchCount || 0) + 1);
-        if (frameCount <= 5) {
+        // Gated behind the general socket debug flag — see msgNum mismatch
+        // above. Expected noise during handshake on shared sockets.
+        if (frameCount <= 5 && this.client.getDebugConfig().general) {
           this.logger?.log(
             `[BaichuanVideoStream] Frame streamType mismatch: received=${frame.header.streamType}, expectedAny=[${[
               ...this.expectedStreamTypes,

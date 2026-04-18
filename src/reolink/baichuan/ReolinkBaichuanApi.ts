@@ -8369,6 +8369,18 @@ export class ReolinkBaichuanApi {
       }
 
       const channel = this.client.getConfiguredChannel?.() ?? 0;
+
+      // When the socket is disconnected (idle_disconnect on battery cam), the
+      // rx/tx ring-buffers still contain pre-disconnect entries that age in/out
+      // of the 10s window, causing phantom awake→sleeping flaps even though
+      // no traffic is going to the camera. Skip the poll — the committed state
+      // stays on the last valid value ("sleeping" in the normal idle_disconnect
+      // path) and no event is emitted until the socket is reconnected.
+      if (!this.client.isSocketConnected?.()) {
+        this.udpPendingSleepStateByChannel.delete(channel);
+        return;
+      }
+
       const status = this.getSleepStatus({ channel });
       if (status.state === "unknown") return;
 
