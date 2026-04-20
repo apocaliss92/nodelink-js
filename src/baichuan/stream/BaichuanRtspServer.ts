@@ -241,6 +241,19 @@ export interface BaichuanRtspServerOptions {
    * 0 = disable. Default 15000 when nativeStreamIdleStopMs > 0, else 0.
    */
   nativeStreamPrimeIdleStopMs?: number;
+
+  /**
+   * When true, `start()` does NOT fetch stream metadata from the camera —
+   * the metadata fetch is deferred to the first DESCRIBE. Useful for
+   * battery / UDP cameras so binding the RTSP port at boot does not wake
+   * them up when no client is listening.
+   *
+   * Trade-off: the very first DESCRIBE pays the metadata round-trip
+   * latency. Subsequent connections hit the cached metadata.
+   *
+   * Default: false (keep existing behaviour).
+   */
+  lazyMetadata?: boolean;
 }
 
 /**
@@ -285,6 +298,7 @@ export class BaichuanRtspServer extends EventEmitter<{
   private authNonces = new Map<string, { nonce: string; timestamp: number }>(); // Track nonces per client
   private readonly AUTH_REALM: string;
   private readonly NONCE_TIMEOUT_MS = 300000; // 5 minutes
+  private readonly lazyMetadata: boolean;
 
   // Client tracking
   private connectedClients = new Set<string>(); // Set of client IDs (IP:port)
@@ -580,6 +594,7 @@ export class BaichuanRtspServer extends EventEmitter<{
     }));
     this.requireAuth = options.requireAuth ?? this.authCredentials.length > 0;
     this.AUTH_REALM = options.authRealm ?? "BaichuanRtspServer";
+    this.lazyMetadata = options.lazyMetadata ?? false;
 
     // Default flow is conservative (tcp+h264); it will be refined from metadata or first frames.
     const transport = this.api.client.getTransport();
@@ -758,34 +773,44 @@ export class BaichuanRtspServer extends EventEmitter<{
       throw new Error("RTSP server is already active");
     }
 
-    // Get stream metadata
-    try {
-      const metadata = await this.api.getStreamMetadata(this.channel);
-      const stream = metadata.streams.find((s) => s.profile === this.profile);
-      if (stream) {
-        this.streamMetadata = {
-          frameRate: stream.frameRate || 25,
-          width: stream.width,
-          height: stream.height,
-        };
-        // Detect video type from metadata (refines flow early, before first frame).
-        const enc = String(stream.videoEncType ?? "")
-          .trim()
-          .toLowerCase();
-        const metaVideoType: RtspVideoType =
-          enc.includes("265") || enc.includes("hevc") ? "H265" : "H264";
-        this.setFlowVideoType(metaVideoType, "metadata");
-      }
-    } catch (error) {
-      this.logger.warn(
-        `[BaichuanRtspServer] Could not get stream metadata: ${error}`,
+    // Get stream metadata (unless lazy mode defers this to first DESCRIBE
+    // — avoids waking battery/UDP cameras just to bind the RTSP port).
+    if (this.lazyMetadata) {
+      this.logger.info(
+        `[BaichuanRtspServer] lazy metadata: skipping initial getStreamMetadata; will fetch on first DESCRIBE`,
       );
-      // Do NOT hardcode 1920x1080 — for 4K cameras this would advertise wrong
-      // a=framesize in SDP. Leave width/height undefined so generateSdp() omits
-      // the attribute and downstream decoders (go2rtc, ffmpeg) derive resolution
-      // from the actual SPS/PPS in the bitstream.
-      this.streamMetadata = { frameRate: 25 };
-      this.setFlowVideoType("H264", "metadata unavailable");
+      // Leave streamMetadata undefined; handleRtspDescribe re-fetches.
+      // flow.videoType stays at the conservative H264 default until the
+      // first camera frame refines it.
+    } else {
+      try {
+        const metadata = await this.api.getStreamMetadata(this.channel);
+        const stream = metadata.streams.find((s) => s.profile === this.profile);
+        if (stream) {
+          this.streamMetadata = {
+            frameRate: stream.frameRate || 25,
+            width: stream.width,
+            height: stream.height,
+          };
+          // Detect video type from metadata (refines flow early, before first frame).
+          const enc = String(stream.videoEncType ?? "")
+            .trim()
+            .toLowerCase();
+          const metaVideoType: RtspVideoType =
+            enc.includes("265") || enc.includes("hevc") ? "H265" : "H264";
+          this.setFlowVideoType(metaVideoType, "metadata");
+        }
+      } catch (error) {
+        this.logger.warn(
+          `[BaichuanRtspServer] Could not get stream metadata: ${error}`,
+        );
+        // Do NOT hardcode 1920x1080 — for 4K cameras this would advertise wrong
+        // a=framesize in SDP. Leave width/height undefined so generateSdp() omits
+        // the attribute and downstream decoders (go2rtc, ffmpeg) derive resolution
+        // from the actual SPS/PPS in the bitstream.
+        this.streamMetadata = { frameRate: 25 };
+        this.setFlowVideoType("H264", "metadata unavailable");
+      }
     }
 
     if (!this.externalListener) {

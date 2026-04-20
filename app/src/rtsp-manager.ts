@@ -1220,6 +1220,14 @@ export async function startRtspServer(
         requireAuth: requireAuthSetting && credentials.length > 0,
         credentials,
         authRealm: RTSP_DIGEST_REALM,
+        // On-demand native stream:
+        // - lazyMetadata: don't wake the camera at boot just to grab SDP
+        //   fields; fetch on first DESCRIBE instead. Matches go2rtc's lazy
+        //   source-pull model.
+        // - nativeStreamIdleStopMs: stop the native Baichuan stream after
+        //   30s with no RTSP clients connected (user-configurable via
+        //   rtspProxyBackendIdleTimeoutMs).
+        lazyMetadata: true,
         nativeStreamIdleStopMs:
           rtspNativeIdleOpts.nativeStreamIdleStopMs > 0
             ? rtspNativeIdleOpts.nativeStreamIdleStopMs
