@@ -1,11 +1,14 @@
+import { useEffect, useState } from 'react';
 import { Outlet } from 'react-router-dom';
-import { LogOut, Github, Moon, Sun, Monitor, Coffee } from 'lucide-react';
+import { LogOut, Github, Moon, Sun, Monitor, Coffee, Megaphone } from 'lucide-react';
 import { useThemeMode } from '@camstack/ui-library';
 import { useAuth } from '../../auth';
 import { NodelinkIcon } from './NodelinkIcon';
 import { NavSidebarItem } from './NavSidebarItem';
 import { BottomNav } from './BottomNav';
 import { navItems } from './nav-items';
+import { NewsModal } from '../../news/NewsModal';
+import { useNews } from '../../news/useNews';
 
 const THEME_ICONS = { dark: Moon, light: Sun, system: Monitor } as const;
 const THEME_LABELS = { dark: 'Dark', light: 'Light', system: 'System' } as const;
@@ -18,6 +21,20 @@ interface AppLayoutProps {
 export function AppLayout({ version, updateAvailable }: AppLayoutProps) {
   const { state, logout } = useAuth();
   const theme = useThemeMode();
+  const { items: newsItems, hasUnread, markAllSeen } = useNews();
+  const [newsOpen, setNewsOpen] = useState(false);
+
+  // Auto-open the news modal once when there's unread content. The user can
+  // dismiss it; the `Got it` / close handlers call markAllSeen() which
+  // persists the latest news id in localStorage.
+  useEffect(() => {
+    if (hasUnread) setNewsOpen(true);
+  }, [hasUnread]);
+
+  const closeNews = () => {
+    setNewsOpen(false);
+    markAllSeen();
+  };
 
   const ThemeIcon = THEME_ICONS[theme?.mode ?? 'system'];
 
@@ -44,6 +61,22 @@ export function AppLayout({ version, updateAvailable }: AppLayoutProps) {
 
           {/* Bottom controls */}
           <div className="flex flex-col gap-1 border-t border-[var(--color-border)] pt-3 mt-2 px-2.5">
+            {/* What's new */}
+            <button
+              onClick={() => setNewsOpen(true)}
+              className="relative flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-[11px] text-[var(--color-foreground-subtle)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-foreground)] transition-colors"
+              title="What's new"
+            >
+              <Megaphone className="h-3.5 w-3.5" />
+              <span>What&apos;s new</span>
+              {hasUnread && (
+                <span
+                  className="ml-auto h-1.5 w-1.5 rounded-full bg-[var(--color-brand)]"
+                  aria-label="Unread news"
+                />
+              )}
+            </button>
+
             {/* Theme toggle */}
             <button
               onClick={() => theme?.toggleMode()}
@@ -107,6 +140,9 @@ export function AppLayout({ version, updateAvailable }: AppLayoutProps) {
 
       {/* Mobile Bottom Nav */}
       <BottomNav />
+
+      {/* News / What's new modal */}
+      <NewsModal open={newsOpen} items={newsItems} onClose={closeNews} />
     </div>
   );
 }
