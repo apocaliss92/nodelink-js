@@ -1504,23 +1504,37 @@ export default function SettingsPage() {
                         </div>
                       )}
 
-                    {go2rtcStatus?.running && go2rtcStatus.apiUrl && (
-                      <div
-                        className={monoCls}
-                        style={{
-                          marginTop: 8,
-                          padding: "8px 12px",
-                          borderRadius: 6,
-                          background: "var(--color-surface)",
-                          fontSize: 12,
-                        }}
-                      >
-                        <div className="text-[var(--color-foreground-muted)]" style={{ fontSize: 10, marginBottom: 4 }}>
-                          Ports (configured via environment variables)
+                    <div className="mt-3 grid grid-cols-3 gap-3">
+                      {(
+                        [
+                          { label: "API port", key: "apiPort", def: 11984 },
+                          { label: "RTSP port", key: "rtspPort", def: 18554 },
+                          { label: "WebRTC port", key: "webrtcPort", def: 18555 },
+                        ] as const
+                      ).map(({ label, key, def }) => (
+                        <div key={key}>
+                          <span className={labelCls} style={{ fontSize: 12 }}>{label}</span>
+                          <input
+                            type="number"
+                            value={go2rtc[key] ?? def}
+                            min={1}
+                            max={65535}
+                            disabled={!canEditSettings}
+                            onChange={(e) =>
+                              setSettings({
+                                ...settings,
+                                go2rtc: { ...go2rtc, [key]: Number(e.target.value) },
+                              })
+                            }
+                            className={inputCls}
+                            style={{ width: "100%" }}
+                          />
                         </div>
-                        <div>API: {go2rtcStatus.apiUrl}</div>
-                      </div>
-                    )}
+                      ))}
+                    </div>
+                    <div className="text-[var(--color-foreground-muted)] text-xs mt-1">
+                      Port changes take effect after saving and restarting the server.
+                    </div>
 
                     <div className="mt-2.5">
                       <span className={labelCls}>ICE servers (one per line)</span>
