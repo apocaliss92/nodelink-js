@@ -551,6 +551,12 @@ function handleSimpleEvent(
   // Filter NVR cross-channel events.
   if (event.channel !== undefined && event.channel !== cam.channel) return;
 
+  // [issue-8 debug] trace every event that reaches HA MQTT with its payload
+  // so we can verify the AI/battery pipeline after the sleep-inference fix.
+  logger.info(
+    `[issue-8] handleSimpleEvent ${event.type} cameraId=${cam.cameraId} channel=${event.channel ?? "?"} payload=${JSON.stringify(event).slice(0, 200)}`,
+  );
+
   if (event.type === "sleeping") {
     void publishEntityState(cam.cameraId, "sleeping", PAYLOAD_ON);
     return;

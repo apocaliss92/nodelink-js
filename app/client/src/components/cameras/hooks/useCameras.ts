@@ -50,6 +50,7 @@ export function useCameras() {
   const [go2rtcApiPort, setGo2rtcApiPort] = useState<number | null>(null);
   const [go2rtcRtspPort, setGo2rtcRtspPort] = useState<number | null>(null);
   const [serviceIp, setServiceIp] = useState<string>("");
+  const [restreamer, setRestreamer] = useState<"go2rtc" | "local">("go2rtc");
   const [streamsLoadingByCamera, setStreamsLoadingByCamera] = useState<
     Record<string, boolean>
   >({});
@@ -89,9 +90,10 @@ export function useCameras() {
         trpcQuery<any[]>("rtsp.list").catch(() => []),
         trpcQuery<NvrInfo[]>("cameras.listNvrs").catch(() => []),
         trpcQuery<{ apiUrl: string | null; running: boolean; rtspPort?: number }>("go2rtc.status").catch(() => null),
-        trpcQuery<{ serviceIp?: string }>("settings.get").catch(() => null),
+        trpcQuery<{ serviceIp?: string; restreamer?: "go2rtc" | "local" }>("settings.get").catch(() => null),
       ]);
       if (settingsRes?.serviceIp) setServiceIp(settingsRes.serviceIp);
+      if (settingsRes?.restreamer) setRestreamer(settingsRes.restreamer);
       if (go2rtcSt) {
         setGo2rtcRunning(go2rtcSt.running);
         if (go2rtcSt.apiUrl) {
@@ -391,6 +393,7 @@ export function useCameras() {
     go2rtcApiPort,
     go2rtcRtspPort,
     serviceIp,
+    restreamer,
     go2rtcRunning,
     streamsByCamera,
     streamsLoadingByCamera,

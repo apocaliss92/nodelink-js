@@ -117,6 +117,12 @@ type Settings = {
     pollIntervalSeconds: number;
     stateTopicPrefix: string;
   };
+  restreamer?: "go2rtc" | "local";
+  localRtsp?: {
+    port: number;
+    bindHost: string;
+    requireAuth?: boolean;
+  };
   go2rtc?: {
     enabled: boolean;
     binaryPath: string;
@@ -572,6 +578,8 @@ export default function SettingsPage() {
         mqtt: settings.mqtt,
         homeassistant: settings.homeassistant,
         go2rtc: settings.go2rtc,
+        restreamer: settings.restreamer,
+        localRtsp: settings.localRtsp,
         frigate: settings.frigate,
       });
       // Re-connect to Frigate after saving (connection params may have changed)
@@ -1244,6 +1252,66 @@ export default function SettingsPage() {
 
           {/* go2rtc tab */}
           {activeTab === "go2rtc" ? (
+            <>
+            {/* Restreamer selection */}
+            <div className={cardCls}>
+              <span className={labelCls}>Restreamer backend</span>
+              <div className="text-[var(--color-foreground-muted)] text-xs mb-2">
+                Pick which streaming stack serves camera streams.
+                <br />
+                <strong>go2rtc</strong> (default) starts the go2rtc sidecar and exposes RTSP, WebRTC, HLS, MJPEG, MSE.
+                <br />
+                <strong>local</strong> uses the library&apos;s built-in RTSP server directly. Only RTSP is available — WebRTC / HLS / MJPEG previews are disabled. Snapshots (CGI) keep working.
+              </div>
+              <div className="flex gap-2 mt-1">
+                {(["go2rtc", "local"] as const).map((mode) => {
+                  const selected = (settings.restreamer ?? "go2rtc") === mode;
+                  return (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setSettings({ ...settings, restreamer: mode })}
+                      className={btnCls}
+                      style={{
+                        padding: "6px 14px",
+                        fontSize: 12,
+                        background: selected ? "var(--color-brand)" : undefined,
+                        color: selected ? "#fff" : undefined,
+                        fontWeight: selected ? 600 : 400,
+                      }}
+                    >
+                      {mode === "go2rtc" ? "go2rtc (default)" : "local (RTSP only)"}
+                    </button>
+                  );
+                })}
+              </div>
+              {(settings.restreamer ?? "go2rtc") === "local" && (
+                <div className="mt-3">
+                  <span className={labelCls} style={{ fontSize: 12 }}>Local RTSP port</span>
+                  <input
+                    type="number"
+                    value={settings.localRtsp?.port ?? 8554}
+                    min={1}
+                    max={65535}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        localRtsp: {
+                          ...(settings.localRtsp ?? { port: 8554, bindHost: "0.0.0.0" }),
+                          port: Number(e.target.value),
+                        },
+                      })
+                    }
+                    className={inputCls}
+                    style={{ width: 140 }}
+                  />
+                  <div className="text-[var(--color-foreground-muted)] text-xs mt-1">
+                    Each stream binds an independent port starting from this value. Restart the server after changing this setting.
+                  </div>
+                </div>
+              )}
+            </div>
+
             <div className={cardCls}>
               <span className={labelCls}>go2rtc Restreamer</span>
               <div className="text-[var(--color-foreground-muted)] text-xs">
@@ -1398,6 +1466,7 @@ export default function SettingsPage() {
                 );
               })()}
             </div>
+            </>
           ) : null}
 
           {/* Frigate tab */}

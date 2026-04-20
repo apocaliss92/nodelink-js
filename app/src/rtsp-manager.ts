@@ -1,6 +1,7 @@
 import {
   ReolinkBaichuanApi,
   Go2rtcTcpServer,
+  BaichuanRtspServer,
 } from "@apocaliss92/nodelink-js";
 import {
   createSourceLogger,
@@ -153,9 +154,12 @@ export interface RtspServerInfo {
   go2rtcWebrtcStreamName?: string;
   /** When using go2rtc: the tcp:// source URL. */
   go2rtcSourceUrl?: string;
-  /** Server mode. Always "go2rtc" — kept for backward compatibility with
-   * persisted stream-info objects, RTSP listener output, and tRPC clients. */
-  mode?: "go2rtc";
+  /**
+   * Server mode:
+   *  - "go2rtc": Go2rtcTcpServer feeding the go2rtc sidecar (WebRTC/HLS/MJPEG/RTSP out)
+   *  - "local":  BaichuanRtspServer directly exposes RTSP (no previews)
+   */
+  mode?: "go2rtc" | "local";
 }
 
 export interface CameraInfo {
@@ -268,13 +272,15 @@ export function onApiDisconnected(
   apiDisconnectionListeners.push(callback);
 }
 
-// Store for RTSP servers
+// Store for RTSP servers. `server` may be either a Go2rtcTcpServer (when
+// settings.restreamer === "go2rtc") or a BaichuanRtspServer (when
+// settings.restreamer === "local"). Both expose an async `stop()` method.
 const rtspServers = new Map<
   string,
   {
-    server: Go2rtcTcpServer;
+    server: Go2rtcTcpServer | BaichuanRtspServer;
     info: RtspServerInfo;
-    /** go2rtc stream name registered with the go2rtc process. */
+    /** go2rtc stream name registered with the go2rtc process (go2rtc mode only). */
     go2rtcStreamName?: string;
   }
 >();
@@ -1116,8 +1122,9 @@ export async function startRtspServer(
 
   try {
     const api = await getOrCreateApiConnection(cameraId);
+    const restreamerMode = settings.restreamer ?? "go2rtc";
     const go2rtcMgr = getGo2rtcManager();
-    const useGo2rtc = go2rtcMgr?.isRunning === true;
+    const useGo2rtc = restreamerMode === "go2rtc" && go2rtcMgr?.isRunning === true;
 
     /**
      * Detect the camera's video codec so we can decide whether a WebRTC
@@ -1143,7 +1150,7 @@ export async function startRtspServer(
     const go2rtcRtspPortForSources =
       Number(process.env.GO2RTC_RTSP_PORT) || (settings.go2rtc?.rtspPort ?? 18554);
 
-    if (!useGo2rtc) {
+    if (restreamerMode === "go2rtc" && !useGo2rtc) {
       throw new Error(
         `Cannot start stream ${profile}/ch${channel}: go2rtc is not running. ` +
         `Check the go2rtc process status.`,
@@ -1160,6 +1167,71 @@ export async function startRtspServer(
 
     const serviceIp = settings.serviceIp || "localhost";
 
+    // ─── Local restreamer mode ──────────────────────────────────────────────
+    // Use the library's built-in BaichuanRtspServer. Exposes RTSP directly;
+    // no go2rtc sidecar, no WebRTC/HLS/MJPEG previews.
+    if (restreamerMode === "local") {
+      const localRtspHost = settings.localRtsp?.bindHost ?? "0.0.0.0";
+      const localPath = `/${buildGo2rtcStreamName(camera.name, profile, channel)}`;
+
+      logger.info(
+        `Starting BaichuanRtspServer (local RTSP) on ${localRtspHost}:${port}${localPath} (${profile}, ch${channel})`,
+      );
+
+      // Local mode currently ships without RTSP auth: dashboardUsers only
+      // hold hashed passwords so we cannot recover the plaintext needed for
+      // RTSP Digest challenge. When the user flips rtspRequireAuth (or the
+      // per-mode requireAuth flag) we warn and continue unauthenticated.
+      const requireAuthSetting =
+        settings.localRtsp?.requireAuth ?? settings.rtspRequireAuth ?? false;
+      if (requireAuthSetting) {
+        logger.warn(
+          `localRtsp.requireAuth set but local mode has no plaintext credentials source — ` +
+          `serving RTSP without authentication. Consider a proxy in front if exposed to untrusted networks.`,
+        );
+      }
+
+      const baichuanServer = new BaichuanRtspServer({
+        api,
+        channel,
+        profile,
+        listenHost: localRtspHost,
+        listenPort: port,
+        path: localPath,
+        logger: rtspLogger,
+        deviceId: cameraId,
+        requireAuth: false,
+        credentials: [],
+        nativeStreamIdleStopMs:
+          rtspNativeIdleOpts.nativeStreamIdleStopMs > 0
+            ? rtspNativeIdleOpts.nativeStreamIdleStopMs
+            : 30_000,
+      });
+
+      await baichuanServer.start();
+
+      info.status = "running";
+      info.mode = "local";
+      info.port = port;
+      info.startedAt = new Date();
+      info.rtspUrl = `rtsp://${serviceIp}:${port}${localPath}`;
+
+      rtspServers.set(streamKey, { server: baichuanServer, info });
+      logger.info(`RTSP (local): ${info.rtspUrl}`);
+
+      upsertCameraStream(cameraId, {
+        profile,
+        channel,
+        port,
+        token: streamToken,
+        enabled: true,
+        autoStart: true,
+      });
+
+      return info;
+    }
+
+    // ─── go2rtc restreamer mode (default) ──────────────────────────────────
     // Go2rtcTcpServer on loopback, feeding MPEG-TS (H.264/H.265 + AAC)
     // directly to go2rtc via a tcp:// source — no intermediate RTSP stack.
     logger.info(
@@ -1293,7 +1365,8 @@ export async function stopRtspServer(
 
   try {
     // Deregister both the primary and the WebRTC companion streams from go2rtc
-    if (entry.go2rtcStreamName) {
+    // (only when running in go2rtc mode).
+    if (entry.info.mode === "go2rtc" && entry.go2rtcStreamName) {
       const go2rtcMgr = getGo2rtcManager();
       if (go2rtcMgr?.isRunning) {
         await go2rtcMgr.removeStream(entry.go2rtcStreamName).catch(() => {});
@@ -1305,7 +1378,11 @@ export async function stopRtspServer(
     }
 
     if (entry.server) {
-      logger.info("Stopping Go2rtc TCP server");
+      logger.info(
+        entry.info.mode === "local"
+          ? "Stopping BaichuanRtspServer (local)"
+          : "Stopping Go2rtc TCP server",
+      );
       await entry.server.stop();
     }
     entry.info.status = "stopped";
@@ -1330,7 +1407,7 @@ export function getRtspServerInstance(
   cameraId: string,
   profile: "main" | "sub" | "ext",
   channel: number,
-): Go2rtcTcpServer | undefined {
+): Go2rtcTcpServer | BaichuanRtspServer | undefined {
   const key = getRtspServerKey(cameraId, profile, channel);
   return rtspServers.get(key)?.server;
 }

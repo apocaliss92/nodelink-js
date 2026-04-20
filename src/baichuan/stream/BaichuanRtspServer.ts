@@ -558,6 +558,11 @@ export class BaichuanRtspServer extends EventEmitter<{
     this.flow = createRtspFlow(transport, "H264");
   }
 
+  /** Number of currently connected RTSP clients. */
+  get clientCount(): number {
+    return this.connectedClients.size;
+  }
+
   // --- Authentication helpers ---
 
   /**

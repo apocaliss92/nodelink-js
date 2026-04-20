@@ -7,16 +7,22 @@ import { copyToClipboard } from './utils';
 interface StreamProfileCardProps {
   cameraId: string;
   stream: AvailableStream;
-  rtspServer?: { status?: string; connections?: number; rtspUrl?: string; go2rtcStreamName?: string };
+  rtspServer?: { status?: string; connections?: number; rtspUrl?: string; go2rtcStreamName?: string; mode?: string };
   onPreview: () => void;
   streamName: string;
   go2rtcApiPort: number | null;
   go2rtcRtspPort: number | null;
   serviceIp: string;
   isBattery?: boolean;
+  /**
+   * Restreamer mode from settings. When "local", go2rtc-based previews
+   * (WebRTC/HLS/MJPEG/MSE/MP4/snapshot) are hidden — only the RTSP URL
+   * remains copyable.
+   */
+  restreamer?: "go2rtc" | "local";
 }
 
-export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, streamName, go2rtcApiPort, go2rtcRtspPort, serviceIp, isBattery }: StreamProfileCardProps) {
+export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, streamName, go2rtcApiPort, go2rtcRtspPort, serviceIp, isBattery, restreamer }: StreamProfileCardProps) {
   const isActive = rtspServer?.status === 'running';
   // Battery cameras stream on-demand: show preview/URLs even when the native stream
   // is not running (idle). Clicking Preview will wake the camera.
@@ -25,6 +31,13 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, str
   const [urlsOpen, setUrlsOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
 
+  // Resolve effective mode: per-server mode wins (backend truth),
+  // fall back to the global settings flag when the server is idle.
+  const effectiveMode = rtspServer?.mode === "local" || rtspServer?.mode === "go2rtc"
+    ? rtspServer.mode
+    : (restreamer ?? "go2rtc");
+  const isLocal = effectiveMode === "local";
+
   const viewers = isActive ? (rtspServer?.connections ?? 0) : 0;
   const go2rtcHost = serviceIp || window.location.hostname;
   // When served over HTTPS (nginx reverse proxy) go2rtc's port is plain HTTP —
@@ -32,7 +45,9 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, str
   // Route through the Express /go2rtc/* proxy instead so the same-origin HTTPS
   // path is used. On HTTP, hit go2rtc directly.
   const isHttps = window.location.protocol === 'https:';
-  const go2rtcBase = go2rtcApiPort
+  // go2rtc-derived URLs are unavailable in local mode — gate the base so
+  // every preview/URL button below folds into "hidden" cleanly.
+  const go2rtcBase = !isLocal && go2rtcApiPort
     ? (isHttps ? `${window.location.origin}/go2rtc` : `http://${go2rtcHost}:${go2rtcApiPort}`)
     : null;
   const src = encodeURIComponent(streamName);
@@ -40,11 +55,16 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, str
   const snapshotUrl = go2rtcBase ? `${go2rtcBase}/api/frame.jpeg?src=${src}` : '';
   const mp4Url = go2rtcBase ? `${go2rtcBase}/api/stream.mp4?src=${src}` : '';
   const mseUrl = go2rtcBase ? `${go2rtcBase}/stream.html?src=${src}&mode=mse` : '';
-  // RTSP URL is deterministic from the stream name and RTSP port — show it even when stream is idle.
-  // Falls back to the running server's URL if available (e.g., legacy non-go2rtc mode).
-  const rtspUrl = go2rtcRtspPort
-    ? `rtsp://${go2rtcHost}:${go2rtcRtspPort}/${streamName}`
-    : rtspServer?.rtspUrl ?? '';
+  // RTSP URL:
+  //  - local mode: always use the per-server rtspUrl (port is dynamic per stream)
+  //  - go2rtc mode: deterministic from the stream name + go2rtc RTSP port
+  const rtspUrl = isLocal
+    ? (rtspServer?.rtspUrl ?? '')
+    : go2rtcRtspPort
+      ? `rtsp://${go2rtcHost}:${go2rtcRtspPort}/${streamName}`
+      : rtspServer?.rtspUrl ?? '';
+  // Preview-button gating: WebRTC/MSE need go2rtc.
+  const hasPreview = !isLocal;
 
   const startAnalysis = async () => {
     setDiagStatus('running');
@@ -93,8 +113,8 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, str
       )}
 
       <div className="flex flex-wrap gap-1 mt-1.5">
-        {/* Preview — always for battery cameras (on-demand), active-only otherwise */}
-        {(isActive || showOnDemand) && (
+        {/* Preview — requires go2rtc (WebRTC/MSE). Hidden in local mode. */}
+        {(isActive || showOnDemand) && hasPreview && (
           <div className="relative">
             <button
               type="button"

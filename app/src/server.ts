@@ -889,35 +889,54 @@ server.listen(PORT, async () => {
     appLogger.error(`Error initializing Home Assistant MQTT discovery: ${error}`, { source: "server" });
   }
 
-  // Step 1: Start go2rtc (always — it is the only supported streaming backend).
-  // Environment variables override settings for Docker/deployment flexibility.
-  try {
-    const go2rtcConfig = {
-      binaryPath: process.env.GO2RTC_PATH || settings.go2rtc.binaryPath,
-      apiPort: Number(process.env.GO2RTC_API_PORT) || settings.go2rtc.apiPort,
-      rtspPort: Number(process.env.GO2RTC_RTSP_PORT) || settings.go2rtc.rtspPort,
-      webrtcPort: Number(process.env.GO2RTC_WEBRTC_PORT) || settings.go2rtc.webrtcPort,
-      iceServers: settings.go2rtc.iceServers,
-    };
-    await initGo2rtc(go2rtcConfig);
+  // Step 1: Start go2rtc when it's the selected restreamer. If the user
+  // chose the local (BaichuanRtspServer) restreamer, skip go2rtc entirely —
+  // no binary download, no YAML, no sidecar process.
+  const restreamerMode = settings.restreamer ?? "go2rtc";
+  if (restreamerMode === "go2rtc") {
+    try {
+      const go2rtcConfig = {
+        binaryPath: process.env.GO2RTC_PATH || settings.go2rtc.binaryPath,
+        apiPort: Number(process.env.GO2RTC_API_PORT) || settings.go2rtc.apiPort,
+        rtspPort: Number(process.env.GO2RTC_RTSP_PORT) || settings.go2rtc.rtspPort,
+        webrtcPort: Number(process.env.GO2RTC_WEBRTC_PORT) || settings.go2rtc.webrtcPort,
+        iceServers: settings.go2rtc.iceServers,
+      };
+      await initGo2rtc(go2rtcConfig);
+      appLogger.info(
+        `go2rtc started (API: http://localhost:${go2rtcConfig.apiPort}, RTSP: ${go2rtcConfig.rtspPort}, WebRTC: ${go2rtcConfig.webrtcPort})`,
+        { source: "go2rtc" },
+      );
+      try {
+        await startStreamsForAllConnectedCameras();
+        appLogger.info("Started streams for already-connected cameras", {
+          source: "go2rtc",
+        });
+      } catch (flushErr) {
+        appLogger.error(`Error starting streams after go2rtc: ${flushErr}`, {
+          source: "go2rtc",
+        });
+      }
+    } catch (error) {
+      appLogger.error(`Error initializing go2rtc: ${error}`, {
+        source: "server",
+      });
+    }
+  } else {
     appLogger.info(
-      `go2rtc started (API: http://localhost:${go2rtcConfig.apiPort}, RTSP: ${go2rtcConfig.rtspPort}, WebRTC: ${go2rtcConfig.webrtcPort})`,
-      { source: "go2rtc" },
+      `Restreamer=${restreamerMode}: go2rtc disabled — using library BaichuanRtspServer (RTSP only, no WebRTC/HLS/MJPEG previews)`,
+      { source: "server" },
     );
     try {
       await startStreamsForAllConnectedCameras();
       appLogger.info("Started streams for already-connected cameras", {
-        source: "go2rtc",
+        source: "server",
       });
     } catch (flushErr) {
-      appLogger.error(`Error starting streams after go2rtc: ${flushErr}`, {
-        source: "go2rtc",
+      appLogger.error(`Error starting streams: ${flushErr}`, {
+        source: "server",
       });
     }
-  } catch (error) {
-    appLogger.error(`Error initializing go2rtc: ${error}`, {
-      source: "server",
-    });
   }
 
   // Step 2: Auto-start streams for cameras configured with autoStart.

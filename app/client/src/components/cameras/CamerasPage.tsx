@@ -152,6 +152,7 @@ export function CamerasPage() {
                 go2rtcApiPort={camerasHook.go2rtcApiPort}
                 go2rtcRtspPort={camerasHook.go2rtcRtspPort}
                 serviceIp={camerasHook.serviceIp}
+                restreamer={camerasHook.restreamer}
                 onClose={() => selectCamera(null)}
               />
             )}

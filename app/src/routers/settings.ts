@@ -130,6 +130,14 @@ export const settingsRouter = router({
             iceServers: z.array(z.string()).optional(),
           })
           .optional(),
+        restreamer: z.enum(["go2rtc", "local"]).optional(),
+        localRtsp: z
+          .object({
+            port: z.number().int().min(1).max(65535).optional(),
+            bindHost: z.string().optional(),
+            requireAuth: z.boolean().optional(),
+          })
+          .optional(),
         frigate: z
           .object({
             host: z.string().optional(),
@@ -173,6 +181,10 @@ export const settingsRouter = router({
 
       if (input.go2rtc) {
         patch.go2rtc = { ...current.go2rtc, ...input.go2rtc };
+      }
+
+      if (input.localRtsp) {
+        patch.localRtsp = { ...current.localRtsp, ...input.localRtsp };
       }
 
       if (input.frigate) {

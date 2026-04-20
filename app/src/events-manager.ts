@@ -211,8 +211,11 @@ export function handleCameraEvent(
   event: ReolinkSimpleEvent,
 ): void {
   const payload = buildPayload(cameraId, event);
-  logger.debug(
-    `Event: ${payload.cameraName} ch${event.channel} ${event.type}`,
+  // [issue-8 debug] elevated to info with full payload so we can verify the
+  // AI/battery events are reaching the events-manager after the sleep-
+  // inference fix. Remove once HA pipeline is confirmed healthy.
+  logger.info(
+    `[issue-8] Event: ${payload.cameraName} ch${event.channel} ${event.type} payload=${JSON.stringify(event).slice(0, 200)}`,
   );
 
   // Track sleep/wake status for battery cameras — and dedupe repeats

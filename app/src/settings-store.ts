@@ -148,7 +148,30 @@ export const SettingsSchema = z.object({
     })
     .default({}),
 
-  // go2rtc restreamer — always active, provides WebRTC/HLS/MJPEG/RTSP output
+  /**
+   * Restreamer mode.
+   *
+   * - "go2rtc" (default): starts the go2rtc sidecar and publishes the native
+   *   MPEG-TS stream to it. go2rtc serves RTSP/HLS/MJPEG/WebRTC/MSE.
+   * - "local": uses the library's BaichuanRtspServer directly. Only RTSP
+   *   output is available — HLS/MJPEG/WebRTC previews are disabled because
+   *   they rely on go2rtc's ffmpeg transcoding. Snapshots (CGI) still work.
+   */
+  restreamer: z.enum(["go2rtc", "local"]).default("go2rtc"),
+
+  /** Local restreamer options (used when restreamer === "local"). */
+  localRtsp: z
+    .object({
+      /** RTSP port for the local BaichuanRtspServer (default 8554). */
+      port: z.number().int().min(1).max(65535).default(8554),
+      /** Bind host for the local RTSP server. Default: 0.0.0.0 (all). */
+      bindHost: z.string().default("0.0.0.0"),
+      /** Require HTTP Basic/Digest auth on RTSP clients. Default: mirrors rtspRequireAuth. */
+      requireAuth: z.boolean().optional(),
+    })
+    .default({}),
+
+  // go2rtc restreamer — active when restreamer === "go2rtc"
   go2rtc: z
     .object({
       /** Path to go2rtc binary (e.g. "./bin/go2rtc" or "go2rtc"). */

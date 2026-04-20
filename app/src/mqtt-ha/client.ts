@@ -235,12 +235,19 @@ export default class MqttClient implements IHaClient {
       entry &&
       entry.value === value &&
       (!this.cacheTtlMs || Date.now() <= entry.expiresAt);
+    const valueForLog = Buffer.isBuffer(value)
+      ? `<buf ${value.length}B>`
+      : value.length > 120
+        ? `${value.slice(0, 120)}…`
+        : value;
     if (this.cache && cacheValid) {
-      this.logger.debug(`Skipping publish (cache hit) for ${topic}`);
+      this.logger.debug(
+        `Skipping publish (cache hit) for ${topic} value=${valueForLog}`,
+      );
       return;
     }
 
-    this.logger.debug(`Publishing ${topic}`);
+    this.logger.debug(`Publishing ${topic} value=${valueForLog}`);
     const client = await this.getMqttClient();
     if (!client) return;
 
