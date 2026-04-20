@@ -1801,8 +1801,11 @@ export function createCameraConnLogger(cameraId: string, label: string) {
 export async function startStreamsForAllConnectedCameras(): Promise<void> {
   const logger = createSourceLogger("auto-streams");
   const go2rtcMgr = getGo2rtcManager();
+  const restreamerMode = getSettings().restreamer ?? "go2rtc";
 
-  if (!go2rtcMgr?.isRunning) {
+  // In go2rtc mode we must wait for the sidecar; in local mode the library
+  // binds the RTSP port directly and has no external dependency.
+  if (restreamerMode === "go2rtc" && !go2rtcMgr?.isRunning) {
     return;
   }
 
@@ -1851,8 +1854,11 @@ export function enableAutoStreamsOnConnect(): void {
 
   onApiConnected(async (cameraId, _api) => {
     const go2rtcMgr = getGo2rtcManager();
+    const restreamerMode = getSettings().restreamer ?? "go2rtc";
 
-    if (!go2rtcMgr?.isRunning) {
+    // Only go2rtc mode depends on the sidecar process — local mode owns
+    // the RTSP port itself and can start streams immediately.
+    if (restreamerMode === "go2rtc" && !go2rtcMgr?.isRunning) {
       logger.debug(
         `Defer auto-streams for camera ${cameraId}: go2rtc not running yet`,
       );
