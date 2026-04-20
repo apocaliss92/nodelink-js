@@ -225,6 +225,27 @@ export const settingsRouter = router({
       };
     }),
 
+  /**
+   * Request a server restart.
+   *
+   * The Node process exits cleanly after a short grace period so the HTTP
+   * response lands before the socket closes. An external supervisor
+   * (systemd / docker / pm2) must be configured to restart the process.
+   *
+   * Used by the Settings UI after save when a setting that requires a
+   * backend reboot (currently: `restreamer`) has changed.
+   */
+  restart: adminProcedure
+    .meta({ description: "Restart the Node process (supervisor must bring it back up)" })
+    .mutation(() => {
+      // Give the response a beat to flush back to the client, then exit.
+      // The shutdown handler registered on SIGTERM runs automatically.
+      setTimeout(() => {
+        process.kill(process.pid, "SIGTERM");
+      }, 300);
+      return { ok: true, restartingInMs: 300 };
+    }),
+
   // Reset settings to defaults
   reset: adminProcedure
     .meta({ description: "Reset settings to defaults" })

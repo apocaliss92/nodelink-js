@@ -210,6 +210,13 @@ export default function SettingsPage() {
   const { state: authState, refresh: refreshAuth } = useAuth();
 
   const [settings, setSettings] = useState<Settings | null>(null);
+  // Last-loaded snapshot used to detect settings that require a server
+  // restart to take effect (e.g. restreamer backend).
+  const [loadedRestreamer, setLoadedRestreamer] = useState<
+    "go2rtc" | "local" | undefined
+  >(undefined);
+  const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
+  const [restarting, setRestarting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
@@ -386,6 +393,7 @@ export default function SettingsPage() {
       try {
         const s = await trpcQuery<Settings>("settings.get");
         setSettings(s);
+        setLoadedRestreamer(s.restreamer ?? "go2rtc");
 
         const r = await trpcQuery<RuntimeInfo>("settings.getRuntime");
         setRuntime(r);
@@ -565,6 +573,21 @@ export default function SettingsPage() {
 
   async function save() {
     if (!settings) return;
+    // The restreamer backend swap requires a full process restart to take
+    // effect (go2rtc sidecar lifecycle is boot-time only). Detect the change
+    // and let the user confirm before we save + restart.
+    const newRestreamer = settings.restreamer ?? "go2rtc";
+    const needsRestart =
+      loadedRestreamer !== undefined && newRestreamer !== loadedRestreamer;
+    if (needsRestart) {
+      setRestartConfirmOpen(true);
+      return;
+    }
+    await persistSettings();
+  }
+
+  async function persistSettings() {
+    if (!settings) return;
     setSaving(true);
     setError(null);
     try {
@@ -582,6 +605,7 @@ export default function SettingsPage() {
         localRtsp: settings.localRtsp,
         frigate: settings.frigate,
       });
+      setLoadedRestreamer(settings.restreamer ?? "go2rtc");
       // Re-connect to Frigate after saving (connection params may have changed)
       if (settings.frigate?.host) {
         setFrigateConnected(null);
@@ -592,6 +616,57 @@ export default function SettingsPage() {
     } finally {
       setSaving(false);
     }
+  }
+
+  /**
+   * Save settings and then request a server restart. The backend exits the
+   * Node process; an external supervisor (systemd/docker/pm2) brings it
+   * back up. The UI shows a "Restarting..." state and reloads the page
+   * after a short delay so the user lands on the fresh instance.
+   */
+  async function saveAndRestart() {
+    setRestartConfirmOpen(false);
+    await persistSettings();
+    setRestarting(true);
+    try {
+      await trpcMutation("settings.restart", {});
+    } catch (e) {
+      // Server likely exited before the response came back — that's OK.
+      // Ignore connection errors, surface real schema/validation errors.
+      const msg = String(e);
+      if (
+        !msg.toLowerCase().includes("failed to fetch") &&
+        !msg.toLowerCase().includes("networkerror")
+      ) {
+        setError(msg);
+      }
+    }
+    // Poll the app until it responds again, then reload.
+    const startedAt = Date.now();
+    const timeoutMs = 60_000;
+    const poll = async () => {
+      if (Date.now() - startedAt > timeoutMs) {
+        setError(
+          "Server did not come back up within 60s. Check your supervisor (docker/systemd/pm2) and reload manually.",
+        );
+        setRestarting(false);
+        return;
+      }
+      try {
+        const res = await fetch("/api/trpc/settings.getRuntime", {
+          method: "GET",
+          cache: "no-store",
+        });
+        if (res.ok) {
+          window.location.reload();
+          return;
+        }
+      } catch {
+        // still down — keep polling
+      }
+      window.setTimeout(poll, 1_000);
+    };
+    window.setTimeout(poll, 2_000);
   }
 
   async function createPersonalToken() {
@@ -2658,6 +2733,67 @@ export default function SettingsPage() {
                   {savingDashUsers ? "Working…" : "Add user"}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Restart confirmation (fires when restreamer backend changed) */}
+      {restartConfirmOpen ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 p-4 grid place-items-center bg-black/[.66] backdrop-blur-sm"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setRestartConfirmOpen(false);
+          }}
+        >
+          <div
+            className="border border-[var(--color-border)] rounded-xl p-4 shadow-2xl"
+            style={{ width: "min(480px, 100%)", background: "rgba(15, 23, 42, 0.96)" }}
+          >
+            <div className="font-extrabold mb-1">Restart required</div>
+            <div className="text-sm text-[var(--color-foreground-muted)] mb-4">
+              Changing the restreamer backend requires a server restart to
+              take effect. Active RTSP clients will drop and reconnect when
+              the server comes back up.
+              <br />
+              <br />
+              Save and restart now?
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                className={btnCls}
+                onClick={() => setRestartConfirmOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className={btnCls}
+                style={{ background: "var(--color-brand)", color: "#fff" }}
+                onClick={() => void saveAndRestart()}
+              >
+                Save &amp; restart
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Restarting overlay */}
+      {restarting ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed inset-0 z-50 p-4 grid place-items-center bg-black/[.75] backdrop-blur-sm"
+        >
+          <div
+            className="border border-[var(--color-border)] rounded-xl p-6 shadow-2xl text-center"
+            style={{ width: "min(420px, 100%)", background: "rgba(15, 23, 42, 0.96)" }}
+          >
+            <div className="font-extrabold mb-2">Restarting server…</div>
+            <div className="text-sm text-[var(--color-foreground-muted)]">
+              The page will reload automatically once the server is back up.
             </div>
           </div>
         </div>
