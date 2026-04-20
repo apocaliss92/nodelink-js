@@ -1116,12 +1116,21 @@ export class BaichuanRtspServer extends EventEmitter<{
             );
           }
           const sdp = this.generateSdp();
+          // Advertise a Content-Base that RTSP clients can resolve. Prefer
+          // the interface the client actually used (socket.localAddress) so
+          // a wildcard bind (e.g. 0.0.0.0) doesn't end up handing the
+          // client a dial-to-0.0.0.0 URL during SETUP. Fallback to
+          // listenHost for environments where localAddress is undefined.
+          const contentHost =
+            (socket.localAddress && socket.localAddress !== "0.0.0.0" && socket.localAddress !== "::"
+              ? socket.localAddress.replace(/^::ffff:/, "")
+              : null) ?? this.listenHost;
           sendResponse(
             200,
             "OK",
             {
               "Content-Type": "application/sdp",
-              "Content-Base": `rtsp://${this.listenHost}:${this.listenPort}${this.path}/`,
+              "Content-Base": `rtsp://${contentHost}:${this.listenPort}${this.path}/`,
             },
             sdp,
           );

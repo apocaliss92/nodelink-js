@@ -1049,9 +1049,17 @@ export async function startRtspServer(
     nativeStreamPrimeIdleStopMs: nativeIdleMs > 0 ? 15_000 : 0,
   };
 
-  // Go2rtcTcpServer always binds loopback only — only the local go2rtc
-  // process consumes the MPEG-TS feed; external clients connect to go2rtc.
-  const portBindHost = "127.0.0.1";
+  // Port availability host MUST match the actual bind host of the stream
+  // server, otherwise findNextAvailablePort may think a port is free on
+  // loopback while another process holds it on the public interface (or
+  // vice-versa), producing a confusing EADDRINUSE at bind time.
+  //  - go2rtc mode: Go2rtcTcpServer binds loopback only (feeds go2rtc).
+  //  - local mode:  BaichuanRtspServer binds on settings.localRtsp.bindHost
+  //                 (default 0.0.0.0) so external RTSP clients can connect.
+  const portBindHost =
+    settings.restreamer === "local"
+      ? (settings.localRtsp?.bindHost ?? "0.0.0.0")
+      : "127.0.0.1";
 
   // Find saved stream config to get previously used port
   const savedStreamConfig = camera.rtspStreams?.find(
@@ -1068,7 +1076,12 @@ export async function startRtspServer(
       logger.warn(
         `Explicit port ${port} already used by another stream; picking next free on ${portBindHost}`,
       );
-      const basePort = camera.rtspPort || Number(process.env.RTSP_PORT) || 8554;
+      // In local restreamer mode the base comes from settings.localRtsp.port
+      // so every stream starts allocating from the port the user configured.
+      const basePort =
+        camera.rtspPort ||
+        Number(process.env.RTSP_PORT) ||
+        (settings.restreamer === "local" ? (settings.localRtsp?.port ?? 8554) : 8554);
       port = await findNextAvailablePort(basePort, 100, portBindHost);
     }
   } else if (
