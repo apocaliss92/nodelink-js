@@ -21,9 +21,16 @@ interface CameraCardProps {
     profile: StreamProfile;
     status?: string;
     connections?: number;
+    mode?: string;
   }>;
   selected: boolean;
   connecting: boolean;
+  /**
+   * Effective restreamer mode. In "local" mode the WebRTC inline preview is
+   * unavailable (no go2rtc sidecar), so the per-stream badge opens/opens a
+   * disabled state with a clear tooltip instead of a broken preview.
+   */
+  restreamer?: "go2rtc" | "local";
   onClick: () => void;
   onConnect?: () => void;
   onOpenPtz?: () => void;
@@ -39,6 +46,7 @@ export function CameraCard({
   rtspServers,
   selected,
   connecting,
+  restreamer,
   onClick,
   onConnect,
   onOpenPtz,
@@ -111,7 +119,10 @@ export function CameraCard({
         {camera.host}
       </div>
 
-      {/* Stream badges — clickable to open stream, show viewer count */}
+      {/* Stream badges — clickable to open stream, show viewer count.
+          In local restreamer mode the inline WebRTC player is unavailable
+          (no go2rtc sidecar), so the badges render disabled with a tooltip
+          pointing the user at the RTSP URL in the detail panel. */}
       {streams.length > 0 && (
         <div className="flex gap-1 mt-2">
           {streams.map((s) => {
@@ -120,20 +131,36 @@ export function CameraCard({
             );
             const viewers =
               server?.status === "running" ? (server.connections ?? 0) : 0;
+            const effectiveMode =
+              server?.mode === "local" || server?.mode === "go2rtc"
+                ? server.mode
+                : (restreamer ?? "go2rtc");
+            const isLocal = effectiveMode === "local";
             return (
               <button
                 key={s.profile}
                 onClick={(e) => {
                   e.stopPropagation();
+                  if (isLocal) return;
                   onOpenStream?.(s);
                 }}
+                disabled={isLocal}
+                aria-disabled={isLocal}
                 className={cn(
-                  "rounded px-1.5 py-0.5 text-[10px] hover:opacity-80 transition-opacity flex items-center gap-0.5",
-                  selected
-                    ? "bg-[var(--color-primary)]/20"
-                    : "bg-[var(--color-surface-hover)]",
+                  "rounded px-1.5 py-0.5 text-[10px] transition-opacity flex items-center gap-0.5",
+                  isLocal
+                    ? "bg-[var(--color-surface-hover)] opacity-50 cursor-not-allowed"
+                    : "hover:opacity-80",
+                  !isLocal &&
+                    (selected
+                      ? "bg-[var(--color-primary)]/20"
+                      : "bg-[var(--color-surface-hover)]"),
                 )}
-                title={`Open ${s.profile} stream${viewers > 0 ? ` (${viewers} viewer${viewers > 1 ? "s" : ""})` : ""}`}
+                title={
+                  isLocal
+                    ? `WebRTC preview unavailable in local restreamer mode. Open the camera to copy the RTSP URL for ${s.profile}.`
+                    : `Open ${s.profile} stream${viewers > 0 ? ` (${viewers} viewer${viewers > 1 ? "s" : ""})` : ""}`
+                }
               >
                 <Play size={8} />
                 {s.profile}

@@ -7,7 +7,7 @@ import { copyToClipboard } from './utils';
 interface StreamProfileCardProps {
   cameraId: string;
   stream: AvailableStream;
-  rtspServer?: { status?: string; connections?: number; rtspUrl?: string; go2rtcStreamName?: string; mode?: string };
+  rtspServer?: { status?: string; connections?: number; rtspUrl?: string; go2rtcStreamName?: string; mode?: string; port?: number };
   onPreview: () => void;
   streamName: string;
   go2rtcApiPort: number | null;
@@ -20,9 +20,15 @@ interface StreamProfileCardProps {
    * remains copyable.
    */
   restreamer?: "go2rtc" | "local";
+  /**
+   * Default local RTSP port from settings. Used as a fallback for building
+   * an RTSP URL in local mode when no per-stream port is known (e.g. an
+   * idle stream that hasn't been bound yet at page load).
+   */
+  localRtspPort?: number | null;
 }
 
-export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, streamName, go2rtcApiPort, go2rtcRtspPort, serviceIp, isBattery, restreamer }: StreamProfileCardProps) {
+export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, streamName, go2rtcApiPort, go2rtcRtspPort, serviceIp, isBattery, restreamer, localRtspPort }: StreamProfileCardProps) {
   const isActive = rtspServer?.status === 'running';
   // Battery cameras stream on-demand: show preview/URLs even when the native stream
   // is not running (idle). Clicking Preview will wake the camera.
@@ -56,10 +62,17 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, str
   const mp4Url = go2rtcBase ? `${go2rtcBase}/api/stream.mp4?src=${src}` : '';
   const mseUrl = go2rtcBase ? `${go2rtcBase}/stream.html?src=${src}&mode=mse` : '';
   // RTSP URL:
-  //  - local mode: always use the per-server rtspUrl (port is dynamic per stream)
+  //  - local mode: prefer the per-server rtspUrl; fall back to a deterministic
+  //    URL from the known port (per-stream info.port if any, else the
+  //    default local RTSP port) so users can copy it even while the
+  //    BaichuanRtspServer is idle / not yet bound.
   //  - go2rtc mode: deterministic from the stream name + go2rtc RTSP port
+  const localPortForUrl = rtspServer?.port ?? localRtspPort ?? null;
   const rtspUrl = isLocal
-    ? (rtspServer?.rtspUrl ?? '')
+    ? rtspServer?.rtspUrl
+      || (localPortForUrl
+        ? `rtsp://${go2rtcHost}:${localPortForUrl}/${streamName}`
+        : '')
     : go2rtcRtspPort
       ? `rtsp://${go2rtcHost}:${go2rtcRtspPort}/${streamName}`
       : rtspServer?.rtspUrl ?? '';

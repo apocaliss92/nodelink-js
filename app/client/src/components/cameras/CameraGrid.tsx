@@ -4,9 +4,10 @@ import type { CameraInfo, AvailableStream, StreamProfile } from './types';
 interface CameraGridProps {
   cameras: CameraInfo[];
   streamsByCamera: Record<string, AvailableStream[]>;
-  rtspServers: Array<{ cameraId: string; profile: StreamProfile; status?: string; connections?: number }>;
+  rtspServers: Array<{ cameraId: string; profile: StreamProfile; status?: string; connections?: number; mode?: string }>;
   connectingByCamera: Record<string, boolean>;
   selectedCamera: CameraInfo | null;
+  restreamer?: "go2rtc" | "local";
   onSelectCamera: (camera: CameraInfo) => void;
   onConnect?: (camera: CameraInfo) => void;
   onOpenPtz?: (camera: CameraInfo) => void;
@@ -22,6 +23,7 @@ export function CameraGrid({
   rtspServers,
   connectingByCamera,
   selectedCamera,
+  restreamer,
   onSelectCamera,
   onConnect,
   onOpenPtz,
@@ -40,6 +42,7 @@ export function CameraGrid({
           rtspServers={rtspServers}
           selected={selectedCamera?.id === camera.id}
           connecting={connectingByCamera[camera.id] ?? false}
+          restreamer={restreamer}
           onClick={() => onSelectCamera(camera)}
           onConnect={onConnect ? () => onConnect(camera) : undefined}
           onOpenPtz={onOpenPtz ? () => onOpenPtz(camera) : undefined}

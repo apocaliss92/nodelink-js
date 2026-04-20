@@ -36,6 +36,7 @@ export function CameraDetailPage() {
     go2rtcRtspPort,
     serviceIp,
     restreamer,
+    localRtspPort,
   } = useCamerasContext();
 
   const [showPtz, setShowPtz] = useState(false);
@@ -224,6 +225,7 @@ export function CameraDetailPage() {
                   serviceIp={serviceIp}
                   isBattery={camera.isBattery}
                   restreamer={restreamer}
+                  localRtspPort={localRtspPort}
                 />
               );
             })}

@@ -128,6 +128,7 @@ export function CamerasPage() {
               rtspServers={rtspServers}
               connectingByCamera={connectingByCamera}
               selectedCamera={selectedCamera}
+              restreamer={camerasHook.restreamer}
               onSelectCamera={handleSelectCamera}
               onConnect={(cam) => camerasHook.connect(cam.id)}
               onOpenPtz={handleOpenPtz}
@@ -153,6 +154,7 @@ export function CamerasPage() {
                 go2rtcRtspPort={camerasHook.go2rtcRtspPort}
                 serviceIp={camerasHook.serviceIp}
                 restreamer={camerasHook.restreamer}
+                localRtspPort={camerasHook.localRtspPort}
                 onClose={() => selectCamera(null)}
               />
             )}

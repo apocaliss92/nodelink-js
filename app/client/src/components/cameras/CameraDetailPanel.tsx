@@ -48,6 +48,7 @@ interface CameraDetailPanelProps {
   go2rtcRtspPort: number | null;
   serviceIp: string;
   restreamer?: "go2rtc" | "local";
+  localRtspPort?: number | null;
   onClose: () => void;
 }
 
@@ -67,6 +68,7 @@ export function CameraDetailPanel({
   go2rtcRtspPort,
   serviceIp,
   restreamer,
+  localRtspPort,
   onClose,
 }: CameraDetailPanelProps) {
   const isConnected = camera.status === 'connected';
@@ -256,6 +258,7 @@ export function CameraDetailPanel({
                   serviceIp={serviceIp}
                   isBattery={camera.isBattery}
                   restreamer={restreamer}
+                  localRtspPort={localRtspPort}
                 />
               );
             })

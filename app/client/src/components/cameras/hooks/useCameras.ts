@@ -45,12 +45,14 @@ export function useCameras() {
       go2rtcWebrtcStreamName: string | undefined;
       rtspUrl: string | undefined;
       mode: string | undefined;
+      port: number | undefined;
     }>
   >([]);
   const [go2rtcApiPort, setGo2rtcApiPort] = useState<number | null>(null);
   const [go2rtcRtspPort, setGo2rtcRtspPort] = useState<number | null>(null);
   const [serviceIp, setServiceIp] = useState<string>("");
   const [restreamer, setRestreamer] = useState<"go2rtc" | "local">("go2rtc");
+  const [localRtspPort, setLocalRtspPort] = useState<number | null>(null);
   const [streamsLoadingByCamera, setStreamsLoadingByCamera] = useState<
     Record<string, boolean>
   >({});
@@ -90,10 +92,15 @@ export function useCameras() {
         trpcQuery<any[]>("rtsp.list").catch(() => []),
         trpcQuery<NvrInfo[]>("cameras.listNvrs").catch(() => []),
         trpcQuery<{ apiUrl: string | null; running: boolean; rtspPort?: number }>("go2rtc.status").catch(() => null),
-        trpcQuery<{ serviceIp?: string; restreamer?: "go2rtc" | "local" }>("settings.get").catch(() => null),
+        trpcQuery<{
+          serviceIp?: string;
+          restreamer?: "go2rtc" | "local";
+          localRtsp?: { port?: number };
+        }>("settings.get").catch(() => null),
       ]);
       if (settingsRes?.serviceIp) setServiceIp(settingsRes.serviceIp);
       if (settingsRes?.restreamer) setRestreamer(settingsRes.restreamer);
+      if (settingsRes?.localRtsp?.port) setLocalRtspPort(settingsRes.localRtsp.port);
       if (go2rtcSt) {
         setGo2rtcRunning(go2rtcSt.running);
         if (go2rtcSt.apiUrl) {
@@ -154,6 +161,7 @@ export function useCameras() {
           go2rtcWebrtcStreamName: x.go2rtcWebrtcStreamName ? String(x.go2rtcWebrtcStreamName) : undefined,
           rtspUrl: x.rtspUrl ? String(x.rtspUrl) : undefined,
           mode: x.mode ? String(x.mode) : undefined,
+          port: x.port === undefined ? undefined : Number(x.port),
         })),
       );
 
@@ -394,6 +402,7 @@ export function useCameras() {
     go2rtcRtspPort,
     serviceIp,
     restreamer,
+    localRtspPort,
     go2rtcRunning,
     streamsByCamera,
     streamsLoadingByCamera,
