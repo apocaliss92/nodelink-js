@@ -23,6 +23,7 @@ import {
 import { updateHomeAssistantPolling } from "../homeassistant-mqtt.js";
 import path from "node:path";
 import fs from "node:fs";
+import { createSourceLogger } from "../logger.js";
 import { inferGithubRepoSlug } from "../github-utils.js";
 import { readAppVersion } from "../app-version.js";
 
@@ -228,20 +229,53 @@ export const settingsRouter = router({
   /**
    * Request a server restart.
    *
-   * The Node process exits cleanly after a short grace period so the HTTP
-   * response lands before the socket closes. An external supervisor
-   * (systemd / docker / pm2) must be configured to restart the process.
+   * Works in both modes:
+   *   - Dev (`tsx watch`): bump the mtime of the watched entrypoint so tsx
+   *     tears down the child process and re-spawns it. Sending SIGTERM to
+   *     ourselves would make `tsx watch` exit as well, which is exactly
+   *     what "the restart does not work" looks like in dev.
+   *   - Production (systemd / docker / pm2): SIGTERM is relayed to the
+   *     supervisor, which restarts the process.
    *
-   * Used by the Settings UI after save when a setting that requires a
-   * backend reboot (currently: `restreamer`) has changed.
+   * A hard `process.exit(0)` is scheduled as a last-resort fallback so the
+   * process cannot get stuck if a shutdown step hangs (e.g. a camera
+   * refusing to close its socket during stopAllRtspServers).
    */
   restart: adminProcedure
-    .meta({ description: "Restart the Node process (supervisor must bring it back up)" })
+    .meta({ description: "Restart the Node process (supervisor / tsx watch must bring it back up)" })
     .mutation(() => {
-      // Give the response a beat to flush back to the client, then exit.
-      // The shutdown handler registered on SIGTERM runs automatically.
+      const log = createSourceLogger("server");
+      log.info("[settings.restart] scheduling restart (300ms)");
       setTimeout(() => {
-        process.kill(process.pid, "SIGTERM");
+        // Dev path: update mtime of src/server.ts so `tsx watch` reloads.
+        // Falls through silently in production where the file does not exist
+        // next to the compiled runtime.
+        try {
+          const candidate = path.resolve(process.cwd(), "src/server.ts");
+          if (fs.existsSync(candidate)) {
+            const now = new Date();
+            fs.utimesSync(candidate, now, now);
+            log.info("[settings.restart] touched src/server.ts for tsx watch");
+          }
+        } catch (e) {
+          log.debug(`[settings.restart] touch failed: ${(e as Error).message}`);
+        }
+
+        // Production path: SIGTERM runs the graceful shutdown handler.
+        try {
+          process.kill(process.pid, "SIGTERM");
+          log.info("[settings.restart] SIGTERM sent");
+        } catch (e) {
+          log.warn(`[settings.restart] SIGTERM failed: ${(e as Error).message}`);
+        }
+
+        // Safety net: if shutdown hangs (e.g. hung ffmpeg child during
+        // stopAllRtspServers), force-exit after 5s so the supervisor can
+        // bring us back up.
+        setTimeout(() => {
+          log.warn("[settings.restart] shutdown timed out — forcing exit");
+          process.exit(0);
+        }, 5_000).unref();
       }, 300);
       return { ok: true, restartingInMs: 300 };
     }),
