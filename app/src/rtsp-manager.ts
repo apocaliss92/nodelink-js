@@ -17,6 +17,7 @@ import {
   getSettings,
   getNvr,
   upsertCameraStream,
+  RTSP_DIGEST_REALM,
 } from "./settings-store.js";
 import { getGo2rtcManager } from "./go2rtc-manager.js";
 import * as net from "net";
@@ -1178,16 +1179,19 @@ export async function startRtspServer(
         `Starting BaichuanRtspServer (local RTSP) on ${localRtspHost}:${port}${localPath} (${profile}, ch${channel})`,
       );
 
-      // Local mode currently ships without RTSP auth: dashboardUsers only
-      // hold hashed passwords so we cannot recover the plaintext needed for
-      // RTSP Digest challenge. When the user flips rtspRequireAuth (or the
-      // per-mode requireAuth flag) we warn and continue unauthenticated.
+      // Unified auth: reuse dashboard users as RTSP users. Their HA1 digest
+      // is pre-computed at password-set time ([settings-store.ts]
+      // addDashboardUser / setDashboardUserPassword) so the RTSP server can
+      // validate Digest challenges without ever seeing the plaintext.
       const requireAuthSetting =
         settings.localRtsp?.requireAuth ?? settings.rtspRequireAuth ?? false;
-      if (requireAuthSetting) {
+      const credentials = (settings.dashboardUsers ?? [])
+        .filter((u) => u.rtspDigestHa1 && u.username)
+        .map((u) => ({ username: u.username, ha1: u.rtspDigestHa1! }));
+      if (requireAuthSetting && credentials.length === 0) {
         logger.warn(
-          `localRtsp.requireAuth set but local mode has no plaintext credentials source — ` +
-          `serving RTSP without authentication. Consider a proxy in front if exposed to untrusted networks.`,
+          `rtspRequireAuth is set but no dashboard user has a pre-computed rtspDigestHa1. ` +
+          `Reset any user password from the Users tab to regenerate it, or clear rtspRequireAuth.`,
         );
       }
 
@@ -1200,8 +1204,9 @@ export async function startRtspServer(
         path: localPath,
         logger: rtspLogger,
         deviceId: cameraId,
-        requireAuth: false,
-        credentials: [],
+        requireAuth: requireAuthSetting && credentials.length > 0,
+        credentials,
+        authRealm: RTSP_DIGEST_REALM,
         nativeStreamIdleStopMs:
           rtspNativeIdleOpts.nativeStreamIdleStopMs > 0
             ? rtspNativeIdleOpts.nativeStreamIdleStopMs

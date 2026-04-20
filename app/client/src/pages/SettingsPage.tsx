@@ -1286,6 +1286,7 @@ export default function SettingsPage() {
                 })}
               </div>
               {(settings.restreamer ?? "go2rtc") === "local" && (
+                <>
                 <div className="mt-3">
                   <span className={labelCls} style={{ fontSize: 12 }}>Local RTSP port</span>
                   <input
@@ -1309,6 +1310,14 @@ export default function SettingsPage() {
                     Each stream binds an independent port starting from this value. Restart the server after changing this setting.
                   </div>
                 </div>
+                <div className="mt-3 text-xs text-[var(--color-foreground-muted)]">
+                  <strong>Authentication:</strong> when <em>Require auth for RTSP connections</em>
+                  {" "}is enabled (Auth tab), RTSP clients authenticate with the
+                  same <strong>dashboard users</strong> — no separate user
+                  list. Digest auth uses pre-computed HA1 stored at password
+                  set time; the server never holds plaintext passwords.
+                </div>
+                </>
               )}
             </div>
 
@@ -2573,6 +2582,8 @@ export default function SettingsPage() {
                 <div className="font-extrabold">Add dashboard user</div>
                 <div className="text-xs text-[var(--color-foreground-muted)] mt-0.5">
                   User/password used to access the web dashboard.
+                  The same credentials authenticate RTSP clients when
+                  Require RTSP auth is enabled — no separate user list.
                 </div>
               </div>
               <button className={btnCls} onClick={() => setAddDashUserOpen(false)}>

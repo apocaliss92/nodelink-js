@@ -22,6 +22,42 @@ export interface NewsItem {
 
 export const NEWS_ITEMS: NewsItem[] = [
   {
+    id: "2026-04-20-unified-rtsp-auth",
+    date: "2026-04-20",
+    title: "Unified RTSP auth: dashboard users are now RTSP users",
+    body: (
+      <div className="space-y-2 text-sm text-[var(--color-foreground-muted)]">
+        <p>
+          The local RTSP restreamer now authenticates clients against the
+          same{" "}
+          <strong className="text-[var(--color-foreground)]">
+            dashboard users
+          </strong>{" "}
+          you manage in{" "}
+          <strong className="text-[var(--color-foreground)]">
+            Settings → Auth → Users
+          </strong>
+          . No separate user list, no duplicate credentials.
+        </p>
+        <p>
+          Digest authentication uses the pre-computed{" "}
+          <code className="rounded bg-[var(--color-surface-hover)] px-1 text-[11px]">
+            HA1
+          </code>{" "}
+          that is persisted once at password-set time; the server never has
+          to hold the plaintext password in memory.
+        </p>
+        <p className="text-[11px] text-[var(--color-foreground-subtle)]">
+          If you have dashboard users created before this update you may need
+          to reset their password once (same value is fine) so the HA1 gets
+          regenerated. Enable{" "}
+          <em>Require auth for RTSP connections</em> in the Auth tab to turn
+          auth on.
+        </p>
+      </div>
+    ),
+  },
+  {
     id: "2026-04-20-local-restreamer",
     date: "2026-04-20",
     title: "New: local RTSP restreamer (drop go2rtc)",

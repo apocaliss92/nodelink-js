@@ -191,10 +191,29 @@ export interface BaichuanRtspServerOptions {
    */
   tcpRtpFraming?: "rtsp-interleaved" | "rfc4571";
 
-  /** Credentials for RTSP authentication (optional) */
-  credentials?: Array<{ username: string; password: string }>;
+  /**
+   * Credentials for RTSP authentication (optional).
+   *
+   * Each entry carries either the plaintext `password` or a pre-computed
+   * Digest `ha1 = MD5(username ":" realm ":" password)`. The HA1 variant is
+   * preferred when the consumer stores only hashed credentials (e.g. the
+   * manager reuses dashboard-user HA1 values without ever holding plaintext).
+   *
+   * When both are supplied, `ha1` wins for Digest validation while `password`
+   * is used for Basic authentication.
+   */
+  credentials?: Array<
+    | { username: string; password: string; ha1?: string }
+    | { username: string; password?: string; ha1: string }
+  >;
   /** Require authentication for RTSP connections (default: false if no credentials set) */
   requireAuth?: boolean;
+  /**
+   * Digest authentication realm advertised to clients. Must match the realm
+   * used when pre-computing HA1 values in `credentials[*].ha1`.
+   * Default: "BaichuanRtspServer" (kept for backward compatibility).
+   */
+  authRealm?: string;
 
   /**
    * External identifier for dedicated socket session.
@@ -257,10 +276,14 @@ export class BaichuanRtspServer extends EventEmitter<{
   private externalListener: boolean;
 
   // Authentication
-  private authCredentials: Array<{ username: string; password: string }> = [];
+  private authCredentials: Array<{
+    username: string;
+    password?: string;
+    ha1?: string;
+  }> = [];
   private requireAuth: boolean;
   private authNonces = new Map<string, { nonce: string; timestamp: number }>(); // Track nonces per client
-  private readonly AUTH_REALM = "BaichuanRtspServer";
+  private readonly AUTH_REALM: string;
   private readonly NONCE_TIMEOUT_MS = 300000; // 5 minutes
 
   // Client tracking
@@ -550,8 +573,13 @@ export class BaichuanRtspServer extends EventEmitter<{
         : 0;
 
     // Authentication settings
-    this.authCredentials = options.credentials ?? [];
+    this.authCredentials = (options.credentials ?? []).map((c) => ({
+      username: c.username,
+      ...(c.password !== undefined ? { password: c.password } : {}),
+      ...(c.ha1 !== undefined ? { ha1: c.ha1 } : {}),
+    }));
     this.requireAuth = options.requireAuth ?? this.authCredentials.length > 0;
+    this.AUTH_REALM = options.authRealm ?? "BaichuanRtspServer";
 
     // Default flow is conservative (tcp+h264); it will be refined from metadata or first frames.
     const transport = this.api.client.getTransport();
@@ -647,13 +675,30 @@ export class BaichuanRtspServer extends EventEmitter<{
       return false;
     }
 
+    // Realm presented by the client must match our advertised realm, otherwise
+    // HA1 computed against the wrong realm will silently not match — fail
+    // early with a clear debug log.
+    if (realm !== this.AUTH_REALM) {
+      this.rtspDebugLog(
+        `Auth failed: realm mismatch (client="${realm}", server="${this.AUTH_REALM}")`,
+      );
+      return false;
+    }
+
     // Try to match against any configured credential
     for (const cred of this.authCredentials) {
       if (username !== cred.username) continue;
 
-      // Calculate expected response for this credential
-      // HA1 = MD5(username:realm:password)
-      const ha1 = this.md5(`${cred.username}:${realm}:${cred.password}`);
+      // Prefer a pre-computed HA1 — lets consumers authenticate without
+      // holding the plaintext password in memory (e.g. dashboard users
+      // whose HA1 is persisted once at password set time).
+      const ha1 =
+        cred.ha1 ??
+        (cred.password !== undefined
+          ? this.md5(`${cred.username}:${this.AUTH_REALM}:${cred.password}`)
+          : undefined);
+      if (!ha1) continue;
+
       // HA2 = MD5(method:uri)
       const ha2 = this.md5(`${method}:${authUri || uri}`);
       // Response = MD5(HA1:nonce:HA2)
