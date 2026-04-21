@@ -1070,6 +1070,18 @@ export class BaichuanRtspServer extends EventEmitter<{
           // already ended, leaving the new subscriber with a dead queue and no frames.
           // startNativeStream() is always called at SETUP time (see below), so battery cameras
           // are only woken up when an actual RTSP consumer is ready to receive frames.
+          //
+          // Early wakeup: if the camera is sleeping (API not ready but not closed — e.g. after
+          // idle_disconnect) kick off ensureConnected() in the background NOW so the control
+          // socket is re-established by the time SETUP arrives.  We don't await this here to
+          // avoid adding latency to DESCRIBE; SETUP will call startNativeStream() which internally
+          // calls ensureConnected() again — but a second call is a cheap no-op if it's already
+          // connected, so there is no race condition.
+          if (!this.api.isClosed && !this.api.isReady && !this.nativeStreamActive) {
+            void this.api.ensureConnected().catch(() => {
+              // handled by startNativeStream() at SETUP time
+            });
+          }
           if (!this.flow.getFmtp().hasParamSets && this.connectedClients.size === 0) {
             try {
               if (!this.nativeStreamActive) {
@@ -1186,9 +1198,14 @@ export class BaichuanRtspServer extends EventEmitter<{
           this.emit("client", clientId);
           this.clearNoClientAutoStopTimer();
 
-          // Start native stream if first client
+          // Start native stream if first client.
+          // Fire-and-forget: do NOT await here.  For battery/UDP cameras, ensureConnected()
+          // inside startNativeStream() can take up to 30 s (UDP discovery timeout), which
+          // would block the SETUP response and cause the RTSP client to time out.
+          // Responding to SETUP immediately lets the connection stay alive; frames will
+          // arrive once the camera wakes up (visible in subsequent PLAY traffic).
           if (this.connectedClients.size === 1 && !this.nativeStreamActive) {
-            await this.startNativeStream();
+            void this.startNativeStream();
           }
 
           // Parse transport
