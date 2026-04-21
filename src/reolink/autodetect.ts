@@ -361,9 +361,11 @@ export async function autoDetectDeviceType(
     max: number,
     op: (attempt: number) => Promise<T>,
     shouldRetry: (e: unknown) => boolean,
+    isAborted?: () => boolean,
   ): Promise<T> => {
     let lastErr: unknown;
     for (let attempt = 1; attempt <= max; attempt++) {
+      if (isAborted?.()) throw new Error(`${label}: aborted (race won by another method)`);
       try {
         if (attempt > 1) {
           logger?.log?.(`[AutoDetect] ${label}: retry ${attempt}/${max}...`);
@@ -372,7 +374,7 @@ export async function autoDetectDeviceType(
       } catch (e) {
         lastErr = e;
         const msg = fmtErr(e);
-        const retryable = attempt < max && shouldRetry(e);
+        const retryable = attempt < max && !isAborted?.() && shouldRetry(e);
         logger?.log?.(
           `[AutoDetect] ${label} attempt ${attempt}/${max} failed: ${msg}${retryable ? " (will retry)" : ""}`,
         );
@@ -384,6 +386,40 @@ export async function autoDetectDeviceType(
     throw lastErr instanceof Error
       ? lastErr
       : new Error(String(lastErr ?? `${label} failed`));
+  };
+
+  type UdpMethod = NonNullable<BaichuanClientOptions["udpDiscoveryMethod"]>;
+
+  // Runs UDP discovery methods in parallel — first to succeed wins.
+  // The `raceWon` flag prevents retries on methods that lose the race.
+  const runUdpMethodsParallel = async (
+    methods: UdpMethod[],
+    loginAndDetect: (m: UdpMethod, isAborted: () => boolean) => Promise<AutoDetectResult>,
+    errorPrefix: string,
+  ): Promise<AutoDetectResult> => {
+    let raceWon = false;
+    const methodErrors = new Map<string, string>();
+    try {
+      return await Promise.any(
+        methods.map(async (m) => {
+          try {
+            const result = await loginAndDetect(m, () => raceWon);
+            raceWon = true;
+            return result;
+          } catch (e) {
+            if (!raceWon) methodErrors.set(m, fmtErr(e));
+            logger?.log?.(`[AutoDetect] UDP (${m}) failed: ${fmtErr(e)}`);
+            throw e;
+          }
+        }),
+      );
+    } catch (e) {
+      if (e instanceof AggregateError) {
+        const msgs = methods.map((m) => `${m}: ${methodErrors.get(m) ?? "unknown"}`);
+        throw new Error(`${errorPrefix} ${msgs.join(" | ")}`);
+      }
+      throw e;
+    }
   };
 
   // Best-effort: discover UID if not provided (useful for BCUDP/battery cams).
@@ -429,9 +465,9 @@ export async function autoDetectDeviceType(
       ? [inputs.udpDiscoveryMethod]
       : ["local-direct", "local-broadcast", "remote", "relay", "map"];
 
-    const udpErrors: string[] = [];
-    for (const m of methodsToTry) {
-      try {
+    return await runUdpMethodsParallel(
+      methodsToTry,
+      async (m, isAborted) => {
         logger?.log?.(`[AutoDetect] Trying UDP discovery method: ${m}...`);
         const udpApi = await withRetries(
           `UDP(${m})`,
@@ -456,9 +492,9 @@ export async function autoDetectDeviceType(
             }
           },
           shouldRetryUdp,
+          isAborted,
         );
 
-        // Reuse the same detection logic used by the fallback path.
         const [deviceInfo, capabilities, hostNetworkInfo] = await Promise.all([
           udpApi.getInfo(),
           udpApi.getDeviceCapabilities(),
@@ -466,34 +502,23 @@ export async function autoDetectDeviceType(
         ]);
         const channelNum = capabilities?.support?.channelNum ?? 1;
         const model = deviceInfo.type?.trim();
-
         const normalizedModel = model ? model.trim() : undefined;
-        const isMultifocalByModel = normalizedModel
-          ? isDualLenseModel(normalizedModel)
-          : false;
+        const isMultifocalByModel = normalizedModel ? isDualLenseModel(normalizedModel) : false;
         const channelNumValue =
-          typeof channelNum === "string"
-            ? Number.parseInt(channelNum, 10)
-            : channelNum;
+          typeof channelNum === "string" ? Number.parseInt(channelNum, 10) : channelNum;
         const hasDualLensChannelCount =
-          (channelNumValue === 2 || channelNumValue === 3) &&
-          Number.isFinite(channelNumValue);
+          (channelNumValue === 2 || channelNumValue === 3) && Number.isFinite(channelNumValue);
         const isMultifocal = isMultifocalByModel || hasDualLensChannelCount;
-
-        // Check if this is actually a battery camera by looking at capabilities
-        // UDP transport does NOT always mean battery camera (e.g., Elite Floodlight WiFi uses UDP but is AC-powered)
         const hasBattery = capabilities?.capabilities?.hasBattery === true;
 
         if (isMultifocal) {
-          const detectionMethod = isMultifocalByModel
-            ? "model match"
-            : "channelNum fallback";
+          const detectionMethod = isMultifocalByModel ? "model match" : "channelNum fallback";
           logger?.log?.(
             `[AutoDetect] UDP (${m}) connection successful. Detected multi-focal device (${detectionMethod}: model=${normalizedModel ?? "unknown"}, channelNum=${channelNum}, hasBattery=${hasBattery}).`,
           );
           return {
-            type: "multifocal",
-            transport: "udp",
+            type: "multifocal" as const,
+            transport: "udp" as const,
             uid: normalizedUid,
             udpDiscoveryMethod: m,
             deviceInfo,
@@ -503,14 +528,13 @@ export async function autoDetectDeviceType(
           };
         }
 
-        // Determine device type based on capabilities, not transport
         const deviceType: DeviceType = hasBattery ? "battery-cam" : "camera";
         logger?.log?.(
           `[AutoDetect] UDP (${m}) connection successful. Detected ${deviceType} (hasBattery=${hasBattery}, model=${normalizedModel ?? "unknown"}).`,
         );
         return {
           type: deviceType,
-          transport: "udp",
+          transport: "udp" as const,
           uid: normalizedUid,
           udpDiscoveryMethod: m,
           deviceInfo,
@@ -518,16 +542,8 @@ export async function autoDetectDeviceType(
           channelNum: 1,
           api: udpApi,
         };
-      } catch (e) {
-        const msg = fmtErr(e);
-        udpErrors.push(`${m}: ${msg}`);
-        // (best-effort) resources are already closed inside the retry wrapper.
-        logger?.log?.(`[AutoDetect] UDP (${m}) failed: ${msg}`);
-      }
-    }
-
-    throw new Error(
-      `Forced UDP autodetect failed for all methods. ${udpErrors.join(" | ")}`,
+      },
+      "Forced UDP autodetect failed for all methods.",
     );
   }
 
@@ -875,22 +891,22 @@ export async function autoDetectDeviceType(
         NonNullable<BaichuanClientOptions["udpDiscoveryMethod"]>
       > = ["local-direct", "local-broadcast", "remote", "relay", "map"];
 
-      const udpErrors: string[] = [];
-      for (const m of methodsToTry) {
-        try {
+      // Filter to only methods that can work without a UID — remote/relay/map
+      // require P2P UID lookup and will fail immediately if none is available.
+      const viableMethods = normalizedUid
+        ? methodsToTry
+        : methodsToTry.filter((m) => m === "local-direct" || m === "local-broadcast");
+
+      return await runUdpMethodsParallel(
+        viableMethods,
+        async (m, isAborted) => {
           logger?.log?.(`[AutoDetect] Trying UDP discovery method: ${m}...`);
           const udpApi = await withRetries(
             `UDP(${m})`,
             maxRetries,
             async (attempt) => {
-              // Build inputs for createBaichuanApi, only including uid if we have one
-              const apiInputs: AutoDetectInputs = {
-                ...inputs,
-                udpDiscoveryMethod: m,
-              };
-              if (normalizedUid) {
-                apiInputs.uid = normalizedUid;
-              }
+              const apiInputs: AutoDetectInputs = { ...inputs, udpDiscoveryMethod: m };
+              if (normalizedUid) apiInputs.uid = normalizedUid;
               const api = createBaichuanApi(apiInputs, "udp");
               try {
                 await api.login();
@@ -907,23 +923,11 @@ export async function autoDetectDeviceType(
               }
             },
             shouldRetryUdp,
+            isAborted,
           );
-          return await detectOverUdpApi(udpApi, m);
-        } catch (e) {
-          const msg =
-            (e as any)?.message || (e as any)?.toString?.() || String(e);
-          udpErrors.push(`${m}: ${msg}`);
-          try {
-            // ignore (api already closed in retry wrapper)
-          } catch {
-            // ignore
-          }
-          logger?.log?.(`[AutoDetect] UDP (${m}) failed: ${msg}`);
-        }
-      }
-
-      throw new Error(
-        `UDP discovery failed for all methods. ${udpErrors.join(" | ")}`,
+          return detectOverUdpApi(udpApi, m);
+        },
+        "UDP discovery failed for all methods.",
       );
     } catch (udpError) {
       logger?.log?.(
