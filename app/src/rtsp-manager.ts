@@ -20,6 +20,11 @@ import {
   RTSP_DIGEST_REALM,
 } from "./settings-store.js";
 import { getGo2rtcManager } from "./go2rtc-manager.js";
+import {
+  getLocalRtspMux,
+  initLocalRtspMux,
+  stopLocalRtspMux,
+} from "./local-rtsp-mux.js";
 import * as net from "net";
 import * as crypto from "crypto";
 import { releaseStreamsByCamera } from "./stream-pool.js";
@@ -56,6 +61,37 @@ export function getRtspServerKey(
   channel: number,
 ): string {
   return `${cameraId}:${profile}:${channel}`;
+}
+
+/**
+ * Ensure the single-port local RTSP multiplexer is initialized and listening.
+ *
+ * Called eagerly from server startup (before any camera streams are
+ * registered) and defensively from `startRtspServer` in local mode so the
+ * mux always exists before we try to register a path on it. The second
+ * call is cheap: `initLocalRtspMux` returns the singleton and `start()` is
+ * idempotent once the server is listening.
+ *
+ * Returns the mux instance. Rejects only if binding the port fails.
+ */
+export async function ensureLocalRtspMux() {
+  const settings = getSettings();
+  const port = settings.localRtsp?.port ?? 8554;
+  const bindHost = settings.localRtsp?.bindHost ?? "0.0.0.0";
+
+  const logger = createSourceLogger("rtsp-mux");
+  const muxLogger = {
+    info: (m: string) => logger.info(m),
+    warn: (m: string) => logger.warn(m),
+    error: (m: string) => logger.error(m),
+    debug: (m: string) => logger.debug(m),
+  };
+
+  const mux = initLocalRtspMux(port, bindHost, muxLogger);
+  if (!mux.isStarted) {
+    await mux.start();
+  }
+  return mux;
 }
 
 /**
@@ -1068,20 +1104,29 @@ export async function startRtspServer(
 
   const portsHeldByPeers = collectInProcessRtspPorts(streamKey);
 
-  // Auto-select port: use specified port, saved port, or find next available
+  // Auto-select port.
+  //
+  // In **local restreamer mode**, all streams share a single RTSP port owned
+  // by `LocalRtspMux` — there is no need to allocate per-stream ports, and
+  // reusing the mux port for every stream avoids bogus EADDRINUSE probing
+  // against a port we don't even bind ourselves. The mux reads the first
+  // request line and dispatches by path.
+  //
+  // In **go2rtc mode** we keep the historical per-Go2rtcTcpServer port
+  // allocation (each TCP source needs its own loopback listener).
   let port: number;
-  if (options?.port) {
+  if (settings.restreamer === "local") {
+    port = settings.localRtsp?.port ?? 8554;
+  } else if (options?.port) {
     port = options.port;
     if (portsHeldByPeers.has(port)) {
       logger.warn(
         `Explicit port ${port} already used by another stream; picking next free on ${portBindHost}`,
       );
-      // In local restreamer mode the base comes from settings.localRtsp.port
-      // so every stream starts allocating from the port the user configured.
       const basePort =
         camera.rtspPort ||
         Number(process.env.RTSP_PORT) ||
-        (settings.restreamer === "local" ? (settings.localRtsp?.port ?? 8554) : 8554);
+        8554;
       port = await findNextAvailablePort(basePort, 100, portBindHost);
     }
   } else if (
@@ -1182,14 +1227,18 @@ export async function startRtspServer(
     const serviceIp = settings.serviceIp || "localhost";
 
     // ─── Local restreamer mode ──────────────────────────────────────────────
-    // Use the library's built-in BaichuanRtspServer. Exposes RTSP directly;
-    // no go2rtc sidecar, no WebRTC/HLS/MJPEG previews.
+    // Use the library's built-in BaichuanRtspServer in **mux mode**: a
+    // single-port LocalRtspMux owns the listening socket and routes each
+    // RTSP connection to the correct per-stream server by URL path. No
+    // go2rtc sidecar, no WebRTC/HLS/MJPEG previews.
     if (restreamerMode === "local") {
-      const localRtspHost = settings.localRtsp?.bindHost ?? "0.0.0.0";
+      const mux = await ensureLocalRtspMux();
+      const muxPort = mux.listenPort;
+      const muxBindHost = mux.listenHost;
       const localPath = `/${buildGo2rtcStreamName(camera.name, profile, channel)}`;
 
       logger.info(
-        `Starting BaichuanRtspServer (local RTSP) on ${localRtspHost}:${port}${localPath} (${profile}, ch${channel})`,
+        `Registering BaichuanRtspServer (local RTSP, mux) on ${muxBindHost}:${muxPort}${localPath} (${profile}, ch${channel})`,
       );
 
       // Unified auth: reuse dashboard users as RTSP users. Their HA1 digest
@@ -1212,14 +1261,18 @@ export async function startRtspServer(
         api,
         channel,
         profile,
-        listenHost: localRtspHost,
-        listenPort: port,
+        // listenHost/listenPort are purely informational in mux mode — the
+        // server never binds them. They are still passed so that SDP/logs
+        // reflect the public endpoint users will dial.
+        listenHost: muxBindHost,
+        listenPort: muxPort,
         path: localPath,
         logger: rtspLogger,
         deviceId: cameraId,
         requireAuth: requireAuthSetting && credentials.length > 0,
         credentials,
         authRealm: RTSP_DIGEST_REALM,
+        muxMode: true,
         // On-demand native stream:
         // - lazyMetadata: don't wake the camera at boot just to grab SDP
         //   fields; fetch on first DESCRIBE instead. Matches go2rtc's lazy
@@ -1235,20 +1288,21 @@ export async function startRtspServer(
       });
 
       await baichuanServer.start();
+      mux.register(localPath, baichuanServer);
 
       info.status = "running";
       info.mode = "local";
-      info.port = port;
+      info.port = muxPort;
       info.startedAt = new Date();
-      info.rtspUrl = `rtsp://${serviceIp}:${port}${localPath}`;
+      info.rtspUrl = `rtsp://${serviceIp}:${muxPort}${localPath}`;
 
       rtspServers.set(streamKey, { server: baichuanServer, info });
-      logger.info(`RTSP (local): ${info.rtspUrl}`);
+      logger.info(`RTSP (local, mux): ${info.rtspUrl}`);
 
       upsertCameraStream(cameraId, {
         profile,
         channel,
-        port,
+        port: muxPort,
         token: streamToken,
         enabled: true,
         autoStart: true,
@@ -1409,6 +1463,13 @@ export async function stopRtspServer(
           ? "Stopping BaichuanRtspServer (local)"
           : "Stopping Go2rtc TCP server",
       );
+      // In local (mux) mode, unregister the path BEFORE stopping the
+      // server so any new connection that races the teardown is rejected
+      // with a clean 404 instead of being handed to a stopped server.
+      if (entry.info.mode === "local" && entry.info.path) {
+        const mux = getLocalRtspMux();
+        mux?.unregister(entry.info.path);
+      }
       await entry.server.stop();
     }
     entry.info.status = "stopped";
@@ -1662,6 +1723,15 @@ export async function stopAllRtspServers() {
     } catch (error) {
       logger.error(`Error stopping RTSP for ${streamKey}: ${error}`);
     }
+  }
+
+  // Tear down the shared local-mode multiplexer after all streams are
+  // stopped. Safe no-op if the mux was never initialized (e.g. go2rtc
+  // mode only).
+  try {
+    await stopLocalRtspMux();
+  } catch (error) {
+    logger.error(`Error stopping LocalRtspMux: ${error}`);
   }
 }
 

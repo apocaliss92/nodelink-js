@@ -34,6 +34,7 @@ import {
   sanitizeCameraName,
   enableAutoStreamsOnConnect,
   startStreamsForAllConnectedCameras,
+  ensureLocalRtspMux,
   getConnLogs,
   connLogEmitter,
 } from "./rtsp-manager.js";
@@ -927,6 +928,23 @@ server.listen(PORT, async () => {
       `Restreamer=${restreamerMode}: go2rtc disabled — using library BaichuanRtspServer (RTSP only, no WebRTC/HLS/MJPEG previews)`,
       { source: "server" },
     );
+
+    // Bring up the single-port RTSP multiplexer BEFORE any camera stream
+    // is started. startRtspServer (local branch) registers its path on the
+    // mux and assumes the listening socket is already bound.
+    try {
+      const mux = await ensureLocalRtspMux();
+      appLogger.info(
+        `LocalRtspMux listening on ${mux.listenHost}:${mux.listenPort}`,
+        { source: "server" },
+      );
+    } catch (muxErr) {
+      appLogger.error(
+        `Error initializing LocalRtspMux: ${muxErr}. Local streams will fail to start.`,
+        { source: "server" },
+      );
+    }
+
     try {
       await startStreamsForAllConnectedCameras();
       appLogger.info("Started streams for already-connected cameras", {

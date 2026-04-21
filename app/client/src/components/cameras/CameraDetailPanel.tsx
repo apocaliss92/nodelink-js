@@ -234,6 +234,10 @@ export function CameraDetailPanel({
               );
               const name = getStreamName(camera, stream.profile, server);
               const webrtcName = getWebrtcStreamName(camera, stream.profile, server);
+              // Look up the per-stream saved port so idle streams show the correct URL
+              const savedPort = (camera.rtspStreams ?? []).find(
+                (s) => s.profile === stream.profile && (s.channel ?? 0) === (stream.channel ?? 0),
+              )?.port ?? null;
               return (
                 <StreamProfileCard
                   key={stream.profile}
@@ -258,6 +262,7 @@ export function CameraDetailPanel({
                   serviceIp={serviceIp}
                   isBattery={camera.isBattery}
                   restreamer={restreamer}
+                  savedPort={savedPort}
                   localRtspPort={localRtspPort}
                 />
               );

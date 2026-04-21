@@ -230,6 +230,19 @@ export interface BaichuanRtspServerOptions {
   externalListener?: boolean;
 
   /**
+   * When true, the server runs in **mux mode**: `start()` skips creating
+   * or listening on any TCP server (a shared multiplexer — e.g.
+   * `LocalRtspMux` — owns the public RTSP port and routes accepted sockets
+   * here via `injectSocket()`). `stop()` likewise skips closing a TCP
+   * server it does not own.
+   *
+   * Semantically equivalent to `externalListener: true`, but expressed from
+   * the point of view of the multiplexer that will drive this instance.
+   * Either flag is sufficient; both may be set together.
+   */
+  muxMode?: boolean;
+
+  /**
    * Ms after the last RTSP client disconnects before stopping the native Baichuan stream.
    * 0 = keep the native stream running (matches rtsp proxy idle timeout 0 / always-mounted sources).
    * Default 30000.
@@ -574,7 +587,12 @@ export class BaichuanRtspServer extends EventEmitter<{
     this.logger = options.logger ?? console;
     this.tcpRtpFraming = options.tcpRtpFraming ?? "rfc4571";
     this.deviceId = options.deviceId;
-    this.externalListener = options.externalListener ?? false;
+    // `muxMode` and `externalListener` are semantically equivalent: both
+    // tell `start()`/`stop()` that some external component (the multiplexer
+    // or proxy) owns the TCP socket lifecycle. Treat them as a union so
+    // callers can pick whichever name reads best at the call-site.
+    this.externalListener =
+      (options.externalListener ?? false) || (options.muxMode ?? false);
     this.nativeStreamIdleStopMs = options.nativeStreamIdleStopMs ?? 30_000;
     this.nativeStreamPrimeIdleStopMs =
       options.nativeStreamPrimeIdleStopMs ??
@@ -857,6 +875,38 @@ export class BaichuanRtspServer extends EventEmitter<{
       return;
     }
     this.handleRtspConnection(socket, initialBuffer);
+  }
+
+  /**
+   * Inject an already-accepted client socket from a multiplexer
+   * (e.g. `LocalRtspMux`) that owns the listening port.
+   *
+   * The mux reads the first RTSP request line to determine the target path,
+   * then hands the socket over. Any bytes already consumed during routing
+   * are replayed back onto the socket via `unshift()` so the RTSP parser in
+   * `handleRtspConnection` sees the complete original request.
+   *
+   * @param socket - Client TCP socket, already accepted by the mux.
+   * @param preReadData - Bytes the mux has already pulled off the socket
+   *   while parsing the request line. Replayed via `socket.unshift()`
+   *   before any further reads.
+   */
+  injectSocket(socket: net.Socket, preReadData: Buffer): void {
+    if (!this.active) {
+      socket.end("RTSP/1.0 503 Service Unavailable\r\n\r\n");
+      return;
+    }
+    // `socket.unshift` must happen BEFORE any consumer reads from the
+    // socket. We unshift here (not inside handleRtspConnection) so the
+    // bytes are on the stream the moment the RTSP handler attaches its
+    // 'data' listener.
+    if (preReadData && preReadData.length > 0) {
+      socket.unshift(preReadData);
+    }
+    // Do NOT pass `initialBuffer` — we've already pushed the bytes back
+    // onto the socket, and handleRtspConnection seeds its own parse buffer
+    // from the live stream.
+    this.handleRtspConnection(socket);
   }
 
   /**

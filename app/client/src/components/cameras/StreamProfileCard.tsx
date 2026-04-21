@@ -21,14 +21,19 @@ interface StreamProfileCardProps {
    */
   restreamer?: "go2rtc" | "local";
   /**
-   * Default local RTSP port from settings. Used as a fallback for building
-   * an RTSP URL in local mode when no per-stream port is known (e.g. an
-   * idle stream that hasn't been bound yet at page load).
+   * Per-stream saved port from camera.rtspStreams config. Used as a fallback
+   * for building an RTSP URL in local mode when the stream is idle (not yet bound).
+   * Takes precedence over the global localRtspPort base port.
+   */
+  savedPort?: number | null;
+  /**
+   * Default local RTSP port from settings. Used as a last-resort fallback for
+   * building an RTSP URL in local mode when no per-stream port is known.
    */
   localRtspPort?: number | null;
 }
 
-export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, streamName, go2rtcApiPort, go2rtcRtspPort, serviceIp, isBattery, restreamer, localRtspPort }: StreamProfileCardProps) {
+export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, streamName, go2rtcApiPort, go2rtcRtspPort, serviceIp, isBattery, restreamer, savedPort, localRtspPort }: StreamProfileCardProps) {
   const isActive = rtspServer?.status === 'running';
   // Battery cameras stream on-demand: show preview/URLs even when the native stream
   // is not running (idle). Clicking Preview will wake the camera.
@@ -67,7 +72,12 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, str
   //    default local RTSP port) so users can copy it even while the
   //    BaichuanRtspServer is idle / not yet bound.
   //  - go2rtc mode: deterministic from the stream name + go2rtc RTSP port
-  const localPortForUrl = rtspServer?.port ?? localRtspPort ?? null;
+  // Port resolution for idle fallback URL:
+  // 1. Running server's bound port (most accurate)
+  // 2. Saved per-stream port from camera config (correct even when idle — fixes the bug
+  //    where ALL idle streams showed port 8554 regardless of their configured port)
+  // 3. Global localRtsp base port (last resort, same for all streams — wrong for non-first streams)
+  const localPortForUrl = rtspServer?.port ?? savedPort ?? localRtspPort ?? null;
   const rtspUrl = isLocal
     ? rtspServer?.rtspUrl
       || (localPortForUrl

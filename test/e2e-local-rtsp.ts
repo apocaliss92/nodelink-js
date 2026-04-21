@@ -1,18 +1,27 @@
 /**
- * E2E test: local RTSP mode — all camera × profile combinations.
+ * E2E test: local RTSP mode — single-port multiplexer.
  *
- * Tests BaichuanRtspServer (restreamer=local) for:
+ * Tests LocalRtspMux + BaichuanRtspServer (restreamer=local) for:
  *   - TCP265_HOST  (Studio, H.265, AC-powered)
  *   - UDP_STANDALONE_HOST  (campanello, BCUDP, battery)
+ *
+ * Architecture being validated:
+ *   A single LocalRtspMux listens on ONE TCP port (19100). For every
+ *   camera × profile combination the test creates a BaichuanRtspServer
+ *   in `muxMode` (so it does NOT bind its own port), registers it with
+ *   the mux under a distinct URL path, and verifies the RTSP handshake
+ *   + first frames can be negotiated through that shared port.
  *
  * For each camera the script:
  *   1. Connects the ReolinkBaichuanApi and logs in
  *   2. Detects available stream profiles from capabilities
- *   3. For every profile: starts a BaichuanRtspServer, does a full
- *      RTSP DESCRIBE → SETUP → PLAY handshake over a raw TCP socket,
- *      counts RTP frames delivered within the timeout window and records
+ *   3. For every profile: registers a muxed BaichuanRtspServer, does a
+ *      full RTSP DESCRIBE → SETUP → PLAY handshake via the shared mux
+ *      port, counts RTP frames within the timeout window and records
  *      time-to-first-frame.
  *   4. Prints a result table and exits 0 (all pass) or 1 (any failure).
+ *   5. Cross-camera identity check: different cameras must serve
+ *      different streams (distinct SPS).
  *
  * Run:
  *   npx tsx test/e2e-local-rtsp.ts
@@ -24,13 +33,16 @@ import { fileURLToPath } from "node:url";
 import * as path from "node:path";
 import { ReolinkBaichuanApi } from "../src/reolink/baichuan/ReolinkBaichuanApi.js";
 import { BaichuanRtspServer } from "../src/baichuan/stream/BaichuanRtspServer.js";
+import { LocalRtspMux } from "../app/src/local-rtsp-mux.js";
 import type { StreamProfile } from "../src/reolink/baichuan/types.js";
 
 dotenv.config({ path: path.join(path.dirname(fileURLToPath(import.meta.url)), "../.env") });
 
 // ─── Configuration ──────────────────────────────────────────────────────────
 
-const BASE_PORT = 19100; // test ports 19100–19199, won't clash with manager ports
+/** Single shared RTSP port — ALL streams mux through this one port. */
+const MUX_PORT = 19100;
+const MUX_HOST = "127.0.0.1";
 
 interface CameraConfig {
   label: string;
@@ -80,6 +92,8 @@ interface ProbeResult {
   sdp?: string;
   hasCodecParams: boolean; // fmtp / sprop-parameter-sets present
   codec?: string;
+  fmtp?: string;    // raw fmtp line (contains SPS/PPS for identity check)
+  spropSps?: string; // extracted sprop-sps or sprop-parameter-sets value
   ttffMs?: number;
   framesReceived: number;
   errorMsg?: string;
@@ -92,7 +106,7 @@ function rtspProbe(
   timeoutMs: number,
 ): Promise<ProbeResult> {
   return new Promise((resolve) => {
-    const url = `rtsp://127.0.0.1:${port}${rtspPath}`;
+    const url = `rtsp://${MUX_HOST}:${port}${rtspPath}`;
     const start = Date.now();
     let cseq = 1;
     let sessionId = "";
@@ -119,6 +133,8 @@ function rtspProbe(
           sdp,
           hasCodecParams: /fmtp|sprop-parameter-sets/i.test(sdp),
           codec: detectCodec(sdp),
+          fmtp: extractFmtp(sdp),
+          spropSps: extractSpropSps(sdp),
           ttffMs: firstFrameAt,
           framesReceived,
           errorMsg: framesReceived === 0 ? "timeout: no frames within deadline" : undefined,
@@ -134,7 +150,7 @@ function rtspProbe(
       }
     }, timeoutMs);
 
-    const socket = net.createConnection({ host: "127.0.0.1", port });
+    const socket = net.createConnection({ host: MUX_HOST, port });
 
     socket.on("error", (e) =>
       done({ ok: false, sdp, hasCodecParams: false, framesReceived: 0, errorMsg: String(e) }),
@@ -256,6 +272,22 @@ function detectCodec(sdp: string): string | undefined {
   return m?.[1]?.toUpperCase();
 }
 
+function extractFmtp(sdp: string): string | undefined {
+  const m = sdp.match(/a=fmtp:\d+\s+(.+)/);
+  return m?.[1]?.trim();
+}
+
+/** Extract the SPS base64 value: first sprop-sps= (H.265) or sprop-parameter-sets= SPS part (H.264). */
+function extractSpropSps(sdp: string): string | undefined {
+  // H.265: sprop-sps=<base64>
+  const h265 = sdp.match(/sprop-sps=([A-Za-z0-9+/=]+)/);
+  if (h265) return h265[1];
+  // H.264: sprop-parameter-sets=<SPS>,<PPS> — take SPS (before comma)
+  const h264 = sdp.match(/sprop-parameter-sets=([A-Za-z0-9+/=]+)/);
+  if (h264) return h264[1];
+  return undefined;
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function sleep(ms: number) {
@@ -269,12 +301,6 @@ const YELLOW = "\x1b[33m";
 const BOLD = "\x1b[1m";
 const DIM = "\x1b[2m";
 
-function status(ok: boolean, noFrames = false) {
-  if (ok) return `${GREEN}${BOLD}✓ PASS${RESET}`;
-  if (noFrames) return `${YELLOW}${BOLD}⚠ PASS (SDP ok, 0 frames in window)${RESET}`;
-  return `${RED}${BOLD}✗ FAIL${RESET}`;
-}
-
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 interface TestResult {
@@ -282,19 +308,37 @@ interface TestResult {
   profile: string;
   status: "pass" | "warn" | "fail";
   codec?: string;
+  spropSps?: string; // SPS fingerprint — must differ across cameras
   ttffMs?: number;
   frames: number;
   durationMs: number;
+  rtspPath: string;
   error?: string;
 }
+
+interface MuxLogger {
+  info: (m: string) => void;
+  warn: (m: string) => void;
+  error: (m: string) => void;
+  debug?: (m: string) => void;
+}
+
+const muxLogger: MuxLogger = {
+  info: (m) => console.log(`${DIM}${m}${RESET}`),
+  warn: (m) => console.warn(`${YELLOW}${m}${RESET}`),
+  error: (m) => console.error(`${RED}${m}${RESET}`),
+  debug: () => {},
+};
 
 async function runCombination(
   cfg: CameraConfig,
   api: ReolinkBaichuanApi,
   profile: StreamProfile,
-  port: number,
+  mux: LocalRtspMux,
 ): Promise<TestResult> {
   const label = `${cfg.label} / ${profile}`;
+  // Unique path per camera×profile so the mux can demux distinct streams
+  // that share the same TCP port.
   const rtspPath = `/${cfg.host.replace(/\./g, "_")}/${profile}`;
   const timeoutMs = cfg.isBattery ? 65_000 : 20_000;
 
@@ -305,24 +349,28 @@ async function runCombination(
       api,
       channel: 0,
       profile,
-      listenHost: "127.0.0.1",
-      listenPort: port,
+      // listenHost/listenPort are informational in muxMode — the server
+      // never binds a TCP socket; the mux owns the port.
+      listenHost: MUX_HOST,
+      listenPort: MUX_PORT,
       path: rtspPath,
       deviceId: cfg.host,
       lazyMetadata: true,
       nativeStreamIdleStopMs: 30_000,
+      muxMode: true,
     });
 
-    process.stdout.write(`  ${DIM}[${label}]${RESET} starting server on :${port}… `);
+    process.stdout.write(`  ${DIM}[${label}]${RESET} starting server (mux path=${rtspPath})… `);
     await server.start();
+    mux.register(rtspPath, server);
     process.stdout.write(`started\n`);
 
-    // Give the server a brief moment to bind
-    await sleep(200);
+    // Give the mux a brief moment to finish any in-flight registration bookkeeping
+    await sleep(100);
 
-    process.stdout.write(`  ${DIM}[${label}]${RESET} probing RTSP (timeout ${timeoutMs / 1000}s)… `);
+    process.stdout.write(`  ${DIM}[${label}]${RESET} probing RTSP on :${MUX_PORT}${rtspPath} (timeout ${timeoutMs / 1000}s)… `);
     const t0 = Date.now();
-    const probe = await rtspProbe(port, rtspPath, timeoutMs);
+    const probe = await rtspProbe(MUX_PORT, rtspPath, timeoutMs);
     process.stdout.write(`done in ${Date.now() - t0}ms\n`);
 
     const hasCodec = probe.hasCodecParams || !!probe.codec;
@@ -344,9 +392,11 @@ async function runCombination(
       profile,
       status: resultStatus,
       codec: probe.codec,
+      spropSps: probe.spropSps,
       ttffMs: probe.ttffMs,
       frames: probe.framesReceived,
       durationMs: probe.durationMs,
+      rtspPath,
       error: probe.errorMsg,
     };
   } catch (e) {
@@ -356,11 +406,13 @@ async function runCombination(
       status: "fail",
       frames: 0,
       durationMs: 0,
+      rtspPath,
       error: String(e),
     };
   } finally {
     if (server) {
       try {
+        mux.unregister(rtspPath);
         await server.stop();
       } catch {
         // ignore
@@ -371,7 +423,7 @@ async function runCombination(
 
 async function main() {
   console.log(`\n${BOLD}══════════════════════════════════════════════════════${RESET}`);
-  console.log(`${BOLD} E2E Local RTSP — all camera × profile combinations${RESET}`);
+  console.log(`${BOLD} E2E Local RTSP — single-port multiplexer${RESET}`);
   console.log(`${BOLD}══════════════════════════════════════════════════════${RESET}\n`);
 
   const cameras = loadCameras();
@@ -380,8 +432,17 @@ async function main() {
     process.exit(1);
   }
 
+  // Bring up the single-port mux ONCE for the whole test.
+  const mux = new LocalRtspMux(MUX_PORT, MUX_HOST, muxLogger);
+  try {
+    await mux.start();
+  } catch (e) {
+    console.error(`${RED}Failed to bind LocalRtspMux on ${MUX_HOST}:${MUX_PORT}: ${e}${RESET}`);
+    process.exit(1);
+  }
+  console.log(`LocalRtspMux listening on ${MUX_HOST}:${MUX_PORT} — all streams share this port\n`);
+
   const allResults: TestResult[] = [];
-  let portOffset = 0;
 
   for (const cfg of cameras) {
     console.log(`\n${BOLD}── ${cfg.label} @ ${cfg.host}${RESET}`);
@@ -410,6 +471,7 @@ async function main() {
         status: "fail",
         frames: 0,
         durationMs: 0,
+        rtspPath: "",
         error: `login failed: ${String(e)}`,
       });
       continue;
@@ -427,10 +489,10 @@ async function main() {
 
     console.log(`  Profiles detected: ${profiles.join(", ")}`);
 
-    // Run each profile sequentially (battery camera: keep API alive between tests)
+    // Run each profile sequentially — all streams multiplexed through the
+    // single mux port, routed by URL path.
     for (const profile of profiles) {
-      const port = BASE_PORT + portOffset++;
-      const result = await runCombination(cfg, api, profile, port);
+      const result = await runCombination(cfg, api, profile, mux);
       allResults.push(result);
 
       const s = result.status === "pass"
@@ -457,29 +519,72 @@ async function main() {
     await api.close({ reason: "e2e-test-done" }).catch(() => {});
   }
 
+  // Tear down the mux before emitting the summary — any lingering route
+  // error would surface here, not mid-test.
+  try {
+    await mux.stop();
+  } catch (e) {
+    console.warn(`${YELLOW}Warning: mux.stop() threw: ${e}${RESET}`);
+  }
+
   // Summary table
   console.log(`\n${BOLD}══════════════════════════════════════════════════════${RESET}`);
-  console.log(`${BOLD} Summary${RESET}`);
-  console.log(`${"─".repeat(54)}`);
+  console.log(`${BOLD} Summary (single-port :${MUX_PORT})${RESET}`);
+  console.log(`${"─".repeat(72)}`);
   console.log(
-    `${"Camera".padEnd(30)} ${"Profile".padEnd(8)} ${"Status".padEnd(8)} ${"TTFF".padEnd(8)} ${"Frames"}`,
+    `${"Camera".padEnd(30)} ${"Profile".padEnd(8)} ${"Status".padEnd(8)} ${"TTFF".padEnd(8)} ${"Frames".padEnd(8)} Path`,
   );
-  console.log(`${"─".repeat(54)}`);
+  console.log(`${"─".repeat(72)}`);
   for (const r of allResults) {
     const s = r.status === "pass" ? `${GREEN}PASS${RESET}` : r.status === "warn" ? `${YELLOW}WARN${RESET}` : `${RED}FAIL${RESET}`;
     const ttff = r.ttffMs !== undefined ? `${r.ttffMs}ms` : "-";
     console.log(
-      `${r.camera.slice(0, 30).padEnd(30)} ${r.profile.padEnd(8)} ${s.padEnd(8 + 9)} ${ttff.padEnd(8)} ${r.frames}`,
+      `${r.camera.slice(0, 30).padEnd(30)} ${r.profile.padEnd(8)} ${s.padEnd(8 + 9)} ${ttff.padEnd(8)} ${String(r.frames).padEnd(8)} ${r.rtspPath}`,
     );
+    if (r.spropSps) {
+      // Show SPS fingerprint (first 32 chars, enough to see differences between same-model cameras)
+      const full = r.spropSps;
+      const fp = full.length > 32 ? `${full.slice(0, 32)}…` : full;
+      console.log(`${"".padEnd(30)}   ${DIM}SPS[${full.length}]: ${fp}${RESET}`);
+    } else if (r.status !== "fail") {
+      console.log(`${"".padEnd(30)}   ${DIM}SPS: (none — priming timed out)${RESET}`);
+    }
   }
-  console.log(`${"─".repeat(54)}`);
+  console.log(`${"─".repeat(72)}`);
+
+  // Cross-camera identity check: same profile, different cameras MUST have different SPS
+  console.log(`\n${BOLD} Identity check (SPS must differ across cameras)${RESET}`);
+  const profiles = [...new Set(allResults.map((r) => r.profile))];
+  let identityFail = false;
+  for (const profile of profiles) {
+    const byProfile = allResults.filter((r) => r.profile === profile && r.spropSps);
+    if (byProfile.length < 2) continue;
+    const spsSeen = new Map<string, string>();
+    for (const r of byProfile) {
+      const sps = r.spropSps!;
+      if (spsSeen.has(sps)) {
+        console.log(
+          `  ${RED}${BOLD}✗ IDENTITY FAIL${RESET} profile=${profile}: ${r.camera} and ${spsSeen.get(sps)} have IDENTICAL SPS (same stream!)`,
+        );
+        identityFail = true;
+      } else {
+        spsSeen.set(sps, r.camera);
+        const fp = sps.length > 32 ? `${sps.slice(0, 32)}…` : sps;
+        console.log(`  ${GREEN}✓${RESET} profile=${profile}  ${r.camera}  SPS=${fp}`);
+      }
+    }
+  }
+  if (!identityFail) {
+    console.log(`  ${GREEN}${BOLD}All cameras serve distinct streams.${RESET}`);
+  }
 
   const passed = allResults.filter((r) => r.status === "pass").length;
   const warned = allResults.filter((r) => r.status === "warn").length;
   const failed = allResults.filter((r) => r.status === "fail").length;
+  const exitCode = (failed > 0 || identityFail) ? 1 : 0;
   console.log(`\n${BOLD}Total: ${passed} pass, ${warned} warn, ${failed} fail / ${allResults.length} combinations${RESET}\n`);
 
-  process.exit(failed > 0 ? 1 : 0);
+  process.exit(exitCode);
 }
 
 main().catch((e) => {
