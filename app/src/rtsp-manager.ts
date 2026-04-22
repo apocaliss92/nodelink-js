@@ -1891,11 +1891,11 @@ export async function startStreamsForAllConnectedCameras(): Promise<void> {
   for (const camera of config.cameras) {
     if (camera.nvrId && disabledNvrCameras.has(camera.id)) continue;
 
-    // Skip battery cameras in streamOnly mode: auto-starting their streams
-    // registers the RTSP URL with go2rtc, which then reconnects every ~60s
-    // even when no client is watching — waking the camera continuously and
-    // draining the battery. Streams are started on-demand when a client connects.
-    if (camera.isBattery && (camera.batteryMode ?? "streamOnly") === "streamOnly") {
+    // Skip battery cameras in streamOnly+go2rtc mode: go2rtc reconnects
+    // every ~60s, continuously waking the camera and draining the battery.
+    // In local mode the BaichuanRtspServer handles wakeup on-demand via
+    // lazyMetadata — we must register the mux path now so it exists.
+    if (camera.isBattery && (camera.batteryMode ?? "streamOnly") === "streamOnly" && restreamerMode !== "local") {
       logger.info(`Flush: skip battery camera ${camera.name} (batteryMode=streamOnly)`);
       continue;
     }
@@ -1949,11 +1949,12 @@ export function enableAutoStreamsOnConnect(): void {
     const camera = config.cameras.find((c) => c.id === cameraId);
     if (!camera) return;
 
-    // Skip battery cameras in streamOnly mode: they must start streams
-    // only on-demand (when a client actually requests playback), otherwise
-    // we hold the Baichuan video socket open and the camera never sleeps.
-    // Users who want permanent streams can switch batteryMode to "alwaysOn".
-    if (camera.isBattery && (camera.batteryMode ?? "streamOnly") === "streamOnly") {
+    // Skip battery cameras in streamOnly mode when using go2rtc: go2rtc
+    // reconnects every ~60s even with no viewer, which continuously wakes
+    // the camera and drains the battery.  In local mode the BaichuanRtspServer
+    // handles on-demand wakeup via lazyMetadata — registering the mux path
+    // upfront is safe (and required so the path exists before any client connects).
+    if (camera.isBattery && (camera.batteryMode ?? "streamOnly") === "streamOnly" && restreamerMode !== "local") {
       logger.info(
         `Skip auto-streams for battery camera ${camera.name} (batteryMode=streamOnly)`,
       );
