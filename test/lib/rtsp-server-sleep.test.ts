@@ -910,3 +910,108 @@ describe("BaichuanRtspServer — battery wakeup via ensureConnected()", () => {
     expect(s.nativeStreamActive).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Abort-signal fix: fanout.stop() must complete promptly when the generator
+// is in an idle sleep (no frames — sleeping camera mid-session).
+//
+// Without the fix:
+//   The generator loops forever in `await new Promise(1s)` with no yield.
+//   `fanout.stop()` calls `src.return()` but it is never processed because
+//   `generator.return()` is only processed at the next yield point — which
+//   never comes. `fanout.stop()` hangs, the watchdog is never stopped, and
+//   the camera is woken 60 s later by the idle watchdog restart.
+//
+// With the fix:
+//   `fanout.stop()` calls `abort.abort()` first. The generator's abort
+//   listener resolves the pending sleep immediately, the while-loop exits,
+//   the `finally` block runs (stopWatchdog / videoStream.stop), and
+//   `src.return()` completes promptly.
+// ---------------------------------------------------------------------------
+describe("NativeStreamFanout abort-signal fix", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+  });
+
+  afterEach(async () => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("stopNativeStream completes promptly when generator is stuck in idle sleep", async () => {
+    const finallyCalled = { value: false };
+
+    // Signal-aware idle generator: loops without yielding, exits when signal fires.
+    vi.mocked(helpers.createNativeStream).mockImplementation(
+      (_api: any, _ch: any, _profile: any, options: any) => {
+        const signal: AbortSignal | undefined = options?.signal;
+        return (async function* () {
+          try {
+            while (!(signal?.aborted)) {
+              await new Promise<void>((resolve) => {
+                const timer = setTimeout(resolve, 1000);
+                if (signal) {
+                  signal.addEventListener(
+                    "abort",
+                    () => { clearTimeout(timer); resolve(); },
+                    { once: true },
+                  );
+                }
+              });
+            }
+          } finally {
+            finallyCalled.value = true;
+          }
+        })();
+      },
+    );
+
+    const api = buildMockApi();
+    const server = buildServer(api);
+    const s = server as any;
+
+    s.connectedClients.add("127.0.0.1:54321");
+    await s.startNativeStream();
+    expect(s.nativeStreamActive).toBe(true);
+
+    // Advance just past the no-frame deadline so the stream is stopped while the
+    // generator is in the idle sleep — this is the bug scenario.
+    const stopPromise = s.stopNativeStream();
+
+    // Without the fix this would never resolve (generator never yields).
+    // With the fix the abort wakes the sleep immediately without needing a timer tick.
+    await stopPromise;
+
+    expect(s.nativeStreamActive).toBe(false);
+    expect(finallyCalled.value).toBe(true);
+  });
+
+  it("abort signal resolves idle sleep even when 1 s timer has not fired yet", async () => {
+    const resolved = { value: false };
+
+    vi.mocked(helpers.createNativeStream).mockImplementation(
+      (_api: any, _ch: any, _profile: any, options: any) => {
+        const signal: AbortSignal | undefined = options?.signal;
+        return (async function* () {
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, 1000);
+            signal?.addEventListener("abort", () => { resolved.value = true; resolve(); }, { once: true });
+          });
+        })();
+      },
+    );
+
+    const api = buildMockApi();
+    const server = buildServer(api);
+    const s = server as any;
+
+    s.connectedClients.add("127.0.0.1:54321");
+    await s.startNativeStream();
+
+    // Stop before the 1 s timer fires — abort should resolve it immediately.
+    await s.stopNativeStream();
+
+    expect(resolved.value).toBe(true);
+  });
+});

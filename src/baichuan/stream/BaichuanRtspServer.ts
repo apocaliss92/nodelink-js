@@ -77,7 +77,7 @@ class AsyncBoundedQueue<T> {
 
 type FanoutOptions<T> = {
   maxQueueItems: number;
-  createSource: () => AsyncGenerator<T, void, unknown>;
+  createSource: (signal: AbortSignal) => AsyncGenerator<T, void, unknown>;
   onFrame?: (frame: T) => void;
   onError?: (error: unknown) => void;
   /** Called when the pump ends, whether by error or natural stream end. */
@@ -90,6 +90,7 @@ class NativeStreamFanout<T> {
   private source: AsyncGenerator<T, void, unknown> | null = null;
   private running = false;
   private pumpPromise: Promise<void> | null = null;
+  private abort = new AbortController();
 
   constructor(opts: FanoutOptions<T>) {
     this.opts = opts;
@@ -98,7 +99,7 @@ class NativeStreamFanout<T> {
   start(): void {
     if (this.running) return;
     this.running = true;
-    this.source = this.opts.createSource();
+    this.source = this.opts.createSource(this.abort.signal);
 
     this.pumpPromise = (async () => {
       try {
@@ -148,6 +149,11 @@ class NativeStreamFanout<T> {
     this.source = null;
     for (const q of this.queues.values()) q.close();
     this.queues.clear();
+    // Abort first: wakes the generator's idle sleep so it exits the while loop
+    // and reaches finally → videoStream.stop() → stopWatchdog() promptly.
+    // Without this, an async generator stuck in a non-yielding await loop never
+    // processes the queued return() request, leaving the watchdog running.
+    this.abort.abort();
     try {
       await src?.return(undefined as any);
     } catch {
@@ -2610,10 +2616,11 @@ export class BaichuanRtspServer extends EventEmitter<{
     // This avoids starting/stopping multiple camera streams (especially fragile on BCUDP/battery).
     this.nativeFanout = new NativeStreamFanout({
       maxQueueItems: 200,
-      createSource: () =>
+      createSource: (signal) =>
         createNativeStream(this.api, this.channel, this.profile, {
           variant: this.variant,
           ...(dedicatedClient ? { client: dedicatedClient } : {}),
+          signal,
         }),
       onFrame: (frame) => {
         if (frame.audio) {

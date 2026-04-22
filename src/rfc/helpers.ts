@@ -339,6 +339,8 @@ export async function* createNativeStream(
     variant?: NativeVideoStreamVariant;
     /** Optional dedicated BaichuanClient for stream isolation. When omitted, uses api.client (shared). */
     client?: BaichuanClient;
+    /** Cancellation signal — aborting wakes the idle sleep and exits the generator promptly. */
+    signal?: AbortSignal;
   }
 ): AsyncGenerator<{
   audio: boolean;
@@ -540,22 +542,40 @@ export async function* createNativeStream(
 
     streamStarted = true;
 
+    const signal = options?.signal;
+
     // Yield frames as they arrive
-    while (!closed) {
+    while (!closed && !(signal?.aborted)) {
       if (frameQueue.length > 0) {
         const frame = frameQueue.shift()!;
         yield frame;
       } else {
-        // Wait for next frame
+        // Wait for next frame, waking immediately if the fanout signals cancellation.
+        // Without the abort listener the generator loops indefinitely with 1-second
+        // sleeps when no frames arrive (sleeping camera), making generator.return()
+        // unable to process because no yield ever occurs.
         await new Promise<void>((resolve) => {
           frameResolve = resolve;
-          // Timeout after 1 second to check if stream is still active
-          setTimeout(() => {
+          const timer = setTimeout(() => {
             if (frameResolve === resolve) {
               frameResolve = null;
               resolve();
             }
           }, 1000);
+          if (signal) {
+            const onAbort = () => {
+              clearTimeout(timer);
+              if (frameResolve === resolve) frameResolve = null;
+              resolve();
+            };
+            if (signal.aborted) {
+              clearTimeout(timer);
+              frameResolve = null;
+              resolve();
+            } else {
+              signal.addEventListener("abort", onAbort, { once: true });
+            }
+          }
         });
       }
     }
