@@ -946,6 +946,7 @@ describe("NativeStreamFanout abort-signal fix", () => {
     vi.mocked(helpers.createNativeStream).mockImplementation(
       (_api: any, _ch: any, _profile: any, options: any) => {
         const signal: AbortSignal | undefined = options?.signal;
+        // eslint-disable-next-line require-yield
         return (async function* () {
           try {
             while (!(signal?.aborted)) {
@@ -993,6 +994,7 @@ describe("NativeStreamFanout abort-signal fix", () => {
     vi.mocked(helpers.createNativeStream).mockImplementation(
       (_api: any, _ch: any, _profile: any, options: any) => {
         const signal: AbortSignal | undefined = options?.signal;
+        // eslint-disable-next-line require-yield
         return (async function* () {
           await new Promise<void>((resolve) => {
             setTimeout(resolve, 1000);
