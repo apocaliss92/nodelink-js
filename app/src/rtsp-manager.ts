@@ -1713,6 +1713,96 @@ export async function autoConnectCameras() {
   }
 }
 
+// --- Reconnect watchdog ---
+// Periodically scan autoStart cameras whose API connection has dropped
+// (WiFi loss, scheduled reboot, transient network failure) and re-attempt
+// the connection with exponential backoff. The onApiConnected listener
+// (enableAutoStreamsOnConnect) restarts streams once the connection is
+// re-established, so RTSP recordings resume without manual intervention.
+
+interface ReconnectState {
+  attempts: number;
+  lastAttempt: number;
+}
+const reconnectState = new Map<string, ReconnectState>();
+const RECONNECT_CHECK_INTERVAL_MS = 30_000;
+const RECONNECT_INITIAL_DELAY_MS = 5_000;
+const RECONNECT_MAX_DELAY_MS = 5 * 60_000;
+
+function nextReconnectDelay(attempts: number): number {
+  const delay = RECONNECT_INITIAL_DELAY_MS * Math.pow(2, Math.max(0, attempts - 1));
+  return Math.min(delay, RECONNECT_MAX_DELAY_MS);
+}
+
+let reconnectInterval: NodeJS.Timeout | undefined;
+
+async function runReconnectCheck(): Promise<void> {
+  const config = getConfig();
+  const logger = createSourceLogger("reconnect-watchdog");
+  const seenKeys = new Set<string>();
+
+  for (const camera of config.cameras) {
+    if (camera.autoStart !== true) continue;
+    // Battery cameras have their own wake-on-demand lifecycle (idle disconnect)
+    if (camera.isBattery) continue;
+    // NVR child explicitly disabled by user
+    if (camera.nvrId && disabledNvrCameras.has(camera.id)) continue;
+
+    const connKey = getConnectionKey(camera.id);
+    if (seenKeys.has(connKey)) continue;
+    seenKeys.add(connKey);
+
+    const existing = apiConnections.get(connKey);
+    if (existing?.api?.isReady) {
+      reconnectState.delete(connKey);
+      continue;
+    }
+    if (existing?.connectPromise) continue;
+
+    const state = reconnectState.get(connKey) ?? { attempts: 0, lastAttempt: 0 };
+    const now = Date.now();
+    if (state.lastAttempt > 0 && now - state.lastAttempt < nextReconnectDelay(state.attempts)) {
+      continue;
+    }
+
+    state.attempts += 1;
+    state.lastAttempt = now;
+    reconnectState.set(connKey, state);
+
+    logger.info(
+      `Attempting reconnect for ${camera.name} (attempt ${state.attempts})`,
+    );
+    try {
+      if (camera.nvrId) {
+        await enableNvrCamera(camera.id);
+      } else {
+        await getOrCreateApiConnection(camera.id);
+      }
+      logger.info(`Reconnect succeeded for ${camera.name}`);
+      reconnectState.delete(connKey);
+    } catch (e) {
+      logger.warn(
+        `Reconnect failed for ${camera.name}: ${(e as { message?: string })?.message ?? String(e)}`,
+      );
+    }
+  }
+}
+
+export function startReconnectWatchdog(): void {
+  if (reconnectInterval) return;
+  reconnectInterval = setInterval(() => {
+    void runReconnectCheck();
+  }, RECONNECT_CHECK_INTERVAL_MS);
+}
+
+export function stopReconnectWatchdog(): void {
+  if (reconnectInterval) {
+    clearInterval(reconnectInterval);
+    reconnectInterval = undefined;
+  }
+  reconnectState.clear();
+}
+
 // Stop all RTSP servers
 export async function stopAllRtspServers() {
   const logger = createSourceLogger("rtsp-manager");

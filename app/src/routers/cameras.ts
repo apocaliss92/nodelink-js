@@ -1,4 +1,4 @@
-import { router, publicProcedure } from "../trpc.js";
+import { router, publicProcedure, adminProcedure } from "../trpc.js";
 import { z } from "zod";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -267,7 +267,7 @@ export const camerasRouter = router({
     }),
 
   // Delete camera
-  delete: publicProcedure
+  delete: adminProcedure
     .meta({ description: "Delete a camera" })
     .input(z.object({ id: z.string() }))
     .mutation(async ({ input }) => {
@@ -1036,7 +1036,7 @@ export const camerasRouter = router({
     }),
 
   // Delete NVR and all its child cameras
-  deleteNvr: publicProcedure
+  deleteNvr: adminProcedure
     .meta({ description: "Delete an NVR and all its child cameras" })
     .input(z.object({ id: z.string() }))
     .mutation(async ({ input }) => {

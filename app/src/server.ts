@@ -34,9 +34,12 @@ import {
   sanitizeCameraName,
   enableAutoStreamsOnConnect,
   startStreamsForAllConnectedCameras,
+  startReconnectWatchdog,
+  stopReconnectWatchdog,
   ensureLocalRtspMux,
   getConnLogs,
   connLogEmitter,
+  getOrCreateApiConnection,
 } from "./rtsp-manager.js";
 import { getSettings, loadSettings, getConfig } from "./settings-store.js";
 // Custom MJPEG/HLS/WebRTC servers removed — go2rtc provides all output formats.
@@ -679,6 +682,54 @@ app.get("/api/cameras/:id/logs", requireAuth, (req, res) => {
   });
 });
 
+// HTTP snapshot: returns a JPEG snapshot from the camera
+// GET /api/cameras/:id/snapshot[?channel=<n>]
+//
+// Useful for ffmpeg, Home Assistant generic_camera, monitoring dashboards,
+// etc. Reuses the managed Baichuan API connection (no extra login per call).
+// For NVR/Hub children, the channel is taken from the camera config (or the
+// optional `channel` query param). Returns 502 if the connection is not
+// available, 404 if the camera id is unknown.
+app.get("/api/cameras/:id/snapshot", async (req, res) => {
+  const cameraId = req.params.id as string;
+  const config = getConfig();
+  const camera = config.cameras.find((c) => c.id === cameraId);
+  if (!camera) {
+    res.status(404).json({ error: "Camera not found" });
+    return;
+  }
+
+  // Optional channel override (e.g. NVR with multiple feeds on one connection)
+  let channel: number | undefined;
+  const channelParam = req.query.channel;
+  if (typeof channelParam === "string" && channelParam.trim().length > 0) {
+    const parsed = Number(channelParam);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      res.status(400).json({ error: "Invalid channel" });
+      return;
+    }
+    channel = parsed;
+  } else {
+    channel = camera.rtspChannel ?? 0;
+  }
+
+  try {
+    const api = await getOrCreateApiConnection(cameraId);
+    const buffer = await api.getSnapshot(channel);
+    res.setHeader("Content-Type", "image/jpeg");
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+    res.setHeader("Content-Length", String(buffer.length));
+    res.status(200).end(buffer);
+  } catch (error) {
+    const message =
+      (error as { message?: string })?.message ?? String(error);
+    appLogger.warn(`Snapshot failed for ${cameraId}: ${message}`, {
+      source: "server",
+    });
+    res.status(502).json({ error: message });
+  }
+});
+
 // JSON stream (NDJSON): one event per line
 // GET /api/events/stream
 app.get("/api/events/stream", (req, res) => {
@@ -796,6 +847,8 @@ async function shutdown() {
       source: "server",
     });
   }
+
+  stopReconnectWatchdog();
 
   await stopAllRtspServers();
 
@@ -963,6 +1016,17 @@ server.listen(PORT, async () => {
     appLogger.info("Auto-started camera streams", { source: "server" });
   } catch (error) {
     appLogger.error(`Error auto-starting streams: ${error}`, {
+      source: "server",
+    });
+  }
+
+  // Step 3: Start reconnect watchdog so dropped connections (WiFi loss,
+  // scheduled reboots) are restored automatically.
+  try {
+    startReconnectWatchdog();
+    appLogger.info("Reconnect watchdog started", { source: "server" });
+  } catch (error) {
+    appLogger.error(`Error starting reconnect watchdog: ${error}`, {
       source: "server",
     });
   }

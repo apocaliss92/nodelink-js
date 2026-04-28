@@ -1184,18 +1184,36 @@ export class BaichuanRtspServer extends EventEmitter<{
             }
           }
 
-          // Brief audio priming: after video SPS/PPS is ready, wait a short window
-          // for the first ADTS AAC frame to arrive. If audio is present the camera
-          // interleaves it with video, so 300 ms is enough; cameras with no audio
-          // will simply time out and SDP will be video-only (unchanged behavior).
+          // Audio priming: after video SPS/PPS is ready, wait for the first
+          // ADTS AAC frame to arrive. Some cameras (notably Elite Floodlight WiFi)
+          // deliver audio frames noticeably later than video on a freshly started
+          // native stream — 300 ms is too short and yields a video-only SDP on
+          // the first DESCRIBE while the second sees audio because hasAudio is
+          // already latched.  Use 2000 ms for TCP and 3000 ms for UDP/battery
+          // (BCUDP) where transport latency is higher.  The race resolves as
+          // soon as firstAudioPromise fires, so cameras with audio incur no
+          // extra latency, and audio-less cameras still hit the cap once.
           if (!this.hasAudio && this.firstAudioPromise) {
+            const audioPrimingMs =
+              this.api.client.getTransport() === "udp" ? 3000 : 2000;
+            const audioPrimingStart = Date.now();
             try {
               await Promise.race([
                 this.firstAudioPromise,
-                new Promise((resolve) => setTimeout(resolve, 300)),
+                new Promise((resolve) => setTimeout(resolve, audioPrimingMs)),
               ]);
             } catch {
               // ignore
+            }
+            const audioPrimingElapsed = Date.now() - audioPrimingStart;
+            if (this.hasAudio) {
+              this.logger.info(
+                `[rebroadcast] DESCRIBE audio priming: AAC detected after ${audioPrimingElapsed}ms  client=${clientId} path=${this.path}`,
+              );
+            } else {
+              this.logger.info(
+                `[rebroadcast] DESCRIBE audio priming: no audio after ${audioPrimingElapsed}ms — SDP will be video-only  client=${clientId} path=${this.path}`,
+              );
             }
           }
 
