@@ -350,10 +350,17 @@ async function cleanupManagedConnection(
       conn.pingInterval = undefined;
     }
 
-    // Remove listeners to prevent re-entrant close handling
+    // Remove listeners to prevent re-entrant close handling.
+    // Re-attach a no-op error handler immediately so any error emitted during
+    // the subsequent api.close() teardown (ECONNRESET on the underlying TCP
+    // socket is common) doesn't bubble up as an unhandled error and crash
+    // the host process.
     try {
       conn.api.client.removeAllListeners("error");
       conn.api.client.removeAllListeners("close");
+      conn.api.client.on("error", () => {
+        // swallow — connection is being torn down
+      });
     } catch {
       // ignore — client may already be destroyed
     }

@@ -1497,6 +1497,15 @@ export class ReolinkBaichuanApi {
    */
   private attachD2cDiscListener(client: BaichuanClient): void {
     client.on("d2c_disc", () => this.notifyD2cDisc());
+    // Safety-net "error" listener: Node's EventEmitter throws if "error" is
+    // emitted with no listeners. Sockets routinely receive ECONNRESET / EPIPE
+    // (camera reboot, WiFi drop, scheduled wake) and consumer-side error
+    // listeners may be temporarily detached during cleanup. Without this the
+    // unhandled error crashes the host process. Real diagnostics still flow
+    // through the consumer's own listener; this one only swallows the leak.
+    client.on("error", () => {
+      // Swallow — the underlying close/cleanup paths handle the disconnect.
+    });
   }
 
   /**
@@ -1668,6 +1677,17 @@ export class ReolinkBaichuanApi {
           : this.clientOptions;
         const newClient = new BaichuanClient(clientOpts);
         this.attachD2cDiscListener(newClient);
+
+        // Always attach an "error" listener — Node's EventEmitter throws if
+        // an "error" event has no listener, and pooled streaming sockets
+        // routinely receive ECONNRESET / EPIPE when the device drops the
+        // connection (camera reboot, scheduled wake-up, WiFi loss). Without
+        // this listener the unhandled error crashes the host process.
+        newClient.on("error", (err: unknown) => {
+          log?.debug?.(
+            `[SocketPool] tag=${tag} client error: ${(err as { message?: string })?.message ?? err}`,
+          );
+        });
 
         await newClient.login();
 
