@@ -16,6 +16,7 @@ import { WebRTCInlinePlayer } from './WebRTCInlinePlayer';
 import { getStreamName, getWebrtcStreamName } from './utils';
 import { useCameras } from './hooks/useCameras';
 import { useSelectedCamera } from './hooks/useSelectedCamera';
+import { useAuth } from '../../auth';
 import type { CameraInfo, AvailableStream } from './types';
 
 type FloatingPanelEntry =
@@ -30,6 +31,12 @@ export function CamerasPage() {
   const { cameras, connectingByCamera, rtspServers, streamsByCamera, savingAutoStart, setAutoStartForCamera } = camerasHook;
   const { selectedCamera, selectCamera } = useSelectedCamera(cameras);
   const navigate = useNavigate();
+  const { state: authState } = useAuth();
+  // Only admins (or anyone when auth is disabled) can delete cameras. Backend
+  // enforces this; the UI mirrors it so the delete button doesn't show as a
+  // dead no-op for non-admin users.
+  const canDeleteCamera =
+    authState.enabled === false || authState.user?.role === 'admin';
 
   const [floatingPanels, setFloatingPanels] = useState<FloatingPanelEntry[]>([]);
 
@@ -145,7 +152,7 @@ export function CamerasPage() {
                 connecting={connectingByCamera[selectedCamera.id] ?? false}
                 onConnect={() => camerasHook.connect(selectedCamera.id)}
                 onDisconnect={() => camerasHook.disconnect(selectedCamera.id)}
-                onDelete={() => { void camerasHook.deleteCamera(selectedCamera.id); selectCamera(null); }}
+                onDelete={canDeleteCamera ? () => { void camerasHook.deleteCamera(selectedCamera.id); selectCamera(null); } : undefined}
                 onSetDebug={() => camerasHook.setCameraDebug(selectedCamera.id, !selectedCamera.debugLogs)}
                 onOpenPreview={(state) => camerasHook.setPreviewModal(state)}
                 savingAutoStart={savingAutoStart[selectedCamera.id] ?? false}

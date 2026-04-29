@@ -939,6 +939,23 @@ export class Go2rtcTcpServer extends EventEmitter<{
             sock.destroy();
           }
         } else if (this.active) {
+          // If the device explicitly rejected this profile (response_code 400)
+          // there is no point in restarting — the camera will reject every
+          // subsequent attempt, spamming the logs. Drop clients and stay
+          // stopped until the consumer explicitly removes/recreates this
+          // server (or the API instance is recycled).
+          if (
+            typeof this.api.isStreamProfileRejected === "function" &&
+            this.api.isStreamProfileRejected(this.channel, this.profile)
+          ) {
+            this.logger.warn?.(
+              `[Go2rtcTcpServer] profile rejected by device  channel=${this.channel} profile=${this.profile} — not restarting`,
+            );
+            for (const [, sock] of this.clientSockets) {
+              sock.destroy();
+            }
+            return;
+          }
           this.logger.info?.(
             `[Go2rtcTcpServer] restarting native stream (clients=${this.connectedClients.size}, prestart=${this.prestartStream})`,
           );

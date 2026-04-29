@@ -39,7 +39,7 @@ interface CameraDetailPanelProps {
   connecting: boolean;
   onConnect: () => void;
   onDisconnect: () => void;
-  onDelete: () => void;
+  onDelete?: () => void;
   onSetDebug: () => void;
   onOpenPreview: (state: PreviewModalState) => void;
   savingAutoStart: boolean;

@@ -465,6 +465,19 @@ function attachConnectionListeners(
     // Remove from map FIRST to prevent getOrCreateApiConnection from returning dead conn
     apiConnections.delete(cameraId);
 
+    // Synchronously mark all RTSP server entries for affected cameras as
+    // "stopped" so the reconnect listener (enableAutoStreamsOnConnect) does
+    // not skip them on its `status === "running"` early-exit check while the
+    // async stopAllCameraStreams below is still tearing them down. Without
+    // this, the watchdog can race the cleanup and conclude that streams are
+    // still alive — leaving them dead until the next disconnect cycle.
+    const affectedIds = getAffectedCameraIds(cameraId);
+    for (const [, entry] of rtspServers) {
+      if (affectedIds.includes(entry.info.cameraId) && entry.info.status === "running") {
+        entry.info.status = "stopped";
+      }
+    }
+
     await cleanupManagedConnection(cameraId, conn);
     notifyDisconnection(cameraId);
 
@@ -472,11 +485,14 @@ function attachConnectionListeners(
     // can be cleanly re-created with a fresh connection on next use.
     // Without this, BaichuanRtspServer instances keep a dead API reference
     // and throw "API has been closed" on the next client connection.
-    const affectedIds = getAffectedCameraIds(cameraId);
+    // AWAITED so the reconnect listener observes a fully clean state when it
+    // runs after getOrCreateApiConnection completes.
     for (const camId of affectedIds) {
-      stopAllCameraStreams(camId).catch((e) => {
+      try {
+        await stopAllCameraStreams(camId);
+      } catch (e) {
         cameraLogger.debug(`Error stopping streams after close: ${e}`);
-      });
+      }
     }
   });
 }
