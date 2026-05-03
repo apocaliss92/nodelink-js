@@ -12112,6 +12112,116 @@ export class ReolinkBaichuanApi {
     return await this.cgiApi.getAllChannelsEvents(options);
   }
 
+  // ====================================================================
+  // CGI tunable-settings passthroughs (Isp / Image / AudioCfg / Enc /
+  // MdAlarm / IrLights / AiCfg). Same convention as getAllChannelsEvents
+  // above — ensure the CGI session is alive, delegate to the
+  // ReolinkCgiApi method, and preserve its original signature via
+  // `Parameters<...>` / `ReturnType<...>` so the wire shape stays in
+  // one place. Consumers (Scrypted plugin, camstack-server) use these
+  // for operator-tunable settings that the Baichuan binary protocol
+  // doesn't expose.
+  // ====================================================================
+
+  async getIsp(
+    channel?: Parameters<ReolinkCgiApi["GetIsp"]>[0],
+  ): ReturnType<ReolinkCgiApi["GetIsp"]> {
+    await this.cgiApi.login();
+    return await this.cgiApi.GetIsp(channel);
+  }
+
+  async setIsp(
+    isp: Parameters<ReolinkCgiApi["SetIsp"]>[0],
+  ): ReturnType<ReolinkCgiApi["SetIsp"]> {
+    await this.cgiApi.login();
+    return await this.cgiApi.SetIsp(isp);
+  }
+
+  async getImage(
+    channel?: Parameters<ReolinkCgiApi["GetImage"]>[0],
+  ): ReturnType<ReolinkCgiApi["GetImage"]> {
+    await this.cgiApi.login();
+    return await this.cgiApi.GetImage(channel);
+  }
+
+  async setImage(
+    image: Parameters<ReolinkCgiApi["SetImage"]>[0],
+  ): ReturnType<ReolinkCgiApi["SetImage"]> {
+    await this.cgiApi.login();
+    return await this.cgiApi.SetImage(image);
+  }
+
+  /** CGI variant — distinct from the Baichuan binary `getAudioCfg`
+   *  (cmdId=GET_AUDIO_CFG). Same semantic concern (mute / volume) but
+   *  different wire format; use the CGI variant when chaining other
+   *  CGI mutations to share the HTTP session. */
+  async getAudioCfgCgi(
+    channel?: Parameters<ReolinkCgiApi["GetAudioCfg"]>[0],
+  ): ReturnType<ReolinkCgiApi["GetAudioCfg"]> {
+    await this.cgiApi.login();
+    return await this.cgiApi.GetAudioCfg(channel);
+  }
+
+  async setAudioCfg(
+    audio: Parameters<ReolinkCgiApi["SetAudioCfg"]>[0],
+  ): ReturnType<ReolinkCgiApi["SetAudioCfg"]> {
+    await this.cgiApi.login();
+    return await this.cgiApi.SetAudioCfg(audio);
+  }
+
+  async setEnc(
+    enc: Parameters<ReolinkCgiApi["SetEnc"]>[0],
+  ): ReturnType<ReolinkCgiApi["SetEnc"]> {
+    await this.cgiApi.login();
+    return await this.cgiApi.SetEnc(enc);
+  }
+
+  async getMdAlarmCgi(
+    channel?: Parameters<ReolinkCgiApi["GetMdAlarm"]>[0],
+  ): ReturnType<ReolinkCgiApi["GetMdAlarm"]> {
+    await this.cgiApi.login();
+    return await this.cgiApi.GetMdAlarm(channel);
+  }
+
+  async setMdAlarmCgi(
+    md: Parameters<ReolinkCgiApi["SetMdAlarm"]>[0],
+  ): ReturnType<ReolinkCgiApi["SetMdAlarm"]> {
+    await this.cgiApi.login();
+    return await this.cgiApi.SetMdAlarm(md);
+  }
+
+  async getIrLights(
+    channel?: Parameters<ReolinkCgiApi["GetIrLights"]>[0],
+  ): ReturnType<ReolinkCgiApi["GetIrLights"]> {
+    await this.cgiApi.login();
+    return await this.cgiApi.GetIrLights(channel);
+  }
+
+  async setIrLights(
+    ir: Parameters<ReolinkCgiApi["SetIrLights"]>[0],
+  ): ReturnType<ReolinkCgiApi["SetIrLights"]> {
+    await this.cgiApi.login();
+    return await this.cgiApi.SetIrLights(ir);
+  }
+
+  /** CGI variant — distinct from the Baichuan binary `getAiCfg`
+   *  (cmdId=GET_AI_CFG). The CGI shape differs from the binary
+   *  `AiConfig` typed response; use this when paired with `setAiCfg`
+   *  which uses the CGI write path. */
+  async getAiCfgCgi(
+    channel?: Parameters<ReolinkCgiApi["GetAiCfg"]>[0],
+  ): ReturnType<ReolinkCgiApi["GetAiCfg"]> {
+    await this.cgiApi.login();
+    return await this.cgiApi.GetAiCfg(channel);
+  }
+
+  async setAiCfg(
+    ai: Parameters<ReolinkCgiApi["SetAiCfg"]>[0],
+  ): ReturnType<ReolinkCgiApi["SetAiCfg"]> {
+    await this.cgiApi.login();
+    return await this.cgiApi.SetAiCfg(ai);
+  }
+
   /**
    * Passthrough to ReolinkCgiApi.getAllChannelsBatteryInfo.
    * Fetches battery info for all channels via CGI (merged with channel status sleep flag).
