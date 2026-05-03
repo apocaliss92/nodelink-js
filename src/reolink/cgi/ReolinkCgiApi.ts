@@ -324,6 +324,161 @@ export type CgiAudioAlarmPlayParam =
   | ({ channel: number } & { alarm_mode: "times"; times: number })
   | ({ channel: number } & { alarm_mode: "manul"; manual_switch: number });
 
+// ── Isp (image colour / exposure) ──────────────────────────────────
+//
+// `Isp` is the modern Reolink endpoint for tunable colour pipeline
+// (brightness / contrast / saturation / sharpness / hue) plus
+// exposure / day-night / anti-flicker / white-balance. Field set
+// varies by model — capability flags (`ispBright`, `ispContrast`,
+// `ispDayNight`, …) under `CgiAbilityChn` advertise which knobs
+// the camera honours.
+export type CgiIsp = {
+  channel: number;
+  bright?: number;
+  contrast?: number;
+  saturation?: number;
+  sharpen?: number;
+  hue?: number;
+  antiFlicker?: string;       // "Outdoor" | "50HZ" | "60HZ" | "Off"
+  exposure?: string;          // "Auto" | "Manual"
+  dayNight?: string;          // "Color" | "Black&White" | "Auto"
+  backLight?: string;         // "BackLightControl" | "DynamicRangeControl" | "Off"
+  blueGain?: number;
+  redGain?: number;
+  whiteBalance?: string;      // "Auto" | "ManualDay" | "ManualNight" | …
+  mirroring?: number;
+  flip?: number;
+  rotation?: number;
+} & Record<string, JsonValue>;
+
+export type CgiGetIspValue = {
+  Isp?: CgiIsp;
+} & Record<string, JsonValue>;
+
+export type CgiSetIspParam = {
+  Isp: CgiIsp;
+};
+
+// ── Image (legacy flip/mirror — distinct from Isp) ────────────────
+export type CgiImage = {
+  channel: number;
+  bright?: number;
+  contrast?: number;
+  saturation?: number;
+  hue?: number;
+  sharpen?: number;
+  mirroring?: number;
+  flip?: number;
+} & Record<string, JsonValue>;
+
+export type CgiGetImageValue = {
+  Image?: CgiImage;
+} & Record<string, JsonValue>;
+
+export type CgiSetImageParam = {
+  Image: CgiImage;
+};
+
+// ── AudioCfg (mute + volume on legacy firmwares) ──────────────────
+export type CgiAudioCfg = {
+  channel: number;
+  /** 0 = unmuted, 1 = muted. */
+  mute?: number;
+  /** 0..100. */
+  volume?: number;
+} & Record<string, JsonValue>;
+
+export type CgiGetAudioCfgValue = {
+  AudioCfg?: CgiAudioCfg;
+} & Record<string, JsonValue>;
+
+export type CgiSetAudioCfgParam = {
+  AudioCfg: CgiAudioCfg;
+};
+
+// ── Enc (encoder / streaming profiles — SET counterpart) ──────────
+//
+// `CgiEnc` and `CgiEncStream` are already exported above for the
+// existing `GetEnc`. The SET param wraps the same structure under
+// the `Enc` root. Operator-relevant fields: `bitRate`, `frameRate`,
+// `gop`, `size` (resolution string), `vType` (`h264`/`h265`),
+// `profile`. Sub-stream / main-stream switch by passing the matching
+// inner key. Cameras typically reject mid-flight changes to
+// `vType` — set when streams are paused.
+export type CgiSetEncParam = {
+  Enc: CgiEnc;
+};
+
+// ── MdAlarm (motion-detection sensitivity grid) ───────────────────
+//
+// Reolink's modern MdAlarm encodes the sensitivity grid as a
+// `scope.table` string (`'1' | '0'` per row × col cell) and per-
+// schedule sensitivity entries under `sens[]`. For most operator
+// flows we only flip `enable` + bump a single `sensitivity` value —
+// callers can read the current shape via `GetMdAlarm` and patch
+// what they need.
+export type CgiMdAlarmSens = {
+  id?: number;
+  beginHour?: number;
+  beginMin?: number;
+  endHour?: number;
+  endMin?: number;
+  sensitivity?: number;
+} & Record<string, JsonValue>;
+
+export type CgiMdAlarmScope = {
+  cols?: number;
+  rows?: number;
+  table?: string;
+} & Record<string, JsonValue>;
+
+export type CgiMdAlarm = {
+  channel: number;
+  type?: string;
+  enable?: number;
+  scope?: CgiMdAlarmScope;
+  sens?: CgiMdAlarmSens[];
+} & Record<string, JsonValue>;
+
+export type CgiGetMdAlarmValue = {
+  MdAlarm?: CgiMdAlarm;
+} & Record<string, JsonValue>;
+
+export type CgiSetMdAlarmParam = {
+  MdAlarm: CgiMdAlarm;
+};
+
+// ── IrLights (IR LED control) ─────────────────────────────────────
+export type CgiIrLights = {
+  channel: number;
+  /** "Auto" | "Off" — modern firmwares; some legacy support "On". */
+  state?: string;
+} & Record<string, JsonValue>;
+
+export type CgiGetIrLightsValue = {
+  IrLights?: CgiIrLights;
+} & Record<string, JsonValue>;
+
+export type CgiSetIrLightsParam = {
+  IrLights: CgiIrLights;
+};
+
+// ── AiCfg (smart detection enable + class filter) ─────────────────
+export type CgiAiCfg = {
+  channel: number;
+  AiTrack?: number;
+  smartTrack?: number;
+  trackType?: Record<string, number>;
+} & Record<string, JsonValue>;
+
+export type CgiGetAiCfgValue = {
+  AiCfg?: CgiAiCfg;
+} & Record<string, JsonValue>;
+
+export type CgiSetAiCfgParam = {
+  AiCfg: CgiAiCfg;
+};
+
 export type CgiNetPort = Record<string, JsonValue>;
 
 export type CgiBattery = {
@@ -865,6 +1020,102 @@ export class ReolinkCgiApi {
   async GetPtzPreset(channel?: number): Promise<ReolinkCmdResponse[]> {
     const param = channel == null ? {} : { channel };
     return await this.call("GetPtzPreset", param, 1);
+  }
+
+  // ── Isp / Image (colour, flip, day-night, exposure) ──────────────
+
+  async GetIsp(
+    channel?: number,
+  ): Promise<Array<ReolinkCmdResponseExt<CgiGetIspValue>>> {
+    const param = channel == null ? {} : { channel };
+    return await this.call("GetIsp", param, 1);
+  }
+
+  async SetIsp(
+    isp: CgiSetIspParam,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+    return await this.call("SetIsp", isp, 0);
+  }
+
+  async GetImage(
+    channel?: number,
+  ): Promise<Array<ReolinkCmdResponseExt<CgiGetImageValue>>> {
+    const param = channel == null ? {} : { channel };
+    return await this.call("GetImage", param, 1);
+  }
+
+  async SetImage(
+    image: CgiSetImageParam,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+    return await this.call("SetImage", image, 0);
+  }
+
+  // ── AudioCfg (mute / volume) ─────────────────────────────────────
+
+  async GetAudioCfg(
+    channel?: number,
+  ): Promise<Array<ReolinkCmdResponseExt<CgiGetAudioCfgValue>>> {
+    const param = channel == null ? {} : { channel };
+    return await this.call("GetAudioCfg", param, 1);
+  }
+
+  async SetAudioCfg(
+    audio: CgiSetAudioCfgParam,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+    return await this.call("SetAudioCfg", audio, 0);
+  }
+
+  // ── Enc setter (Get already exists above) ────────────────────────
+
+  async SetEnc(
+    enc: CgiSetEncParam,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+    return await this.call("SetEnc", enc, 0);
+  }
+
+  // ── MdAlarm (motion detection sensitivity / regions) ─────────────
+
+  async GetMdAlarm(
+    channel?: number,
+  ): Promise<Array<ReolinkCmdResponseExt<CgiGetMdAlarmValue>>> {
+    const param = channel == null ? {} : { channel };
+    return await this.call("GetMdAlarm", param, 1);
+  }
+
+  async SetMdAlarm(
+    md: CgiSetMdAlarmParam,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+    return await this.call("SetMdAlarm", md, 0);
+  }
+
+  // ── IrLights ─────────────────────────────────────────────────────
+
+  async GetIrLights(
+    channel?: number,
+  ): Promise<Array<ReolinkCmdResponseExt<CgiGetIrLightsValue>>> {
+    const param = channel == null ? {} : { channel };
+    return await this.call("GetIrLights", param, 1);
+  }
+
+  async SetIrLights(
+    ir: CgiSetIrLightsParam,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+    return await this.call("SetIrLights", ir, 0);
+  }
+
+  // ── AiCfg (smart-detection enable + class filter) ────────────────
+
+  async GetAiCfg(
+    channel?: number,
+  ): Promise<Array<ReolinkCmdResponseExt<CgiGetAiCfgValue>>> {
+    const param = channel == null ? {} : { channel };
+    return await this.call("GetAiCfg", param, 1);
+  }
+
+  async SetAiCfg(
+    ai: CgiSetAiCfgParam,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+    return await this.call("SetAiCfg", ai, 0);
   }
 
   async GetAudioAlarmV20(channel?: number): Promise<ReolinkCmdResponse[]> {
