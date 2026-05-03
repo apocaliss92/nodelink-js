@@ -479,6 +479,167 @@ export type CgiSetAiCfgParam = {
   AiCfg: CgiAiCfg;
 };
 
+// ── Mask (privacy mask zones) ─────────────────────────────────────
+export type CgiMaskShelter = {
+  enabled?: number;
+  position?: { x?: number; y?: number; w?: number; h?: number };
+} & Record<string, JsonValue>;
+
+export type CgiMask = {
+  channel: number;
+  enable?: number;
+  shelterList?: CgiMaskShelter[];
+} & Record<string, JsonValue>;
+
+export type CgiGetMaskValue = {
+  Mask?: CgiMask;
+} & Record<string, JsonValue>;
+
+export type CgiSetMaskParam = {
+  Mask: CgiMask;
+};
+
+// ── AudioNoise (input noise reduction) ────────────────────────────
+export type CgiAudioNoise = {
+  channel: number;
+  enable?: number;
+  /** 0 = disabled, 1..N = strength tier (model-specific). */
+  level?: number;
+} & Record<string, JsonValue>;
+
+export type CgiGetAudioNoiseValue = {
+  AudioNoise?: CgiAudioNoise;
+} & Record<string, JsonValue>;
+
+export type CgiSetAudioNoiseParam = {
+  AudioNoise: CgiAudioNoise;
+};
+
+// ── Rec / RecV20 (recording schedule) ─────────────────────────────
+export type CgiRecSchedule = {
+  channel: number;
+  enable?: number;
+  /** 7×24 weekly schedule mask, "1"/"0" per slot — present on V20+. */
+  table?: string;
+} & Record<string, JsonValue>;
+
+export type CgiRec = {
+  schedule?: CgiRecSchedule;
+  scheduleEnable?: number;
+  enable?: number;
+  packTime?: string;       // e.g. "60 Minutes"
+  postRec?: string;        // e.g. "15 Seconds"
+} & Record<string, JsonValue>;
+
+export type CgiGetRecValue = {
+  Rec?: CgiRec;
+} & Record<string, JsonValue>;
+
+export type CgiSetRecParam = {
+  Rec: CgiRec;
+};
+
+// ── Email (SMTP alert config) ─────────────────────────────────────
+export type CgiEmail = {
+  schedule?: { channel?: number; enable?: number; table?: string };
+  scheduleEnable?: number;
+  enable?: number;
+  smtpServer?: string;
+  smtpPort?: number;
+  userName?: string;
+  password?: string;
+  addr1?: string;
+  addr2?: string;
+  addr3?: string;
+  ssl?: number;
+  attachment?: number;
+  interval?: string;
+  textType?: string;
+  subject?: string;
+  content?: string;
+} & Record<string, JsonValue>;
+
+export type CgiGetEmailValue = {
+  Email?: CgiEmail;
+} & Record<string, JsonValue>;
+
+export type CgiSetEmailParam = {
+  Email: CgiEmail;
+};
+
+// ── Push (Reolink-cloud push notifications) ───────────────────────
+export type CgiPush = {
+  schedule?: { channel?: number; enable?: number; table?: string };
+  scheduleEnable?: number;
+  enable?: number;
+} & Record<string, JsonValue>;
+
+export type CgiGetPushValue = {
+  Push?: CgiPush;
+} & Record<string, JsonValue>;
+
+export type CgiSetPushParam = {
+  Push: CgiPush;
+};
+
+// ── AudioAlarm (siren-on-event) ───────────────────────────────────
+export type CgiAudioAlarm = {
+  schedule?: { channel?: number; enable?: number; table?: string };
+  scheduleEnable?: number;
+  enable?: number;
+  /** Built-in audio id; varies by camera. Use AudioAlarmPlay for
+   *  one-shot test playback. */
+  audioId?: number;
+  /** Times to repeat the audio per trigger. */
+  alarmTimes?: number;
+  audioVolume?: number;
+} & Record<string, JsonValue>;
+
+export type CgiGetAudioAlarmValue = {
+  Audio?: CgiAudioAlarm;
+} & Record<string, JsonValue>;
+
+export type CgiSetAudioAlarmParam = {
+  Audio: CgiAudioAlarm;
+};
+
+// ── AutoFocus (PTZ AF disable / re-arm) ───────────────────────────
+export type CgiAutoFocus = {
+  channel: number;
+  /** 0 = enabled (default), 1 = disabled. Reolink names it `disable`
+   *  rather than `enable` because AF is on by default. */
+  disable?: number;
+} & Record<string, JsonValue>;
+
+export type CgiGetAutoFocusValue = {
+  AutoFocus?: CgiAutoFocus;
+} & Record<string, JsonValue>;
+
+export type CgiSetAutoFocusParam = {
+  AutoFocus: CgiAutoFocus;
+};
+
+// ── AiAlarm (per-class smart-detection thresholds) ────────────────
+//
+// `ai_type` is one of `people` / `vehicle` / `dog_cat` / `face` /
+// `package` (depends on the camera's AI capabilities). `sensitivity`
+// is 0..100; `stayTime` is how long an object must remain in frame
+// before triggering (seconds).
+export type CgiAiAlarm = {
+  channel: number;
+  ai_type: string;
+  sensitivity?: number;
+  stayTime?: number;
+} & Record<string, JsonValue>;
+
+export type CgiGetAiAlarmValue = {
+  AiAlarm?: CgiAiAlarm;
+} & Record<string, JsonValue>;
+
+export type CgiSetAiAlarmParam = {
+  AiAlarm: CgiAiAlarm;
+};
+
 export type CgiNetPort = Record<string, JsonValue>;
 
 export type CgiBattery = {
@@ -1118,8 +1279,169 @@ export class ReolinkCgiApi {
     return await this.call("SetAiCfg", ai, 0);
   }
 
+  // ── Mask (privacy-mask zones) ────────────────────────────────────
+
+  async GetMask(
+    channel: number,
+  ): Promise<Array<ReolinkCmdResponseExt<CgiGetMaskValue>>> {
+    return await this.call("GetMask", { channel }, 1);
+  }
+
+  async SetMask(
+    mask: CgiSetMaskParam,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+    return await this.call("SetMask", mask, 0);
+  }
+
+  // ── AudioNoise (input noise reduction) ───────────────────────────
+
+  async GetAudioNoise(
+    channel: number,
+  ): Promise<Array<ReolinkCmdResponseExt<CgiGetAudioNoiseValue>>> {
+    return await this.call("GetAudioNoise", { channel }, 1);
+  }
+
+  async SetAudioNoise(
+    noise: CgiSetAudioNoiseParam,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+    return await this.call("SetAudioNoise", noise, 0);
+  }
+
+  // ── Rec / RecV20 (recording schedule) ────────────────────────────
+
+  async GetRec(
+    channel: number,
+  ): Promise<Array<ReolinkCmdResponseExt<CgiGetRecValue>>> {
+    return await this.call("GetRec", { channel }, 1);
+  }
+
+  async SetRec(
+    rec: CgiSetRecParam,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+    return await this.call("SetRec", rec, 0);
+  }
+
+  /** Newer firmwares advertise `GetRecV20` / `SetRecV20` with the
+   *  weekly-schedule `table` field. Same payload shape as `Rec`. */
+  async GetRecV20(
+    channel: number,
+  ): Promise<Array<ReolinkCmdResponseExt<CgiGetRecValue>>> {
+    return await this.call("GetRecV20", { channel }, 1);
+  }
+
+  async SetRecV20(
+    rec: CgiSetRecParam,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+    return await this.call("SetRecV20", rec, 0);
+  }
+
+  // ── Email (SMTP alert) ───────────────────────────────────────────
+
+  async GetEmail(
+    channel: number,
+  ): Promise<Array<ReolinkCmdResponseExt<CgiGetEmailValue>>> {
+    return await this.call("GetEmail", { channel }, 1);
+  }
+
+  async SetEmail(
+    email: CgiSetEmailParam,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+    return await this.call("SetEmail", email, 0);
+  }
+
+  /** V20 variant on newer firmwares with weekly-schedule `table`. */
+  async GetEmailV20(
+    channel: number,
+  ): Promise<Array<ReolinkCmdResponseExt<CgiGetEmailValue>>> {
+    return await this.call("GetEmailV20", { channel }, 1);
+  }
+
+  async SetEmailV20(
+    email: CgiSetEmailParam,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+    return await this.call("SetEmailV20", email, 0);
+  }
+
+  // ── Push (Reolink-cloud push notifications) ──────────────────────
+
+  async GetPush(
+    channel: number,
+  ): Promise<Array<ReolinkCmdResponseExt<CgiGetPushValue>>> {
+    return await this.call("GetPush", { channel }, 1);
+  }
+
+  async SetPush(
+    push: CgiSetPushParam,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+    return await this.call("SetPush", push, 0);
+  }
+
+  async GetPushV20(
+    channel: number,
+  ): Promise<Array<ReolinkCmdResponseExt<CgiGetPushValue>>> {
+    return await this.call("GetPushV20", { channel }, 1);
+  }
+
+  async SetPushV20(
+    push: CgiSetPushParam,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+    return await this.call("SetPushV20", push, 0);
+  }
+
+  // ── AudioAlarm (siren-on-event) ──────────────────────────────────
+
+  async GetAudioAlarm(
+    channel: number,
+  ): Promise<Array<ReolinkCmdResponseExt<CgiGetAudioAlarmValue>>> {
+    return await this.call("GetAudioAlarm", { channel }, 1);
+  }
+
+  async SetAudioAlarm(
+    audio: CgiSetAudioAlarmParam,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+    return await this.call("SetAudioAlarm", audio, 0);
+  }
+
+  async SetAudioAlarmV20(
+    audio: CgiSetAudioAlarmParam,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+    return await this.call("SetAudioAlarmV20", audio, 0);
+  }
+
+  // ── AutoFocus (PTZ AF) ───────────────────────────────────────────
+
+  async GetAutoFocus(
+    channel: number,
+  ): Promise<Array<ReolinkCmdResponseExt<CgiGetAutoFocusValue>>> {
+    return await this.call("GetAutoFocus", { channel }, 1);
+  }
+
+  async SetAutoFocus(
+    af: CgiSetAutoFocusParam,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+    return await this.call("SetAutoFocus", af, 0);
+  }
+
+  // ── AiAlarm (per-class smart-detection thresholds) ───────────────
+
+  async GetAiAlarm(
+    channel: number,
+    aiType: string,
+  ): Promise<Array<ReolinkCmdResponseExt<CgiGetAiAlarmValue>>> {
+    return await this.call("GetAiAlarm", { channel, ai_type: aiType }, 1);
+  }
+
+  async SetAiAlarm(
+    ai: CgiSetAiAlarmParam,
+  ): Promise<Array<ReolinkCmdResponseExt<JsonValue>>> {
+    return await this.call("SetAiAlarm", ai, 0);
+  }
+
   async GetAudioAlarmV20(channel?: number): Promise<ReolinkCmdResponse[]> {
     const param = channel == null ? {} : { channel };
+    // NOTE: action stays at 0 here for backwards compat with existing
+    // callers that depend on this exact wire shape — newer code that
+    // wants the typed shape should use `GetAudioAlarm(channel)` (action 1).
     return await this.call("GetAudioAlarmV20", param, 0);
   }
 

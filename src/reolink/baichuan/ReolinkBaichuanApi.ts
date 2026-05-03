@@ -96,9 +96,20 @@ import {
   BC_CMD_ID_PUSH_SLEEP_STATUS,
   BC_CMD_ID_PUSH_VIDEO_INPUT,
   BC_CMD_ID_SET_AI_ALARM,
+  BC_CMD_ID_SET_AI_DENOISE,
+  BC_CMD_ID_SET_AUDIO_CFG,
   BC_CMD_ID_SET_AUDIO_TASK,
+  BC_CMD_ID_SET_AUTO_FOCUS,
+  BC_CMD_ID_GET_AUTO_FOCUS,
+  BC_CMD_ID_SET_DAY_NIGHT_THRESHOLD,
+  BC_CMD_ID_SET_LED_STATE,
   BC_CMD_ID_SET_MOTION_ALARM,
   BC_CMD_ID_SET_PIR_INFO,
+  BC_CMD_ID_SET_PRIVACY_MASK,
+  BC_CMD_ID_GET_PRIVACY_MASK,
+  BC_CMD_ID_SET_VIDEO_INPUT,
+  BC_CMD_ID_GET_ENC,
+  BC_CMD_ID_SET_ENC,
   BC_CMD_ID_SET_WHITE_LED_STATE,
   BC_CMD_ID_SET_WHITE_LED_TASK,
   BC_CMD_ID_SET_ZOOM_FOCUS,
@@ -119,6 +130,8 @@ import {
   BC_CMD_ID_SET_DING_DONG_SILENT,
 } from "../../protocol/constants";
 import {
+  applyStreamPatch,
+  applyXmlTagPatch,
   buildAbilityInfoExtensionXml,
   buildBinaryExtensionXml,
   buildChannelExtensionXml,
@@ -132,7 +145,11 @@ import {
   buildSirenManualXml,
   buildSirenTimesXml,
   buildStartZoomFocusXml,
+  ensureXmlHeader,
   getXmlText,
+  normalizeDayNightMode,
+  normalizeOpenClose,
+  patchNestedTag,
   xmlEscape,
 } from "../../protocol/xml";
 import type {
@@ -12113,113 +12130,501 @@ export class ReolinkBaichuanApi {
   }
 
   // ====================================================================
-  // CGI tunable-settings passthroughs (Isp / Image / AudioCfg / Enc /
-  // MdAlarm / IrLights / AiCfg). Same convention as getAllChannelsEvents
-  // above — ensure the CGI session is alive, delegate to the
-  // ReolinkCgiApi method, and preserve its original signature via
-  // `Parameters<...>` / `ReturnType<...>` so the wire shape stays in
-  // one place. Consumers (Scrypted plugin, camstack-server) use these
-  // for operator-tunable settings that the Baichuan binary protocol
-  // doesn't expose.
+  // Native Baichuan tunable-settings setters
+  //
+  // Replace the CGI passthroughs above with on-wire Baichuan binary
+  // calls. Mirrors the @http_cmd-decorated methods in reolink_aio's
+  // baichuan.py — every command has a documented `cmd_id` (read) and
+  // `cmd_id` (write) pair. The pattern is:
+  //
+  //   1. read XML via `sendXml({ cmdId: GET, channel })`
+  //   2. patch fields via regex (camera firmware is XML-strict; using
+  //      the parser would force us to rebuild the document and risk
+  //      losing unmodified attributes / element order).
+  //   3. write back via `sendXml({ cmdId: SET, channel, payloadXml })`
+  //
+  // All getters parse via `parseXmlFragmentToJson` so the consumer gets
+  // a clean JSON object instead of XML.
   // ====================================================================
 
-  async getIsp(
-    channel?: Parameters<ReolinkCgiApi["GetIsp"]>[0],
-  ): ReturnType<ReolinkCgiApi["GetIsp"]> {
-    await this.cgiApi.login();
-    return await this.cgiApi.GetIsp(channel);
+  /**
+   * GetEnc via Baichuan (cmdId=56). Returns the `<Enc>` block: per-
+   * stream `mainStream` / `subStream` with `audio` flag, `width`,
+   * `height`, `videoEncType`, `frameRate`, `bitRate`, `gop`, `profile`,
+   * `size`, `vType`. Mirrors reolink_aio's `GetEnc`.
+   */
+  async getEnc(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<XmlJsonValue> {
+    const xml = await this.sendPcapDerivedSettingsGetXml({
+      cmdId: BC_CMD_ID_GET_ENC,
+      ...(channel != null ? { channel } : {}),
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+    return parseXmlFragmentToJson(xml);
   }
 
-  async setIsp(
-    isp: Parameters<ReolinkCgiApi["SetIsp"]>[0],
-  ): ReturnType<ReolinkCgiApi["SetIsp"]> {
-    await this.cgiApi.login();
-    return await this.cgiApi.SetIsp(isp);
-  }
-
-  async getImage(
-    channel?: Parameters<ReolinkCgiApi["GetImage"]>[0],
-  ): ReturnType<ReolinkCgiApi["GetImage"]> {
-    await this.cgiApi.login();
-    return await this.cgiApi.GetImage(channel);
-  }
-
-  async setImage(
-    image: Parameters<ReolinkCgiApi["SetImage"]>[0],
-  ): ReturnType<ReolinkCgiApi["SetImage"]> {
-    await this.cgiApi.login();
-    return await this.cgiApi.SetImage(image);
-  }
-
-  /** CGI variant — distinct from the Baichuan binary `getAudioCfg`
-   *  (cmdId=GET_AUDIO_CFG). Same semantic concern (mute / volume) but
-   *  different wire format; use the CGI variant when chaining other
-   *  CGI mutations to share the HTTP session. */
-  async getAudioCfgCgi(
-    channel?: Parameters<ReolinkCgiApi["GetAudioCfg"]>[0],
-  ): ReturnType<ReolinkCgiApi["GetAudioCfg"]> {
-    await this.cgiApi.login();
-    return await this.cgiApi.GetAudioCfg(channel);
-  }
-
-  async setAudioCfg(
-    audio: Parameters<ReolinkCgiApi["SetAudioCfg"]>[0],
-  ): ReturnType<ReolinkCgiApi["SetAudioCfg"]> {
-    await this.cgiApi.login();
-    return await this.cgiApi.SetAudioCfg(audio);
-  }
-
+  /**
+   * SetEnc via Baichuan (cmdId=57). Read-modify-write — preserves
+   * unspecified fields. Mirrors reolink_aio's `SetEnc`.
+   *
+   * @param channel - Channel number (0-based)
+   * @param patch - Fields to update on `mainStream` and/or `subStream`,
+   *   plus a top-level `audio` toggle (0/1). Pass only what you want
+   *   to change.
+   */
   async setEnc(
-    enc: Parameters<ReolinkCgiApi["SetEnc"]>[0],
-  ): ReturnType<ReolinkCgiApi["SetEnc"]> {
-    await this.cgiApi.login();
-    return await this.cgiApi.SetEnc(enc);
+    channel: number,
+    patch: {
+      audio?: 0 | 1;
+      mainStream?: {
+        bitRate?: number;
+        frameRate?: number;
+        videoEncType?: "h264" | "h265";
+      };
+      subStream?: {
+        bitRate?: number;
+        frameRate?: number;
+        videoEncType?: "h264" | "h265";
+      };
+    },
+    options?: { timeoutMs?: number },
+  ): Promise<void> {
+    const ch = this.normalizeChannel(channel);
+    let xml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_ENC,
+      channel: ch,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+
+    if (patch.audio !== undefined) {
+      xml = xml.replace(
+        /<audio>[^<]*<\/audio>/g,
+        `<audio>${patch.audio}</audio>`,
+      );
+    }
+    xml = applyStreamPatch(xml, "mainStream", patch.mainStream);
+    xml = applyStreamPatch(xml, "subStream", patch.subStream);
+
+    await this.sendXml({
+      cmdId: BC_CMD_ID_SET_ENC,
+      channel: ch,
+      payloadXml: ensureXmlHeader(xml),
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
   }
 
-  async getMdAlarmCgi(
-    channel?: Parameters<ReolinkCgiApi["GetMdAlarm"]>[0],
-  ): ReturnType<ReolinkCgiApi["GetMdAlarm"]> {
-    await this.cgiApi.login();
-    return await this.cgiApi.GetMdAlarm(channel);
+  /**
+   * SetImage via Baichuan (cmdId=25, read via cmdId=26). Patches the
+   * `<VideoInput>` block: bright / contrast / saturation / hue /
+   * sharpen. Mirrors reolink_aio's `SetImage`.
+   */
+  async setImage(
+    channel: number,
+    patch: {
+      bright?: number;
+      contrast?: number;
+      saturation?: number;
+      hue?: number;
+      sharpen?: number;
+    },
+    options?: { timeoutMs?: number },
+  ): Promise<void> {
+    const ch = this.normalizeChannel(channel);
+    let xml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_VIDEO_INPUT,
+      channel: ch,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+
+    xml = applyXmlTagPatch(xml, "bright", patch.bright);
+    xml = applyXmlTagPatch(xml, "contrast", patch.contrast);
+    xml = applyXmlTagPatch(xml, "saturation", patch.saturation);
+    xml = applyXmlTagPatch(xml, "hue", patch.hue);
+    xml = applyXmlTagPatch(xml, "sharpen", patch.sharpen);
+
+    await this.sendXml({
+      cmdId: BC_CMD_ID_SET_VIDEO_INPUT,
+      channel: ch,
+      payloadXml: ensureXmlHeader(xml),
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
   }
 
-  async setMdAlarmCgi(
-    md: Parameters<ReolinkCgiApi["SetMdAlarm"]>[0],
-  ): ReturnType<ReolinkCgiApi["SetMdAlarm"]> {
-    await this.cgiApi.login();
-    return await this.cgiApi.SetMdAlarm(md);
+  /**
+   * SetIsp via Baichuan (cmdId=25 for image side, cmdId=297 for
+   * dayNightThreshold). Patches the `<InputAdvanceCfg>` block:
+   * `DayNight/mode`, `Exposure/mode`, `binning_mode`, `hdrSwitch`.
+   * Mirrors reolink_aio's `SetIsp`.
+   *
+   * @param channel - Channel number (0-based)
+   * @param patch - Fields to update. `dayNight` accepts the camera's
+   *   raw enum (`color`, `auto`, `blackAndWhite`, …) — pass it as the
+   *   camera reports it (PascalCase / dotted forms get normalized
+   *   server-side).
+   */
+  async setIsp(
+    channel: number,
+    patch: {
+      dayNight?: string;
+      exposure?: string;
+      binningMode?: number;
+      hdr?: 0 | 1;
+      dayNightThreshold?: number;
+    },
+    options?: { timeoutMs?: number },
+  ): Promise<void> {
+    const ch = this.normalizeChannel(channel);
+    const timeoutOpts =
+      options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {};
+
+    const wantsImageWrite =
+      patch.dayNight !== undefined ||
+      patch.exposure !== undefined ||
+      patch.binningMode !== undefined ||
+      patch.hdr !== undefined;
+
+    if (wantsImageWrite) {
+      let xml = await this.sendXml({
+        cmdId: BC_CMD_ID_GET_VIDEO_INPUT,
+        channel: ch,
+        ...timeoutOpts,
+      });
+
+      if (patch.dayNight !== undefined) {
+        const normalized = normalizeDayNightMode(patch.dayNight);
+        xml = patchNestedTag(xml, "DayNight", "mode", normalized);
+      }
+      if (patch.exposure !== undefined) {
+        xml = patchNestedTag(
+          xml,
+          "Exposure",
+          "mode",
+          patch.exposure.toLowerCase(),
+        );
+      }
+      if (patch.binningMode !== undefined) {
+        xml = applyXmlTagPatch(xml, "binning_mode", patch.binningMode);
+      }
+      if (patch.hdr !== undefined) {
+        xml = applyXmlTagPatch(xml, "hdrSwitch", patch.hdr);
+      }
+
+      await this.sendXml({
+        cmdId: BC_CMD_ID_SET_VIDEO_INPUT,
+        channel: ch,
+        payloadXml: ensureXmlHeader(xml),
+        ...timeoutOpts,
+      });
+    }
+
+    if (patch.dayNightThreshold !== undefined) {
+      let xml = await this.sendXml({
+        cmdId: BC_CMD_ID_GET_DAY_NIGHT_THRESHOLD,
+        channel: ch,
+        ...timeoutOpts,
+      });
+      xml = applyXmlTagPatch(xml, "cur", patch.dayNightThreshold);
+      await this.sendXml({
+        cmdId: BC_CMD_ID_SET_DAY_NIGHT_THRESHOLD,
+        channel: ch,
+        payloadXml: ensureXmlHeader(xml),
+        ...timeoutOpts,
+      });
+    }
   }
 
+  /**
+   * GetIsp via Baichuan (cmdId=26). Convenience alias of
+   * `getVideoInput()` so callers that switched from CGI keep the
+   * familiar name. Both return the merged VideoInput +
+   * InputAdvanceCfg blob.
+   */
+  async getIsp(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<XmlJsonValue> {
+    return this.getVideoInput(channel, options) as Promise<XmlJsonValue>;
+  }
+
+  /** GetImage via Baichuan (cmdId=26). Same payload as `getIsp` —
+   *  Reolink merged VideoInput + InputAdvanceCfg under one cmdId. */
+  async getImage(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<XmlJsonValue> {
+    return this.getVideoInput(channel, options) as Promise<XmlJsonValue>;
+  }
+
+  /**
+   * GetIrLights via Baichuan (cmdId=208). Returns LedState block:
+   * `IRLedBrightness`, `state` (ir on/off), `lightState` (status LED
+   * open/close), `doorbellLightState`. Mirrors reolink_aio's
+   * `get_status_led`.
+   */
   async getIrLights(
-    channel?: Parameters<ReolinkCgiApi["GetIrLights"]>[0],
-  ): ReturnType<ReolinkCgiApi["GetIrLights"]> {
-    await this.cgiApi.login();
-    return await this.cgiApi.GetIrLights(channel);
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<XmlJsonValue> {
+    const xml = await this.sendPcapDerivedSettingsGetXml({
+      cmdId: BC_CMD_ID_GET_LED_STATE,
+      ...(channel != null ? { channel } : {}),
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+    return parseXmlFragmentToJson(xml);
   }
 
+  /**
+   * SetIrLights via Baichuan (cmdId=209, read via cmdId=208). Patches
+   * IR LED + status LED + doorbell LED + IR brightness. Mirrors
+   * reolink_aio's `set_status_led`.
+   *
+   * @param channel - Channel number (0-based)
+   * @param patch - `irState` ("On" | "Off" | "Auto"), `lightState`
+   *   (status LED), `doorbellLightState`, `irBrightness` (0..255).
+   *   Camera-side accepts lowercase strings (`open`/`close`); the
+   *   helper normalizes from the friendly variants.
+   */
   async setIrLights(
-    ir: Parameters<ReolinkCgiApi["SetIrLights"]>[0],
-  ): ReturnType<ReolinkCgiApi["SetIrLights"]> {
-    await this.cgiApi.login();
-    return await this.cgiApi.SetIrLights(ir);
+    channel: number,
+    patch: {
+      irState?: "On" | "Off" | "Auto" | string;
+      lightState?: "On" | "Off" | string;
+      doorbellLightState?: "On" | "Off" | string;
+      irBrightness?: number;
+    },
+    options?: { timeoutMs?: number },
+  ): Promise<void> {
+    const ch = this.normalizeChannel(channel);
+    const timeoutOpts =
+      options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {};
+
+    let xml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_LED_STATE,
+      channel: ch,
+      ...timeoutOpts,
+    });
+
+    if (patch.lightState !== undefined) {
+      xml = applyXmlTagPatch(
+        xml,
+        "lightState",
+        patch.lightState === "On" ? "open" : "close",
+      );
+    }
+    if (patch.doorbellLightState !== undefined) {
+      xml = applyXmlTagPatch(
+        xml,
+        "doorbellLightState",
+        normalizeOpenClose(patch.doorbellLightState),
+      );
+    }
+    if (patch.irState !== undefined) {
+      const v = String(patch.irState);
+      const out = v === "Off" ? "close" : v.toLowerCase();
+      xml = applyXmlTagPatch(xml, "state", out);
+    }
+    if (patch.irBrightness !== undefined) {
+      xml = applyXmlTagPatch(xml, "IRLedBrightness", patch.irBrightness);
+    }
+
+    await this.sendXml({
+      cmdId: BC_CMD_ID_SET_LED_STATE,
+      channel: ch,
+      payloadXml: ensureXmlHeader(xml),
+      ...timeoutOpts,
+    });
   }
 
-  /** CGI variant — distinct from the Baichuan binary `getAiCfg`
-   *  (cmdId=GET_AI_CFG). The CGI shape differs from the binary
-   *  `AiConfig` typed response; use this when paired with `setAiCfg`
-   *  which uses the CGI write path. */
-  async getAiCfgCgi(
-    channel?: Parameters<ReolinkCgiApi["GetAiCfg"]>[0],
-  ): ReturnType<ReolinkCgiApi["GetAiCfg"]> {
-    await this.cgiApi.login();
-    return await this.cgiApi.GetAiCfg(channel);
+  /**
+   * SetAudioCfg via Baichuan (cmdId=265, read via cmdId=264). Patches
+   * volume / talk-and-reply / visitor settings. Mirrors reolink_aio's
+   * `SetAudioCfg`.
+   */
+  async setAudioCfg(
+    channel: number,
+    patch: {
+      volume?: number;
+      talkAndReplyVolume?: number;
+      visitorVolume?: number;
+      visitorLoudspeaker?: number;
+    },
+    options?: { timeoutMs?: number },
+  ): Promise<void> {
+    const ch = this.normalizeChannel(channel);
+    const timeoutOpts =
+      options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {};
+
+    let xml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_AUDIO_CFG,
+      channel: ch,
+      ...timeoutOpts,
+    });
+
+    xml = applyXmlTagPatch(xml, "volume", patch.volume);
+    xml = applyXmlTagPatch(
+      xml,
+      "talkAndReplyVolume",
+      patch.talkAndReplyVolume,
+    );
+    xml = applyXmlTagPatch(xml, "visitorVolume", patch.visitorVolume);
+    xml = applyXmlTagPatch(xml, "visitorLoudspeaker", patch.visitorLoudspeaker);
+
+    await this.sendXml({
+      cmdId: BC_CMD_ID_SET_AUDIO_CFG,
+      channel: ch,
+      payloadXml: ensureXmlHeader(xml),
+      ...timeoutOpts,
+    });
   }
 
-  async setAiCfg(
-    ai: Parameters<ReolinkCgiApi["SetAiCfg"]>[0],
-  ): ReturnType<ReolinkCgiApi["SetAiCfg"]> {
-    await this.cgiApi.login();
-    return await this.cgiApi.SetAiCfg(ai);
+  /**
+   * GetMask (privacy mask) via Baichuan (cmdId=52). Returns the
+   * `<Shelter>` block — `enable` flag + `shelterList`. Mirrors
+   * reolink_aio's `GetMask`.
+   */
+  async getMask(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<XmlJsonValue> {
+    const xml = await this.sendPcapDerivedSettingsGetXml({
+      cmdId: BC_CMD_ID_GET_PRIVACY_MASK,
+      ...(channel != null ? { channel } : {}),
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+    return parseXmlFragmentToJson(xml);
+  }
+
+  /**
+   * SetMask (privacy mask) via Baichuan (cmdId=53, read via cmdId=52).
+   * Toggles the `<Shelter><enable>` flag. Mirrors reolink_aio's
+   * `SetMask` (which only touches enable too — shelter zone editing
+   * goes through a separate flow).
+   */
+  async setMask(
+    channel: number,
+    patch: { enable?: 0 | 1 | boolean },
+    options?: { timeoutMs?: number },
+  ): Promise<void> {
+    const ch = this.normalizeChannel(channel);
+    const timeoutOpts =
+      options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {};
+
+    let xml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_PRIVACY_MASK,
+      channel: ch,
+      ...timeoutOpts,
+    });
+
+    if (patch.enable !== undefined) {
+      xml = applyXmlTagPatch(xml, "enable", patch.enable ? 1 : 0);
+    }
+
+    await this.sendXml({
+      cmdId: BC_CMD_ID_SET_PRIVACY_MASK,
+      channel: ch,
+      payloadXml: ensureXmlHeader(xml),
+      ...timeoutOpts,
+    });
+  }
+
+  /**
+   * GetAudioNoise via Baichuan (cmdId=439). Reads `enable` + `level`
+   * from the aiDenoise block. Mirrors reolink_aio's `GetAudioNoise`.
+   *
+   * Note: `getAiDenoise` already returns the same payload typed as
+   * `AiDenoiseConfig`. This getter exists for naming parity with
+   * reolink_aio + the reolink CGI.
+   */
+  async getAudioNoise(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<XmlJsonValue> {
+    const xml = await this.sendPcapDerivedSettingsGetXml({
+      cmdId: BC_CMD_ID_GET_AI_DENOISE,
+      ...(channel != null ? { channel } : {}),
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+    return parseXmlFragmentToJson(xml);
+  }
+
+  /**
+   * SetAudioNoise via Baichuan (cmdId=440, read via cmdId=439).
+   * Mirrors reolink_aio's `SetAudioNoise` — `level <= 0` flips the
+   * enable flag off; positive values turn it on and update the level.
+   */
+  async setAudioNoise(
+    channel: number,
+    level: number,
+    options?: { timeoutMs?: number },
+  ): Promise<void> {
+    const ch = this.normalizeChannel(channel);
+    const timeoutOpts =
+      options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {};
+
+    let xml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_AI_DENOISE,
+      channel: ch,
+      ...timeoutOpts,
+    });
+
+    xml = applyXmlTagPatch(xml, "enable", level > 0 ? 1 : 0);
+    if (level > 0) {
+      xml = applyXmlTagPatch(xml, "level", level);
+    }
+
+    await this.sendXml({
+      cmdId: BC_CMD_ID_SET_AI_DENOISE,
+      channel: ch,
+      payloadXml: ensureXmlHeader(xml),
+      ...timeoutOpts,
+    });
+  }
+
+  /**
+   * GetAutoFocus via Baichuan (cmdId=224). Returns the `<AutoFocus>`
+   * block — only `disable` (0 = AF on, 1 = AF off). Mirrors
+   * reolink_aio's `GetAutoFocus`.
+   */
+  async getAutoFocus(
+    channel: number,
+    options?: { timeoutMs?: number },
+  ): Promise<XmlJsonValue> {
+    const ch = this.normalizeChannel(channel);
+    const xml = await this.sendPcapDerivedSettingsGetXml({
+      cmdId: BC_CMD_ID_GET_AUTO_FOCUS,
+      channel: ch,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+    return parseXmlFragmentToJson(xml);
+  }
+
+  /**
+   * SetAutoFocus via Baichuan (cmdId=225). Mirrors reolink_aio's
+   * `SetAutoFocus`. Note: write-only command — the payload is built
+   * from scratch (no read-modify-write needed).
+   */
+  async setAutoFocus(
+    channel: number,
+    disable: 0 | 1 | boolean,
+    options?: { timeoutMs?: number },
+  ): Promise<void> {
+    const ch = this.normalizeChannel(channel);
+    const disableVal = disable ? 1 : 0;
+    const payloadXml = `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<AutoFocus version="1.1">
+<channelId>${ch}</channelId>
+<disable>${disableVal}</disable>
+</AutoFocus>
+</body>`;
+    await this.sendXml({
+      cmdId: BC_CMD_ID_SET_AUTO_FOCUS,
+      channel: ch,
+      payloadXml,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
   }
 
   /**

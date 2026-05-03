@@ -1,6 +1,6 @@
 {
   "name": "@apocaliss92/nodelink-js",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "description": "TypeScript library implementing Reolink Baichuan protocol (control + streaming) with CGI and RTSP helpers. Full TypeScript support with comprehensive type definitions.",
   "license": "MIT",
   "author": "",

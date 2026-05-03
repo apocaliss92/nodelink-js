@@ -389,6 +389,129 @@ export function buildWhiteLedStateXml(
   return buildFloodlightManualXml(channelId, state ? 1 : 0);
 }
 
+// ====================================================================
+// Read-modify-write helpers for Baichuan binary settings setters.
+//
+// Reolink firmwares are XML-strict — they reject payloads that drop
+// unmodified attributes or reorder elements. The setX methods on
+// `ReolinkBaichuanApi` follow reolink_aio's pattern: read the current
+// XML, mutate only the targeted tag(s) via regex, and write the same
+// document back. These helpers encapsulate the regex churn so each
+// setter stays a one-liner.
+// ====================================================================
+
+const XML_HEADER = `<?xml version="1.0" encoding="UTF-8" ?>`;
+
+/**
+ * Prepend the XML declaration if the body doesn't already start with
+ * one. Reolink rejects payloads without it on most setX commands.
+ */
+export function ensureXmlHeader(xml: string): string {
+  const trimmed = xml.trimStart();
+  if (trimmed.startsWith("<?xml")) return xml;
+  return `${XML_HEADER}\n${xml}`;
+}
+
+/**
+ * Replace the text content of `<tag>...</tag>` (first match) with the
+ * stringified value. No-op when `value` is undefined — lets callers
+ * pass partial patches without branching at every field.
+ */
+export function applyXmlTagPatch(
+  xml: string,
+  tag: string,
+  value: string | number | boolean | undefined,
+): string {
+  if (value === undefined) return xml;
+  const v = typeof value === "boolean" ? (value ? 1 : 0) : value;
+  const re = new RegExp(`<${tag}>[^<]*</${tag}>`);
+  return xml.replace(re, `<${tag}>${v}</${tag}>`);
+}
+
+/**
+ * Patch a child tag inside a named parent block. Used for nested
+ * structures like `<DayNight><mode>...</mode></DayNight>` where the
+ * same `<mode>` tag appears under multiple parents.
+ */
+export function patchNestedTag(
+  xml: string,
+  parent: string,
+  child: string,
+  value: string | number | boolean | undefined,
+): string {
+  if (value === undefined) return xml;
+  const v = typeof value === "boolean" ? (value ? 1 : 0) : value;
+  // Match <parent>…<child>...</child>…</parent>, keep everything else.
+  const re = new RegExp(
+    `(<${parent}[^>]*>[\\s\\S]*?<${child}>)[^<]*(</${child}>[\\s\\S]*?</${parent}>)`,
+  );
+  return xml.replace(re, `$1${v}$2`);
+}
+
+/**
+ * Patch one or more fields inside an `<Enc>` stream block
+ * (`<mainStream>` or `<subStream>`). Used by `setEnc` —
+ * Reolink emits both blocks in the same document so a per-block scope
+ * is needed to avoid clobbering the wrong stream.
+ */
+export function applyStreamPatch(
+  xml: string,
+  streamTag: "mainStream" | "subStream",
+  patch:
+    | {
+        bitRate?: number;
+        frameRate?: number;
+        videoEncType?: "h264" | "h265";
+      }
+    | undefined,
+): string {
+  if (!patch) return xml;
+  const re = new RegExp(
+    `(<${streamTag}[^>]*>)([\\s\\S]*?)(</${streamTag}>)`,
+  );
+  return xml.replace(re, (_match, open: string, body: string, close: string) => {
+    let next = body;
+    if (patch.bitRate !== undefined) {
+      next = applyXmlTagPatch(next, "bitRate", patch.bitRate);
+    }
+    if (patch.frameRate !== undefined) {
+      // The Enc block uses `<frameRate>` for the value but reolink_aio
+      // also patches `<frame>` (older firmwares). Cover both — no-op
+      // if only one is present.
+      next = applyXmlTagPatch(next, "frameRate", patch.frameRate);
+      next = applyXmlTagPatch(next, "frame", patch.frameRate);
+    }
+    if (patch.videoEncType !== undefined) {
+      const intVal = patch.videoEncType === "h265" ? 1 : 0;
+      next = applyXmlTagPatch(next, "videoEncType", intVal);
+    }
+    return `${open}${next}${close}`;
+  });
+}
+
+/**
+ * Normalize human-friendly day/night labels to the camera's expected
+ * lowercase form. Mirrors reolink_aio's `SetIsp` post-processing
+ * (`& → And`, capitalize first letter).
+ */
+export function normalizeDayNightMode(input: string): string {
+  const stripped = String(input).replace(/&/g, "And");
+  if (!stripped) return stripped;
+  const first = stripped[0];
+  if (first === undefined) return stripped;
+  return first.toLowerCase() + stripped.slice(1);
+}
+
+/**
+ * Normalize "On"/"Off" / "open"/"close" / boolean-ish inputs to the
+ * `open`/`close` enum the camera expects on LED-control commands.
+ */
+export function normalizeOpenClose(input: string): string {
+  const v = String(input).toLowerCase();
+  if (v === "on" || v === "open" || v === "1" || v === "true") return "open";
+  return "close";
+}
+
 /**
  * Build AbilityInfo extension XML for requesting device capabilities.
  * Requests all available tokens: "system, streaming, PTZ, IO, security, replay, disk, network, alarm, record, video, image"

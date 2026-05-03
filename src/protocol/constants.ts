@@ -186,10 +186,60 @@ export const BC_CMD_ID_GET_SIREN_STATUS = 547; // <SirenStatusList> - Siren stat
 // cmdId=231 SET sends encrypted XML payload to toggle motion alarm
 export const BC_CMD_ID_SET_AUDIO_TASK = 231; // SetAudioTask - Toggle motion alarm enable/disable
 
-// Unknown / no XML samples captured in current PCAP corpus (still observed cmdIds)
+// SetVideoInput / SetImage / SetIsp share the same write cmdId.
+// GET (cmdId=26) returns the merged blob, SET (cmdId=25) writes back the
+// patched XML. Mirrors reolink_aio's @http_cmd("SetImage") / SetIsp.
+export const BC_CMD_ID_SET_VIDEO_INPUT = 25; // SetImage / SetIsp - write patched VideoInput/InputAdvanceCfg
+export const BC_CMD_ID_SET_DAY_NIGHT_THRESHOLD = 297; // SetIsp dayNightThreshold writer
+
+// Encoding settings (mainStream / subStream / audio / bitrate / framerate).
+// cmdId=56 GET <Enc>, cmdId=57 SET (read-modify-write).
+export const BC_CMD_ID_GET_ENC = 56; // GetEnc - encoding info
+export const BC_CMD_ID_SET_ENC = 57; // SetEnc - write patched encoding
+
+// Privacy mask (Shelter). cmdId=52 GET, cmdId=53 SET (read-modify-write).
+export const BC_CMD_ID_GET_PRIVACY_MASK = 52; // GetMask - privacy mask config
+export const BC_CMD_ID_SET_PRIVACY_MASK = 53; // SetMask - write patched mask
+
+// Audio noise reduction (aiDenoise). cmdId=439 GET, cmdId=440 SET.
+export const BC_CMD_ID_SET_AI_DENOISE = 440; // SetAudioNoise - write aiDenoise
+
+// LED state (status LED + IR lights). cmdId=208 GET, cmdId=209 SET.
+export const BC_CMD_ID_SET_LED_STATE = 209; // SetIrLights / SetPowerLed - write LedState
+
+// AudioCfg (volume / talk / visitor). cmdId=264 GET, cmdId=265 SET.
+export const BC_CMD_ID_SET_AUDIO_CFG = 265; // SetAudioCfg - write audio settings
+
+// Recording schedule. cmdId=81 GET schedule, cmdId=82 SET schedule.
+// cmdId=54 GET RecordCfg (delay/pack), cmdId=55 SET RecordCfg.
+export const BC_CMD_ID_SET_RECORD = 82; // SetRec - write recording schedule
+export const BC_CMD_ID_SET_RECORD_CFG = 55; // SetRecCfg - write recording delay/pack
+
+// Email task. cmdId=217 GET, cmdId=216 SET.
+export const BC_CMD_ID_SET_EMAIL_TASK = 216; // SetEmail - write email schedule
+
+// Push task. cmdId=219 GET, cmdId=218 SET.
+export const BC_CMD_ID_GET_PUSH_TASK = 219; // GetPush - push schedule
+export const BC_CMD_ID_SET_PUSH_TASK = 218; // SetPush - write push schedule
+
+// Audio alarm (siren on event). GET cmdId=232 (shared with AudioTask),
+// SET cmdId=231 (shared with SetAudioTask).
+// We reuse BC_CMD_ID_GET_AUDIO_TASK / BC_CMD_ID_SET_AUDIO_TASK above.
+
+// Auto focus. cmdId=224 GET, cmdId=225 SET.
+export const BC_CMD_ID_GET_AUTO_FOCUS = 224; // GetAutoFocus - auto focus settings
+export const BC_CMD_ID_SET_AUTO_FOCUS = 225; // SetAutoFocus - write auto focus
+
+// Legacy placeholder aliases — kept for back-compat with consumers that
+// referenced the cmd_id directly. New callers should use the semantic
+// names above.
+/** @deprecated Use {@link BC_CMD_ID_SET_LED_STATE} (209). */
 export const BC_CMD_ID_CMD_123 = 123;
+/** @deprecated Use {@link BC_CMD_ID_SET_LED_STATE} (209). */
 export const BC_CMD_ID_CMD_209 = 209;
+/** @deprecated Use {@link BC_CMD_ID_SET_AUDIO_CFG} (265). */
 export const BC_CMD_ID_CMD_265 = 265;
+/** @deprecated Use {@link BC_CMD_ID_SET_AI_DENOISE} (440). */
 export const BC_CMD_ID_CMD_440 = 440;
 
 // push/device->client (camera-initiated)
