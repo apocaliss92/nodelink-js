@@ -413,6 +413,22 @@ export class ReolinkBaichuanApi {
   readonly logger: Logger;
   private readonly httpClient: ReolinkHttpClient;
   private readonly cgiApi: ReolinkCgiApi;
+
+  /**
+   * Public CGI accessor — exposes the underlying `ReolinkCgiApi`
+   * (HTTP /cgi-bin endpoint) for callers that need methods the
+   * Baichuan binary protocol doesn't expose. Operator-tunable
+   * settings like Isp / AudioCfg / Enc / MdAlarm / IrLights / AiCfg
+   * have CGI setters but no Baichuan equivalents — this getter is
+   * the only way for consumers (Scrypted plugin, camstack-server)
+   * to reach them without instantiating a separate `ReolinkCgiApi`
+   * with duplicated credentials. Reuses the same login session as
+   * the parent api.
+   */
+  get cgi(): ReolinkCgiApi {
+    return this.cgiApi;
+  }
+
   private readonly nativeOnly: boolean;
   private readonly host: string;
   private readonly username: string;
