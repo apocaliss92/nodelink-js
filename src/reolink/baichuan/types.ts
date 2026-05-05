@@ -1318,6 +1318,171 @@ export interface AiAlarmConfig {
 }
 
 /**
+ * Per-stream encoding entry inside `Compression`. Captured live on
+ * E1-Zoom (TCP), Doorbell (UDP), Hub channel-0 (Argus 3E).
+ *
+ * Note: the camera-side field name is `frame`, NOT `frameRate`.
+ * `videoEncType` is a numeric enum (`0` = h264, `1` = h265). The
+ * `gop`/`encoderType`/`separateCfg` sub-blocks are firmware-dependent
+ * (Hub-channel cameras carry them; standalone devices may not).
+ */
+export interface CompressionStream {
+  audio?: number | undefined;
+  resolutionName?: string | undefined;
+  width?: number | undefined;
+  height?: number | undefined;
+  frame?: number | undefined;
+  bitRate?: number | undefined;
+  encoderProfile?: string | undefined;
+  videoEncType?: number | undefined;
+  gop?: { cur?: number; max?: number; min?: number } | undefined;
+  encoderType?: string | undefined;
+  [key: string]: unknown;
+}
+
+/**
+ * Encoding configuration (getEnc response).
+ * cmdId=56 (GetEnc) — payload is wrapped in `Compression`, not `Enc`.
+ */
+export interface EncConfig {
+  body?: {
+    Compression?: {
+      channelId?: number | undefined;
+      isNoTranslateFrame?: number | undefined;
+      mainStream?: CompressionStream | undefined;
+      subStream?: CompressionStream | undefined;
+      thirdStream?: CompressionStream | undefined;
+      separateCfg?: { encodeCfg?: number; [key: string]: unknown } | undefined;
+      [key: string]: unknown;
+    };
+  };
+}
+
+/**
+ * ISP / image input configuration. Both `getIsp` (cmdId=25) and
+ * `getImage` (cmdId=26) return identical payloads on observed firmwares
+ * — the underlying VideoInput + InputAdvanceCfg blocks. Different
+ * cmdIds preserved for backwards compatibility.
+ */
+export interface IspConfig {
+  body?: {
+    VideoInput?: {
+      channelId?: number | undefined;
+      bright?: number | undefined;
+      contrast?: number | undefined;
+      saturation?: number | undefined;
+      hue?: number | undefined;
+      sharpen?: number | undefined;
+      corridorAbility?: number | undefined;
+      corridorMode?: string | undefined;
+      [key: string]: unknown;
+    };
+    InputAdvanceCfg?: {
+      channelId?: number | undefined;
+      digitalChannel?: number | undefined;
+      separateCfg?: { encType?: number; constantFrameRate?: number; [key: string]: unknown } | undefined;
+      PowerLineFrequency?: { mode?: string; enable?: number; [key: string]: unknown } | undefined;
+      Exposure?: {
+        mode?: string;
+        Gainctl?: { defMin?: number; defMax?: number; curMin?: number; curMax?: number };
+        Shutterctl?: { defMin?: number; defMax?: number; curMin?: number; curMax?: number };
+        shutterLevel?: string;
+        gainLevel?: number;
+        [key: string]: unknown;
+      } | undefined;
+      Scene?: {
+        mode?: string;
+        modeList?: string;
+        Redgain?: { min?: number; max?: number; cur?: number };
+        Bluegain?: { min?: number; max?: number; cur?: number };
+        [key: string]: unknown;
+      } | undefined;
+      DayNight?: { mode?: string; IrcutMode?: string; Threshold?: string; [key: string]: unknown } | undefined;
+      BLC?: { enable?: number; mode?: string; [key: string]: unknown } | undefined;
+      [key: string]: unknown;
+    };
+  };
+}
+
+/**
+ * IR / supplemental light state (`getIrLights`). Captured live on every
+ * test camera — `state` is the operator-facing toggle, `lightState` is
+ * the camera's own runtime status. `doorbellLightState` /
+ * `doorbellAbility` only appear on doorbell models.
+ */
+export interface IrLightsConfig {
+  body?: {
+    LedState?: {
+      channelId?: number | undefined;
+      ledVersion?: number | undefined;
+      IRLedBrightness?: number | undefined;
+      state?: string | undefined;
+      lightState?: string | undefined;
+      doorbellLightState?: string | undefined;
+      doorbellAbility?: number | undefined;
+      [key: string]: unknown;
+    };
+  };
+}
+
+/**
+ * Privacy mask configuration (`getMask`). The `Shelter` block always
+ * contains `enable` + `maxNum` + `shelterList`; tracked-shelter sub-
+ * blocks (`trackEnable`, `trackShelterList`) are PTZ-only and
+ * conditional on the camera supporting motion-tracking. Hub-channel
+ * cameras include `separateCfg` + `logicChannel`.
+ */
+export interface MaskConfig {
+  body?: {
+    Shelter?: {
+      channelId?: number | undefined;
+      enable?: number | undefined;
+      maxNum?: number | undefined;
+      shelterList?: unknown;
+      trackEnable?: number | undefined;
+      maxTrackShelterNum?: number | undefined;
+      trackShelterList?: unknown;
+      separateCfg?: { shelter?: number; [key: string]: unknown } | undefined;
+      logicChannel?: number | undefined;
+      [key: string]: unknown;
+    };
+  };
+}
+
+/**
+ * Audio noise reduction configuration (`getAudioNoise`).
+ * cmdId=439. Note: the wire tag is lowercase `aiDenoise` (capital `V`
+ * in `@_Version`). Mirrors the camera-side schema observed live.
+ */
+export interface AudioNoiseConfig {
+  body?: {
+    aiDenoise?: {
+      channelId?: number | undefined;
+      enable?: number | undefined;
+      level?: number | undefined;
+      [key: string]: unknown;
+    };
+  };
+}
+
+/**
+ * Auto-focus configuration (`getAutoFocus`). cmdId=224.
+ *
+ * The `disable` field is a 0/1 flag — `0` means autofocus is ENABLED.
+ * Non-PTZ cameras may return an empty `{}` or 400 — callers should
+ * narrow `body?.AutoFocus?.disable` defensively.
+ */
+export interface AutoFocusConfig {
+  body?: {
+    AutoFocus?: {
+      channelId?: number | undefined;
+      disable?: number | undefined;
+      [key: string]: unknown;
+    };
+  };
+}
+
+/**
  * Video input configuration.
  * cmdId=75 (GetVideoInput)
  */

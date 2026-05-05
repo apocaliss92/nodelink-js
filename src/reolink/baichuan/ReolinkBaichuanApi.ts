@@ -238,6 +238,12 @@ import type {
   MotionAlarmConfig,
   AiAlarmConfig,
   VideoInputConfig,
+  EncConfig,
+  IspConfig,
+  IrLightsConfig,
+  MaskConfig,
+  AudioNoiseConfig,
+  AutoFocusConfig,
   SystemGeneralConfig,
   SupportConfig,
   SirenStatusConfig,
@@ -12148,21 +12154,23 @@ export class ReolinkBaichuanApi {
   // ====================================================================
 
   /**
-   * GetEnc via Baichuan (cmdId=56). Returns the `<Enc>` block: per-
-   * stream `mainStream` / `subStream` with `audio` flag, `width`,
-   * `height`, `videoEncType`, `frameRate`, `bitRate`, `gop`, `profile`,
-   * `size`, `vType`. Mirrors reolink_aio's `GetEnc`.
+   * GetEnc via Baichuan (cmdId=56). Returns the `<Compression>` block:
+   * per-stream `mainStream` / `subStream` / `thirdStream` with `audio`
+   * flag, `width`, `height`, `frame` (NOT `frameRate`), `bitRate`,
+   * `videoEncType` (0=h264, 1=h265), `encoderProfile`, `gop`. Mirrors
+   * reolink_aio's `GetEnc` — note the wire payload wraps everything
+   * in `Compression`, not `Enc`.
    */
   async getEnc(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<XmlJsonValue> {
+  ): Promise<EncConfig> {
     const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_ENC,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
-    return parseXmlFragmentToJson(xml);
+    return parseXmlFragmentToJson<EncConfig>(xml);
   }
 
   /**
@@ -12344,8 +12352,8 @@ export class ReolinkBaichuanApi {
   async getIsp(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<XmlJsonValue> {
-    return this.getVideoInput(channel, options) as Promise<XmlJsonValue>;
+  ): Promise<IspConfig> {
+    return this.getVideoInput(channel, options) as Promise<IspConfig>;
   }
 
   /** GetImage via Baichuan (cmdId=26). Same payload as `getIsp` —
@@ -12353,8 +12361,8 @@ export class ReolinkBaichuanApi {
   async getImage(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<XmlJsonValue> {
-    return this.getVideoInput(channel, options) as Promise<XmlJsonValue>;
+  ): Promise<IspConfig> {
+    return this.getVideoInput(channel, options) as Promise<IspConfig>;
   }
 
   /**
@@ -12366,13 +12374,13 @@ export class ReolinkBaichuanApi {
   async getIrLights(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<XmlJsonValue> {
+  ): Promise<IrLightsConfig> {
     const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_LED_STATE,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
-    return parseXmlFragmentToJson(xml);
+    return parseXmlFragmentToJson<IrLightsConfig>(xml);
   }
 
   /**
@@ -12487,13 +12495,13 @@ export class ReolinkBaichuanApi {
   async getMask(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<XmlJsonValue> {
+  ): Promise<MaskConfig> {
     const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_PRIVACY_MASK,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
-    return parseXmlFragmentToJson(xml);
+    return parseXmlFragmentToJson<MaskConfig>(xml);
   }
 
   /**
@@ -12540,13 +12548,13 @@ export class ReolinkBaichuanApi {
   async getAudioNoise(
     channel?: number,
     options?: { timeoutMs?: number },
-  ): Promise<XmlJsonValue> {
+  ): Promise<AudioNoiseConfig> {
     const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_AI_DENOISE,
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
-    return parseXmlFragmentToJson(xml);
+    return parseXmlFragmentToJson<AudioNoiseConfig>(xml);
   }
 
   /**
@@ -12590,14 +12598,14 @@ export class ReolinkBaichuanApi {
   async getAutoFocus(
     channel: number,
     options?: { timeoutMs?: number },
-  ): Promise<XmlJsonValue> {
+  ): Promise<AutoFocusConfig> {
     const ch = this.normalizeChannel(channel);
     const xml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_AUTO_FOCUS,
       channel: ch,
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
-    return parseXmlFragmentToJson(xml);
+    return parseXmlFragmentToJson<AutoFocusConfig>(xml);
   }
 
   /**
