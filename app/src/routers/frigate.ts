@@ -3,6 +3,7 @@ import { z } from "zod";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import YAML from "yaml";
+import { atomicWriteFileSync } from "../atomic-write.js";
 import { getSettings } from "../settings-store.js";
 import { getConfig } from "../settings-store.js";
 import {
@@ -45,7 +46,7 @@ function loadBackupIndex(): BackupEntry[] {
 
 function saveBackupIndex(entries: BackupEntry[]): void {
   ensureBackupDir();
-  fs.writeFileSync(getBackupIndexPath(), JSON.stringify(entries, null, 2));
+  atomicWriteFileSync(getBackupIndexPath(), JSON.stringify(entries, null, 2));
 }
 
 function createBackup(yamlBefore: string, summary: string): BackupEntry {
@@ -53,7 +54,7 @@ function createBackup(yamlBefore: string, summary: string): BackupEntry {
   const now = new Date();
   const id = now.toISOString().replace(/[:.]/g, "-");
   const filename = `frigate-config-${id}.yaml`;
-  fs.writeFileSync(path.join(BACKUP_DIR, filename), yamlBefore);
+  atomicWriteFileSync(path.join(BACKUP_DIR, filename), yamlBefore);
 
   const entry: BackupEntry = {
     id,

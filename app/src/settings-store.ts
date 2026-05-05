@@ -1,5 +1,4 @@
 import { z } from "zod";
-import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -11,6 +10,7 @@ import {
   type RtspServerConfig,
 } from "./types.js";
 import { hashPassword } from "./password.js";
+import { atomicWriteFileSync, readWithBackupFallback } from "./atomic-write.js";
 
 export const RTSP_DIGEST_REALM = "RTSP Proxy";
 
@@ -219,14 +219,17 @@ const SETTINGS_FILE = path.join(DATA_DIR, "settings.json");
 
 let settings: Settings = SettingsSchema.parse({});
 
-// Load settings from file
+// Load settings from file. If the primary file is missing, empty, or corrupt
+// (e.g. truncated to 0 bytes by a crash mid-write — see issue #17), fall back
+// to the .bak sibling written by the previous successful save before giving up
+// and using defaults.
 export function loadSettings(): Settings {
+  const data = readWithBackupFallback(SETTINGS_FILE);
+  if (data === null) {
+    return settings;
+  }
   try {
-    if (fs.existsSync(SETTINGS_FILE)) {
-      const data = fs.readFileSync(SETTINGS_FILE, "utf-8");
-      const parsed = JSON.parse(data);
-      settings = SettingsSchema.parse(parsed);
-    }
+    settings = SettingsSchema.parse(JSON.parse(data));
   } catch (error) {
     console.error("Failed to load settings, using defaults:", error);
     settings = SettingsSchema.parse({});
@@ -234,11 +237,16 @@ export function loadSettings(): Settings {
   return settings;
 }
 
-// Save settings to file
+// Save settings to file atomically (tmp + fsync + rename) so a crash between
+// O_TRUNC and write() can never leave settings.json at 0 bytes. Keeps a .bak
+// of the previous version for one-step recovery if the rename ever races on
+// something exotic.
 export function saveSettings(newSettings: Partial<Settings>): Settings {
   settings = SettingsSchema.parse({ ...settings, ...newSettings });
 
-  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
+  atomicWriteFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2), {
+    keepBackup: true,
+  });
   return settings;
 }
 

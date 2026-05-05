@@ -14,7 +14,8 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { resolve as resolvePath } from "node:path";
-import { existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
+import { atomicWriteFileSync } from "./atomic-write.js";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { createSourceLogger } from "./logger.js";
@@ -195,7 +196,7 @@ export class Go2rtcManager {
     const yaml = generateGo2rtcYaml(this.streams, this.options);
     const configPath = join(this.options.dataDir, "go2rtc.yaml");
     mkdirSync(dirname(configPath), { recursive: true });
-    writeFileSync(configPath, yaml, "utf-8");
+    atomicWriteFileSync(configPath, yaml);
     this.configPath = configPath;
 
     // Resolve binary
@@ -375,7 +376,7 @@ export class Go2rtcManager {
   private async rewriteYamlFromState(): Promise<void> {
     if (!this.configPath) return;
     const yaml = generateGo2rtcYaml(this.streams, this.options);
-    writeFileSync(this.configPath, yaml, "utf-8");
+    atomicWriteFileSync(this.configPath, yaml);
   }
 
   /** Get registered streams (from go2rtc API if running, otherwise from local cache). */

@@ -247,6 +247,17 @@ export interface PirState {
   state?: {
     enable?: number;
     channel?: number;
+    /** PIR sensitivity (typically 1..100). Camera-side field is
+     *  `sensiValue` in the cmd_id 212 response. */
+    sensitive?: number;
+    /** False-positive reduction toggle (`reduceFalseAlarm` on the
+     *  wire). 0/1. */
+    reduceAlarm?: number;
+    /** Cooldown between consecutive PIR triggers (seconds). */
+    interval?: number;
+    /** Firmware-advertised max value for `interval`. Drives the
+     *  upper bound of operator-facing sliders. */
+    intervalMax?: number;
     [key: string]: unknown;
   };
 }
