@@ -89,8 +89,8 @@ describe("Go2rtcTcpServer — rejected profile (issue #13 follow-up)", () => {
       // First call ends immediately, subsequent calls return a hanging generator
       // so we don't loop forever in this test.
       if (counter === 1) return makeImmediateEndGenerator() as any;
+      // eslint-disable-next-line require-yield
       return (async function* () {
-        // eslint-disable-next-line require-yield
         await new Promise<never>(() => {});
       })();
     }) as any);
