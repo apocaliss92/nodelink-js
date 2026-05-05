@@ -2660,11 +2660,8 @@ export default function SettingsPage() {
           }}
         >
           <div
-            className="border border-[var(--color-border)] rounded-xl p-4 shadow-2xl"
-            style={{
-              width: "min(720px, 100%)",
-              background: "rgba(15, 23, 42, 0.96)",
-            }}
+            className="border border-[var(--color-border)] bg-[var(--color-background-elevated)] text-[var(--color-foreground)] rounded-xl p-4 shadow-2xl"
+            style={{ width: "min(720px, 100%)" }}
           >
             <div className="flex items-center justify-between gap-2.5">
               <div>
@@ -2763,8 +2760,8 @@ export default function SettingsPage() {
           }}
         >
           <div
-            className="border border-[var(--color-border)] rounded-xl p-4 shadow-2xl"
-            style={{ width: "min(480px, 100%)", background: "rgba(15, 23, 42, 0.96)" }}
+            className="border border-[var(--color-border)] bg-[var(--color-background-elevated)] text-[var(--color-foreground)] rounded-xl p-4 shadow-2xl"
+            style={{ width: "min(480px, 100%)" }}
           >
             <div className="font-extrabold mb-1">Restart required</div>
             <div className="text-sm text-[var(--color-foreground-muted)] mb-4">
@@ -2802,8 +2799,8 @@ export default function SettingsPage() {
           className="fixed inset-0 z-50 p-4 grid place-items-center bg-black/[.75] backdrop-blur-sm"
         >
           <div
-            className="border border-[var(--color-border)] rounded-xl p-6 shadow-2xl text-center"
-            style={{ width: "min(420px, 100%)", background: "rgba(15, 23, 42, 0.96)" }}
+            className="border border-[var(--color-border)] bg-[var(--color-background-elevated)] text-[var(--color-foreground)] rounded-xl p-6 shadow-2xl text-center"
+            style={{ width: "min(420px, 100%)" }}
           >
             <div className="font-extrabold mb-2">Restarting server…</div>
             <div className="text-sm text-[var(--color-foreground-muted)]">
