@@ -279,6 +279,17 @@ export class Go2rtcTcpServer extends EventEmitter<{
   // Native stream
   private nativeFanout: NativeStreamFanout | null = null;
   private nativeStreamActive = false;
+  // Set only by stopNativeStream() (explicit teardown) so the fanout's onEnd
+  // callback can short-circuit cleanup/restart logic. NOT set by the inactivity-
+  // timeout force-restart path — that flow wants onEnd to run and decide
+  // whether to restart based on prestartStream / connected clients.
+  private nativeStreamStopping = false;
+  // Pending retry timer for the unbounded auto-restart loop. When a stream
+  // start fails transiently (camera in maintenance reboot, idle-disconnect
+  // race, etc.) we keep trying with exponential backoff until either the
+  // server is stopped or a frame finally arrives.
+  private nativeStreamRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  private nativeStreamRetryDelayMs = 0;
   private dedicatedSessionRelease: (() => Promise<void>) | undefined;
   private detectedVideoType: "H264" | "H265" | undefined;
 
@@ -365,6 +376,7 @@ export class Go2rtcTcpServer extends EventEmitter<{
     if (!this.active) return;
     this.active = false;
     clearTimeout(this.stopGraceTimer);
+    this.clearNativeStreamRetry();
     this.stopStreamHealthMonitor();
 
     // Close all client sockets
@@ -775,6 +787,53 @@ export class Go2rtcTcpServer extends EventEmitter<{
   // Native stream management
   // -----------------------------------------------------------------------
 
+  /**
+   * Schedule another startNativeStream() attempt after the given delay.
+   * Idempotent: a no-op if a retry is already scheduled, the server is no
+   * longer active, or an explicit stop is in progress. Implements unbounded
+   * exponential backoff (5s → 60s) so a camera that stays unreachable for
+   * minutes (e.g. nightly maintenance reboot) eventually recovers without
+   * manual intervention — see issue #16.
+   */
+  private scheduleNativeStreamRetry(reason: string): void {
+    if (!this.active) return;
+    if (this.nativeStreamStopping) return;
+    if (this.nativeStreamRetryTimer) return;
+
+    const delay = this.nativeStreamRetryDelayMs > 0
+      ? this.nativeStreamRetryDelayMs
+      : 5_000;
+    this.logger.info?.(
+      `[Go2rtcTcpServer] scheduling native stream retry in ${(delay / 1000).toFixed(0)}s (reason=${reason})`,
+    );
+    this.nativeStreamRetryTimer = setTimeout(() => {
+      this.nativeStreamRetryTimer = undefined;
+      if (!this.active) return;
+      if (this.nativeStreamStopping) return;
+      this.startNativeStream().catch((err) => {
+        this.logger.warn?.(
+          `[Go2rtcTcpServer] retry of startNativeStream threw: ${err instanceof Error ? err.message : err}`,
+        );
+      });
+    }, delay);
+
+    // Exponential backoff: 5 → 10 → 20 → 40 → 60 (capped). Reset on first frame.
+    this.nativeStreamRetryDelayMs = Math.min(delay * 2, 60_000);
+  }
+
+  /**
+   * Cancel any pending retry timer and reset the backoff. Called on explicit
+   * stop and on first-frame-received so the next failure starts the backoff
+   * window from scratch.
+   */
+  private clearNativeStreamRetry(): void {
+    if (this.nativeStreamRetryTimer) {
+      clearTimeout(this.nativeStreamRetryTimer);
+      this.nativeStreamRetryTimer = undefined;
+    }
+    this.nativeStreamRetryDelayMs = 0;
+  }
+
   private async startNativeStream(): Promise<void> {
     if (this.nativeStreamActive) return;
 
@@ -796,8 +855,12 @@ export class Go2rtcTcpServer extends EventEmitter<{
         await this.api.ensureConnected();
       } catch (e) {
         this.logger.warn?.(
-          `[Go2rtcTcpServer] ensureConnected failed, aborting stream start: ${e}`,
+          `[Go2rtcTcpServer] ensureConnected failed: ${e}`,
         );
+        // Schedule another attempt with backoff so a transient outage
+        // (camera reboot, network blip) eventually recovers without manual
+        // intervention.
+        this.scheduleNativeStreamRetry("ensureConnected failed");
         return;
       }
     }
@@ -842,6 +905,11 @@ export class Go2rtcTcpServer extends EventEmitter<{
         }),
       onFrame: (frame) => {
         // Update stream health tracking
+        if (!hadFrames) {
+          // First frame after (re)start — wipe any pending retry timer and
+          // reset the backoff window so the next failure starts fresh.
+          this.clearNativeStreamRetry();
+        }
         hadFrames = true;
         this.lastFrameAt = Date.now();
         this.totalFramesReceived++;
@@ -896,7 +964,11 @@ export class Go2rtcTcpServer extends EventEmitter<{
         this.logger.warn?.(`[Go2rtcTcpServer] native stream error: ${error}`);
       },
       onEnd: () => {
-        if (!this.nativeStreamActive) return;
+        // Short-circuit only when stopNativeStream() is the trigger — that
+        // path performs its own cleanup. The inactivity-timeout force-restart
+        // path leaves nativeStreamStopping=false, so we proceed and let the
+        // restart branch below decide what to do (issue #16).
+        if (this.nativeStreamStopping) return;
         this.nativeStreamActive = false;
         this.nativeFanout = null;
         this.stopStreamHealthMonitor();
@@ -969,18 +1041,29 @@ export class Go2rtcTcpServer extends EventEmitter<{
   }
 
   private async stopNativeStream(): Promise<void> {
+    // Mark the teardown as explicit so the fanout's onEnd skips its
+    // auto-restart branch (otherwise an explicit stop would loop right back
+    // to a fresh native stream).
+    this.nativeStreamStopping = true;
     this.nativeStreamActive = false;
+    // Cancel any pending unbounded-retry timer so we don't resurrect the
+    // stream we're explicitly tearing down.
+    this.clearNativeStreamRetry();
     this.stopStreamHealthMonitor();
     const fanout = this.nativeFanout;
     this.nativeFanout = null;
-    if (fanout) {
-      await fanout.stop();
-    }
-    this.prebuffer = [];
+    try {
+      if (fanout) {
+        await fanout.stop();
+      }
+      this.prebuffer = [];
 
-    if (this.dedicatedSessionRelease) {
-      await this.dedicatedSessionRelease().catch(() => {});
-      this.dedicatedSessionRelease = undefined;
+      if (this.dedicatedSessionRelease) {
+        await this.dedicatedSessionRelease().catch(() => {});
+        this.dedicatedSessionRelease = undefined;
+      }
+    } finally {
+      this.nativeStreamStopping = false;
     }
   }
 
@@ -1008,7 +1091,13 @@ export class Go2rtcTcpServer extends EventEmitter<{
         this.stopStreamHealthMonitor();
 
         // Force-stop the native stream; the onEnd callback will auto-restart
-        // if clients are connected or prestartStream is enabled.
+        // if clients are connected or prestartStream is enabled. We do NOT
+        // set nativeStreamStopping here — that flag is reserved for explicit
+        // stopNativeStream() calls and tells onEnd to skip its restart branch.
+        // (Pre-fix: this block flipped nativeStreamActive=false, which the
+        // old onEnd guard interpreted as "explicit stop" and skipped the
+        // restart, leaving the stream dead until manual intervention — see
+        // issue #16.)
         const fanout = this.nativeFanout;
         if (fanout) {
           this.nativeStreamActive = false;

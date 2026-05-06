@@ -238,6 +238,74 @@ wss.on("connection", (ws, req) => {
 });
 
 app.use(cors());
+
+// go2rtc same-origin proxy. Required for browsers loading the dashboard over
+// HTTPS (reverse proxy with SSL): go2rtc only speaks plain HTTP, so a direct
+// `https://host:11984/api/webrtc` request from the page errors out with
+// ERR_SSL_PROTOCOL_ERROR. Routing through `/go2rtc/*` here lets the server
+// forward the request to go2rtc on loopback while the browser sees a
+// same-origin URL.
+//
+// Issue #11 (David Berdik): WebRTC failed for all cameras when the dashboard
+// was reverse-proxied over HTTPS because this proxy was missing — the client
+// in `WebRTCInlinePlayer.tsx` sends WHEP signaling to `/go2rtc/api/webrtc?...`
+// which previously returned 404 from the SPA fallback handler.
+//
+// Mounted BEFORE express.json() so the raw request body (WHEP SDP offers,
+// arbitrary JSON config payloads) is still readable as a stream.
+app.use("/go2rtc", (req, res) => {
+  const manager = getGo2rtcManager();
+  if (!manager || !manager.isRunning) {
+    res.status(503).type("text/plain").send("go2rtc not available");
+    return;
+  }
+
+  // Express strips the mount prefix, so `req.url` here is the path *under*
+  // /go2rtc (e.g. "/api/webrtc?src=foo"). Default to "/" for a bare
+  // /go2rtc request so the user lands on the go2rtc UI root.
+  const targetPath = req.url || "/";
+  const upstreamUrl = new URL(targetPath, manager.apiUrl);
+
+  const forwardedHeaders: http.OutgoingHttpHeaders = { ...req.headers };
+  forwardedHeaders.host = upstreamUrl.host;
+  delete forwardedHeaders["connection"];
+  delete forwardedHeaders["keep-alive"];
+  delete forwardedHeaders["transfer-encoding"];
+  delete forwardedHeaders["upgrade"];
+
+  const upstream = http.request(
+    {
+      hostname: upstreamUrl.hostname,
+      port: upstreamUrl.port,
+      method: req.method,
+      path: `${upstreamUrl.pathname}${upstreamUrl.search}`,
+      headers: forwardedHeaders,
+    },
+    (upRes) => {
+      res.status(upRes.statusCode ?? 502);
+      for (const [name, value] of Object.entries(upRes.headers)) {
+        if (value === undefined) continue;
+        if (name.toLowerCase() === "transfer-encoding") continue;
+        res.setHeader(name, value as string | string[]);
+      }
+      upRes.pipe(res);
+    },
+  );
+
+  upstream.on("error", (err) => {
+    if (!res.headersSent) {
+      res
+        .status(502)
+        .type("text/plain")
+        .send(`go2rtc upstream error: ${err.message}`);
+    } else {
+      res.destroy();
+    }
+  });
+
+  req.pipe(upstream);
+});
+
 app.use(express.json());
 
 const requireAuth: express.RequestHandler = (req, res, next) => {
@@ -747,8 +815,9 @@ app.get("/api/events/status", (req, res) => {
   res.json(getEventsManagerStatus());
 });
 
-// All streaming handled directly by go2rtc on its own port (default 11984).
-// No proxy needed — go2rtc has CORS enabled (origin: "*").
+// go2rtc same-origin proxy is mounted earlier (right after cors() and BEFORE
+// express.json()) so request bodies (WHEP SDP, JSON config writes) remain
+// pipeable. See the `/go2rtc` proxy near the top of this file for details.
 
 // Main dashboard - serve static HTML file
 app.get("/", (req, res) => {
