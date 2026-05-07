@@ -158,6 +158,24 @@ export class BaichuanClient extends EventEmitter<{
   >();
 
   /**
+   * Per-device set of live BaichuanClient instances.
+   *
+   * Why: when a streaming client unsubscribes (e.g. RTSP grace timer expires
+   * and SocketPool tears the streaming socket down), the global streaming
+   * registry decrements but the GENERAL client of the same device has no
+   * way of knowing — its idle-disconnect timer was last evaluated while
+   * `isDeviceStreamingActive()` was still true (because the streaming socket
+   * was still alive) and wasn't rescheduled. Without this registry the
+   * general socket stays connected, the 60-second session-guard timer keeps
+   * sending getOnlineUserList() to the camera, and a battery camera ends up
+   * waking up every minute (issue #18).
+   *
+   * On streamingRegistry decrement-to-zero we walk this set and kick every
+   * sibling's idle-disconnect timer so it can re-evaluate eligibility.
+   */
+  private static readonly deviceClients = new Map<string, Set<BaichuanClient>>();
+
+  /**
    * Per-host D2C_DISC backoff state that persists across client instance recreation.
    *
    * Why: when a D2C_DISC kills a client, the socket pool destroys the old instance
@@ -371,6 +389,32 @@ export class BaichuanClient extends EventEmitter<{
     }
   >();
 
+  /** Whether this instance is currently in BaichuanClient.deviceClients. */
+  private registeredInDeviceClients = false;
+
+  private registerInDeviceClients(): void {
+    if (this.registeredInDeviceClients) return;
+    const key = this.getDeviceRegistryKey();
+    let set = BaichuanClient.deviceClients.get(key);
+    if (!set) {
+      set = new Set<BaichuanClient>();
+      BaichuanClient.deviceClients.set(key, set);
+    }
+    set.add(this);
+    this.registeredInDeviceClients = true;
+  }
+
+  private unregisterFromDeviceClients(): void {
+    if (!this.registeredInDeviceClients) return;
+    const key = this.getDeviceRegistryKey();
+    const set = BaichuanClient.deviceClients.get(key);
+    if (set) {
+      set.delete(this);
+      if (set.size === 0) BaichuanClient.deviceClients.delete(key);
+    }
+    this.registeredInDeviceClients = false;
+  }
+
   constructor(options: BaichuanClientOptions) {
     super();
     this.opts = options;
@@ -394,6 +438,8 @@ export class BaichuanClient extends EventEmitter<{
         code: (err as any)?.code,
       });
     });
+
+    this.registerInDeviceClients();
     // this.logger.log("BaichuanClient constructor", { options, dgfg: this.debugCfg });
   }
 
@@ -729,6 +775,25 @@ export class BaichuanClient extends EventEmitter<{
       });
 
     this.contributesToGlobalStreamingRegistry = shouldContribute;
+
+    // Issue #18: when streaming ends device-wide, sibling clients (e.g. the
+    // GENERAL control socket of a battery camera) may now be idle-disconnect
+    // eligible but they last evaluated their idle timer while streaming was
+    // still active and never got rescheduled. Kick them so they re-evaluate.
+    if (!shouldContribute && nextCount === 0) {
+      const siblings = BaichuanClient.deviceClients.get(key);
+      if (siblings) {
+        for (const sib of siblings) {
+          if (sib === this) continue;
+          try {
+            sib.kickIdleDisconnectTimer();
+          } catch {
+            // Never let a sibling's bookkeeping bug propagate up the stream-
+            // teardown path.
+          }
+        }
+      }
+    }
   }
 
   /**
@@ -1377,6 +1442,9 @@ export class BaichuanClient extends EventEmitter<{
     );
 
     this.logSocketState("tcp_connected");
+    // Re-register in deviceClients in case a prior close() unregistered us.
+    // Idempotent: a no-op if already registered.
+    this.registerInDeviceClients();
     this.startKeepAlive();
     this.kickIdleDisconnectTimer();
   }
@@ -1789,6 +1857,11 @@ export class BaichuanClient extends EventEmitter<{
         this.logDebug("udp_close_error", e);
       }
     }
+
+    // Drop ourselves from the device-clients registry so a sibling's
+    // streaming-end notification doesn't try to kick a dead instance's idle
+    // timer. We re-register on the next successful TCP connect.
+    this.unregisterFromDeviceClients();
   }
 
   private handleFrame(frame: BaichuanFrame): void {
