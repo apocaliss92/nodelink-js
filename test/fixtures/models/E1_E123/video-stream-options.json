@@ -1,0 +1,73 @@
+{
+  "nativeStreams": [
+    {
+      "name": "Native main",
+      "id": "channel_0_main",
+      "container": "rtp",
+      "channel": 0,
+      "profile": "main",
+      "streamName": "main",
+      "lens": "wide",
+      "url": "baichuan://192.***.***.***/channel/0/profile/main",
+      "urlWithAuth": "baichuan://***:***@192.***.***.***/channel/0/profile/main",
+      "metadata": {
+        "profile": "main",
+        "audio": 1,
+        "width": 2560,
+        "height": 1440,
+        "videoEncType": "H.264",
+        "videoEncTypeInt": 0,
+        "frameRate": 15,
+        "bitRate": 3072,
+        "audioCodec": "aac"
+      }
+    },
+    {
+      "name": "Native sub",
+      "id": "channel_0_sub",
+      "container": "rtp",
+      "channel": 0,
+      "profile": "sub",
+      "streamName": "sub",
+      "lens": "wide",
+      "url": "baichuan://192.***.***.***/channel/0/profile/sub",
+      "urlWithAuth": "baichuan://***:***@192.***.***.***/channel/0/profile/sub",
+      "metadata": {
+        "profile": "sub",
+        "audio": 1,
+        "width": 640,
+        "height": 360,
+        "videoEncType": "H.264",
+        "videoEncTypeInt": 0,
+        "frameRate": 10,
+        "bitRate": 256,
+        "audioCodec": "aac"
+      }
+    },
+    {
+      "name": "Native ext",
+      "id": "channel_0_ext",
+      "container": "rtp",
+      "channel": 0,
+      "profile": "ext",
+      "streamName": "ext",
+      "lens": "wide",
+      "url": "baichuan://192.***.***.***/channel/0/profile/ext",
+      "urlWithAuth": "baichuan://***:***@192.***.***.***/channel/0/profile/ext",
+      "metadata": {
+        "profile": "ext",
+        "audio": 0,
+        "width": 896,
+        "height": 512,
+        "videoEncType": "H.264",
+        "videoEncTypeInt": 0,
+        "frameRate": 10,
+        "bitRate": 1024,
+        "audioCodec": "aac"
+      }
+    }
+  ],
+  "rtmpStreams": [],
+  "rtspStreams": [],
+  "rawEncXml": "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<body>\n<Compression version=\"1.1\">\n<channelId>0</channelId>\n<isNoTranslateFrame>1</isNoTranslateFrame>\n<mainStream>\n<audio>1</audio>\n<resolutionName>2560*1440</resolutionName>\n<width>2560</width>\n<height>1440</height>\n<frame>15</frame>\n<bitRate>3072</bitRate>\n<encoderProfile>high</encoderProfile>\n<videoEncType>0</videoEncType>\n<gop>\n<cur>2</cur>\n<max>2</max>\n<min>1</min>\n</gop>\n</mainStream>\n<subStream>\n<audio>1</audio>\n<resolutionName>640*360</resolutionName>\n<width>640</width>\n<height>360</height>\n<frame>10</frame>\n<bitRate>256</bitRate>\n<encoderProfile>high</encoderProfile>\n<videoEncType>0</videoEncType>\n<gop>\n<cur>4</cur>\n<max>4</max>\n<min>1</min>\n</gop>\n</subStream>\n<thirdStream>\n<audio>0</audio>\n<resolutionName>896*512</resolutionName>\n<width>896</width>\n<height>512</height>\n<frame>10</frame>\n<bitRate>1024</bitRate>\n<encoderProfile>high</encoderProfile>\n<videoEncType>0</videoEncType>\n</thirdStream>\n</Compression>\n</body>\n"
+}

@@ -1,0 +1,27 @@
+{
+  "body": {
+    "SystemGeneral": {
+      "timeZone": -43200,
+      "osdFormat": "DMY",
+      "year": 2026,
+      "month": 5,
+      "day": 7,
+      "hour": 12,
+      "minute": 48,
+      "second": 7,
+      "deviceId": 0,
+      "timeFormat": 1,
+      "language": "English",
+      "deviceName": "Wifi",
+      "loginLock": 0,
+      "lockTime": 300,
+      "allowedTimes": 10,
+      "isDst": 0,
+      "@_version": 1.1
+    },
+    "Norm": {
+      "norm": "NTSC",
+      "@_version": 1.1
+    }
+  }
+}
