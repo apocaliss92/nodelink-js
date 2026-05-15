@@ -101,6 +101,40 @@ export async function createWebRTCSession(
     `Creating WebRTC session for ${camera.name}/${profile} (intercom: ${enableIntercom})`,
   );
 
+  // Evict any existing session for the same (camera, profile). The camera
+  // rejects a second <Preview> on the same channel with response_code 430
+  // while the previous dedicated socket is still open, so we wait for the
+  // old session to finish closing before we ask for the next one. This
+  // happens whenever the browser re-mounts the player (React StrictMode in
+  // dev, or a rapid Stop→Start click) without an explicit close in between.
+  const stale = [...activeSessions.values()].filter(
+    (s) => s.cameraId === camera.id && s.profile === profile,
+  );
+  if (stale.length > 0) {
+    logger.info(
+      `Evicting ${stale.length} stale WebRTC session(s) for ${camera.name}/${profile} before opening a new one`,
+    );
+    await Promise.allSettled(
+      stale.map(async (s) => {
+        try {
+          await s.server.closeSession(s.sessionId);
+        } catch (e) {
+          logger.warn(
+            `Eviction closeSession failed for ${s.sessionId}: ${(e as Error).message}`,
+          );
+        }
+        try {
+          await s.server.stop();
+        } catch { /* noop */ }
+        activeSessions.delete(s.sessionId);
+      }),
+    );
+    // Brief grace period so the underlying BaichuanClient dedicated socket
+    // fully releases inside the library's socket pool before we ask for it
+    // again. 200 ms is enough on the cameras we've tested.
+    await new Promise((r) => setTimeout(r, 200));
+  }
+
   // Get channel from rtspChannel config or default to 0
   const channel = camera.rtspChannel ?? 0;
 

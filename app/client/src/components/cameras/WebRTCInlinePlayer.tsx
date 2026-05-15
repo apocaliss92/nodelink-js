@@ -89,6 +89,15 @@ export function WebRTCInlinePlayer({
    * cleanly mid-handshake.
    */
   const closedRef = useRef(false);
+  /**
+   * Serializes start/stop operations. The camera rejects a second
+   * `<Preview>` for the same channel+profile with `response_code 430`
+   * while the previous stream's dedicated socket is still being released,
+   * so we always await the previous operation (mount/unmount/stop) before
+   * opening a new session. Without this guard, dev-mode StrictMode and
+   * rapid Stop→Start clicks both produce the 430 the user reported.
+   */
+  const pendingOpRef = useRef<Promise<void>>(Promise.resolve());
   // Intercom (mic → camera) state. Set up once the server's `intercom`
   // DataChannel is open and reused for every push-to-talk session.
   const intercomChannelRef = useRef<RTCDataChannel | null>(null);
@@ -118,7 +127,6 @@ export function WebRTCInlinePlayer({
   const wantNative = useNative === true && Boolean(cameraId);
 
   const log = useCallback((msg: string, extra?: unknown) => {
-    // eslint-disable-next-line no-console
     console.log(`[WebRTC] ${msg}`, extra ?? "");
   }, []);
 
@@ -489,39 +497,57 @@ export function WebRTCInlinePlayer({
   }, [cameraId, profile, log, stopIntercom]);
 
   const start = useCallback(async () => {
-    closedRef.current = false;
-    setError(null);
-    setStatus("Connecting…");
-    setStreamActive(true);
-    try {
-      if (wantNative) {
-        await startNative();
-      } else {
-        await startGo2rtc();
+    // Serialize against any in-flight teardown / start. Without this, a
+    // rapid stop→start or a StrictMode double-mount would race the
+    // server's session close and the camera would reject the new
+    // <Preview> with response_code 430 (stream still owned by the
+    // previous dedicated socket).
+    const previous = pendingOpRef.current;
+    const op = (async () => {
+      try { await previous; } catch { /* prior op failed; we proceed anyway */ }
+      closedRef.current = false;
+      setError(null);
+      setStatus("Connecting…");
+      setStreamActive(true);
+      try {
+        if (wantNative) {
+          await startNative();
+        } else {
+          await startGo2rtc();
+        }
+      } catch (err) {
+        if (!closedRef.current) {
+          setError(String(err));
+          setStatus("Error");
+          setStreamActive(false);
+          void teardown();
+        }
       }
-    } catch (err) {
-      if (!closedRef.current) {
-        setError(String(err));
-        setStatus("Error");
-        setStreamActive(false);
-        void teardown();
-      }
-    }
+    })();
+    pendingOpRef.current = op;
+    await op;
   }, [wantNative, startGo2rtc, startNative, teardown]);
 
   const stop = useCallback(async () => {
-    await teardown();
+    const previous = pendingOpRef.current;
+    const op = (async () => {
+      try { await previous; } catch { /* noop */ }
+      await teardown();
+    })();
+    pendingOpRef.current = op;
+    await op;
   }, [teardown]);
 
-  // Auto-start on mount (default: true).
+  // Auto-start on mount (default: true). When props change (camera /
+  // profile / restreamer), the cleanup tears down through the same
+  // serialization promise, then start can safely run again.
   useEffect(() => {
     if (autoStart) void start();
     return () => {
-      void teardown();
+      void stop();
     };
-    // We want this effect to fire exactly once on mount; `start`/`teardown`
-    // are stable callbacks but listing them would re-run on prop changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Effect intentionally runs on prop-set changes only; `start` / `stop`
+    // are stable callbacks but listing them would cause spurious re-runs.
   }, [streamName, go2rtcApiPort, serviceIp, wantNative, cameraId, profile]);
 
   // ---------------------------------------------------------------------------
