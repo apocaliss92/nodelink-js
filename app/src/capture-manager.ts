@@ -872,12 +872,59 @@ function captureDir(id: string): string {
 }
 
 /**
+ * Re-parse the on-disk .pcapng to rebuild the cmd histogram and frame log
+ * from authoritative data. tshark always writes the .pcapng file completely,
+ * but its stdout pipe (which our LIVE parser reads) can backpressure under
+ * heavy traffic — that means the live counter may be behind by the time the
+ * user hits Stop. This pass closes that gap so what ends up in Reports
+ * matches what was actually on the wire.
+ */
+async function reparseFromPcap(s: CaptureSession): Promise<void> {
+  if (!existsSync(s.pcapPath)) return;
+  await new Promise<void>((resolve) => {
+    const args = [
+      "-r", s.pcapPath,
+      "-Y", "tcp.port == 9000",
+      "-T", "fields",
+      "-e", "tcp.srcport",
+      "-e", "tcp.dstport",
+      "-e", "tcp.payload",
+      "-l",
+    ];
+    const proc = spawn("tshark", args, { stdio: ["ignore", "pipe", "pipe"] });
+    let tail = "";
+    // Reset session state — we're rebuilding from scratch so any partial
+    // live data is discarded in favour of the file content.
+    s.cmds.clear();
+    s.parsers.clear();
+    s.frameLog.length = 0;
+    s.framesDecoded = 0;
+    s.stdoutTail = "";
+    proc.stdout?.on("data", (chunk: Buffer) => {
+      const text = tail + chunk.toString("latin1");
+      const lines = text.split("\n");
+      tail = lines.pop() ?? "";
+      for (const line of lines) handleTsharkLine(s, line);
+    });
+    proc.on("close", () => {
+      if (tail.trim()) handleTsharkLine(s, tail);
+      resolve();
+    });
+    proc.on("error", () => resolve());
+  });
+}
+
+/**
  * Write the sanitized JSON + redacted .pcapng + manifest to disk so the user
  * can revisit this capture later from the Reports page.
  */
 async function persistCapture(s: CaptureSession): Promise<void> {
   const dir = captureDir(s.id);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+
+  // Re-parse the file to make sure the manifest counts are authoritative
+  // (they include any frames the live stdout pipe missed under backpressure).
+  await reparseFromPcap(s);
 
   const sanitized = buildSanitizedExport(s.id);
   if (!sanitized) return;
