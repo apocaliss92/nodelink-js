@@ -10473,27 +10473,69 @@ export class ReolinkBaichuanApi {
     const enabled = typeof arg1 === "number" ? (arg2 as boolean) : arg1;
     const sensitivity =
       typeof arg1 === "number" ? arg3 : (arg2 as number | undefined);
-    const ch = this.normalizeChannel(channel);
-    // First get current settings
+    return await this.setMotionAlarmFull({
+      ...(channel !== undefined ? { channel } : {}),
+      enabled,
+      ...(sensitivity !== undefined ? { sensitivity } : {}),
+    });
+  }
+
+  /**
+   * Set motion alarm with full control, including the detection-zone grid.
+   *
+   * Wire format observed on E1 Zoom (cmd_id=47 SetMdAlarm body):
+   *
+   *   <MD version="1.1">
+   *     <channelId>0</channelId>
+   *     <enable>1</enable>
+   *     <usepir>0</usepir>
+   *     <width>60</width> <height>33</height>
+   *     <scope>
+   *       <columns>96</columns> <rows>64</rows>
+   *       <valueTable>{base64 6144-bit bitmap}</valueTable>
+   *     </scope>
+   *     ... other camera-specific fields ...
+   *   </MD>
+   *
+   * We do a read-modify-write of the GET response so any camera-specific
+   * extension fields are preserved untouched. Pass `valueTable` to update
+   * the detection zone — see `encodeMotionScopeBitmap` for the bitmap layout.
+   *
+   * @param channel - 0-based channel
+   * @param enabled - toggle motion detection on/off (optional)
+   * @param sensitivity - 0-50, higher = more sensitive (optional)
+   * @param valueTable - base64-encoded grid bitmap; size must match
+   *   `<scope><columns>×<rows></scope>` from the GET (optional)
+   */
+  async setMotionAlarmFull(opts: {
+    channel?: number;
+    enabled?: boolean;
+    sensitivity?: number;
+    valueTable?: string;
+  }): Promise<void> {
+    const ch = this.normalizeChannel(opts.channel);
     const currentXml = await this.sendXml({
       cmdId: BC_CMD_ID_GET_MOTION_ALARM,
       channel: ch,
     });
 
-    // Parse and modify XML
-    // Expected format: <sensInfoNew><enable>...</enable><sensitivityDefault>...</sensitivityDefault></sensInfoNew>
     let modifiedXml = currentXml;
-
-    if (enabled !== undefined) {
+    if (opts.enabled !== undefined) {
       modifiedXml = modifiedXml.replace(
         /<enable>[^<]*<\/enable>/,
-        `<enable>${enabled ? "1" : "0"}</enable>`,
+        `<enable>${opts.enabled ? "1" : "0"}</enable>`,
       );
     }
-    if (sensitivity !== undefined) {
+    if (opts.sensitivity !== undefined) {
       modifiedXml = modifiedXml.replace(
         /<sensitivityDefault>[^<]*<\/sensitivityDefault>/,
-        `<sensitivityDefault>${sensitivity}</sensitivityDefault>`,
+        `<sensitivityDefault>${opts.sensitivity}</sensitivityDefault>`,
+      );
+    }
+    if (opts.valueTable !== undefined) {
+      modifiedXml = modifiedXml.replace(
+        /<valueTable>[^<]*<\/valueTable>/,
+        `<valueTable>${opts.valueTable}</valueTable>`,
       );
     }
 

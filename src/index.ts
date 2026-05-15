@@ -81,3 +81,11 @@ export * from "./reolink/autodetect";
 export * from "./reolink/discovery";
 export * from "./multifocal/compositeStream";
 export * from "./multifocal/compositeRtspServer";
+
+// Motion zone bitmap helpers (encode/decode the camera's grid valueTable)
+export {
+  decodeMotionScopeBitmap,
+  encodeMotionScopeBitmap,
+  fullCoverageScope,
+} from "./reolink/baichuan/utils/motionZone";
+export type { MotionZoneScope } from "./reolink/baichuan/utils/motionZone";

@@ -320,6 +320,31 @@ export const baichuanRouter = router({
       return { success: true };
     }),
 
+  setMotionAlarmZone: publicProcedure
+    .meta({
+      description:
+        "Update the motion-detection grid (valueTable base64 bitmap). Also optionally toggles enable/sensitivity in the same call.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        valueTable: z.string().min(1),
+        enabled: z.boolean().optional(),
+        sensitivity: z.number().int().min(0).max(50).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.setMotionAlarmFull({
+        channel: input.channel,
+        valueTable: input.valueTable,
+        ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+        ...(input.sensitivity !== undefined
+          ? { sensitivity: input.sensitivity }
+          : {}),
+      });
+      return { success: true };
+    }),
+
   getAiState: publicProcedure
     .meta({ description: "Get AI detection state" })
     .input(ConnectionWithChannel)

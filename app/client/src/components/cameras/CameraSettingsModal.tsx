@@ -4,6 +4,7 @@ import {
   Video,
   Image as ImageIcon,
   Eye,
+  Grid3x3,
   Type,
   Cpu,
   X,
@@ -12,6 +13,7 @@ import type { LucideIcon } from "lucide-react";
 import { StreamsTab } from "./settings-tabs/StreamsTab";
 import { ImageTab } from "./settings-tabs/ImageTab";
 import { DetectionTab } from "./settings-tabs/DetectionTab";
+import { MotionZonesTab } from "./settings-tabs/MotionZonesTab";
 import { OsdTab } from "./settings-tabs/OsdTab";
 import { SystemTab } from "./settings-tabs/SystemTab";
 
@@ -44,6 +46,13 @@ const TABS: TabDef[] = [
     icon: Eye,
     hint: "Motion + AI alarm sensitivity.",
     Component: DetectionTab,
+  },
+  {
+    id: "motion-zones",
+    label: "Motion zones",
+    icon: Grid3x3,
+    hint: "Paint the detection grid over the camera frame.",
+    Component: MotionZonesTab,
   },
   {
     id: "osd",
