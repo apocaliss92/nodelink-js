@@ -267,6 +267,52 @@ export const baichuanRouter = router({
       return { success: true };
     }),
 
+  setPtzPreset: publicProcedure
+    .meta({
+      description:
+        "Save the camera's CURRENT pan/tilt/zoom position into the given preset slot, with the given name.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        presetId: z.number().int().min(0),
+        name: z.string().min(1),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.setPtzPreset(input.channel, input.presetId, input.name);
+      return { success: true };
+    }),
+
+  deletePtzPreset: publicProcedure
+    .meta({
+      description:
+        "Best-effort delete a PTZ preset (sets enable=0 on the slot). Some firmwares still keep the position; reuse `setPtzPreset` to overwrite.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        presetId: z.number().int().min(0),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.deletePtzPreset(input.channel, input.presetId);
+      return { success: true };
+    }),
+
+  gotoPtzPreset: publicProcedure
+    .meta({ description: "Recall (move to) a saved PTZ preset by id." })
+    .input(
+      ConnectionWithChannel.extend({
+        presetId: z.number().int().min(0),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.gotoPtzPreset(input.channel, input.presetId);
+      return { success: true };
+    }),
+
   getPtzPresets: publicProcedure
     .meta({ description: "Get PTZ presets" })
     .input(ConnectionWithChannel)
@@ -601,6 +647,62 @@ export const baichuanRouter = router({
     }),
 
   // ============ AUDIO ============
+
+  getAudioCfg: publicProcedure
+    .meta({ description: "Get audio config (volumes, visitor settings)." })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getAudioCfg(input.channel);
+    }),
+
+  setAudioCfg: publicProcedure
+    .meta({
+      description:
+        "Update audio config — speaker volume, talk-and-reply volume, visitor volume, visitor loudspeaker enable.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        volume: z.number().int().min(0).max(100).optional(),
+        talkAndReplyVolume: z.number().int().min(0).max(100).optional(),
+        visitorVolume: z.number().int().min(0).max(100).optional(),
+        visitorLoudspeaker: z.union([z.literal(0), z.literal(1)]).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      const { cameraId: _c, channel: _ch, ...patch } = input;
+      void _c;
+      void _ch;
+      await api.setAudioCfg(input.channel, patch);
+      return { success: true };
+    }),
+
+  getAudioNoise: publicProcedure
+    .meta({
+      description: "Get AI noise-reduction config (enable + level 0-100).",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getAudioNoise(input.channel);
+    }),
+
+  setAudioNoise: publicProcedure
+    .meta({
+      description:
+        "Set AI noise-reduction level (0 turns it off; 1-100 enables and sets the level).",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        level: z.number().int().min(0).max(100),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.setAudioNoise(input.channel, input.level);
+      return { success: true };
+    }),
 
   getTwoWayAudioConfig: publicProcedure
     .meta({ description: "Get two-way audio configuration" })

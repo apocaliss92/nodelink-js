@@ -9524,6 +9524,41 @@ export class ReolinkBaichuanApi {
   }
 
   /**
+   * Recall (move to) a saved PTZ preset.
+   *
+   * cmd_id 19 (PTZ_CONTROL_PRESET) with command="toPos". The camera moves
+   * the head at its own default preset-recall speed; we don't expose
+   * speed here because most firmwares ignore the field on toPos.
+   */
+  async gotoPtzPreset(presetId: number, channel?: number): Promise<void>;
+  async gotoPtzPreset(channel: number, presetId: number): Promise<void>;
+  async gotoPtzPreset(arg1: number, arg2?: number): Promise<void> {
+    // Two-arg form is (channel, presetId); one-arg form is (presetId).
+    const ch =
+      arg2 === undefined
+        ? this.normalizeChannel(undefined)
+        : this.normalizeChannel(arg1);
+    const presetId = arg2 === undefined ? arg1 : arg2;
+    const channelId = ch;
+    const payloadXml = buildPtzPresetXmlV2(channelId, presetId, "toPos");
+    const extensionXml = buildChannelExtensionXml(channelId);
+    const frame = await this.client.sendFrame({
+      cmdId: BC_CMD_ID_PTZ_CONTROL_PRESET,
+      channel: ch,
+      channelIdOverride: channelId,
+      extensionXml,
+      payloadXml,
+      messageClass: BC_CLASS_MODERN_24,
+      streamType: 0,
+    });
+    if (frame.header.responseCode !== 200) {
+      throw new Error(
+        `PTZ goto preset rejected (response_code ${frame.header.responseCode})`,
+      );
+    }
+  }
+
+  /**
    * Best-effort delete/disable a PTZ preset.
    *
    * Note: firmware behavior varies. Many cameras include an <enable> flag in the preset list.

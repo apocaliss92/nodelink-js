@@ -7,6 +7,9 @@ import {
   Grid3x3,
   Type,
   Cpu,
+  Volume2,
+  Move,
+  Globe,
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -15,6 +18,9 @@ import { ImageTab } from "./settings-tabs/ImageTab";
 import { DetectionTab } from "./settings-tabs/DetectionTab";
 import { MotionZonesTab } from "./settings-tabs/MotionZonesTab";
 import { OsdTab } from "./settings-tabs/OsdTab";
+import { AudioTab } from "./settings-tabs/AudioTab";
+import { PtzTab } from "./settings-tabs/PtzTab";
+import { NetworkTab } from "./settings-tabs/NetworkTab";
 import { SystemTab } from "./settings-tabs/SystemTab";
 
 interface TabDef {
@@ -60,6 +66,27 @@ const TABS: TabDef[] = [
     icon: Type,
     hint: "On-screen text overlay, timestamp, watermark.",
     Component: OsdTab,
+  },
+  {
+    id: "audio",
+    label: "Audio",
+    icon: Volume2,
+    hint: "Speaker volumes, visitor loudspeaker, AI noise reduction.",
+    Component: AudioTab,
+  },
+  {
+    id: "ptz",
+    label: "PTZ",
+    icon: Move,
+    hint: "Live view + manual pan/tilt/zoom, presets save / recall / delete.",
+    Component: PtzTab,
+  },
+  {
+    id: "network",
+    label: "Network",
+    icon: Globe,
+    hint: "IP, ports, Wi-Fi (read-only).",
+    Component: NetworkTab,
   },
   {
     id: "system",
