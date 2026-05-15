@@ -10,48 +10,9 @@
  */
 
 import { getXmlText } from "../../../protocol/xml";
+import type { BaichuanVersionInfo } from "../types";
 
-/**
- * Snapshot of `<VersionInfo>` returned by cmd_id=80.
- *
- * Every field is optional because firmware variants and models include
- * different subsets. The parser preserves the raw string the camera sent;
- * empty XML elements (e.g. `<cc3200Version></cc3200Version>`) come through
- * as the empty string so callers can distinguish "absent" (undefined) from
- * "explicitly empty" ("").
- */
-export interface BaichuanVersionInfo {
-  /** User-assigned name (matches the OSD camera name). */
-  name?: string;
-  /** Model code, e.g. `"E1 Zoom"`, `"RLC-810A"`. */
-  type?: string;
-  /** Hardware serial number. */
-  serialNumber?: string;
-  /** Build identifier, typically a date string like `"build 2503281992"`. */
-  buildDay?: string;
-  /** Internal hardware revision, e.g. `"IPC_NT14NA48MPSD6"`. */
-  hardwareVersion?: string;
-  /** Config-format version Reolink uses to know what schema the device speaks. */
-  cfgVersion?: string;
-  /** Firmware version, e.g. `"v3.2.0.4741_2503281992"`. */
-  firmwareVersion?: string;
-  /** Extended hardware detail (often hardwareVersion + region/sku suffix). */
-  detail?: string;
-  /** IE-Client identifier (legacy plug-in tag, usually `"IEClient"`). */
-  IEClient?: string;
-  /** Legacy MCU firmware version (present on some Reolink wireless models). */
-  cc3200Version?: string;
-  /** Signal-processor firmware version (rarely populated). */
-  spVersion?: string;
-  /** File extension Reolink expects for firmware updates (`"pak"`). */
-  pakSuffix?: string;
-  /** Reolink item / SKU number, e.g. `"E340"`. */
-  itemNo?: string;
-  /** AI-model bundle version (the on-device people/vehicle/animal detector). */
-  aiVersion?: string;
-  /** Diagnostic helper string the app sends to support, e.g. `"blackPointsLevel=0"`. */
-  helpVersion?: string;
-}
+export type { BaichuanVersionInfo };
 
 /**
  * Parse a `<VersionInfo>` XML block into a typed snapshot. Accepts either

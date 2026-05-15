@@ -235,6 +235,142 @@ The Manager exposes go2rtc management via tRPC:
 
 ---
 
+## Native WebRTC Backend
+
+In addition to go2rtc, the Manager exposes an in-process WebRTC server
+(`BaichuanWebRTCServer` from the library) that streams native Baichuan frames
+to the browser **without an intermediate RTSP/MSE hop**. Useful when:
+
+- you need precise frame timing (e.g. to overlay AI detection boxes that align
+  with the decoded video frame)
+- go2rtc is not available in your environment
+- you want to ship two-way audio (intercom) on the same WebRTC peer connection
+
+The backend is selected by `settings.webrtc.preferredBackend`:
+
+| Value | Behaviour |
+|-------|-----------|
+| `auto` (default) | Use go2rtc if it's running; fall back to native otherwise. |
+| `go2rtc` | Always go2rtc. Error surfaced if go2rtc is down. |
+| `native` | Always `BaichuanWebRTCServer`. Required by the detection-box overlay. |
+
+### Signaling flow (server-driven offer)
+
+Unlike go2rtc (which takes the browser's offer via WHEP), the native server
+**generates the offer**. The browser answers, sets the local description, and
+optionally trickles ICE candidates back. Every step is a tRPC call:
+
+```
+1. POST /api/trpc/webrtc.create
+     input  { cameraId, profile: "main"|"sub"|"ext", enableIntercom? }
+     output { sessionId, offer: { type: "offer", sdp } }
+
+2. (browser) RTCPeerConnection.setRemoteDescription(offer)
+   (browser) const answer = await pc.createAnswer()
+   (browser) await pc.setLocalDescription(answer)
+
+3. POST /api/trpc/webrtc.answer
+     input  { sessionId, sdp: { type: "answer", sdp } }
+     output { success: true }
+
+4. POST /api/trpc/webrtc.addIce    (optional, only if browser trickles ICE)
+     input  { sessionId, candidate: RTCIceCandidateInit }
+     output { success: true }
+
+5. POST /api/trpc/webrtc.close     (on tear-down)
+     input  { sessionId }
+     output { success: true }
+```
+
+The server gathers ICE candidates fully (3 s timeout) before returning the
+offer in step 1, so trickle ICE on the browser side is optional for LAN
+deployments. `webrtc.status` (query, no parameters) returns the live session
+list with per-session stats.
+
+### Transport per codec
+
+| Codec | Transport | Notes |
+|-------|-----------|-------|
+| **H.264** | RTP media track | Standard WebRTC. NAL units fragmented as FU-A when larger than 1200 bytes. SPS/PPS are cached and prepended to IDR frames if the camera ships them inline only. |
+| **H.265** | RTCDataChannel `"video"` | Chrome/Safari can't decode H.265 over RTP, so the server pushes raw Annex-B bytes over a DataChannel and the browser decodes via **WebCodecs `VideoDecoder`**. |
+| **Audio (AAC)** | RTP audio track (Opus) | An ffmpeg subprocess transcodes AAC ADTS → Opus on demand the first time the camera emits an audio frame; the resulting RTP is re-wrapped with the session SSRC. |
+| **Intercom (browser → camera)** | RTCDataChannel `"intercom"` | Optional, enable via `enableIntercom: true` in `webrtc.create`. Browser sends ADPCM audio; server forwards it to the camera's Talk API. One-way. |
+
+### H.265 DataChannel frame format
+
+Frames over 16 KB are sent in chunks; every binary message carries a uniform
+4-byte chunk header:
+
+```
+[0..1]  chunkIndex   (u16 BE)
+[1..3]  totalChunks  (u16 BE)
+[4..n]  payload
+```
+
+After reassembling all chunks, the concatenated payload starts with a
+12-byte custom frame header:
+
+```
+[0..3]  frameNum   (u32 BE)
+[4..7]  timestamp  (u32 BE, ms since epoch)
+[8]     flags      (0x01 = H.265, 0x02 = H.264)
+[9]     keyframe   (0 / 1)
+[10..11] reserved  (u16 BE)
+```
+
+…followed by raw Annex-B bytes (start codes + NAL units). On the first video
+frame the server also sends a plain JSON announcement string on the
+DataChannel:
+
+```json
+{ "type": "codec", "codec": "H264" | "H265", "width": 0, "height": 0 }
+```
+
+so the browser knows whether to wire WebCodecs or just play the RTP track.
+
+### Configuration
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `webrtc.preferredBackend` | `auto` | `auto` / `go2rtc` / `native` |
+| `webrtc.stunServers` | Google STUN | Array of STUN URLs used for ICE gathering. |
+| `webrtc.icePortRange` | (empty) | e.g. `"10000-10100"` to constrain UDP ports for firewall pinholes. Empty = ephemeral. |
+| `webrtc.iceAdditionalHostAddresses` | (empty) | CSV of extra host IPs to advertise as ICE host candidates (useful in NAT'd / Docker `bridge` mode). |
+
+Authentication: all `webrtc.*` tRPC procedures inherit the dashboard's
+session/Bearer-token auth. No separate token is needed.
+
+### Minimal browser snippet
+
+```ts
+// 1. ask the server for an offer
+const { sessionId, offer } = await trpcMutation("webrtc.create", {
+  cameraId: "studio",
+  profile: "main",
+});
+
+// 2. accept the offer, build an answer
+const pc = new RTCPeerConnection({ iceServers: [...] });
+pc.ondatachannel = (ev) => { /* handle "video" (H.265) and "intercom" channels */ };
+pc.ontrack = (ev) => { /* attach ev.streams[0] to a <video> for H.264/audio */ };
+await pc.setRemoteDescription(offer);
+const answer = await pc.createAnswer();
+await pc.setLocalDescription(answer);
+
+// 3. ship the answer
+await trpcMutation("webrtc.answer", { sessionId, sdp: answer });
+
+// 4. tear down
+await trpcMutation("webrtc.close", { sessionId });
+```
+
+A full reference implementation lives in
+[`app/client/src/components/cameras/WebRTCInlinePlayer.tsx`](../app/client/src/components/cameras/WebRTCInlinePlayer.tsx),
+including H.265 chunk reassembly, codec announcement handling, and the
+WebCodecs canvas swap.
+
+---
+
 ## Events (SSE, JSON stream)
 
 Real-time events from all connected cameras (motion, doorbell, people, vehicle, animal, etc.).

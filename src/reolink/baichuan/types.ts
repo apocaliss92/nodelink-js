@@ -432,6 +432,50 @@ export type BaichuanLedState = {
   lightState?: string;
 };
 
+/**
+ * Snapshot of `<VersionInfo>` returned by Baichuan cmd_id=80
+ * (`BC_CMD_ID_GET_VERSION_INFO`) — the same payload the Reolink mobile app
+ * displays in "About this device". Distinct from `getSystemGeneral`
+ * (cmd_104) which holds time/locale.
+ *
+ * All fields optional because firmware variants and models include
+ * different subsets. Empty XML elements (e.g. `<cc3200Version></cc3200Version>`)
+ * come through as the empty string so callers can distinguish "absent"
+ * (undefined) from "explicitly empty" ("").
+ */
+export interface BaichuanVersionInfo {
+  /** User-assigned name (matches the OSD camera name). */
+  name?: string;
+  /** Model code, e.g. `"E1 Zoom"`, `"RLC-810A"`. */
+  type?: string;
+  /** Hardware serial number. */
+  serialNumber?: string;
+  /** Build identifier, typically a date string like `"build 2503281992"`. */
+  buildDay?: string;
+  /** Internal hardware revision, e.g. `"IPC_NT14NA48MPSD6"`. */
+  hardwareVersion?: string;
+  /** Config-format version Reolink uses to identify the schema the device speaks. */
+  cfgVersion?: string;
+  /** Firmware version, e.g. `"v3.2.0.4741_2503281992"`. */
+  firmwareVersion?: string;
+  /** Extended hardware detail (often hardwareVersion + region/sku suffix). */
+  detail?: string;
+  /** IE-Client identifier (legacy plug-in tag, usually `"IEClient"`). */
+  IEClient?: string;
+  /** Legacy MCU firmware version (present on some Reolink wireless models). */
+  cc3200Version?: string;
+  /** Signal-processor firmware version (rarely populated). */
+  spVersion?: string;
+  /** File extension Reolink expects for firmware updates (`"pak"`). */
+  pakSuffix?: string;
+  /** Reolink item / SKU number, e.g. `"E340"`. */
+  itemNo?: string;
+  /** AI-model bundle version (the on-device people/vehicle/animal detector). */
+  aiVersion?: string;
+  /** Diagnostic helper string the app sends to support, e.g. `"blackPointsLevel=0"`. */
+  helpVersion?: string;
+}
+
 export type BaichuanSleepState = {
   sleep?: number;
   mode?: number;

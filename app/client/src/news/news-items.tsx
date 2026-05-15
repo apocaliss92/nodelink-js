@@ -22,6 +22,28 @@ export interface NewsItem {
 
 export const NEWS_ITEMS: NewsItem[] = [
   {
+    id: "2026-05-15-webrtc-docs",
+    date: "2026-05-15",
+    title: "WebRTC endpoints documented",
+    body: (
+      <div className="space-y-2 text-sm text-[var(--color-foreground-muted)]">
+        <p>
+          The Manager has two WebRTC backends — go2rtc and the in-process
+          native server — and each one establishes a session differently.
+          The docs now spell out the full signaling flow for both.
+        </p>
+        <p>
+          See{" "}
+          <strong className="text-[var(--color-foreground)]">
+            documentation/manager-api.md
+          </strong>{" "}
+          for the endpoint reference, including the H.265 chunk format and
+          a ready-to-paste browser snippet.
+        </p>
+      </div>
+    ),
+  },
+  {
     id: "2026-05-15-packet-capture",
     date: "2026-05-15",
     title: "New: packet capture & analysis from a camera",
