@@ -294,15 +294,21 @@ interface HandlerMatch {
   constants: string[];
   /** util/api files that reference the constant */
   refs: string[];
+  /**
+   * XML element names this cmd_id's parsers read via `getXmlText(...)` or
+   * `getXmlBlocks(...)`. Used by the drift checker to flag firmware versions
+   * where the camera answers with a different key set than what we expect.
+   */
+  expectedXmlKeys: Set<string>;
 }
 
 async function mapCmdIdsToFiles(): Promise<Map<number, HandlerMatch>> {
   const map = new Map<number, HandlerMatch>();
   for (const [cmdId, names] of cmdNames) {
-    map.set(cmdId, { constants: names, refs: [] });
+    map.set(cmdId, { constants: names, refs: [], expectedXmlKeys: new Set() });
   }
-  // Walk src/reolink/baichuan/ to find which utility files import each
-  // cmd constant. Best-effort: simple grep, no AST.
+  // Walk src/reolink/baichuan/ + cgi to find which files reference each
+  // constant. Best-effort: simple grep, no AST.
   const root = path.resolve(__dirname, "../../../../src");
   const targetDirs = [
     path.join(root, "reolink", "baichuan"),
@@ -312,19 +318,53 @@ async function mapCmdIdsToFiles(): Promise<Map<number, HandlerMatch>> {
   for (const dir of targetDirs) {
     if (existsSync(dir)) walk(dir, files);
   }
+
+  // Step 1: per-file constant references → file→cmdIds mapping. We want to
+  // collect XML keys from ALL files that handle a cmd, not just one.
+  const fileToCmds = new Map<string, number[]>();
   for (const file of files) {
     if (!file.endsWith(".ts")) continue;
     const text = readFileSync(file, "utf8");
+    const localCmds: number[] = [];
     for (const [cmdId, match] of map) {
       for (const name of match.constants) {
         if (text.includes(name)) {
           const rel = path.relative(path.resolve(__dirname, "../../../.."), file);
           if (!match.refs.includes(rel)) match.refs.push(rel);
+          if (!localCmds.includes(cmdId)) localCmds.push(cmdId);
         }
       }
-      void cmdId;
+    }
+    if (localCmds.length > 0) fileToCmds.set(file, localCmds);
+  }
+
+  // Step 2: for each file that handles cmd_ids, extract every XML element
+  // name it reads. The simple-but-effective heuristic: any string literal
+  // passed to `getXmlText(...)` or `getXmlBlocks(...)`.
+  //
+  // We deliberately SKIP `ReolinkBaichuanApi.ts` (the public API surface
+  // references ~every cmd_id, so attributing all its getXmlText calls to
+  // each one would balloon the "expected keys" set into noise). Focused
+  // utility files in `utils/` typically handle one feature → one cmd_id,
+  // so their keys are a precise signal.
+  const keyRegex =
+    /getXml(?:Text|Blocks)\s*\(\s*[^,]+,\s*['"]([a-zA-Z_][\w-]*)['"]\s*\)/g;
+  for (const [file, cmdIds] of fileToCmds) {
+    if (path.basename(file) === "ReolinkBaichuanApi.ts") continue;
+    const text = readFileSync(file, "utf8");
+    const keys = new Set<string>();
+    let m: RegExpExecArray | null;
+    while ((m = keyRegex.exec(text)) !== null) {
+      if (m[1]) keys.add(m[1]);
+    }
+    if (keys.size === 0) continue;
+    for (const cmdId of cmdIds) {
+      const match = map.get(cmdId);
+      if (!match) continue;
+      for (const k of keys) match.expectedXmlKeys.add(k);
     }
   }
+
   return map;
 }
 
@@ -450,6 +490,84 @@ function renderReport(
     }
   }
 
+  // Firmware-drift / parser-gap check for KNOWN cmd_ids: per cmd_id,
+  // compare the XML element names our parser reads against the ones the
+  // camera actually emitted. Mismatches point at firmware variants whose
+  // response shape doesn't match what our code expects — that's the whole
+  // point the user flagged: an unknown cmd_id is easy to spot, a known
+  // cmd_id whose body has a renamed/missing element is invisible until you
+  // try to use it.
+  type Drift = {
+    cmdId: number;
+    names: string[];
+    expected: string[]; // keys our parser reads
+    observed: string[]; // keys present in the actual body
+    parserMissing: string[]; // observed but parser doesn't read
+    cameraMissing: string[]; // parser reads but body doesn't have
+  };
+  const driftRows: Drift[] = [];
+  // cmd_id=3 (VIDEO) bodies are BcMedia binary, not XML — skip even though
+  // the Extension prefix happens to look like XML. cmd_id=1/2 (login /
+  // challenge) bodies are either redacted or pure plaintext nonces we
+  // already know the shape of.
+  const skipDrift = new Set<number>([1, 2, 3]);
+  for (const cmdId of known) {
+    if (skipDrift.has(cmdId)) continue;
+    const hm = handlerMap.get(cmdId);
+    if (!hm || hm.expectedXmlKeys.size === 0) continue;
+    const samples = byCmd.get(cmdId)?.filter(
+      (f) => f.bodyDecrypted && f.bodyDecrypted.startsWith("<"),
+    ) ?? [];
+    if (samples.length === 0) continue;
+    const observedKeys = new Set<string>();
+    for (const f of samples) {
+      for (const k of collectXmlTagNames(f.bodyDecrypted)) observedKeys.add(k);
+    }
+    if (observedKeys.size === 0) continue;
+    const expectedKeys = hm.expectedXmlKeys;
+    const parserMissing = [...observedKeys].filter((k) => !expectedKeys.has(k));
+    const cameraMissing = [...expectedKeys].filter((k) => !observedKeys.has(k));
+    if (parserMissing.length === 0 && cameraMissing.length === 0) continue;
+    driftRows.push({
+      cmdId,
+      names: cmdNames.get(cmdId) ?? [],
+      expected: [...expectedKeys].sort(),
+      observed: [...observedKeys].sort(),
+      parserMissing: parserMissing.sort(),
+      cameraMissing: cameraMissing.sort(),
+    });
+  }
+  if (driftRows.length > 0) {
+    lines.push("");
+    lines.push(`## Firmware drift / parser gaps`);
+    lines.push("");
+    lines.push(
+      `For each known cmd_id, this compares the XML element names the parser` +
+        ` reads against the ones the camera actually sent. Rows where` +
+        ` *parserMissing* is non-empty point at new firmware fields we're not` +
+        ` reading; rows where *cameraMissing* is non-empty point at parser` +
+        ` reads that the current firmware doesn't answer (legacy fields, or a` +
+        ` parser handler shared across multiple cmd_ids where this one is a` +
+        ` subset).`,
+    );
+    lines.push("");
+    lines.push(`| cmd_id | name | parser doesn't read (observed) | parser reads (not in body) |`);
+    lines.push(`|---|---|---|---|`);
+    for (const d of driftRows) {
+      lines.push(
+        `| ${d.cmdId} | ${d.names.join(" / ") || "?"} | ${
+          d.parserMissing.length === 0
+            ? "—"
+            : d.parserMissing.map((k) => "`" + k + "`").join(", ")
+        } | ${
+          d.cameraMissing.length === 0
+            ? "—"
+            : d.cameraMissing.map((k) => "`" + k + "`").join(", ")
+        } |`,
+      );
+    }
+  }
+
   // Decrypted-XML structural validation: for every frame with a decrypted
   // XML body, list the root element so the maintainer can spot ones whose
   // root doesn't match what our parser reads.
@@ -530,6 +648,49 @@ function extractRootElement(xml: string): string | undefined {
   const stripped = xml.replace(/^\s*<\?xml[^?]*\?>\s*/, "");
   const m = stripped.match(/^\s*<([a-zA-Z_][\w-]*)/);
   return m?.[1];
+}
+
+/**
+ * Collect every XML tag name in `xml`. Used by the firmware-drift checker
+ * to compare the set of element names the camera emits against the set our
+ * parser reads.
+ *
+ * Strict mode to avoid false positives on Extension+binary bodies (cmd_109
+ * style) where random bytes after `</Extension>` happen to match the
+ * "<name>" regex. Rules:
+ *   - Only consider the XML prefix up to (and including) the last `</...>`
+ *     closing tag — bytes after that are binary garbage.
+ *   - Require BOTH `<name>` opening and `</name>` closing in the prefix.
+ *     A balanced pair almost certainly isn't accidental byte noise.
+ *   - Skip the `<body>` envelope (always present, not informative).
+ */
+function collectXmlTagNames(xml: string): Set<string> {
+  // Find the last closing tag — beyond it the body is binary noise.
+  const lastClose = xml.lastIndexOf("</");
+  const prefix = lastClose === -1 ? xml : xml.slice(0, xml.indexOf(">", lastClose) + 1);
+  const tags = new Set<string>();
+  const openRe = /<([a-zA-Z_][\w-]*)(?:\s[^>]*)?\/?>/g;
+  const opened = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = openRe.exec(prefix)) !== null) {
+    const name = m[1];
+    if (!name) continue;
+    opened.add(name);
+  }
+  const closeRe = /<\/([a-zA-Z_][\w-]*)>/g;
+  while ((m = closeRe.exec(prefix)) !== null) {
+    const name = m[1];
+    if (!name) continue;
+    if (name === "body") continue;
+    if (opened.has(name)) tags.add(name);
+  }
+  // Include self-closing tags (no separate closing form).
+  const selfRe = /<([a-zA-Z_][\w-]*)(?:\s[^>]*)?\/>/g;
+  while ((m = selfRe.exec(prefix)) !== null) {
+    const name = m[1];
+    if (name && name !== "body") tags.add(name);
+  }
+  return tags;
 }
 
 function escapeMd(s: string): string {
