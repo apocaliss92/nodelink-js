@@ -252,59 +252,15 @@ export default function ReportsPage() {
             Packet Captures
           </div>
           {captures.map((c) => (
-            <div
+            <CaptureReportCard
               key={c.id}
-              className="rounded-[14px] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 mb-2"
-            >
-              <div className="flex items-center justify-between flex-wrap gap-2">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-semibold text-[var(--color-foreground)]">
-                    {c.cameraDisplayName}
-                  </span>
-                  <span className="text-xs px-2 py-1 rounded-full border border-[var(--color-border)] bg-white/[0.04] text-[var(--color-foreground-muted)]">
-                    {c.iface}
-                  </span>
-                  <span className="text-xs px-2 py-1 rounded-full border border-[var(--color-border)] bg-white/[0.04] text-[var(--color-foreground-muted)]">
-                    {c.framesDecoded} frames
-                  </span>
-                  <span className="text-xs px-2 py-1 rounded-full border border-[var(--color-border)] bg-white/[0.04] text-[var(--color-foreground-muted)]">
-                    {c.knownCmdCount} known / {c.unknownCmdCount} unknown
-                  </span>
-                  <span className="text-[11px] text-[var(--color-foreground-muted)]">
-                    {new Date(c.startedAt).toLocaleString()} · {(c.durationMs / 1000).toFixed(0)}s
-                  </span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <a
-                    className={btnClass}
-                    href={`/api/capture/${c.id}/export`}
-                  >
-                    JSON
-                  </a>
-                  {c.hasRawPcap && (
-                    <a
-                      className={btnClass}
-                      href={`/api/capture/${c.id}/pcap`}
-                    >
-                      PCAP {formatSize(c.rawPcapBytes)}
-                    </a>
-                  )}
-                  <button
-                    className={deleteBtnClass}
-                    disabled={deleting === c.id}
-                    onClick={() => void deleteCapture(c.id)}
-                  >
-                    {deleting === c.id ? "..." : "Delete"}
-                  </button>
-                </div>
-              </div>
-              {c.redactedLoginFrames > 0 && (
-                <div className="mt-2 text-[10px] text-[var(--color-foreground-muted)]">
-                  Redacted {c.redactedLoginFrames} login frame
-                  {c.redactedLoginFrames === 1 ? "" : "s"} ({c.redactedBytes} bytes wiped).
-                </div>
-              )}
-            </div>
+              capture={c}
+              deleting={deleting}
+              btnClass={btnClass}
+              deleteBtnClass={deleteBtnClass}
+              onDelete={() => void deleteCapture(c.id)}
+              formatSize={formatSize}
+            />
           ))}
         </>
       )}
@@ -470,6 +426,236 @@ export default function ReportsPage() {
             </div>
           ))}
         </>
+      )}
+    </div>
+  );
+}
+
+interface CaptureFrameEntry {
+  offsetMs: number;
+  direction: "c2s" | "s2c";
+  cmdId: number;
+  cmdNames: string[] | undefined;
+  msgNum: number;
+  channelId: number;
+  responseCode: number;
+  bodyLen: number;
+  bodyHexPreview: string;
+  bodyDecrypted: string | null;
+}
+
+interface CaptureManifest {
+  version: number;
+  summary: CaptureReport;
+  sanitizedExport: {
+    cmdSummary: Array<{
+      cmdId: number;
+      cmdNames: string[] | undefined;
+      count: number;
+      lastResponseCode: number | undefined;
+      lastBodyHexPreview: string | undefined;
+    }>;
+    frames: CaptureFrameEntry[];
+  };
+}
+
+function CaptureReportCard({
+  capture,
+  deleting,
+  btnClass,
+  deleteBtnClass,
+  onDelete,
+  formatSize,
+}: {
+  capture: CaptureReport;
+  deleting: string | null;
+  btnClass: string;
+  deleteBtnClass: string;
+  onDelete: () => void;
+  formatSize: (bytes: number) => string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [manifest, setManifest] = useState<CaptureManifest | null>(null);
+  const [loadingManifest, setLoadingManifest] = useState(false);
+  const [filter, setFilter] = useState<"all" | "known" | "unknown" | "decrypted">("all");
+  const [openFrameIdx, setOpenFrameIdx] = useState<number | null>(null);
+
+  const toggle = async () => {
+    if (expanded) {
+      setExpanded(false);
+      return;
+    }
+    setExpanded(true);
+    if (manifest) return;
+    setLoadingManifest(true);
+    try {
+      const m = await trpcQuery<CaptureManifest>("capture.getSaved", {
+        captureId: capture.id,
+      });
+      setManifest(m);
+    } catch (e) {
+      console.error("Load manifest failed", e);
+    } finally {
+      setLoadingManifest(false);
+    }
+  };
+
+  const filteredFrames = manifest?.sanitizedExport.frames.filter((f) => {
+    if (filter === "known") return f.cmdNames && f.cmdNames.length > 0;
+    if (filter === "unknown") return !f.cmdNames || f.cmdNames.length === 0;
+    if (filter === "decrypted") return f.bodyDecrypted && f.bodyDecrypted !== "" && !f.bodyDecrypted.startsWith("<binary");
+    return true;
+  }) ?? [];
+
+  return (
+    <div className="rounded-[14px] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 mb-2">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-semibold text-[var(--color-foreground)]">
+            {capture.cameraDisplayName}
+          </span>
+          <span className="text-xs px-2 py-1 rounded-full border border-[var(--color-border)] bg-white/[0.04] text-[var(--color-foreground-muted)]">
+            {capture.iface}
+          </span>
+          <span className="text-xs px-2 py-1 rounded-full border border-[var(--color-border)] bg-white/[0.04] text-[var(--color-foreground-muted)]">
+            {capture.framesDecoded} frames
+          </span>
+          <span className="text-xs px-2 py-1 rounded-full border border-[var(--color-border)] bg-white/[0.04] text-[var(--color-foreground-muted)]">
+            {capture.knownCmdCount} known / {capture.unknownCmdCount} unknown
+          </span>
+          <span className="text-[11px] text-[var(--color-foreground-muted)]">
+            {new Date(capture.startedAt).toLocaleString()} ·{" "}
+            {(capture.durationMs / 1000).toFixed(0)}s
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <button className={btnClass} onClick={() => void toggle()}>
+            {expanded ? "Hide" : "View"}
+          </button>
+          <a className={btnClass} href={`/api/capture/${capture.id}/export`}>
+            JSON
+          </a>
+          {capture.hasRawPcap && (
+            <a className={btnClass} href={`/api/capture/${capture.id}/pcap`}>
+              PCAP {formatSize(capture.rawPcapBytes)}
+            </a>
+          )}
+          <button
+            className={deleteBtnClass}
+            disabled={deleting === capture.id}
+            onClick={onDelete}
+          >
+            {deleting === capture.id ? "..." : "Delete"}
+          </button>
+        </div>
+      </div>
+      {capture.redactedLoginFrames > 0 && (
+        <div className="mt-2 text-[10px] text-[var(--color-foreground-muted)]">
+          Redacted {capture.redactedLoginFrames} login frame
+          {capture.redactedLoginFrames === 1 ? "" : "s"} ({capture.redactedBytes}{" "}
+          bytes wiped).
+        </div>
+      )}
+
+      {expanded && (
+        <div className="mt-3 border-t border-[var(--color-border)] pt-3">
+          {loadingManifest && (
+            <div className="text-[11px] text-[var(--color-foreground-muted)]">
+              Loading…
+            </div>
+          )}
+          {manifest && (
+            <>
+              <div className="flex items-center gap-2 mb-2 text-[11px]">
+                <span className="text-[var(--color-foreground-muted)]">
+                  Filter:
+                </span>
+                {(["all", "known", "unknown", "decrypted"] as const).map((f) => (
+                  <button
+                    key={f}
+                    className={`px-2 py-0.5 rounded border ${
+                      filter === f
+                        ? "border-[var(--color-accent,#22d3ee)]/50 bg-[var(--color-accent,#22d3ee)]/10 text-[var(--color-foreground)]"
+                        : "border-[var(--color-border)] text-[var(--color-foreground-muted)] hover:text-[var(--color-foreground)]"
+                    }`}
+                    onClick={() => setFilter(f)}
+                  >
+                    {f}
+                  </button>
+                ))}
+                <span className="ml-auto text-[var(--color-foreground-muted)]">
+                  {filteredFrames.length} / {manifest.sanitizedExport.frames.length} frames
+                </span>
+              </div>
+              <div className="max-h-[420px] overflow-auto rounded border border-[var(--color-border)]">
+                <table className="w-full text-[11px]">
+                  <thead className="text-left text-[var(--color-foreground-muted)] sticky top-0 bg-[var(--color-surface)]">
+                    <tr>
+                      <th className="py-1 px-2">#</th>
+                      <th className="py-1 px-2">dir</th>
+                      <th className="py-1 px-2">cmd</th>
+                      <th className="py-1 px-2">name</th>
+                      <th className="py-1 px-2">msgNum</th>
+                      <th className="py-1 px-2">resp</th>
+                      <th className="py-1 px-2 text-right">bodyLen</th>
+                      <th className="py-1 px-2">body</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredFrames.map((fr, i) => {
+                      const isOpen = openFrameIdx === i;
+                      const decryptedSummary = fr.bodyDecrypted
+                        ? fr.bodyDecrypted.startsWith("<")
+                          ? fr.bodyDecrypted.slice(0, 60).replace(/\s+/g, " ")
+                          : fr.bodyDecrypted
+                        : fr.bodyHexPreview;
+                      return (
+                        <>
+                          <tr
+                            key={i}
+                            className="border-t border-[var(--color-border)] cursor-pointer hover:bg-[var(--color-surface-hover)]"
+                            onClick={() => setOpenFrameIdx(isOpen ? null : i)}
+                          >
+                            <td className="py-1 px-2 font-mono text-[var(--color-foreground-muted)]">{i}</td>
+                            <td className="py-1 px-2 font-mono text-[var(--color-foreground-muted)]">{fr.direction}</td>
+                            <td className="py-1 px-2 font-mono text-[var(--color-foreground)]">{fr.cmdId}</td>
+                            <td className="py-1 px-2 text-[var(--color-foreground)]">
+                              {fr.cmdNames?.[0] ?? <span className="text-[var(--color-foreground-muted)]">(unknown)</span>}
+                            </td>
+                            <td className="py-1 px-2 font-mono text-[var(--color-foreground-muted)]">{fr.msgNum}</td>
+                            <td className="py-1 px-2 font-mono text-[var(--color-foreground-muted)]">{fr.responseCode}</td>
+                            <td className="py-1 px-2 text-right font-mono text-[var(--color-foreground-muted)]">{fr.bodyLen}</td>
+                            <td className="py-1 px-2 font-mono text-[10px] text-[var(--color-foreground-muted)] max-w-[400px] truncate">
+                              {decryptedSummary || "—"}
+                            </td>
+                          </tr>
+                          {isOpen && (
+                            <tr key={`${i}-detail`}>
+                              <td colSpan={8} className="px-2 py-2 bg-[var(--color-background)]/40">
+                                <div className="text-[10px] uppercase tracking-wider text-[var(--color-foreground-subtle)] mb-1">
+                                  Decrypted body
+                                </div>
+                                <pre className="text-[11px] text-[var(--color-foreground)] bg-[var(--color-surface)] border border-[var(--color-border)] p-2 rounded overflow-auto max-h-[200px] whitespace-pre-wrap">
+{fr.bodyDecrypted || "(not decrypted)"}
+                                </pre>
+                                <div className="text-[10px] uppercase tracking-wider text-[var(--color-foreground-subtle)] mt-2 mb-1">
+                                  Encrypted hex preview
+                                </div>
+                                <pre className="text-[10px] font-mono text-[var(--color-foreground-muted)] bg-[var(--color-surface)] border border-[var(--color-border)] p-2 rounded overflow-auto max-h-[100px] whitespace-pre-wrap break-all">
+{fr.bodyHexPreview || "(empty)"}
+                                </pre>
+                              </td>
+                            </tr>
+                          )}
+                        </>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
       )}
     </div>
   );

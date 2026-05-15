@@ -105,6 +105,8 @@ export const captureRouter = router({
         cameraName: camera.name || camera.host,
         cameraHost: camera.host,
         iface: input.iface,
+        cameraUsername: camera.username,
+        cameraPassword: camera.password,
       });
       return { sessionId: id };
     }),

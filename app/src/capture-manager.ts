@@ -35,7 +35,13 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
-import { BaichuanFrameParser } from "@apocaliss92/nodelink-js";
+import {
+  BaichuanFrameParser,
+  bcDecrypt,
+  aesDecrypt,
+  deriveAesKey,
+  getXmlText,
+} from "@apocaliss92/nodelink-js";
 import * as constants from "@apocaliss92/nodelink-js";
 import logger from "./logger.js";
 
@@ -119,6 +125,15 @@ export interface CaptureFrameLogEntry {
    * XOR/AES encrypted and opaque without the nonce we just redacted).
    */
   bodyHexPreview: string;
+  /**
+   * Decrypted body as plain text (typically XML), best-effort.
+   * Populated by the post-stop decryption pass when we have the camera
+   * credentials. Login bodies (cmd_id=1) are always replaced with
+   * `<redacted>` because they contain username + password digests.
+   * `null` means the decryption pass didn't run; `""` means it ran but
+   * produced no usable text (binary body, decryption failed, etc.).
+   */
+  bodyDecrypted: string | null;
 }
 
 interface CaptureSession {
@@ -126,6 +141,13 @@ interface CaptureSession {
   cameraHost: string;
   cameraName: string;
   iface: string;
+  /**
+   * Camera credentials looked up at capture-start so the post-stop decrypt
+   * pass can derive the AES key without going back through settings (which
+   * could change between start and stop).
+   */
+  cameraUsername: string;
+  cameraPassword: string;
   startedAt: number;
   stoppedAt?: number;
   pcapPath: string;
@@ -451,6 +473,10 @@ export interface StartCaptureOptions {
   cameraName: string;
   cameraHost: string;
   iface: string;
+  /** Camera username — kept in memory so the decrypt pass can derive the AES key. */
+  cameraUsername: string;
+  /** Camera password — same purpose. Never persisted, never echoed in exports. */
+  cameraPassword: string;
 }
 
 /**
@@ -501,6 +527,8 @@ export function startCapture(opts: StartCaptureOptions): string {
     cameraHost: opts.cameraHost,
     cameraName: opts.cameraName,
     iface: opts.iface,
+    cameraUsername: opts.cameraUsername,
+    cameraPassword: opts.cameraPassword,
     startedAt: Date.now(),
     pcapPath,
     proc,
@@ -818,6 +846,7 @@ function handleTsharkLine(session: CaptureSession, line: string): void {
       payloadOffset: f.header.payloadOffset,
       bodyLen: f.header.bodyLen,
       bodyHexPreview,
+      bodyDecrypted: null,
     });
     // Phase transitions driven by the auth handshake.
     //   cmd_id=1, responseCode=56594 → server returned the challenge nonce
@@ -872,15 +901,34 @@ function captureDir(id: string): string {
 }
 
 /**
- * Re-parse the on-disk .pcapng to rebuild the cmd histogram and frame log
- * from authoritative data. tshark always writes the .pcapng file completely,
- * but its stdout pipe (which our LIVE parser reads) can backpressure under
- * heavy traffic — that means the live counter may be behind by the time the
- * user hits Stop. This pass closes that gap so what ends up in Reports
- * matches what was actually on the wire.
+ * Re-parse the on-disk .pcapng AND decrypt every body we can. Two reasons:
+ *
+ *   1. tshark always writes the .pcapng file completely, but its stdout pipe
+ *      (which our LIVE parser reads) can backpressure under heavy traffic —
+ *      so the live counter may lag the file by the time the user hits Stop.
+ *      Re-reading from disk closes that gap.
+ *
+ *   2. We have the camera credentials in memory (passed to startCapture) so
+ *      we can derive the AES key from the nonce that's actually present in
+ *      the capture and decrypt every subsequent body. The export then
+ *      surfaces readable XML alongside the raw header fields.
+ *
+ * This rewrites s.cmds, s.frameLog and s.framesDecoded from scratch.
  */
 async function reparseFromPcap(s: CaptureSession): Promise<void> {
   if (!existsSync(s.pcapPath)) return;
+
+  // Reset live state: we're rebuilding from authoritative file content.
+  s.cmds.clear();
+  s.parsers.clear();
+  s.frameLog.length = 0;
+  s.framesDecoded = 0;
+  s.stdoutTail = "";
+
+  // Phase 1: parse all frames from the pcap, keep the full encrypted body
+  // alongside each log entry so the decryption pass below can use it.
+  const fullBodies: Buffer[] = [];
+
   await new Promise<void>((resolve) => {
     const args = [
       "-r", s.pcapPath,
@@ -893,25 +941,222 @@ async function reparseFromPcap(s: CaptureSession): Promise<void> {
     ];
     const proc = spawn("tshark", args, { stdio: ["ignore", "pipe", "pipe"] });
     let tail = "";
-    // Reset session state — we're rebuilding from scratch so any partial
-    // live data is discarded in favour of the file content.
-    s.cmds.clear();
-    s.parsers.clear();
-    s.frameLog.length = 0;
-    s.framesDecoded = 0;
-    s.stdoutTail = "";
     proc.stdout?.on("data", (chunk: Buffer) => {
       const text = tail + chunk.toString("latin1");
       const lines = text.split("\n");
       tail = lines.pop() ?? "";
-      for (const line of lines) handleTsharkLine(s, line);
+      for (const line of lines) parseLineForReparse(s, line, fullBodies);
     });
     proc.on("close", () => {
-      if (tail.trim()) handleTsharkLine(s, tail);
+      if (tail.trim()) parseLineForReparse(s, tail, fullBodies);
       resolve();
     });
     proc.on("error", () => resolve());
   });
+
+  // Phase 2: decrypt bodies (best-effort).
+  decryptCapturedBodies(s, fullBodies);
+}
+
+/**
+ * Like handleTsharkLine but ALSO captures the full (still-encrypted) body for
+ * each frame in `fullBodies`, indexed in the same order as the frameLog
+ * entries we just appended. Phase 2 needs the full body to decrypt; the
+ * frameLog itself only carries a hex preview for display.
+ */
+function parseLineForReparse(
+  session: CaptureSession,
+  line: string,
+  fullBodies: Buffer[],
+): void {
+  if (!line.trim()) return;
+  const parts = line.split("\t");
+  if (parts.length < 3) return;
+  const srcPort = parts[0]?.trim();
+  const dstPort = parts[1]?.trim();
+  const hexRaw = (parts[2] ?? "").replace(/[^0-9a-fA-F]/g, "");
+  if (!srcPort || !dstPort || hexRaw.length === 0) return;
+  const payload = Buffer.from(hexRaw, "hex");
+  if (payload.length === 0) return;
+
+  const dirKey = `${srcPort}->${dstPort}`;
+  let parser = session.parsers.get(dirKey);
+  if (!parser) {
+    parser = new BaichuanFrameParser();
+    session.parsers.set(dirKey, parser);
+  }
+  let frames;
+  try { frames = parser.push(payload); } catch { return; }
+
+  const direction: "c2s" | "s2c" = srcPort === CAMERA_PORT ? "s2c" : "c2s";
+
+  for (const f of frames) {
+    session.framesDecoded++;
+    const cmdId = f.header.cmdId;
+    let entry = session.cmds.get(cmdId);
+    if (!entry) {
+      entry = {
+        cmdId,
+        names: CMD_NAMES.get(cmdId),
+        count: 0,
+        lastBodyHexPreview: undefined,
+        lastResponseCode: undefined,
+      };
+      session.cmds.set(cmdId, entry);
+    }
+    entry.count++;
+    entry.lastResponseCode = f.header.responseCode;
+    if (f.body && f.body.length > 0) {
+      entry.lastBodyHexPreview = SENSITIVE_CMD_IDS.has(cmdId)
+        ? REDACTED_PLACEHOLDER
+        : f.body.subarray(0, Math.min(32, f.body.length)).toString("hex");
+    }
+    const bodyHexPreview = SENSITIVE_CMD_IDS.has(cmdId)
+      ? REDACTED_PLACEHOLDER
+      : f.body && f.body.length > 0
+        ? f.body.subarray(0, Math.min(64, f.body.length)).toString("hex")
+        : "";
+    if (session.frameLog.length >= MAX_FRAME_LOG) {
+      session.frameLog.shift();
+      fullBodies.shift();
+    }
+    session.frameLog.push({
+      offsetMs: 0, // we lose timing on the reparse — set to 0 for consistency
+      direction,
+      cmdId,
+      cmdNames: CMD_NAMES.get(cmdId),
+      msgNum: f.header.msgNum,
+      channelId: f.header.channelId,
+      streamType: f.header.streamType,
+      responseCode: f.header.responseCode,
+      messageClass: f.header.messageClass,
+      payloadOffset: f.header.payloadOffset,
+      bodyLen: f.header.bodyLen,
+      bodyHexPreview,
+      bodyDecrypted: null,
+    });
+    fullBodies.push(f.body ?? Buffer.alloc(0));
+
+    // Phase tracking (mirrors handleTsharkLine).
+    if (cmdId === 1 && f.header.responseCode === 56594) {
+      if (session.phase === "starting" || session.phase === "running") {
+        session.phase = "nonce-acquired";
+      }
+    } else if (cmdId === 1 && f.header.responseCode === 200) {
+      if (session.phase !== "stopped" && session.phase !== "error") {
+        session.phase = "authenticated";
+      }
+    }
+  }
+}
+
+/**
+ * Walk the frame log, find the nonce frame (cmd_id=1 with responseCode>>8 ==
+ * 0xDD), derive the AES key with the camera password, then decrypt every
+ * subsequent body and stash the plaintext on the matching frameLog entry.
+ *
+ * Decryption is best-effort: if a body isn't valid XML after decrypt or the
+ * encryption type is something we don't handle, we leave `bodyDecrypted` as
+ * an empty string instead of null so the UI can still distinguish "tried but
+ * failed" from "didn't try".
+ */
+function decryptCapturedBodies(s: CaptureSession, fullBodies: Buffer[]): void {
+  if (s.frameLog.length !== fullBodies.length) {
+    logger.warn(
+      `Capture ${s.id} decrypt skipped: frameLog/body length mismatch (${s.frameLog.length} vs ${fullBodies.length})`,
+    );
+    return;
+  }
+  if (!s.cameraPassword) {
+    // No credentials → mark every entry as "didn't try".
+    return;
+  }
+
+  // Find the encryption-info response: cmd_id=1, responseCode upper byte 0xDD.
+  // Body is XOR-encrypted regardless of final encryption type.
+  let nonce: string | undefined;
+  let encType: number | undefined;
+  let nonceFrameIdx = -1;
+  for (let i = 0; i < s.frameLog.length; i++) {
+    const fr = s.frameLog[i]!;
+    if (fr.cmdId !== 1) continue;
+    if ((fr.responseCode >>> 8) !== 0xdd) continue;
+    encType = fr.responseCode & 0xff;
+    const body = fullBodies[i]!;
+    if (body.length === 0) continue;
+    // XOR-decrypt the body using the channel id as the offset (matches
+    // BaichuanClient.tryDecryptXml for the negotiation phase).
+    const xml =
+      encType === 0x00
+        ? body.toString("utf8")
+        : bcDecrypt(body, fr.channelId).toString("utf8");
+    const n = getXmlText(xml, "nonce");
+    if (n) {
+      nonce = n;
+      nonceFrameIdx = i;
+      // Mark the nonce body as decrypted (it's safe — nonce is not personal).
+      fr.bodyDecrypted = xml;
+      break;
+    }
+  }
+  if (!nonce || encType === undefined) {
+    logger.debug(
+      `Capture ${s.id} decrypt: no nonce frame found in capture`,
+    );
+    return;
+  }
+
+  // Derive the per-camera AES key once.
+  const aesKey =
+    encType === 0x02 || encType === 0x12
+      ? deriveAesKey(nonce, s.cameraPassword)
+      : undefined;
+
+  for (let i = 0; i < s.frameLog.length; i++) {
+    if (i === nonceFrameIdx) continue; // already decoded above
+    const fr = s.frameLog[i]!;
+    const body = fullBodies[i]!;
+    if (body.length === 0) {
+      fr.bodyDecrypted = "";
+      continue;
+    }
+    // Login frame always stays redacted — its plaintext contains the
+    // username and password digests. Signal "decrypted ran but redacted".
+    if (fr.cmdId === 1) {
+      fr.bodyDecrypted = REDACTED_PLACEHOLDER;
+      continue;
+    }
+    let plaintext: string | undefined;
+    try {
+      if (encType === 0x00) {
+        plaintext = body.toString("utf8");
+      } else if (encType === 0x01) {
+        plaintext = bcDecrypt(body, fr.channelId).toString("utf8");
+      } else if (encType === 0x02 && aesKey) {
+        plaintext = aesDecrypt(body, aesKey).toString("utf8");
+      } else if (encType === 0x12 && aesKey) {
+        // full_aes — body still uses standard AES-128-CFB; header is encrypted
+        // too but we already decoded the header from the wire (tshark gave us
+        // unencrypted bytes — header decryption happens at a different layer).
+        plaintext = aesDecrypt(body, aesKey).toString("utf8");
+      }
+    } catch {
+      plaintext = undefined;
+    }
+    if (!plaintext) {
+      fr.bodyDecrypted = "";
+      continue;
+    }
+    // Only keep "<?xml" / valid-looking XML output. Binary bodies (cmd_id=3
+    // video stream) decrypt to BcMedia bytes which are not XML; we surface
+    // "<binary N bytes>" so the export shows we tried.
+    const trimmed = plaintext.trim();
+    if (trimmed.startsWith("<")) {
+      fr.bodyDecrypted = plaintext;
+    } else {
+      fr.bodyDecrypted = `<binary ${body.length} bytes>`;
+    }
+  }
 }
 
 /**
