@@ -37,8 +37,8 @@ export default function LoginPage() {
           <img
             src={
               theme?.resolvedMode === "light"
-                ? "/brand/logo-horizontal-light.svg"
-                : "/brand/logo-horizontal-dark.svg"
+                ? `${import.meta.env.BASE_URL}brand/logo-horizontal-light.svg`
+                : `${import.meta.env.BASE_URL}brand/logo-horizontal-dark.svg`
             }
             alt="Nodelink.js Manager"
             className="h-12"
