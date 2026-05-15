@@ -170,8 +170,14 @@ export class BaichuanHttpStreamServer extends EventEmitter<{
       "-loglevel", "error",
       // Force a known frame rate on raw H.264 input so the muxer gets valid PTS/DTS.
       "-r", String(this.inputFps),
+      // `+genpts` generates uniform PTS from `-r` for raw Annex-B input. We
+      // deliberately do NOT pass `-use_wallclock_as_timestamps 1`: that
+      // overrides the generated PTS with the host wallclock at frame ARRIVAL
+      // time, and the network stream is bursty so the resulting PTS is
+      // uneven. With `-r` forcing a target rate downstream, ffmpeg then
+      // drops/duplicates frames to match — visible as the periodic stutter
+      // reported on local-restreamer recordings (issue #11).
       "-fflags", "+genpts",
-      "-use_wallclock_as_timestamps", "1",
       "-f", "h264", // Input format (H.264 Annex-B)
       "-i", "pipe:0", // Read from stdin
       "-c:v", "copy", // Copy video codec (no re-encoding)

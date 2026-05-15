@@ -667,10 +667,17 @@ export class BaichuanHlsServer extends EventEmitter {
       "-hide_banner",
       "-loglevel",
       "warning",
+      // `+genpts` makes ffmpeg generate uniform PTS from the declared `-r`
+      // when the raw H.264/H.265 input has none. We deliberately do NOT use
+      // `-use_wallclock_as_timestamps 1` here: it replaces the generated
+      // PTS with the host wallclock at FRAME ARRIVAL time, and because the
+      // camera ships frames in bursty network reads, the resulting PTS
+      // sequence is uneven. With `-r 25` (or anything else) forcing a
+      // target rate downstream, ffmpeg then drops/duplicates frames to
+      // match — visible as the periodic stutter / pulsing reported on
+      // local-restreamer recordings (issue #11).
       "-fflags",
       "+genpts",
-      "-use_wallclock_as_timestamps",
-      "1",
       "-r",
       "25",
       "-f",
