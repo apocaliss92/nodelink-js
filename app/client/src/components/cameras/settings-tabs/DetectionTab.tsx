@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import {
   Section,
   FieldGrid,
@@ -7,6 +7,7 @@ import {
   Toggle,
   ApplyBar,
   findNumber,
+  findString,
   type TabProps,
 } from "./shared";
 import { trpcQuery, trpcMutation } from "../../../api";
@@ -14,50 +15,61 @@ import { trpcQuery, trpcMutation } from "../../../api";
 /**
  * Motion + AI detection tab.
  *
- * The library returns the raw camera XML parsed as nested JSON. The
- * relevant fields live under `body.MD` for cmd_46 and `body.AiAlarm`
- * (or similar) for cmd_342, so we use `findNumber` to pluck what we
- * need without committing to a fixed shape.
+ * Two independent forms in one tab:
  *
- * Sensitivity on E1 Zoom is reported as a per-time-window array under
- * `<sensitivityInfoList><sensitivityInfo>…</sensitivityInfo>…</sensitivityInfoList>`.
- * We surface the FIRST window's value (the camera UI in the official
- * app does the same when it shows a single slider). When the user
- * applies, the library setter writes only the top-level field — older
- * firmwares that expose a scalar respond correctly; newer firmwares
- * with the time-window list need additional work to roll out per-window
- * sensitivity which we'll do once we have a SET capture to verify.
+ *   1. Motion alarm (cmd_46/47) — top-level enable + sensitivity slider.
+ *      Modern firmwares ship a per-time-window sensitivity array under
+ *      `<sensitivityInfoList>`; we surface the FIRST window's value
+ *      until the full schedule editor lands.
+ *
+ *   2. Per-class AI sensitivity (cmd_342/343) — the camera advertises
+ *      which classes it supports via cmd_299's `<detectType>` list
+ *      ("people,dog_cat" etc.). For each, we fetch the AiDetectCfg
+ *      via the raw `getAiAlarmRaw` call to pull `sensitivity` and
+ *      `stayTime` out, then let the user edit. Apply writes per class
+ *      via `setAiDetection`.
  */
 interface MotionForm {
   enabled: boolean;
   sensitivity: number;
 }
 
-interface AiAlarm {
-  channel?: number;
-  alarm_state?: number;
-  support?: number;
-  [k: string]: unknown;
+interface AiClassForm {
+  type: string;
+  sensitivity: number | undefined;
+  stayTime: number | undefined;
 }
 
 function readMotionForm(raw: unknown): MotionForm {
   const enable = findNumber(raw, "enable");
-  // First try a top-level <sensitivity> (older firmwares); otherwise
-  // pluck the first <sensitivityInfo> entry's sensitivity (E1 Zoom and
-  // similar). `findNumber` returns the first match in DFS order which is
-  // exactly what we want.
   let sens = findNumber(raw, "sensitivity");
   if (sens === undefined) sens = findNumber(raw, "sensitivityDefault");
-  return {
-    enabled: enable === 1,
-    sensitivity: sens ?? 50,
-  };
+  return { enabled: enable === 1, sensitivity: sens ?? 50 };
 }
+
+function readAiTypes(aiCfg: unknown): string[] {
+  // <AiCfg><detectType>people,dog_cat</detectType>...</AiCfg>
+  const detect = findString(aiCfg, "detectType");
+  if (!detect) return [];
+  return detect.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+const CLASS_LABELS: Record<string, string> = {
+  people: "People",
+  vehicle: "Vehicle",
+  dog_cat: "Animals (dog / cat)",
+  face: "Face",
+  package: "Package",
+};
+
+const labelForClass = (type: string): string =>
+  CLASS_LABELS[type] ?? type;
 
 export function DetectionTab({ cameraId, channel }: TabProps) {
   const [motion, setMotion] = useState<MotionForm | null>(null);
   const [loadedMotion, setLoadedMotion] = useState<MotionForm | null>(null);
-  const [ai, setAi] = useState<AiAlarm | null>(null);
+  const [aiClasses, setAiClasses] = useState<AiClassForm[]>([]);
+  const [loadedAi, setLoadedAi] = useState<AiClassForm[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -67,14 +79,29 @@ export function DetectionTab({ cameraId, channel }: TabProps) {
     setLoading(true);
     setError(null);
     try {
-      const [m, a] = await Promise.all([
+      const [m, aiCfg] = await Promise.all([
         trpcQuery<unknown>("baichuan.getMotionAlarm", { cameraId, channel }),
-        trpcQuery<AiAlarm>("baichuan.getAiAlarm", { cameraId, channel }).catch(() => null),
+        trpcQuery<unknown>("baichuan.getAiCfg", { cameraId, channel }).catch(() => null),
       ]);
       const f = readMotionForm(m);
       setMotion(f);
       setLoadedMotion(f);
-      setAi(a);
+
+      const types = readAiTypes(aiCfg);
+      const classForms: AiClassForm[] = [];
+      for (const type of types) {
+        const raw = await trpcQuery<unknown>(
+          "baichuan.getAiAlarmRaw",
+          { cameraId, channel, aiType: type },
+        ).catch(() => null);
+        classForms.push({
+          type,
+          sensitivity: findNumber(raw, "sensitivity"),
+          stayTime: findNumber(raw, "stayTime"),
+        });
+      }
+      setAiClasses(classForms);
+      setLoadedAi(classForms.map((c) => ({ ...c })));
       setSaved(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -83,25 +110,43 @@ export function DetectionTab({ cameraId, channel }: TabProps) {
     }
   }, [cameraId, channel]);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  useEffect(() => { void refresh(); }, [refresh]);
 
-  const dirty =
-    JSON.stringify(loadedMotion) !== JSON.stringify(motion);
+  const dirty = useMemo(() => {
+    if (JSON.stringify(loadedMotion) !== JSON.stringify(motion)) return true;
+    if (JSON.stringify(loadedAi) !== JSON.stringify(aiClasses)) return true;
+    return false;
+  }, [motion, loadedMotion, aiClasses, loadedAi]);
 
   const apply = useCallback(async () => {
-    if (!motion) return;
     setSaving(true);
     setError(null);
     setSaved(false);
     try {
-      await trpcMutation("baichuan.setMotionAlarm", {
-        cameraId,
-        channel,
-        enabled: motion.enabled,
-        sensitivity: motion.sensitivity,
-      });
+      if (
+        motion &&
+        loadedMotion &&
+        JSON.stringify(motion) !== JSON.stringify(loadedMotion)
+      ) {
+        await trpcMutation("baichuan.setMotionAlarm", {
+          cameraId,
+          channel,
+          enabled: motion.enabled,
+          sensitivity: motion.sensitivity,
+        });
+      }
+      for (let i = 0; i < aiClasses.length; i++) {
+        const cur = aiClasses[i]!;
+        const old = loadedAi[i];
+        if (!old || JSON.stringify(cur) === JSON.stringify(old)) continue;
+        await trpcMutation("baichuan.setAiDetection", {
+          cameraId,
+          channel,
+          aiType: cur.type,
+          ...(cur.sensitivity !== undefined ? { sensitivity: cur.sensitivity } : {}),
+          ...(cur.stayTime !== undefined ? { stayTime: cur.stayTime } : {}),
+        });
+      }
       setSaved(true);
       await refresh();
     } catch (e) {
@@ -109,7 +154,18 @@ export function DetectionTab({ cameraId, channel }: TabProps) {
     } finally {
       setSaving(false);
     }
-  }, [motion, cameraId, channel, refresh]);
+  }, [motion, loadedMotion, aiClasses, loadedAi, cameraId, channel, refresh]);
+
+  const revertAll = useCallback(() => {
+    if (loadedMotion) setMotion(loadedMotion);
+    setAiClasses(loadedAi.map((c) => ({ ...c })));
+  }, [loadedMotion, loadedAi]);
+
+  const updateAi = (idx: number, field: "sensitivity" | "stayTime", value: number): void => {
+    setAiClasses((prev) =>
+      prev.map((c, i) => (i === idx ? { ...c, [field]: value } : c)),
+    );
+  };
 
   return (
     <div>
@@ -148,17 +204,51 @@ export function DetectionTab({ cameraId, channel }: TabProps) {
       </Section>
 
       <Section
-        title="AI detection state"
-        description="Last AI-alarm snapshot reported by the camera. Per-class AI configuration (sensitivity, area, types) is captured by `getAiState` and `getAiCfg` — read-only here while we wire setters for each AI class."
+        title="AI detection per class"
+        description="Sensitivity per AI class advertised by the camera. The list is built from the `detectType` field of cmd_299 (so it reflects exactly what this model/firmware supports). stayTime is the minimum dwell time before an alarm fires (seconds)."
       >
-        {ai === null ? (
+        {loading ? (
+          <div className="text-[11px] text-[var(--color-foreground-muted)] py-4">Loading…</div>
+        ) : aiClasses.length === 0 ? (
           <div className="text-[11px] text-[var(--color-foreground-muted)] py-2">
-            Camera did not report AI alarm fields (typical for models without AI).
+            Camera did not report any AI classes (cmd_299 detectType was empty). Typical on models without on-device AI.
           </div>
         ) : (
-          <pre className="text-[11px] font-mono bg-[var(--color-background)] border border-[var(--color-border)] rounded p-2 overflow-auto max-h-[200px]">
-{JSON.stringify(ai, null, 2)}
-          </pre>
+          <div className="flex flex-col gap-3">
+            {aiClasses.map((cls, idx) => (
+              <div
+                key={cls.type}
+                className="rounded-md border border-[var(--color-border)] p-3"
+              >
+                <div className="text-[12px] font-semibold text-[var(--color-foreground)] mb-2">
+                  {labelForClass(cls.type)}
+                  <span className="ml-2 text-[10px] text-[var(--color-foreground-muted)] font-mono">
+                    type={cls.type}
+                  </span>
+                </div>
+                <FieldGrid>
+                  <Field label="Sensitivity" hint="0–100; higher = more sensitive">
+                    <NumberInput
+                      value={cls.sensitivity}
+                      min={0}
+                      max={100}
+                      onChange={(v) => updateAi(idx, "sensitivity", v)}
+                      disabled={saving}
+                    />
+                  </Field>
+                  <Field label="Stay time (s)" hint="0 = trigger on first detection">
+                    <NumberInput
+                      value={cls.stayTime}
+                      min={0}
+                      max={600}
+                      onChange={(v) => updateAi(idx, "stayTime", v)}
+                      disabled={saving}
+                    />
+                  </Field>
+                </FieldGrid>
+              </div>
+            ))}
+          </div>
         )}
       </Section>
 
@@ -168,7 +258,7 @@ export function DetectionTab({ cameraId, channel }: TabProps) {
         saved={saved}
         error={error}
         onApply={() => void apply()}
-        onRevert={() => setMotion(loadedMotion)}
+        onRevert={revertAll}
         onRefresh={() => void refresh()}
       />
     </div>

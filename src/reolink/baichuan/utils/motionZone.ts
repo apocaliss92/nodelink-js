@@ -18,9 +18,15 @@
  */
 
 export interface MotionZoneScope {
+  /** Active region width (effective grid columns, `<width>` in MD). */
+  width: number;
+  /** Active region height (effective grid rows, `<height>` in MD). */
+  height: number;
+  /** Bitmap columns reported by `<scope><columns>`. */
   columns: number;
+  /** Bitmap rows reported by `<scope><rows>`. */
   rows: number;
-  /** Flat `columns × rows` array, row-major. `true` = cell included. */
+  /** Flat `width × height` array, row-major. `true` = cell included. */
   cells: boolean[];
 }
 
@@ -28,45 +34,64 @@ export interface MotionZoneScope {
  * Decode the base64 `valueTable` from a `<scope>` (or `<area>`) into a flat
  * boolean grid. Bytes are packed MSB-first: bit 7 of byte 0 is cell (0,0).
  *
+ * The camera ships TWO pairs of dimensions: `<scope><columns>×<rows>`
+ * (bitmap size — typically 96×64) and `<width>×<height>` in the parent
+ * block (the effective motion grid — typically smaller, e.g. 60×33 on
+ * E1 Zoom). The user-editable region matches `width × height`, not the
+ * full bitmap; bits past that are camera-side padding that stays 0.
+ *
+ * When `width`/`height` are omitted we treat the whole bitmap as the
+ * active region (back-compat).
+ *
  * Throws if the base64 contains too few bytes for `columns*rows` bits.
  */
 export function decodeMotionScopeBitmap(
   valueTable: string,
   columns: number,
   rows: number,
+  width: number = columns,
+  height: number = rows,
 ): MotionZoneScope {
   const trimmed = valueTable.trim().replace(/[^A-Za-z0-9+/=]/g, "");
   const bytes = base64DecodeToBytes(trimmed);
-  const total = columns * rows;
-  if (bytes.length * 8 < total) {
+  const totalBits = columns * rows;
+  if (bytes.length * 8 < totalBits) {
     throw new Error(
-      `valueTable too short: have ${bytes.length * 8} bits, need ${total}`,
+      `valueTable too short: have ${bytes.length * 8} bits, need ${totalBits}`,
     );
   }
-  const cells = new Array<boolean>(total);
-  for (let i = 0; i < total; i++) {
-    const byteIdx = i >> 3;
-    const bitIdx = 7 - (i & 7);
-    cells[i] = ((bytes[byteIdx] ?? 0) >> bitIdx) & 1 ? true : false;
+  const w = Math.min(width, columns);
+  const h = Math.min(height, rows);
+  const cells = new Array<boolean>(w * h);
+  for (let r = 0; r < h; r++) {
+    for (let c = 0; c < w; c++) {
+      const bitIndex = r * columns + c;
+      const byteIdx = bitIndex >> 3;
+      const bitIdx = 7 - (bitIndex & 7);
+      cells[r * w + c] = ((bytes[byteIdx] ?? 0) >> bitIdx) & 1 ? true : false;
+    }
   }
-  return { columns, rows, cells };
+  return { width: w, height: h, columns, rows, cells };
 }
 
 /**
- * Encode a flat boolean grid back into the base64 `valueTable` the camera
- * expects. Bytes are packed MSB-first to match `decodeMotionScopeBitmap`.
+ * Encode a `width × height` boolean grid back into the camera's
+ * `columns × rows` `valueTable`. Bits outside the active region stay 0,
+ * matching what the camera ships on the way down.
  *
- * `scope.cells.length` must equal `scope.columns * scope.rows`. Missing
- * cells are treated as `false`.
+ * `scope.cells.length` must equal `scope.width * scope.height`.
  */
 export function encodeMotionScopeBitmap(scope: MotionZoneScope): string {
-  const total = scope.columns * scope.rows;
-  const bytes = new Uint8Array(Math.ceil(total / 8));
-  for (let i = 0; i < total; i++) {
-    if (!scope.cells[i]) continue;
-    const byteIdx = i >> 3;
-    const bitIdx = 7 - (i & 7);
-    bytes[byteIdx] = (bytes[byteIdx] ?? 0) | (1 << bitIdx);
+  const bytes = new Uint8Array(Math.ceil((scope.columns * scope.rows) / 8));
+  for (let r = 0; r < scope.height; r++) {
+    for (let c = 0; c < scope.width; c++) {
+      const on = scope.cells[r * scope.width + c];
+      if (!on) continue;
+      const bitIndex = r * scope.columns + c;
+      const byteIdx = bitIndex >> 3;
+      const bitIdx = 7 - (bitIndex & 7);
+      bytes[byteIdx] = (bytes[byteIdx] ?? 0) | (1 << bitIdx);
+    }
   }
   return base64EncodeBytes(bytes);
 }
@@ -76,11 +101,18 @@ export function encodeMotionScopeBitmap(scope: MotionZoneScope): string {
  * Useful when the camera response has no `<valueTable>` and we want to
  * start the user off with a clean slate.
  */
-export function fullCoverageScope(columns: number, rows: number): MotionZoneScope {
+export function fullCoverageScope(
+  columns: number,
+  rows: number,
+  width: number = columns,
+  height: number = rows,
+): MotionZoneScope {
   return {
+    width,
+    height,
     columns,
     rows,
-    cells: new Array<boolean>(columns * rows).fill(true),
+    cells: new Array<boolean>(width * height).fill(true),
   };
 }
 

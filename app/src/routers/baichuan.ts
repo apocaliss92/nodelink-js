@@ -407,6 +407,55 @@ export const baichuanRouter = router({
       return await api.getAiAlarm(input.channel);
     }),
 
+  getAiAlarmRaw: publicProcedure
+    .meta({
+      description:
+        "Get raw AiDetectCfg for one AI class. aiType is 'people' / 'vehicle' / 'dog_cat' / 'face' / 'package'. Includes sensitivity, stayTime, min/maxTargetWidth/Height and the per-class area bitmap.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        aiType: z.string().min(1),
+      }),
+    )
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getAiAlarmRaw(input.channel, input.aiType);
+    }),
+
+  getAiCfg: publicProcedure
+    .meta({
+      description:
+        "Get AI configuration (cmd_299). Returns the comma-separated `detectType` list — useful to know which AI classes the camera actually supports.",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getAiCfg(input.channel);
+    }),
+
+  setAiDetection: publicProcedure
+    .meta({
+      description:
+        "Update sensitivity (and optionally stayTime) for one AI class on this channel. aiType is 'people' / 'vehicle' / 'dog_cat' / 'face' / 'package'.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        aiType: z.string().min(1),
+        sensitivity: z.number().int().min(0).max(100).optional(),
+        stayTime: z.number().int().min(0).max(600).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.setAiDetection(
+        input.channel,
+        input.aiType,
+        input.sensitivity,
+        input.stayTime,
+      );
+      return { success: true };
+    }),
+
   // ============ LIGHTS & SIREN ============
 
   getWhiteLedState: publicProcedure

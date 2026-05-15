@@ -1,56 +1,99 @@
 /**
  * Browser-side mirror of the library's `motionZone` helpers.
  *
- * The library exposes the same functions under
- * `@apocaliss92/nodelink-js`, but importing from the package root pulls
- * Node's `crypto` (via the protocol crypto module) into the Vite bundle
- * — Vite externalises it and the browser build fails. The helpers
- * themselves are pure-JS, no Node deps, so we just duplicate them here
- * and keep the wire format documented next to the encoder/decoder pair.
+ * Wire format observed on E1 Zoom (cmd_46 GetMdAlarm):
  *
- *   <scope>
- *     <columns>96</columns>
- *     <rows>64</rows>
- *     <valueTable>{base64 of columns*rows bits, MSB-first per byte}</valueTable>
- *   </scope>
+ *   <body>
+ *     <MD>
+ *       <width>60</width>          ← effective motion grid (active region)
+ *       <height>33</height>
+ *       <scope>
+ *         <columns>96</columns>    ← bitmap dimensions in the valueTable
+ *         <rows>64</rows>
+ *         <valueTable>{base64 of columns*rows bits, MSB-first per byte}</valueTable>
+ *       </scope>
+ *     </MD>
+ *   </body>
+ *
+ * The `valueTable` bitmap is `columns × rows` packed MSB-first. The CAMERA
+ * however only honours the first `width × height` cells; bits past that
+ * are padding (always 0 in captures). When we render the editor we want
+ * to map a `width × height` grid over the WHOLE camera frame — otherwise
+ * the painted area covers only the upper-left fraction of the image (we
+ * stretched the 96×64 grid over the full frame and only the first 60×33
+ * of those map to the real motion region).
+ *
+ * So the helpers below take BOTH the bitmap dimensions AND the active
+ * region size. The decoder returns a `width × height` flat cell array;
+ * the encoder writes a `columns × rows` bitmap where the first
+ * `width × height` cells come from the user grid and the rest stay 0.
+ *
+ * Pure-JS / Uint8Array, works in browser and Node.
  */
 
 export interface MotionZoneScope {
+  /** Active region width (effective grid columns). */
+  width: number;
+  /** Active region height (effective grid rows). */
+  height: number;
+  /** Bitmap columns reported by `<scope><columns>`. */
   columns: number;
+  /** Bitmap rows reported by `<scope><rows>`. */
   rows: number;
+  /** Flat `width × height` boolean grid, row-major. */
   cells: boolean[];
 }
 
+/**
+ * Decode the camera's `<valueTable>` bitmap into the user-facing
+ * `width × height` grid. The remaining `columns × rows − width × height`
+ * bits are camera-side padding and not surfaced.
+ */
 export function decodeMotionScopeBitmap(
   valueTable: string,
   columns: number,
   rows: number,
+  width: number = columns,
+  height: number = rows,
 ): MotionZoneScope {
   const trimmed = valueTable.trim().replace(/[^A-Za-z0-9+/=]/g, "");
   const bytes = base64DecodeToBytes(trimmed);
-  const total = columns * rows;
-  if (bytes.length * 8 < total) {
+  const totalBits = columns * rows;
+  if (bytes.length * 8 < totalBits) {
     throw new Error(
-      `valueTable too short: have ${bytes.length * 8} bits, need ${total}`,
+      `valueTable too short: have ${bytes.length * 8} bits, need ${totalBits}`,
     );
   }
-  const cells = new Array<boolean>(total);
-  for (let i = 0; i < total; i++) {
-    const byteIdx = i >> 3;
-    const bitIdx = 7 - (i & 7);
-    cells[i] = ((bytes[byteIdx] ?? 0) >> bitIdx) & 1 ? true : false;
+  const w = Math.min(width, columns);
+  const h = Math.min(height, rows);
+  const cells = new Array<boolean>(w * h);
+  for (let r = 0; r < h; r++) {
+    for (let c = 0; c < w; c++) {
+      const bitIndex = r * columns + c;
+      const byteIdx = bitIndex >> 3;
+      const bitIdx = 7 - (bitIndex & 7);
+      cells[r * w + c] = ((bytes[byteIdx] ?? 0) >> bitIdx) & 1 ? true : false;
+    }
   }
-  return { columns, rows, cells };
+  return { width: w, height: h, columns, rows, cells };
 }
 
+/**
+ * Encode a user-edited `width × height` grid back into the camera's
+ * `columns × rows` bitmap. Bits outside the active region stay 0 (same
+ * pattern the camera ships when the GET returns).
+ */
 export function encodeMotionScopeBitmap(scope: MotionZoneScope): string {
-  const total = scope.columns * scope.rows;
-  const bytes = new Uint8Array(Math.ceil(total / 8));
-  for (let i = 0; i < total; i++) {
-    if (!scope.cells[i]) continue;
-    const byteIdx = i >> 3;
-    const bitIdx = 7 - (i & 7);
-    bytes[byteIdx] = (bytes[byteIdx] ?? 0) | (1 << bitIdx);
+  const bytes = new Uint8Array(Math.ceil((scope.columns * scope.rows) / 8));
+  for (let r = 0; r < scope.height; r++) {
+    for (let c = 0; c < scope.width; c++) {
+      const on = scope.cells[r * scope.width + c];
+      if (!on) continue;
+      const bitIndex = r * scope.columns + c;
+      const byteIdx = bitIndex >> 3;
+      const bitIdx = 7 - (bitIndex & 7);
+      bytes[byteIdx] = (bytes[byteIdx] ?? 0) | (1 << bitIdx);
+    }
   }
   return base64EncodeBytes(bytes);
 }

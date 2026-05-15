@@ -24,7 +24,13 @@ import { withAuthTokenQuery } from "../utils";
  * tool is selected).
  */
 interface ScopeData {
+  /** UI grid width (matches the camera's active motion region). */
+  width: number;
+  /** UI grid height. */
+  height: number;
+  /** Wire-format bitmap columns (typically 96 on E1 Zoom). */
   columns: number;
+  /** Wire-format bitmap rows (typically 64). */
   rows: number;
   valueTable: string;
   channelId: number;
@@ -113,9 +119,27 @@ export function MotionZonesTab({ cameraId, channel }: TabProps) {
       const cols = hit.scope.columns;
       const rows = hit.scope.rows;
       const vt = hit.scope.valueTable;
-      const decoded = decodeMotionScopeBitmap(vt, cols, rows);
+      // The MD block reports a `width × height` ACTIVE region next to
+      // the bitmap `columns × rows`. Only the first width × height cells
+      // of the bitmap correspond to the actual camera frame; the rest
+      // are camera-side padding that stays 0. We render the editor at
+      // the active size so the painted cells map onto the full picture
+      // — otherwise the grid only covers the top-left fraction.
+      const widthRaw = hit.node.width;
+      const heightRaw = hit.node.height;
+      const width = Math.max(
+        1,
+        Math.min(cols, typeof widthRaw === "number" ? widthRaw : Number(widthRaw) || cols),
+      );
+      const height = Math.max(
+        1,
+        Math.min(rows, typeof heightRaw === "number" ? heightRaw : Number(heightRaw) || rows),
+      );
+      const decoded = decodeMotionScopeBitmap(vt, cols, rows, width, height);
       const channelIdRaw = hit.node.channelId;
       setScope({
+        width,
+        height,
         columns: cols,
         rows,
         valueTable: vt,
@@ -157,6 +181,8 @@ export function MotionZonesTab({ cameraId, channel }: TabProps) {
     setSaved(false);
     try {
       const valueTable = encodeMotionScopeBitmap({
+        width: scope.width,
+        height: scope.height,
         columns: scope.columns,
         rows: scope.rows,
         cells,
@@ -195,10 +221,10 @@ export function MotionZonesTab({ cameraId, channel }: TabProps) {
     const rect = canvasRef.current.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-    const col = Math.floor((x / rect.width) * scope.columns);
-    const row = Math.floor((y / rect.height) * scope.rows);
-    if (col < 0 || col >= scope.columns || row < 0 || row >= scope.rows) return;
-    const idx = row * scope.columns + col;
+    const col = Math.floor((x / rect.width) * scope.width);
+    const row = Math.floor((y / rect.height) * scope.height);
+    if (col < 0 || col >= scope.width || row < 0 || row >= scope.height) return;
+    const idx = row * scope.width + col;
     if (touchedRef.current.has(idx)) return;
     touchedRef.current.add(idx);
     setCells((prev) => {
@@ -249,7 +275,7 @@ export function MotionZonesTab({ cameraId, channel }: TabProps) {
                 label="Erase (exclude)"
               />
               <span className="text-[11px] text-[var(--color-foreground-muted)] ml-2">
-                Grid {scope.columns} × {scope.rows} · {cells.filter(Boolean).length} of {cells.length} cells included
+                Grid {scope.width} × {scope.height} · {cells.filter(Boolean).length} of {cells.length} cells included
               </span>
               <span className="flex-1" />
               <button
@@ -300,13 +326,13 @@ export function MotionZonesTab({ cameraId, channel }: TabProps) {
                   6k+ rectangles smoothly without per-element re-renders. */}
               <svg
                 className="absolute inset-0 w-full h-full pointer-events-none"
-                viewBox={`0 0 ${scope.columns} ${scope.rows}`}
+                viewBox={`0 0 ${scope.width} ${scope.height}`}
                 preserveAspectRatio="none"
               >
                 {cells.map((on, i) => {
                   if (!on) return null;
-                  const c = i % scope.columns;
-                  const r = Math.floor(i / scope.columns);
+                  const c = i % scope.width;
+                  const r = Math.floor(i / scope.width);
                   return (
                     <rect
                       key={i}
