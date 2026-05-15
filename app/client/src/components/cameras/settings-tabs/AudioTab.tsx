@@ -6,6 +6,7 @@ import {
   NumberInput,
   Toggle,
   ApplyBar,
+  findNumber,
   type TabProps,
 } from "./shared";
 import { trpcQuery, trpcMutation } from "../../../api";
@@ -37,32 +38,13 @@ const cfgFromRaw = (
   cfg: AudioCfg | null,
   noise: AudioNoise | null,
 ): Form => ({
-  volume: pickNumber(cfg, "volume"),
-  talkAndReplyVolume: pickNumber(cfg, "talkAndReplyVolume"),
-  visitorVolume: pickNumber(cfg, "visitorVolume"),
-  visitorLoudspeaker: pickNumber(cfg, "visitorLoudspeaker") === 1,
-  noiseEnabled: pickNumber(noise, "enable") === 1,
-  noiseLevel: pickNumber(noise, "level") ?? 50,
+  volume: findNumber(cfg, "volume"),
+  talkAndReplyVolume: findNumber(cfg, "talkAndReplyVolume"),
+  visitorVolume: findNumber(cfg, "visitorVolume"),
+  visitorLoudspeaker: findNumber(cfg, "visitorLoudspeaker") === 1,
+  noiseEnabled: findNumber(noise, "enable") === 1,
+  noiseLevel: findNumber(noise, "level") ?? 50,
 });
-
-function pickNumber(obj: unknown, key: string): number | undefined {
-  if (!obj || typeof obj !== "object") return undefined;
-  // The library returns parsed XML (possibly nested under body.audioCfg /
-  // body.aiDenoise). Walk one level deep to find the value.
-  const stack: unknown[] = [obj];
-  while (stack.length > 0) {
-    const node = stack.pop();
-    if (!node || typeof node !== "object") continue;
-    const rec = node as Record<string, unknown>;
-    const v = rec[key];
-    if (typeof v === "number") return v;
-    if (typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v)) return Number(v);
-    for (const child of Object.values(rec)) {
-      if (child && typeof child === "object") stack.push(child);
-    }
-  }
-  return undefined;
-}
 
 export function AudioTab({ cameraId, channel }: TabProps) {
   const [form, setForm] = useState<Form | null>(null);

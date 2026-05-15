@@ -445,6 +445,53 @@ export const baichuanRouter = router({
       return await api.getOsd(input.channel);
     }),
 
+  getOsdDatetime: publicProcedure
+    .meta({
+      description:
+        "Get OSD datetime + channel-name overlay (cmd_44). Returns the parsed `OsdDatetime` block (enable, topLeftX/Y, language) plus `OsdChannelName` (name, enable, topLeftX/Y, enWatermark, enBgcolor) — the schema modern Reolink firmwares actually use.",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getOsdDatetime(input.channel);
+    }),
+
+  setOsdDatetime: publicProcedure
+    .meta({
+      description:
+        "Update OSD datetime + channel-name overlay via cmd_45 (SetOsdDatetime). Pixel-coord positions, boolean enables.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        datetime: z
+          .object({
+            enable: z.boolean().optional(),
+            topLeftX: z.number().int().optional(),
+            topLeftY: z.number().int().optional(),
+            language: z.string().optional(),
+          })
+          .optional(),
+        channelName: z
+          .object({
+            name: z.string().optional(),
+            enable: z.boolean().optional(),
+            topLeftX: z.number().int().optional(),
+            topLeftY: z.number().int().optional(),
+            enWatermark: z.boolean().optional(),
+            enBgcolor: z.boolean().optional(),
+          })
+          .optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.setOsdDatetime(input.channel, {
+        ...(input.datetime ? { datetime: input.datetime } : {}),
+        ...(input.channelName ? { channelName: input.channelName } : {}),
+      });
+      return { success: true };
+    }),
+
   setOsd: publicProcedure
     .meta({
       description:

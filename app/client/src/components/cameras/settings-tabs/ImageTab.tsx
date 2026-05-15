@@ -4,32 +4,38 @@ import {
   Field,
   NumberInput,
   ApplyBar,
+  findNumber,
   useSettingsForm,
   type TabProps,
 } from "./shared";
 
-interface ImageGet {
-  bright?: number;
-  contrast?: number;
-  saturation?: number;
-  hue?: number;
-  sharpen?: number;
-}
-
-type Form = ImageGet;
+/**
+ * The library's `getImage` returns the raw cmd_26 response parsed as
+ * JSON — nested under `body.VideoInput`. Different firmwares wrap things
+ * slightly differently (some merge VideoInput + InputAdvanceCfg, some
+ * keep them separate), so we walk the result with `findNumber` instead
+ * of assuming a fixed shape.
+ */
+type Form = {
+  bright: number | undefined;
+  contrast: number | undefined;
+  saturation: number | undefined;
+  hue: number | undefined;
+  sharpen: number | undefined;
+};
 
 export function ImageTab({ cameraId, channel }: TabProps) {
   const { form, setForm, dirty, saving, saved, error, apply, revert, refresh, loading } =
-    useSettingsForm<ImageGet, Form>({
+    useSettingsForm<unknown, Form>({
       getProcedure: "baichuan.getImage",
       cameraId,
       channel,
       toForm: (data) => ({
-        bright: data.bright,
-        contrast: data.contrast,
-        saturation: data.saturation,
-        hue: data.hue,
-        sharpen: data.sharpen,
+        bright: findNumber(data, "bright"),
+        contrast: findNumber(data, "contrast"),
+        saturation: findNumber(data, "saturation"),
+        hue: findNumber(data, "hue"),
+        sharpen: findNumber(data, "sharpen"),
       }),
     });
 

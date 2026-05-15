@@ -3,6 +3,7 @@ import {
   FieldGrid,
   Field,
   TextInput,
+  NumberInput,
   Toggle,
   Select,
   ApplyBar,
@@ -10,47 +11,81 @@ import {
   type TabProps,
 } from "./shared";
 
-interface OsdConfig {
-  channel: number;
-  osdChannel: { enable: number; name: string; pos: string };
-  osdTime: { enable: number; pos: string };
-  watermark: number;
-  bgcolor?: number;
-}
+/**
+ * Reolink's actual OSD payload (cmd_44 GetOsdDatetime / cmd_45 SetOsdDatetime)
+ * splits into two top-level XML blocks: `<OsdDatetime>` for the timestamp
+ * burn-in and `<OsdChannelName>` for the friendly camera name. Position is
+ * given in **camera pixel coordinates** — (1, 1) is top-left; 65536 is the
+ * sentinel some firmwares use for "hidden". The OSD tab edits both blocks
+ * in one form.
+ *
+ * Note: the library also exposes a legacy `setOsd` (cmd_25, write-through
+ * via the Image config) which we keep for older firmwares. This tab uses
+ * `setOsdDatetime` which is what current Reolink builds expect.
+ */
+type OsdDatetimeResult = {
+  osdDatetime?: {
+    channelId?: number;
+    enable?: boolean;
+    topLeftX?: number;
+    topLeftY?: number;
+    width?: number;
+    height?: number;
+    language?: string;
+  };
+  osdChannelName?: {
+    channelId?: number;
+    name?: string;
+    enable?: boolean;
+    topLeftX?: number;
+    topLeftY?: number;
+    enWatermark?: boolean;
+    enBgcolor?: boolean;
+  };
+};
 
 interface Form {
-  channelName: string;
-  channelEnable: boolean;
-  channelPos: string;
   timeEnable: boolean;
-  timePos: string;
+  timeX: number;
+  timeY: number;
+  language: string;
+  nameEnable: boolean;
+  name: string;
+  nameX: number;
+  nameY: number;
   watermark: boolean;
-  bgcolor: boolean | undefined;
+  bgcolor: boolean;
 }
 
-const POS_OPTIONS = [
-  { value: "topLeft", label: "Top left" },
-  { value: "topCenter", label: "Top center" },
-  { value: "topRight", label: "Top right" },
-  { value: "lowerLeft", label: "Bottom left" },
-  { value: "lowerCenter", label: "Bottom center" },
-  { value: "lowerRight", label: "Bottom right" },
+const LANGUAGE_OPTIONS = [
+  { value: "English", label: "English" },
+  { value: "Chinese", label: "Chinese" },
+  { value: "German", label: "German" },
+  { value: "French", label: "French" },
+  { value: "Spanish", label: "Spanish" },
+  { value: "Italian", label: "Italian" },
+  { value: "Russian", label: "Russian" },
+  { value: "Polish", label: "Polish" },
+  { value: "Czech", label: "Czech" },
 ];
 
 export function OsdTab({ cameraId, channel }: TabProps) {
   const { form, setForm, dirty, saving, saved, error, apply, revert, refresh, loading } =
-    useSettingsForm<OsdConfig, Form>({
-      getProcedure: "baichuan.getOsd",
+    useSettingsForm<OsdDatetimeResult, Form>({
+      getProcedure: "baichuan.getOsdDatetime",
       cameraId,
       channel,
       toForm: (d) => ({
-        channelName: d.osdChannel.name,
-        channelEnable: d.osdChannel.enable === 1,
-        channelPos: d.osdChannel.pos,
-        timeEnable: d.osdTime.enable === 1,
-        timePos: d.osdTime.pos,
-        watermark: d.watermark === 1,
-        bgcolor: d.bgcolor === undefined ? undefined : d.bgcolor === 1,
+        timeEnable: d.osdDatetime?.enable === true,
+        timeX: d.osdDatetime?.topLeftX ?? 1,
+        timeY: d.osdDatetime?.topLeftY ?? 1,
+        language: d.osdDatetime?.language ?? "English",
+        nameEnable: d.osdChannelName?.enable === true,
+        name: d.osdChannelName?.name ?? "",
+        nameX: d.osdChannelName?.topLeftX ?? 1,
+        nameY: d.osdChannelName?.topLeftY ?? 1,
+        watermark: d.osdChannelName?.enWatermark === true,
+        bgcolor: d.osdChannelName?.enBgcolor === true,
       }),
     });
 
@@ -61,50 +96,60 @@ export function OsdTab({ cameraId, channel }: TabProps) {
   return (
     <div>
       <Section
-        title="On-screen overlay"
-        description="Text Reolink burns into the encoded video. Datetime is the timestamp the camera draws in the corner; channel name is the friendly label."
+        title="Timestamp overlay"
+        description="The clock the camera burns into the encoded video. Position is in camera pixels — (1, 1) is the top-left corner."
+      >
+        {loading || !form ? (
+          <div className="text-[11px] text-[var(--color-foreground-muted)] py-4">Loading…</div>
+        ) : (
+          <FieldGrid>
+            <Field label="Show timestamp">
+              <Toggle value={form.timeEnable} onChange={(v) => update("timeEnable", v)} disabled={saving} />
+            </Field>
+            <Field label="Language">
+              <Select
+                value={form.language}
+                onChange={(v) => update("language", v)}
+                disabled={saving || !form.timeEnable}
+                options={LANGUAGE_OPTIONS}
+              />
+            </Field>
+            <Field label="Position X (px)">
+              <NumberInput value={form.timeX} min={0} onChange={(v) => update("timeX", v)} disabled={saving || !form.timeEnable} />
+            </Field>
+            <Field label="Position Y (px)">
+              <NumberInput value={form.timeY} min={0} onChange={(v) => update("timeY", v)} disabled={saving || !form.timeEnable} />
+            </Field>
+          </FieldGrid>
+        )}
+      </Section>
+
+      <Section
+        title="Channel name overlay"
+        description="The friendly camera label burned into the picture (independent of the dashboard name). Some firmwares display 65536 for an unset position — change to a real coordinate to make it visible."
       >
         {loading || !form ? (
           <div className="text-[11px] text-[var(--color-foreground-muted)] py-4">Loading…</div>
         ) : (
           <FieldGrid>
             <Field label="Show channel name">
-              <Toggle
-                value={form.channelEnable}
-                onChange={(v) => update("channelEnable", v)}
-                disabled={saving}
-              />
+              <Toggle value={form.nameEnable} onChange={(v) => update("nameEnable", v)} disabled={saving} />
             </Field>
             <Field label="Channel name">
-              <TextInput value={form.channelName} onChange={(v) => update("channelName", v)} disabled={saving || !form.channelEnable} />
+              <TextInput value={form.name} onChange={(v) => update("name", v)} disabled={saving || !form.nameEnable} />
             </Field>
-            <Field label="Channel name position">
-              <Select
-                value={form.channelPos}
-                onChange={(v) => update("channelPos", v)}
-                disabled={saving || !form.channelEnable}
-                options={POS_OPTIONS}
-              />
+            <Field label="Position X (px)">
+              <NumberInput value={form.nameX} min={0} onChange={(v) => update("nameX", v)} disabled={saving || !form.nameEnable} />
             </Field>
-            <Field label="Show timestamp">
-              <Toggle value={form.timeEnable} onChange={(v) => update("timeEnable", v)} disabled={saving} />
-            </Field>
-            <Field label="Timestamp position">
-              <Select
-                value={form.timePos}
-                onChange={(v) => update("timePos", v)}
-                disabled={saving || !form.timeEnable}
-                options={POS_OPTIONS}
-              />
+            <Field label="Position Y (px)">
+              <NumberInput value={form.nameY} min={0} onChange={(v) => update("nameY", v)} disabled={saving || !form.nameEnable} />
             </Field>
             <Field label="Watermark">
               <Toggle value={form.watermark} onChange={(v) => update("watermark", v)} disabled={saving} />
             </Field>
-            {form.bgcolor !== undefined && (
-              <Field label="Background color">
-                <Toggle value={form.bgcolor} onChange={(v) => update("bgcolor", v)} disabled={saving} />
-              </Field>
-            )}
+            <Field label="Background color">
+              <Toggle value={form.bgcolor} onChange={(v) => update("bgcolor", v)} disabled={saving} />
+            </Field>
           </FieldGrid>
         )}
       </Section>
@@ -115,22 +160,20 @@ export function OsdTab({ cameraId, channel }: TabProps) {
         saved={saved}
         error={error}
         onApply={() =>
-          void apply("baichuan.setOsd", (f) => ({
-            osd: {
-              channel,
-              osdChannel: {
-                enable: f.channelEnable ? 1 : 0,
-                name: f.channelName,
-                pos: f.channelPos,
-              },
-              osdTime: {
-                enable: f.timeEnable ? 1 : 0,
-                pos: f.timePos,
-              },
-              watermark: f.watermark ? 1 : 0,
-              ...(f.bgcolor !== undefined
-                ? { bgcolor: f.bgcolor ? 1 : 0 }
-                : {}),
+          void apply("baichuan.setOsdDatetime", (f) => ({
+            datetime: {
+              enable: f.timeEnable,
+              topLeftX: f.timeX,
+              topLeftY: f.timeY,
+              language: f.language,
+            },
+            channelName: {
+              name: f.name,
+              enable: f.nameEnable,
+              topLeftX: f.nameX,
+              topLeftY: f.nameY,
+              enWatermark: f.watermark,
+              enBgcolor: f.bgcolor,
             },
           }))
         }

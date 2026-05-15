@@ -237,6 +237,46 @@ export function ApplyBar({
 }
 
 /**
+ * Recursively search a parsed-XML JSON object for the FIRST string/number
+ * leaf with the given tag name. The library returns
+ * `parseXmlFragmentToJson(...)` output where the actual fields live
+ * deep inside the response — `<body><VideoInput><bright>128</bright>...</VideoInput></body>`
+ * becomes `{body: {VideoInput: {bright: 128}}}`. Different cmd_ids nest
+ * differently (and the same cmd_id may even nest differently across
+ * firmwares), so every tab has to walk the result rather than guess.
+ */
+export function findValue(obj: unknown, key: string): string | number | undefined {
+  const stack: unknown[] = [obj];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node || typeof node !== "object") continue;
+    const rec = node as Record<string, unknown>;
+    const v = rec[key];
+    if (typeof v === "string" || typeof v === "number") return v;
+    for (const child of Object.values(rec)) {
+      if (child && typeof child === "object") stack.push(child);
+    }
+  }
+  return undefined;
+}
+
+/** Same as `findValue`, coerced to a number. Returns `undefined` if absent or not numeric. */
+export function findNumber(obj: unknown, key: string): number | undefined {
+  const v = findValue(obj, key);
+  if (typeof v === "number") return v;
+  if (typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v)) return Number(v);
+  return undefined;
+}
+
+/** Same as `findValue`, coerced to a string. Returns `undefined` if absent. */
+export function findString(obj: unknown, key: string): string | undefined {
+  const v = findValue(obj, key);
+  if (typeof v === "string") return v;
+  if (typeof v === "number") return String(v);
+  return undefined;
+}
+
+/**
  * Generic load+save lifecycle wrapper for a settings tab.
  *
  *   - Calls `getProcedure` on mount to populate the form.

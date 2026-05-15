@@ -69,6 +69,7 @@ import {
   BC_CMD_ID_GET_MOTION_ALARM,
   BC_CMD_ID_GET_ONLINE_USER_LIST,
   BC_CMD_ID_GET_OSD_DATETIME,
+  BC_CMD_ID_SET_OSD_DATETIME,
   BC_CMD_ID_GET_PIR_INFO,
   BC_CMD_ID_GET_PTZ_POSITION,
   BC_CMD_ID_GET_PTZ_PRESET,
@@ -13430,6 +13431,100 @@ export class ReolinkBaichuanApi {
       : new Error(
           `PCAP-derived settings GET failed for cmdId=${params.cmdId}: ${String(lastErr)}`,
         );
+  }
+
+  /**
+   * Update the OSD timestamp + channel-name overlay via cmd_id=45
+   * (SetOsdDatetime). The schema is the same `<body><OsdDatetime>` +
+   * `<OsdChannelName>` block returned by `getOsdDatetime` — we
+   * read-modify-write so any extension fields the camera sent are
+   * preserved.
+   *
+   * Position is in **camera pixel coordinates** (e.g. (1,1) for top-left,
+   * not preset strings). Set `enable=0` to hide the overlay; the camera
+   * keeps the stored position so re-enabling later restores it.
+   */
+  async setOsdDatetime(
+    channel: number,
+    patch: {
+      datetime?: {
+        enable?: boolean | 0 | 1;
+        topLeftX?: number;
+        topLeftY?: number;
+        language?: string;
+      };
+      channelName?: {
+        name?: string;
+        enable?: boolean | 0 | 1;
+        topLeftX?: number;
+        topLeftY?: number;
+        enWatermark?: boolean | 0 | 1;
+        enBgcolor?: boolean | 0 | 1;
+      };
+    },
+    options?: { timeoutMs?: number },
+  ): Promise<void> {
+    const ch = this.normalizeChannel(channel);
+    const timeoutOpts =
+      options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {};
+    let xml = await this.sendPcapDerivedSettingsGetXml({
+      cmdId: BC_CMD_ID_GET_OSD_DATETIME,
+      channel: ch,
+      ...timeoutOpts,
+    });
+
+    const patchBlock = (block: "OsdDatetime" | "OsdChannelName", fields: Record<string, unknown>) => {
+      const start = xml.indexOf(`<${block}`);
+      if (start < 0) return;
+      const end = xml.indexOf(`</${block}>`, start);
+      if (end < 0) return;
+      let body = xml.slice(start, end);
+      for (const [tag, value] of Object.entries(fields)) {
+        if (value === undefined) continue;
+        const raw =
+          typeof value === "boolean" ? (value ? "1" : "0") : String(value);
+        const escaped = raw
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+        if (body.includes(`<${tag}>`)) {
+          body = body.replace(
+            new RegExp(`<${tag}>[^<]*<\\/${tag}>`),
+            `<${tag}>${escaped}</${tag}>`,
+          );
+        } else {
+          // Tag wasn't in the GET response — append it just before </block>.
+          body += `<${tag}>${escaped}</${tag}>`;
+        }
+      }
+      xml = xml.slice(0, start) + body + xml.slice(end);
+    };
+
+    if (patch.datetime) {
+      patchBlock("OsdDatetime", {
+        enable: patch.datetime.enable,
+        topLeftX: patch.datetime.topLeftX,
+        topLeftY: patch.datetime.topLeftY,
+        language: patch.datetime.language,
+      });
+    }
+    if (patch.channelName) {
+      patchBlock("OsdChannelName", {
+        name: patch.channelName.name,
+        enable: patch.channelName.enable,
+        topLeftX: patch.channelName.topLeftX,
+        topLeftY: patch.channelName.topLeftY,
+        enWatermark: patch.channelName.enWatermark,
+        enBgcolor: patch.channelName.enBgcolor,
+      });
+    }
+
+    await this.sendXml({
+      cmdId: BC_CMD_ID_SET_OSD_DATETIME,
+      channel: ch,
+      payloadXml: ensureXmlHeader(xml),
+      ...timeoutOpts,
+    });
   }
 
   async getOsdDatetime(

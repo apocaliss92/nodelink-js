@@ -151,6 +151,7 @@ export const BC_CMD_ID_CHANNEL_INFO_ALL = 145; // Get channel info for all chann
 
 // client->device (request/response)
 export const BC_CMD_ID_GET_OSD_DATETIME = 44; // <OsdDatetime>
+export const BC_CMD_ID_SET_OSD_DATETIME = 45; // <OsdDatetime> + <OsdChannelName>
 export const BC_CMD_ID_GET_RECORD_CFG = 54; // <RecordCfg>
 export const BC_CMD_ID_GET_ABILITY_SUPPORT = 58; // <AbilitySuppport> (spelling as seen in XML)
 export const BC_CMD_ID_GET_FTP_TASK = 70; // <FtpTask>

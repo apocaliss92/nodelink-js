@@ -6,15 +6,31 @@ import {
   NumberInput,
   Toggle,
   ApplyBar,
+  findNumber,
   type TabProps,
 } from "./shared";
 import { trpcQuery, trpcMutation } from "../../../api";
 
-interface MotionAlarm {
-  enabled?: boolean;
-  enable?: boolean;
-  sensitivity?: number;
-  [k: string]: unknown;
+/**
+ * Motion + AI detection tab.
+ *
+ * The library returns the raw camera XML parsed as nested JSON. The
+ * relevant fields live under `body.MD` for cmd_46 and `body.AiAlarm`
+ * (or similar) for cmd_342, so we use `findNumber` to pluck what we
+ * need without committing to a fixed shape.
+ *
+ * Sensitivity on E1 Zoom is reported as a per-time-window array under
+ * `<sensitivityInfoList><sensitivityInfo>…</sensitivityInfo>…</sensitivityInfoList>`.
+ * We surface the FIRST window's value (the camera UI in the official
+ * app does the same when it shows a single slider). When the user
+ * applies, the library setter writes only the top-level field — older
+ * firmwares that expose a scalar respond correctly; newer firmwares
+ * with the time-window list need additional work to roll out per-window
+ * sensitivity which we'll do once we have a SET capture to verify.
+ */
+interface MotionForm {
+  enabled: boolean;
+  sensitivity: number;
 }
 
 interface AiAlarm {
@@ -24,9 +40,18 @@ interface AiAlarm {
   [k: string]: unknown;
 }
 
-interface MotionForm {
-  enabled: boolean;
-  sensitivity: number;
+function readMotionForm(raw: unknown): MotionForm {
+  const enable = findNumber(raw, "enable");
+  // First try a top-level <sensitivity> (older firmwares); otherwise
+  // pluck the first <sensitivityInfo> entry's sensitivity (E1 Zoom and
+  // similar). `findNumber` returns the first match in DFS order which is
+  // exactly what we want.
+  let sens = findNumber(raw, "sensitivity");
+  if (sens === undefined) sens = findNumber(raw, "sensitivityDefault");
+  return {
+    enabled: enable === 1,
+    sensitivity: sens ?? 50,
+  };
 }
 
 export function DetectionTab({ cameraId, channel }: TabProps) {
@@ -43,15 +68,12 @@ export function DetectionTab({ cameraId, channel }: TabProps) {
     setError(null);
     try {
       const [m, a] = await Promise.all([
-        trpcQuery<MotionAlarm>("baichuan.getMotionAlarm", { cameraId, channel }),
+        trpcQuery<unknown>("baichuan.getMotionAlarm", { cameraId, channel }),
         trpcQuery<AiAlarm>("baichuan.getAiAlarm", { cameraId, channel }).catch(() => null),
       ]);
-      const mForm: MotionForm = {
-        enabled: Boolean(m.enabled ?? m.enable ?? false),
-        sensitivity: typeof m.sensitivity === "number" ? m.sensitivity : 50,
-      };
-      setMotion(mForm);
-      setLoadedMotion(mForm);
+      const f = readMotionForm(m);
+      setMotion(f);
+      setLoadedMotion(f);
       setAi(a);
       setSaved(false);
     } catch (e) {
@@ -93,7 +115,7 @@ export function DetectionTab({ cameraId, channel }: TabProps) {
     <div>
       <Section
         title="Motion detection"
-        description="Camera-side motion alarm (cmd_id 47). The same setting Reolink calls 'Motion Detection' in the mobile app."
+        description="Camera-side motion alarm (cmd_id 47). The same setting Reolink calls 'Motion Detection' in the mobile app. Sensitivity here updates the FIRST time-window when the firmware exposes per-hour values; the full schedule editor is on the roadmap."
       >
         {loading || !motion ? (
           <div className="text-[11px] text-[var(--color-foreground-muted)] py-4">
