@@ -50,6 +50,7 @@ export function WebRTCInlinePlayer({
 }: WebRTCInlinePlayerProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const mediaContainerRef = useRef<HTMLDivElement | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const decoderRef = useRef<VideoDecoder | null>(null);
@@ -59,6 +60,7 @@ export function WebRTCInlinePlayer({
   // When the native server announces H.265, we switch to canvas + WebCodecs
   // because Chrome / Safari can't decode H.265 over standard WebRTC RTP.
   const [renderTarget, setRenderTarget] = useState<"video" | "canvas">("video");
+  const [muted, setMuted] = useState(true);
 
   // The native path needs cameraId; fall back to "go2rtc" if missing.
   const wantNative = useNative === true && Boolean(cameraId);
@@ -526,6 +528,7 @@ export function WebRTCInlinePlayer({
         )}
       </div>
       <div
+        ref={mediaContainerRef}
         style={{
           position: "relative",
           flex: "1 1 0",
@@ -538,8 +541,7 @@ export function WebRTCInlinePlayer({
           ref={videoRef}
           autoPlay
           playsInline
-          muted
-          controls={renderTarget === "video"}
+          muted={muted}
           style={{
             width: "100%",
             height: "100%",
@@ -565,6 +567,72 @@ export function WebRTCInlinePlayer({
               renderTarget === "canvas" ? canvasRef.current : videoRef.current,
             )
           : null}
+        {/*
+          Custom controls overlay. The <video> element only renders native
+          controls for H.264 (RTP track); in H.265 mode the picture is
+          painted to <canvas> which has no controls of its own. Mirror the
+          essentials (mute, fullscreen) here so both modes look the same.
+        */}
+        <div
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            bottom: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "flex-end",
+            gap: 6,
+            padding: "4px 8px",
+            background: "linear-gradient(to top, rgba(0,0,0,0.55), rgba(0,0,0,0))",
+            borderBottomLeftRadius: 8,
+            borderBottomRightRadius: 8,
+            pointerEvents: "none",
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setMuted((m) => !m)}
+            title={muted ? "Unmute" : "Mute"}
+            style={{
+              pointerEvents: "auto",
+              background: "rgba(0,0,0,0.4)",
+              color: "#fff",
+              border: "1px solid rgba(255,255,255,0.2)",
+              borderRadius: 6,
+              padding: "4px 8px",
+              fontSize: 12,
+              cursor: "pointer",
+            }}
+          >
+            {muted ? "🔇" : "🔊"}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const el = mediaContainerRef.current;
+              if (!el) return;
+              if (document.fullscreenElement) {
+                void document.exitFullscreen();
+              } else {
+                void el.requestFullscreen();
+              }
+            }}
+            title="Fullscreen"
+            style={{
+              pointerEvents: "auto",
+              background: "rgba(0,0,0,0.4)",
+              color: "#fff",
+              border: "1px solid rgba(255,255,255,0.2)",
+              borderRadius: 6,
+              padding: "4px 8px",
+              fontSize: 12,
+              cursor: "pointer",
+            }}
+          >
+            ⛶
+          </button>
+        </div>
       </div>
     </div>
   );

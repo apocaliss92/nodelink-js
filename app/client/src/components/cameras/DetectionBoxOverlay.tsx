@@ -101,15 +101,59 @@ export function DetectionBoxOverlay({
         return;
       }
 
+      // Both <video> and <canvas> render with `objectFit: contain` so the
+      // actual picture is letterboxed inside the element when the container
+      // aspect ratio doesn't match the video aspect ratio. Boxes are
+      // normalized to the camera's video frame, NOT to the container, so we
+      // must map them into the *displayed* picture rect, not into the full
+      // element rect — otherwise a wide floating panel stretches every box
+      // into the black bars on the sides.
+      let intrinsicW = 0;
+      let intrinsicH = 0;
+      if (videoEl instanceof HTMLVideoElement) {
+        intrinsicW = videoEl.videoWidth;
+        intrinsicH = videoEl.videoHeight;
+      } else if (videoEl instanceof HTMLCanvasElement) {
+        intrinsicW = videoEl.width;
+        intrinsicH = videoEl.height;
+      }
+      // Fall back to the AI frame dimensions reported by the server when the
+      // media element hasn't reported its intrinsic size yet (decoder still
+      // warming up). Last resort: full element rect.
+      if ((!intrinsicW || !intrinsicH) && evt.frameWidth && evt.frameHeight) {
+        intrinsicW = evt.frameWidth;
+        intrinsicH = evt.frameHeight;
+      }
+
+      let displayW = rect.width;
+      let displayH = rect.height;
+      let offsetX = 0;
+      let offsetY = 0;
+      if (intrinsicW > 0 && intrinsicH > 0) {
+        const intrinsicAR = intrinsicW / intrinsicH;
+        const containerAR = rect.width / rect.height;
+        if (containerAR > intrinsicAR) {
+          // Container wider than the picture → black bars on the sides.
+          displayH = rect.height;
+          displayW = rect.height * intrinsicAR;
+          offsetX = (rect.width - displayW) / 2;
+        } else {
+          // Container taller than the picture → black bars on top/bottom.
+          displayW = rect.width;
+          displayH = rect.width / intrinsicAR;
+          offsetY = (rect.height - displayH) / 2;
+        }
+      }
+
       ctx.lineWidth = BOX_THICKNESS;
       ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
       ctx.textBaseline = "top";
 
       for (const b of evt.boxes) {
-        const x = b.x * rect.width;
-        const y = b.y * rect.height;
-        const w = b.width * rect.width;
-        const h = b.height * rect.height;
+        const x = offsetX + b.x * displayW;
+        const y = offsetY + b.y * displayH;
+        const w = b.width * displayW;
+        const h = b.height * displayH;
         const color =
           (b.label && LABEL_COLOR[b.label]) || DEFAULT_BOX_COLOR;
         ctx.strokeStyle = color;
