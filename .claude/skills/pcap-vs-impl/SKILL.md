@@ -25,23 +25,29 @@ can act on:
 
 ## How to run
 
-The skill expects a path to a pcap file as the only argument. The agent
-should:
+The skill accepts either:
 
-1. Validate the file exists and is a pcap-ng (`file <path>`).
+- **Sanitized JSON export** (`.json`) — preferred. Bodies are already
+  decrypted server-side using the camera's stored credentials. No
+  password needed.
+- **Raw redacted pcap** (`.pcapng`) — fall-back for tshark captures
+  not produced by the in-app tool. Pass `--password` to decrypt.
+
+The agent should:
+
+1. Validate the file exists.
 2. Run the analysis script:
 
    ```bash
    npx tsx .claude/skills/pcap-vs-impl/scripts/compare.ts <path> \
-     [--username <user>] [--password <pwd>] [--out <markdown-path>]
+     [--password <pwd>] [--out <markdown-path>]
    ```
 
-   - `--username` / `--password` are optional. When provided, the script
-     decrypts every body using the nonce that's already in the pcap.
-     The credentials are not stored anywhere; they're only used to
-     derive the AES key in-process.
-   - `--out` writes the markdown report to a file. By default it streams
-     to stdout.
+   - `--password` only applies to `.pcapng` inputs (JSON exports come
+     pre-decrypted from the manager). The password stays in process
+     memory and is never echoed.
+   - `--out` writes the markdown report to a file. By default it
+     streams to stdout.
 
 3. Read the report, extract the most useful actions, and present a short
    summary to the user. Highlight:

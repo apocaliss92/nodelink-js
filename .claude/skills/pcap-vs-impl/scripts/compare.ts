@@ -22,30 +22,34 @@ import {
 import * as constants from "../../../../src/index";
 
 interface Args {
-  pcap: string;
-  username?: string;
+  input: string;
+  /** Optional password for `.pcapng` inputs only. JSON exports come decrypted. */
   password?: string;
   out?: string;
 }
 
 function parseArgs(): Args {
   const argv = process.argv.slice(2);
-  const args: Args = { pcap: "" };
+  const args: Args = { input: "" };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
-    if (a === "--username") args.username = argv[++i];
-    else if (a === "--password") args.password = argv[++i];
+    if (a === "--password") args.password = argv[++i];
     else if (a === "--out") args.out = argv[++i];
-    else if (!args.pcap && !a.startsWith("--")) args.pcap = a;
+    else if (!args.input && !a.startsWith("--")) args.input = a;
   }
-  if (!args.pcap) {
+  if (!args.input) {
     process.stderr.write(
-      "usage: compare.ts <pcap> [--username <u>] [--password <p>] [--out <md>]\n",
+      "usage: compare.ts <pcap-or-json> [--password <p>] [--out <md>]\n" +
+        "\n" +
+        "  - .json input: sanitized export from the in-app Capture tool. Bodies are\n" +
+        "    already decrypted server-side; --password is ignored.\n" +
+        "  - .pcapng input: raw pcap from any tshark capture. Pass --password to\n" +
+        "    decrypt bodies on the fly using the nonce embedded in the file.\n",
     );
     process.exit(1);
   }
-  if (!existsSync(args.pcap)) {
-    process.stderr.write(`pcap not found: ${args.pcap}\n`);
+  if (!existsSync(args.input)) {
+    process.stderr.write(`input not found: ${args.input}\n`);
     process.exit(1);
   }
   return args;
@@ -82,12 +86,28 @@ for (const [name, value] of Object.entries(
 async function main(): Promise<void> {
   const args = parseArgs();
 
+  // JSON sanitized export from the in-app Capture tool: bodies are already
+  // decrypted server-side (the manager uses the camera's stored credentials
+  // during persist). No password needed, no tshark needed.
+  if (args.input.endsWith(".json")) {
+    const frames = framesFromJsonExport(args.input);
+    const handlerMap = await mapCmdIdsToFiles();
+    const md = renderReport(args, frames, handlerMap);
+    if (args.out) {
+      writeFileSync(args.out, md);
+      process.stderr.write(`report written to ${args.out}\n`);
+    } else {
+      process.stdout.write(md);
+    }
+    return;
+  }
+
   // Phase 1: parse pcap, collect frames + full encrypted bodies (in memory).
   const frames: FrameLogEntry[] = [];
   const fullBodies: Buffer[] = [];
   await new Promise<void>((resolve) => {
     const tsharkArgs = [
-      "-r", args.pcap,
+      "-r", args.input,
       "-Y", "tcp.port == 9000",
       "-T", "fields",
       "-e", "tcp.srcport",
@@ -127,6 +147,50 @@ async function main(): Promise<void> {
   } else {
     process.stdout.write(md);
   }
+}
+
+/**
+ * Build the same `FrameLogEntry[]` shape we use for live captures, but from
+ * the JSON manifest the server already wrote at stop-time. The server has
+ * already done the decryption with the camera's stored credentials, so each
+ * frame carries `bodyDecrypted` directly.
+ */
+function framesFromJsonExport(jsonPath: string): FrameLogEntry[] {
+  const raw = JSON.parse(readFileSync(jsonPath, "utf8")) as Record<string, unknown>;
+  // The export can be either the SanitizedCaptureExport itself or the wrapping
+  // PersistedManifest from /api/capture/:id/export. Detect both.
+  const exp = (
+    raw.format === "nodelink-baichuan-capture-v1"
+      ? raw
+      : (raw.sanitizedExport as Record<string, unknown> | undefined)
+  ) as Record<string, unknown> | undefined;
+  if (!exp || exp.format !== "nodelink-baichuan-capture-v1") {
+    throw new Error(
+      "input JSON is not a sanitized capture export (missing format=nodelink-baichuan-capture-v1)",
+    );
+  }
+  const rawFrames = (exp.frames as Array<Record<string, unknown>>) ?? [];
+  const out: FrameLogEntry[] = [];
+  for (let i = 0; i < rawFrames.length; i++) {
+    const f = rawFrames[i]!;
+    const cmdId = Number(f.cmdId);
+    const names = (f.cmdNames as string[] | undefined) ?? cmdNames.get(cmdId) ?? [];
+    out.push({
+      idx: i,
+      direction: (f.direction as "c2s" | "s2c") ?? "c2s",
+      cmdId,
+      cmdNames: names,
+      msgNum: Number(f.msgNum ?? 0),
+      channelId: Number(f.channelId ?? 0),
+      responseCode: Number(f.responseCode ?? 0),
+      messageClass: Number(f.messageClass ?? 0),
+      payloadOffset: typeof f.payloadOffset === "number" ? f.payloadOffset : undefined,
+      bodyLen: Number(f.bodyLen ?? 0),
+      bodyHex: (f.bodyHexPreview as string) ?? "",
+      bodyDecrypted: typeof f.bodyDecrypted === "string" ? f.bodyDecrypted : "",
+    });
+  }
+  return out;
 }
 
 function handleLine(
@@ -284,9 +348,17 @@ function renderReport(
     if (arr) arr.push(f);
     else byCmd.set(f.cmdId, [f]);
   }
+  // Count frames whose body decrypted to something useful — XML, binary
+  // placeholder, or even just non-empty. Frames with zero-length bodies
+  // naturally have an empty bodyDecrypted and don't count.
   const decryptedFrames = frames.filter(
-    (f) => f.bodyDecrypted && f.bodyDecrypted.startsWith("<?xml"),
+    (f) =>
+      f.bodyDecrypted &&
+      f.bodyDecrypted !== "<redacted>" &&
+      f.bodyDecrypted.length > 0,
   ).length;
+  const totalNonEmpty = frames.filter((f) => f.bodyLen > 0).length;
+  const hasAnyDecrypted = decryptedFrames > 0;
   const distinct = byCmd.size;
   const known: number[] = [];
   const unknown: number[] = [];
@@ -300,10 +372,17 @@ function renderReport(
   const lines: string[] = [];
   lines.push(`# pcap-vs-impl report`);
   lines.push("");
-  lines.push(`- **File:** \`${path.basename(args.pcap)}\``);
+  lines.push(`- **File:** \`${path.basename(args.input)}\``);
   lines.push(`- **Total Baichuan frames:** ${total}`);
   lines.push(`- **Distinct cmd_ids:** ${distinct} (known ${known.length}, unknown ${unknown.length})`);
-  lines.push(`- **Decrypted bodies:** ${decryptedFrames} / ${total}${args.password ? "" : " (no password supplied — pass `--password` to decrypt)"}`);
+  lines.push(
+    `- **Decrypted bodies:** ${decryptedFrames} / ${totalNonEmpty}` +
+      (hasAnyDecrypted
+        ? ""
+        : args.input.endsWith(".json")
+          ? " (manifest has no decrypted bodies — re-export the capture from a manager that has the camera credentials)"
+          : " (no password supplied — pass `--password` to decrypt)"),
+  );
   lines.push("");
 
   lines.push(`## Known commands`);
@@ -397,15 +476,21 @@ function renderReport(
 }
 
 function pickBodySample(items: FrameLogEntry[]): string {
+  // Prefer the longest decrypted XML across all frames — most information per
+  // line. Skip "<redacted>" (login bodies) and "<binary N bytes>" placeholders.
+  let best: string | undefined;
   for (const it of items) {
-    if (it.bodyDecrypted && it.bodyDecrypted !== "<redacted>") {
-      if (it.bodyDecrypted.startsWith("<?xml")) {
-        return it.bodyDecrypted.replace(/\s+/g, " ").slice(0, 100);
-      }
-      return it.bodyDecrypted;
-    }
+    if (!it.bodyDecrypted || it.bodyDecrypted === "<redacted>") continue;
+    if (it.bodyDecrypted.startsWith("<binary")) continue;
+    const cleaned = it.bodyDecrypted.replace(/\s+/g, " ").trim();
+    if (!cleaned) continue;
+    if (!best || cleaned.length > best.length) best = cleaned;
   }
-  // Fall back to encrypted hex
+  if (best) {
+    // Truncate aggressively for table cells but keep the structure-revealing
+    // prefix (root + first child).
+    return best.length <= 120 ? best : best.slice(0, 120) + "…";
+  }
   return items[0]?.bodyHex.slice(0, 64) ?? "(empty)";
 }
 
@@ -413,10 +498,26 @@ function guessShape(items: FrameLogEntry[]): string {
   const dir = items[0]?.direction ?? "?";
   const msgNum = items[0]?.msgNum ?? 0;
   const bodyLen = items[0]?.bodyLen ?? 0;
-  const decrypted = items.find((i) => i.bodyDecrypted.startsWith("<?xml"));
-  if (decrypted) {
-    const root = extractRootElement(decrypted.bodyDecrypted);
-    return root ? `XML \`<${root}>\`` : "XML";
+  // Look across every frame for the most informative body. Bodies can be:
+  //   - pure XML response (<?xml ... <Root>...</Root></body>)
+  //   - Extension wrapper + binary payload (cmd_109 / cmd_345 style: XML
+  //     prefix declaring channelId then raw bytes after the payloadOffset)
+  //   - all-binary (video frames)
+  //   - empty (ack / push)
+  for (const it of items) {
+    if (!it.bodyDecrypted) continue;
+    if (it.bodyDecrypted.startsWith("<?xml")) {
+      const root = extractRootElement(it.bodyDecrypted);
+      // Differentiate <Extension>... + trailing binary from a pure XML body.
+      const hasTrailingBinary =
+        it.bodyDecrypted.includes("</Extension>") &&
+        it.bodyLen >
+          (it.bodyDecrypted.indexOf("</Extension>") + "</Extension>".length + 8);
+      if (root === "Extension" && hasTrailingBinary) {
+        return "Extension XML + binary payload";
+      }
+      return root ? `XML \`<${root}>\`` : "XML";
+    }
   }
   if (bodyLen === 0 && msgNum === 0 && dir === "s2c") return "push event (no body)";
   if (bodyLen === 0) return "ack / heartbeat";
