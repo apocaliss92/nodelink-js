@@ -22,6 +22,76 @@ export interface NewsItem {
 
 export const NEWS_ITEMS: NewsItem[] = [
   {
+    id: "2026-05-15-ai-detection-overlay",
+    date: "2026-05-15",
+    title: "AI detection boxes on the live stream",
+    body: (
+      <div className="space-y-2 text-sm text-[var(--color-foreground-muted)]">
+        <p>
+          The stream panel now draws coloured boxes around what the
+          camera detects, with the class and confidence right on the
+          picture:{" "}
+          <span style={{ color: "#22d3ee" }}>cyan</span> for people,{" "}
+          <span style={{ color: "#a78bfa" }}>violet</span> for vehicles,{" "}
+          <span style={{ color: "#fb923c" }}>orange</span> for animals,{" "}
+          <span style={{ color: "#f472b6" }}>pink</span> for faces.
+        </p>
+        <p>
+          Use the{" "}
+          <strong className="text-[var(--color-foreground)]">
+            Show detection boxes
+          </strong>{" "}
+          checkbox at the top of each stream window to turn the overlay
+          on or off.
+        </p>
+      </div>
+    ),
+  },
+  {
+    id: "2026-05-15-h265-mainstream-fix",
+    date: "2026-05-15",
+    title: "H.265 4K main streams now play in the browser",
+    body: (
+      <div className="space-y-2 text-sm text-[var(--color-foreground-muted)]">
+        <p>
+          Opening the main stream of a 4K H.265 camera used to show a
+          black screen. It now plays end-to-end.
+        </p>
+        <p>
+          The stream window also gained a mute and fullscreen button
+          that work for every camera and codec.
+        </p>
+      </div>
+    ),
+  },
+  {
+    id: "2026-05-15-snapshot-reboot",
+    date: "2026-05-15",
+    title: "Snapshot and Reboot buttons",
+    body: (
+      <div className="space-y-2 text-sm text-[var(--color-foreground-muted)]">
+        <p>
+          Two new actions in the right-side camera panel:
+        </p>
+        <ul className="list-disc pl-5 space-y-1">
+          <li>
+            <strong className="text-[var(--color-foreground)]">
+              Snapshot
+            </strong>{" "}
+            — saves a JPEG of the current camera view to your computer.
+          </li>
+          <li>
+            <strong className="text-[var(--color-foreground)]">
+              Reboot camera
+            </strong>{" "}
+            — restarts the camera (with a confirmation step so a misclick
+            doesn't take it offline).
+          </li>
+        </ul>
+      </div>
+    ),
+  },
+  {
     id: "2026-04-20-unified-rtsp-auth",
     date: "2026-04-20",
     title: "Unified RTSP auth: dashboard users are now RTSP users",
