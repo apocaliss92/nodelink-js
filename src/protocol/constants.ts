@@ -154,6 +154,7 @@ export const BC_CMD_ID_GET_OSD_DATETIME = 44; // <OsdDatetime>
 export const BC_CMD_ID_GET_RECORD_CFG = 54; // <RecordCfg>
 export const BC_CMD_ID_GET_ABILITY_SUPPORT = 58; // <AbilitySuppport> (spelling as seen in XML)
 export const BC_CMD_ID_GET_FTP_TASK = 70; // <FtpTask>
+export const BC_CMD_ID_GET_VERSION_INFO = 80; // <VersionInfo> - model / firmware / serial number
 export const BC_CMD_ID_GET_RECORD = 81; // <Record>
 export const BC_CMD_ID_GET_HDD_INFO_LIST = 102; // <HddInfoList>
 export const BC_CMD_ID_GET_WIFI_SIGNAL = 115; // <WifiSignal>

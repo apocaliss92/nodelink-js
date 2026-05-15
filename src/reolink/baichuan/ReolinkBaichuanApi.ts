@@ -74,6 +74,7 @@ import {
   BC_CMD_ID_GET_PTZ_PRESET,
   BC_CMD_ID_GET_REC_ENC_CFG,
   BC_CMD_ID_GET_RECORD,
+  BC_CMD_ID_GET_VERSION_INFO,
   BC_CMD_ID_GET_RECORD_CFG,
   BC_CMD_ID_GET_SIREN_STATUS,
   BC_CMD_ID_GET_SLEEP_STATE,
@@ -276,6 +277,7 @@ import { ReolinkHttpClient } from "../http/ReolinkHttpClient";
 import type { ReolinkDeviceInfo, ReolinkDeviceInfoTag } from "../types";
 import { computeDeviceCapabilities, getSupportItemForChannel, parseSupportXml, xmlIndicatesFloodlight } from "./capabilities";
 import { parseAbilityInfoXml } from "./utils/abilityInfo";
+import { parseVersionInfo, type BaichuanVersionInfo } from "./utils/versionInfo";
 import { getAiStateViaGetAiAlarm } from "./utils/aiState";
 import { decideSleepInferenceTransition } from "./utils/sleepInference";
 import { parseChannelInfoPushBlocks } from "./utils/channelInfoPush";
@@ -13637,6 +13639,30 @@ export class ReolinkBaichuanApi {
   ): Promise<EncOptions> {
     const list = await this.getStreamInfoList(channel, options);
     return buildEncOptions(list, channel);
+  }
+
+  /**
+   * Read the camera's `<VersionInfo>` block (cmd_id=80). Returns the
+   * friendly name, model code (e.g. `"E1 Zoom"`), serial number, firmware
+   * version, hardware revision, build day, AI model bundle version, etc.
+   *
+   * This is the same info the Reolink mobile app shows in "About this
+   * device" — distinct from `getSystemGeneral` (cmd_104) which carries
+   * time/locale.
+   *
+   * No channel parameter: this command is device-global on NVRs/Hubs and
+   * camera-global on standalone cameras. Pass an explicit channel via the
+   * underlying `sendXml` only if a specific firmware demands it (none we've
+   * tested do).
+   */
+  async getVersionInfo(
+    options?: { timeoutMs?: number },
+  ): Promise<BaichuanVersionInfo> {
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_VERSION_INFO,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+    return parseVersionInfo(xml);
   }
 
   async getLedState(

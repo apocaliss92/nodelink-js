@@ -367,6 +367,17 @@ export const baichuanRouter = router({
       return await api.getEncXml(input.channel);
     }),
 
+  getVersionInfo: publicProcedure
+    .meta({
+      description:
+        "Get the camera's VersionInfo block (model, firmware, serial number, build day, AI bundle version). Maps to Baichuan cmd_id=80.",
+    })
+    .input(OptionalConnectionInput)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getVersionInfo();
+    }),
+
   getStreamMetadata: publicProcedure
     .meta({ description: "Get stream metadata" })
     .input(ConnectionWithChannel)
