@@ -12,6 +12,7 @@ import { router, publicProcedure } from "../trpc.js";
 import { getConfig } from "../settings-store.js";
 import {
   listInterfaces,
+  testInterfaces,
   startCapture,
   stopCapture,
   deleteCapture,
@@ -29,6 +30,34 @@ export const captureRouter = router({
     const items = await listInterfaces();
     return { interfaces: items };
   }),
+
+  /**
+   * Probe each interface (most plausible first) and return how many packets
+   * each one saw to/from the camera during a short test window. The UI uses
+   * this to auto-pick the right interface without the user having to know
+   * their network topology.
+   */
+  testInterfaces: publicProcedure
+    .input(z.object({ cameraId: z.string() }))
+    .mutation(async ({ input }) => {
+      const config = getConfig();
+      const camera = config.cameras.find((c) => c.id === input.cameraId);
+      if (!camera) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: `Camera not found: ${input.cameraId}`,
+        });
+      }
+      if (!camera.host) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Camera ${camera.name} has no host configured`,
+        });
+      }
+      const ifaces = (await listInterfaces()).map((i) => i.id);
+      const results = await testInterfaces(camera.host, ifaces);
+      return { results };
+    }),
 
   /** List all currently-tracked capture sessions. */
   list: publicProcedure.query(() => {

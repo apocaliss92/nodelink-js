@@ -190,6 +190,229 @@ export function listCaptureSessions(): CaptureSession[] {
 }
 
 /**
+ * Per-interface result of `testInterfaces`. The ones with the highest
+ * `packetCount` are the ones that actually saw the camera's traffic during
+ * the probe window.
+ */
+export interface InterfaceTestResult {
+  iface: string;
+  packetCount: number;
+  /** True if the OS routing table picked this interface for the camera host. */
+  routeSuggested: boolean;
+  /** Captured stderr tail when no packets were seen — useful to surface "permission denied". */
+  errorHint?: string;
+}
+
+/**
+ * Probe the most plausible interfaces first and only fan out to the rest if
+ * none of them saw any traffic. Returns one entry per probed interface with
+ * the packet count we observed during the test window.
+ *
+ * Plausibility ranking:
+ *   1. The interface the OS routing table picks for `cameraHost`
+ *      (`route get` on macOS, `ip route get` on Linux). Almost always
+ *      correct — we probe it first and short-circuit on success.
+ *   2. Interfaces with common LAN names (en0/en1/eth0/eth1/wlan0/wlp*).
+ *   3. Everything else (lo / utun / awdl / docker / vboxnet / ...).
+ *
+ * Each probe runs tshark for ~3s with `host <cameraHost>` and counts the
+ * frames that arrive. While probes run we open a short TCP connect to
+ * camera:9000 so the device responds with the Baichuan login challenge —
+ * that gives the probe something to see even on a quiet link.
+ */
+export async function testInterfaces(
+  cameraHost: string,
+  ifaces: string[],
+): Promise<InterfaceTestResult[]> {
+  if (ifaces.length === 0) return [];
+
+  const routeSuggested = await detectRouteInterface(cameraHost).catch(
+    () => undefined,
+  );
+  const ordered = sortByPlausibility(ifaces, routeSuggested);
+
+  const results: InterfaceTestResult[] = [];
+
+  // Phase 1: probe the routing-table suggestion alone. If it sees traffic we
+  // can stop there — most users land here on the first try.
+  if (routeSuggested && ordered[0] === routeSuggested) {
+    const triggerTimer = setTimeout(() => {
+      void triggerCameraTraffic(cameraHost);
+    }, 400);
+    const r = await probeOneInterface(routeSuggested, cameraHost);
+    clearTimeout(triggerTimer);
+    r.routeSuggested = true;
+    results.push(r);
+    if (r.packetCount > 0) {
+      return results;
+    }
+  }
+
+  // Phase 2: parallel probe of the remaining interfaces, plausible names first.
+  const remaining = ordered.filter(
+    (i) => !results.some((r) => r.iface === i),
+  );
+  if (remaining.length > 0) {
+    const triggerTimer = setTimeout(() => {
+      void triggerCameraTraffic(cameraHost);
+    }, 400);
+    const more = await Promise.all(
+      remaining.map((iface) => probeOneInterface(iface, cameraHost)),
+    );
+    clearTimeout(triggerTimer);
+    for (const r of more) {
+      if (r.iface === routeSuggested) r.routeSuggested = true;
+      results.push(r);
+    }
+  }
+
+  results.sort((a, b) => b.packetCount - a.packetCount);
+  return results;
+}
+
+/**
+ * Order interfaces by how likely they are to see camera traffic. Routing-table
+ * pick first, then LAN-shaped names, then anything else (lo, virtual, VPN).
+ */
+function sortByPlausibility(
+  ifaces: string[],
+  routeSuggested: string | undefined,
+): string[] {
+  const plausible = (name: string): number => {
+    if (name === routeSuggested) return 0;
+    if (/^(en|eth|wlan|wlp|enp|wls)\d/.test(name)) return 1;
+    if (/^(lo|utun|awdl|docker|vboxnet|tap|tun|veth|br-)/i.test(name)) return 9;
+    return 5;
+  };
+  return [...ifaces].sort((a, b) => plausible(a) - plausible(b));
+}
+
+async function probeOneInterface(
+  iface: string,
+  cameraHost: string,
+): Promise<InterfaceTestResult> {
+  return new Promise((resolve) => {
+    const args = [
+      "-i", iface,
+      "-a", "duration:3",
+      "-f", `host ${cameraHost}`,
+      "-T", "fields",
+      "-e", "frame.number",
+      "-l",
+      "-q", // suppress per-packet display summary noise
+    ];
+    let proc: ReturnType<typeof spawn>;
+    try {
+      proc = spawn("tshark", args, { stdio: ["ignore", "pipe", "pipe"] });
+    } catch {
+      resolve({
+        iface,
+        packetCount: 0,
+        routeSuggested: false,
+        errorHint: "tshark not available",
+      });
+      return;
+    }
+    let count = 0;
+    let stderr = "";
+    proc.stdout?.on("data", (chunk: Buffer) => {
+      // Each captured packet emits a single line with frame.number; counting
+      // newlines is a robust way to tally without parsing.
+      count += (chunk.toString("ascii").match(/\n/g) ?? []).length;
+    });
+    proc.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    proc.on("close", () => {
+      const result: InterfaceTestResult = {
+        iface,
+        packetCount: count,
+        routeSuggested: false,
+      };
+      if (count === 0) {
+        const tail = stderr.slice(-200).trim();
+        if (tail) result.errorHint = tail;
+      }
+      resolve(result);
+    });
+    proc.on("error", () => {
+      resolve({
+        iface,
+        packetCount: 0,
+        routeSuggested: false,
+        errorHint: "tshark spawn error",
+      });
+    });
+    // Hard safety timeout in case `-a duration:3` is ignored on some builds.
+    setTimeout(() => {
+      try { proc.kill("SIGTERM"); } catch { /* noop */ }
+    }, 6000);
+  });
+}
+
+async function detectRouteInterface(
+  cameraHost: string,
+): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    const isLinux = process.platform === "linux";
+    const cmd = isLinux ? "ip" : "route";
+    const args = isLinux
+      ? ["route", "get", cameraHost]
+      : ["-n", "get", cameraHost];
+    let proc: ReturnType<typeof spawn>;
+    try {
+      proc = spawn(cmd, args, { stdio: ["ignore", "pipe", "ignore"] });
+    } catch {
+      resolve(undefined);
+      return;
+    }
+    let out = "";
+    proc.stdout?.on("data", (b: Buffer) => (out += b.toString()));
+    proc.on("close", () => {
+      // macOS `route -n get`: a line like "   interface: en0"
+      // Linux `ip route get`: "...dev en0..."
+      const macMatch = out.match(/interface:\s*(\S+)/);
+      if (macMatch?.[1]) {
+        resolve(macMatch[1]);
+        return;
+      }
+      const linuxMatch = out.match(/\bdev\s+(\S+)/);
+      resolve(linuxMatch?.[1]);
+    });
+    proc.on("error", () => resolve(undefined));
+    setTimeout(() => {
+      try { proc.kill("SIGTERM"); } catch { /* noop */ }
+      resolve(undefined);
+    }, 2000);
+  });
+}
+
+/**
+ * Open a short TCP connection to camera:9000 to coax a response the probe can
+ * count. Reolink will at minimum send TCP SYN-ACK and likely a full Baichuan
+ * challenge frame; either is enough.
+ */
+async function triggerCameraTraffic(cameraHost: string): Promise<void> {
+  const net = await import("node:net");
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    const cleanup = (): void => {
+      try { socket.destroy(); } catch { /* noop */ }
+      resolve();
+    };
+    socket.setTimeout(2000);
+    socket.once("connect", cleanup);
+    socket.once("error", cleanup);
+    socket.once("timeout", cleanup);
+    try {
+      socket.connect(9000, cameraHost);
+    } catch {
+      cleanup();
+    }
+  });
+}
+
+/**
  * List the network interfaces tshark can capture on. Wraps `tshark -D`.
  */
 export async function listInterfaces(): Promise<

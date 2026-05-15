@@ -1,10 +1,17 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { trpcQuery, trpcMutation } from "../api";
-import { CheckCircle2, Circle, AlertCircle, Loader2 } from "lucide-react";
+import { CheckCircle2, Circle, AlertCircle, Loader2, Wand2 } from "lucide-react";
 
 interface NetIface {
   id: string;
   description: string;
+}
+
+interface InterfaceTestResult {
+  iface: string;
+  packetCount: number;
+  routeSuggested: boolean;
+  errorHint?: string;
 }
 
 interface CameraOpt {
@@ -88,6 +95,8 @@ export default function CapturePage() {
   const [status, setStatus] = useState<CaptureStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResults, setTestResults] = useState<InterfaceTestResult[] | null>(null);
   const pollRef = useRef<NodeJS.Timeout | null>(null);
 
   // Initial load: cameras + interfaces.
@@ -138,6 +147,28 @@ export default function CapturePage() {
       }
     };
   }, [activeId]);
+
+  const detectInterface = useCallback(async () => {
+    if (!selectedCamera) return;
+    setTesting(true);
+    setTestResults(null);
+    setError(null);
+    try {
+      const r = await trpcMutation<{ results: InterfaceTestResult[] }>(
+        "capture.testInterfaces",
+        { cameraId: selectedCamera },
+      );
+      setTestResults(r.results);
+      const best = r.results[0];
+      if (best && best.packetCount > 0) {
+        setSelectedIface(best.iface);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTesting(false);
+    }
+  }, [selectedCamera]);
 
   const startCapture = useCallback(async () => {
     setError(null);
@@ -236,7 +267,23 @@ export default function CapturePage() {
               </select>
             </label>
             <label className="flex flex-col gap-1 text-xs text-[var(--color-foreground-muted)]">
-              Network interface
+              <span className="flex items-center justify-between gap-2">
+                Network interface
+                <button
+                  type="button"
+                  className="flex items-center gap-1 text-[11px] text-[var(--color-foreground-muted)] hover:text-[var(--color-foreground)] disabled:opacity-50"
+                  onClick={() => void detectInterface()}
+                  disabled={!selectedCamera || testing}
+                  title="Probe each interface for camera traffic"
+                >
+                  {testing ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <Wand2 size={12} />
+                  )}
+                  Auto-detect
+                </button>
+              </span>
               <select
                 className="rounded-md border border-[var(--color-border)] bg-[var(--color-background)] text-[var(--color-foreground)] px-2 py-2 text-sm"
                 value={selectedIface}
@@ -244,15 +291,41 @@ export default function CapturePage() {
                 disabled={interfaces.length === 0}
               >
                 {interfaces.length === 0 && <option value="">tshark not available</option>}
-                {interfaces.map((i) => (
-                  <option key={i.id} value={i.id}>
-                    {i.id}
-                    {i.description && i.description !== i.id ? ` (${i.description})` : ""}
-                  </option>
-                ))}
+                {interfaces.map((i) => {
+                  const probed = testResults?.find((r) => r.iface === i.id);
+                  const note = probed
+                    ? ` — ${probed.packetCount} pkt${probed.routeSuggested ? " ★" : ""}`
+                    : "";
+                  return (
+                    <option key={i.id} value={i.id}>
+                      {i.id}
+                      {i.description && i.description !== i.id ? ` (${i.description})` : ""}
+                      {note}
+                    </option>
+                  );
+                })}
               </select>
             </label>
           </div>
+          {testResults && (
+            <div className="mt-2 text-[11px] text-[var(--color-foreground-muted)]">
+              {testResults[0] && testResults[0].packetCount > 0 ? (
+                <>
+                  Best match:{" "}
+                  <strong className="text-[var(--color-foreground)]">{testResults[0].iface}</strong>
+                  {" "}saw {testResults[0].packetCount} packet
+                  {testResults[0].packetCount === 1 ? "" : "s"} from this camera
+                  {testResults[0].routeSuggested && " (matches OS routing table)"}.
+                </>
+              ) : (
+                <>
+                  No interface saw camera traffic. Check that the camera is
+                  reachable on this host (`ping` it) or that tshark has
+                  permission to read packets.
+                </>
+              )}
+            </div>
+          )}
           <div className="mt-3 flex justify-end">
             <button
               className="rounded-md border border-[var(--color-accent,#22d3ee)]/50 bg-[var(--color-accent,#22d3ee)]/10 text-[var(--color-foreground)] px-4 py-2 text-sm hover:bg-[var(--color-accent,#22d3ee)]/20 disabled:opacity-50"
