@@ -732,6 +732,28 @@ export const baichuanRouter = router({
       return await api.getPorts();
     }),
 
+  setNetPort: publicProcedure
+    .meta({
+      description:
+        "Toggle the camera's serving ports (RTSP, RTMP, ONVIF). Each flag is independent and only applied when provided.",
+    })
+    .input(
+      OptionalConnectionInput.extend({
+        rtspEnable: z.union([z.literal(0), z.literal(1)]).optional(),
+        rtmpEnable: z.union([z.literal(0), z.literal(1)]).optional(),
+        onvifEnable: z.union([z.literal(0), z.literal(1)]).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.setNetPort({
+        ...(input.rtspEnable !== undefined ? { rtspEnable: input.rtspEnable } : {}),
+        ...(input.rtmpEnable !== undefined ? { rtmpEnable: input.rtmpEnable } : {}),
+        ...(input.onvifEnable !== undefined ? { onvifEnable: input.onvifEnable } : {}),
+      });
+      return { success: true };
+    }),
+
   // ============ SYSTEM ============
 
   getSystemGeneral: publicProcedure

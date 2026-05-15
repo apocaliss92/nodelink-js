@@ -2,7 +2,7 @@ import {
   Section,
   FieldGrid,
   Field,
-  NumberInput,
+  RangeInput,
   ApplyBar,
   findNumber,
   useSettingsForm,
@@ -55,20 +55,20 @@ export function ImageTab({ cameraId, channel }: TabProps) {
           </div>
         ) : (
           <FieldGrid>
-            <Field label="Brightness" hint="0–255">
-              <NumberInput value={form.bright} min={0} max={255} onChange={(v) => updateField("bright", v)} disabled={saving} />
+            <Field label="Brightness">
+              <RangeInput value={form.bright} min={0} max={255} onChange={(v) => updateField("bright", v)} disabled={saving} />
             </Field>
-            <Field label="Contrast" hint="0–255">
-              <NumberInput value={form.contrast} min={0} max={255} onChange={(v) => updateField("contrast", v)} disabled={saving} />
+            <Field label="Contrast">
+              <RangeInput value={form.contrast} min={0} max={255} onChange={(v) => updateField("contrast", v)} disabled={saving} />
             </Field>
-            <Field label="Saturation" hint="0–255">
-              <NumberInput value={form.saturation} min={0} max={255} onChange={(v) => updateField("saturation", v)} disabled={saving} />
+            <Field label="Saturation">
+              <RangeInput value={form.saturation} min={0} max={255} onChange={(v) => updateField("saturation", v)} disabled={saving} />
             </Field>
-            <Field label="Hue" hint="0–255">
-              <NumberInput value={form.hue} min={0} max={255} onChange={(v) => updateField("hue", v)} disabled={saving} />
+            <Field label="Hue">
+              <RangeInput value={form.hue} min={0} max={255} onChange={(v) => updateField("hue", v)} disabled={saving} />
             </Field>
-            <Field label="Sharpen" hint="0–255">
-              <NumberInput value={form.sharpen} min={0} max={255} onChange={(v) => updateField("sharpen", v)} disabled={saving} />
+            <Field label="Sharpen">
+              <RangeInput value={form.sharpen} min={0} max={255} onChange={(v) => updateField("sharpen", v)} disabled={saving} />
             </Field>
           </FieldGrid>
         )}

@@ -1,10 +1,20 @@
 /**
- * Primitives shared by every CameraSettingsModal tab — small enough to live
- * in one file. Each tab pulls its own data via tRPC, owns a local form state,
- * and uses these wrappers for layout consistency.
+ * Primitives shared by every CameraSettingsModal tab — wrappers around the
+ * shared `@camstack/ui-library` components so every tab gets the same look,
+ * focus styles and keyboard handling for free.
+ *
+ * Each tab pulls its own data via tRPC, owns a local form state, and uses
+ * these wrappers for layout consistency.
  */
 import { type ReactNode, useState, useEffect, useCallback } from "react";
 import { Loader2, Save, RefreshCw, CheckCircle2, AlertCircle } from "lucide-react";
+import {
+  Input,
+  Select as CamSelect,
+  Switch,
+  Button,
+  type SelectOption,
+} from "@camstack/ui-library";
 import { trpcQuery, trpcMutation } from "../../../api";
 
 export interface TabProps {
@@ -54,9 +64,56 @@ export function Field({ label, hint, children }: FieldProps) {
   );
 }
 
-const baseInput =
-  "w-full rounded-md border border-[var(--color-border)] bg-[var(--color-background)] text-[var(--color-foreground)] px-2 py-1.5 text-sm focus:outline-none focus:border-[var(--color-accent,#22d3ee)]";
+/**
+ * Slider input for numeric fields with a visible current value. Replaces
+ * the previous NumberInput in most places — Reolink ranges (0-255 image
+ * params, 0-100 sensitivity, etc.) are easier to dial in with a slider
+ * than a typed input.
+ */
+export function RangeInput({
+  value,
+  onChange,
+  min = 0,
+  max = 100,
+  step = 1,
+  disabled,
+  unit,
+}: {
+  value: number | undefined;
+  onChange: (v: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  disabled?: boolean;
+  unit?: string;
+}) {
+  return (
+    <div className="flex items-center gap-3">
+      <input
+        type="range"
+        className="flex-1 accent-[var(--color-accent,#22d3ee)]"
+        value={value ?? min}
+        min={min}
+        max={max}
+        step={step}
+        disabled={disabled}
+        onChange={(e) => {
+          const n = Number(e.target.value);
+          if (Number.isFinite(n)) onChange(n);
+        }}
+      />
+      <span className="text-[11px] tabular-nums text-[var(--color-foreground)] min-w-[44px] text-right font-mono">
+        {value ?? "—"}
+        {unit ? ` ${unit}` : ""}
+      </span>
+    </div>
+  );
+}
 
+/**
+ * Numeric input (typed) — kept for cases where the value space is too
+ * sparse for a slider (pixel coords with arbitrary range, port numbers).
+ */
 export function NumberInput({
   value,
   onChange,
@@ -73,16 +130,15 @@ export function NumberInput({
   disabled?: boolean;
 }) {
   return (
-    <input
+    <Input
       type="number"
-      className={baseInput}
       value={value ?? ""}
       min={min}
       max={max}
       step={step}
       disabled={disabled}
       onChange={(e) => {
-        const n = Number(e.target.value);
+        const n = Number(e.currentTarget.value);
         if (Number.isFinite(n)) onChange(n);
       }}
     />
@@ -101,13 +157,12 @@ export function TextInput({
   placeholder?: string;
 }) {
   return (
-    <input
+    <Input
       type="text"
-      className={baseInput}
       value={value ?? ""}
       disabled={disabled}
       placeholder={placeholder}
-      onChange={(e) => onChange(e.target.value)}
+      onChange={(e) => onChange(e.currentTarget.value)}
     />
   );
 }
@@ -123,52 +178,46 @@ export function Select<T extends string | number>({
   onChange: (v: T) => void;
   disabled?: boolean;
 }) {
+  const camOptions: SelectOption[] = options.map((o) => ({
+    value: String(o.value),
+    label: o.label,
+  }));
   return (
-    <select
-      className={baseInput}
+    <CamSelect
+      options={camOptions}
       value={String(value ?? "")}
       disabled={disabled}
       onChange={(e) => {
-        const raw = e.target.value;
+        const raw = e.currentTarget.value;
         const opt = options.find((o) => String(o.value) === raw);
         if (opt) onChange(opt.value);
       }}
-    >
-      {options.map((o) => (
-        <option key={String(o.value)} value={String(o.value)}>
-          {o.label}
-        </option>
-      ))}
-    </select>
+    />
   );
 }
 
+/**
+ * Boolean toggle — uses the shared `Switch` so the dashboard, settings
+ * modal and any future surface stay visually consistent.
+ */
 export function Toggle({
   value,
   onChange,
   disabled,
-  labelOn = "On",
-  labelOff = "Off",
+  label,
 }: {
   value: boolean | undefined;
   onChange: (v: boolean) => void;
   disabled?: boolean;
-  labelOn?: string;
-  labelOff?: string;
+  label?: string;
 }) {
   return (
-    <button
-      type="button"
+    <Switch
+      checked={Boolean(value)}
+      onCheckedChange={onChange}
       disabled={disabled}
-      onClick={() => onChange(!value)}
-      className={`rounded-md border px-3 py-1.5 text-xs transition-colors disabled:opacity-50 ${
-        value
-          ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
-          : "border-[var(--color-border)] bg-[var(--color-background)] text-[var(--color-foreground-muted)]"
-      }`}
-    >
-      {value ? labelOn : labelOff}
-    </button>
+      {...(label !== undefined ? { label } : {})}
+    />
   );
 }
 
@@ -203,38 +252,42 @@ export function ApplyBar({
       )}
       <span className="flex-1" />
       {onRefresh && (
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={onRefresh}
           disabled={saving}
-          className="flex items-center gap-1 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-foreground-muted)] px-3 py-1.5 text-xs hover:bg-[var(--color-surface-hover)] disabled:opacity-50"
+          className="gap-1"
         >
           <RefreshCw size={12} />
           Refresh
-        </button>
+        </Button>
       )}
       {onRevert && (
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={onRevert}
           disabled={!dirty || saving}
-          className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-foreground-muted)] px-3 py-1.5 text-xs hover:bg-[var(--color-surface-hover)] disabled:opacity-50"
         >
           Revert
-        </button>
+        </Button>
       )}
-      <button
-        type="button"
+      <Button
+        variant="primary"
+        size="sm"
         onClick={onApply}
         disabled={!dirty || saving}
-        className="flex items-center gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-500/10 text-emerald-200 px-3 py-1.5 text-xs hover:bg-emerald-500/20 disabled:opacity-50"
+        className="gap-1.5"
       >
         {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
         Apply
-      </button>
+      </Button>
     </div>
   );
 }
+
+// ────────────── XML walker helpers ──────────────
 
 /**
  * Recursively search a parsed-XML JSON object for the FIRST string/number
@@ -260,7 +313,6 @@ export function findValue(obj: unknown, key: string): string | number | undefine
   return undefined;
 }
 
-/** Same as `findValue`, coerced to a number. Returns `undefined` if absent or not numeric. */
 export function findNumber(obj: unknown, key: string): number | undefined {
   const v = findValue(obj, key);
   if (typeof v === "number") return v;
@@ -268,7 +320,6 @@ export function findNumber(obj: unknown, key: string): number | undefined {
   return undefined;
 }
 
-/** Same as `findValue`, coerced to a string. Returns `undefined` if absent. */
 export function findString(obj: unknown, key: string): string | undefined {
   const v = findValue(obj, key);
   if (typeof v === "string") return v;
@@ -278,13 +329,6 @@ export function findString(obj: unknown, key: string): string | undefined {
 
 /**
  * Generic load+save lifecycle wrapper for a settings tab.
- *
- *   - Calls `getProcedure` on mount to populate the form.
- *   - Tracks "dirty" by deep-comparing the current form against the last
- *     loaded snapshot.
- *   - Apply runs `setProcedure(formBuilder(form))` and refreshes from the
- *     server.
- *   - Surfaces the standard ApplyBar at the bottom.
  */
 export function useSettingsForm<G, F>(opts: {
   getProcedure: string;

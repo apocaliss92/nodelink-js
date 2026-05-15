@@ -3,7 +3,7 @@ import {
   Section,
   FieldGrid,
   Field,
-  NumberInput,
+  RangeInput,
   Toggle,
   ApplyBar,
   findNumber,
@@ -189,7 +189,7 @@ export function DetectionTab({ cameraId, channel }: TabProps) {
               />
             </Field>
             <Field label="Sensitivity" hint="0–50; higher = more sensitive">
-              <NumberInput
+              <RangeInput
                 value={motion.sensitivity}
                 min={0}
                 max={50}
@@ -228,7 +228,7 @@ export function DetectionTab({ cameraId, channel }: TabProps) {
                 </div>
                 <FieldGrid>
                   <Field label="Sensitivity" hint="0–100; higher = more sensitive">
-                    <NumberInput
+                    <RangeInput
                       value={cls.sensitivity}
                       min={0}
                       max={100}
@@ -236,11 +236,13 @@ export function DetectionTab({ cameraId, channel }: TabProps) {
                       disabled={saving}
                     />
                   </Field>
-                  <Field label="Stay time (s)" hint="0 = trigger on first detection">
-                    <NumberInput
+                  <Field label="Stay time" hint="0 = trigger on first detection">
+                    <RangeInput
                       value={cls.stayTime}
                       min={0}
                       max={600}
+                      step={5}
+                      unit="s"
                       onChange={(v) => updateAi(idx, "stayTime", v)}
                       disabled={saving}
                     />

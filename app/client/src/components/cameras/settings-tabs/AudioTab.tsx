@@ -3,7 +3,7 @@ import {
   Section,
   FieldGrid,
   Field,
-  NumberInput,
+  RangeInput,
   Toggle,
   ApplyBar,
   findNumber,
@@ -140,14 +140,14 @@ export function AudioTab({ cameraId, channel }: TabProps) {
           <div className="text-[11px] text-[var(--color-foreground-muted)] py-4">Loading…</div>
         ) : (
           <FieldGrid>
-            <Field label="Speaker volume" hint="0–100">
-              <NumberInput value={form.volume} min={0} max={100} onChange={(v) => update("volume", v)} disabled={saving} />
+            <Field label="Speaker volume">
+              <RangeInput value={form.volume} min={0} max={100} onChange={(v) => update("volume", v)} disabled={saving} />
             </Field>
             <Field label="Talk-and-reply volume" hint="Doorbell / intercom only">
-              <NumberInput value={form.talkAndReplyVolume} min={0} max={100} onChange={(v) => update("talkAndReplyVolume", v)} disabled={saving} />
+              <RangeInput value={form.talkAndReplyVolume} min={0} max={100} onChange={(v) => update("talkAndReplyVolume", v)} disabled={saving} />
             </Field>
             <Field label="Visitor volume" hint="Pre-set greeting clips">
-              <NumberInput value={form.visitorVolume} min={0} max={100} onChange={(v) => update("visitorVolume", v)} disabled={saving} />
+              <RangeInput value={form.visitorVolume} min={0} max={100} onChange={(v) => update("visitorVolume", v)} disabled={saving} />
             </Field>
             <Field label="Visitor loudspeaker">
               <Toggle value={form.visitorLoudspeaker} onChange={(v) => update("visitorLoudspeaker", v)} disabled={saving} />
@@ -168,7 +168,7 @@ export function AudioTab({ cameraId, channel }: TabProps) {
               <Toggle value={form.noiseEnabled} onChange={(v) => update("noiseEnabled", v)} disabled={saving} />
             </Field>
             <Field label="Level" hint="1–100 (only applied when enabled)">
-              <NumberInput
+              <RangeInput
                 value={form.noiseLevel}
                 min={1}
                 max={100}

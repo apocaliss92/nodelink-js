@@ -92,11 +92,17 @@ export function MotionZonesTab({ cameraId, channel }: TabProps) {
   // from flipping multiple times when the mouse hovers it again mid-drag.
   const touchedRef = useRef<Set<number>>(new Set());
 
-  const snapshotUrl = useMemo(() => {
-    return withAuthTokenQuery(
+  // Frozen snapshot URL — captured once on mount and never re-derived. The
+  // user is dragging across the image to paint a zone; reloading the
+  // snapshot mid-edit (or right after Apply) shifts every reference under
+  // them and any cells they're hovering get repositioned. The picture
+  // doesn't have to be live — Reolink's motion zones are anchored to the
+  // CAMERA's image, not whatever the snapshot endpoint happens to return.
+  const [snapshotUrl] = useState(() =>
+    withAuthTokenQuery(
       `${window.location.origin}/api/cameras/${cameraId}/snapshot?channel=${channel}`,
-    );
-  }, [cameraId, channel]);
+    ),
+  );
 
   const refresh = useCallback(async () => {
     setLoading(true);
