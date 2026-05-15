@@ -11,7 +11,7 @@ import {
   Trash2,
   RefreshCw,
 } from "lucide-react";
-import { Button, ConfirmDialog, Input } from "@camstack/ui-library";
+import { Button, Input } from "@camstack/ui-library";
 import { trpcQuery, trpcMutation } from "../../../api";
 import { WebRTCInlinePlayer } from "../WebRTCInlinePlayer";
 import { RangeInput, type TabProps } from "./shared";
@@ -51,7 +51,12 @@ export function PtzTab({ cameraId, channel }: TabProps) {
   const [newName, setNewName] = useState("");
   const [newId, setNewId] = useState<number>(1);
   const [speed, setSpeed] = useState<number>(32);
-  const [confirmDelete, setConfirmDelete] = useState<PtzPreset | null>(null);
+  // Inline confirm pattern: the row swaps to "Confirm delete / Cancel"
+  // when the trash icon is clicked. Native `<dialog>` modals can't be
+  // nested inside the settings modal without stacking issues (browser
+  // shows the child top-left and the click closes the parent), so we
+  // confirm inline like the dashboard's Delete-camera flow.
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
   const refresh = useCallback(async () => {
     setError(null);
@@ -246,53 +251,82 @@ export function PtzTab({ cameraId, channel }: TabProps) {
               </div>
             ) : (
               <div className="flex flex-col gap-1 max-h-[260px] overflow-auto">
-                {presets.map((p) => (
-                  <div
-                    key={p.id}
-                    className="flex items-center justify-between gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-background)] px-2 py-1.5"
-                  >
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="font-mono text-[11px] text-[var(--color-foreground-muted)] w-6 shrink-0">
-                        #{p.id}
-                      </span>
-                      <span className="text-xs text-[var(--color-foreground)] truncate">
-                        {p.name || "(unnamed)"}
-                      </span>
+                {presets.map((p) => {
+                  const isConfirming = confirmDeleteId === p.id;
+                  return (
+                    <div
+                      key={p.id}
+                      className="flex items-center justify-between gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-background)] px-2 py-1.5"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="font-mono text-[11px] text-[var(--color-foreground-muted)] w-6 shrink-0">
+                          #{p.id}
+                        </span>
+                        <span className="text-xs text-[var(--color-foreground)] truncate">
+                          {p.name || "(unnamed)"}
+                        </span>
+                      </div>
+                      {isConfirming ? (
+                        <div className="flex items-center gap-1 shrink-0">
+                          <Button
+                            variant="danger"
+                            size="sm"
+                            onClick={() => {
+                              setConfirmDeleteId(null);
+                              void deletePreset(p.id);
+                            }}
+                            disabled={busy === `del-${p.id}`}
+                            className="px-2"
+                          >
+                            Delete
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setConfirmDeleteId(null)}
+                            disabled={busy === `del-${p.id}`}
+                            className="px-2"
+                          >
+                            Cancel
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1 shrink-0">
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => void goto(p.id)}
+                            disabled={busy === `goto-${p.id}`}
+                            className="gap-1 px-2"
+                            title="Move camera to this preset"
+                          >
+                            <Crosshair size={12} />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => void savePreset(p.id, p.name || `Preset ${p.id}`)}
+                            disabled={busy === `save-${p.id}`}
+                            className="gap-1 px-2"
+                            title="Overwrite with current position"
+                          >
+                            <Save size={12} />
+                          </Button>
+                          <Button
+                            variant="danger"
+                            size="sm"
+                            onClick={() => setConfirmDeleteId(p.id)}
+                            disabled={busy === `del-${p.id}`}
+                            className="gap-1 px-2"
+                            title="Delete preset"
+                          >
+                            <Trash2 size={12} />
+                          </Button>
+                        </div>
+                      )}
                     </div>
-                    <div className="flex items-center gap-1 shrink-0">
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        onClick={() => void goto(p.id)}
-                        disabled={busy === `goto-${p.id}`}
-                        className="gap-1 px-2"
-                        title="Move camera to this preset"
-                      >
-                        <Crosshair size={12} />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => void savePreset(p.id, p.name || `Preset ${p.id}`)}
-                        disabled={busy === `save-${p.id}`}
-                        className="gap-1 px-2"
-                        title="Overwrite with current position"
-                      >
-                        <Save size={12} />
-                      </Button>
-                      <Button
-                        variant="danger"
-                        size="sm"
-                        onClick={() => setConfirmDelete(p)}
-                        disabled={busy === `del-${p.id}`}
-                        className="gap-1 px-2"
-                        title="Delete preset"
-                      >
-                        <Trash2 size={12} />
-                      </Button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
 
@@ -337,24 +371,6 @@ export function PtzTab({ cameraId, channel }: TabProps) {
         </div>
       </div>
 
-      <ConfirmDialog
-        open={confirmDelete !== null}
-        onOpenChange={(v) => !v && setConfirmDelete(null)}
-        title="Delete preset"
-        message={
-          confirmDelete
-            ? `Permanently delete preset #${confirmDelete.id} "${confirmDelete.name || "unnamed"}"? Some firmwares keep the position internally even after deletion.`
-            : ""
-        }
-        confirmLabel="Delete"
-        variant="danger"
-        onCancel={() => setConfirmDelete(null)}
-        onConfirm={() => {
-          const target = confirmDelete;
-          setConfirmDelete(null);
-          if (target) void deletePreset(target.id);
-        }}
-      />
     </div>
   );
 }

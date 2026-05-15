@@ -1,6 +1,14 @@
 @import "tailwindcss";
 @import "@camstack/ui-library/tailwind/camstack-theme.css";
 
+/* Tailwind v4 only scans project source files by default. Camstack's
+   primitives live in node_modules and use utility classes (bg-primary,
+   bg-surface-hover, translate-x-4, etc.) — without this @source those
+   classes never reach the compiled CSS, so components like <Switch>
+   render with no track. Point Tailwind at the lib's built JS so every
+   class referenced inside it is picked up. */
+@source "../../node_modules/@camstack/ui-library/dist/**/*.js";
+
 /* Nodelink.js theme overrides — blue primary instead of amber */
 .dark {
   --color-primary: #3b82f6;
