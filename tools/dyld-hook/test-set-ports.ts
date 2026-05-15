@@ -8,8 +8,9 @@
  */
 import { ReolinkBaichuanApi } from "../../src/reolink/baichuan/ReolinkBaichuanApi";
 
-interface PortBlock { enable?: number; rtspport?: number; [k: string]: unknown }
-interface PortsResp { https?: PortBlock; rtsp?: PortBlock; [k: string]: unknown }
+type PortKey = "http" | "https" | "rtsp" | "rtmp" | "onvif";
+interface PortBlock { enable?: number; [k: string]: unknown }
+type PortsResp = Partial<Record<PortKey | "server", PortBlock>>;
 
 async function main(): Promise<void> {
   const host = process.argv[2];
@@ -21,50 +22,80 @@ async function main(): Promise<void> {
   const api = new ReolinkBaichuanApi({ host, username: "admin", password });
   await api.client.connect();
   await api.login();
+  const portField = (k: PortKey): string => `${k}port`;
+
+  const readEnable = (resp: PortsResp, k: PortKey): number =>
+    Number(resp[k]?.enable ?? 0);
+  const readPort = (resp: PortsResp, k: PortKey): number =>
+    Number((resp[k] as Record<string, unknown> | undefined)?.[portField(k)] ?? 0);
+
   try {
+    // Test EVERY non-Server port. We skip Server (cmd_id 9000 = the
+    // Baichuan connection we're using) since toggling it disconnects us.
+    const targets: PortKey[] = ["http", "https", "rtsp", "rtmp", "onvif"];
+
     const before = (await api.getPorts()) as PortsResp;
-    const beforeEnable = Number(before.https?.enable ?? 0);
-    process.stdout.write(`HTTPS before: enable=${beforeEnable}\n`);
-
-    const target = beforeEnable === 1 ? false : true;
-    process.stdout.write(`\nWriting HTTPS enable=${target ? 1 : 0} ...\n`);
-    await api.setPortConfig({ https: { enable: target } });
-
-    const after = (await api.getPorts()) as PortsResp;
-    const afterEnable = Number(after.https?.enable ?? 0);
-    process.stdout.write(`HTTPS after:  enable=${afterEnable}\n`);
-    if (afterEnable !== (target ? 1 : 0)) {
-      process.stderr.write(
-        `MISMATCH: expected ${target ? 1 : 0}, got ${afterEnable}\n`,
+    process.stdout.write(`=== Initial state ===\n`);
+    for (const k of targets) {
+      process.stdout.write(
+        `  ${k.padEnd(6)} port=${readPort(before, k)} enable=${readEnable(before, k)}\n`,
       );
-      process.exitCode = 2;
     }
 
-    // Restore
-    process.stdout.write(`\nRestoring HTTPS enable=${beforeEnable} ...\n`);
-    await api.setPortConfig({ https: { enable: beforeEnable === 1 } });
-    const restored = (await api.getPorts()) as PortsResp;
-    process.stdout.write(`HTTPS restored: enable=${Number(restored.https?.enable ?? 0)}\n`);
+    type Result = { port: "ok" | "mismatch" | "skip"; enable: "ok" | "mismatch" | "skip" };
+    const results: Record<PortKey, Result> = {} as Record<PortKey, Result>;
 
-    // Test changing a port number — RTSP from current to current+1 and back.
-    const beforeRtsp = Number(before.rtsp?.rtspport ?? 554);
-    process.stdout.write(`\nRTSP before: port=${beforeRtsp}\n`);
-    const newRtsp = beforeRtsp === 554 ? 5541 : 554;
-    process.stdout.write(`Writing RTSP port=${newRtsp} ...\n`);
-    await api.setPortConfig({ rtsp: { port: newRtsp } });
-    const afterRtsp = (await api.getPorts()) as PortsResp;
-    const afterRtspPort = Number(afterRtsp.rtsp?.rtspport ?? 0);
-    process.stdout.write(`RTSP after:  port=${afterRtspPort}\n`);
-    if (afterRtspPort !== newRtsp) {
-      process.stderr.write(
-        `MISMATCH: expected port ${newRtsp}, got ${afterRtspPort}\n`,
-      );
-      process.exitCode = 2;
+    for (const k of targets) {
+      results[k] = { port: "skip", enable: "skip" };
+      const initialEnable = readEnable(before, k);
+      const initialPort = readPort(before, k);
+      // HTTP is what the dashboard / mobile app talks to over LAN.
+      // Disabling it could lock the user out of the camera's web UI on
+      // a different network path, but we're going to RESTORE the
+      // original value, so the test is reversible. Still, skip the
+      // HTTP enable toggle to avoid any chance of leaving the camera
+      // unreachable from the browser if the script errors mid-way.
+      if (k !== "http") {
+        const target = initialEnable === 1 ? false : true;
+        process.stdout.write(`\n[${k}] enable ${initialEnable} → ${target ? 1 : 0}\n`);
+        await api.setPortConfig({ [k]: { enable: target } });
+        const after = (await api.getPorts()) as PortsResp;
+        const got = readEnable(after, k);
+        results[k].enable = got === (target ? 1 : 0) ? "ok" : "mismatch";
+        process.stdout.write(`         readback=${got} → ${results[k].enable}\n`);
+        // Restore
+        await api.setPortConfig({ [k]: { enable: initialEnable === 1 } });
+      }
+
+      // Try a port-number toggle — pick a value 1 off the default so
+      // we can spot dropped writes. Skip HTTP because changing it
+      // breaks the same path the manager uses to talk to the camera
+      // on some networks.
+      if (k !== "http") {
+        const newPort = initialPort + 1;
+        process.stdout.write(`[${k}] port ${initialPort} → ${newPort}\n`);
+        try {
+          await api.setPortConfig({ [k]: { port: newPort } });
+          const after = (await api.getPorts()) as PortsResp;
+          const got = readPort(after, k);
+          results[k].port = got === newPort ? "ok" : "mismatch";
+          process.stdout.write(`         readback=${got} → ${results[k].port}\n`);
+        } catch (e) {
+          results[k].port = "mismatch";
+          process.stdout.write(`         write rejected: ${(e as Error).message}\n`);
+        }
+        // Restore
+        await api.setPortConfig({ [k]: { port: initialPort } });
+      }
     }
-    process.stdout.write(`Restoring RTSP port=${beforeRtsp} ...\n`);
-    await api.setPortConfig({ rtsp: { port: beforeRtsp } });
-    const restoredRtsp = (await api.getPorts()) as PortsResp;
-    process.stdout.write(`RTSP restored: port=${Number(restoredRtsp.rtsp?.rtspport ?? 0)}\n`);
+
+    process.stdout.write(`\n=== Summary ===\n`);
+    process.stdout.write(`port    | port-change | enable-toggle\n`);
+    for (const k of targets) {
+      process.stdout.write(
+        `${k.padEnd(7)} | ${results[k].port.padEnd(11)} | ${results[k].enable}\n`,
+      );
+    }
   } finally {
     await api.close();
   }
