@@ -3,7 +3,7 @@ import { Paintbrush, Eraser } from "lucide-react";
 import {
   decodeMotionScopeBitmap,
   encodeMotionScopeBitmap,
-} from "@apocaliss92/nodelink-js";
+} from "../utils/motionZoneBitmap";
 import { Section, ApplyBar, type TabProps } from "./shared";
 import { trpcQuery, trpcMutation } from "../../../api";
 import { withAuthTokenQuery } from "../utils";
