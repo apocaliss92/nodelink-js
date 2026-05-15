@@ -4150,6 +4150,67 @@ export class ReolinkBaichuanApi {
     await this.sendXml({ cmdId: 36, payloadXml: xml });
   }
 
+  /**
+   * Full port-config setter (cmd_id 36). Patches one or more of the six
+   * service ports the camera serves — Server (Baichuan), HTTP, HTTPS,
+   * RTSP, RTMP, ONVIF. Each entry takes an optional `port` (number) and
+   * `enable` (boolean); fields the caller doesn't pass are left alone.
+   *
+   * Sends one block per port that has any field set, then issues a
+   * single cmd_36 with the merged body. The camera accepts multiple
+   * `<XxxPort>` siblings in the same payload.
+   *
+   * Wire format observed on E1 Zoom:
+   *
+   *   <body>
+   *     <RtspPort version="1.1">
+   *       <rtspPort>554</rtspPort>
+   *       <enable>1</enable>
+   *     </RtspPort>
+   *     <HttpsPort version="1.1">
+   *       <enable>0</enable>
+   *     </HttpsPort>
+   *     ...
+   *   </body>
+   */
+  async setPortConfig(patch: {
+    server?: { port?: number; enable?: boolean };
+    http?: { port?: number; enable?: boolean };
+    https?: { port?: number; enable?: boolean };
+    rtsp?: { port?: number; enable?: boolean };
+    rtmp?: { port?: number; enable?: boolean };
+    onvif?: { port?: number; enable?: boolean };
+  }): Promise<void> {
+    const blocks: string[] = [];
+    const append = (
+      tag: string,
+      portField: string,
+      cfg: { port?: number; enable?: boolean } | undefined,
+    ): void => {
+      if (!cfg) return;
+      if (cfg.port === undefined && cfg.enable === undefined) return;
+      const inner: string[] = [];
+      if (cfg.port !== undefined) {
+        inner.push(`<${portField}>${cfg.port}</${portField}>`);
+      }
+      if (cfg.enable !== undefined) {
+        inner.push(`<enable>${cfg.enable ? 1 : 0}</enable>`);
+      }
+      blocks.push(`<${tag} version="1.1">${inner.join("")}</${tag}>`);
+    };
+    append("ServerPort", "serverPort", patch.server);
+    append("HttpPort", "httpPort", patch.http);
+    append("HttpsPort", "httpsPort", patch.https);
+    append("RtspPort", "rtspPort", patch.rtsp);
+    append("RtmpPort", "rtmpPort", patch.rtmp);
+    append("OnvifPort", "onvifPort", patch.onvif);
+    if (blocks.length === 0) return;
+    const xml =
+      `<?xml version="1.0" encoding="UTF-8" ?>` +
+      `<body>${blocks.join("")}</body>`;
+    await this.sendXml({ cmdId: 36, payloadXml: xml });
+  }
+
   /** GetDevInfo via Baichuan: host cmd_id 80, channel cmd_id 318 */
   async getInfo(
     channel?: number,

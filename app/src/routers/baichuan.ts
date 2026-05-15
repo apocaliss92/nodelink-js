@@ -735,21 +735,57 @@ export const baichuanRouter = router({
   setNetPort: publicProcedure
     .meta({
       description:
-        "Toggle the camera's serving ports (RTSP, RTMP, ONVIF). Each flag is independent and only applied when provided.",
+        "Update one or more of the camera's six service ports (Server, HTTP, HTTPS, RTSP, RTMP, ONVIF). Each entry takes optional `port` + `enable`; fields not passed are left alone.",
     })
     .input(
       OptionalConnectionInput.extend({
-        rtspEnable: z.union([z.literal(0), z.literal(1)]).optional(),
-        rtmpEnable: z.union([z.literal(0), z.literal(1)]).optional(),
-        onvifEnable: z.union([z.literal(0), z.literal(1)]).optional(),
+        server: z
+          .object({
+            port: z.number().int().min(1).max(65535).optional(),
+            enable: z.boolean().optional(),
+          })
+          .optional(),
+        http: z
+          .object({
+            port: z.number().int().min(1).max(65535).optional(),
+            enable: z.boolean().optional(),
+          })
+          .optional(),
+        https: z
+          .object({
+            port: z.number().int().min(1).max(65535).optional(),
+            enable: z.boolean().optional(),
+          })
+          .optional(),
+        rtsp: z
+          .object({
+            port: z.number().int().min(1).max(65535).optional(),
+            enable: z.boolean().optional(),
+          })
+          .optional(),
+        rtmp: z
+          .object({
+            port: z.number().int().min(1).max(65535).optional(),
+            enable: z.boolean().optional(),
+          })
+          .optional(),
+        onvif: z
+          .object({
+            port: z.number().int().min(1).max(65535).optional(),
+            enable: z.boolean().optional(),
+          })
+          .optional(),
       }),
     )
     .mutation(async ({ input }) => {
       const api = await getApi(input);
-      await api.setNetPort({
-        ...(input.rtspEnable !== undefined ? { rtspEnable: input.rtspEnable } : {}),
-        ...(input.rtmpEnable !== undefined ? { rtmpEnable: input.rtmpEnable } : {}),
-        ...(input.onvifEnable !== undefined ? { onvifEnable: input.onvifEnable } : {}),
+      await api.setPortConfig({
+        ...(input.server ? { server: input.server } : {}),
+        ...(input.http ? { http: input.http } : {}),
+        ...(input.https ? { https: input.https } : {}),
+        ...(input.rtsp ? { rtsp: input.rtsp } : {}),
+        ...(input.rtmp ? { rtmp: input.rtmp } : {}),
+        ...(input.onvif ? { onvif: input.onvif } : {}),
       });
       return { success: true };
     }),

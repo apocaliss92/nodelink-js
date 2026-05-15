@@ -4,8 +4,8 @@ import {
   FieldGrid,
   Field,
   Toggle,
+  NumberInput,
   ApplyBar,
-  findNumber,
   type TabProps,
 } from "./shared";
 import { trpcQuery, trpcMutation } from "../../../api";
@@ -13,33 +13,102 @@ import { trpcQuery, trpcMutation } from "../../../api";
 /**
  * Network tab.
  *
- * Read-only sections for IP / Wi-Fi (changing those over the same camera
- * connection you're using is a footgun). Editable section for serving
- * ports — RTSP / RTMP / ONVIF — via `setNetPort` which uses
- * setPortEnabled under the hood. IP / DNS / gateway are intentionally
- * not editable.
+ * The camera returns six service-port blocks (cmd_id=37) — Server
+ * (Baichuan protocol on TCP 9000), HTTP, HTTPS, RTSP, RTMP, ONVIF —
+ * each with its own port number and enable flag. We surface every
+ * one with a port input + enable toggle and ship the dirty fields
+ * in a single `setNetPort` call (cmd_id=36).
+ *
+ * IP / DNS / Wi-Fi remain read-only — those are listed below the
+ * port editor for reference but the manager intentionally doesn't
+ * let you change them from the same connection you're using.
  */
-interface PortsForm {
-  rtspEnabled: boolean;
-  rtmpEnabled: boolean;
-  onvifEnabled: boolean;
+type PortKey = "server" | "http" | "https" | "rtsp" | "rtmp" | "onvif";
+
+interface PortRow {
+  key: PortKey;
+  label: string;
+  hint: string;
 }
 
-function readPortsForm(ports: unknown): PortsForm {
-  return {
-    rtspEnabled: findNumber(ports, "rtspEnable") === 1,
-    rtmpEnabled: findNumber(ports, "rtmpEnable") === 1,
-    onvifEnabled: findNumber(ports, "onvifEnable") === 1,
+const PORTS: PortRow[] = [
+  { key: "server", label: "Server (Baichuan)", hint: "TCP 9000 — this is the port the manager itself uses; turn off only if you know what you're doing." },
+  { key: "http",   label: "HTTP",              hint: "Web UI / CGI API." },
+  { key: "https",  label: "HTTPS",             hint: "Encrypted web UI / CGI." },
+  { key: "rtsp",   label: "RTSP",              hint: "What go2rtc / ffmpeg ingest from." },
+  { key: "rtmp",   label: "RTMP",              hint: "Legacy stream protocol, mostly unused." },
+  { key: "onvif",  label: "ONVIF",             hint: "Needed by some NVRs and third-party tools." },
+];
+
+interface PortValue {
+  port: number | undefined;
+  enable: boolean;
+}
+
+type Form = Record<PortKey, PortValue>;
+
+interface PortBlock {
+  enable?: number | string;
+  // The XML tag has lowercase port keys: serverPort, httpPort, httpsPort,
+  // rtspPort, rtmpPort, onvifPort. After parseXmlFragmentToJson the keys
+  // stay as-is.
+  serverport?: number | string;
+  httpport?: number | string;
+  httpsport?: number | string;
+  rtspport?: number | string;
+  rtmpport?: number | string;
+  onvifport?: number | string;
+  [k: string]: unknown;
+}
+
+interface PortsResponse {
+  server?: PortBlock;
+  http?: PortBlock;
+  https?: PortBlock;
+  rtsp?: PortBlock;
+  rtmp?: PortBlock;
+  onvif?: PortBlock;
+  [k: string]: unknown;
+}
+
+function toNumber(v: unknown): number | undefined {
+  if (typeof v === "number") return v;
+  if (typeof v === "string" && /^\d+$/.test(v)) return Number(v);
+  return undefined;
+}
+
+function readPortsForm(raw: PortsResponse | null): Form {
+  // For each port, pluck `<xxxPort>` and `<enable>`. The library lowercases
+  // XML tags on parse, so the inner port field is `serverport`, `httpport`,
+  // `httpsport`, `rtspport`, `rtmpport`, `onvifport`.
+  const blank: PortValue = { port: undefined, enable: false };
+  const out: Form = {
+    server: { ...blank },
+    http: { ...blank },
+    https: { ...blank },
+    rtsp: { ...blank },
+    rtmp: { ...blank },
+    onvif: { ...blank },
   };
+  if (!raw || typeof raw !== "object") return out;
+  for (const key of Object.keys(out) as PortKey[]) {
+    const block = raw[key] as PortBlock | undefined;
+    if (!block) continue;
+    const portField = `${key}port` as keyof PortBlock;
+    out[key] = {
+      port: toNumber(block[portField]),
+      enable: toNumber(block.enable) === 1,
+    };
+  }
+  return out;
 }
 
 export function NetworkTab({ cameraId, channel }: TabProps) {
   const [network, setNetwork] = useState<unknown>(null);
   const [wifi, setWifi] = useState<unknown>(null);
   const [wifiSignal, setWifiSignal] = useState<unknown>(null);
-  const [ports, setPorts] = useState<unknown>(null);
-  const [portsForm, setPortsForm] = useState<PortsForm | null>(null);
-  const [loadedPorts, setLoadedPorts] = useState<PortsForm | null>(null);
+  const [portsForm, setPortsForm] = useState<Form | null>(null);
+  const [loadedPorts, setLoadedPorts] = useState<Form | null>(null);
   const [errs, setErrs] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -54,17 +123,20 @@ export function NetworkTab({ cameraId, channel }: TabProps) {
     void trpcQuery("baichuan.getNetworkInfo", { cameraId })
       .then(setNetwork)
       .catch(fail("network"));
-    void trpcQuery("baichuan.getPorts", { cameraId })
+    void trpcQuery<PortsResponse>("baichuan.getPorts", { cameraId })
       .then((p) => {
-        setPorts(p);
         const form = readPortsForm(p);
         setPortsForm(form);
         setLoadedPorts(form);
         setSaved(false);
       })
       .catch(fail("ports"));
-    void trpcQuery("baichuan.getWifi", { cameraId, channel }).then(setWifi).catch(fail("wifi"));
-    void trpcQuery("baichuan.getWifiSignal", { cameraId, channel }).then(setWifiSignal).catch(fail("wifiSignal"));
+    void trpcQuery("baichuan.getWifi", { cameraId, channel })
+      .then(setWifi)
+      .catch(fail("wifi"));
+    void trpcQuery("baichuan.getWifiSignal", { cameraId, channel })
+      .then(setWifiSignal)
+      .catch(fail("wifiSignal"));
   }, [cameraId, channel]);
 
   useEffect(refresh, [refresh]);
@@ -77,17 +149,29 @@ export function NetworkTab({ cameraId, channel }: TabProps) {
     setSaveError(null);
     setSaved(false);
     try {
-      const patch: Record<string, 0 | 1> = {};
-      if (portsForm.rtspEnabled !== loadedPorts.rtspEnabled) {
-        patch.rtspEnable = portsForm.rtspEnabled ? 1 : 0;
+      // Only send blocks where SOMETHING changed (port number or enable
+      // flag), and only the fields that changed inside each block.
+      const patch: Record<PortKey, { port?: number; enable?: boolean }> = {} as never;
+      for (const key of Object.keys(portsForm) as PortKey[]) {
+        const cur = portsForm[key];
+        const old = loadedPorts[key];
+        const block: { port?: number; enable?: boolean } = {};
+        if (cur.port !== undefined && cur.port !== old.port) {
+          block.port = cur.port;
+        }
+        if (cur.enable !== old.enable) {
+          block.enable = cur.enable;
+        }
+        if (block.port !== undefined || block.enable !== undefined) {
+          patch[key] = block;
+        }
       }
-      if (portsForm.rtmpEnabled !== loadedPorts.rtmpEnabled) {
-        patch.rtmpEnable = portsForm.rtmpEnabled ? 1 : 0;
+      if (Object.keys(patch).length > 0) {
+        await trpcMutation("baichuan.setNetPort", {
+          cameraId,
+          ...patch,
+        });
       }
-      if (portsForm.onvifEnabled !== loadedPorts.onvifEnabled) {
-        patch.onvifEnable = portsForm.onvifEnabled ? 1 : 0;
-      }
-      await trpcMutation("baichuan.setNetPort", { cameraId, ...patch });
       setSaved(true);
       refresh();
     } catch (e) {
@@ -101,54 +185,79 @@ export function NetworkTab({ cameraId, channel }: TabProps) {
     <div>
       <Section
         title="Service ports"
-        description="Toggle the protocols the camera serves. RTSP is what go2rtc and the manager's local restreamer ingest from."
+        description="Each protocol has its own port and enable flag. Most users only need to touch RTSP / ONVIF; changing the Baichuan Server port disconnects the manager."
       >
         {portsForm === null ? (
           <div className="text-[11px] text-[var(--color-foreground-muted)] py-2">
             {errs.ports ?? "Loading…"}
           </div>
         ) : (
-          <FieldGrid>
-            <Field label="RTSP" hint="default port 554 — used by ffmpeg / go2rtc">
-              <Toggle
-                value={portsForm.rtspEnabled}
-                onChange={(v) =>
-                  setPortsForm((prev) => (prev ? { ...prev, rtspEnabled: v } : prev))
-                }
-                disabled={saving}
-              />
-            </Field>
-            <Field label="RTMP" hint="legacy stream protocol, mostly unused now">
-              <Toggle
-                value={portsForm.rtmpEnabled}
-                onChange={(v) =>
-                  setPortsForm((prev) => (prev ? { ...prev, rtmpEnabled: v } : prev))
-                }
-                disabled={saving}
-              />
-            </Field>
-            <Field label="ONVIF" hint="needed by some NVRs and third-party tools">
-              <Toggle
-                value={portsForm.onvifEnabled}
-                onChange={(v) =>
-                  setPortsForm((prev) => (prev ? { ...prev, onvifEnabled: v } : prev))
-                }
-                disabled={saving}
-              />
-            </Field>
-          </FieldGrid>
+          <div className="flex flex-col gap-3">
+            {PORTS.map((row) => {
+              const cur = portsForm[row.key];
+              return (
+                <div
+                  key={row.key}
+                  className="rounded-md border border-[var(--color-border)] bg-[var(--color-background)] p-3"
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <div>
+                      <div className="text-[12px] font-semibold text-[var(--color-foreground)]">
+                        {row.label}
+                      </div>
+                      <div className="text-[10px] text-[var(--color-foreground-muted)]">
+                        {row.hint}
+                      </div>
+                    </div>
+                  </div>
+                  <FieldGrid>
+                    <Field label="Port" hint="1–65535">
+                      <NumberInput
+                        value={cur.port}
+                        min={1}
+                        max={65535}
+                        onChange={(v) =>
+                          setPortsForm((prev) =>
+                            prev
+                              ? { ...prev, [row.key]: { ...prev[row.key], port: v } }
+                              : prev,
+                          )
+                        }
+                        disabled={saving}
+                      />
+                    </Field>
+                    <Field label="Enabled">
+                      <Toggle
+                        value={cur.enable}
+                        onChange={(v) =>
+                          setPortsForm((prev) =>
+                            prev
+                              ? { ...prev, [row.key]: { ...prev[row.key], enable: v } }
+                              : prev,
+                          )
+                        }
+                        disabled={saving}
+                      />
+                    </Field>
+                  </FieldGrid>
+                </div>
+              );
+            })}
+          </div>
         )}
       </Section>
 
-      <Section title="Network" description="IP / netmask / gateway / DNS / MAC as reported by getNetworkInfo (cmd_id=78). Read-only — changing IPs from this dashboard would knock the camera off the network you're using to talk to it.">
+      <Section
+        title="Network"
+        description="IP / netmask / gateway / DNS / MAC as reported by getNetworkInfo (cmd_id=78). Read-only — changing IPs from this dashboard would knock the camera off the network you're using to talk to it."
+      >
         <Json value={network} error={errs.network} />
       </Section>
 
-      <Section title="All ports" description="Raw cmd_id=37 response showing every served port (server/HTTPS/ONVIF/RTSP/RTMP). Use the toggles above to change the common ones.">
-        <Json value={ports} error={errs.ports} />
-      </Section>
-
-      <Section title="Wi-Fi" description="Connection details for wireless models. Missing fields = wired camera.">
+      <Section
+        title="Wi-Fi"
+        description="Connection details for wireless models. Missing fields = wired camera."
+      >
         <Json value={wifi} error={errs.wifi} />
         <div className="mt-2">
           <div className="text-[10px] uppercase tracking-wider text-[var(--color-foreground-subtle)] mb-1">
