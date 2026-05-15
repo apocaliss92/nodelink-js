@@ -817,16 +817,6 @@ export const baichuanRouter = router({
       return await api.getRecordSchedule(input.channel);
     }),
 
-  // ============ OSD DATETIME ============
-
-  getOsdDatetime: publicProcedure
-    .meta({ description: "Get OSD datetime settings" })
-    .input(ConnectionWithChannel)
-    .query(async ({ input }) => {
-      const api = await getApi(input);
-      return await api.getOsdDatetime(input.channel);
-    }),
-
   // ============ CHIME / DINGDONG ============
 
   getDingDongList: publicProcedure
