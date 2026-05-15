@@ -60,7 +60,7 @@ export function ActionsGrid({
         <button className={btnClass} onClick={onEvents}><Bell size={13} /> Events</button>
         <button className={btnClass} onClick={onSessions}><Users size={13} /> Sessions</button>
         <button className={btnClass} onClick={onLogs}><ScrollText size={13} /> Logs</button>
-        <button className={`${btnClass} col-span-2`} onClick={onStreamSettings} disabled={!isConnected}><Sliders size={13} /> Stream settings</button>
+        <button className={`${btnClass} col-span-2`} onClick={onStreamSettings} disabled={!isConnected}><Sliders size={13} /> Camera settings</button>
         <button className={`${btnClass} col-span-2`} onClick={onConnection}><Network size={13} /> Connection mode</button>
         <button className={btnClass} onClick={onConnect} disabled={connecting}>
           <Plug size={13} /> {isConnected ? 'Disconnect' : 'Connect'}

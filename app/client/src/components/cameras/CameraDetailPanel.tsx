@@ -9,7 +9,7 @@ import { SessionsPanel } from './SessionsPanel';
 import { SessionsDialog } from './SessionsDialog';
 import { CameraLogsPanel } from './CameraLogsPanel';
 import { ConnectionPanel } from './ConnectionPanel';
-import { StreamSettingsPanel } from './StreamSettingsPanel';
+import { CameraSettingsModal } from './CameraSettingsModal';
 import { useConnectionLogs } from './hooks/useConnectionLogs';
 import { trpcQuery, trpcMutation } from '../../api';
 import { withAuthTokenQuery, getCameraDisplayName, getStreamName, getWebrtcStreamName } from './utils';
@@ -381,15 +381,13 @@ export function CameraDetailPanel({
         />
       )}
 
-      {showStreamSettings && (
-        <div className="mt-3">
-          <StreamSettingsPanel
-            cameraId={camera.id}
-            channel={camera.rtspChannel ?? 0}
-            onClose={() => setShowStreamSettings(false)}
-          />
-        </div>
-      )}
+      <CameraSettingsModal
+        open={showStreamSettings}
+        cameraId={camera.id}
+        cameraName={camera.name || camera.host}
+        channel={camera.rtspChannel ?? 0}
+        onClose={() => setShowStreamSettings(false)}
+      />
 
       {showSessions && (
         <SessionsPanel

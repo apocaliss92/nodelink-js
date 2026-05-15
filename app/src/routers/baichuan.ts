@@ -303,6 +303,23 @@ export const baichuanRouter = router({
       return await api.getMotionAlarm(input.channel);
     }),
 
+  setMotionAlarm: publicProcedure
+    .meta({
+      description:
+        "Toggle motion detection and optionally set sensitivity (0-50).",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        enabled: z.boolean(),
+        sensitivity: z.number().int().min(0).max(50).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.setMotionAlarm(input.channel, input.enabled, input.sensitivity);
+      return { success: true };
+    }),
+
   getAiState: publicProcedure
     .meta({ description: "Get AI detection state" })
     .input(ConnectionWithChannel)
@@ -355,6 +372,66 @@ export const baichuanRouter = router({
     .query(async ({ input }) => {
       const api = await getApi(input);
       return await api.getOsd(input.channel);
+    }),
+
+  setOsd: publicProcedure
+    .meta({
+      description:
+        "Set OSD overlay (channel name + position, datetime visibility, watermark).",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        osd: z.object({
+          channel: z.number().int().min(0),
+          osdChannel: z.object({
+            enable: z.union([z.literal(0), z.literal(1)]),
+            name: z.string(),
+            pos: z.string(),
+          }),
+          osdTime: z.object({
+            enable: z.union([z.literal(0), z.literal(1)]),
+            pos: z.string(),
+          }),
+          watermark: z.union([z.literal(0), z.literal(1)]),
+          bgcolor: z.union([z.literal(0), z.literal(1)]).optional(),
+        }),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.setOsd(input.channel, input.osd);
+      return { success: true };
+    }),
+
+  getImage: publicProcedure
+    .meta({ description: "Get image settings (brightness, contrast, etc.)" })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getImage(input.channel);
+    }),
+
+  setImage: publicProcedure
+    .meta({
+      description:
+        "Update image quality fields: bright, contrast, saturation, hue, sharpen (0-255 typical).",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        bright: z.number().int().min(0).max(255).optional(),
+        contrast: z.number().int().min(0).max(255).optional(),
+        saturation: z.number().int().min(0).max(255).optional(),
+        hue: z.number().int().min(0).max(255).optional(),
+        sharpen: z.number().int().min(0).max(255).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      const { cameraId: _, channel: _ch, ...patch } = input;
+      void _;
+      void _ch;
+      await api.setImage(input.channel, patch);
+      return { success: true };
     }),
 
   // ============ ENCODING ============
