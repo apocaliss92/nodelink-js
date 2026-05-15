@@ -120,9 +120,10 @@ export function CameraCard({
       </div>
 
       {/* Stream badges — clickable to open stream, show viewer count.
-          In local restreamer mode the inline WebRTC player is unavailable
-          (no go2rtc sidecar), so the badges render disabled with a tooltip
-          pointing the user at the RTSP URL in the detail panel. */}
+          Both restreamer modes are now supported: go2rtc uses WHEP signaling
+          to the sidecar; local uses the in-process BaichuanWebRTCServer over
+          tRPC. The badge stays enabled in both modes — only the underlying
+          signaling path changes (the consumer wires it on the player side). */}
       {streams.length > 0 && (
         <div className="flex gap-1 mt-2">
           {streams.map((s) => {
@@ -135,32 +136,20 @@ export function CameraCard({
               server?.mode === "local" || server?.mode === "go2rtc"
                 ? server.mode
                 : (restreamer ?? "go2rtc");
-            const isLocal = effectiveMode === "local";
             return (
               <button
                 key={s.profile}
                 onClick={(e) => {
                   e.stopPropagation();
-                  if (isLocal) return;
                   onOpenStream?.(s);
                 }}
-                disabled={isLocal}
-                aria-disabled={isLocal}
                 className={cn(
-                  "rounded px-1.5 py-0.5 text-[10px] transition-opacity flex items-center gap-0.5",
-                  isLocal
-                    ? "bg-[var(--color-surface-hover)] opacity-50 cursor-not-allowed"
-                    : "hover:opacity-80",
-                  !isLocal &&
-                    (selected
-                      ? "bg-[var(--color-primary)]/20"
-                      : "bg-[var(--color-surface-hover)]"),
+                  "rounded px-1.5 py-0.5 text-[10px] transition-opacity flex items-center gap-0.5 hover:opacity-80",
+                  selected
+                    ? "bg-[var(--color-primary)]/20"
+                    : "bg-[var(--color-surface-hover)]",
                 )}
-                title={
-                  isLocal
-                    ? `WebRTC preview unavailable in local restreamer mode. Open the camera to copy the RTSP URL for ${s.profile}.`
-                    : `Open ${s.profile} stream${viewers > 0 ? ` (${viewers} viewer${viewers > 1 ? "s" : ""})` : ""}`
-                }
+                title={`Open ${s.profile} stream via ${effectiveMode === "local" ? "native WebRTC" : "go2rtc"}${viewers > 0 ? ` (${viewers} viewer${viewers > 1 ? "s" : ""})` : ""}`}
               >
                 <Play size={8} />
                 {s.profile}

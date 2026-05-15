@@ -216,10 +216,14 @@ export function CameraDetailPage() {
                       kind: 'webrtc' as const,
                       title: `${camera.name || camera.host} - ${stream.profile}`,
                       cameraName: getCameraDisplayName(camera),
+                      cameraId: camera.id,
                       profile: stream.profile,
                       streamName: webrtcName,
                       go2rtcApiPort,
                       serviceIp,
+                      // Force the in-process pipeline when restreamer is local
+                      // (no go2rtc sidecar to talk to).
+                      useNative: restreamer === "local",
                     });
                   }}
                   streamName={name}

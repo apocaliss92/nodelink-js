@@ -3,7 +3,10 @@
  * and emits them via SSE, JSON stream and MQTT.
  */
 
-import type { ReolinkSimpleEvent } from "@apocaliss92/nodelink-js";
+import type {
+  ReolinkSimpleEvent,
+  ReolinkDetectionEvent,
+} from "@apocaliss92/nodelink-js";
 import type { ReolinkBaichuanApi } from "@apocaliss92/nodelink-js";
 import type { Response } from "express";
 import { onApiConnected, onApiDisconnected } from "./rtsp-manager.js";
@@ -59,8 +62,79 @@ const sseClients = new Set<Response>();
 /** Connected JSON stream clients */
 const jsonStreamClients = new Set<Response>();
 
+/**
+ * Detection event payload — broadcast on a SEPARATE SSE channel because it
+ * fires per-frame (10–30 Hz) vs. the alarm SSE which fires per-event. Keeping
+ * them on different endpoints means consumers that only care about state
+ * changes don't pay the per-frame bandwidth cost.
+ */
+export interface DetectionEventPayload {
+  cameraId: string;
+  cameraName: string;
+  cameraNameSlug: string;
+  channel: number;
+  /** main / sub / ext — the stream profile that produced the boxes. */
+  profile: "main" | "sub" | "ext";
+  /** Frame timestamp in microseconds (from BcMedia). */
+  microseconds: number;
+  /** Source frame width in pixels (if reported by InfoV1/V2). */
+  frameWidth?: number;
+  /** Source frame height in pixels (if reported by InfoV1/V2). */
+  frameHeight?: number;
+  /** Decoded boxes in normalized [0, 1] coordinates. */
+  boxes: ReolinkDetectionEvent["boxes"];
+  /** Decoder diagnostic state. */
+  decodeState: ReolinkDetectionEvent["decodeState"];
+  /** Wall-clock when the frame was processed. */
+  timestamp: number;
+}
+
+/** Connected SSE clients on the detection firehose. */
+const detectionSseClients = new Set<Response>();
+
+/**
+ * Last seen AI classification (people/vehicle/animal/face/package) per camera.
+ *
+ * Used as a *best-effort* label for bounding boxes — the raw additionalHeader
+ * doesn't carry the class index in a form we can decode yet, but the
+ * `cmd_33 AlarmEventList` push that arrives within ~100ms of a detection DOES
+ * include the AItype.
+ *
+ * IMPORTANT: this label is only reliable when there is exactly ONE box in the
+ * frame. With multiple simultaneous detections (e.g. a person AND a vehicle)
+ * we have no way to map each box to its class. In that case we omit the label
+ * so the consumer doesn't see misleading information.
+ */
+const lastAiClassByCamera = new Map<
+  string,
+  { label: string; receivedAtMs: number }
+>();
+/**
+ * Maximum age of the AI-class hint we'll trust as the box label. Kept short
+ * (the AI push and the box-bearing frame are emitted within ~100–300ms of
+ * each other for in-progress motion).
+ */
+const AI_LABEL_TTL_MS = 1_500;
+
+/** Reolink `ReolinkSimpleEvent.type` values that act as box labels. */
+const LABEL_EVENT_TYPES = new Set([
+  "people",
+  "vehicle",
+  "animal",
+  "face",
+  "package",
+]);
+
 /** Cameras already registered (to avoid duplicate subscriptions) */
 const registeredCameras = new Set<string>();
+
+/**
+ * Per-camera API handles for cameras with active event subscriptions. Used by
+ * the detection-SSE lifecycle to attach `onObjectDetections` on demand: the
+ * substream is only opened when at least one detection-SSE client is connected.
+ */
+const registeredApis = new Map<string, ReolinkBaichuanApi>();
+let objectDetectionSubsActive = false;
 
 /** MQTT client (lazy init) */
 let mqttClient: import("mqtt").MqttClient | null = null;
@@ -218,6 +292,15 @@ export function handleCameraEvent(
     `[issue-8] Event: ${payload.cameraName} ch${event.channel} ${event.type} payload=${JSON.stringify(event).slice(0, 200)}`,
   );
 
+  // Cache the most recent AI classification so subsequent single-box
+  // detection events can carry a human-readable label.
+  if (LABEL_EVENT_TYPES.has(event.type)) {
+    lastAiClassByCamera.set(cameraId, {
+      label: event.type,
+      receivedAtMs: Date.now(),
+    });
+  }
+
   // Track sleep/wake status for battery cameras — and dedupe repeats
   if (event.type === "sleeping" || event.type === "awake") {
     const newStatus = event.type === "sleeping" ? "sleeping" : "awake";
@@ -318,6 +401,20 @@ function registerCameraEvents(cameraId: string, api: ReolinkBaichuanApi): void {
   // Allow re-registration after reconnection: the old API is dead,
   // so we must subscribe on the new one even if cameraId was already registered.
   registeredCameras.add(cameraId);
+  registeredApis.set(cameraId, api);
+  // If a detection-SSE client is already connected when this camera comes
+  // online, attach `onObjectDetections` so its substream starts immediately.
+  if (objectDetectionSubsActive) {
+    void api
+      .onObjectDetections((event) => {
+        handleDetectionEvent(cameraId, event);
+      })
+      .catch((e: unknown) => {
+        logger.warn(
+          `onObjectDetections subscribe failed for ${cameraId}: ${(e as Error)?.message ?? e}`,
+        );
+      });
+  }
 
   const config = getConfig();
   const camera = config.cameras.find((c) => c.id === cameraId);
@@ -332,7 +429,75 @@ function registerCameraEvents(cameraId: string, api: ReolinkBaichuanApi): void {
     handleCameraEvent(cameraId, event);
   });
 
+  // Detection events fire per-frame from the BcMedia overlay channel. We
+  // always register the listener (it's cheap) but the broadcast short-circuits
+  // when no SSE client is subscribed to the detection firehose.
+  api.onDetection((event) => {
+    if (isNvrChild && event.channel !== cameraChannel) return;
+    handleDetectionEvent(cameraId, event);
+  });
+
   logger.info(`Subscribed to events for camera ${cameraId}${isNvrChild ? ` (ch${cameraChannel})` : ""}`);
+}
+
+/**
+ * Forward a detection event to any active SSE clients on the detection
+ * firehose. Returns early if nobody's listening to keep the cost negligible
+ * for the streaming hot path.
+ */
+function handleDetectionEvent(
+  cameraId: string,
+  event: ReolinkDetectionEvent,
+): void {
+  if (detectionSseClients.size === 0) return;
+
+  const config = getConfig();
+  const camera = config.cameras.find((c) => c.id === cameraId);
+  if (!camera) return;
+  const name = camera.name || camera.host;
+  const slug = sanitizeCameraName(name);
+
+  // The library decoder now resolves the AI class directly from the SDK's
+  // static TLV map, so `b.label` is already set per box (people / vehicle /
+  // animal / face). We retain the cmd_33 cache as a *fallback*: if a frame
+  // arrives with boxes but no label (e.g. an unknown class for a firmware we
+  // haven't mapped yet) AND there's exactly one box AND a recent AItype is
+  // cached, we copy it.
+  let fallbackLabel: string | undefined;
+  if (event.boxes.length === 1 && !event.boxes[0]?.label) {
+    const cached = lastAiClassByCamera.get(cameraId);
+    if (cached && Date.now() - cached.receivedAtMs <= AI_LABEL_TTL_MS) {
+      fallbackLabel = cached.label;
+    }
+  }
+  const boxes = fallbackLabel
+    ? event.boxes.map((b) => ({ ...b, label: b.label ?? fallbackLabel }))
+    : event.boxes;
+
+  const payload: DetectionEventPayload = {
+    cameraId,
+    cameraName: name,
+    cameraNameSlug: slug,
+    channel: event.channel,
+    profile: event.profile,
+    microseconds: event.microseconds,
+    ...(event.frameWidth !== undefined ? { frameWidth: event.frameWidth } : {}),
+    ...(event.frameHeight !== undefined ? { frameHeight: event.frameHeight } : {}),
+    boxes,
+    decodeState: event.decodeState,
+    timestamp: Date.now(),
+  };
+  const json = JSON.stringify(payload);
+
+  for (const res of detectionSseClients) {
+    try {
+      if (!res.writableEnded) {
+        res.write(`data: ${json}\n\n`);
+      }
+    } catch {
+      detectionSseClients.delete(res);
+    }
+  }
 }
 
 /**
@@ -369,8 +534,10 @@ export function initEventsManager(): void {
   onApiDisconnected((cameraId) => {
     emitSystemEvent(cameraId, "camera_disconnected");
     registeredCameras.delete(cameraId);
+    registeredApis.delete(cameraId);
     recentEventsByCamera.delete(cameraId);
     cameraSleepStatus.delete(cameraId);
+    lastAiClassByCamera.delete(cameraId);
     logger.debug(`Unregistered events for camera ${cameraId}`);
   });
   logger.info("Events manager initialized");
@@ -392,6 +559,79 @@ export function addJsonStreamClient(res: Response): void {
   jsonStreamClients.add(res);
   res.on("close", () => jsonStreamClients.delete(res));
   res.on("error", () => jsonStreamClients.delete(res));
+}
+
+/**
+ * Add an SSE client to the high-frequency detection firehose. Box overlays
+ * subscribe here. Separate from the regular SSE channel because the rate is
+ * orders of magnitude higher (per-frame vs per-event).
+ */
+export function addDetectionSseClient(res: Response): void {
+  const wasEmpty = detectionSseClients.size === 0;
+  detectionSseClients.add(res);
+  if (wasEmpty) {
+    void activateObjectDetectionSubs();
+  }
+  const onLeave = (): void => {
+    if (!detectionSseClients.delete(res)) return;
+    if (detectionSseClients.size === 0) {
+      void deactivateObjectDetectionSubs();
+    }
+  };
+  res.on("close", onLeave);
+  res.on("error", onLeave);
+}
+
+/**
+ * Attach `onObjectDetections` to every registered camera so AI detection boxes
+ * start flowing even when no video player is open. Called when the first
+ * detection-SSE client connects. Idempotent.
+ */
+async function activateObjectDetectionSubs(): Promise<void> {
+  if (objectDetectionSubsActive) return;
+  objectDetectionSubsActive = true;
+  await Promise.allSettled(
+    [...registeredApis.entries()].map(async ([cameraId, api]) => {
+      try {
+        await api.onObjectDetections((event) => {
+          handleDetectionEvent(cameraId, event);
+        });
+      } catch (e) {
+        logger.warn(
+          `onObjectDetections activate failed for ${cameraId}: ${(e as Error)?.message ?? e}`,
+        );
+      }
+    }),
+  );
+  logger.info(
+    `Detection SSE: activated onObjectDetections on ${registeredApis.size} camera(s)`,
+  );
+}
+
+/**
+ * Detach `onObjectDetections` from every registered camera. Called when the
+ * last detection-SSE client disconnects. Idempotent.
+ */
+async function deactivateObjectDetectionSubs(): Promise<void> {
+  if (!objectDetectionSubsActive) return;
+  objectDetectionSubsActive = false;
+  await Promise.allSettled(
+    [...registeredApis.values()].map(async (api) => {
+      try {
+        await api.offObjectDetections();
+      } catch (e) {
+        logger.warn(
+          `offObjectDetections failed: ${(e as Error)?.message ?? e}`,
+        );
+      }
+    }),
+  );
+  logger.info(`Detection SSE: deactivated onObjectDetections`);
+}
+
+/** Number of currently connected detection SSE clients. */
+export function getDetectionClientCount(): number {
+  return detectionSseClients.size;
 }
 
 /**

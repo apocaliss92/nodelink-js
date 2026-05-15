@@ -8,15 +8,35 @@
 import { parseBcMedia, type BcMedia } from "./BcMediaParser";
 import type { Logger } from "../../debug/DebugConfig";
 
+/**
+ * Optional listener invoked whenever the codec encounters a 4-byte sequence
+ * at the buffer head that does NOT match any known BcMedia magic and is about
+ * to be skipped as "recovery". Use it to discover undocumented sub-packet
+ * shapes (e.g. AI overlay metadata) without altering the codec's behaviour.
+ */
+export type UnknownChunkListener = (info: {
+  magic: number;
+  /** Up to 256 bytes starting at the unknown chunk's first byte. */
+  preview: Buffer;
+  /** Number of bytes the codec is about to skip before resyncing. */
+  skipped: number;
+}) => void;
+
 export class BcMediaCodec {
   private buffer: Buffer = Buffer.alloc(0);
   private strict: boolean;
   private amountSkipped: number = 0;
   private logger: Logger | undefined;
+  private onUnknownChunk: UnknownChunkListener | undefined;
 
   constructor(strict: boolean = false, logger?: Logger) {
     this.strict = strict;
     this.logger = logger;
+  }
+
+  /** Register a listener that fires for every unknown chunk before recovery. */
+  setUnknownChunkListener(listener: UnknownChunkListener | undefined): void {
+    this.onUnknownChunk = listener;
   }
 
   /**
@@ -102,6 +122,13 @@ export class BcMediaCodec {
         }
 
         if (next > 0) {
+          if (this.onUnknownChunk) {
+            this.onUnknownChunk({
+              magic,
+              preview: Buffer.from(this.buffer.subarray(0, Math.min(256, next))),
+              skipped: next,
+            });
+          }
           this.amountSkipped += next;
           this.buffer = this.buffer.subarray(next);
           continue;

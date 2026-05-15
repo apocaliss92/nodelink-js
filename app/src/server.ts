@@ -42,18 +42,21 @@ import {
   getOrCreateApiConnection,
 } from "./rtsp-manager.js";
 import { getSettings, loadSettings, getConfig } from "./settings-store.js";
-// Custom MJPEG/HLS/WebRTC servers removed — go2rtc provides all output formats.
-// Legacy modules (mjpeg-native, hls-native, webrtc-native, stream-pool) are still
-// on disk but no longer wired into the server.
+// go2rtc provides the primary streaming pipeline (WebRTC, HLS, MJPEG, RTSP).
+// The native modules (mjpeg-native, hls-native, webrtc-native, stream-pool)
+// stay on disk as fallbacks. webrtc-native is now exposed via the `webrtc`
+// tRPC router so the UI can use it when go2rtc is disabled or unavailable.
 import {
   initEventsManager,
   addSseClient,
+  addDetectionSseClient,
   addJsonStreamClient,
   getEventsManagerStatus,
   connectMqtt,
   disconnectMqtt,
 } from "./events-manager.js";
 import { initGo2rtc, stopGo2rtc, getGo2rtcManager } from "./go2rtc-manager.js";
+import { stopAllWebRTCSessions } from "./webrtc-native.js";
 import { getActiveSessions } from "./stream-diagnostic.js";
 import {
   initHomeAssistantMqtt,
@@ -716,6 +719,28 @@ app.get("/api/events/sse", (req, res) => {
   req.on("close", () => clearInterval(keepAlive));
 });
 
+// SSE: detection box firehose — fires per video frame on every active stream
+// where the camera reports an AI overlay block. Kept on its own endpoint so
+// regular SSE consumers don't pay the per-frame bandwidth cost.
+// GET /api/events/detection
+app.get("/api/events/detection", (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+
+  addDetectionSseClient(res);
+
+  const keepAlive = setInterval(() => {
+    if (!res.writableEnded) {
+      res.write(": keepalive\n\n");
+    }
+  }, 30000);
+
+  req.on("close", () => clearInterval(keepAlive));
+});
+
 // SSE: per-camera connection log stream
 // GET /api/cameras/:id/logs
 app.get("/api/cameras/:id/logs", requireAuth, (req, res) => {
@@ -920,6 +945,15 @@ async function shutdown() {
   stopReconnectWatchdog();
 
   await stopAllRtspServers();
+
+  // Stop native WebRTC sessions (fallback path; harmless if none active).
+  try {
+    await stopAllWebRTCSessions();
+  } catch (error) {
+    appLogger.error(`Error stopping native WebRTC sessions: ${error}`, {
+      source: "server",
+    });
+  }
 
   // Stop go2rtc
   try {

@@ -216,6 +216,22 @@ export class BaichuanVideoStream extends EventEmitter<{
       time?: number;
     },
   ];
+  /**
+   * Raw BcMedia `additionalHeader` block emitted for every I-frame and P-frame.
+   * Carries Reolink's per-frame side-channel metadata (detection bounding boxes).
+   * `frameWidth`/`frameHeight` come from the most recent BcMedia InfoV1/V2 packet
+   * so consumers can normalize pixel coordinates against the actual stream size.
+   */
+  additionalHeader: [
+    {
+      raw: Buffer;
+      frameType: "Iframe" | "Pframe";
+      videoType: "H264" | "H265";
+      microseconds: number;
+      frameWidth?: number;
+      frameHeight?: number;
+    },
+  ];
   audioFrame: [Buffer]; // Audio frame (if present)
   error: [Error];
   close: [];
@@ -234,6 +250,15 @@ export class BaichuanVideoStream extends EventEmitter<{
   private readonly acceptAnyStreamType: boolean;
   private lockedChannelId: number | undefined;
   private bcMediaCodec: BcMediaCodec;
+  /**
+   * Diagnostic-only accessor for the BcMedia codec. Used by tools that need to
+   * inspect unknown chunks (for example to discover undocumented audio
+   * sub-packets the parser currently skips). Not part of the supported public
+   * surface — do not rely on it in application code.
+   */
+  get _bcMediaCodec(): BcMediaCodec {
+    return this.bcMediaCodec;
+  }
   private debugH264LogsLeft: number;
   private debugSavedSamples: boolean;
   private warnedNonAnnexBOnce = false;
@@ -257,6 +282,16 @@ export class BaichuanVideoStream extends EventEmitter<{
   // Stateful AES decryptor for fragmented BcMedia packets (full_aes mode)
   // In CFB mode, continuation frames must use the cipher state from previous frames.
   private aesStreamDecryptor: AesStreamDecryptor | null = null;
+
+  // Latest frame dimensions reported by BcMedia InfoV1/V2 packets.
+  // Used to attach width/height context to the `additionalHeader` event so
+  // consumers can normalize box coordinates to a fraction of the stream size.
+  private latestFrameWidth: number | undefined;
+  private latestFrameHeight: number | undefined;
+
+  // Teardown returned by ReolinkBaichuanApi._registerVideoStreamForDetection.
+  // Called from stop() to detach the detection bridge.
+  private detectionTeardown: (() => void) | undefined;
 
   /**
    * Pending startup error stashed when emitSafeError is called before any
@@ -1227,6 +1262,21 @@ export class BaichuanVideoStream extends EventEmitter<{
             videoType = detectedCodec;
           }
 
+          if (media.additionalHeader && media.additionalHeader.length > 0) {
+            this.emit("additionalHeader", {
+              raw: media.additionalHeader,
+              frameType: "Iframe",
+              videoType,
+              microseconds: media.microseconds,
+              ...(this.latestFrameWidth !== undefined
+                ? { frameWidth: this.latestFrameWidth }
+                : {}),
+              ...(this.latestFrameHeight !== undefined
+                ? { frameHeight: this.latestFrameHeight }
+                : {}),
+            });
+          }
+
           // Convert to Annex-B format (different converters for H.264 and H.265)
           const annexBData =
             videoType === "H265"
@@ -1339,6 +1389,25 @@ export class BaichuanVideoStream extends EventEmitter<{
         } else if (media.type === "Pframe") {
           const chunk = media.data;
 
+          if (media.additionalHeader && media.additionalHeader.length > 0) {
+            // Detect codec on raw NAL chunk before annex-B conversion, mirroring the
+            // logic below so the emitted videoType is consistent across both events.
+            const detected = detectVideoCodecFromNal(chunk);
+            const videoTypeForHeader = detected ?? media.videoType;
+            this.emit("additionalHeader", {
+              raw: media.additionalHeader,
+              frameType: "Pframe",
+              videoType: videoTypeForHeader,
+              microseconds: media.microseconds,
+              ...(this.latestFrameWidth !== undefined
+                ? { frameWidth: this.latestFrameWidth }
+                : {}),
+              ...(this.latestFrameHeight !== undefined
+                ? { frameHeight: this.latestFrameHeight }
+                : {}),
+            });
+          }
+
           // Detect actual video codec from NAL data (some cameras report wrong codec in BcMedia header)
           let videoType = media.videoType;
           const detectedCodec = detectVideoCodecFromNal(chunk);
@@ -1411,7 +1480,10 @@ export class BaichuanVideoStream extends EventEmitter<{
 
         // Emit info frames for metadata
         if (media.type === "InfoV1" || media.type === "InfoV2") {
-          // Could emit metadata event if needed
+          // Cache the most recent frame dimensions so subsequent additionalHeader
+          // events can attach width/height context for normalized box coords.
+          if (media.videoWidth > 0) this.latestFrameWidth = media.videoWidth;
+          if (media.videoHeight > 0) this.latestFrameHeight = media.videoHeight;
         }
       }
 
@@ -1448,6 +1520,15 @@ export class BaichuanVideoStream extends EventEmitter<{
     this.client.on("push", this.videoFrameHandler);
     this.active = true;
     this.startWatchdog();
+
+    // Register with the API so it can forward additionalHeader frames to any
+    // onDetection listeners.
+    if (this.api && typeof this.api._registerVideoStreamForDetection === "function") {
+      this.detectionTeardown = this.api._registerVideoStreamForDetection(this, {
+        channel: this.channel,
+        profile: this.profile,
+      });
+    }
 
     // Seed liveness so the watchdog doesn't immediately restart while we are still negotiating.
     this.lastMediaAtMs = Date.now();
@@ -1600,6 +1681,14 @@ export class BaichuanVideoStream extends EventEmitter<{
     }
 
     this.active = false;
+    if (this.detectionTeardown) {
+      try {
+        this.detectionTeardown();
+      } catch {
+        // Swallow: the API may already be torn down at this point.
+      }
+      this.detectionTeardown = undefined;
+    }
     this.emit("close");
   }
 

@@ -52,6 +52,12 @@ external/*
 docs/*
 tools/stream-probe/*
 
+# Compiled C++ probes / debug symbol bundles. Source .cpp files are tracked;
+# binaries are reproducible (see tools/sdk-probe/README if present).
+tools/sdk-probe/dump-class-map
+tools/sdk-probe/probe
+tools/sdk-probe/*.dSYM/
+
 app/data/
 app/logs/*
 logs/*

@@ -209,6 +209,7 @@ import type {
   ReolinkEvent,
   ReolinkNvrDeviceGroupsResult,
   ReolinkNvrDeviceGroupSummary,
+  ReolinkDetectionEvent,
   ReolinkSimpleEvent,
   ReolinkSupportedStream,
   ReolinkVideoStreamOptionsResult,
@@ -234,6 +235,8 @@ import type {
   AudioCfgConfig,
   DayNightThresholdConfig,
   AiDenoiseConfig,
+  EncOptions,
+  EncStreamPatch,
   RecEncConfig,
   MotionAlarmConfig,
   AiAlarmConfig,
@@ -280,6 +283,8 @@ import {
   buildChannelPushDataLogSnapshot,
   computeChannelPushUpdateFromEntry,
 } from "./utils/channelInfoStore";
+import { decodeDetectionHeader } from "./utils/detection";
+import { buildEncOptions } from "./utils/encOptions";
 import { mapToSimpleEvent } from "./utils/events";
 import { formatClientIoForLog, formatErrorForLog } from "./utils/logging";
 import { parseBoolean01, parseNumber } from "./utils/parsing";
@@ -847,6 +852,33 @@ export class ReolinkBaichuanApi {
     (event: ReolinkSimpleEvent) => void | Promise<void>
   >();
   private simpleEventSubscribed = false;
+
+  // Detection events are sourced from BcMedia additionalHeader on active video
+  // streams. Unlike simpleEvent, no Baichuan subscribe command is needed — the
+  // data flows whenever a stream is open. Active streams register themselves via
+  // _registerVideoStreamForDetection (called from BaichuanVideoStream.start).
+  private readonly detectionEventListeners = new Set<
+    (event: ReolinkDetectionEvent) => void | Promise<void>
+  >();
+  private readonly detectionEventStreamHooks = new Map<
+    object,
+    () => void
+  >();
+  // Auto-managed substream for `onObjectDetections` listeners. Reference-counted
+  // by the listener set: the substream is opened on the first listener and torn
+  // down with the last one. Mirrors `onSimpleEvent`'s subscribe/unsubscribe
+  // lifecycle so a caller never has to manage a video stream just to read AI
+  // detections.
+  private readonly objectDetectionListeners = new Set<
+    (event: ReolinkDetectionEvent) => void | Promise<void>
+  >();
+  private objectDetectionStream:
+    | { stop: () => Promise<void>; release: () => Promise<void> }
+    | undefined;
+  private objectDetectionStreamStartInFlight: Promise<void> | undefined;
+  private objectDetectionInternalListener:
+    | ((event: ReolinkDetectionEvent) => void)
+    | undefined;
   private simpleEventSubscribeInFlight: Promise<void> | undefined;
   private simpleEventUnsubscribeInFlight: Promise<void> | undefined;
   private simpleEventResubscribeTimer: NodeJS.Timeout | undefined;
@@ -2865,6 +2897,250 @@ export class ReolinkBaichuanApi {
     }
   }
 
+  /**
+   * Subscribe to per-frame detection events sourced from the BcMedia
+   * `additionalHeader` block on active video streams.
+   *
+   * Mirrors {@link onSimpleEvent} but is fed by the streaming side-channel:
+   * one event fires for every I-frame / P-frame that carries an overlay block.
+   * Coordinates are reported in normalized [0, 1] fractions of the source
+   * frame, so the same box renders correctly on mainStream, subStream, and
+   * externStream.
+   *
+   * Unlike `onSimpleEvent`, no Baichuan subscribe command is involved — events
+   * only flow while a video stream is open. The library hooks every
+   * `BaichuanVideoStream` created via this API for the listener's lifetime.
+   */
+  onDetection(
+    callback: (event: ReolinkDetectionEvent) => void | Promise<void>,
+  ): void {
+    this.detectionEventListeners.add(callback);
+  }
+
+  /**
+   * Remove a single detection callback, or all of them if `callback` is omitted.
+   */
+  offDetection(
+    callback?: (event: ReolinkDetectionEvent) => void | Promise<void>,
+  ): void {
+    if (callback) {
+      this.detectionEventListeners.delete(callback);
+    } else {
+      this.detectionEventListeners.clear();
+    }
+  }
+
+  /**
+   * Subscribe to AI object detections (people / vehicle / animal / face boxes
+   * with class label and confidence) without managing a video stream yourself.
+   *
+   * Mirrors {@link onSimpleEvent} end-to-end: the API opens a dedicated
+   * substream behind the scenes on the first listener, forwards every box-bearing
+   * `additionalHeader` to your callback, and tears the stream down when the last
+   * listener unsubscribes. The substream is the lightest profile (typically
+   * 640×360) so the additional bandwidth/CPU overhead is minimal.
+   *
+   * Each event carries normalized `[0, 1]` box coordinates, a class label, and
+   * a confidence score — render-ready without further conversion.
+   */
+  async onObjectDetections(
+    callback: (event: ReolinkDetectionEvent) => void | Promise<void>,
+  ): Promise<void> {
+    this.objectDetectionListeners.add(callback);
+    this.logger.debug?.(
+      `[ReolinkBaichuanApi] onObjectDetections: registering listener (total=${this.objectDetectionListeners.size})`,
+    );
+    await this.ensureObjectDetectionStream();
+  }
+
+  /**
+   * Remove one detection callback, or all of them if `callback` is omitted.
+   * When the last listener is removed the auto-managed substream is closed.
+   */
+  async offObjectDetections(
+    callback?: (event: ReolinkDetectionEvent) => void | Promise<void>,
+  ): Promise<void> {
+    if (callback) {
+      this.objectDetectionListeners.delete(callback);
+    } else {
+      this.objectDetectionListeners.clear();
+    }
+    if (this.objectDetectionListeners.size === 0) {
+      await this.tearDownObjectDetectionStream();
+    }
+  }
+
+  private async ensureObjectDetectionStream(): Promise<void> {
+    if (this.objectDetectionStream) return;
+    if (this.objectDetectionStreamStartInFlight) {
+      await this.objectDetectionStreamStartInFlight;
+      return;
+    }
+    this.objectDetectionStreamStartInFlight = (async () => {
+      // Lazy require to avoid a circular import at module load time.
+      const { BaichuanVideoStream } = await import(
+        "../../baichuan/stream/BaichuanVideoStream"
+      );
+      const sessionKey = `live:object-detections:ch0:sub`;
+      const dedicated = await this.createDedicatedSession(sessionKey);
+      const stream = new BaichuanVideoStream({
+        client: dedicated.client,
+        api: this,
+        channel: 0,
+        profile: "sub",
+        logger: this.logger,
+      });
+      // Bridge `onDetection` to `onObjectDetections`. The internal listener
+      // forwards every event to every registered object-detection callback;
+      // we keep a reference so we can remove it on teardown.
+      this.objectDetectionInternalListener = (event: ReolinkDetectionEvent) => {
+        for (const cb of this.objectDetectionListeners) {
+          try {
+            void Promise.resolve(cb(event)).catch((e: unknown) => {
+              (this.logger.warn ?? this.logger.error).call(
+                this.logger,
+                "[ReolinkBaichuanApi] onObjectDetections handler error",
+                formatErrorForLog(e),
+              );
+            });
+          } catch (e) {
+            (this.logger.warn ?? this.logger.error).call(
+              this.logger,
+              "[ReolinkBaichuanApi] onObjectDetections handler error",
+              formatErrorForLog(e),
+            );
+          }
+        }
+      };
+      this.detectionEventListeners.add(this.objectDetectionInternalListener);
+      try {
+        await stream.start();
+      } catch (e) {
+        if (this.objectDetectionInternalListener) {
+          this.detectionEventListeners.delete(
+            this.objectDetectionInternalListener,
+          );
+          this.objectDetectionInternalListener = undefined;
+        }
+        await dedicated.release().catch(() => {});
+        throw e;
+      }
+      this.objectDetectionStream = {
+        stop: () => stream.stop(),
+        release: () => dedicated.release(),
+      };
+      this.logger.debug?.(
+        `[ReolinkBaichuanApi] onObjectDetections: substream started (key=${sessionKey})`,
+      );
+    })();
+    try {
+      await this.objectDetectionStreamStartInFlight;
+    } finally {
+      this.objectDetectionStreamStartInFlight = undefined;
+    }
+  }
+
+  private async tearDownObjectDetectionStream(): Promise<void> {
+    const handle = this.objectDetectionStream;
+    this.objectDetectionStream = undefined;
+    if (this.objectDetectionInternalListener) {
+      this.detectionEventListeners.delete(this.objectDetectionInternalListener);
+      this.objectDetectionInternalListener = undefined;
+    }
+    if (!handle) return;
+    try {
+      await handle.stop();
+    } catch (e) {
+      this.logger.debug?.(
+        `[ReolinkBaichuanApi] onObjectDetections: stream stop error: ${formatErrorForLog(e)}`,
+      );
+    }
+    try {
+      await handle.release();
+    } catch (e) {
+      this.logger.debug?.(
+        `[ReolinkBaichuanApi] onObjectDetections: session release error: ${formatErrorForLog(e)}`,
+      );
+    }
+    this.logger.debug?.(
+      `[ReolinkBaichuanApi] onObjectDetections: substream torn down`,
+    );
+  }
+
+  /**
+   * Internal: invoked by BaichuanVideoStream when it starts so the API can hook
+   * its `additionalHeader` event. Returns a teardown function the stream calls
+   * on stop. Not intended for direct use by consumers.
+   */
+  _registerVideoStreamForDetection(stream: {
+    on: (event: "additionalHeader", listener: (info: {
+      raw: Buffer;
+      frameType: "Iframe" | "Pframe";
+      videoType: "H264" | "H265";
+      microseconds: number;
+      frameWidth?: number;
+      frameHeight?: number;
+    }) => void) => void;
+    off: (event: "additionalHeader", listener: (info: {
+      raw: Buffer;
+      frameType: "Iframe" | "Pframe";
+      videoType: "H264" | "H265";
+      microseconds: number;
+      frameWidth?: number;
+      frameHeight?: number;
+    }) => void) => void;
+  }, context: { channel: number; profile: "main" | "sub" | "ext" }): () => void {
+    const listener = (info: {
+      raw: Buffer;
+      frameType: "Iframe" | "Pframe";
+      videoType: "H264" | "H265";
+      microseconds: number;
+      frameWidth?: number;
+      frameHeight?: number;
+    }): void => {
+      if (this.detectionEventListeners.size === 0) return;
+      const decoded = decodeDetectionHeader(info.raw, info.frameType);
+      const event: ReolinkDetectionEvent = {
+        channel: context.channel,
+        microseconds: info.microseconds,
+        profile: context.profile,
+        boxes: decoded.boxes,
+        ...(info.frameWidth !== undefined ? { frameWidth: info.frameWidth } : {}),
+        ...(info.frameHeight !== undefined ? { frameHeight: info.frameHeight } : {}),
+        decodeState: decoded.state,
+        rawHeader: info.raw,
+      };
+      this.dispatchDetectionEvent(event);
+    };
+    stream.on("additionalHeader", listener);
+    const teardown = (): void => {
+      stream.off("additionalHeader", listener);
+      this.detectionEventStreamHooks.delete(stream);
+    };
+    this.detectionEventStreamHooks.set(stream, teardown);
+    return teardown;
+  }
+
+  private dispatchDetectionEvent(evt: ReolinkDetectionEvent): void {
+    for (const cb of this.detectionEventListeners) {
+      try {
+        void Promise.resolve(cb(evt)).catch((e: unknown) => {
+          (this.logger.warn ?? this.logger.error).call(
+            this.logger,
+            "[ReolinkBaichuanApi] onDetection handler error",
+            formatErrorForLog(e),
+          );
+        });
+      } catch (e) {
+        (this.logger.warn ?? this.logger.error).call(
+          this.logger,
+          "[ReolinkBaichuanApi] onDetection handler error",
+          formatErrorForLog(e),
+        );
+      }
+    }
+  }
+
   private startSimpleEventResubscribeTimer(): void {
     if (this.simpleEventResubscribeTimer) return;
     if (this.simpleEventListeners.size === 0) return;
@@ -3364,6 +3640,9 @@ export class ReolinkBaichuanApi {
     // Stop event watchdog and resubscribe timer
     this.stopSimpleEventWatchdog();
     this.stopSimpleEventResubscribeTimer();
+    // Tear down the auto-managed object-detection substream, if any.
+    this.objectDetectionListeners.clear();
+    await this.tearDownObjectDetectionStream().catch(() => {});
     // Stop all RTSP servers before closing the client
     await this.cleanup();
     // Stop all active video streams on the main client before logout/close
@@ -12175,27 +12454,32 @@ export class ReolinkBaichuanApi {
 
   /**
    * SetEnc via Baichuan (cmdId=57). Read-modify-write — preserves
-   * unspecified fields. Mirrors reolink_aio's `SetEnc`.
+   * unspecified fields. Mirrors reolink_aio's `SetEnc` plus the additional
+   * `width`/`height`/`encoderType`/`encoderProfile`/`gop`/`thirdStream`
+   * fields observed in the official mobile app (see `pcap/resolution.pcapng`).
+   *
+   * Field meaning per stream:
+   *  - `audio`           — 0/1 toggle
+   *  - `width`/`height`  — resolution in pixels. Must be one of the
+   *                        resolutions returned by {@link getStreamInfoList}.
+   *  - `bitRate`         — kbps. Must match the table from `getStreamInfoList`.
+   *  - `frameRate`       — fps. Must match the table from `getStreamInfoList`.
+   *  - `videoEncType`    — `"h264"` or `"h265"`
+   *  - `encoderType`     — `"vbr"` or `"cbr"`
+   *  - `encoderProfile`  — `"high"`, `"main"`, or `"baseline"`
+   *  - `gop`             — keyframe interval in seconds (sets `<gop><cur>`)
    *
    * @param channel - Channel number (0-based)
-   * @param patch - Fields to update on `mainStream` and/or `subStream`,
-   *   plus a top-level `audio` toggle (0/1). Pass only what you want
-   *   to change.
+   * @param patch - Fields to update. Pass only the fields you want to change;
+   *   everything else is preserved from the device's current configuration.
    */
   async setEnc(
     channel: number,
     patch: {
       audio?: 0 | 1;
-      mainStream?: {
-        bitRate?: number;
-        frameRate?: number;
-        videoEncType?: "h264" | "h265";
-      };
-      subStream?: {
-        bitRate?: number;
-        frameRate?: number;
-        videoEncType?: "h264" | "h265";
-      };
+      mainStream?: EncStreamPatch;
+      subStream?: EncStreamPatch;
+      thirdStream?: EncStreamPatch;
     },
     options?: { timeoutMs?: number },
   ): Promise<void> {
@@ -12214,6 +12498,7 @@ export class ReolinkBaichuanApi {
     }
     xml = applyStreamPatch(xml, "mainStream", patch.mainStream);
     xml = applyStreamPatch(xml, "subStream", patch.subStream);
+    xml = applyStreamPatch(xml, "thirdStream", patch.thirdStream);
 
     await this.sendXml({
       cmdId: BC_CMD_ID_SET_ENC,
@@ -13334,6 +13619,24 @@ export class ReolinkBaichuanApi {
     });
 
     return { streams };
+  }
+
+  /**
+   * Return the set of values `setEnc` will accept on each stream of `channel`.
+   * Aggregates `getStreamInfoList` (cmd_146) into a UI-friendly shape:
+   * per-stream resolutions with their allowed codecs/framerates/bitrates plus
+   * the enumerated encoder modes/profiles Reolink exposes.
+   *
+   * Useful for populating selectors and validating user input before calling
+   * `setEnc` — picking an unsupported combination causes the camera to reject
+   * the SET_ENC command (responseCode != 200).
+   */
+  async getEncOptions(
+    channel: number,
+    options?: { timeoutMs?: number },
+  ): Promise<EncOptions> {
+    const list = await this.getStreamInfoList(channel, options);
+    return buildEncOptions(list, channel);
   }
 
   async getLedState(

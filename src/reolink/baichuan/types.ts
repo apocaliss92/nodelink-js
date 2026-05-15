@@ -667,6 +667,64 @@ export interface ReolinkSimpleEvent {
   battery?: Partial<BatteryInfo>;
 }
 
+/**
+ * A single detection bounding box in normalized [0, 1] coordinates relative to
+ * the source video frame. Using fractions instead of pixels keeps the same box
+ * valid across mainStream / subStream / externStream output and across firmware
+ * resolution changes.
+ */
+export interface ReolinkDetectionBox {
+  /** Left edge in [0, 1] (0 = left, 1 = right). */
+  x: number;
+  /** Top edge in [0, 1] (0 = top, 1 = bottom). */
+  y: number;
+  /** Width in [0, 1]. */
+  width: number;
+  /** Height in [0, 1]. */
+  height: number;
+  /** AI class label if the camera reports one (e.g. "person", "vehicle"). */
+  label?: string;
+  /** Confidence in [0, 1] if exposed by the camera. */
+  confidence?: number;
+}
+
+/**
+ * Diagnostic state describing how much of the BcMedia additionalHeader the
+ * decoder was able to interpret. Useful for consumers iterating on the format.
+ */
+export type ReolinkDetectionDecodeState =
+  /** Header marker was missing or malformed. */
+  | "invalid-marker"
+  /** Baseline 128-byte header — camera reports no overlay metadata. */
+  | "no-overlay"
+  /** Overlay block present, but coordinates have not been decoded yet. */
+  | "overlay-undecoded"
+  /** Overlay block decoded successfully. */
+  | "overlay-decoded";
+
+/**
+ * High-level "detection" event emitted alongside every video frame that carries
+ * a non-empty BcMedia additionalHeader. Mirrors `ReolinkSimpleEvent` but is
+ * sourced from the streaming side-channel rather than from cmd_id 33 push events.
+ */
+export interface ReolinkDetectionEvent {
+  channel: number;
+  /** Microseconds timestamp from the BcMedia video frame. */
+  microseconds: number;
+  /** Stream profile that produced the underlying frame. */
+  profile: "main" | "sub" | "ext";
+  /** Boxes in [0, 1] fractional coordinates. */
+  boxes: ReolinkDetectionBox[];
+  /** Source frame width (from BcMedia InfoV1/V2) if known. */
+  frameWidth?: number;
+  /** Source frame height (from BcMedia InfoV1/V2) if known. */
+  frameHeight?: number;
+  /** Decoder diagnostic state. */
+  decodeState: ReolinkDetectionDecodeState;
+  /** Raw additionalHeader bytes — kept for downstream decoder work. */
+  rawHeader: Buffer;
+}
+
 export interface TwoWayAudioConfig {
   channel: number;
   enabled: boolean;
@@ -1349,6 +1407,74 @@ export interface CompressionStream {
   gop?: { cur?: number; max?: number; min?: number } | undefined;
   encoderType?: string | undefined;
   [key: string]: unknown;
+}
+
+/**
+ * One allowable resolution from a `getEncOptions` reply.
+ * `videoEncTypeList` enumerates the codecs supported at this resolution
+ * (mapped to `"h264"`/`"h265"`).
+ */
+export interface EncResolutionOption {
+  width: number;
+  height: number;
+  /** Codecs available at this resolution. */
+  videoEncTypes: Array<"h264" | "h265">;
+  /** Camera-default framerate at this resolution, if reported. */
+  defaultFramerate?: number;
+  /** Camera-default bitrate (kbps) at this resolution, if reported. */
+  defaultBitrate?: number;
+  /** Camera-default GOP at this resolution, if reported. */
+  defaultGop?: number;
+  /** Allowed framerate values. */
+  framerateOptions: number[];
+  /** Allowed bitrate values (kbps). */
+  bitrateOptions: number[];
+}
+
+/**
+ * Allowable values for a single stream profile (mainStream / subStream / thirdStream).
+ * Aggregated from `getStreamInfoList` (cmd_146) so consumers can populate UI
+ * pickers without re-implementing the parsing logic.
+ */
+export interface EncStreamOptions {
+  /** Stream profile (one of `mainStream` / `subStream` / `thirdStream`). */
+  type: string;
+  /** Each entry is a `{width, height}` paired with its allowed values. */
+  resolutions: EncResolutionOption[];
+  /** Encoder rate-control modes Reolink exposes in the app. */
+  encoderTypes: Array<"vbr" | "cbr">;
+  /** Encoder profiles Reolink exposes in the app. */
+  encoderProfiles: Array<"high" | "main" | "baseline">;
+}
+
+/**
+ * Reply from `getEncOptions` — the set of allowable values for `setEnc`,
+ * derived from `getStreamInfoList`. Use this to validate user input or
+ * populate UI selectors.
+ */
+export interface EncOptions {
+  channel: number;
+  mainStream?: EncStreamOptions;
+  subStream?: EncStreamOptions;
+  thirdStream?: EncStreamOptions;
+}
+
+/**
+ * Patch payload accepted by `setEnc` for a single stream block
+ * (`mainStream` / `subStream` / `thirdStream`). All fields optional —
+ * unspecified ones are preserved from the device's current config.
+ */
+export interface EncStreamPatch {
+  audio?: 0 | 1;
+  width?: number;
+  height?: number;
+  bitRate?: number;
+  frameRate?: number;
+  videoEncType?: "h264" | "h265";
+  encoderType?: "vbr" | "cbr";
+  encoderProfile?: "high" | "main" | "baseline";
+  /** Keyframe interval in seconds — patches `<gop><cur>`. */
+  gop?: number;
 }
 
 /**

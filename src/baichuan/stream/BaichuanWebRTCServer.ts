@@ -37,6 +37,7 @@ import type { ReolinkBaichuanApi } from "../../reolink/baichuan/ReolinkBaichuanA
 import type { NativeVideoStreamVariant } from "../../reolink/baichuan/types";
 import { createNativeStream, Intercom } from "../../rfc/helpers";
 import { detectVideoCodecFromNal } from "./BcMediaAnnexBDecoder";
+import { AacToOpusTranscoder } from "./AacToOpusTranscoder";
 import {
   convertToAnnexB as convertH264ToAnnexB,
   isH264KeyframeAnnexB,
@@ -72,6 +73,12 @@ export interface BaichuanWebRTCServerOptions {
   iceAdditionalHostAddresses?: string[];
   /** Force relay-only (TURN) if needed */
   iceTransportPolicy?: "all" | "relay";
+  /**
+   * Path to ffmpeg used for AAC → Opus audio transcoding. Defaults to
+   * "ffmpeg" on PATH. Pass an empty string to disable audio (the audio track
+   * will still appear in the SDP for SDP-stability, but stay silent).
+   */
+  ffmpegPath?: string;
   /** Logger callback */
   logger?: (
     level: "debug" | "info" | "warn" | "error",
@@ -125,6 +132,15 @@ interface WebRTCSession {
   lastH265Sps?: Buffer | null;
   lastH265Pps?: Buffer | null;
   hasReceivedKeyframe?: boolean; // Track if we've received an IDR frame
+  // AAC → Opus transcoder for the audio track. Lazy-spun on the first audio
+  // frame so non-audio sessions don't fork an ffmpeg process.
+  audioTranscoder?: AacToOpusTranscoder | null;
+  // RTP sequence + timestamp counters for the audio track. ffmpeg's RTP
+  // output uses its own SSRC, so we extract just the opus payload and rewrap
+  // it with our audio track's SSRC and our own monotonic seq.
+  audioRtpSequence?: number;
+  audioRtpTimestampBase?: number;
+  audioStartedLogged?: boolean;
   createdAt: Date;
   state: "connecting" | "connected" | "disconnected" | "failed";
   stats: {
@@ -531,6 +547,17 @@ export class BaichuanWebRTCServer extends EventEmitter {
       session.dataChannel = null;
     }
 
+    // Stop audio transcoder (kills the per-session ffmpeg subprocess and
+    // closes the UDP loopback socket).
+    if (session.audioTranscoder) {
+      try {
+        await session.audioTranscoder.stop();
+      } catch (err) {
+        this.log("debug", `Error stopping audio transcoder: ${err}`);
+      }
+      session.audioTranscoder = null;
+    }
+
     // Call cleanup if defined
     if (session.cleanup) {
       session.cleanup();
@@ -684,10 +711,30 @@ export class BaichuanWebRTCServer extends EventEmitter {
         }
 
         if (frame.audio) {
-          // Audio frame - would need transcoding to Opus for WebRTC
-          // For now, track stats only
-          // TODO: Implement AAC/ADPCM to Opus transcoding
+          // Audio frame from the camera (AAC ADTS or ADPCM). Hand off to the
+          // ffmpeg-backed transcoder, which decodes + re-encodes to Opus and
+          // returns RTP-ready packets via the `packet` event.
           session.stats.audioFrames++;
+          if (session.stats.audioFrames === 1) {
+            const head =
+              frame.data && frame.data.length > 0
+                ? frame.data.subarray(0, Math.min(8, frame.data.length)).toString("hex")
+                : "(empty)";
+            this.log(
+              "info",
+              `First audio frame for ${session.id}: codec=${frame.codec ?? "?"} bytes=${frame.data?.length ?? 0} head=${head}`,
+            );
+          }
+          if (
+            this.options.ffmpegPath !== "" &&
+            frame.data &&
+            frame.data.length > 0
+          ) {
+            // ADPCM is uncommon on the cameras we've tested — start with AAC
+            // only; ADPCM support can be added by switching the input format.
+            await this.ensureAudioTranscoder(session, werift);
+            session.audioTranscoder?.feedAac(frame.data);
+          }
         } else {
           // Video frame
           if (frame.data) {
@@ -777,12 +824,13 @@ export class BaichuanWebRTCServer extends EventEmitter {
               }
             }
 
-            // Log progress every 5 seconds
+            // Log progress every 5 seconds (now includes audio frame counter
+            // so we can see whether the camera ever yields audio at all).
             const now = Date.now();
             if (now - lastLogTime >= 5000) {
               this.log(
                 "debug",
-                `WebRTC session ${session.id} [${session.videoCodec}]: sent ${session.stats.videoFrames} frames, ${packetsSentSinceLastLog} packets, ${Math.round(session.stats.bytesSent / 1024)} KB`,
+                `WebRTC session ${session.id} [${session.videoCodec}]: sent ${session.stats.videoFrames} video frames, ${packetsSentSinceLastLog} packets, ${Math.round(session.stats.bytesSent / 1024)} KB | audio frames=${session.stats.audioFrames}`,
               );
               lastLogTime = now;
               packetsSentSinceLastLog = 0;
@@ -798,6 +846,94 @@ export class BaichuanWebRTCServer extends EventEmitter {
     }
 
     this.log("info", `Native stream ended for session ${session.id}`);
+  }
+
+  /**
+   * Lazily start the AAC → Opus transcoder for `session` and wire it to the
+   * audio RTP track. ffmpeg writes RTP-formatted Opus packets back to a UDP
+   * loopback the transcoder owns; we strip the RTP header and rewrap the
+   * Opus payload with our audioTrack's SSRC so the browser receives a
+   * coherent stream.
+   */
+  private async ensureAudioTranscoder(
+    session: WebRTCSession,
+    werift: any,
+  ): Promise<void> {
+    if (session.audioTranscoder !== undefined) return;
+
+    const { RtpPacket, RtpHeader } = werift;
+    const ssrc = session.audioTrack?.ssrc ?? Math.floor(Math.random() * 0xffffffff);
+
+    const transcoder = new AacToOpusTranscoder({
+      ...(this.options.ffmpegPath ? { ffmpegPath: this.options.ffmpegPath } : {}),
+      logger: (level, msg) => this.log(level, msg),
+    });
+
+    session.audioRtpSequence = Math.floor(Math.random() * 0xffff);
+    session.audioRtpTimestampBase = 0;
+
+    transcoder.on("packet", ({ payload, timestamp, marker }) => {
+      try {
+        // Anchor the RTP timestamp to the first packet so the value space we
+        // send to the browser starts near 0 (avoids negative jitter buffer
+        // effects) and stays consistent across reconnects.
+        if (
+          session.audioRtpTimestampBase === undefined ||
+          session.audioRtpTimestampBase === 0
+        ) {
+          session.audioRtpTimestampBase = timestamp;
+        }
+        const localTs = (timestamp - session.audioRtpTimestampBase) >>> 0;
+        const seq = session.audioRtpSequence!;
+        session.audioRtpSequence = (seq + 1) & 0xffff;
+
+        const header = new RtpHeader({
+          version: 2,
+          padding: false,
+          extension: false,
+          marker,
+          // Werift assigns 111 to Opus by default in the receiver SDP, but it
+          // also accepts other PTs. Use 111 for compatibility with the offer
+          // we generated earlier.
+          payloadType: 111,
+          sequenceNumber: seq,
+          timestamp: localTs,
+          ssrc,
+        });
+        const rtp = new RtpPacket(header, payload);
+        session.audioTrack?.writeRtp(rtp);
+        if (!session.audioStartedLogged) {
+          session.audioStartedLogged = true;
+          this.log(
+            "info",
+            `Audio RTP started for ${session.id} (PT=111, ssrc=${ssrc})`,
+          );
+        }
+      } catch (err) {
+        this.log(
+          "warn",
+          `audio writeRtp failed for ${session.id}: ${(err as Error).message}`,
+        );
+      }
+    });
+
+    transcoder.on("error", (err) => {
+      this.log("error", `audio transcoder error for ${session.id}: ${err.message}`);
+    });
+    transcoder.on("exit", (code) => {
+      this.log("info", `audio transcoder exited (${code}) for ${session.id}`);
+    });
+
+    try {
+      await transcoder.start();
+      session.audioTranscoder = transcoder;
+    } catch (err) {
+      this.log(
+        "error",
+        `failed to start audio transcoder for ${session.id}: ${(err as Error).message}`,
+      );
+      session.audioTranscoder = null;
+    }
   }
 
   /**
@@ -1164,27 +1300,32 @@ export class BaichuanWebRTCServer extends EventEmitter {
       );
     }
 
-    // Send via DataChannel (may need to chunk for large frames)
-    const MAX_CHUNK_SIZE = 16000; // Safe size for DataChannel
+    // Send via DataChannel as a sequence of chunks. Every binary message
+    // carries a uniform 4-byte chunk header so the client can reassemble
+    // without ambiguity:
+    //   [0..1] chunk index      (u16 BE)
+    //   [2..3] total chunks     (u16 BE)
+    //
+    // Single-chunk frames are sent as `[0, 1]` so the wire format is consistent
+    // — important for H.265 where a 4K IDR frame can run 400KB and is always
+    // chunked, while inter-frames may fit in one message. Without a uniform
+    // header the client would have no way to tell which is which.
+    const CHUNK_HEADER_LEN = 4;
+    const MAX_PAYLOAD_PER_CHUNK = 16000 - CHUNK_HEADER_LEN;
 
     try {
-      if (packet.length <= MAX_CHUNK_SIZE) {
-        session.videoDataChannel.send(packet);
-      } else {
-        // Chunk large frames
-        const totalChunks = Math.ceil(packet.length / MAX_CHUNK_SIZE);
-        for (let i = 0; i < totalChunks; i++) {
-          const start = i * MAX_CHUNK_SIZE;
-          const end = Math.min(start + MAX_CHUNK_SIZE, packet.length);
-          const chunk = packet.subarray(start, end);
-
-          // Prepend chunk header: [chunk index (1)] [total chunks (1)] [data...]
-          const chunkHeader = Buffer.alloc(2);
-          chunkHeader.writeUInt8(i, 0);
-          chunkHeader.writeUInt8(totalChunks, 1);
-
-          session.videoDataChannel.send(Buffer.concat([chunkHeader, chunk]));
-        }
+      const totalChunks = Math.max(
+        1,
+        Math.ceil(packet.length / MAX_PAYLOAD_PER_CHUNK),
+      );
+      for (let i = 0; i < totalChunks; i++) {
+        const start = i * MAX_PAYLOAD_PER_CHUNK;
+        const end = Math.min(start + MAX_PAYLOAD_PER_CHUNK, packet.length);
+        const chunk = packet.subarray(start, end);
+        const chunkHeader = Buffer.alloc(CHUNK_HEADER_LEN);
+        chunkHeader.writeUInt16BE(i, 0);
+        chunkHeader.writeUInt16BE(totalChunks, 2);
+        session.videoDataChannel.send(Buffer.concat([chunkHeader, chunk]));
       }
       return true;
     } catch (err) {

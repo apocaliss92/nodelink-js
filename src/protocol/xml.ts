@@ -429,6 +429,25 @@ export function applyXmlTagPatch(
 }
 
 /**
+ * Like {@link applyXmlTagPatch} but inserts the tag at the end of the block
+ * when it is not already present. Required for fields the camera omits on
+ * GET responses but expects on SET (e.g. `<encoderType>` on `setEnc`).
+ */
+export function upsertXmlTag(
+  xml: string,
+  tag: string,
+  value: string | number | boolean | undefined,
+): string {
+  if (value === undefined) return xml;
+  const v = typeof value === "boolean" ? (value ? 1 : 0) : value;
+  const re = new RegExp(`<${tag}>[^<]*</${tag}>`);
+  if (re.test(xml)) {
+    return xml.replace(re, `<${tag}>${v}</${tag}>`);
+  }
+  return `${xml}<${tag}>${v}</${tag}>`;
+}
+
+/**
  * Patch a child tag inside a named parent block. Used for nested
  * structures like `<DayNight><mode>...</mode></DayNight>` where the
  * same `<mode>` tag appears under multiple parents.
@@ -449,19 +468,31 @@ export function patchNestedTag(
 }
 
 /**
- * Patch one or more fields inside an `<Enc>` stream block
- * (`<mainStream>` or `<subStream>`). Used by `setEnc` —
- * Reolink emits both blocks in the same document so a per-block scope
- * is needed to avoid clobbering the wrong stream.
+ * Patch fields inside a `<Compression>` stream block (`<mainStream>`,
+ * `<subStream>`, or `<thirdStream>`). Used by `setEnc` — Reolink emits all
+ * three blocks in the same document so a per-block scope is needed to avoid
+ * clobbering the wrong stream.
+ *
+ * The mapping `videoEncType` ↔ codec uses the convention seen on the wire:
+ *   0 = H.264
+ *   1 = H.265
+ * Both `<frame>` (camera-side preferred) and `<frameRate>` (older reolink_aio
+ * naming) are patched defensively — no-op if only one is present.
  */
 export function applyStreamPatch(
   xml: string,
-  streamTag: "mainStream" | "subStream",
+  streamTag: "mainStream" | "subStream" | "thirdStream",
   patch:
     | {
+        audio?: 0 | 1;
+        width?: number;
+        height?: number;
         bitRate?: number;
         frameRate?: number;
         videoEncType?: "h264" | "h265";
+        encoderType?: "vbr" | "cbr";
+        encoderProfile?: "high" | "main" | "baseline";
+        gop?: number;
       }
     | undefined,
 ): string {
@@ -471,19 +502,45 @@ export function applyStreamPatch(
   );
   return xml.replace(re, (_match, open: string, body: string, close: string) => {
     let next = body;
+    if (patch.audio !== undefined) {
+      next = applyXmlTagPatch(next, "audio", patch.audio);
+    }
+    if (patch.width !== undefined) {
+      next = applyXmlTagPatch(next, "width", patch.width);
+    }
+    if (patch.height !== undefined) {
+      next = applyXmlTagPatch(next, "height", patch.height);
+    }
     if (patch.bitRate !== undefined) {
       next = applyXmlTagPatch(next, "bitRate", patch.bitRate);
     }
     if (patch.frameRate !== undefined) {
-      // The Enc block uses `<frameRate>` for the value but reolink_aio
-      // also patches `<frame>` (older firmwares). Cover both — no-op
-      // if only one is present.
       next = applyXmlTagPatch(next, "frameRate", patch.frameRate);
       next = applyXmlTagPatch(next, "frame", patch.frameRate);
     }
     if (patch.videoEncType !== undefined) {
       const intVal = patch.videoEncType === "h265" ? 1 : 0;
       next = applyXmlTagPatch(next, "videoEncType", intVal);
+    }
+    if (patch.encoderType !== undefined) {
+      next = upsertXmlTag(next, "encoderType", patch.encoderType);
+    }
+    if (patch.encoderProfile !== undefined) {
+      next = upsertXmlTag(next, "encoderProfile", patch.encoderProfile);
+    }
+    if (patch.gop !== undefined) {
+      // gop has nested <cur>/<max>/<min> — only <cur> is writable.
+      const gopBlockRe = /(<gop[^>]*>)([\s\S]*?)(<\/gop>)/;
+      if (gopBlockRe.test(next)) {
+        next = next.replace(
+          gopBlockRe,
+          (_m, gOpen: string, gBody: string, gClose: string) =>
+            `${gOpen}${applyXmlTagPatch(gBody, "cur", patch.gop!)}${gClose}`,
+        );
+      } else {
+        // Sub/third streams sometimes omit <gop>; inject a minimal block.
+        next = `${next}<gop><cur>${patch.gop}</cur></gop>`;
+      }
     }
     return `${open}${next}${close}`;
   });

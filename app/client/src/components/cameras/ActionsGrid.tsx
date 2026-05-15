@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Move, Bell, Users, Plug, Bug, Download, Power, Trash2, ScrollText, Network } from 'lucide-react';
+import { Move, Bell, Users, Plug, Bug, Download, Power, Trash2, ScrollText, Network, RotateCw, Camera } from 'lucide-react';
 
 interface ActionsGridProps {
   onPtz: () => void;
@@ -9,9 +9,13 @@ interface ActionsGridProps {
   onConnect: () => void;
   onDebug: () => void;
   onDump: () => void;
+  onSnapshot: () => void;
+  onReboot: () => void;
   onDelete?: () => void;
   onConnection: () => void;
   dumping: boolean;
+  snapshotting: boolean;
+  rebooting: boolean;
   isConnected: boolean;
   connecting: boolean;
   autoStart: boolean;
@@ -27,9 +31,13 @@ export function ActionsGrid({
   onConnect,
   onDebug,
   onDump,
+  onSnapshot,
+  onReboot,
   onDelete,
   onConnection,
   dumping,
+  snapshotting,
+  rebooting,
   isConnected,
   connecting,
   autoStart,
@@ -37,6 +45,7 @@ export function ActionsGrid({
   onToggleAutoStart,
 }: ActionsGridProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmReboot, setConfirmReboot] = useState(false);
   const btnClass = "flex items-center justify-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[11px] hover:bg-[var(--color-surface-hover)] transition-colors disabled:opacity-50";
 
   return (
@@ -57,9 +66,34 @@ export function ActionsGrid({
         <button className={btnClass} onClick={onDump} disabled={dumping || !isConnected}>
           <Download size={13} /> {dumping ? 'Dumping...' : 'Dump'}
         </button>
+        <button className={`${btnClass} col-span-2`} onClick={onSnapshot} disabled={snapshotting || !isConnected}>
+          <Camera size={13} /> {snapshotting ? 'Capturing…' : 'Snapshot'}
+        </button>
         <button className={`${btnClass} col-span-2`} onClick={onToggleAutoStart} disabled={savingAutoStart || !isConnected}>
           <Power size={13} /> Auto-start: {autoStart ? 'ON' : 'OFF'}
         </button>
+        {confirmReboot ? (
+          <div className="col-span-2 flex gap-1.5">
+            <button
+              className={`${btnClass} flex-1 border-[var(--color-warning,#f59e0b)]/50 text-[var(--color-warning,#f59e0b)] hover:bg-[var(--color-warning,#f59e0b)]/10`}
+              onClick={() => { setConfirmReboot(false); onReboot(); }}
+              disabled={rebooting}
+            >
+              <RotateCw size={13} /> Confirm reboot
+            </button>
+            <button className={`${btnClass} flex-1`} onClick={() => setConfirmReboot(false)}>
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            className={`${btnClass} col-span-2 border-[var(--color-warning,#f59e0b)]/30 text-[var(--color-warning,#f59e0b)] hover:bg-[var(--color-warning,#f59e0b)]/10`}
+            onClick={() => setConfirmReboot(true)}
+            disabled={rebooting || !isConnected}
+          >
+            <RotateCw size={13} /> {rebooting ? 'Rebooting…' : 'Reboot camera'}
+          </button>
+        )}
         {onDelete && (confirmDelete ? (
           <div className="col-span-2 flex gap-1.5">
             <button

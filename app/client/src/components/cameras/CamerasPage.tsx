@@ -13,6 +13,8 @@ import { EventsFloatingContent } from './EventsFloatingContent';
 import { SessionsFloatingContent } from './SessionsFloatingContent';
 import { DeviceControlsContent } from './DeviceControlsContent';
 import { WebRTCInlinePlayer } from './WebRTCInlinePlayer';
+import { DetectionBoxOverlay } from './DetectionBoxOverlay';
+import { StreamFloatingPanel } from './StreamFloatingPanel';
 import { getStreamName, getWebrtcStreamName } from './utils';
 import { useCameras } from './hooks/useCameras';
 import { useSelectedCamera } from './hooks/useSelectedCamera';
@@ -261,24 +263,17 @@ export function CamerasPage() {
             (s) => s.cameraId === panel.camera.id && s.profile === panel.stream.profile,
           );
           return (
-            <FloatingPanel
+            <StreamFloatingPanel
               key={panel.id}
-              title={`${panel.camera.name || panel.camera.host} — ${panel.stream.profile}`}
-              onClose={() => closeFloatingPanel(panel.id)}
+              panelId={panel.id}
+              camera={panel.camera}
+              stream={panel.stream}
+              streamName={getWebrtcStreamName(panel.camera, panel.stream.profile, server)}
+              go2rtcApiPort={camerasHook.go2rtcApiPort}
+              serviceIp={camerasHook.serviceIp}
+              useNative={camerasHook.restreamer === "local"}
               offsetIndex={i}
-              defaultWidth={480}
-              defaultHeight={310}
-              minWidth={320}
-              minHeight={200}
-            >
-              <div className="h-full bg-black">
-                <WebRTCInlinePlayer
-                  streamName={getWebrtcStreamName(panel.camera, panel.stream.profile, server)}
-                  go2rtcApiPort={camerasHook.go2rtcApiPort}
-                  serviceIp={camerasHook.serviceIp}
-                />
-              </div>
-            </FloatingPanel>
+              onClose={() => closeFloatingPanel(panel.id)} />
           );
         }
 

@@ -131,6 +131,17 @@ export const SettingsSchema = z.object({
       icePortRange: z.string().default(""),
       // CSV list of IPs/hostnames to advertise in ICE candidates (empty disables)
       iceAdditionalHostAddresses: z.string().default(""),
+      /**
+       * Which WebRTC backend the live preview player uses:
+       *  - "auto" (default): go2rtc if running, otherwise the native pipeline.
+       *  - "go2rtc": always go2rtc — fail if it's down.
+       *  - "native": always BaichuanWebRTCServer (in-process). Required when
+       *    rendering per-frame detection-box overlays, since the native path
+       *    is the only one with deterministic frame timing.
+       */
+      preferredBackend: z
+        .enum(["auto", "go2rtc", "native"])
+        .default("auto"),
     })
     .default({}),
 

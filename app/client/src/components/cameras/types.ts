@@ -86,12 +86,16 @@ export type PreviewModalState =
       title: string;
       cameraName: string;
       profile: StreamProfile;
+      /** Camera id — required for the native WebRTC pipeline. */
+      cameraId?: string;
       /** go2rtc stream name for WHEP signaling. */
       streamName?: string;
       /** go2rtc API port for direct access. */
       go2rtcApiPort?: number | null;
       /** Service IP for building go2rtc URLs. */
       serviceIp?: string;
+      /** Force the native (in-process) WebRTC pipeline. Used when restreamer === "local". */
+      useNative?: boolean;
       mjpegUrl?: string;
       hlsUrl?: string;
     }

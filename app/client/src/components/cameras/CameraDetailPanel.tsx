@@ -90,6 +90,51 @@ export function CameraDetailPanel({
   const [sessionsTotal, setSessionsTotal] = useState(0);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [dumping, setDumping] = useState(false);
+  const [rebooting, setRebooting] = useState(false);
+  const [snapshotting, setSnapshotting] = useState(false);
+
+  const handleSnapshot = useCallback(async () => {
+    setSnapshotting(true);
+    try {
+      const url = withAuthTokenQuery(
+        `${window.location.origin}/api/cameras/${camera.id}/snapshot`,
+      );
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const blob = await resp.blob();
+      const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const filename = `${getCameraDisplayName(camera)}_${ts}.jpg`.replace(
+        /[^a-zA-Z0-9._-]/g,
+        "_",
+      );
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch (e) {
+      console.error("Snapshot failed:", e);
+    } finally {
+      setSnapshotting(false);
+    }
+  }, [camera]);
+
+  const handleReboot = useCallback(async () => {
+    setRebooting(true);
+    try {
+      await trpcMutation<{ success: boolean; message?: string }>(
+        "baichuan.reboot",
+        { cameraId: camera.id },
+      );
+    } catch (e) {
+      console.error("Reboot failed:", e);
+    } finally {
+      setRebooting(false);
+    }
+  }, [camera.id]);
 
   const handleDump = useCallback(async () => {
     setDumping(true);
@@ -284,8 +329,12 @@ export function CameraDetailPanel({
         onConnect={isConnected ? onDisconnect : onConnect}
         onDebug={onSetDebug}
         onDump={handleDump}
+        onSnapshot={handleSnapshot}
+        onReboot={handleReboot}
         onDelete={onDelete}
         dumping={dumping}
+        snapshotting={snapshotting}
+        rebooting={rebooting}
         isConnected={isConnected}
         connecting={connecting}
         autoStart={camera.autoStart}
