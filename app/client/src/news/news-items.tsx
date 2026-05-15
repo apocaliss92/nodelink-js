@@ -22,6 +22,28 @@ export interface NewsItem {
 
 export const NEWS_ITEMS: NewsItem[] = [
   {
+    id: "2026-05-15-talk-to-camera",
+    date: "2026-05-15",
+    title: "Talk to the camera from the browser",
+    body: (
+      <div className="space-y-2 text-sm text-[var(--color-foreground-muted)]">
+        <p>
+          The stream player gained two-way audio. While a native WebRTC
+          stream is open, a microphone button appears in the controls bar
+          — press it to start talking to the camera. Press it again to
+          stop.
+        </p>
+        <p>
+          The player also has dedicated{" "}
+          <strong className="text-[var(--color-foreground)]">play / stop</strong>{" "}
+          buttons now (no more auto-start surprises) and a proper{" "}
+          <strong className="text-[var(--color-foreground)]">fullscreen</strong>{" "}
+          toggle that works for both H.264 and H.265 streams.
+        </p>
+      </div>
+    ),
+  },
+  {
     id: "2026-05-15-webrtc-docs",
     date: "2026-05-15",
     title: "WebRTC endpoints documented",
