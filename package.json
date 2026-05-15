@@ -59,6 +59,7 @@
   "devDependencies": {
     "@eslint/js": "^9.0.0",
     "@microsoft/api-extractor": "^7.53.0",
+    "@types/lz4js": "^0.2.2",
     "@types/node": "^24.0.0",
     "@types/yazl": "^2.4.6",
     "eslint": "^9.0.0",
