@@ -11,6 +11,7 @@ interface CameraOpt {
   id: string;
   name: string;
   host: string;
+  status?: string;
 }
 
 interface CmdSeen {
@@ -93,13 +94,13 @@ export default function CapturePage() {
   useEffect(() => {
     void (async () => {
       try {
-        const [cfg, ifaceData] = await Promise.all([
-          trpcQuery<{ cameras: CameraOpt[] }>("config.get", {}),
+        const [camList, ifaceData] = await Promise.all([
+          trpcQuery<CameraOpt[]>("cameras.list", {}),
           trpcQuery<{ interfaces: NetIface[] }>("capture.listInterfaces", {}),
         ]);
-        setCameras(cfg.cameras ?? []);
+        setCameras(camList ?? []);
         setInterfaces(ifaceData.interfaces ?? []);
-        if (cfg.cameras?.[0]) setSelectedCamera(cfg.cameras[0].id);
+        if (camList?.[0]) setSelectedCamera(camList[0].id);
         if (ifaceData.interfaces?.[0]) setSelectedIface(ifaceData.interfaces[0].id);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
