@@ -9,6 +9,7 @@ import { SessionsPanel } from './SessionsPanel';
 import { SessionsDialog } from './SessionsDialog';
 import { CameraLogsPanel } from './CameraLogsPanel';
 import { ConnectionPanel } from './ConnectionPanel';
+import { StreamSettingsPanel } from './StreamSettingsPanel';
 import { useConnectionLogs } from './hooks/useConnectionLogs';
 import { trpcQuery, trpcMutation } from '../../api';
 import { withAuthTokenQuery, getCameraDisplayName, getStreamName, getWebrtcStreamName } from './utils';
@@ -77,6 +78,7 @@ export function CameraDetailPanel({
   const [showSessions, setShowSessions] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
   const [showConnection, setShowConnection] = useState(false);
+  const [showStreamSettings, setShowStreamSettings] = useState(false);
   const [sessionsDialogOpen, setSessionsDialogOpen] = useState(false);
 
   const connLogs = useConnectionLogs(showLogs ? camera.id : null);
@@ -325,6 +327,7 @@ export function CameraDetailPanel({
         onEvents={() => setShowEvents((v) => !v)}
         onSessions={() => setShowSessions((v) => !v)}
         onLogs={() => setShowLogs((v) => !v)}
+        onStreamSettings={() => setShowStreamSettings((v) => !v)}
         onConnection={() => setShowConnection((v) => !v)}
         onConnect={isConnected ? onDisconnect : onConnect}
         onDebug={onSetDebug}
@@ -376,6 +379,16 @@ export function CameraDetailPanel({
           camera={camera}
           onClose={() => setShowConnection(false)}
         />
+      )}
+
+      {showStreamSettings && (
+        <div className="mt-3">
+          <StreamSettingsPanel
+            cameraId={camera.id}
+            channel={camera.rtspChannel ?? 0}
+            onClose={() => setShowStreamSettings(false)}
+          />
+        </div>
       )}
 
       {showSessions && (

@@ -22,6 +22,49 @@ export interface NewsItem {
 
 export const NEWS_ITEMS: NewsItem[] = [
   {
+    id: "2026-05-15-packet-capture",
+    date: "2026-05-15",
+    title: "New: packet capture & analysis from a camera",
+    body: (
+      <div className="space-y-2 text-sm text-[var(--color-foreground-muted)]">
+        <p>
+          A new <strong className="text-[var(--color-foreground)]">Capture</strong>{" "}
+          page in the side menu starts a live wireshark/tshark capture against
+          a single camera. The page guides you through the steps:
+        </p>
+        <ul className="list-disc pl-5 space-y-1">
+          <li>Pick a camera + network interface and start the capture.</li>
+          <li>Open the Reolink app to perform the action you want to debug.</li>
+          <li>Watch known and unknown commands fill the live tables as the camera responds.</li>
+          <li>Stop and download a sanitized JSON or a redacted .pcapng — login bytes are wiped before either file leaves the server, the rest is preserved so we can reproduce the issue.</li>
+        </ul>
+        <p>
+          Past captures appear under{" "}
+          <strong className="text-[var(--color-foreground)]">Reports</strong> →
+          Packet Captures so you can re-download or delete them later.
+        </p>
+      </div>
+    ),
+  },
+  {
+    id: "2026-05-15-stream-settings",
+    date: "2026-05-15",
+    title: "Stream settings editor in the camera panel",
+    body: (
+      <div className="space-y-2 text-sm text-[var(--color-foreground-muted)]">
+        <p>
+          A new <strong className="text-[var(--color-foreground)]">Stream settings</strong>{" "}
+          button in the right detail panel lets you tweak resolution, codec,
+          frame rate, bitrate and audio for each profile.
+        </p>
+        <p>
+          Dropdowns are populated from what the camera actually reports as
+          supported (no more guessing values that the device will reject).
+        </p>
+      </div>
+    ),
+  },
+  {
     id: "2026-05-15-ai-detection-overlay",
     date: "2026-05-15",
     title: "AI detection boxes on the live stream",

@@ -54,8 +54,14 @@ FROM node:22-alpine AS production
 
 ARG TARGETARCH
 
-# Install ffmpeg for snapshot transcoding and su-exec for entrypoint
-RUN apk add --no-cache ffmpeg su-exec
+# Install ffmpeg for snapshot transcoding, su-exec for entrypoint, and tshark
+# for the in-app packet capture tool. tshark+dumpcap need CAP_NET_RAW +
+# CAP_NET_ADMIN to capture packets; we set them on the binaries so the
+# container's non-root nodejs user can use them without --privileged.
+# At runtime the container also needs the caps from `docker run` (or compose)
+# — see README for the recommended `--cap-add` / `--net=host` flags.
+RUN apk add --no-cache ffmpeg su-exec tshark libcap && \
+    setcap 'cap_net_raw,cap_net_admin+eip' /usr/bin/dumpcap || true
 
 WORKDIR /app
 

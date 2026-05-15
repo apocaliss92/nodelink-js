@@ -16,6 +16,12 @@ import { appLogger, logEmitter, LogEntry, getRecentLogs } from "./logger.js";
 import { getDumpZipPath } from "./routers/cameras.js";
 import { appRouter } from "./router.js";
 import {
+  buildSanitizedExport as buildSanitizedCaptureExport,
+  buildRedactedPcap,
+  getSavedCaptureSanitizedPath,
+  getSavedCaptureRawPcapPath,
+} from "./capture-manager.js";
+import {
   getAuthConfig,
   getAuthTokenFromRequest,
   getUserFromRequest,
@@ -507,6 +513,70 @@ app.get("/api/dump/:token", (req, res) => {
   res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
   res.setHeader("Content-Type", "application/zip");
   return res.sendFile(path.resolve(zipPath));
+});
+
+// Sanitized capture export (safe to attach to a GitHub issue).
+// JSON dump of header fields + redacted body previews. Two paths:
+//   1. live capture (still in-memory): rebuild on the fly
+//   2. persisted capture (after stop): serve the file from disk
+app.get("/api/capture/:id/export", (req, res) => {
+  const id = req.params.id as string;
+  const savedPath = getSavedCaptureSanitizedPath(id);
+  if (savedPath) {
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="nodelink-capture_${id}.json"`,
+    );
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    return res.sendFile(path.resolve(savedPath));
+  }
+  const exportData = buildSanitizedCaptureExport(id);
+  if (!exportData) {
+    return res.status(404).json({ error: "Capture not found" });
+  }
+  const safeName = (exportData.cameraDisplayName || "capture")
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .slice(0, 64);
+  const filename = `nodelink-capture_${safeName}_${exportData.captureId}.json`;
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  return res.send(JSON.stringify(exportData, null, 2));
+});
+
+// Redacted raw .pcapng (login bodies wiped, TCP checksums recomputed).
+// Includes the challenge nonce and encrypted bodies — fine to share for
+// debugging since nothing identifies the user beyond what was on the wire.
+app.get("/api/capture/:id/pcap", async (req, res) => {
+  const id = req.params.id as string;
+  const savedPath = getSavedCaptureRawPcapPath(id);
+  if (savedPath) {
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="nodelink-capture_${id}.pcapng"`,
+    );
+    res.setHeader("Content-Type", "application/vnd.tcpdump.pcap");
+    return res.sendFile(path.resolve(savedPath));
+  }
+  try {
+    const r = await buildRedactedPcap(id);
+    if (!r) {
+      return res.status(404).json({ error: "Capture not found" });
+    }
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${path.basename(r.path)}"`,
+    );
+    res.setHeader("Content-Type", "application/vnd.tcpdump.pcap");
+    res.setHeader(
+      "X-Nodelink-Redaction",
+      `loginFrames=${r.loginFramesRedacted}, bytes=${r.bytesRedacted}`,
+    );
+    return res.sendFile(path.resolve(r.path));
+  } catch (e) {
+    return res.status(500).json({
+      error: `Failed to redact pcap: ${(e as Error).message}`,
+    });
+  }
 });
 
 // Update check (GitHub Releases)

@@ -17,9 +17,27 @@ interface DumpEntry {
   createdAt: string;
 }
 
+interface CaptureReport {
+  id: string;
+  cameraDisplayName: string;
+  iface: string;
+  startedAt: number;
+  stoppedAt: number;
+  durationMs: number;
+  framesDecoded: number;
+  knownCmdCount: number;
+  unknownCmdCount: number;
+  phase: string;
+  hasRawPcap: boolean;
+  rawPcapBytes: number;
+  redactedBytes: number;
+  redactedLoginFrames: number;
+}
+
 export default function ReportsPage() {
   const [reports, setReports] = useState<ReportEntry[]>([]);
   const [dumps, setDumps] = useState<DumpEntry[]>([]);
+  const [captures, setCaptures] = useState<CaptureReport[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedReport, setExpandedReport] = useState<string | null>(null);
@@ -30,12 +48,14 @@ export default function ReportsPage() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [reportList, dumpList] = await Promise.all([
+      const [reportList, dumpList, captureList] = await Promise.all([
         trpcQuery<ReportEntry[]>("diagnostics.list", {}),
         trpcQuery<DumpEntry[]>("cameras.listDumps", {}),
+        trpcQuery<{ reports: CaptureReport[] }>("capture.listSaved", {}),
       ]);
       setReports(reportList);
       setDumps(dumpList);
+      setCaptures(captureList?.reports ?? []);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -132,7 +152,24 @@ export default function ReportsPage() {
   const deleteBtnClass =
     "border border-red-500/50 bg-red-500/[0.18] text-[var(--color-foreground)] px-2 py-1 rounded-[10px] cursor-pointer text-[11px] hover:bg-red-500/25 transition-colors disabled:opacity-60 disabled:cursor-not-allowed";
 
-  const isEmpty = !loading && reports.length === 0 && dumps.length === 0;
+  const deleteCapture = async (id: string) => {
+    if (!confirm("Delete this capture report?")) return;
+    setDeleting(id);
+    try {
+      await trpcMutation("capture.deleteSaved", { captureId: id });
+      setCaptures((prev) => prev.filter((c) => c.id !== id));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDeleting(null);
+    }
+  };
+
+  const isEmpty =
+    !loading &&
+    reports.length === 0 &&
+    dumps.length === 0 &&
+    captures.length === 0;
 
   return (
     <div className="p-4">
@@ -203,6 +240,70 @@ export default function ReportsPage() {
                   </button>
                 </div>
               </div>
+            </div>
+          ))}
+        </>
+      )}
+
+      {/* Packet Capture Reports */}
+      {captures.length > 0 && (
+        <>
+          <div className="mb-2 mt-4 text-[10px] uppercase tracking-wider text-[var(--color-foreground-subtle)]">
+            Packet Captures
+          </div>
+          {captures.map((c) => (
+            <div
+              key={c.id}
+              className="rounded-[14px] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 mb-2"
+            >
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-semibold text-[var(--color-foreground)]">
+                    {c.cameraDisplayName}
+                  </span>
+                  <span className="text-xs px-2 py-1 rounded-full border border-[var(--color-border)] bg-white/[0.04] text-[var(--color-foreground-muted)]">
+                    {c.iface}
+                  </span>
+                  <span className="text-xs px-2 py-1 rounded-full border border-[var(--color-border)] bg-white/[0.04] text-[var(--color-foreground-muted)]">
+                    {c.framesDecoded} frames
+                  </span>
+                  <span className="text-xs px-2 py-1 rounded-full border border-[var(--color-border)] bg-white/[0.04] text-[var(--color-foreground-muted)]">
+                    {c.knownCmdCount} known / {c.unknownCmdCount} unknown
+                  </span>
+                  <span className="text-[11px] text-[var(--color-foreground-muted)]">
+                    {new Date(c.startedAt).toLocaleString()} · {(c.durationMs / 1000).toFixed(0)}s
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <a
+                    className={btnClass}
+                    href={`/api/capture/${c.id}/export`}
+                  >
+                    JSON
+                  </a>
+                  {c.hasRawPcap && (
+                    <a
+                      className={btnClass}
+                      href={`/api/capture/${c.id}/pcap`}
+                    >
+                      PCAP {formatSize(c.rawPcapBytes)}
+                    </a>
+                  )}
+                  <button
+                    className={deleteBtnClass}
+                    disabled={deleting === c.id}
+                    onClick={() => void deleteCapture(c.id)}
+                  >
+                    {deleting === c.id ? "..." : "Delete"}
+                  </button>
+                </div>
+              </div>
+              {c.redactedLoginFrames > 0 && (
+                <div className="mt-2 text-[10px] text-[var(--color-foreground-muted)]">
+                  Redacted {c.redactedLoginFrames} login frame
+                  {c.redactedLoginFrames === 1 ? "" : "s"} ({c.redactedBytes} bytes wiped).
+                </div>
+              )}
             </div>
           ))}
         </>

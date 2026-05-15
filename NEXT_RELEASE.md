@@ -16,6 +16,9 @@
 
 ### Features
 
+- New **Capture** page (server + UI) drives a live tshark capture against a chosen camera, parses Baichuan frames in real time, classifies cmd_ids as known/unknown, and walks the user through the auth handshake checklist (started → nonce captured → login successful). Sanitized JSON export and redacted `.pcapng` export — login XML bodies wiped, TCP checksums recomputed, nonce kept so maintainers can decrypt locally. Past captures persist under Reports → Packet Captures.
+- Docker image now ships with `tshark` (Alpine package) and the `setcap` for `dumpcap`; compose file documents the `cap_add: NET_RAW, NET_ADMIN` requirement.
+- New **Stream settings** panel in the camera detail tab. Reads `getEncOptions` (cmd_146) + `getStreamMetadata` (cmd_56) and renders one editor per profile (main / sub / ext) with selectors populated only from values the camera reports as supported. Per-profile Apply button calls `setEnc` and re-reads on success.
 - New `api.onObjectDetections(cb)` / `offObjectDetections(cb?)` API mirroring `onSimpleEvent`. Reference-counted lifecycle: opens a dedicated substream on the first listener and closes it with the last. Every event carries the AI class label (people / vehicle / animal / face), confidence and normalized box coordinates — no need to manage a video stream yourself.
 - Decoded AI Mark `additionalHeader` (TLV chain + LZ4F-compressed inner payload) end-to-end. Boxes are now emitted with class label and confidence, mirroring the SDK's own dispatch via the static `s_tlv_types_map` table.
 - Manager UI: reboot camera button in the right detail panel (with confirmation step).

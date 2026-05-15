@@ -10,7 +10,9 @@ import { go2rtcRouter } from "./routers/go2rtc.js";
 import { frigateRouter } from "./routers/frigate.js";
 import { diagnosticsRouter } from "./routers/diagnostics.js";
 import { webrtcRouter } from "./routers/webrtc.js";
+import { captureRouter } from "./routers/capture.js";
 export const appRouter = router({
+  capture: captureRouter,
   config: configRouter,
   baichuan: baichuanRouter,
   cameras: camerasRouter,

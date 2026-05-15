@@ -12,6 +12,7 @@ import LogsPage from "./pages/LogsPage";
 import SettingsPage from "./pages/SettingsPage";
 import DocsPage from "./pages/DocsPage";
 import ReportsPage from "./pages/ReportsPage";
+import CapturePage from "./pages/CapturePage";
 import WebRTCPreviewPage from "./pages/WebRTCPreviewPage";
 import LoginPage from "./pages/LoginPage";
 import { fetchUpdates, trpcQuery, type UpdateInfo } from "./api";
@@ -89,6 +90,7 @@ function AppInner() {
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/docs" element={<DocsPage />} />
         <Route path="/reports" element={<ReportsPage />} />
+        <Route path="/capture" element={<CapturePage />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />

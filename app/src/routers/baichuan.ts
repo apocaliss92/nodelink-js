@@ -375,6 +375,74 @@ export const baichuanRouter = router({
       return await api.getStreamMetadata(input.channel);
     }),
 
+  getEncOptions: publicProcedure
+    .meta({
+      description:
+        "Allowed values for setEnc on each stream profile (codecs, resolutions, bitrates, framerates).",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getEncOptions(input.channel);
+    }),
+
+  setEnc: publicProcedure
+    .meta({
+      description:
+        "Update one or more stream profiles' encoding parameters. Only the supplied fields are changed.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        audio: z.union([z.literal(0), z.literal(1)]).optional(),
+        mainStream: z
+          .object({
+            audio: z.union([z.literal(0), z.literal(1)]).optional(),
+            width: z.number().int().positive().optional(),
+            height: z.number().int().positive().optional(),
+            bitRate: z.number().int().positive().optional(),
+            frameRate: z.number().int().positive().optional(),
+            videoEncType: z.enum(["h264", "h265"]).optional(),
+            encoderType: z.enum(["vbr", "cbr"]).optional(),
+            encoderProfile: z.enum(["high", "main", "baseline"]).optional(),
+            gop: z.number().int().positive().optional(),
+          })
+          .optional(),
+        subStream: z
+          .object({
+            audio: z.union([z.literal(0), z.literal(1)]).optional(),
+            width: z.number().int().positive().optional(),
+            height: z.number().int().positive().optional(),
+            bitRate: z.number().int().positive().optional(),
+            frameRate: z.number().int().positive().optional(),
+            videoEncType: z.enum(["h264", "h265"]).optional(),
+            encoderType: z.enum(["vbr", "cbr"]).optional(),
+            encoderProfile: z.enum(["high", "main", "baseline"]).optional(),
+            gop: z.number().int().positive().optional(),
+          })
+          .optional(),
+        thirdStream: z
+          .object({
+            audio: z.union([z.literal(0), z.literal(1)]).optional(),
+            width: z.number().int().positive().optional(),
+            height: z.number().int().positive().optional(),
+            bitRate: z.number().int().positive().optional(),
+            frameRate: z.number().int().positive().optional(),
+            videoEncType: z.enum(["h264", "h265"]).optional(),
+            encoderType: z.enum(["vbr", "cbr"]).optional(),
+            encoderProfile: z.enum(["high", "main", "baseline"]).optional(),
+            gop: z.number().int().positive().optional(),
+          })
+          .optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      const { channel, cameraId: _ignored, ...patch } = input;
+      void _ignored;
+      await api.setEnc(channel, patch);
+      return { success: true };
+    }),
+
   // ============ NETWORK ============
 
   getNetworkInfo: publicProcedure

@@ -43,6 +43,14 @@ services:
       # WebRTC / ICE (bridge mode)
       # Configure in Settings → WebRTC (ICE)
 
+    # Required for the in-app packet capture tool (tshark/dumpcap). Without
+    # these caps the Capture page can list interfaces but Start will fail
+    # with "permission denied". `network_mode: host` above also exposes the
+    # host's interfaces (en0/eth0/...) so the capture sees real camera traffic.
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+
     # Healthcheck inherited from Dockerfile
 
     logging:
