@@ -22,10 +22,28 @@ import { SMTPServer, type SMTPServerSession } from "smtp-server";
 import { simpleParser, type ParsedMail, type Attachment } from "mailparser";
 import fs from "node:fs";
 import path from "node:path";
-import { EventEmitter } from "node:events";
 import { createSelfSignedTlsCert } from "./email-push-tls.js";
 import { createSourceLogger } from "./logger.js";
 import { getSettings } from "./settings-store.js";
+import {
+  emitEmailPushEvent,
+  getEmailPushCameraResolver,
+  getRecentEmailPushEvents,
+  onEmailPushEvent,
+  setEmailPushCameraResolver,
+  setRecentEventsPerCamera,
+  type EmailPushEvent,
+  type EmailPushInferredType,
+} from "./email-push-bus.js";
+
+// Re-export bus surface so callers don't need to know the file split.
+export {
+  onEmailPushEvent,
+  setEmailPushCameraResolver,
+  getRecentEmailPushEvents,
+  type EmailPushEvent,
+  type EmailPushInferredType,
+};
 
 const logger = createSourceLogger("email-push");
 
@@ -35,29 +53,10 @@ const SNAPSHOT_ROOT = path.join(DATA_DIR, "email-push");
 /** Maximum size of a single attachment we'll persist (best-effort safety). */
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
-export interface EmailPushEvent {
-  cameraId: string;
-  /** Original recipient address that matched this camera. */
-  recipient: string;
-  /** Reolink AI class extracted from subject/body, or "motion" as fallback. */
-  inferredType:
-    | "motion"
-    | "people"
-    | "vehicle"
-    | "animal"
-    | "face"
-    | "package"
-    | "doorbell"
-    | "other";
-  /** Mail timestamp (parsed Date or fall-back to receipt time). */
-  receivedAtMs: number;
-  subject: string;
-  from: string;
-  /** Path of the saved snapshot attachment, if any. Relative to DATA_PATH. */
-  snapshotPath?: string;
-  /** Raw body text excerpt (max 500 chars) — useful for debugging unknown firmwares. */
-  bodyExcerpt: string;
-}
+// `EmailPushEvent` / `EmailPushInferredType` live in email-push-bus.ts so the
+// events-manager and integration tests can import them without dragging in
+// the `smtp-server` native dependency. The bus module is the single source
+// of truth; the SMTP listener below just emits into it.
 
 export interface EmailPushServerStatus {
   enabled: boolean;
@@ -75,9 +74,6 @@ export interface EmailPushServerStatus {
   lastErrorMessage: string | undefined;
 }
 
-type CameraResolver = (recipient: string) => string | undefined;
-type EventHandler = (event: EmailPushEvent) => void;
-
 interface ServerState {
   server: SMTPServer;
   status: EmailPushServerStatus;
@@ -85,9 +81,6 @@ interface ServerState {
 }
 
 let state: ServerState | undefined;
-let cameraResolver: CameraResolver = () => undefined;
-const emitter = new EventEmitter();
-const recentEventsByCamera = new Map<string, EmailPushEvent[]>();
 
 /**
  * Subject/body classification. Reolink firmwares put the AI class in the
@@ -165,19 +158,6 @@ async function persistAttachments(
 }
 
 /**
- * Trim the in-memory recent-events ring per camera.
- */
-function pushRecentEvent(event: EmailPushEvent): void {
-  const settings = getSettings();
-  const max = settings.emailPush.recentEventsPerCamera;
-  if (max <= 0) return;
-  const list = recentEventsByCamera.get(event.cameraId) ?? [];
-  list.unshift(event);
-  if (list.length > max) list.length = max;
-  recentEventsByCamera.set(event.cameraId, list);
-}
-
-/**
  * Best-effort cleanup of expired snapshot folders. Runs every hour while the
  * server is active. Retention `0` means keep forever.
  */
@@ -211,23 +191,6 @@ function pruneOldSnapshots(): void {
   }
 }
 
-/**
- * Set the callback that maps a recipient address (e.g. `cam-abc@nodelink.local`)
- * to a known cameraId. Returning `undefined` rejects the recipient at RCPT TO.
- */
-export function setEmailPushCameraResolver(resolver: CameraResolver): void {
-  cameraResolver = resolver;
-}
-
-/**
- * Register a handler invoked for every accepted email-push event. Multiple
- * handlers can be registered (e.g. events-manager, MQTT bridge).
- */
-export function onEmailPushEvent(handler: EventHandler): () => void {
-  emitter.on("event", handler);
-  return () => emitter.off("event", handler);
-}
-
 export function getEmailPushServerStatus(): EmailPushServerStatus {
   const settings = getSettings();
   if (state) return { ...state.status };
@@ -250,15 +213,6 @@ export function getEmailPushServerStatus(): EmailPushServerStatus {
 export function getCameraEmailAddress(cameraId: string): string {
   const { domain } = getSettings().emailPush;
   return `cam-${cameraId}@${domain}`;
-}
-
-/** Recover the recent events buffered in memory for a given camera. */
-export function getRecentEmailPushEvents(
-  cameraId: string,
-  limit?: number,
-): EmailPushEvent[] {
-  const list = recentEventsByCamera.get(cameraId) ?? [];
-  return typeof limit === "number" ? list.slice(0, limit) : [...list];
 }
 
 async function handleIncomingMessage(
@@ -298,12 +252,11 @@ async function handleIncomingMessage(
     bodyExcerpt: (parsed.text ?? "").slice(0, 500),
   };
 
-  pushRecentEvent(event);
   if (state) state.status.messagesAccepted++;
   logger.info(
     `Email push for camera=${cameraId} type=${event.inferredType} subject="${event.subject.slice(0, 80)}"`,
   );
-  emitter.emit("event", event);
+  emitEmailPushEvent(event);
 }
 
 function parseRecipient(rcpt: string): { local: string; domain: string } | undefined {
@@ -324,7 +277,7 @@ function resolveCameraIdFromRecipient(rcpt: string): string | undefined {
   const candidate = match[1];
 
   // Defer to the resolver: the cameraId must correspond to a registered camera.
-  return cameraResolver(candidate);
+  return getEmailPushCameraResolver()(candidate);
 }
 
 /** Start the SMTP server using current settings. No-op if already running. */
@@ -340,6 +293,7 @@ export async function startEmailPushServer(): Promise<void> {
   }
 
   fs.mkdirSync(SNAPSHOT_ROOT, { recursive: true });
+  setRecentEventsPerCamera(settings.emailPush.recentEventsPerCamera);
 
   const tlsOptions = settings.emailPush.tls
     ? await createSelfSignedTlsCert()
@@ -492,6 +446,5 @@ export async function restartEmailPushServer(): Promise<void> {
 
 /** Test hook: dispatch a synthetic event into the bus without an SMTP round-trip. */
 export function emitSyntheticEmailPushEventForTest(event: EmailPushEvent): void {
-  pushRecentEvent(event);
-  emitter.emit("event", event);
+  emitEmailPushEvent(event);
 }
