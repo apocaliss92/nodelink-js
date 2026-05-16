@@ -232,6 +232,39 @@ export const BC_CMD_ID_SET_PUSH_TASK = 218; // SetPush - write push schedule
 export const BC_CMD_ID_GET_AUTO_FOCUS = 224; // GetAutoFocus - auto focus settings
 export const BC_CMD_ID_SET_AUTO_FOCUS = 225; // SetAutoFocus - write auto focus
 
+// Email SMTP server config. cmdId=42 GET, cmdId=43 SET, cmdId=141 TEST.
+// Schema confirmed from Reolink Client pcap (2026-05-16):
+//   <Email><smtpServer/><userName/><password/><address1..3/><smtpPort/>
+//   <sendNickname/><attachment/><attachmentType/><textType/><ssl/><interval/></Email>
+export const BC_CMD_ID_GET_EMAIL = 42;
+export const BC_CMD_ID_SET_EMAIL = 43;
+export const BC_CMD_ID_TEST_EMAIL = 141; // Server returns 200=ok, 482=test failed
+
+// NTP. cmdId=38 GET, cmdId=39 SET.
+//   <Ntp><enable/><server/><synchronizeInterval/><port/></Ntp>
+export const BC_CMD_ID_GET_NTP = 38;
+export const BC_CMD_ID_SET_NTP = 39;
+
+// System general (timezone, manual time, osd date format, device name, language).
+// cmdId=104 GET (already declared), cmdId=105 SET.
+// SET supports partial payloads: include only the fields to change, plus the
+// `<year>0</year>` marker meaning "do not set manual time". `<deviceNameOnly>1</deviceNameOnly>`
+// is required when patching only the device name.
+export const BC_CMD_ID_SET_SYSTEM_GENERAL = 105;
+
+// Daylight Saving Time. cmdId=106 GET, cmdId=107 SET.
+//   <Dst><enable/><offset/><startMonth/><startWeekIndex/><startWeekday/>
+//   <startHour/><startMinute/><startSecond/><endMonth/><endWeekIndex/>
+//   <endWeekday/><endHour/><endMinute/><endSecond/><version/></Dst>
+export const BC_CMD_ID_GET_DST = 106;
+export const BC_CMD_ID_SET_DST = 107;
+
+// Auto reboot. cmdId=101 GET, cmdId=100 SET.
+//   <AutoReboot><enable/><weekDay/><hour/><minute/><second/></AutoReboot>
+// weekDay accepts "Sunday".."Saturday" or "everyday".
+export const BC_CMD_ID_GET_AUTO_REBOOT = 101;
+export const BC_CMD_ID_SET_AUTO_REBOOT = 100;
+
 // Legacy placeholder aliases — kept for back-compat with consumers that
 // referenced the cmd_id directly. New callers should use the semantic
 // names above.

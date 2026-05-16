@@ -130,6 +130,17 @@ import {
   BC_CMD_ID_QUICK_REPLY_PLAY,
   BC_CMD_ID_GET_DING_DONG_SILENT,
   BC_CMD_ID_SET_DING_DONG_SILENT,
+  BC_CMD_ID_GET_EMAIL,
+  BC_CMD_ID_SET_EMAIL,
+  BC_CMD_ID_TEST_EMAIL,
+  BC_CMD_ID_SET_EMAIL_TASK,
+  BC_CMD_ID_GET_NTP,
+  BC_CMD_ID_SET_NTP,
+  BC_CMD_ID_SET_SYSTEM_GENERAL,
+  BC_CMD_ID_GET_DST,
+  BC_CMD_ID_SET_DST,
+  BC_CMD_ID_GET_AUTO_REBOOT,
+  BC_CMD_ID_SET_AUTO_REBOOT,
 } from "../../protocol/constants";
 import {
   applyStreamPatch,
@@ -263,8 +274,34 @@ import type {
   ChimeCfg,
   HardwiredChimeState,
   WirelessChimeSilentState,
+  EmailConfig,
+  EmailConfigPatch,
+  NtpConfig,
+  NtpConfigPatch,
+  DstConfig,
+  DstConfigPatch,
+  SystemGeneralPatch,
+  AutoRebootConfig,
+  AutoRebootConfigPatch,
 } from "./types";
 import { parseXmlFragmentToJson, type XmlJsonValue } from "./utils/xml";
+import {
+  buildEmailScheduleValueTable,
+  buildSetEmailTaskXml,
+  buildSetEmailXml,
+  parseEmailConfigFromXml,
+  parseEmailTaskFromXml,
+} from "./utils/email";
+import { buildSetNtpXml, parseNtpConfigFromXml } from "./utils/ntp";
+import { buildSetDstXml, parseDstConfigFromXml } from "./utils/dst";
+import {
+  buildSetAutoRebootXml,
+  parseAutoRebootFromXml,
+} from "./utils/autoReboot";
+import {
+  buildSetSystemGeneralXml,
+  parseSystemGeneralFromXml,
+} from "./utils/systemGeneral";
 
 import { Jimp, JimpMime } from "jimp";
 import type { CompositeStreamPipOptions } from "../../multifocal/compositeStream";
@@ -14010,7 +14047,398 @@ export class ReolinkBaichuanApi {
       ...(channel != null ? { channel } : {}),
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
-    return parseXmlFragmentToJson<EmailTaskConfig>(xml);
+    return parseEmailTaskFromXml(xml);
+  }
+
+  /**
+   * SetEmailTask via Baichuan (cmdId=216). Updates the email alarm schedule
+   * (per-event-type 7×24 valueTable + master enable).
+   *
+   * Reolink expects the FULL `typeScheduleList` — pass the array from a prior
+   * GET and only flip the entries you care about. Slots you don't track must
+   * be sent back unchanged to avoid the camera dropping them.
+   */
+  async setEmailTask(
+    channel: number | undefined,
+    task: EmailTaskConfig,
+    options?: { timeoutMs?: number },
+  ): Promise<void> {
+    const ch = this.normalizeChannel(channel);
+    const payloadXml = buildSetEmailTaskXml({ ...task, channelId: ch });
+    await this.sendXml({
+      cmdId: BC_CMD_ID_SET_EMAIL_TASK,
+      channel: ch,
+      payloadXml,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+  }
+
+  /**
+   * Convenience wrapper that patches the schedule of one or more trigger
+   * types on the camera's EmailTask without touching the others.
+   *
+   * Pass a high-level schedule spec (`always` / `never` / explicit windows)
+   * and the trigger types it should apply to. The method:
+   *
+   * 1. Reads the current EmailTask via GET (so we keep every existing slot).
+   * 2. Builds the new `valueTable` once from `schedule`.
+   * 3. Replaces the `valueTable` of every matching `type` in the list.
+   * 4. Appends entries for any requested type not already present.
+   * 5. Writes the merged list back via SET.
+   *
+   * Returns the list of types that were actually touched.
+   */
+  async patchEmailSchedule(
+    channel: number | undefined,
+    spec: {
+      types: string[];
+      schedule:
+        | { kind: "always" }
+        | { kind: "never" }
+        | {
+            kind: "windows";
+            windows: Array<{
+              days: number[];
+              startHour: number;
+              endHour: number;
+            }>;
+          };
+      /** When provided, also flips the EmailTask master `enable` flag. */
+      enable?: 0 | 1;
+    },
+    options?: { timeoutMs?: number },
+  ): Promise<{ touchedTypes: string[] }> {
+    const current = await this.getEmailTask(channel, options);
+    const newValueTable = buildEmailScheduleValueTable(spec.schedule);
+    const targetSet = new Set(spec.types);
+    const touched: string[] = [];
+
+    const updatedList = current.typeScheduleList.map((item) => {
+      if (targetSet.has(item.type)) {
+        touched.push(item.type);
+        return { ...item, valueTable: newValueTable };
+      }
+      return item;
+    });
+
+    for (const t of spec.types) {
+      if (!current.typeScheduleList.some((item) => item.type === t)) {
+        updatedList.push({ type: t, valueTable: newValueTable });
+        touched.push(t);
+      }
+    }
+
+    await this.setEmailTask(
+      channel,
+      {
+        channelId: current.channelId,
+        enable: spec.enable ?? current.enable,
+        typeScheduleList: updatedList,
+      },
+      options,
+    );
+
+    return { touchedTypes: touched };
+  }
+
+  // ====================================================================
+  // Email server (cmdId 42/43/141), NTP (38/39), DST (106/107),
+  // SystemGeneral SET (105), AutoReboot (100/101).
+  // Schemas derived from Reolink Client pcap (2026-05-16).
+  // ====================================================================
+
+  /**
+   * Read the SMTP email configuration (cmdId=42). Returns the full `<Email>`
+   * block including capability hints (`senderMaxLen`, `pwdMaxLen`,
+   * `emailAttachAbility`).
+   */
+  async getEmail(options?: { timeoutMs?: number }): Promise<EmailConfig> {
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_EMAIL,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+    return parseEmailConfigFromXml(xml);
+  }
+
+  /**
+   * Patch the SMTP email configuration (cmdId=43). Reads the current config
+   * first then merges the patch — Reolink rejects partial `<Email>` blocks.
+   */
+  async setEmail(
+    patch: EmailConfigPatch,
+    options?: { timeoutMs?: number },
+  ): Promise<void> {
+    const current = await this.getEmail(options);
+    const payloadXml = buildSetEmailXml(current, patch);
+    await this.sendXml({
+      cmdId: BC_CMD_ID_SET_EMAIL,
+      payloadXml,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+  }
+
+  /**
+   * Send a test email using either the current config or an override patch
+   * (cmdId=141). Returns true when the camera reports 200 (test succeeded),
+   * false when it reports 482 (test failed — server unreachable / bad creds).
+   * Other non-200 codes propagate as exceptions via `sendXml`.
+   */
+  async testEmail(
+    patch?: EmailConfigPatch,
+    options?: { timeoutMs?: number },
+  ): Promise<boolean> {
+    const current = await this.getEmail(options);
+    const payloadXml = buildSetEmailXml(current, patch ?? {});
+    // testEmail makes the camera perform a real SMTP send (TCP connect +
+    // EHLO + AUTH + DATA + QUIT). On slow networks or unreachable mail
+    // servers this can take 30+ seconds — the default Baichuan timeout
+    // (~5s) is far too aggressive. Default to 60s and let callers override.
+    const timeoutMs = options?.timeoutMs ?? 60_000;
+    try {
+      await this.sendXml({
+        cmdId: BC_CMD_ID_TEST_EMAIL,
+        payloadXml,
+        timeoutMs,
+      });
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Reolink uses response_code=482 specifically for "test failed" — keep
+      // it as a structured boolean rather than throwing, so callers can show
+      // a friendly "test failed, check credentials" message.
+      if (msg.includes("response_code 482") || msg.includes("response_code=482")) {
+        return false;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Read the NTP server configuration (cmdId=38).
+   */
+  async getNtp(options?: { timeoutMs?: number }): Promise<NtpConfig> {
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_NTP,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+    return parseNtpConfigFromXml(xml);
+  }
+
+  /**
+   * Patch the NTP server configuration (cmdId=39). Reads the current state
+   * first and merges the patch — Reolink rejects partial `<Ntp>` blocks.
+   */
+  async setNtp(
+    patch: NtpConfigPatch,
+    options?: { timeoutMs?: number },
+  ): Promise<void> {
+    const current = await this.getNtp(options);
+    const payloadXml = buildSetNtpXml(current, patch);
+    await this.sendXml({
+      cmdId: BC_CMD_ID_SET_NTP,
+      payloadXml,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+  }
+
+  /**
+   * Patch SystemGeneral (cmdId=105). Supports partial payloads: include only
+   * the fields you want to change. By default the builder emits `<year>0</year>`
+   * as the "do not set manual clock" marker; pass `manualTime` to actually
+   * set the date/time. Setting only `deviceName` automatically uses the
+   * Reolink Client's `deviceNameOnly=1` shape.
+   */
+  async setSystemGeneral(
+    patch: SystemGeneralPatch,
+    options?: { timeoutMs?: number },
+  ): Promise<void> {
+    const payloadXml = buildSetSystemGeneralXml(patch);
+    await this.sendXml({
+      cmdId: BC_CMD_ID_SET_SYSTEM_GENERAL,
+      payloadXml,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+  }
+
+  /**
+   * Read the Daylight Saving Time configuration (cmdId=106).
+   */
+  async getDst(options?: { timeoutMs?: number }): Promise<DstConfig> {
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_DST,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+    return parseDstConfigFromXml(xml);
+  }
+
+  /**
+   * Patch the DST configuration (cmdId=107). Reads the current state first
+   * and merges the patch.
+   */
+  async setDst(
+    patch: DstConfigPatch,
+    options?: { timeoutMs?: number },
+  ): Promise<void> {
+    const current = await this.getDst(options);
+    const payloadXml = buildSetDstXml(current, patch);
+    await this.sendXml({
+      cmdId: BC_CMD_ID_SET_DST,
+      payloadXml,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+  }
+
+  /**
+   * Read the auto-reboot schedule (cmdId=101).
+   */
+  async getAutoReboot(options?: {
+    timeoutMs?: number;
+  }): Promise<AutoRebootConfig> {
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_AUTO_REBOOT,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+    return parseAutoRebootFromXml(xml);
+  }
+
+  /**
+   * Patch the auto-reboot schedule (cmdId=100).
+   */
+  async setAutoReboot(
+    patch: AutoRebootConfigPatch,
+    options?: { timeoutMs?: number },
+  ): Promise<void> {
+    const current = await this.getAutoReboot(options);
+    const payloadXml = buildSetAutoRebootXml(current, patch);
+    await this.sendXml({
+      cmdId: BC_CMD_ID_SET_AUTO_REBOOT,
+      payloadXml,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+  }
+
+  /**
+   * High-level helper that configures the camera to deliver motion alerts via
+   * SMTP to the local nodelink manager. Orchestrates `setEmail` + `setEmailTask`
+   * in a single call so UI code can offer "auto-configure" without juggling
+   * the underlying commands.
+   *
+   * Pass `runTest: true` to also send a test email (cmdId=141). Returns a
+   * structured result describing each leg of the flow so the caller can show
+   * granular feedback.
+   *
+   * @param params Auto-configuration parameters
+   * @param channel Logical channel (default 0). Used for the EmailTask SET.
+   */
+  async setupEmailPushToManager(
+    params: {
+      /** Manager hostname or IP reachable from the camera's network. */
+      managerHost: string;
+      /** Manager SMTP port. Default 2525. */
+      managerPort?: number;
+      /** Per-camera recipient local-part — typically `cam-<cameraId>`. */
+      recipientLocalPart: string;
+      /** Virtual mail domain (must match the server-side setting). */
+      domain?: string;
+      /** Attachment kind on motion. Default "picture". */
+      attachmentType?: "picture" | "video" | "none";
+      /** Optional sender nickname shown in the From header. */
+      sendNickname?: string;
+      /** Interval throttle in seconds (ignored on battery cams). Default 30. */
+      interval?: number;
+      /** Optional SMTP auth — required when the server's `requireAuth` is on. */
+      authUsername?: string;
+      authPassword?: string;
+      /**
+       * Trigger types to enable in the email schedule. Must match the types
+       * already present in the current EmailTask (we patch their schedule to
+       * full-week 24/7, leaving any other slot untouched).
+       */
+      triggerTypes?: string[];
+      /** Send a test email after the SET. Default false. */
+      runTest?: boolean;
+    },
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<{
+    setEmail: { applied: true };
+    setEmailTask: { applied: true; touchedTypes: string[] };
+    testEmail?: { success: boolean };
+  }> {
+    const port = params.managerPort ?? 2525;
+    const domain = params.domain ?? "nodelink.local";
+    const recipient = `${params.recipientLocalPart}@${domain}`;
+    const triggers = params.triggerTypes ?? ["MD", "people", "vehicle"];
+    const attachmentType = params.attachmentType ?? "picture";
+    const interval = params.interval ?? 30;
+
+    const emailPatch: EmailConfigPatch = {
+      smtpServer: params.managerHost,
+      smtpPort: port,
+      userName: params.authUsername ?? recipient,
+      password: params.authPassword ?? "",
+      address1: recipient,
+      address2: "",
+      address3: "",
+      sendNickname: params.sendNickname ?? params.recipientLocalPart,
+      attachment: attachmentType === "none" ? 0 : 1,
+      attachmentType,
+      textType: "withText",
+      ssl: 0,
+      interval,
+    };
+
+    await this.setEmail(emailPatch, options);
+
+    // EmailTask: patch the schedule for the requested triggers to 24/7 ON,
+    // leave any other type unchanged.
+    const fullWeekOn = "1".repeat(168);
+    const current = await this.getEmailTask(channel, options);
+    const triggerSet = new Set(triggers);
+    const touched: string[] = [];
+    const updatedList = current.typeScheduleList.map((item) => {
+      if (triggerSet.has(item.type)) {
+        touched.push(item.type);
+        return { ...item, valueTable: fullWeekOn };
+      }
+      return item;
+    });
+
+    // Append any requested trigger that wasn't already in the camera's list
+    // (the camera will silently ignore unknown types on most firmwares, but
+    // including them is correct on those that DO recognise extra slots).
+    for (const t of triggers) {
+      if (!current.typeScheduleList.some((item) => item.type === t)) {
+        updatedList.push({ type: t, valueTable: fullWeekOn });
+        touched.push(t);
+      }
+    }
+
+    await this.setEmailTask(
+      channel,
+      {
+        channelId: current.channelId,
+        enable: 1,
+        typeScheduleList: updatedList,
+      },
+      options,
+    );
+
+    const result: {
+      setEmail: { applied: true };
+      setEmailTask: { applied: true; touchedTypes: string[] };
+      testEmail?: { success: boolean };
+    } = {
+      setEmail: { applied: true },
+      setEmailTask: { applied: true, touchedTypes: touched },
+    };
+
+    if (params.runTest) {
+      const ok = await this.testEmail(emailPatch, options);
+      result.testEmail = { success: ok };
+    }
+
+    return result;
   }
 
   /**
@@ -14371,7 +14799,7 @@ export class ReolinkBaichuanApi {
       cmdId: BC_CMD_ID_GET_SYSTEM_GENERAL,
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
-    return parseXmlFragmentToJson<SystemGeneralConfig>(xml);
+    return parseSystemGeneralFromXml(xml);
   }
 
   /**

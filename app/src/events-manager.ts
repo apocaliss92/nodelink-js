@@ -11,6 +11,10 @@ import type { ReolinkBaichuanApi } from "@apocaliss92/nodelink-js";
 import type { Response } from "express";
 import { onApiConnected, onApiDisconnected } from "./rtsp-manager.js";
 import { getConfig, getSettings, updateCamera } from "./settings-store.js";
+import {
+  onEmailPushEvent,
+  type EmailPushEvent,
+} from "./email-push-server.js";
 import { getCameraInfo } from "./rtsp-manager.js";
 import { sanitizeCameraName } from "./rtsp-manager.js";
 import { createSourceLogger } from "./logger.js";
@@ -540,7 +544,59 @@ export function initEventsManager(): void {
     lastAiClassByCamera.delete(cameraId);
     logger.debug(`Unregistered events for camera ${cameraId}`);
   });
+
+  // Forward email-push notifications (from battery cameras that can't keep
+  // a TCP/ONVIF push subscription alive) as synthetic motion events.
+  onEmailPushEvent((event: EmailPushEvent) => {
+    const mappedType = mapEmailPushType(event.inferredType);
+    const channel = inferChannelForCamera(event.cameraId);
+    handleCameraEvent(event.cameraId, {
+      type: mappedType,
+      channel,
+      timestamp: event.receivedAtMs,
+    });
+    // When the email carries an AI class, also fire a generic "motion" so
+    // motion-only consumers (Frigate bridge, basic SSE listeners) still see
+    // it — mirrors how native Baichuan push delivers both events.
+    if (mappedType !== "motion" && mappedType !== "doorbell") {
+      handleCameraEvent(event.cameraId, {
+        type: "motion",
+        channel,
+        timestamp: event.receivedAtMs,
+      });
+    }
+  });
+
   logger.info("Events manager initialized");
+}
+
+function mapEmailPushType(
+  inferred: EmailPushEvent["inferredType"],
+): ReolinkSimpleEvent["type"] {
+  switch (inferred) {
+    case "people":
+      return "people";
+    case "vehicle":
+      return "vehicle";
+    case "animal":
+      return "animal";
+    case "face":
+      return "face";
+    case "package":
+      return "package";
+    case "doorbell":
+      return "doorbell";
+    case "motion":
+    case "other":
+    default:
+      return "motion";
+  }
+}
+
+function inferChannelForCamera(cameraId: string): number {
+  const config = getConfig();
+  const camera = config.cameras.find((c) => c.id === cameraId);
+  return camera?.rtspChannel ?? 0;
 }
 
 /**

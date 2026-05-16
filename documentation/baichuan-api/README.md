@@ -65,6 +65,8 @@ Also available: **[CGI HTTP API](../cgi-api/README.md)** for HTTP-based configur
 - **[Battery & Sleep](./battery.md)** - Battery status, wake-up
 - **[OSD & Display](./osd.md)** - On-screen display, camera name
 - **[Network & System](./network.md)** - Ports, WiFi, storage, reboot
+- **[Email & Email Push](./email.md)** - SMTP config, schedule, manager-side intake, auto-configure
+- **[Time, NTP, DST, Auto-Reboot](./time.md)** - Clock, time zone, NTP, DST, scheduled reboot
 
 ---
 

@@ -1686,25 +1686,6 @@ export interface VideoInputConfig {
 }
 
 /**
- * System general configuration.
- * cmdId=77 (GetSystemGeneral)
- */
-export interface SystemGeneralConfig {
-  body?: {
-    SystemGeneral?: {
-      timeZone?: number | undefined;
-      deviceName?: string | undefined;
-      language?: string | undefined;
-      dstMode?: number | undefined;
-      [key: string]: unknown;
-    };
-    Norm?: {
-      [key: string]: unknown;
-    };
-  };
-}
-
-/**
  * Device support/capability flags.
  * cmdId=78 (GetSupport)
  */
@@ -1749,19 +1730,6 @@ export interface SirenStatusConfig {
 export interface FtpTaskConfig {
   body?: {
     FtpTask?: {
-      channelId?: number | undefined;
-      enable?: number | undefined;
-      [key: string]: unknown;
-    };
-  };
-}
-
-/**
- * Email task configuration.
- */
-export interface EmailTaskConfig {
-  body?: {
-    EmailTask?: {
       channelId?: number | undefined;
       enable?: number | undefined;
       [key: string]: unknown;
@@ -2057,3 +2025,197 @@ export interface WirelessChimeSilentState {
   /** Whether the chime is currently active (not silenced). Derived: time === 0 */
   active: boolean;
 }
+
+// ====================================================================
+// Email / NTP / Time / DST / AutoReboot
+// All schemas derived from Reolink Client pcap (2026-05-16).
+// ====================================================================
+
+/** Image vs video attachment for motion alert emails. */
+export type EmailAttachmentType = "picture" | "video" | "none";
+
+/** Whether the alert body carries the standard human-readable text. */
+export type EmailTextType = "withText" | "noText";
+
+/**
+ * Email SMTP server configuration. Returned by GetEmail (cmdId=42) and
+ * accepted by SetEmail (cmdId=43) and TestEmail (cmdId=141).
+ *
+ * Read-only fields (only present on GET): `senderMaxLen`, `pwdMaxLen`,
+ * `emailAttachAbility` — the camera-reported capability bitmap.
+ */
+export interface EmailConfig {
+  smtpServer: string;
+  /** Sender email address / SMTP username. Empty when unconfigured. */
+  userName: string;
+  /** SMTP password. Always sent in cleartext — camera limitation. */
+  password: string;
+  /** Recipient 1. */
+  address1: string;
+  /** Recipient 2 (optional). */
+  address2: string;
+  /** Recipient 3 (optional). */
+  address3: string;
+  smtpPort: number;
+  sendNickname: string;
+  /** 1 = attach picture/video, 0 = text-only. */
+  attachment: 0 | 1;
+  attachmentType: EmailAttachmentType;
+  textType: EmailTextType;
+  /** 1 = SSL/TLS, 0 = plain SMTP. */
+  ssl: 0 | 1;
+  /** Throttle between successive motion mails in seconds. Ignored on battery cams. */
+  interval: number;
+  // GET-only capability fields
+  senderMaxLen?: number;
+  pwdMaxLen?: number;
+  /** Bitmap of supported attachment combinations. */
+  emailAttachAbility?: number;
+}
+
+/** Patch payload accepted by SetEmail. All fields optional — only supplied ones are written. */
+export type EmailConfigPatch = Partial<
+  Omit<EmailConfig, "senderMaxLen" | "pwdMaxLen" | "emailAttachAbility">
+>;
+
+/**
+ * Single entry in the EmailTask `typeScheduleList`. `valueTable` is a
+ * 168-char string of '0'/'1' representing the 7-days × 24-hours grid.
+ */
+export interface EmailTaskScheduleItem {
+  /**
+   * Trigger type. Known: "MD" (motion), "Normal" (continuous record),
+   * "people", "vehicle", "dog_cat", "face", "package", "cry", "visitor",
+   * "doorbell", "none" (placeholder slot).
+   * Treated as string to cover firmware-specific extensions.
+   */
+  type: string;
+  /** 168-char 0/1 schedule bitmap. */
+  valueTable: string;
+}
+
+/** Email schedule configuration (cmdId=216/217). */
+export interface EmailTaskConfig {
+  channelId: number;
+  enable: 0 | 1;
+  typeScheduleList: EmailTaskScheduleItem[];
+}
+
+/** NTP server configuration (cmdId=38/39). */
+export interface NtpConfig {
+  /** 1 = NTP sync enabled, 0 = disabled. */
+  enable: 0 | 1;
+  /** Hostname or IP of the NTP server. */
+  server: string;
+  /** Sync interval in minutes. */
+  synchronizeInterval: number;
+  /** UDP port. Default 123. */
+  port: number;
+}
+
+export type NtpConfigPatch = Partial<NtpConfig>;
+
+/** Day-of-week labels accepted by Dst and AutoReboot blocks. */
+export type DayOfWeek =
+  | "Sunday"
+  | "Monday"
+  | "Tuesday"
+  | "Wednesday"
+  | "Thursday"
+  | "Friday"
+  | "Saturday"
+  | "everyday";
+
+/** Daylight Saving Time configuration (cmdId=106/107). */
+export interface DstConfig {
+  enable: 0 | 1;
+  /** Offset in hours (typically 1). */
+  offset: number;
+  startMonth: number;
+  /** Week-of-month index (1..5). 5 = "last week of the month". */
+  startWeekIndex: number;
+  startWeekday: DayOfWeek;
+  startHour: number;
+  startMinute: number;
+  startSecond: number;
+  endMonth: number;
+  endWeekIndex: number;
+  endWeekday: DayOfWeek;
+  endHour: number;
+  endMinute: number;
+  endSecond: number;
+  /** Schema version (returned by camera, defaults to 0). */
+  version?: number;
+}
+
+export type DstConfigPatch = Partial<DstConfig>;
+
+/** OSD date format. */
+export type OsdDateFormat = "DMY" | "MDY" | "YMD";
+
+/** 24h (0) or 12h (1) clock format. */
+export type TimeFormat = 0 | 1;
+
+/**
+ * Full SystemGeneral block returned by cmdId=104. SET (cmdId=105) accepts a
+ * subset (any combination of these fields) plus the mandatory `<year>0</year>`
+ * marker that signals "do not set the manual clock". When you DO want to set
+ * the manual clock, pass year/month/day/hour/minute/second together.
+ */
+export interface SystemGeneralConfig {
+  /** Timezone offset in seconds. POSIX convention: UTC+1 → -3600. */
+  timeZone: number;
+  osdFormat: OsdDateFormat;
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+  deviceId: number;
+  timeFormat: TimeFormat;
+  language: string;
+  deviceName: string;
+  loginLock: 0 | 1;
+  lockTime: number;
+  allowedTimes: number;
+  /** 1 when DST is currently active (camera-side). Read-only on most firmwares. */
+  isDst: 0 | 1;
+}
+
+/**
+ * Patch accepted by SetSystemGeneral. When `manualTime` is provided, the
+ * year/month/day/hour/minute/second fields are sent as-is. When omitted, the
+ * builder injects `<year>0</year>` to skip the manual clock even when other
+ * fields are present. Setting only `deviceName` triggers the
+ * `<deviceNameOnly>1</deviceNameOnly>` flag automatically.
+ */
+export interface SystemGeneralPatch {
+  timeZone?: number;
+  osdFormat?: OsdDateFormat;
+  timeFormat?: TimeFormat;
+  language?: string;
+  deviceName?: string;
+  loginLock?: 0 | 1;
+  lockTime?: number;
+  allowedTimes?: number;
+  manualTime?: {
+    year: number;
+    month: number;
+    day: number;
+    hour: number;
+    minute: number;
+    second: number;
+  };
+}
+
+/** AutoReboot schedule (cmdId=100/101). */
+export interface AutoRebootConfig {
+  enable: 0 | 1;
+  weekDay: DayOfWeek;
+  hour: number;
+  minute: number;
+  second: number;
+}
+
+export type AutoRebootConfigPatch = Partial<AutoRebootConfig>;

@@ -37,6 +37,30 @@ await api.onSimpleEvent((event) => {
 
 ---
 
+## Email Push for Battery Cameras
+
+Battery cameras (Argus, Go, …) can't reliably keep a TCP/ONVIF push subscription alive while sleeping. The manager app embeds an SMTP server so the camera can deliver motion alerts via email — the most resilient path for sleep-heavy devices.
+
+**Flow**:
+
+1. Enable the manager's built-in SMTP server (**Settings → Email Push**, default port `2525`).
+2. Each camera gets a unique recipient `cam-<id>@<domain>` (`emailPush.getCameraAddress`).
+3. From the camera's **Email Push** tab in the manager UI, click **Auto-configure** — the manager pushes the right SMTP server, recipients and 24/7 schedule to the camera via Baichuan (`baichuan.setupEmailPushToManager`).
+4. On motion, the camera sends an email. The manager parses it, classifies the trigger (people/vehicle/motion), saves the snapshot under `${DATA_PATH}/email-push/<cameraId>/`, and emits a synthetic motion event into the same bus used by native Baichuan push — so MQTT, Home Assistant, Frigate, etc. see it transparently.
+
+See [documentation/baichuan-api/email.md](./documentation/baichuan-api/email.md) for the full API and [documentation/baichuan-api/time.md](./documentation/baichuan-api/time.md) for the related NTP / DST / system clock setters.
+
+**Key tRPC procedures**:
+
+- `emailPush.status`, `emailPush.start/stop/restart`, `emailPush.updateSettings`
+- `emailPush.getCameraAddress`, `emailPush.listCameraAddresses`
+- `emailPush.recentEvents`, `emailPush.injectTestEvent`
+- `baichuan.getEmail`, `baichuan.setEmail`, `baichuan.testEmail`
+- `baichuan.getEmailTask`, `baichuan.setEmailTask`
+- `baichuan.setupEmailPushToManager` (one-shot orchestrator)
+
+---
+
 ## Contributing: Share Your Camera Fixtures
 
 Help improve device support by sharing the API responses from your camera model. The diagnostics dump captures all capability and configuration data (credentials, IPs, and serial numbers are **automatically sanitized**).

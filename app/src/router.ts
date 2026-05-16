@@ -11,6 +11,7 @@ import { frigateRouter } from "./routers/frigate.js";
 import { diagnosticsRouter } from "./routers/diagnostics.js";
 import { webrtcRouter } from "./routers/webrtc.js";
 import { captureRouter } from "./routers/capture.js";
+import { emailPushRouter } from "./routers/email-push.js";
 export const appRouter = router({
   capture: captureRouter,
   config: configRouter,
@@ -24,6 +25,7 @@ export const appRouter = router({
   frigate: frigateRouter,
   diagnostics: diagnosticsRouter,
   webrtc: webrtcRouter,
+  emailPush: emailPushRouter,
 });
 
 export type AppRouter = typeof appRouter;

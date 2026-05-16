@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchUpdates, trpcMutation, trpcQuery, type UpdateInfo } from "../api";
 import { useAuth } from "../auth";
 import { getStoredAuthToken, setStoredAuthToken } from "../authToken";
+import { EmailPushSettingsSection } from "../components/EmailPushSettingsSection";
 
 /** Build Frigate camera YAML from streamInfo + feature options. */
 function buildFrigateYaml(
@@ -278,7 +279,8 @@ export default function SettingsPage() {
     | "mqtt"
     | "webrtc"
     | "proxy"
-    | "metrics";
+    | "metrics"
+    | "email-push";
   const [activeTab, setActiveTab] = useState<TabId>("general");
 
   const dirty = useMemo(() => settings !== null, [settings]);
@@ -737,6 +739,7 @@ export default function SettingsPage() {
                 ["webrtc", "WebRTC"],
                 ["proxy", "Proxy"],
                 ["metrics", "Metrics"],
+                ["email-push", "Email Push"],
               ] as const
             ).map(([id, label]) => (
               <button
@@ -2522,6 +2525,10 @@ export default function SettingsPage() {
           ) : null}
 
           {/* Metrics tab */}
+          {activeTab === "email-push" ? (
+            <EmailPushSettingsSection />
+          ) : null}
+
           {activeTab === "metrics" ? (
             <div className={cardCls}>
               <span className={labelCls}>Resource usage</span>

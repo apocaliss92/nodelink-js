@@ -10,6 +10,9 @@ import {
   Volume2,
   Move,
   Globe,
+  Mail,
+  Clock,
+  Sliders,
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -22,6 +25,9 @@ import { AudioTab } from "./settings-tabs/AudioTab";
 import { PtzTab } from "./settings-tabs/PtzTab";
 import { NetworkTab } from "./settings-tabs/NetworkTab";
 import { SystemTab } from "./settings-tabs/SystemTab";
+import { EmailPushTab } from "./settings-tabs/EmailPushTab";
+import { TimeTab } from "./settings-tabs/TimeTab";
+import { GeneralTab } from "./settings-tabs/GeneralTab";
 
 interface TabDef {
   id: string;
@@ -87,6 +93,27 @@ const TABS: TabDef[] = [
     icon: Globe,
     hint: "IP, ports, Wi-Fi (read-only).",
     Component: NetworkTab,
+  },
+  {
+    id: "email-push",
+    label: "Email Push",
+    icon: Mail,
+    hint: "SMTP-based motion delivery for battery cameras. Auto-configure + recent events.",
+    Component: EmailPushTab,
+  },
+  {
+    id: "time",
+    label: "Time",
+    icon: Clock,
+    hint: "Timezone, NTP server, DST, manual clock.",
+    Component: TimeTab,
+  },
+  {
+    id: "general",
+    label: "General",
+    icon: Sliders,
+    hint: "Camera name, display format, language, auto-reboot, login lockout.",
+    Component: GeneralTab,
   },
   {
     id: "system",

@@ -22,6 +22,170 @@ export interface NewsItem {
 
 export const NEWS_ITEMS: NewsItem[] = [
   {
+    id: "2026-05-16-email-push-smtp",
+    date: "2026-05-16",
+    title: "Email Push: built-in SMTP server for battery cameras",
+    body: (
+      <div className="space-y-3 text-sm text-[var(--color-foreground-muted)]">
+        <div className="inline-flex items-center gap-2 rounded border border-amber-700/60 bg-amber-900/30 px-2 py-1 text-[11px] text-amber-200">
+          <span className="font-semibold uppercase tracking-wider">
+            Experimental
+          </span>
+          <span>
+            Schemas confirmed via pcap on E1 Zoom / E1 Outdoor PoE — other
+            firmwares may differ.
+          </span>
+        </div>
+
+        <p>
+          Battery cameras (Argus, Go, …) can&apos;t reliably keep a TCP /
+          ONVIF push subscription alive while sleeping. The Manager now ships
+          a tiny SMTP server that receives the camera&apos;s motion
+          notification email, parses it (people / vehicle / animal / motion),
+          saves the attached snapshot and emits a synthetic motion event into
+          the same bus used by native push — so MQTT, Home Assistant and
+          Frigate downstream see it like any other motion.
+        </p>
+
+        <div>
+          <h4 className="text-[var(--color-foreground)] font-semibold mb-1">
+            How to enable
+          </h4>
+          <ol className="list-decimal pl-5 space-y-1">
+            <li>
+              Open{" "}
+              <strong className="text-[var(--color-foreground)]">
+                Settings → Email Push
+              </strong>
+              , toggle <em>Enabled</em>, click <em>Save</em>. Default port is{" "}
+              <code className="rounded bg-[var(--color-surface-hover)] px-1 text-[11px]">
+                2525
+              </code>{" "}
+              bound on <code>0.0.0.0</code>.
+            </li>
+            <li>
+              Open any camera&apos;s detail panel →{" "}
+              <strong className="text-[var(--color-foreground)]">
+                Settings → Email Push
+              </strong>{" "}
+              tab. Copy the assigned{" "}
+              <code className="rounded bg-[var(--color-surface-hover)] px-1 text-[11px]">
+                cam-&lt;id&gt;@nodelink.local
+              </code>{" "}
+              address.
+            </li>
+            <li>
+              Hit{" "}
+              <strong className="text-[var(--color-foreground)]">
+                Auto-configure
+              </strong>
+              . The manager pushes the right SMTP server, recipients and a
+              24/7 schedule for{" "}
+              <code className="text-[11px]">MD / people / vehicle</code> to
+              the camera via Baichuan (cmd_id 42/43/216/141).
+            </li>
+            <li>
+              Click{" "}
+              <strong className="text-[var(--color-foreground)]">
+                Verify delivery
+              </strong>{" "}
+              to confirm end-to-end: the manager waits up to 60s for a real
+              SMTP connection from the camera. If it lands you&apos;ll see
+              the event in <em>Recent received events</em> on the same tab.
+            </li>
+          </ol>
+        </div>
+
+        <div>
+          <h4 className="text-[var(--color-foreground)] font-semibold mb-1">
+            What you also get
+          </h4>
+          <ul className="list-disc pl-5 space-y-1">
+            <li>
+              <strong className="text-[var(--color-foreground)]">
+                Schedule presets
+              </strong>{" "}
+              in the same tab: 24/7 / Weekdays 8–18 / Nights 20–06 / Never.
+              They flip every known AI trigger on the camera at once.
+            </li>
+            <li>
+              A new{" "}
+              <strong className="text-[var(--color-foreground)]">Time</strong>{" "}
+              tab that edits timezone, NTP server, DST window, manual clock,
+              OSD date format, language, auto-reboot schedule and the camera
+              name — all via Baichuan setters captured for this release
+              (cmd_id 38/39/100/101/105/106/107).
+            </li>
+            <li>
+              Snapshots from received emails are kept under{" "}
+              <code className="rounded bg-[var(--color-surface-hover)] px-1 text-[11px]">
+                DATA_PATH/email-push/&lt;cameraId&gt;/
+              </code>{" "}
+              for 7 days by default (configurable in settings).
+            </li>
+          </ul>
+        </div>
+
+        <div>
+          <h4 className="text-[var(--color-foreground)] font-semibold mb-1">
+            Known caveats
+          </h4>
+          <ul className="list-disc pl-5 space-y-1">
+            <li>
+              <strong className="text-[var(--color-foreground)]">
+                &quot;Send test email&quot; can lie.
+              </strong>{" "}
+              Some firmwares (e.g. E1 Outdoor PoE v3.1.0.5223) reply 200 to{" "}
+              <code className="text-[11px]">cmd_id=141</code> without
+              actually attempting an SMTP send. Always use{" "}
+              <strong className="text-[var(--color-foreground)]">
+                Verify delivery
+              </strong>{" "}
+              to confirm real delivery.
+            </li>
+            <li>
+              <strong className="text-[var(--color-foreground)]">
+                VLAN / firewall.
+              </strong>{" "}
+              The camera needs to reach the manager on the chosen SMTP port.
+              If the camera lives on a separate VLAN from the manager, open a
+              rule allowing{" "}
+              <code className="text-[11px]">
+                CAM_VLAN → MANAGER_IP:2525
+              </code>
+              .
+            </li>
+            <li>
+              <strong className="text-[var(--color-foreground)]">
+                Plain SMTP by default.
+              </strong>{" "}
+              The server is plain (no STARTTLS) and accepts anonymous AUTH
+              for simplicity. Enable AUTH or TLS in{" "}
+              <em>Settings → Email Push</em> if exposing it beyond a trusted
+              LAN; for TLS drop a PEM cert+key under{" "}
+              <code className="rounded bg-[var(--color-surface-hover)] px-1 text-[11px]">
+                DATA_PATH/email-push-tls/
+              </code>
+              .
+            </li>
+          </ul>
+        </div>
+
+        <p className="text-[11px] text-[var(--color-foreground-subtle)]">
+          API reference:{" "}
+          <strong className="text-[var(--color-foreground)]">
+            documentation/baichuan-api/email.md
+          </strong>{" "}
+          and{" "}
+          <strong className="text-[var(--color-foreground)]">
+            documentation/baichuan-api/time.md
+          </strong>
+          .
+        </p>
+      </div>
+    ),
+  },
+  {
     id: "2026-05-15-talk-to-camera",
     date: "2026-05-15",
     title: "Talk to the camera from the browser",

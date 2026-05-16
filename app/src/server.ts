@@ -62,6 +62,11 @@ import {
   disconnectMqtt,
 } from "./events-manager.js";
 import { initGo2rtc, stopGo2rtc, getGo2rtcManager } from "./go2rtc-manager.js";
+import {
+  startEmailPushServer,
+  stopEmailPushServer,
+  setEmailPushCameraResolver,
+} from "./email-push-server.js";
 import { stopAllWebRTCSessions } from "./webrtc-native.js";
 import { getActiveSessions } from "./stream-diagnostic.js";
 import {
@@ -1032,6 +1037,15 @@ async function shutdown() {
     appLogger.error(`Error stopping go2rtc: ${error}`, { source: "server" });
   }
 
+  // Stop email push SMTP server.
+  try {
+    await stopEmailPushServer();
+  } catch (error) {
+    appLogger.error(`Error stopping email push server: ${error}`, {
+      source: "server",
+    });
+  }
+
   server.close();
   process.exit(0);
 }
@@ -1114,6 +1128,30 @@ server.listen(PORT, async () => {
     initHomeAssistantMqtt();
   } catch (error) {
     appLogger.error(`Error initializing Home Assistant MQTT discovery: ${error}`, { source: "server" });
+  }
+
+  // Email push (SMTP intake) — used by battery cameras that can't keep a
+  // long-lived TCP/ONVIF push subscription. Resolver verifies the cameraId
+  // extracted from the recipient (`cam-<id>@<domain>`) belongs to a
+  // registered camera; settings are persisted, so changes via the tRPC
+  // router survive restarts.
+  try {
+    setEmailPushCameraResolver((candidate) => {
+      const lower = candidate.toLowerCase();
+      const match = settings.cameras.find(
+        (c) =>
+          c.id.toLowerCase() === lower ||
+          sanitizeCameraName(c.name).toLowerCase() === lower,
+      );
+      return match?.id;
+    });
+    if (settings.emailPush?.enabled) {
+      await startEmailPushServer();
+    }
+  } catch (error) {
+    appLogger.error(`Error initializing email push server: ${error}`, {
+      source: "server",
+    });
   }
 
   // Step 1: Start go2rtc when it's the selected restreamer. If the user

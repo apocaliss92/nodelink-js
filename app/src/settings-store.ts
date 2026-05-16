@@ -221,6 +221,54 @@ export const SettingsSchema = z.object({
       stateTopicPrefix: z.string().default("nodelink-js"),
     })
     .default({}),
+
+  /**
+   * Email push: receive SMTP-delivered motion notifications from battery cameras
+   * (Argus, Go, etc.) that don't reliably emit TCP/ONVIF push when sleeping.
+   *
+   * The manager runs an SMTP server. Each camera gets a unique recipient
+   * `cam-<id>@<domain>`; when a mail arrives we parse it and emit a motion
+   * event via the events-manager (same path as native motion).
+   */
+  emailPush: z
+    .object({
+      enabled: z.boolean().default(false),
+      /** SMTP listen port. Default 2525 (avoid privileged 25). */
+      port: z.number().int().min(1).max(65535).default(2525),
+      /** Bind host (0.0.0.0 to accept on LAN). */
+      bindHost: z.string().default("0.0.0.0"),
+      /** Virtual mail domain used for per-camera recipients. */
+      domain: z.string().default("nodelink.local"),
+      /**
+       * If true, the SMTP server requires AUTH PLAIN/LOGIN with the credentials below.
+       * Camera firmwares all support SMTP auth, so this is recommended when the
+       * port is reachable outside LAN.
+       */
+      requireAuth: z.boolean().default(false),
+      authUsername: z.string().default(""),
+      authPassword: z.string().default(""),
+      /**
+       * Enable STARTTLS. The camera will negotiate TLS after EHLO.
+       * Self-signed cert is auto-generated and stored under DATA_PATH/email-push-tls/.
+       */
+      tls: z.boolean().default(false),
+      /** Maximum accepted message size in bytes (default 25 MB). */
+      maxMessageBytes: z.number().int().min(1024).default(25 * 1024 * 1024),
+      /**
+       * Retention for saved snapshot attachments (days). 0 = keep forever.
+       */
+      snapshotRetentionDays: z.number().int().min(0).default(7),
+      /**
+       * Max recent events to keep in memory per camera (for the UI panel).
+       */
+      recentEventsPerCamera: z.number().int().min(0).default(20),
+      /**
+       * Auto-reset delay for the synthetic motion event in ms. After this
+       * window with no more emails, the motion state goes back to clear.
+       */
+      motionResetMs: z.number().int().min(500).default(15_000),
+    })
+    .default({}),
 });
 
 export type Settings = z.infer<typeof SettingsSchema>;

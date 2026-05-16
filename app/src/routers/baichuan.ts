@@ -2151,4 +2151,412 @@ export const baichuanRouter = router({
       const api = await getApi(input);
       return await api.getCmd440(input.channel);
     }),
+
+  // ============ EMAIL (SMTP server config) ============
+
+  getEmail: publicProcedure
+    .meta({
+      description:
+        "Get the SMTP email configuration (cmd_id=42) — server/port/user/recipients/SSL/attachment.",
+    })
+    .input(OptionalConnectionInput)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getEmail();
+    }),
+
+  setEmail: publicProcedure
+    .meta({
+      description:
+        "Update SMTP email configuration (cmd_id=43). Read-modify-write — only the supplied fields are changed.",
+    })
+    .input(
+      OptionalConnectionInput.extend({
+        smtpServer: z.string().optional(),
+        userName: z.string().optional(),
+        password: z.string().optional(),
+        address1: z.string().optional(),
+        address2: z.string().optional(),
+        address3: z.string().optional(),
+        smtpPort: z.number().int().min(1).max(65535).optional(),
+        sendNickname: z.string().optional(),
+        attachment: z.union([z.literal(0), z.literal(1)]).optional(),
+        attachmentType: z.enum(["picture", "video", "none"]).optional(),
+        textType: z.enum(["withText", "noText"]).optional(),
+        ssl: z.union([z.literal(0), z.literal(1)]).optional(),
+        interval: z.number().int().min(0).max(3600).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      const { cameraId: _c, host: _h, port: _p, username: _u, password: _pw, ...patch } =
+        input;
+      void _c;
+      void _h;
+      void _p;
+      void _u;
+      void _pw;
+      await api.setEmail(patch);
+      return { success: true };
+    }),
+
+  testEmail: publicProcedure
+    .meta({
+      description:
+        "Send a test email from the camera (cmd_id=141). The camera performs a real SMTP send — set `timeoutMs` generously (default 60s) because slow MTA negotiation is normal. Returns `{ success: true }` on cam response 200, `{ success: false }` on 482 (server unreachable / bad credentials).",
+    })
+    .input(
+      OptionalConnectionInput.extend({
+        // Same patch as setEmail — letting the caller override fields without
+        // persisting them (handy for "send test before saving").
+        smtpServer: z.string().optional(),
+        userName: z.string().optional(),
+        password: z.string().optional(),
+        address1: z.string().optional(),
+        address2: z.string().optional(),
+        address3: z.string().optional(),
+        smtpPort: z.number().int().min(1).max(65535).optional(),
+        sendNickname: z.string().optional(),
+        attachment: z.union([z.literal(0), z.literal(1)]).optional(),
+        attachmentType: z.enum(["picture", "video", "none"]).optional(),
+        textType: z.enum(["withText", "noText"]).optional(),
+        ssl: z.union([z.literal(0), z.literal(1)]).optional(),
+        interval: z.number().int().min(0).max(3600).optional(),
+        timeoutMs: z.number().int().min(1000).max(180_000).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      const {
+        cameraId: _c,
+        host: _h,
+        port: _p,
+        username: _u,
+        password: _pw,
+        timeoutMs,
+        ...patch
+      } = input;
+      void _c;
+      void _h;
+      void _p;
+      void _u;
+      void _pw;
+      const ok = await api.testEmail(
+        patch,
+        timeoutMs !== undefined ? { timeoutMs } : undefined,
+      );
+      return { success: ok };
+    }),
+
+  setEmailTask: publicProcedure
+    .meta({
+      description:
+        "Update the email-alarm schedule (cmd_id=216). The `typeScheduleList` MUST be the full list from a prior `getEmailTask` (with the slots you want to flip patched in-place) — Reolink drops any entries omitted from the SET.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        enable: z.union([z.literal(0), z.literal(1)]),
+        typeScheduleList: z.array(
+          z.object({
+            type: z.string().min(1),
+            valueTable: z
+              .string()
+              .length(168, "valueTable must be 168 chars (7 days × 24 hours)"),
+          }),
+        ),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.setEmailTask(input.channel, {
+        channelId: input.channel,
+        enable: input.enable,
+        typeScheduleList: input.typeScheduleList,
+      });
+      return { success: true };
+    }),
+
+  // ============ NTP ============
+
+  getNtp: publicProcedure
+    .meta({
+      description:
+        "Get NTP server configuration (cmd_id=38) — enable, server, port, sync interval (minutes).",
+    })
+    .input(OptionalConnectionInput)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getNtp();
+    }),
+
+  setNtp: publicProcedure
+    .meta({
+      description:
+        "Update NTP configuration (cmd_id=39). Read-modify-write.",
+    })
+    .input(
+      OptionalConnectionInput.extend({
+        enable: z.union([z.literal(0), z.literal(1)]).optional(),
+        server: z.string().optional(),
+        synchronizeInterval: z.number().int().min(1).optional(),
+        port: z.number().int().min(1).max(65535).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      const { cameraId: _c, host: _h, port: _p, username: _u, password: _pw, ...patch } =
+        input;
+      void _c;
+      void _h;
+      void _p;
+      void _u;
+      void _pw;
+      await api.setNtp(patch);
+      return { success: true };
+    }),
+
+  // ============ SYSTEM GENERAL SET (timezone / manual time / device name / locale) ============
+
+  setSystemGeneral: publicProcedure
+    .meta({
+      description:
+        "Patch SystemGeneral (cmd_id=105). Supports partial payloads. Pass `manualTime` to set the camera clock explicitly; omit it to keep NTP-driven time. Setting only `deviceName` uses the dedicated `deviceNameOnly=1` shape.",
+    })
+    .input(
+      OptionalConnectionInput.extend({
+        timeZone: z
+          .number()
+          .int()
+          .optional()
+          .describe(
+            "Offset in seconds, POSIX convention (UTC+1 → -3600, UTC-5 → 18000)",
+          ),
+        osdFormat: z.enum(["DMY", "MDY", "YMD"]).optional(),
+        timeFormat: z
+          .union([z.literal(0), z.literal(1)])
+          .optional()
+          .describe("0=24h, 1=12h"),
+        language: z.string().optional(),
+        deviceName: z.string().optional(),
+        loginLock: z.union([z.literal(0), z.literal(1)]).optional(),
+        lockTime: z.number().int().min(0).optional(),
+        allowedTimes: z.number().int().min(0).optional(),
+        manualTime: z
+          .object({
+            year: z.number().int().min(1970),
+            month: z.number().int().min(1).max(12),
+            day: z.number().int().min(1).max(31),
+            hour: z.number().int().min(0).max(23),
+            minute: z.number().int().min(0).max(59),
+            second: z.number().int().min(0).max(59),
+          })
+          .optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      const { cameraId: _c, host: _h, port: _p, username: _u, password: _pw, ...patch } =
+        input;
+      void _c;
+      void _h;
+      void _p;
+      void _u;
+      void _pw;
+      await api.setSystemGeneral(patch);
+      return { success: true };
+    }),
+
+  // ============ DST (Daylight Saving Time) ============
+
+  getDst: publicProcedure
+    .meta({
+      description: "Get DST configuration (cmd_id=106).",
+    })
+    .input(OptionalConnectionInput)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getDst();
+    }),
+
+  setDst: publicProcedure
+    .meta({
+      description: "Patch DST configuration (cmd_id=107). Read-modify-write.",
+    })
+    .input(
+      OptionalConnectionInput.extend({
+        enable: z.union([z.literal(0), z.literal(1)]).optional(),
+        offset: z.number().int().min(0).max(2).optional(),
+        startMonth: z.number().int().min(1).max(12).optional(),
+        startWeekIndex: z.number().int().min(1).max(5).optional(),
+        startWeekday: z
+          .enum([
+            "Sunday",
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+          ])
+          .optional(),
+        startHour: z.number().int().min(0).max(23).optional(),
+        startMinute: z.number().int().min(0).max(59).optional(),
+        startSecond: z.number().int().min(0).max(59).optional(),
+        endMonth: z.number().int().min(1).max(12).optional(),
+        endWeekIndex: z.number().int().min(1).max(5).optional(),
+        endWeekday: z
+          .enum([
+            "Sunday",
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+          ])
+          .optional(),
+        endHour: z.number().int().min(0).max(23).optional(),
+        endMinute: z.number().int().min(0).max(59).optional(),
+        endSecond: z.number().int().min(0).max(59).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      const { cameraId: _c, host: _h, port: _p, username: _u, password: _pw, ...patch } =
+        input;
+      void _c;
+      void _h;
+      void _p;
+      void _u;
+      void _pw;
+      await api.setDst(patch);
+      return { success: true };
+    }),
+
+  // ============ AUTO REBOOT ============
+
+  getAutoReboot: publicProcedure
+    .meta({
+      description:
+        "Get the auto-reboot schedule (cmd_id=101) — enable, day, time.",
+    })
+    .input(OptionalConnectionInput)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getAutoReboot();
+    }),
+
+  patchEmailSchedule: publicProcedure
+    .meta({
+      description:
+        "High-level schedule editor: pick one or more trigger types and set them all to `always` / `never` / explicit windows. Other trigger slots on the camera are left untouched.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        types: z.array(z.string().min(1)).min(1),
+        enable: z.union([z.literal(0), z.literal(1)]).optional(),
+        schedule: z.union([
+          z.object({ kind: z.literal("always") }),
+          z.object({ kind: z.literal("never") }),
+          z.object({
+            kind: z.literal("windows"),
+            windows: z
+              .array(
+                z.object({
+                  days: z.array(z.number().int().min(0).max(6)).min(1),
+                  startHour: z.number().int().min(0).max(24),
+                  endHour: z.number().int().min(0).max(24),
+                }),
+              )
+              .min(1),
+          }),
+        ]),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.patchEmailSchedule(input.channel, {
+        types: input.types,
+        schedule: input.schedule,
+        ...(input.enable !== undefined ? { enable: input.enable } : {}),
+      });
+    }),
+
+  setupEmailPushToManager: publicProcedure
+    .meta({
+      description:
+        "Auto-configure the camera to deliver motion emails to the local manager SMTP server. Orchestrates `setEmail` + `setEmailTask` (and optionally `testEmail`).",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        managerHost: z.string().min(1),
+        managerPort: z.number().int().min(1).max(65535).optional(),
+        recipientLocalPart: z.string().min(1),
+        domain: z.string().optional(),
+        attachmentType: z.enum(["picture", "video", "none"]).optional(),
+        sendNickname: z.string().optional(),
+        interval: z.number().int().min(0).max(3600).optional(),
+        authUsername: z.string().optional(),
+        authPassword: z.string().optional(),
+        triggerTypes: z.array(z.string().min(1)).optional(),
+        runTest: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      const {
+        cameraId: _c,
+        host: _h,
+        port: _p,
+        username: _u,
+        password: _pw,
+        channel: _ch,
+        ...rest
+      } = input;
+      void _c;
+      void _h;
+      void _p;
+      void _u;
+      void _pw;
+      void _ch;
+      return await api.setupEmailPushToManager(rest, input.channel);
+    }),
+
+  setAutoReboot: publicProcedure
+    .meta({
+      description:
+        "Patch the auto-reboot schedule (cmd_id=100). Read-modify-write. `weekDay` accepts `Sunday`..`Saturday` or `everyday`.",
+    })
+    .input(
+      OptionalConnectionInput.extend({
+        enable: z.union([z.literal(0), z.literal(1)]).optional(),
+        weekDay: z
+          .enum([
+            "Sunday",
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "everyday",
+          ])
+          .optional(),
+        hour: z.number().int().min(0).max(23).optional(),
+        minute: z.number().int().min(0).max(59).optional(),
+        second: z.number().int().min(0).max(59).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      const { cameraId: _c, host: _h, port: _p, username: _u, password: _pw, ...patch } =
+        input;
+      void _c;
+      void _h;
+      void _p;
+      void _u;
+      void _pw;
+      await api.setAutoReboot(patch);
+      return { success: true };
+    }),
 });
