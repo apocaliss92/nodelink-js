@@ -140,11 +140,34 @@ export const baichuanRouter = router({
   // ============ DEVICE INFO ============
 
   getInfo: publicProcedure
-    .meta({ description: "Get basic device information" })
-    .input(OptionalConnectionInput)
+    .meta({
+      description:
+        "Get basic device information. Omit `channel` for host-level info (cmd_id=80); pass a channel index for channel-specific DevInfo (cmd_id=318). `tags` restricts which fields are extracted.",
+    })
+    .input(
+      OptionalConnectionInput.extend({
+        channel: z.number().int().min(0).optional(),
+        tags: z
+          .array(
+            z.enum([
+              "type",
+              "hardwareVersion",
+              "firmwareVersion",
+              "itemNo",
+              "serialNumber",
+              "name",
+            ]),
+          )
+          .optional(),
+        timeoutMs: z.number().int().min(100).optional(),
+      }),
+    )
     .query(async ({ input }) => {
       const api = await getApi(input);
-      return await api.getInfo();
+      const options: Parameters<typeof api.getInfo>[1] = {};
+      if (input.tags) options.tags = input.tags;
+      if (input.timeoutMs !== undefined) options.timeoutMs = input.timeoutMs;
+      return await api.getInfo(input.channel, options);
     }),
 
   getAbilityInfo: publicProcedure
@@ -198,34 +221,62 @@ export const baichuanRouter = router({
   // ============ VIDEO CLIPS / RECORDINGS ============
 
   getVideoclips: publicProcedure
-    .meta({ description: "Search for recorded video clips" })
+    .meta({
+      description:
+        "Search for recorded video clips. `recordType` accepts a comma-separated list (default: all types). `uid` overrides UID auto-discovery. `timeoutMs` defaults to 15000.",
+    })
     .input(
       ConnectionWithChannel.merge(
         z.object({
           startTime: z.string().transform((s) => new Date(s)),
           endTime: z.string().transform((s) => new Date(s)),
           streamType: z.enum(["mainStream", "subStream"]).optional(),
+          recordType: z.string().optional(),
+          uid: z.string().optional(),
+          timeoutMs: z.number().int().min(1000).optional(),
+          maxIterations: z.number().int().min(1).max(500).optional(),
         }),
       ),
     )
     .query(async ({ input }) => {
       const api = await getApi(input);
-      return await api.getVideoclips({
+      const params: Parameters<typeof api.getVideoclips>[0] = {
         channel: input.channel,
         start: input.startTime,
         end: input.endTime,
-        streamType: input.streamType,
-      });
+      };
+      if (input.streamType) params.streamType = input.streamType;
+      if (input.recordType) params.recordType = input.recordType;
+      if (input.uid) params.uid = input.uid;
+      if (input.timeoutMs !== undefined) params.timeoutMs = input.timeoutMs;
+      if (input.maxIterations !== undefined)
+        params.maxIterations = input.maxIterations;
+      return await api.getVideoclips(params);
     }),
 
   // ============ SNAPSHOTS ============
 
   getSnapshot: publicProcedure
-    .meta({ description: "Capture a snapshot from the camera" })
-    .input(ConnectionWithChannel)
+    .meta({
+      description:
+        "Capture a snapshot from the camera. `variant` selects the lens on dual-lens models (default=wide, telephoto/autotrack=tele lens). `onNvr` must be true when the camera is behind an NVR/Hub so the tele lens is selected via logic-channel.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        variant: z.enum(["default", "autotrack", "telephoto"]).optional(),
+        onNvr: z.boolean().optional(),
+        streamType: z.enum(["main", "sub"]).optional(),
+        timeoutMs: z.number().int().min(1000).optional(),
+      }),
+    )
     .query(async ({ input }) => {
       const api = await getApi(input);
-      const buffer = await api.getSnapshot(input.channel);
+      const options: Parameters<typeof api.getSnapshot>[1] = {};
+      if (input.variant) options.variant = input.variant;
+      if (input.onNvr !== undefined) options.onNvr = input.onNvr;
+      if (input.streamType) options.streamType = input.streamType;
+      if (input.timeoutMs !== undefined) options.timeoutMs = input.timeoutMs;
+      const buffer = await api.getSnapshot(input.channel, options);
       return {
         base64: buffer.toString("base64"),
         mimeType: "image/jpeg",
@@ -236,7 +287,10 @@ export const baichuanRouter = router({
   // ============ PTZ CONTROL ============
 
   ptzControl: publicProcedure
-    .meta({ description: "Send PTZ command" })
+    .meta({
+      description:
+        "Send PTZ command. `speed` (1-64) and `autoStopMs` are optional — the library applies its own defaults (speed≈32, autoStopMs=500) when omitted. Pass `autoStopMs: 0` to disable the automatic stop.",
+    })
     .input(
       ConnectionWithChannel.merge(
         z.object({
@@ -250,20 +304,21 @@ export const baichuanRouter = router({
             "FocusNear",
             "FocusFar",
           ]),
-          speed: z.number().min(1).max(64).default(32),
+          speed: z.number().int().min(1).max(64).optional(),
           action: z.enum(["start", "stop"]).default("start"),
-          autoStopMs: z.number().optional().default(500),
+          autoStopMs: z.number().int().min(0).optional(),
         }),
       ),
     )
     .mutation(async ({ input }) => {
       const api = await getApi(input);
-      await api.ptz(input.channel, {
+      const cmd: import("@apocaliss92/nodelink-js").PtzCommand = {
         action: input.action,
         command: input.command,
-        speed: input.speed,
-        autoStopMs: input.autoStopMs,
-      });
+      };
+      if (input.speed !== undefined) cmd.speed = input.speed;
+      if (input.autoStopMs !== undefined) cmd.autoStopMs = input.autoStopMs;
+      await api.ptz(input.channel, cmd);
       return { success: true };
     }),
 
@@ -1088,5 +1143,1012 @@ export const baichuanRouter = router({
     .mutation(async ({ input }) => {
       const api = await getApi(input);
       return await api.setDingDongSilent(input.chimeId, input.time, input.channel);
+    }),
+
+  // ============ PTZ ADVANCED / AUTOTRACKING / ZOOM ============
+
+  zoomToFactor: publicProcedure
+    .meta({
+      description:
+        "Zoom to an absolute zoom factor (e.g. 1.0 = wide, 2.0 = 2x). The library clamps to the camera's reported min/max zoom.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        zoomFactor: z.number().positive(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.zoomToFactor(input.zoomFactor, input.channel);
+      return { success: true };
+    }),
+
+  getAutoFocus: publicProcedure
+    .meta({
+      description:
+        "Get autofocus configuration (cmd_id=224). Returns `<AutoFocus>` block with `disable` (0 = AF on, 1 = AF off).",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getAutoFocus(input.channel);
+    }),
+
+  setAutoFocus: publicProcedure
+    .meta({
+      description:
+        "Enable or disable autofocus (cmd_id=225). `disable=true` turns AF off, `disable=false` turns it on.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        disable: z.boolean(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.setAutoFocus(input.channel, input.disable);
+      return { success: true };
+    }),
+
+  probeAutotrackingSupport: publicProcedure
+    .meta({
+      description:
+        "Probe whether autotracking is supported on this channel via AiCfg (cmd_id=299). Uses smartTrackMode>0 as the indicator (more reliable than SupportInfo.autoPt).",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.probeAutotrackingSupport(input.channel);
+    }),
+
+  getAutotracking: publicProcedure
+    .meta({
+      description:
+        "Get autotracking (smart-track) state and config via AiCfg (cmd_id=299).",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getAutotracking(input.channel);
+    }),
+
+  setAutotracking: publicProcedure
+    .meta({
+      description:
+        "Enable or disable autotracking (smart-track) via AiCfg (cmd_id=300).",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        enabled: z.boolean(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.setAutotracking(input.enabled, input.channel);
+      return { success: true };
+    }),
+
+  setAutotrackingSettings: publicProcedure
+    .meta({
+      description:
+        "Update autotracking detail settings (smartTrackType, stop/disappear delays) via AiCfg (cmd_id=300). Does not change enable state.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        smartTrackType: z
+          .string()
+          .optional()
+          .describe("Comma-separated detect types, e.g. 'people,vehicle'"),
+        smartTrackObjectStopDelay: z.number().int().min(0).optional(),
+        smartTrackObjectDisappearDelay: z.number().int().min(0).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      const { cameraId: _c, channel: _ch, ...settings } = input;
+      void _c;
+      void _ch;
+      await api.setAutotrackingSettings(input.channel, settings);
+      return { success: true };
+    }),
+
+  // ============ FLOODLIGHT / SIREN / IR ============
+
+  getFloodlightOnMotion: publicProcedure
+    .meta({
+      description:
+        "Get floodlight-on-motion state via FloodlightTask (cmd_id=289). Returns floodlightOnMotion flag plus enable/brightness/duration/detectType.",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getFloodlightOnMotion(input.channel);
+    }),
+
+  setFloodlightOnMotion: publicProcedure
+    .meta({
+      description:
+        "Enable or disable floodlight turning on automatically when motion is detected (cmd_id=290).",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        on: z.boolean(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.setFloodlightOnMotion(input.on, input.channel);
+      return { success: true };
+    }),
+
+  setFloodlightSettings: publicProcedure
+    .meta({
+      description:
+        "Update floodlight parameters (duration, detectType, brightness) without touching the enable state (cmd_id=290).",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        duration: z.number().int().min(0).optional(),
+        detectType: z.string().optional(),
+        brightness: z.number().int().min(0).max(100).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      const { cameraId: _c, channel: _ch, ...settings } = input;
+      void _c;
+      void _ch;
+      await api.setFloodlightSettings(input.channel, settings);
+      return { success: true };
+    }),
+
+  setWhiteLedState: publicProcedure
+    .meta({
+      description:
+        "Manually turn the white LED / spotlight on/off and/or set brightness (cmd_id=288 / 290).",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        on: z.boolean().optional(),
+        brightness: z.number().int().min(0).max(100).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.setWhiteLedState(input.channel, input.on, input.brightness);
+      return { success: true };
+    }),
+
+  setSiren: publicProcedure
+    .meta({
+      description:
+        "Trigger or stop the siren. Pass `on:true` to start, `on:false` to stop. Optional `duration` (times count) switches to times mode.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        on: z.boolean().optional(),
+        duration: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe("Number of times to play the siren (times mode)"),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.setSiren(input.channel, input.on, input.duration);
+      return { success: true };
+    }),
+
+  getSirenOnMotion: publicProcedure
+    .meta({
+      description:
+        "Get siren-on-motion state via AudioTask (cmd_id=232). Returns enable flag + per-type schedule list.",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getSirenOnMotion(input.channel);
+    }),
+
+  setSirenOnMotion: publicProcedure
+    .meta({
+      description:
+        "Enable or disable siren-on-motion via AudioTask (cmd_id=231). When omitted, a default 24/7 schedule for MD/people/dog_cat is used.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        enable: z.union([z.literal(0), z.literal(1)]),
+        typeScheduleList: z
+          .array(
+            z.object({
+              type: z.string(),
+              valueTable: z.string(),
+            }),
+          )
+          .optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.setSirenOnMotion(
+        {
+          enable: input.enable,
+          ...(input.typeScheduleList
+            ? { typeScheduleList: input.typeScheduleList }
+            : {}),
+        },
+        input.channel,
+      );
+      return { success: true };
+    }),
+
+  getSirenStatus: publicProcedure
+    .meta({
+      description:
+        "Get current siren status (host-level). Reports whether the siren alarm is currently active.",
+    })
+    .input(OptionalConnectionInput)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getSirenStatus();
+    }),
+
+  getIrLights: publicProcedure
+    .meta({
+      description:
+        "Get IR / status LED state (cmd_id=208). Returns IRLedBrightness, IR state, status LED state, doorbell light state.",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getIrLights(input.channel);
+    }),
+
+  setIrLights: publicProcedure
+    .meta({
+      description:
+        "Set IR / status LED state (cmd_id=209). Patches IR state (On/Off/Auto), status LED, doorbell LED, IR brightness (0-255).",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        irState: z.enum(["On", "Off", "Auto"]).optional(),
+        lightState: z.enum(["On", "Off"]).optional(),
+        doorbellLightState: z.enum(["On", "Off"]).optional(),
+        irBrightness: z.number().int().min(0).max(255).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      const { cameraId: _c, channel: _ch, ...patch } = input;
+      void _c;
+      void _ch;
+      await api.setIrLights(input.channel, patch);
+      return { success: true };
+    }),
+
+  // ============ MOTION / PIR (SET) ============
+
+  getMotionState: publicProcedure
+    .meta({
+      description:
+        "Get the current motion-detection state for a channel (true = motion currently detected).",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getMotionState(input.channel);
+    }),
+
+  setPirInfo: publicProcedure
+    .meta({
+      description:
+        "Set PIR (Passive Infrared) settings (cmd_id=213). `sensitive` is 0-100 (higher = more sensitive — the library maps to the raw inverted scale).",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        enable: z.union([z.literal(0), z.literal(1)]),
+        sensitive: z.number().int().min(0).max(100).optional(),
+        reduceAlarm: z.union([z.literal(0), z.literal(1)]).optional(),
+        interval: z.number().int().min(0).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      const { cameraId: _c, channel: _ch, ...params } = input;
+      void _c;
+      void _ch;
+      await api.setPirInfo(input.channel, params);
+      return { success: true };
+    }),
+
+  setMotionDetection: publicProcedure
+    .meta({
+      description:
+        "Toggle motion detection on/off and optionally update sensitivity (0-50). Convenience wrapper over setMotionAlarmFull.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        enabled: z.boolean(),
+        sensitivity: z.number().int().min(0).max(50).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.setMotionDetection(
+        input.channel,
+        input.enabled,
+        input.sensitivity,
+      );
+      return { success: true };
+    }),
+
+  // ============ AI ADVANCED ============
+
+  getAiDetectTypes: publicProcedure
+    .meta({
+      description:
+        "Return the AI object-detection types supported by this channel (cmd_id=299 → detectType list, e.g. ['people','vehicle','dog_cat']).",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getAiDetectTypes(input.channel);
+    }),
+
+  getAiDenoise: publicProcedure
+    .meta({
+      description: "Get AI noise-reduction config (enable + level 0-100).",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getAiDenoise(input.channel);
+    }),
+
+  // ============ PRIVACY MASK ============
+
+  getMask: publicProcedure
+    .meta({
+      description:
+        "Get privacy mask configuration (cmd_id=52). Returns `<Shelter>` block — enable flag + shelter list.",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getMask(input.channel);
+    }),
+
+  setMask: publicProcedure
+    .meta({
+      description:
+        "Toggle privacy mask enable flag (cmd_id=53). Shelter zone editing is not supported via this call.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        enable: z.boolean(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.setMask(input.channel, { enable: input.enable });
+      return { success: true };
+    }),
+
+  // ============ ISP / VIDEO INPUT ============
+
+  getIsp: publicProcedure
+    .meta({
+      description:
+        "Get ISP / VideoInput configuration (cmd_id=26). Returns merged VideoInput + InputAdvanceCfg blob (day/night mode, exposure, HDR, binning, etc.).",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getIsp(input.channel);
+    }),
+
+  setIsp: publicProcedure
+    .meta({
+      description:
+        "Patch ISP fields (day/night, exposure, HDR, binning mode, day/night threshold). Each field is optional; omitted fields are left untouched.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        dayNight: z.string().optional(),
+        exposure: z.string().optional(),
+        binningMode: z.number().int().min(0).optional(),
+        hdr: z.union([z.literal(0), z.literal(1)]).optional(),
+        dayNightThreshold: z.number().int().min(0).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      const { cameraId: _c, channel: _ch, ...patch } = input;
+      void _c;
+      void _ch;
+      await api.setIsp(input.channel, patch);
+      return { success: true };
+    }),
+
+  // ============ SLEEP / WAKE / BATTERY ============
+
+  isSleeping: publicProcedure
+    .meta({
+      description:
+        "Check if a battery camera appears to be sleeping. Best-effort: returns true if GetBatteryInfo times out within ~5s.",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.isSleeping(input.channel);
+    }),
+
+  probeSleepStatus: publicProcedure
+    .meta({
+      description:
+        "Active sleep probe with a short timeout (UDP/battery only). Caches result for `minIntervalMs` to avoid keeping the camera awake.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        timeoutMs: z.number().int().min(50).optional(),
+        attempts: z.number().int().min(1).optional(),
+        minIntervalMs: z.number().int().min(0).optional(),
+        cmdId: z.number().int().min(0).optional(),
+      }),
+    )
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      const { cameraId: _c, ...probeOpts } = input;
+      void _c;
+      return await api.probeSleepStatus(probeOpts);
+    }),
+
+  wakeUp: publicProcedure
+    .meta({
+      description:
+        "Wake up a sleeping battery camera by sending a waking command (GetEnc cmd_id=56). Retries up to `attempts` times with backoff.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        timeoutMs: z.number().int().min(100).optional(),
+        attempts: z.number().int().min(1).max(10).optional(),
+        waitAfterWakeMs: z.number().int().min(0).optional(),
+        backoffMs: z.number().int().min(0).optional(),
+        reconnect: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      const { cameraId: _c, channel: _ch, ...wakeOpts } = input;
+      void _c;
+      void _ch;
+      await api.wakeUp(input.channel, wakeOpts);
+      return { success: true };
+    }),
+
+  getAllChannelsBatteryInfo: publicProcedure
+    .meta({
+      description:
+        "Fetch battery info for all NVR/Hub channels via CGI (merged with channel-status sleep flag). Standalone cameras return their single channel.",
+    })
+    .input(OptionalConnectionInput)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getAllChannelsBatteryInfo();
+    }),
+
+  getBatteryStatus: publicProcedure
+    .meta({
+      description:
+        "Comprehensive battery status with sleep state. Returns battery info AND a `sleeping` flag (true if the camera didn't respond).",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getBatteryStatus(input.channel);
+    }),
+
+  // ============ CAPABILITIES / SUPPORT ============
+
+  getDeviceCapabilities: publicProcedure
+    .meta({
+      description:
+        "Get full device capability set for a channel (SupportInfo + AbilityInfo + AI detect types + floodlight probe + chime discovery). Cached 5 min per channel.",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getDeviceCapabilities(input.channel);
+    }),
+
+  getAbilityVersion: publicProcedure
+    .meta({
+      description:
+        "Return the version number for a specific capability (0 = not supported). Channel-scoped; pass `channel:null` for host-level.",
+    })
+    .input(
+      OptionalConnectionInput.extend({
+        capability: z.string().min(1),
+        channel: z.number().int().nullable().optional(),
+      }),
+    )
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getAbilityVersion(
+        input.capability,
+        input.channel ?? undefined,
+      );
+    }),
+
+  getAbilitySupport: publicProcedure
+    .meta({
+      description:
+        "Get the raw AbilitySupport XML blob (cmd_id derived from pcap settings). Complementary to getSupportInfo.",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getAbilitySupport(input.channel);
+    }),
+
+  getSupportInfo: publicProcedure
+    .meta({
+      description:
+        "Get the device SupportInfo block (cmd_id=199). Host-level ptzMode and per-channel flags (battery, ledCtrl, lightType, autoPt, etc.).",
+    })
+    .input(OptionalConnectionInput)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getSupportInfo();
+    }),
+
+  getDualLensChannelInfo: publicProcedure
+    .meta({
+      description:
+        "Analyze whether the channel belongs to a dual-lens camera (TrackMix, Duo) and report which logical lens it represents.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        onNvr: z
+          .boolean()
+          .optional()
+          .describe(
+            "True when the camera is behind an NVR/Hub (tele lens is usually exposed as an autotrack/logic channel)",
+          ),
+      }),
+    )
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getDualLensChannelInfo(input.channel, {
+        ...(input.onNvr !== undefined ? { onNvr: input.onNvr } : {}),
+      });
+    }),
+
+  // ============ DEVICE / NVR HELPERS ============
+
+  isNvrDevice: publicProcedure
+    .meta({
+      description:
+        "Return true if the connected device is an NVR/Hub (i.e. exposes multiple camera channels).",
+    })
+    .input(OptionalConnectionInput)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.isNvrDevice();
+    }),
+
+  getNvrChannelsSummary: publicProcedure
+    .meta({
+      description:
+        "Per-channel summary for an NVR/Hub (name, UID, online/sleeping, model, battery/doorbell flags). Defaults to the CGI path; pass source='baichuan' to derive channels from the push cache.",
+    })
+    .input(
+      OptionalConnectionInput.extend({
+        channels: z.array(z.number().int().min(0)).optional(),
+        source: z.enum(["cgi", "baichuan"]).optional(),
+      }),
+    )
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getNvrChannelsSummary({
+        ...(input.channels ? { channels: input.channels } : {}),
+        ...(input.source ? { source: input.source } : {}),
+      });
+    }),
+
+  getNvrDeviceGroups: publicProcedure
+    .meta({
+      description:
+        "Group NVR/Hub channels by physical device — collapses dual-lens / multifocal cameras (TrackMix, Duo) into a single group with multiple channels.",
+    })
+    .input(
+      OptionalConnectionInput.extend({
+        channels: z.array(z.number().int().min(0)).optional(),
+      }),
+    )
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getNvrDeviceGroups({
+        ...(input.channels ? { channels: input.channels } : {}),
+      });
+    }),
+
+  getAllChannelsEvents: publicProcedure
+    .meta({
+      description:
+        "CGI passthrough — fetch the latest motion/AI event states across all channels in a single round-trip.",
+    })
+    .input(OptionalConnectionInput)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getAllChannelsEvents();
+    }),
+
+  // ============ NETWORK / PORTS (EXTENDED) ============
+
+  getNetPort: publicProcedure
+    .meta({
+      description:
+        "Get raw per-protocol port config (cmd_id=37): rtsp/rtmp/onvif/http/https/server. Same data as getPorts.",
+    })
+    .input(OptionalConnectionInput)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getNetPort();
+    }),
+
+  setPortEnabled: publicProcedure
+    .meta({
+      description:
+        "Enable or disable a single service port (cmd_id=36). `service` selects which protocol to toggle. For multi-port updates with custom port numbers, use setNetPort.",
+    })
+    .input(
+      OptionalConnectionInput.extend({
+        service: z.enum(["rtsp", "rtmp", "onvif", "http", "https"]),
+        enable: z.boolean(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.setPortEnabled({ port: input.service, enable: input.enable });
+      return { success: true };
+    }),
+
+  // ============ TWO-WAY TALK (RAW) ============
+
+  getTalkAbility: publicProcedure
+    .meta({
+      description:
+        "Get talk (two-way audio) ability — supported audio formats, sample rates, bitrates.",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getTalkAbility(input.channel);
+    }),
+
+  talkReset: publicProcedure
+    .meta({
+      description:
+        "Reset the talk session (cmd_id=11). Useful when TalkConfig returned responseCode=422.",
+    })
+    .input(ConnectionWithChannel)
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.talkReset(input.channel);
+      return { success: true };
+    }),
+
+  talkConfig: publicProcedure
+    .meta({
+      description:
+        "Send a raw TalkConfig XML payload (cmd_id=201). Auto-retries with TalkReset on 422.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        payloadXml: z.string().min(1),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.talkConfig(input.payloadXml, input.channel);
+      return { success: true };
+    }),
+
+  // ============ RECORDING / PLAYBACK HELPERS ============
+
+  getRecordingPlaybackUrls: publicProcedure
+    .meta({
+      description:
+        "Build playback URLs (currently RTMP VOD) for a previously discovered recording filename.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        fileName: z.string().min(1),
+        streamType: z.enum(["mainStream", "subStream"]).optional(),
+        ensureEnabled: z.boolean().optional(),
+      }),
+    )
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getRecordingPlaybackUrls({
+        channel: input.channel,
+        fileName: input.fileName,
+        ...(input.streamType ? { streamType: input.streamType } : {}),
+        ...(input.ensureEnabled !== undefined
+          ? { ensureEnabled: input.ensureEnabled }
+          : {}),
+      });
+    }),
+
+  getRecordingThumbnail: publicProcedure
+    .meta({
+      description:
+        "Extract a thumbnail (first keyframe → JPEG) from a recording by replaying it natively and decoding via ffmpeg. Returns base64 JPEG.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        fileName: z.string().min(1),
+        timeoutMs: z.number().int().min(1000).optional(),
+        ffmpegPath: z.string().optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      const buffer = await api.getRecordingThumbnail({
+        channel: input.channel,
+        fileName: input.fileName,
+        ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+        ...(input.ffmpegPath ? { ffmpegPath: input.ffmpegPath } : {}),
+      });
+      return {
+        base64: buffer.toString("base64"),
+        mimeType: "image/jpeg",
+        size: buffer.length,
+      };
+    }),
+
+  getVideoclipThumbnail: publicProcedure
+    .meta({
+      description:
+        "Snapshot from a recorded videoclip via the camera's native snapshot endpoint (sub stream by default). Returns the result struct as-is.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        time: z.string().transform((s) => new Date(s)),
+        endTime: z
+          .string()
+          .optional()
+          .transform((s) => (s ? new Date(s) : undefined)),
+        snapType: z.enum(["main", "sub"]).optional(),
+        uid: z.string().optional(),
+        timeoutMs: z.number().int().min(1000).optional(),
+        isNvr: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      const params: Parameters<typeof api.getVideoclipThumbnail>[0] = {
+        channel: input.channel,
+        time: input.time,
+      };
+      if (input.endTime) params.endTime = input.endTime;
+      if (input.snapType) params.snapType = input.snapType;
+      if (input.uid) params.uid = input.uid;
+      if (input.timeoutMs !== undefined) params.timeoutMs = input.timeoutMs;
+      if (input.isNvr !== undefined) params.isNvr = input.isNvr;
+      return await api.getVideoclipThumbnail(params);
+    }),
+
+  snapshotFromRecording: publicProcedure
+    .meta({
+      description:
+        "Snapshot a single frame from a recording at a given seek offset (via ffmpeg). Returns base64 JPEG.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        fileName: z.string().min(1),
+        seekSeconds: z.number().min(0).optional(),
+        streamType: z.enum(["mainStream", "subStream"]).optional(),
+        ffmpegPath: z.string().optional(),
+        timeoutMs: z.number().int().min(1000).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      const params: Parameters<typeof api.snapshotFromRecording>[0] = {
+        channel: input.channel,
+        fileName: input.fileName,
+      };
+      if (input.seekSeconds !== undefined)
+        params.seekSeconds = input.seekSeconds;
+      if (input.streamType) params.streamType = input.streamType;
+      if (input.ffmpegPath) params.ffmpegPath = input.ffmpegPath;
+      if (input.timeoutMs !== undefined) params.timeoutMs = input.timeoutMs;
+      const buffer = await api.snapshotFromRecording(params);
+      return {
+        base64: buffer.toString("base64"),
+        mimeType: "image/jpeg",
+        size: buffer.length,
+      };
+    }),
+
+  // ============ ADDITIONAL GETTERS ============
+
+  getVideoInput: publicProcedure
+    .meta({
+      description:
+        "Get VideoInput + InputAdvanceCfg block (brightness, contrast, exposure, etc.). Same data as getIsp / getImage.",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getVideoInput(input.channel);
+    }),
+
+  getDayRecords: publicProcedure
+    .meta({
+      description:
+        "Get the recording-days bitmap for the current month — which days have recordings available.",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getDayRecords(input.channel);
+    }),
+
+  getDayNightThreshold: publicProcedure
+    .meta({
+      description:
+        "Get the day/night IR-cut switching threshold (cur + range). Used together with setIsp({ dayNightThreshold }).",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getDayNightThreshold(input.channel);
+    }),
+
+  getEmailTask: publicProcedure
+    .meta({
+      description:
+        "Get the channel's email-notification schedule and trigger list.",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getEmailTask(input.channel);
+    }),
+
+  getFtpTask: publicProcedure
+    .meta({
+      description: "Get the channel's FTP upload schedule and trigger list.",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getFtpTask(input.channel);
+    }),
+
+  getTimelapseCfg: publicProcedure
+    .meta({
+      description:
+        "Get timelapse configuration (interval, output, schedule) for the channel.",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getTimelapseCfg(input.channel);
+    }),
+
+  getKitApCfg: publicProcedure
+    .meta({
+      description:
+        "Get the kit access-point configuration (used by battery kits in pairing/AP mode).",
+    })
+    .input(OptionalConnectionInput)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getKitApCfg();
+    }),
+
+  getRecEncCfg: publicProcedure
+    .meta({
+      description:
+        "Get recording encoding config (resolution/bitrate/codec per recorded stream).",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getRecEncCfg(input.channel);
+    }),
+
+  getAccessUserList: publicProcedure
+    .meta({
+      description:
+        "Get the list of users with access to the device (cmd_id for access user list).",
+    })
+    .input(OptionalConnectionInput)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getAccessUserList();
+    }),
+
+  getOnlineUserList: publicProcedure
+    .meta({
+      description:
+        "Get the list of currently online user sessions (cmd_id=120).",
+    })
+    .input(OptionalConnectionInput)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getOnlineUserList();
+    }),
+
+  getOnlineUserSessionsForUi: publicProcedure
+    .meta({
+      description:
+        "UI-friendly multi-line summary of currently online sessions (built on top of getOnlineUserList).",
+    })
+    .input(OptionalConnectionInput)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getOnlineUserSessionsForUi();
+    }),
+
+  getSupport: publicProcedure
+    .meta({
+      description:
+        "Raw Support block (ptzMode, channelNum, wifi flags, rtsp, rtmp, etc.) — alternative parsing of cmd_id GetSupport.",
+    })
+    .input(OptionalConnectionInput)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getSupport();
+    }),
+
+  getCmd123: publicProcedure
+    .meta({
+      description:
+        "Inspection helper — raw XML→JSON dump for cmd_id 123 (no documented schema yet).",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getCmd123(input.channel);
+    }),
+
+  getCmd209: publicProcedure
+    .meta({
+      description:
+        "Inspection helper — raw XML→JSON dump for cmd_id 209 (no documented schema yet).",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getCmd209(input.channel);
+    }),
+
+  getCmd265: publicProcedure
+    .meta({
+      description:
+        "Inspection helper — raw XML→JSON dump for cmd_id 265 (no documented schema yet).",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getCmd265(input.channel);
+    }),
+
+  getCmd440: publicProcedure
+    .meta({
+      description:
+        "Inspection helper — raw XML→JSON dump for cmd_id 440 (no documented schema yet).",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getCmd440(input.channel);
     }),
 });

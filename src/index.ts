@@ -89,3 +89,11 @@ export {
   fullCoverageScope,
 } from "./reolink/baichuan/utils/motionZone";
 export type { MotionZoneScope } from "./reolink/baichuan/utils/motionZone";
+
+// Auxiliary public types referenced by ReolinkBaichuanApi method signatures
+export type {
+  XmlJsonPrimitive,
+  XmlJsonValue,
+  XmlJsonObject,
+} from "./reolink/baichuan/utils/xml";
+export type { FloodlightTaskState } from "./reolink/baichuan/utils/whiteLed";
