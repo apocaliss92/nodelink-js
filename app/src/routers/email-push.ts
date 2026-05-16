@@ -79,6 +79,8 @@ export const emailPushRouter = router({
   /**
    * Read the persisted emailPush settings block (sans secrets — auth password
    * is exposed as a boolean so the UI can show whether it's configured).
+   * `featureEnabled` is the master flag the UI checks before rendering its
+   * email-push tabs and is intentionally never settable through this router.
    */
   getSettings: publicProcedure
     .meta({ description: "Get email-push configuration (password redacted)" })

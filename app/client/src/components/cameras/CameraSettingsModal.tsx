@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Dialog, DialogContent } from "@camstack/ui-library";
+import { useEmailPushFeature } from "../../hooks/useEmailPushFeature";
 import {
   Video,
   Image as ImageIcon,
@@ -144,8 +145,19 @@ export function CameraSettingsModal({
   channel,
   onClose,
 }: CameraSettingsModalProps) {
-  const [activeTabId, setActiveTabId] = useState<string>(TABS[0]?.id ?? "streams");
-  const activeTab = TABS.find((t) => t.id === activeTabId) ?? TABS[0]!;
+  const emailPushFeature = useEmailPushFeature();
+  // Filter out experimental tabs that are disabled by the master feature
+  // flag. The flag is intentionally not user-toggleable.
+  const visibleTabs = useMemo(
+    () =>
+      TABS.filter((t) => (t.id === "email-push" ? emailPushFeature.enabled : true)),
+    [emailPushFeature.enabled],
+  );
+  const [activeTabId, setActiveTabId] = useState<string>(
+    visibleTabs[0]?.id ?? TABS[0]?.id ?? "streams",
+  );
+  const activeTab =
+    visibleTabs.find((t) => t.id === activeTabId) ?? visibleTabs[0]!;
   const ActiveComponent = activeTab.Component;
 
   return (
@@ -166,7 +178,7 @@ export function CameraSettingsModal({
               </div>
             </div>
             <nav className="flex flex-col gap-0.5 px-2">
-              {TABS.map((tab) => {
+              {visibleTabs.map((tab) => {
                 const Icon = tab.icon;
                 const active = tab.id === activeTabId;
                 return (

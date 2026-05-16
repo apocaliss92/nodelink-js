@@ -1145,7 +1145,9 @@ server.listen(PORT, async () => {
       );
       return match?.id;
     });
-    if (settings.emailPush?.enabled) {
+    // featureEnabled is the master kill switch — when off the SMTP intake
+    // never starts, regardless of the user-facing `enabled` toggle.
+    if (settings.emailPush?.featureEnabled && settings.emailPush?.enabled) {
       await startEmailPushServer();
     }
   } catch (error) {

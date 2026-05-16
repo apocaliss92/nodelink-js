@@ -842,16 +842,12 @@ function ScheduleGridEditor({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Whenever the user picks a different trigger type, reload the draft.
+  // Reload draft whenever the trigger type changes, OR the upstream task
+  // mutates (loadValueTable is a useCallback bound to `task`, so it changes
+  // whenever the parent re-fetches after a Save).
   useEffect(() => {
     setDraft(loadValueTable(selectedType));
   }, [selectedType, loadValueTable]);
-
-  // Reload draft when the task changes upstream (e.g. after a Save).
-  useEffect(() => {
-    setDraft(loadValueTable(selectedType));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [task]);
 
   const cellAt = (day: number, hour: number): number => day * 24 + hour;
 

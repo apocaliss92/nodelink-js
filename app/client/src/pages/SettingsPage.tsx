@@ -3,6 +3,7 @@ import { fetchUpdates, trpcMutation, trpcQuery, type UpdateInfo } from "../api";
 import { useAuth } from "../auth";
 import { getStoredAuthToken, setStoredAuthToken } from "../authToken";
 import { EmailPushSettingsSection } from "../components/EmailPushSettingsSection";
+import { useEmailPushFeature } from "../hooks/useEmailPushFeature";
 
 /** Build Frigate camera YAML from streamInfo + feature options. */
 function buildFrigateYaml(
@@ -282,6 +283,7 @@ export default function SettingsPage() {
     | "metrics"
     | "email-push";
   const [activeTab, setActiveTab] = useState<TabId>("general");
+  const emailPushFeature = useEmailPushFeature();
 
   const dirty = useMemo(() => settings !== null, [settings]);
 
@@ -739,7 +741,11 @@ export default function SettingsPage() {
                 ["webrtc", "WebRTC"],
                 ["proxy", "Proxy"],
                 ["metrics", "Metrics"],
-                ["email-push", "Email Push"],
+                // Email Push is hidden behind the master feature flag; only
+                // surface the tab when the flag is on.
+                ...(emailPushFeature.enabled
+                  ? ([["email-push", "Email Push"]] as const)
+                  : ([] as const)),
               ] as const
             ).map(([id, label]) => (
               <button

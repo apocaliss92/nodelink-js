@@ -53,6 +53,23 @@ export const NEWS_ITEMS: NewsItem[] = [
           </h4>
           <ol className="list-decimal pl-5 space-y-1">
             <li>
+              <strong className="text-[var(--color-foreground)]">
+                Unlock the feature first.
+              </strong>{" "}
+              The Email Push subsystem is gated behind a master flag —
+              edit{" "}
+              <code className="rounded bg-[var(--color-surface-hover)] px-1 text-[11px]">
+                DATA_PATH/settings.json
+              </code>{" "}
+              and set{" "}
+              <code className="rounded bg-[var(--color-surface-hover)] px-1 text-[11px]">
+                emailPush.featureEnabled
+              </code>{" "}
+              to <code>true</code>, then restart the manager. The{" "}
+              <em>Email Push</em> tab in the camera panel and the matching
+              Settings section will appear.
+            </li>
+            <li>
               Open{" "}
               <strong className="text-[var(--color-foreground)]">
                 Settings → Email Push
