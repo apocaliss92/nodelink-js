@@ -1,0 +1,18 @@
+{
+  "timeZone": 18000,
+  "osdFormat": "MDY",
+  "year": 2026,
+  "month": 5,
+  "day": 17,
+  "hour": 8,
+  "minute": 22,
+  "second": 45,
+  "deviceId": 0,
+  "timeFormat": 1,
+  "language": "English",
+  "deviceName": "Front Yard",
+  "loginLock": 1,
+  "lockTime": 300,
+  "allowedTimes": 10,
+  "isDst": 1
+}
