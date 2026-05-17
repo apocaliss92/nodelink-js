@@ -1,0 +1,13 @@
+{
+  "channel": 0,
+  "osdChannel": {
+    "enable": 1,
+    "name": "",
+    "pos": ""
+  },
+  "osdTime": {
+    "enable": 0,
+    "pos": ""
+  },
+  "watermark": 0
+}
