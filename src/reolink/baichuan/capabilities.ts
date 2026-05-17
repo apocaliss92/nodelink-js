@@ -240,6 +240,15 @@ export function computeDeviceCapabilities(params: {
   // - 1: IR LED only (not controllable as floodlight)
   // - 2+: white LED / spotlight / floodlight (controllable)
   // Only treat lightType >= 2 as having a controllable floodlight.
+  //
+  // CAVEAT: the Reolink Duo 3 WiFi reports lightType=1 yet exposes a real
+  // controllable spotlight via cmd 289 (PR #22). The `ledCtrl` bitmask is a
+  // more reliable secondary signal — bit 0 alone is the status LED, anything
+  // >= 2 means there's controllable white-LED hardware. We use the ledCtrl
+  // override below to rescue the Duo 3 case. The cmd 289 XML cannot be used
+  // as a tie-breaker because firmwares emit a generic `<FloodlightTask>`
+  // template (with brightness / schedule / lightSensThreshold) even on
+  // cameras that don't physically have a floodlight (e.g. Reolink E1 Zoom).
   const lightTypeRaw = supportItem ? (supportItem as any).lightType : undefined;
   const lightType =
     typeof lightTypeRaw === "number"
@@ -247,6 +256,18 @@ export function computeDeviceCapabilities(params: {
       : typeof lightTypeRaw === "string"
         ? Number(lightTypeRaw)
         : undefined;
+
+  const ledCtrlRaw = supportItem ? (supportItem as any).ledCtrl : undefined;
+  const ledCtrl =
+    typeof ledCtrlRaw === "number"
+      ? ledCtrlRaw
+      : typeof ledCtrlRaw === "string"
+        ? Number(ledCtrlRaw)
+        : undefined;
+  // Bit 0 = status LED only (E1 Zoom reports ledCtrl=1, no floodlight).
+  // Anything beyond bit 0 indicates additional controllable LED hardware.
+  const hasFloodlightFromLedCtrl =
+    typeof ledCtrl === "number" && Number.isFinite(ledCtrl) && ledCtrl > 1;
 
   const hasPtzFromSupport =
     hasPtzFromSupportItem ||
@@ -364,10 +385,12 @@ export function computeDeviceCapabilities(params: {
     hasBattery,
     hasIntercom: hasIntercomFromSupport,
     hasSiren: hasSirenFromSupport || hasSirenFromAbilities,
-    // lightType >= 2 indicates controllable white LED / floodlight (1 = IR only)
+    // lightType >= 2 indicates controllable white LED / floodlight (1 = IR only).
+    // ledCtrl > 1 is a secondary signal that rescues firmwares like the Duo 3
+    // WiFi which under-report lightType (=1) despite having a real spotlight.
     hasFloodlight: Number.isFinite(lightType as number)
-      ? (lightType as number) >= 2
-      : hasFloodlightFromAbilities,
+      ? (lightType as number) >= 2 || hasFloodlightFromLedCtrl
+      : hasFloodlightFromAbilities || hasFloodlightFromLedCtrl,
     hasPir: hasPirFromAbilities || hasPirFromSupport,
     isDoorbell,
     hasAutotracking: ptzDisabledBySupport

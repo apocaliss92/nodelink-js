@@ -136,7 +136,12 @@ describe("computeDeviceCapabilities — from model fixtures", () => {
     });
   });
 
-  // D340W (Video Doorbell WiFi) — no floodlight
+  // D340W (Video Doorbell WiFi) — firmware exposes the doorbell LED ring as
+  // a controllable "floodlight" via cmd 289 + ledCtrl bitmask (= 35840). The
+  // previous assertion (no floodlight) reflected an outdated assumption that
+  // pre-dated the ledCtrl rescue path; PR #24 contributor confirms the camera
+  // has a light, and capabilities.json captured from a live D340W reports
+  // `hasFloodlight: true`. See `floodlight-detection-ledctrl.test.ts`.
   describe("D340W (Video Doorbell WiFi)", () => {
     // D340W doesn't have full capabilities.json from the device,
     // so we test computeDeviceCapabilities directly
@@ -148,7 +153,7 @@ describe("computeDeviceCapabilities — from model fixtures", () => {
       expect(deviceInfo).toBeDefined();
     });
 
-    it("hasFloodlight is false (no lightType, abilities fallback also false)", () => {
+    it("hasFloodlight is true (no lightType, but ledCtrl=35840 indicates controllable LED)", () => {
       const support = {
         ptzMode: "none",
         channelNum: 1,
@@ -187,7 +192,7 @@ describe("computeDeviceCapabilities — from model fixtures", () => {
         model: deviceInfo.type,
       });
 
-      expect(caps.hasFloodlight).toBe(false);
+      expect(caps.hasFloodlight).toBe(true);
       expect(caps.isDoorbell).toBe(true);
       expect(caps.hasIntercom).toBe(true);
       expect(caps.hasSiren).toBe(true);

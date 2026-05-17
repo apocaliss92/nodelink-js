@@ -11377,13 +11377,20 @@ export class ReolinkBaichuanApi {
       // On NVR, ledCtrl indicates LED control capabilities for the connected camera
       capabilities.hasFloodlight = (ledCtrl ?? 0) > 0;
     } else if (lightType === undefined) {
-      // Standalone camera with unknown lightType: probe cmd 289
+      // Standalone camera with unknown lightType: probe cmd 289 as a fallback
+      // signal. The probe can false-negative when the firmware doesn't expose
+      // cmd 289, so we OR it with whatever computeDeviceCapabilities already
+      // worked out from the support-info ledCtrl bitmask — never downgrade a
+      // positive ledCtrl signal because of a probe miss.
       const probed = await this.probeFloodlightSupportByCmd289(ch, {
         timeoutMs: 2500,
       });
-      capabilities.hasFloodlight = probed;
+      capabilities.hasFloodlight = capabilities.hasFloodlight || probed;
     }
-    // else: lightType is defined, computeDeviceCapabilities already set hasFloodlight
+    // else: lightType is defined. computeDeviceCapabilities already merged the
+    // lightType >= 2 check with the ledCtrl > 1 rescue (Reolink Duo 3 WiFi
+    // reports lightType=1 + ledCtrl=38 even though it has a real spotlight —
+    // PR #22).
 
     // Wireless chime: only true when paired chimes are discovered (like reolink_aio)
     let dingDongListIds: number[] | undefined;
