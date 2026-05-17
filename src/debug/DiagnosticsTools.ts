@@ -3324,9 +3324,35 @@ export async function captureModelFixtures(params: {
   }
 
   // ── Device Info ──────────────────────────────────────────────────────────
-  const info = await capture("getInfo", () => api.getInfo(channel), (v) =>
-    writeJsonSafe(path.join(outDir, "device-info.json"), v),
-  );
+  //
+  // We capture BOTH the channel-specific DevInfo (cmd_id 318) and the
+  // device-wide DevInfo (cmd_id 80). On some cameras the channel-specific
+  // call returns an empty payload (e.g. Reolink Duo 3 WiFi and the latest
+  // Video Doorbell firmwares — see PRs #22 / #23 / #24) even though the
+  // device-wide one returns the full type / firmwareVersion / itemNo. Saving
+  // the richer of the two prevents the fixture from ending up with
+  // `model: "unknown"`, `firmwareVersion: "unknown"` and downstream parsers
+  // (e.g. `getDualLensChannelInfo`, capability fallbacks) misclassifying the
+  // model.
+  const channelInfo = (await capture(
+    "getInfo",
+    () => api.getInfo(channel),
+  )) as Record<string, unknown> | undefined;
+  const baseInfo = (await capture(
+    "getInfoBase",
+    () => api.getInfo(),
+  )) as Record<string, unknown> | undefined;
+
+  // Merge baseInfo and channelInfo, taking the channel-specific value only
+  // when it's actually non-empty so a sparse cmd_318 response never blanks
+  // out richer cmd_80 fields.
+  const mergedInfo: Record<string, unknown> = { ...(baseInfo ?? {}) };
+  for (const [k, v] of Object.entries(channelInfo ?? {})) {
+    if (v !== undefined && v !== null && v !== "") mergedInfo[k] = v;
+  }
+  const info: Record<string, unknown> | undefined =
+    Object.keys(mergedInfo).length > 0 ? mergedInfo : undefined;
+  if (info) writeJsonSafe(path.join(outDir, "device-info.json"), info);
 
   // ── Support Info ─────────────────────────────────────────────────────────
   const support = await capture("getSupportInfo", () => api.getSupportInfo(), (v) =>
@@ -3443,6 +3469,86 @@ export async function captureModelFixtures(params: {
   // ── Multifocal / Dual-Lens Info ────────────────────────────────────────
   await capture("getDualLensChannelInfo", () => api.getDualLensChannelInfo(channel), (v) =>
     writeJsonSafe(path.join(outDir, "dual-lens-info.json"), v),
+  );
+
+  // ── Encoding Options (cmd_id 146) ──────────────────────────────────────
+  // Lists every supported resolution / fps / bitrate / GOP combo per profile.
+  // Critical for surfacing the full set of values a model accepts — without
+  // this the fixture only records the current selection (PR #22 / #23 / #24
+  // explicitly flagged this gap).
+  await capture("getEncOptions", () => api.getEncOptions(channel), (v) =>
+    writeJsonSafe(path.join(outDir, "enc-options.json"), v),
+  );
+
+  // ── Encoding Config (parsed) ───────────────────────────────────────────
+  // Companion to the raw `enc-config.xml` already captured above. The parsed
+  // form is what `setEnc` round-trips through, so it doubles as a fixture
+  // for the GOP / keyframe-interval support added in 35dfae4.
+  await capture("getEnc", () => api.getEnc(channel), (v) =>
+    writeJsonSafe(path.join(outDir, "enc.json"), v),
+  );
+
+  // ── Stream Info List ───────────────────────────────────────────────────
+  // Alternative source of per-profile stream metadata (cmd 196) used by some
+  // legacy code paths.
+  await capture("getStreamInfoList", () => api.getStreamInfoList(channel), (v) =>
+    writeJsonSafe(path.join(outDir, "stream-info-list.json"), v),
+  );
+
+  // ── Autofocus state ────────────────────────────────────────────────────
+  // Recent fix (commit 04d6b7e) wired `getAutoFocus` through the
+  // channel-extension envelope. Capture so regressions on the envelope are
+  // caught by the fixture comparison.
+  await capture("getAutoFocus", () => api.getAutoFocus(channel), (v) =>
+    writeJsonSafe(path.join(outDir, "autofocus.json"), v),
+  );
+
+  // ── LED state (spotlight / status LED) ─────────────────────────────────
+  // The Duo 3 WiFi (and several recent doorbells) expose an LED spotlight
+  // that's not reflected in `capabilities.json` today — PRs #22 / #23 / #24
+  // explicitly flagged it. Capturing `getLedState` here documents what the
+  // camera actually reports so the capability detector can be taught.
+  await capture("getLedState", () => api.getLedState(channel), (v) =>
+    writeJsonSafe(path.join(outDir, "led-state.json"), v),
+  );
+
+  // ── IR LEDs ────────────────────────────────────────────────────────────
+  await capture("getIrLights", () => api.getIrLights(channel), (v) =>
+    writeJsonSafe(path.join(outDir, "ir-lights.json"), v),
+  );
+
+  // ── Image / ISP / Day-night ────────────────────────────────────────────
+  await capture("getImage", () => api.getImage(channel), (v) =>
+    writeJsonSafe(path.join(outDir, "image.json"), v),
+  );
+  await capture("getIsp", () => api.getIsp(channel), (v) =>
+    writeJsonSafe(path.join(outDir, "isp.json"), v),
+  );
+  await capture("getDayNightThreshold", () => api.getDayNightThreshold(channel), (v) =>
+    writeJsonSafe(path.join(outDir, "day-night-threshold.json"), v),
+  );
+
+  // ── Privacy mask ───────────────────────────────────────────────────────
+  await capture("getMask", () => api.getMask(channel), (v) =>
+    writeJsonSafe(path.join(outDir, "mask.json"), v),
+  );
+
+  // ── Audio config ───────────────────────────────────────────────────────
+  await capture("getAudioCfg", () => api.getAudioCfg(channel), (v) =>
+    writeJsonSafe(path.join(outDir, "audio-cfg.json"), v),
+  );
+
+  // ── OSD date/time ─────────────────────────────────────────────────────
+  await capture("getOsdDatetime", () => api.getOsdDatetime(channel), (v) =>
+    writeJsonSafe(path.join(outDir, "osd-datetime.json"), v),
+  );
+
+  // ── PTZ position + zoom/focus state ────────────────────────────────────
+  await capture("getPtzPosition", () => api.getPtzPosition(channel), (v) =>
+    writeJsonSafe(path.join(outDir, "ptz-position.json"), v),
+  );
+  await capture("getZoomFocus", () => api.getZoomFocus(channel), (v) =>
+    writeJsonSafe(path.join(outDir, "zoom-focus.json"), v),
   );
 
   // ── Stream Combination Test ────────────────────────────────────────────

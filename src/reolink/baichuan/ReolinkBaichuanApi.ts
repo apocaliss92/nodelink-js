@@ -417,6 +417,14 @@ export type {
 export const DUAL_LENS_DUAL_MOTION_MODELS = new Set<string>([
   "Reolink Duo PoE",
   "Reolink Duo WiFi",
+  // Duo 2 family
+  "Reolink Duo 2 PoE",
+  "Reolink Duo 2 WiFi",
+  // Duo 3 family — physically dual-sensor, marketed as a stitched 16MP feed
+  // (the firmware exposes a single logical channel, so callers should still
+  // check `getDualLensChannelInfo` for the actual channel topology).
+  "Reolink Duo 3 PoE",
+  "Reolink Duo 3 WiFi",
 ]);
 
 export const DUAL_LENS_SINGLE_MOTION_MODELS = new Set<string>([
@@ -434,10 +442,17 @@ export const DUAL_LENS_MODELS = new Set<string>([
 
 export const isDualLenseModel = (model: string): boolean => {
   const lower = model.toLowerCase();
+  if (Array.from(DUAL_LENS_MODELS).some((m) => m.toLowerCase() === lower)) {
+    return true;
+  }
+  // Substring fallback so future variants (e.g. "Reolink Duo 4 ...") and the
+  // assorted spellings cameras report for the TrackMix / TrackFlex / Duo
+  // families are picked up without code changes. Mirrors the `checkModelMatch`
+  // helper inside `getDualLensChannelInfo`.
   return (
-    Array.from(DUAL_LENS_MODELS).some((m) => m.toLowerCase() === lower) ||
     lower.includes("trackmix") ||
-    lower.includes("trackflex")
+    lower.includes("trackflex") ||
+    /\bduo\b/.test(lower)
   );
 };
 
@@ -11555,6 +11570,20 @@ export class ReolinkBaichuanApi {
       model = deviceInfo.type?.trim();
     } catch {
       // ignore
+    }
+
+    // Some firmwares (Reolink Duo 3 WiFi, recent Video Doorbell builds) return
+    // an empty payload for the channel-specific DevInfo (cmd_id 318) on
+    // standalone cameras, even though the device-wide DevInfo (cmd_id 80)
+    // exposes the full `type`. Fall back to the device-wide call so the
+    // dual-lens classifier doesn't end up with `model: undefined`.
+    if (!model) {
+      try {
+        const deviceInfoBase = await this.getInfo(undefined, { tags: ["type"] });
+        model = deviceInfoBase.type?.trim();
+      } catch {
+        // ignore
+      }
     }
 
     try {
