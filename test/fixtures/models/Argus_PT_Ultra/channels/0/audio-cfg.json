@@ -1,0 +1,14 @@
+{
+  "body": {
+    "audioCfg": {
+      "channelId": 1,
+      "timeout": 0,
+      "audioSelect": 0,
+      "volume": 100,
+      "preAlarm": 0,
+      "audioListId": 0,
+      "visitorLoudspeaker": 0,
+      "@_version": 1.1
+    }
+  }
+}

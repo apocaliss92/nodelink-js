@@ -1,0 +1,12 @@
+{
+  "zoom": {
+    "maxPos": 28,
+    "minPos": 0,
+    "curPos": 28
+  },
+  "focus": {
+    "maxPos": 204,
+    "minPos": 0,
+    "curPos": 186
+  }
+}

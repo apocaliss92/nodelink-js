@@ -1,0 +1,12 @@
+{
+  "body": {
+    "audioCfg": {
+      "channelId": 0,
+      "timeout": 0,
+      "audioSelect": 0,
+      "volume": 92,
+      "preAlarm": 0,
+      "@_version": 1.1
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "osdDatetime": {
+    "channelId": 0,
+    "enable": true,
+    "topLeftX": 1,
+    "topLeftY": 1,
+    "width": 0,
+    "height": 0,
+    "language": "English"
+  },
+  "osdChannelName": {
+    "channelId": 0,
+    "name": "Studio",
+    "enable": false,
+    "topLeftX": 65536,
+    "topLeftY": 65536,
+    "enWatermark": false,
+    "enBgcolor": false
+  }
+}

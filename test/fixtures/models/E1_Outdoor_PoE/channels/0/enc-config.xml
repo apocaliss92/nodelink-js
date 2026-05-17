@@ -9,7 +9,7 @@
 <width>3840</width>
 <height>2160</height>
 <frame>25</frame>
-<bitRate>8192</bitRate>
+<bitRate>6144</bitRate>
 <encoderProfile>high</encoderProfile>
 <videoEncType>0</videoEncType>
 <gop>
@@ -23,8 +23,8 @@
 <resolutionName>640*360</resolutionName>
 <width>640</width>
 <height>360</height>
-<frame>10</frame>
-<bitRate>256</bitRate>
+<frame>15</frame>
+<bitRate>384</bitRate>
 <encoderProfile>high</encoderProfile>
 <videoEncType>0</videoEncType>
 <gop>

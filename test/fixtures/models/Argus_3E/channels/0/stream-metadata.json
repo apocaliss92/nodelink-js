@@ -1,5 +1,5 @@
 {
-  "channel": 2,
+  "channel": 0,
   "streams": [
     {
       "profile": "main",
@@ -25,5 +25,5 @@
     }
   ],
   "audioEnabled": true,
-  "rawXml": "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<body>\n<Compression version=\"1.1\">\n<channelId>2</channelId>\n<separateCfg>\n<encodeCfg>0</encodeCfg>\n</separateCfg>\n<isNoTranslateFrame>1</isNoTranslateFrame>\n<mainStream>\n<audio>1</audio>\n<resolutionName>2304*1296</resolutionName>\n<width>2304</width>\n<height>1296</height>\n<encoderType>vbr</encoderType>\n<frame>15</frame>\n<bitRate>2048</bitRate>\n<encoderProfile>high</encoderProfile>\n<videoEncType>1</videoEncType>\n<gop>\n<cur>0</cur>\n<max>0</max>\n<min>0</min>\n</gop>\n</mainStream>\n<subStream>\n<audio>1</audio>\n<resolutionName>640*360</resolutionName>\n<width>640</width>\n<height>360</height>\n<encoderType>vbr</encoderType>\n<frame>15</frame>\n<bitRate>192</bitRate>\n<encoderProfile>high</encoderProfile>\n<videoEncType>0</videoEncType>\n<gop>\n<cur>0</cur>\n<max>0</max>\n<min>0</min>\n</gop>\n</subStream>\n<thirdStream>\n<audio>1</audio>\n<resolutionName>0*0</resolutionName>\n<width>0</width>\n<height>0</height>\n<encoderType>vbr</encoderType>\n<frame>0</frame>\n<bitRate>0</bitRate>\n<encoderProfile>default</encoderProfile>\n<videoEncType>0</videoEncType>\n<gop>\n<cur>0</cur>\n<max>0</max>\n<min>0</min>\n</gop>\n</thirdStream>\n</Compression>\n</body>\n"
+  "rawXml": "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<body>\n<Compression version=\"1.1\">\n<channelId>0</channelId>\n<separateCfg>\n<encodeCfg>0</encodeCfg>\n</separateCfg>\n<isNoTranslateFrame>0</isNoTranslateFrame>\n<mainStream>\n<audio>1</audio>\n<resolutionName>2304*1296</resolutionName>\n<width>2304</width>\n<height>1296</height>\n<encoderType>vbr</encoderType>\n<frame>15</frame>\n<bitRate>2048</bitRate>\n<encoderProfile>high</encoderProfile>\n<videoEncType>1</videoEncType>\n<gop>\n<cur>0</cur>\n<max>0</max>\n<min>0</min>\n</gop>\n</mainStream>\n<subStream>\n<audio>1</audio>\n<resolutionName>640*360</resolutionName>\n<width>640</width>\n<height>360</height>\n<encoderType>vbr</encoderType>\n<frame>15</frame>\n<bitRate>192</bitRate>\n<encoderProfile>high</encoderProfile>\n<videoEncType>0</videoEncType>\n<gop>\n<cur>0</cur>\n<max>0</max>\n<min>0</min>\n</gop>\n</subStream>\n<thirdStream>\n<audio>1</audio>\n<resolutionName>0*0</resolutionName>\n<width>0</width>\n<height>0</height>\n<encoderType>vbr</encoderType>\n<frame>0</frame>\n<bitRate>0</bitRate>\n<encoderProfile>default</encoderProfile>\n<videoEncType>0</videoEncType>\n<gop>\n<cur>0</cur>\n<max>0</max>\n<min>0</min>\n</gop>\n</thirdStream>\n</Compression>\n</body>\n"
 }

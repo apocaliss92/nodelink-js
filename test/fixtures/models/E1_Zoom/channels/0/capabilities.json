@@ -182,11 +182,7 @@
   "presets": [
     {
       "id": 1,
-      "name": "test3"
-    },
-    {
-      "id": 3,
-      "name": "test6"
+      "name": "Test"
     }
   ],
   "objects": [

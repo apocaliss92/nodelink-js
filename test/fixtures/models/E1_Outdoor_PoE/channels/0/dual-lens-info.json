@@ -1,5 +1,6 @@
 {
   "isDualLens": false,
+  "model": "E1 Outdoor PoE",
   "streamChannelCount": 1,
   "logicalChannelCount": 1,
   "channels": [],

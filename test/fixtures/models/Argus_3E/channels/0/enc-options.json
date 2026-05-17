@@ -1,0 +1,128 @@
+{
+  "channel": 0,
+  "mainStream": {
+    "type": "mainStream",
+    "resolutions": [
+      {
+        "width": 2304,
+        "height": 1296,
+        "videoEncTypes": [
+          "h265"
+        ],
+        "defaultFramerate": 15,
+        "defaultBitrate": 2048,
+        "defaultGop": 0,
+        "framerateOptions": [
+          10,
+          12,
+          15
+        ],
+        "bitrateOptions": [
+          1024,
+          1536,
+          2048
+        ]
+      },
+      {
+        "width": 3840,
+        "height": 2160,
+        "videoEncTypes": [
+          "h265"
+        ],
+        "defaultFramerate": 15,
+        "defaultBitrate": 2048,
+        "defaultGop": 0,
+        "framerateOptions": [
+          10,
+          12,
+          15
+        ],
+        "bitrateOptions": [
+          1024,
+          1536,
+          2048,
+          3072,
+          4096
+        ]
+      }
+    ],
+    "encoderTypes": [
+      "vbr",
+      "cbr"
+    ],
+    "encoderProfiles": [
+      "high",
+      "main",
+      "baseline"
+    ],
+    "gopRange": {
+      "cur": 0,
+      "min": 0,
+      "max": 0
+    }
+  },
+  "subStream": {
+    "type": "subStream",
+    "resolutions": [
+      {
+        "width": 640,
+        "height": 360,
+        "videoEncTypes": [
+          "h264"
+        ],
+        "defaultFramerate": 15,
+        "defaultBitrate": 192,
+        "defaultGop": 0,
+        "framerateOptions": [
+          10,
+          15
+        ],
+        "bitrateOptions": [
+          64,
+          128,
+          160,
+          192,
+          256
+        ]
+      },
+      {
+        "width": 896,
+        "height": 512,
+        "videoEncTypes": [
+          "h264"
+        ],
+        "defaultFramerate": 15,
+        "defaultBitrate": 672,
+        "defaultGop": 0,
+        "framerateOptions": [
+          10,
+          15
+        ],
+        "bitrateOptions": [
+          64,
+          128,
+          160,
+          192,
+          256,
+          384,
+          512,
+          672
+        ]
+      }
+    ],
+    "encoderTypes": [
+      "vbr",
+      "cbr"
+    ],
+    "encoderProfiles": [
+      "high",
+      "main",
+      "baseline"
+    ],
+    "gopRange": {
+      "cur": 0,
+      "min": 0,
+      "max": 0
+    }
+  }
+}

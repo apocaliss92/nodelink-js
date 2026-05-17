@@ -1,0 +1,13 @@
+{
+  "body": {
+    "LedState": {
+      "channelId": 1,
+      "ledVersion": 0,
+      "IRLedBrightness": 100,
+      "state": "auto",
+      "lightState": "open",
+      "doorbellLightState": "close",
+      "@_version": 1.1
+    }
+  }
+}

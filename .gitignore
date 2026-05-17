@@ -69,3 +69,6 @@ app/go2rtc.yaml
 # Git worktrees
 .worktrees/
 .superpowers/
+
+# Claude Code local state (scheduled wakeups, sessions, etc.)
+.claude/

@@ -1,27 +1,18 @@
 {
-  "body": {
-    "SystemGeneral": {
-      "timeZone": -3600,
-      "osdFormat": "DMY",
-      "year": 2026,
-      "month": 3,
-      "day": 24,
-      "hour": 10,
-      "minute": 48,
-      "second": 29,
-      "deviceId": 0,
-      "timeFormat": 0,
-      "language": "English",
-      "deviceName": "Camera da letto",
-      "loginLock": 0,
-      "lockTime": 300,
-      "allowedTimes": 10,
-      "isDst": 0,
-      "@_version": 1.1
-    },
-    "Norm": {
-      "norm": "NTSC",
-      "@_version": 1.1
-    }
-  }
+  "timeZone": 0,
+  "osdFormat": "DMY",
+  "year": 2026,
+  "month": 5,
+  "day": 17,
+  "hour": 22,
+  "minute": 34,
+  "second": 8,
+  "deviceId": 0,
+  "timeFormat": 0,
+  "language": "English",
+  "deviceName": "Studio",
+  "loginLock": 0,
+  "lockTime": 300,
+  "allowedTimes": 10,
+  "isDst": 1
 }

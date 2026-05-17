@@ -1,7 +1,7 @@
 {
-  "channelId": 2,
+  "channelId": 0,
   "cycle": 1,
-  "recordDelayTime": 8,
+  "recordDelayTime": 15,
   "preRecordTime": 10,
   "packageTime": 60,
   "cycleList": [

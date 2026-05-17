@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <Compression version="1.1">
-<channelId>2</channelId>
+<channelId>0</channelId>
 <separateCfg>
 <encodeCfg>0</encodeCfg>
 </separateCfg>
-<isNoTranslateFrame>1</isNoTranslateFrame>
+<isNoTranslateFrame>0</isNoTranslateFrame>
 <mainStream>
 <audio>1</audio>
 <resolutionName>2304*1296</resolutionName>

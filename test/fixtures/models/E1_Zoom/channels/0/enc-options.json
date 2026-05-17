@@ -1,0 +1,150 @@
+{
+  "channel": 0,
+  "mainStream": {
+    "type": "mainStream",
+    "resolutions": [
+      {
+        "width": 3840,
+        "height": 2160,
+        "videoEncTypes": [
+          "h265"
+        ],
+        "defaultFramerate": 20,
+        "defaultBitrate": 4096,
+        "defaultGop": 2,
+        "framerateOptions": [
+          20,
+          18,
+          16,
+          15,
+          12,
+          10,
+          8,
+          6,
+          4,
+          2
+        ],
+        "bitrateOptions": [
+          2048,
+          3072,
+          4096,
+          5120
+        ]
+      },
+      {
+        "width": 2560,
+        "height": 1440,
+        "videoEncTypes": [
+          "h264"
+        ],
+        "defaultFramerate": 20,
+        "defaultBitrate": 4096,
+        "defaultGop": 2,
+        "framerateOptions": [
+          20,
+          18,
+          16,
+          15,
+          12,
+          10,
+          8,
+          6,
+          4,
+          2
+        ],
+        "bitrateOptions": [
+          2048,
+          3072,
+          4096,
+          5120
+        ]
+      },
+      {
+        "width": 2304,
+        "height": 1296,
+        "videoEncTypes": [
+          "h264"
+        ],
+        "defaultFramerate": 20,
+        "defaultBitrate": 4096,
+        "defaultGop": 2,
+        "framerateOptions": [
+          20,
+          18,
+          16,
+          15,
+          12,
+          10,
+          8,
+          6,
+          4,
+          2
+        ],
+        "bitrateOptions": [
+          2048,
+          3072,
+          4096,
+          5120
+        ]
+      }
+    ],
+    "encoderTypes": [
+      "vbr",
+      "cbr"
+    ],
+    "encoderProfiles": [
+      "high",
+      "main",
+      "baseline"
+    ],
+    "gopRange": {
+      "cur": 2,
+      "min": 1,
+      "max": 2
+    }
+  },
+  "subStream": {
+    "type": "subStream",
+    "resolutions": [
+      {
+        "width": 640,
+        "height": 360,
+        "videoEncTypes": [
+          "h264"
+        ],
+        "defaultFramerate": 10,
+        "defaultBitrate": 256,
+        "defaultGop": 4,
+        "framerateOptions": [
+          15,
+          10,
+          7,
+          4
+        ],
+        "bitrateOptions": [
+          64,
+          128,
+          160,
+          192,
+          256,
+          384,
+          512
+        ]
+      }
+    ],
+    "encoderTypes": [
+      "vbr",
+      "cbr"
+    ],
+    "encoderProfiles": [
+      "high",
+      "main",
+      "baseline"
+    ],
+    "gopRange": {
+      "cur": 4,
+      "min": 1,
+      "max": 4
+    }
+  }
+}
