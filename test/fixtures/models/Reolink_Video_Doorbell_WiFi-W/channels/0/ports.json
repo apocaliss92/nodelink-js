@@ -1,0 +1,26 @@
+{
+  "server": {
+    "serverport": 9000,
+    "enable": 0
+  },
+  "http": {
+    "httpport": 80,
+    "enable": 0
+  },
+  "https": {
+    "httpsport": 443,
+    "enable": 1
+  },
+  "rtsp": {
+    "rtspport": 554,
+    "enable": 1
+  },
+  "rtmp": {
+    "rtmpport": 1935,
+    "enable": 0
+  },
+  "onvif": {
+    "onvifport": 8000,
+    "enable": 1
+  }
+}

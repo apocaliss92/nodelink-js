@@ -1,0 +1,12 @@
+{
+  "body": {
+    "AiCfg": {
+      "channelId": 0,
+      "smartTrack": 0,
+      "detectType": "people,vehicle",
+      "smartTrackType": "people",
+      "smartTrackPt": 1,
+      "@_version": 1.1
+    }
+  }
+}
