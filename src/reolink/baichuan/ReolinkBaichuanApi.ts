@@ -13085,6 +13085,13 @@ export class ReolinkBaichuanApi {
   ): Promise<void> {
     const ch = this.normalizeChannel(channel);
     const disableVal = disable ? 1 : 0;
+    // The Reolink Client wire-frames cmd_id=225 with the channel-extension
+    // envelope in front of the encrypted `<AutoFocus>` body. Older releases
+    // here sent only the body — the camera then replied 200 but never
+    // actually applied the toggle (confirmed via pcap on E1 Zoom, cmd 225
+    // c2s frames carry a 104-byte `<Extension>` prefix). Mirror the
+    // client's framing so the SET sticks.
+    const extensionXml = buildChannelExtensionXml(ch);
     const payloadXml = `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <AutoFocus version="1.1">
@@ -13095,6 +13102,7 @@ export class ReolinkBaichuanApi {
     await this.sendXml({
       cmdId: BC_CMD_ID_SET_AUTO_FOCUS,
       channel: ch,
+      extensionXml,
       payloadXml,
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });

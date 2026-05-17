@@ -11,7 +11,7 @@ import {
   Trash2,
   RefreshCw,
 } from "lucide-react";
-import { Button, Input } from "@camstack/ui-library";
+import { Button, Input, Switch } from "@camstack/ui-library";
 import { trpcQuery, trpcMutation } from "../../../api";
 import { WebRTCInlinePlayer } from "../WebRTCInlinePlayer";
 import { RangeInput, type TabProps } from "./shared";
@@ -57,6 +57,13 @@ export function PtzTab({ cameraId, channel }: TabProps) {
   // shows the child top-left and the click closes the parent), so we
   // confirm inline like the dashboard's Delete-camera flow.
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  // Autofocus toggle state. The Baichuan setter takes `disable` (0/1)
+  // where 1 = AF off; we surface the inverse — the toggle is "on" when
+  // the camera is doing autofocus. `undefined` while loading or when
+  // the camera doesn't expose the field (older firmwares).
+  const [autoFocusOn, setAutoFocusOn] = useState<boolean | undefined>(undefined);
+  const [autoFocusSupported, setAutoFocusSupported] = useState<boolean>(true);
+  const [autoFocusBusy, setAutoFocusBusy] = useState<boolean>(false);
 
   const refresh = useCallback(async () => {
     setError(null);
@@ -75,6 +82,35 @@ export function PtzTab({ cameraId, channel }: TabProps) {
       setNewId(next);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    }
+    // Autofocus is firmware-dependent (PTZ models only). Fetch best-
+    // effort so cameras without zoom optics don't break the whole tab.
+    try {
+      const af = await trpcQuery<{ disable?: number; body?: unknown } | null>(
+        "baichuan.getAutoFocus",
+        { cameraId, channel },
+      );
+      const findDisable = (obj: unknown): number | undefined => {
+        if (!obj || typeof obj !== "object") return undefined;
+        const rec = obj as Record<string, unknown>;
+        if (typeof rec.disable === "number") return rec.disable;
+        for (const v of Object.values(rec)) {
+          const r = findDisable(v);
+          if (r !== undefined) return r;
+        }
+        return undefined;
+      };
+      const disable = findDisable(af);
+      if (disable === undefined) {
+        setAutoFocusSupported(false);
+        setAutoFocusOn(undefined);
+      } else {
+        setAutoFocusSupported(true);
+        setAutoFocusOn(disable === 0);
+      }
+    } catch {
+      setAutoFocusSupported(false);
+      setAutoFocusOn(undefined);
     }
   }, [cameraId, channel]);
 
@@ -136,6 +172,31 @@ export function PtzTab({ cameraId, channel }: TabProps) {
       }
     },
     [cameraId, channel, refresh],
+  );
+
+  const toggleAutoFocus = useCallback(
+    async (next: boolean) => {
+      setAutoFocusBusy(true);
+      setError(null);
+      // Optimistic flip — the camera takes ~1 s to settle.
+      setAutoFocusOn(next);
+      try {
+        await trpcMutation("baichuan.setAutoFocus", {
+          cameraId,
+          channel,
+          // Baichuan field is `disable`: 1 = AF off, 0 = AF on. Toggle
+          // semantics are the inverse for the user-facing label.
+          disable: !next,
+        });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        // Roll back the optimistic update on failure.
+        setAutoFocusOn(!next);
+      } finally {
+        setAutoFocusBusy(false);
+      }
+    },
+    [cameraId, channel],
   );
 
   const deletePreset = useCallback(
@@ -227,6 +288,27 @@ export function PtzTab({ cameraId, channel }: TabProps) {
               </div>
               <RangeInput value={speed} min={1} max={64} onChange={setSpeed} />
             </div>
+            {autoFocusSupported && (
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-[var(--color-foreground-subtle)]">
+                    Autofocus
+                  </div>
+                  <div className="text-[10px] text-[var(--color-foreground-muted)]">
+                    {autoFocusOn === undefined
+                      ? "Loading…"
+                      : autoFocusOn
+                        ? "Camera focuses automatically"
+                        : "Manual — use Focus near/far"}
+                  </div>
+                </div>
+                <Switch
+                  checked={autoFocusOn === true}
+                  disabled={autoFocusOn === undefined || autoFocusBusy}
+                  onCheckedChange={(v) => void toggleAutoFocus(v)}
+                />
+              </div>
+            )}
           </div>
 
           <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
