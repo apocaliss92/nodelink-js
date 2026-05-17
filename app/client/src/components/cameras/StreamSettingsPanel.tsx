@@ -23,6 +23,7 @@ interface ResolutionOpt {
   bitrateOptions: number[];
   defaultFramerate?: number;
   defaultBitrate?: number;
+  defaultGop?: number;
 }
 
 interface StreamOpt {
@@ -30,6 +31,13 @@ interface StreamOpt {
   resolutions: ResolutionOpt[];
   encoderTypes: Array<"vbr" | "cbr">;
   encoderProfiles: Array<"high" | "main" | "baseline">;
+  /**
+   * Merged from `getEnc` — cmd_146 only exposes a `defaultGop` per
+   * resolution; cmd_56 carries the actual `{cur, min, max}` for the
+   * live stream. The library's `getEncOptions` already grafts these
+   * onto the response.
+   */
+  gopRange?: { cur?: number; min?: number; max?: number };
 }
 
 interface EncOptions {
@@ -60,6 +68,8 @@ interface ProfileForm {
   frameRate: number;
   videoEncType: "h264" | "h265";
   audio: 0 | 1;
+  /** Keyframe interval in seconds — patches `<gop><cur>` in setEnc. */
+  gop?: number;
 }
 
 const PROFILE_LABELS: Record<ProfileKey, string> = {
@@ -109,6 +119,14 @@ export function StreamSettingsPanel({
         const apiName = PROFILE_TO_API[key];
         const cur = meta.streams.find((s) => s.profile === apiName);
         if (!cur) continue;
+        const so = opts[key];
+        // Live GOP from getEnc merged into options.gopRange.cur; fall
+        // back to the per-resolution defaultGop, then leave undefined.
+        const liveGop = so?.gopRange?.cur;
+        const res = so?.resolutions.find(
+          (r) => r.width === cur.width && r.height === cur.height,
+        );
+        const seedGop = liveGop ?? res?.defaultGop;
         seeded[key] = {
           width: cur.width,
           height: cur.height,
@@ -116,6 +134,7 @@ export function StreamSettingsPanel({
           frameRate: cur.frameRate,
           videoEncType: cur.videoEncTypeInt === 1 ? "h265" : "h264",
           audio: cur.audio === 1 ? 1 : 0,
+          ...(seedGop !== undefined ? { gop: seedGop } : {}),
         };
       }
       setForms(seeded);
@@ -181,6 +200,7 @@ export function StreamSettingsPanel({
           frameRate: f.frameRate,
           videoEncType: f.videoEncType,
           audio: f.audio,
+          ...(f.gop !== undefined ? { gop: f.gop } : {}),
         },
       });
       setSuccess(`${PROFILE_LABELS[key]} stream updated`);
@@ -335,6 +355,51 @@ export function StreamSettingsPanel({
                       <option value="0">Off</option>
                     </select>
                   </FormField>
+                  {(() => {
+                    // GOP / keyframe interval — value space comes from
+                    // getEncOptions.gopRange (merged from getEnc) when
+                    // the firmware reports it; otherwise fall back to
+                    // the per-resolution defaultGop and a 1..10 s
+                    // freeform range. Showing only the slider when we
+                    // have at least one piece of info keeps the UI
+                    // sober on firmwares that don't expose this knob.
+                    const range = opt.gopRange;
+                    const min = range?.min ?? 1;
+                    const max = range?.max ?? Math.max(min + 1, 10);
+                    const fallbackDefault = selectedRes?.defaultGop;
+                    const currentValue =
+                      form.gop ?? range?.cur ?? fallbackDefault;
+                    if (currentValue === undefined && !range && !fallbackDefault) {
+                      return null;
+                    }
+                    return (
+                      <FormField label={`Keyframe interval (s)`}>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="range"
+                            min={min}
+                            max={max}
+                            step={1}
+                            value={currentValue ?? min}
+                            onChange={(e) =>
+                              updateForm(key, { gop: Number(e.target.value) })
+                            }
+                            className="flex-1 accent-[var(--color-accent,#22d3ee)]"
+                          />
+                          <span className="text-[11px] tabular-nums font-mono min-w-[28px] text-right">
+                            {currentValue ?? "—"} s
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-[var(--color-foreground-muted)]">
+                          {range?.min !== undefined && range?.max !== undefined
+                            ? `Range ${range.min}–${range.max}s`
+                            : fallbackDefault !== undefined
+                              ? `Default ${fallbackDefault}s — firmware doesn't expose range`
+                              : "Firmware-dependent. Lower = more keyframes (better seek, more bandwidth)."}
+                        </span>
+                      </FormField>
+                    );
+                  })()}
                 </div>
                 <div className="flex justify-end mt-2">
                   <button

@@ -1489,6 +1489,19 @@ export interface EncStreamOptions {
   encoderTypes: Array<"vbr" | "cbr">;
   /** Encoder profiles Reolink exposes in the app. */
   encoderProfiles: Array<"high" | "main" | "baseline">;
+  /**
+   * Keyframe-interval (GOP) range merged from the live `getEnc`
+   * response. `cmd_146` (`getStreamInfoList`) only exposes a
+   * `defaultGop` per resolution; the actual valid `{cur, min, max}`
+   * comes from the `<Compression>` block of `cmd_56`. We surface both
+   * here so UI consumers can populate a single GOP slider without
+   * juggling two responses.
+   */
+  gopRange?: {
+    cur?: number;
+    min?: number;
+    max?: number;
+  };
 }
 
 /**

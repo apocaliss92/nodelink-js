@@ -666,6 +666,17 @@ export const baichuanRouter = router({
       return await api.getEncXml(input.channel);
     }),
 
+  getEnc: publicProcedure
+    .meta({
+      description:
+        "Structured `<Compression>` block (cmd_id 56). Returns the live per-stream values used by the camera, including `gop: { cur, min, max }` for keyframe-interval — handy when the UI needs the current state without re-parsing the XML.",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getEnc(input.channel);
+    }),
+
   getVersionInfo: publicProcedure
     .meta({
       description:

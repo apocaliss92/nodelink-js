@@ -249,7 +249,9 @@ import type {
   DayNightThresholdConfig,
   AiDenoiseConfig,
   EncOptions,
+  EncStreamOptions,
   EncStreamPatch,
+  CompressionStream,
   RecEncConfig,
   MotionAlarmConfig,
   AiAlarmConfig,
@@ -13908,7 +13910,40 @@ export class ReolinkBaichuanApi {
     options?: { timeoutMs?: number },
   ): Promise<EncOptions> {
     const list = await this.getStreamInfoList(channel, options);
-    return buildEncOptions(list, channel);
+    const built = buildEncOptions(list, channel);
+
+    // Firmware exposes only `defaultGop` per resolution in cmd_146.
+    // The actual valid {cur, min, max} lives in the <Compression>
+    // block of cmd_56 — fetch it best-effort and graft the per-stream
+    // range onto the options reply so UI consumers can populate a single
+    // GOP slider without a second round-trip.
+    try {
+      const enc = await this.getEnc(channel, options);
+      const compression = enc.body?.Compression;
+      const mergeGop = (
+        target: EncStreamOptions | undefined,
+        stream: CompressionStream | undefined,
+      ): void => {
+        if (!target || !stream) return;
+        const g = stream.gop as
+          | { cur?: number; min?: number; max?: number }
+          | undefined;
+        if (!g) return;
+        target.gopRange = {
+          ...(g.cur !== undefined ? { cur: g.cur } : {}),
+          ...(g.min !== undefined ? { min: g.min } : {}),
+          ...(g.max !== undefined ? { max: g.max } : {}),
+        };
+      };
+      mergeGop(built.mainStream, compression?.mainStream);
+      mergeGop(built.subStream, compression?.subStream);
+      mergeGop(built.thirdStream, compression?.thirdStream);
+    } catch {
+      // getEnc failures shouldn't break the options reply — the consumer
+      // can still rely on defaultGop per resolution.
+    }
+
+    return built;
   }
 
   /**
