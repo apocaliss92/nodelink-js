@@ -20,6 +20,13 @@ permissions:
   contents: write
   packages: write
 
+# Serialize against release-npm.yml — both workflows commit/push bumps to
+# `main`, so running them simultaneously causes a non-fast-forward push from
+# whichever one finishes last (see https://github.com/apocaliss92/nodelink-js/actions/runs/26002923672).
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
 env:
   NODE_VERSION: "22"
   REGISTRY: ghcr.io
