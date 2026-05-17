@@ -906,18 +906,26 @@ export class ReolinkBaichuanApi {
     object,
     () => void
   >();
-  // Auto-managed substream for `onObjectDetections` listeners. Reference-counted
-  // by the listener set: the substream is opened on the first listener and torn
-  // down with the last one. Mirrors `onSimpleEvent`'s subscribe/unsubscribe
-  // lifecycle so a caller never has to manage a video stream just to read AI
-  // detections.
-  private readonly objectDetectionListeners = new Set<
-    (event: ReolinkDetectionEvent) => void | Promise<void>
+  // Auto-managed substreams for `onObjectDetections` listeners. One entry per
+  // `(channel, profile)` tuple — required for NVR/Hub setups where AI boxes
+  // live on a specific channel, and for callers that need detections off a
+  // profile other than the default `sub`. The substream is opened on the first
+  // listener of a tuple and torn down when the last one for that tuple leaves.
+  private readonly objectDetectionSubs = new Map<
+    string,
+    {
+      channel: number;
+      profile: "main" | "sub" | "ext";
+      listeners: Set<
+        (event: ReolinkDetectionEvent) => void | Promise<void>
+      >;
+      stream?: { stop: () => Promise<void>; release: () => Promise<void> };
+      startInFlight?: Promise<void>;
+    }
   >();
-  private objectDetectionStream:
-    | { stop: () => Promise<void>; release: () => Promise<void> }
-    | undefined;
-  private objectDetectionStreamStartInFlight: Promise<void> | undefined;
+  // Single bridge installed into `detectionEventListeners` while at least one
+  // object-detection subscription is active. It routes events to the correct
+  // tuple's listener set based on `event.channel` / `event.profile`.
   private objectDetectionInternalListener:
     | ((event: ReolinkDetectionEvent) => void)
     | undefined;
@@ -2976,98 +2984,148 @@ export class ReolinkBaichuanApi {
    * Subscribe to AI object detections (people / vehicle / animal / face boxes
    * with class label and confidence) without managing a video stream yourself.
    *
-   * Mirrors {@link onSimpleEvent} end-to-end: the API opens a dedicated
-   * substream behind the scenes on the first listener, forwards every box-bearing
-   * `additionalHeader` to your callback, and tears the stream down when the last
-   * listener unsubscribes. The substream is the lightest profile (typically
-   * 640×360) so the additional bandwidth/CPU overhead is minimal.
+   * Mirrors {@link onSimpleEvent} end-to-end: on the first listener for a given
+   * `(channel, profile)` tuple the API ensures the corresponding video stream
+   * is running (the pool socket may already be shared with a regular consumer),
+   * forwards every box-bearing `additionalHeader` to your callback, and tears
+   * the stream down when the last listener for that tuple unsubscribes.
+   *
+   * Defaults — `channel: 0`, `profile: "sub"` — match a single-lens standalone
+   * camera. **For NVR/Hub child cameras you must pass the channel explicitly**,
+   * otherwise the substream opens on channel 0 and never sees the AI boxes for
+   * the other channels. The `sub` profile is recommended (lighter bandwidth)
+   * but `main` / `ext` are accepted if you specifically need detections off a
+   * different feed.
    *
    * Each event carries normalized `[0, 1]` box coordinates, a class label, and
    * a confidence score — render-ready without further conversion.
    */
   async onObjectDetections(
     callback: (event: ReolinkDetectionEvent) => void | Promise<void>,
+    options?: { channel?: number; profile?: "main" | "sub" | "ext" },
   ): Promise<void> {
-    this.objectDetectionListeners.add(callback);
+    const channel = options?.channel ?? 0;
+    const profile = options?.profile ?? "sub";
+    const key = this.objectDetectionKey(channel, profile);
+    let entry = this.objectDetectionSubs.get(key);
+    if (!entry) {
+      entry = { channel, profile, listeners: new Set() };
+      this.objectDetectionSubs.set(key, entry);
+    }
+    entry.listeners.add(callback);
     this.logger.debug?.(
-      `[ReolinkBaichuanApi] onObjectDetections: registering listener (total=${this.objectDetectionListeners.size})`,
+      `[ReolinkBaichuanApi] onObjectDetections: registering listener for ch${channel}/${profile} (total=${entry.listeners.size})`,
     );
-    await this.ensureObjectDetectionStream();
+    await this.ensureObjectDetectionStream(key);
   }
 
   /**
-   * Remove one detection callback, or all of them if `callback` is omitted.
-   * When the last listener is removed the auto-managed substream is closed.
+   * Remove a detection callback for a given `(channel, profile)` tuple — or,
+   * if `options` is omitted, remove the callback from every active tuple. When
+   * `callback` is also omitted, every listener on the targeted tuples is
+   * cleared. The auto-managed substream of a tuple is closed when its last
+   * listener is removed.
    */
   async offObjectDetections(
     callback?: (event: ReolinkDetectionEvent) => void | Promise<void>,
+    options?: { channel?: number; profile?: "main" | "sub" | "ext" },
   ): Promise<void> {
-    if (callback) {
-      this.objectDetectionListeners.delete(callback);
-    } else {
-      this.objectDetectionListeners.clear();
-    }
-    if (this.objectDetectionListeners.size === 0) {
-      await this.tearDownObjectDetectionStream();
+    const targetKeys: string[] = options
+      ? [
+          this.objectDetectionKey(
+            options.channel ?? 0,
+            options.profile ?? "sub",
+          ),
+        ]
+      : [...this.objectDetectionSubs.keys()];
+
+    for (const key of targetKeys) {
+      const entry = this.objectDetectionSubs.get(key);
+      if (!entry) continue;
+      if (callback) {
+        entry.listeners.delete(callback);
+      } else {
+        entry.listeners.clear();
+      }
+      if (entry.listeners.size === 0) {
+        await this.tearDownObjectDetectionStream(key);
+      }
     }
   }
 
-  private async ensureObjectDetectionStream(): Promise<void> {
-    if (this.objectDetectionStream) return;
-    if (this.objectDetectionStreamStartInFlight) {
-      await this.objectDetectionStreamStartInFlight;
-      return;
-    }
-    this.objectDetectionStreamStartInFlight = (async () => {
-      // Lazy require to avoid a circular import at module load time.
-      const { BaichuanVideoStream } = await import(
-        "../../baichuan/stream/BaichuanVideoStream"
-      );
-      const sessionKey = `live:object-detections:ch0:sub`;
-      const dedicated = await this.createDedicatedSession(sessionKey);
-      const stream = new BaichuanVideoStream({
-        client: dedicated.client,
-        api: this,
-        channel: 0,
-        profile: "sub",
-        logger: this.logger,
-      });
-      // Bridge `onDetection` to `onObjectDetections`. The internal listener
-      // forwards every event to every registered object-detection callback;
-      // we keep a reference so we can remove it on teardown.
-      this.objectDetectionInternalListener = (event: ReolinkDetectionEvent) => {
-        for (const cb of this.objectDetectionListeners) {
-          try {
-            void Promise.resolve(cb(event)).catch((e: unknown) => {
-              (this.logger.warn ?? this.logger.error).call(
-                this.logger,
-                "[ReolinkBaichuanApi] onObjectDetections handler error",
-                formatErrorForLog(e),
-              );
-            });
-          } catch (e) {
+  private objectDetectionKey(
+    channel: number,
+    profile: "main" | "sub" | "ext",
+  ): string {
+    return `${channel}:${profile}`;
+  }
+
+  private ensureObjectDetectionInternalListener(): void {
+    if (this.objectDetectionInternalListener) return;
+    const internal = (event: ReolinkDetectionEvent): void => {
+      const key = this.objectDetectionKey(event.channel, event.profile);
+      const entry = this.objectDetectionSubs.get(key);
+      if (!entry || entry.listeners.size === 0) return;
+      for (const cb of entry.listeners) {
+        try {
+          void Promise.resolve(cb(event)).catch((e: unknown) => {
             (this.logger.warn ?? this.logger.error).call(
               this.logger,
               "[ReolinkBaichuanApi] onObjectDetections handler error",
               formatErrorForLog(e),
             );
-          }
+          });
+        } catch (e) {
+          (this.logger.warn ?? this.logger.error).call(
+            this.logger,
+            "[ReolinkBaichuanApi] onObjectDetections handler error",
+            formatErrorForLog(e),
+          );
         }
-      };
-      this.detectionEventListeners.add(this.objectDetectionInternalListener);
+      }
+    };
+    this.objectDetectionInternalListener = internal;
+    this.detectionEventListeners.add(internal);
+  }
+
+  private maybeDropObjectDetectionInternalListener(): void {
+    if (this.objectDetectionSubs.size > 0) return;
+    if (!this.objectDetectionInternalListener) return;
+    this.detectionEventListeners.delete(this.objectDetectionInternalListener);
+    this.objectDetectionInternalListener = undefined;
+  }
+
+  private async ensureObjectDetectionStream(key: string): Promise<void> {
+    const entry = this.objectDetectionSubs.get(key);
+    if (!entry) return;
+    if (entry.stream) return;
+    if (entry.startInFlight) {
+      await entry.startInFlight;
+      return;
+    }
+    entry.startInFlight = (async () => {
+      // Lazy require to avoid a circular import at module load time.
+      const { BaichuanVideoStream } = await import(
+        "../../baichuan/stream/BaichuanVideoStream"
+      );
+      const sessionKey = `live:object-detections:ch${entry.channel}:${entry.profile}`;
+      const dedicated = await this.createDedicatedSession(sessionKey);
+      const stream = new BaichuanVideoStream({
+        client: dedicated.client,
+        api: this,
+        channel: entry.channel,
+        profile: entry.profile,
+        logger: this.logger,
+      });
+      this.ensureObjectDetectionInternalListener();
       try {
         await stream.start();
       } catch (e) {
-        if (this.objectDetectionInternalListener) {
-          this.detectionEventListeners.delete(
-            this.objectDetectionInternalListener,
-          );
-          this.objectDetectionInternalListener = undefined;
-        }
         await dedicated.release().catch(() => {});
+        this.maybeDropObjectDetectionInternalListener();
         throw e;
       }
-      this.objectDetectionStream = {
+      entry.stream = {
         stop: () => stream.stop(),
         release: () => dedicated.release(),
       };
@@ -3076,36 +3134,37 @@ export class ReolinkBaichuanApi {
       );
     })();
     try {
-      await this.objectDetectionStreamStartInFlight;
+      await entry.startInFlight;
     } finally {
-      this.objectDetectionStreamStartInFlight = undefined;
+      delete entry.startInFlight;
     }
   }
 
-  private async tearDownObjectDetectionStream(): Promise<void> {
-    const handle = this.objectDetectionStream;
-    this.objectDetectionStream = undefined;
-    if (this.objectDetectionInternalListener) {
-      this.detectionEventListeners.delete(this.objectDetectionInternalListener);
-      this.objectDetectionInternalListener = undefined;
+  private async tearDownObjectDetectionStream(key: string): Promise<void> {
+    const entry = this.objectDetectionSubs.get(key);
+    if (!entry) return;
+    const handle = entry.stream;
+    delete entry.stream;
+    this.objectDetectionSubs.delete(key);
+    if (handle) {
+      try {
+        await handle.stop();
+      } catch (e) {
+        this.logger.debug?.(
+          `[ReolinkBaichuanApi] onObjectDetections: stream stop error (key=${key}): ${formatErrorForLog(e)}`,
+        );
+      }
+      try {
+        await handle.release();
+      } catch (e) {
+        this.logger.debug?.(
+          `[ReolinkBaichuanApi] onObjectDetections: session release error (key=${key}): ${formatErrorForLog(e)}`,
+        );
+      }
     }
-    if (!handle) return;
-    try {
-      await handle.stop();
-    } catch (e) {
-      this.logger.debug?.(
-        `[ReolinkBaichuanApi] onObjectDetections: stream stop error: ${formatErrorForLog(e)}`,
-      );
-    }
-    try {
-      await handle.release();
-    } catch (e) {
-      this.logger.debug?.(
-        `[ReolinkBaichuanApi] onObjectDetections: session release error: ${formatErrorForLog(e)}`,
-      );
-    }
+    this.maybeDropObjectDetectionInternalListener();
     this.logger.debug?.(
-      `[ReolinkBaichuanApi] onObjectDetections: substream torn down`,
+      `[ReolinkBaichuanApi] onObjectDetections: substream torn down (key=${key})`,
     );
   }
 
@@ -3682,9 +3741,10 @@ export class ReolinkBaichuanApi {
     // Stop event watchdog and resubscribe timer
     this.stopSimpleEventWatchdog();
     this.stopSimpleEventResubscribeTimer();
-    // Tear down the auto-managed object-detection substream, if any.
-    this.objectDetectionListeners.clear();
-    await this.tearDownObjectDetectionStream().catch(() => {});
+    // Tear down every auto-managed object-detection substream, if any.
+    for (const key of [...this.objectDetectionSubs.keys()]) {
+      await this.tearDownObjectDetectionStream(key).catch(() => {});
+    }
     // Stop all RTSP servers before closing the client
     await this.cleanup();
     // Stop all active video streams on the main client before logout/close

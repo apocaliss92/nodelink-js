@@ -181,6 +181,26 @@ await api.onSimpleEvent((event) => {
 });
 ```
 
+For **AI detection boxes** (people / vehicle / animal / face) with normalized coordinates, use `onObjectDetections()` — listeners are reference-counted per `(channel, profile)` and the library ensures the matching substream is running (defaults: `channel: 0`, `profile: "sub"`):
+
+```typescript
+// Standalone camera (ch0/sub by default)
+await api.onObjectDetections((event) => {
+  for (const box of event.boxes) {
+    // box.x, box.y, box.width, box.height are in [0, 1]
+    console.log(box.label, box.confidence, box);
+  }
+});
+
+// NVR/Hub: always pass the channel
+await api.onObjectDetections(
+  (event) => render(event),
+  { channel: 2 },
+);
+```
+
+See [Events & Notifications](./events.md#onobjectdetections) for the full payload shape and the lifecycle details.
+
 The API also emits low-level EventEmitter events:
 
 | Event        | Description            |

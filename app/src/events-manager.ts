@@ -406,24 +406,30 @@ function registerCameraEvents(cameraId: string, api: ReolinkBaichuanApi): void {
   // so we must subscribe on the new one even if cameraId was already registered.
   registeredCameras.add(cameraId);
   registeredApis.set(cameraId, api);
+
+  const config = getConfig();
+  const camera = config.cameras.find((c) => c.id === cameraId);
+  const cameraChannel = camera?.rtspChannel ?? 0;
+  const isNvrChild = !!camera?.nvrId;
+
   // If a detection-SSE client is already connected when this camera comes
   // online, attach `onObjectDetections` so its substream starts immediately.
+  // Pass the camera's channel explicitly — NVR children live on non-zero
+  // channels and would otherwise get no AI boxes.
   if (objectDetectionSubsActive) {
     void api
-      .onObjectDetections((event) => {
-        handleDetectionEvent(cameraId, event);
-      })
+      .onObjectDetections(
+        (event) => {
+          handleDetectionEvent(cameraId, event);
+        },
+        { channel: cameraChannel },
+      )
       .catch((e: unknown) => {
         logger.warn(
           `onObjectDetections subscribe failed for ${cameraId}: ${(e as Error)?.message ?? e}`,
         );
       });
   }
-
-  const config = getConfig();
-  const camera = config.cameras.find((c) => c.id === cameraId);
-  const cameraChannel = camera?.rtspChannel ?? 0;
-  const isNvrChild = !!camera?.nvrId;
 
   api.onSimpleEvent((event) => {
     // For NVR children, only process events for this camera's channel
@@ -646,12 +652,18 @@ export function addDetectionSseClient(res: Response): void {
 async function activateObjectDetectionSubs(): Promise<void> {
   if (objectDetectionSubsActive) return;
   objectDetectionSubsActive = true;
+  const config = getConfig();
   await Promise.allSettled(
     [...registeredApis.entries()].map(async ([cameraId, api]) => {
+      const camera = config.cameras.find((c) => c.id === cameraId);
+      const cameraChannel = camera?.rtspChannel ?? 0;
       try {
-        await api.onObjectDetections((event) => {
-          handleDetectionEvent(cameraId, event);
-        });
+        await api.onObjectDetections(
+          (event) => {
+            handleDetectionEvent(cameraId, event);
+          },
+          { channel: cameraChannel },
+        );
       } catch (e) {
         logger.warn(
           `onObjectDetections activate failed for ${cameraId}: ${(e as Error)?.message ?? e}`,
@@ -671,10 +683,15 @@ async function activateObjectDetectionSubs(): Promise<void> {
 async function deactivateObjectDetectionSubs(): Promise<void> {
   if (!objectDetectionSubsActive) return;
   objectDetectionSubsActive = false;
+  const config = getConfig();
   await Promise.allSettled(
-    [...registeredApis.values()].map(async (api) => {
+    [...registeredApis.entries()].map(async ([cameraId, api]) => {
+      const camera = config.cameras.find((c) => c.id === cameraId);
+      const cameraChannel = camera?.rtspChannel ?? 0;
       try {
-        await api.offObjectDetections();
+        // Per-channel teardown: an NVR `api` may be shared by several child
+        // cameras, so we only clear listeners for *this* camera's channel.
+        await api.offObjectDetections(undefined, { channel: cameraChannel });
       } catch (e) {
         logger.warn(
           `offObjectDetections failed: ${(e as Error)?.message ?? e}`,
