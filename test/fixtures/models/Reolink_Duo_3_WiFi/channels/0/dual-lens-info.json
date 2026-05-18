@@ -1,14 +1,37 @@
 {
-  "isDualLens": false,
+  "isDualLens": true,
+  "dualLensType": "dual_motion",
+  "model": "Reolink Duo 3 WiFi",
   "streamChannelCount": 1,
   "logicalChannelCount": 1,
-  "channels": [],
+  "channels": [
+    {
+      "channel": 0,
+      "hasPan": false,
+      "hasTilt": false,
+      "hasZoom": false,
+      "hasMotion": true,
+      "hasIntercom": true,
+      "hasPresets": false,
+      "lensType": "wide",
+      "variantType": "default",
+      "availableStreams": {
+        "rtsp": true,
+        "rtmp": false,
+        "native": true
+      }
+    }
+  ],
   "capabilityChannels": {
     "pan": [],
     "tilt": [],
     "zoom": [],
-    "motion": [],
-    "intercom": [],
+    "motion": [
+      0
+    ],
+    "intercom": [
+      0
+    ],
     "presets": []
   }
 }

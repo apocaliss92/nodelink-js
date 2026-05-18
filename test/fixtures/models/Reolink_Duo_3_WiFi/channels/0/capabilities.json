@@ -9,7 +9,7 @@
     "hasBattery": false,
     "hasIntercom": true,
     "hasSiren": true,
-    "hasFloodlight": false,
+    "hasFloodlight": true,
     "hasPir": false,
     "isDoorbell": false,
     "hasAutotracking": true,

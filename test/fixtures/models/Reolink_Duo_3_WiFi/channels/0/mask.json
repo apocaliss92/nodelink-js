@@ -1,0 +1,69 @@
+{
+  "body": {
+    "Shelter": {
+      "channelId": 0,
+      "enable": 0,
+      "maxNum": 4,
+      "shelterList": "",
+      "trackEnable": 0,
+      "maxTrackShelterNum": 4,
+      "trackShelterList": {
+        "trackShelter": [
+          {
+            "name": 0,
+            "enable": 0,
+            "layer": 0,
+            "color": 0,
+            "topLeftX": 0,
+            "topLeftY": 0,
+            "width": 0,
+            "height": 0,
+            "pPos": -1,
+            "tPos": -1,
+            "zPos": -1
+          },
+          {
+            "name": 1,
+            "enable": 0,
+            "layer": 0,
+            "color": 0,
+            "topLeftX": 0,
+            "topLeftY": 0,
+            "width": 0,
+            "height": 0,
+            "pPos": -1,
+            "tPos": -1,
+            "zPos": -1
+          },
+          {
+            "name": 2,
+            "enable": 0,
+            "layer": 0,
+            "color": 0,
+            "topLeftX": 0,
+            "topLeftY": 0,
+            "width": 0,
+            "height": 0,
+            "pPos": -1,
+            "tPos": -1,
+            "zPos": -1
+          },
+          {
+            "name": 3,
+            "enable": 0,
+            "layer": 0,
+            "color": 0,
+            "topLeftX": 0,
+            "topLeftY": 0,
+            "width": 0,
+            "height": 0,
+            "pPos": -1,
+            "tPos": -1,
+            "zPos": -1
+          }
+        ]
+      },
+      "@_version": 1.1
+    }
+  }
+}

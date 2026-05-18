@@ -43,28 +43,6 @@
         "bitRate": 2048,
         "audioCodec": "aac"
       }
-    },
-    {
-      "name": "Native ext",
-      "id": "channel_0_ext",
-      "container": "rtp",
-      "channel": 0,
-      "profile": "ext",
-      "streamName": "ext",
-      "lens": "wide",
-      "url": "baichuan://192.***.***.***/channel/0/profile/ext",
-      "urlWithAuth": "baichuan://***:***@192.***.***.***/channel/0/profile/ext",
-      "metadata": {
-        "profile": "ext",
-        "audio": 0,
-        "width": 2560,
-        "height": 720,
-        "videoEncType": "H.264",
-        "videoEncTypeInt": 0,
-        "frameRate": 20,
-        "bitRate": 2024,
-        "audioCodec": "aac"
-      }
     }
   ],
   "rtmpStreams": [],
