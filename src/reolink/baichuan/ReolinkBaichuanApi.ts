@@ -836,14 +836,19 @@ export class ReolinkBaichuanApi {
       });
     }
 
-    // Session guard: start periodic check after first push
-    // (skip if the interval is already running from a previous connection)
+    // Session guard: start periodic check after first push.
+    // Opt-in via `enableSessionGuard: true` constructor option. When
+    // disabled (default) we still log the active sessions once on startup
+    // (purely informational, single call) but skip the recurring 60s poll
+    // — see issue #18 for why this matters on battery cameras.
     if (!this.sessionGuardIntervalTimer) {
       client.once("push", () => {
         void this.logActiveSessionsOnStartup();
-        this.sessionGuardIntervalTimer = setInterval(() => {
-          void this.maybeRebootOnTooManySessions();
-        }, 60_000);
+        if (this.sessionGuardEnabled) {
+          this.sessionGuardIntervalTimer = setInterval(() => {
+            void this.maybeRebootOnTooManySessions();
+          }, 60_000);
+        }
       });
     }
   }
@@ -880,6 +885,19 @@ export class ReolinkBaichuanApi {
 
   /** Maximum dedicated sessions allowed before triggering a reboot (default: 7). */
   private maxDedicatedSessionsBeforeReboot: number | undefined;
+  /**
+   * Opt-in: when `false` (default), the lib never starts the 60s periodic
+   * `getOnlineUserList` poll and never schedules an automatic reboot based
+   * on the session count. The post-socket-create probe at line ~1859 is
+   * also skipped. Consumers that want the legacy behaviour can pass
+   * `enableSessionGuard: true` to the constructor.
+   *
+   * Rationale: on BCUDP (battery cameras) the periodic poll wakes the
+   * camera every minute and triggers a perpetual sleeping↔awake cycle —
+   * see issue #18. Even on AC cameras the auto-reboot side effect is
+   * surprising; making it explicit avoids astonishment.
+   */
+  private sessionGuardEnabled: boolean = false;
   private sessionGuardRebootInFlight: Promise<void> | undefined;
   private sessionGuardLastRebootAtMs: number | undefined;
   /** Track last known session count and IDs for change detection. */
@@ -1855,8 +1873,12 @@ export class ReolinkBaichuanApi {
           }
         }
 
-        // Check session count after creating new socket
-        void this.maybeRebootOnTooManySessions();
+        // Check session count after creating new socket (opt-in via
+        // `enableSessionGuard`). See `sessionGuardEnabled` field doc for
+        // why the default is `false`.
+        if (this.sessionGuardEnabled) {
+          void this.maybeRebootOnTooManySessions();
+        }
 
         return newClient;
       } catch (loginError) {
@@ -2215,6 +2237,18 @@ export class ReolinkBaichuanApi {
       rebootAfterConsecutiveEconnreset?: number;
       /** If true, avoid using HTTP/CGI fallbacks and discovery paths (native Baichuan only). */
       nativeOnly?: boolean;
+      /**
+       * Enable the periodic session-count guard: every 60s the lib polls
+       * `getOnlineUserList` (cmd_id 120) and triggers a device reboot if
+       * sessions from our IP exceed `maxDedicatedSessionsBeforeReboot`.
+       *
+       * Default: `false`. The poll wakes battery cameras on every tick and
+       * its only side effect — an automatic reboot — is a heavy-hand fix
+       * for a problem that rarely materialises in practice. Set to `true`
+       * only if you specifically need the legacy auto-recovery behaviour;
+       * even then the lib skips the poll on UDP transport.
+       */
+      enableSessionGuard?: boolean;
     },
   ) {
     const dbg = normalizeDebugOptions(opts.debugOptions);
@@ -2285,7 +2319,9 @@ export class ReolinkBaichuanApi {
       debugConfig: generalClient.getDebugConfig?.(),
     });
 
-    // Session guard: reboot if too many dedicated sessions are open
+    // Session guard: reboot if too many dedicated sessions are open.
+    // Opt-in (see field doc on `sessionGuardEnabled`).
+    this.sessionGuardEnabled = opts.enableSessionGuard === true;
     const maxSessions = opts.maxDedicatedSessionsBeforeReboot;
     if (
       typeof maxSessions === "number" &&
