@@ -1,0 +1,61 @@
+{
+  "streams": [
+    {
+      "channelBits": 1,
+      "encodeTables": [
+        {
+          "type": "mainStream",
+          "width": 2560,
+          "height": 1920,
+          "defaultFramerate": 20,
+          "defaultBitrate": 4096,
+          "framerateTable": [
+            20,
+            18,
+            16,
+            15,
+            12,
+            10,
+            8,
+            6,
+            4,
+            2
+          ],
+          "bitrateTable": [
+            1024,
+            1536,
+            2048,
+            3072,
+            4096,
+            5120,
+            6144
+          ],
+          "defaultGop": 2
+        },
+        {
+          "type": "subStream",
+          "width": 640,
+          "height": 480,
+          "defaultFramerate": 10,
+          "defaultBitrate": 256,
+          "framerateTable": [
+            15,
+            10,
+            7,
+            4
+          ],
+          "bitrateTable": [
+            64,
+            128,
+            160,
+            192,
+            256,
+            384,
+            512
+          ],
+          "defaultGop": 4
+        }
+      ]
+    }
+  ]
+}
