@@ -1,0 +1,10 @@
+{
+  "body": {
+    "Shelter": {
+      "channelId": 0,
+      "enable": 0,
+      "shelterList": "",
+      "@_version": 1.1
+    }
+  }
+}
