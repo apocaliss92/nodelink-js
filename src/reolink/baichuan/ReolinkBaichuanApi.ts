@@ -2551,6 +2551,18 @@ export class ReolinkBaichuanApi {
     // wake the camera unnecessarily.
     if (!this.client.isSocketConnected?.()) return;
 
+    // Skip on BCUDP (battery cameras): the socket stays "connected" at the
+    // transport level even when the camera is in deep sleep, so the
+    // isSocketConnected guard above doesn't fire. Every getOnlineUserList
+    // (cmd_id 120) we send wakes the camera — and because we send it every
+    // 60s, the result is a perpetual sleeping↔awake cycle (issue #18).
+    //
+    // For a single client (the common case for battery cams) the session
+    // count is always 1, so the periodic check has no actionable signal.
+    // If a multi-session situation arises on UDP it will be diagnosed via
+    // explicit `getOnlineUserList()` calls, not by silent periodic polling.
+    if (this.client.getTransport?.() === "udp") return;
+
     // Calculate threshold: use explicit value or default to 10 sessions
     const threshold = this.maxDedicatedSessionsBeforeReboot ?? 10;
 
