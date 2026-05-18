@@ -1,15 +1,19 @@
 {
-  "collectedAt": "2026-05-17T12:22:59.829Z",
-  "model": "unknown",
-  "itemNo": "unknown",
-  "firmwareVersion": "unknown",
+  "collectedAt": "2026-05-18T01:11:17.784Z",
+  "model": "Reolink Duo 3 WiFi",
+  "itemNo": "W750",
+  "firmwareVersion": "v3.2.0.4989_2509111449",
   "channel": 0,
-  "total": 25,
-  "ok": 25,
-  "failed": 0,
-  "errors": [],
+  "total": 40,
+  "ok": 38,
+  "failed": 2,
+  "errors": [
+    "getAutoFocus: Baichuan request failed (responseCode 400, empty body). Possible causes: expired session, invalid username/password, or unsupported command on NVR/Hub.",
+    "getZoomFocus: Baichuan request failed (responseCode 400, empty body). Possible causes: expired session, invalid username/password, or unsupported command on NVR/Hub."
+  ],
   "calls": {
     "getInfo": "ok",
+    "getInfoBase": "ok",
     "getSupportInfo": "ok",
     "getAbilityInfo": "ok",
     "getDeviceCapabilities": "ok",
@@ -33,6 +37,20 @@
     "getFloodlightOnMotion": "ok",
     "buildVideoStreamOptions": "ok",
     "getDualLensChannelInfo": "ok",
+    "getEncOptions": "ok",
+    "getEnc": "ok",
+    "getStreamInfoList": "ok",
+    "getAutoFocus": "FAILED: Baichuan request failed (responseCode 400, empty body). Possible causes: expired session, invalid username/password, or unsupported command on NVR/Hub.",
+    "getLedState": "ok",
+    "getIrLights": "ok",
+    "getImage": "ok",
+    "getIsp": "ok",
+    "getDayNightThreshold": "ok",
+    "getMask": "ok",
+    "getAudioCfg": "ok",
+    "getOsdDatetime": "ok",
+    "getPtzPosition": "ok",
+    "getZoomFocus": "FAILED: Baichuan request failed (responseCode 400, empty body). Possible causes: expired session, invalid username/password, or unsupported command on NVR/Hub.",
     "streamCombinationTest": "ok"
   }
 }
