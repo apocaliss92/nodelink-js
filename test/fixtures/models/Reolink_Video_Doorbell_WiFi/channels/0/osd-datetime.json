@@ -1,0 +1,20 @@
+{
+  "osdDatetime": {
+    "channelId": 0,
+    "enable": true,
+    "topLeftX": 65537,
+    "topLeftY": 1,
+    "width": 0,
+    "height": 0,
+    "language": "English"
+  },
+  "osdChannelName": {
+    "channelId": 0,
+    "name": "Kitchen Door",
+    "enable": true,
+    "topLeftX": 65536,
+    "topLeftY": 65536,
+    "enWatermark": false,
+    "enBgcolor": false
+  }
+}

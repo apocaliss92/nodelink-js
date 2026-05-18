@@ -1,0 +1,15 @@
+{
+  "body": {
+    "DayNightThreshold": {
+      "channelId": 0,
+      "threshold": "custom",
+      "stat": "day",
+      "thresholdval": {
+        "min": 0,
+        "max": 100,
+        "cur": 50
+      },
+      "@_version": 1.1
+    }
+  }
+}
