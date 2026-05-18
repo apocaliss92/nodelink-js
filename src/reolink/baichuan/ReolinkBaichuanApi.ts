@@ -11656,9 +11656,42 @@ export class ReolinkBaichuanApi {
     const hasDualLensChannelCount =
       channelNumValue === 2 && Number.isFinite(channelNumValue);
 
-    // Consider it dual lens if model matches OR if channelNum suggests it
+    // Firmware-level "binocular" flag: present in cmd_id 199 (SupportInfo)
+    // per-channel item as `binoCfg`. Captured against an Argus (UDP) standalone
+    // confirms the Reolink Electron client uses the same SupportInfo
+    // response to derive `cameraType === "binocular"` — this flag is the
+    // authoritative signal for a stitched dual-sensor camera like the
+    // Reolink Duo 3 (which exposes a single logical channel despite having
+    // two physical lenses). The model-name match list above stays as a
+    // fallback for older firmwares that pre-date the binoCfg field.
+    const supportItemForChannel = (() => {
+      if (!supportInfo) return undefined;
+      const items = (supportInfo as { items?: Array<Record<string, unknown>> })
+        .items;
+      if (!Array.isArray(items)) return undefined;
+      return items.find(
+        (it) => typeof it === "object" && it !== null && "ledCtrl" in it,
+      );
+    })();
+    const binoCfgRaw = supportItemForChannel
+      ? (supportItemForChannel as { binoCfg?: unknown }).binoCfg
+      : undefined;
+    const hasBinoCfgFlag =
+      typeof binoCfgRaw === "number"
+        ? binoCfgRaw > 0
+        : typeof binoCfgRaw === "string"
+          ? Number(binoCfgRaw) > 0
+          : false;
+
+    // Consider it dual lens if any signal fires:
+    //   - explicit firmware binoCfg flag (most reliable)
+    //   - known model match (legacy fallback for Duo/TrackMix without binoCfg)
+    //   - device exposes 2 channels (most-permissive fallback)
     const isDualLens =
-      isDualMotionModel || isSingleMotionModel || hasDualLensChannelCount;
+      hasBinoCfgFlag ||
+      isDualMotionModel ||
+      isSingleMotionModel ||
+      hasDualLensChannelCount;
 
     if (!isDualLens) {
       return {

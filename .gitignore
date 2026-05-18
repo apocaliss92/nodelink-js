@@ -72,3 +72,6 @@ app/go2rtc.yaml
 
 # Claude Code local state (scheduled wakeups, sessions, etc.)
 .claude/
+
+# One-off probe / research scripts output (contain real camera ability dumps)
+tools/probe-ability-out/
