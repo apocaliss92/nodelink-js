@@ -10,6 +10,7 @@ import {
   type RtspServerConfig,
 } from "./types.js";
 import { hashPassword } from "./password.js";
+import { migrateLegacyBatteryCamera } from "./camera-traits.js";
 import { atomicWriteFileSync, readWithBackupFallback } from "./atomic-write.js";
 
 export const RTSP_DIGEST_REALM = "RTSP Proxy";
@@ -305,6 +306,30 @@ export function loadSettings(): Settings {
     console.error("Failed to load settings, using defaults:", error);
     settings = SettingsSchema.parse({});
   }
+
+  // One-shot migration for the legacy `isBattery` field. For
+  // standalone cameras the flag is replaced by `transport: "udp"`
+  // (single source of truth, see `./camera-traits.ts`). NVR children
+  // keep the flag because they share the parent Hub's TCP socket and
+  // the field is the only per-child battery signal we have. Settings
+  // written by older versions are migrated in place and rewritten on
+  // first run so the file converges to the new shape.
+  let migrated = 0;
+  for (const cam of settings.cameras) {
+    if (migrateLegacyBatteryCamera(cam)) migrated++;
+    // Strip the legacy field on standalone cameras only; NVR children
+    // keep it.
+    if (!cam.nvrId && "isBattery" in cam) {
+      delete (cam as { isBattery?: boolean }).isBattery;
+    }
+  }
+  if (migrated > 0) {
+    console.log(
+      `[settings] Migrated ${migrated} legacy standalone battery camera(s) to transport=udp; rewriting settings.json`,
+    );
+    saveSettings({ cameras: settings.cameras });
+  }
+
   return settings;
 }
 

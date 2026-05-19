@@ -28,6 +28,7 @@ import {
   getCameraInfo,
 } from "./rtsp-manager.js";
 import { getConfig, getSettings } from "./settings-store.js";
+import { isBatteryCamera } from "./camera-traits.js";
 import { readAppVersion } from "./app-version.js";
 import { createSourceLogger } from "./logger.js";
 
@@ -609,7 +610,7 @@ async function registerCamera(
   const info = getCameraInfo(cameraId);
   const cameraName = camera?.name ?? info?.name ?? cameraId;
   const channel = camera?.rtspChannel ?? 0;
-  const isBattery = camera?.isBattery ?? false;
+  const isBattery = isBatteryCamera(camera);
   const appVersion = readAppVersion() ?? "0.0.0";
 
   // Tear down any previous registration (e.g. after a reconnect).

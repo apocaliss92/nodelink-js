@@ -20,6 +20,7 @@ import {
   RTSP_DIGEST_REALM,
 } from "./settings-store.js";
 import { getGo2rtcManager } from "./go2rtc-manager.js";
+import { isBatteryCamera } from "./camera-traits.js";
 import {
   getLocalRtspMux,
   initLocalRtspMux,
@@ -449,7 +450,7 @@ function attachConnectionListeners(
     const currentConfig = getConfig();
     const isBatteryIdleDisconnect = getAffectedCameraIds(cameraId).some((camId) => {
       const cam = currentConfig.cameras.find((c) => c.id === camId);
-      return cam?.isBattery && !conn.api.isClosed;
+      return isBatteryCamera(cam) && !conn.api.isClosed;
     });
 
     if (isBatteryIdleDisconnect) {
@@ -662,12 +663,12 @@ export async function getOrCreateApiConnection(
       username,
       password,
       ...(camera.uid ? { uid: camera.uid } : {}),
-      // NVR/Hub connections always use TCP on port 9000 — never UDP, even if the
-      // child camera is a battery device. The battery flag applies to standalone connections only.
-      // For standalone battery cameras, use UDP directly — "auto" mode won't help because the
-      // camera accepts the TCP socket handshake but never responds to Baichuan protocol,
-      // so connectTcp() resolves without throwing and the UDP fallback never triggers.
-      transport: isNvrConnection ? "tcp" : (camera.isBattery ? "udp" : (camera.transport ?? "auto")),
+      // NVR/Hub connections always use TCP on port 9000.
+      // For standalone cameras the explicit `camera.transport` is the source
+      // of truth: battery cameras carry `transport: "udp"` (set explicitly
+      // by the user, by discovery, or by the "Persisted resolved transport"
+      // hook in events-manager). AC cameras carry "tcp" or "auto".
+      transport: isNvrConnection ? "tcp" : (camera.transport ?? "auto"),
       ...(!isNvrConnection && camera.udpDiscoveryMethod ? { udpDiscoveryMethod: camera.udpDiscoveryMethod } : {}),
       debugOptions,
       logger: {
@@ -705,7 +706,7 @@ export async function getOrCreateApiConnection(
     // unnecessarily wake the camera during reconnection.
     const channel = camera.rtspChannel ?? 0;
     let isMultifocal = false;
-    if (!isNvrConnection && !camera.isBattery) {
+    if (!isNvrConnection && !isBatteryCamera(camera)) {
       try {
         const dualLensAnalysis = await api.getDualLensChannelInfo(
           isNvr ? channel : 0,
@@ -727,7 +728,7 @@ export async function getOrCreateApiConnection(
     // Without this the camera is constantly woken up by external pings and
     // drains the battery even with a solar panel attached.
     // (Mirrors scrypted-reolink-native/src/baichuan-base.ts.)
-    if (camera.isBattery) {
+    if (isBatteryCamera(camera)) {
       api.setIdleDisconnect(true);
       cameraLogger.info("setIdleDisconnect(true) — battery camera");
     }
@@ -749,7 +750,7 @@ export async function getOrCreateApiConnection(
     // force-wake the camera every PING_INTERVAL_MS, defeating idle disconnect
     // and draining the battery. The library's internal watchdog handles
     // event subscription recovery for UDP/battery cameras.
-    if (!camera.isBattery) {
+    if (!isBatteryCamera(camera)) {
       startPingKeepalive(connKey, conn);
     } else {
       cameraLogger.info("Ping keepalive disabled — battery camera");
@@ -809,7 +810,7 @@ export async function getOrCreateApiConnection(
 
 // Update a single camera's info cache entry
 async function updateSingleCameraInfo(
-  camera: { id: string; name: string; host: string; port: number; rtspChannel?: number; isBattery?: boolean },
+  camera: { id: string; name: string; host: string; port: number; rtspChannel?: number; transport?: string },
   api: ReolinkBaichuanApi,
   sharedInfo?: { type?: string; firmwareVersion?: string; serialNumber?: string },
   sharedChannelCount?: number,
@@ -828,8 +829,9 @@ async function updateSingleCameraInfo(
         modelLower.includes("nvr") ||
         modelLower.includes("home hub"));
 
+    const battery = isBatteryCamera(camera);
     let isMultifocal = false;
-    if (!camera.isBattery) {
+    if (!battery) {
       try {
         const dualLensAnalysis = await api.getDualLensChannelInfo(
           isNvr ? channel : 0,
@@ -843,7 +845,7 @@ async function updateSingleCameraInfo(
 
     let channelName: string | undefined;
     let channelModel: string | undefined;
-    if (!camera.isBattery && isNvr && channel >= 0) {
+    if (!battery && isNvr && channel >= 0) {
       try {
         const channelInfo = await api.getInfo(channel);
         if (channelInfo?.name) channelName = channelInfo.name;
@@ -1098,7 +1100,7 @@ export async function startRtspServer(
   // drains its battery. AC-powered cameras use the user setting
   // (rtspProxyBackendIdleTimeoutMs, default 0 = always-on).
   const baseNativeIdleMs = settings.rtspProxyBackendIdleTimeoutMs;
-  const nativeIdleMs = camera.isBattery
+  const nativeIdleMs = isBatteryCamera(camera)
     ? baseNativeIdleMs > 0
       ? Math.min(baseNativeIdleMs, 15_000)
       : 15_000
@@ -1351,7 +1353,7 @@ export async function startRtspServer(
       listenHost: "127.0.0.1",
       deviceId: cameraId,
       logger: rtspLogger,
-      prestartStream: !camera.isBattery,
+      prestartStream: !isBatteryCamera(camera),
       gracePeriodMs: rtspNativeIdleOpts.nativeStreamIdleStopMs > 0
         ? rtspNativeIdleOpts.nativeStreamIdleStopMs
         : 30_000,
@@ -1627,7 +1629,7 @@ export async function startAllCameraStreams(
   // If no streams configured, start main by default.
   // For battery cameras, also fall back even if rtspEnabled is false —
   // the caller (e.g. manual connect) explicitly requested stream start.
-  if (streams.length === 0 && (camera.rtspEnabled || camera.isBattery)) {
+  if (streams.length === 0 && (camera.rtspEnabled || isBatteryCamera(camera))) {
     const info = await startRtspServer(cameraId, {
       profile: camera.rtspProfile || "main",
       channel: camera.rtspChannel ?? 0,
@@ -1767,7 +1769,7 @@ async function runReconnectCheck(): Promise<void> {
   for (const camera of config.cameras) {
     if (camera.autoStart !== true) continue;
     // Battery cameras have their own wake-on-demand lifecycle (idle disconnect)
-    if (camera.isBattery) continue;
+    if (isBatteryCamera(camera)) continue;
     // NVR child explicitly disabled by user
     if (camera.nvrId && disabledNvrCameras.has(camera.id)) continue;
 
@@ -1944,7 +1946,7 @@ export async function registerPreConnectedApi(
   attachConnectionListeners(connKey, conn);
   // Skip ping keepalive for battery cameras — pings would force-wake the camera
   // every PING_INTERVAL_MS, defeating idle disconnect and draining the battery.
-  if (!camera?.isBattery) {
+  if (!isBatteryCamera(camera)) {
     startPingKeepalive(connKey, conn);
   } else {
     cameraLogger.info("Ping keepalive disabled — battery camera");
@@ -2008,7 +2010,7 @@ export async function startStreamsForAllConnectedCameras(): Promise<void> {
     // every ~60s, continuously waking the camera and draining the battery.
     // In local mode the BaichuanRtspServer handles wakeup on-demand via
     // lazyMetadata — we must register the mux path now so it exists.
-    if (camera.isBattery && (camera.batteryMode ?? "streamOnly") === "streamOnly" && restreamerMode !== "local") {
+    if (isBatteryCamera(camera) && (camera.batteryMode ?? "streamOnly") === "streamOnly" && restreamerMode !== "local") {
       logger.info(`Flush: skip battery camera ${camera.name} (batteryMode=streamOnly)`);
       continue;
     }
@@ -2067,7 +2069,7 @@ export function enableAutoStreamsOnConnect(): void {
     // the camera and drains the battery.  In local mode the BaichuanRtspServer
     // handles on-demand wakeup via lazyMetadata — registering the mux path
     // upfront is safe (and required so the path exists before any client connects).
-    if (camera.isBattery && (camera.batteryMode ?? "streamOnly") === "streamOnly" && restreamerMode !== "local") {
+    if (isBatteryCamera(camera) && (camera.batteryMode ?? "streamOnly") === "streamOnly" && restreamerMode !== "local") {
       logger.info(
         `Skip auto-streams for battery camera ${camera.name} (batteryMode=streamOnly)`,
       );

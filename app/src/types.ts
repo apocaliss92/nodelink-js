@@ -26,8 +26,14 @@ export const CameraConfigSchema = z.object({
   isNvr: z.boolean().default(false),
   // Reference to parent NVR (if this camera was added via NVR discovery)
   nvrId: z.string().optional(),
-  // Whether this camera is battery-powered (affects query behavior)
-  isBattery: z.boolean().default(false),
+  // NOTE: the legacy `isBattery: boolean` field was removed in 0.4.21.
+  // Battery-ness is now derived from `transport === "udp"` via
+  // `isBatteryCamera` in `./camera-traits.ts`. Settings written by older
+  // versions are migrated at startup: `isBattery: true` is translated to
+  // `transport: "udp"` and the field is dropped. The schema below keeps
+  // accepting the field on read so the parse step doesn't reject legacy
+  // files — but it's not propagated anywhere else.
+  isBattery: z.boolean().optional(),
   // Battery behavior: "alwaysOn" keeps camera awake while connected,
   // "streamOnly" wakes on stream and sleeps after last client disconnects
   batteryMode: z.enum(["alwaysOn", "streamOnly"]).optional().default("streamOnly"),

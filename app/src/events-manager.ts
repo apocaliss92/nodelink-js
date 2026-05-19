@@ -18,6 +18,7 @@ import {
 import { getCameraInfo } from "./rtsp-manager.js";
 import { sanitizeCameraName } from "./rtsp-manager.js";
 import { createSourceLogger } from "./logger.js";
+import { isBatteryCamera } from "./camera-traits.js";
 
 const logger = createSourceLogger("events-manager");
 
@@ -310,13 +311,13 @@ export function handleCameraEvent(
     const newStatus = event.type === "sleeping" ? "sleeping" : "awake";
     const previousStatus = cameraSleepStatus.get(cameraId);
 
-    // Auto-mark camera as battery if it receives sleep/awake events
-    const config = getConfig();
-    const cam = config.cameras.find((c) => c.id === cameraId);
-    if (cam && !cam.isBattery) {
-      updateCamera(cameraId, { isBattery: true });
-      logger.info(`Auto-marked camera ${cameraId} as battery (received ${event.type} event)`);
-    }
+    // The legacy auto-mark heuristic ("set isBattery: true on first
+    // sleeping/awake event") was removed in 0.4.21: battery-ness is now
+    // derived from `transport === "udp"` and persisted by the
+    // "Persisted resolved transport" hook in `initEventsManager`. The
+    // hook fires inside `onApiConnected`, i.e. well before any
+    // sleeping/awake event can reach this handler, so by the time we get
+    // here the transport is already correct.
 
     // Dedupe: skip broadcast when the state hasn't actually changed.
     // This guards against UDP sleep-inference flapping described above.
@@ -543,8 +544,8 @@ export function initEventsManager(): void {
     // while the camera is still awake, to seed the initial % before it sleeps.
     // getBatteryStatus() has a built-in sleeping guard and won't wake a camera
     // that already went to sleep before this runs.
-    if (camera?.isBattery) {
-      const ch = camera.rtspChannel ?? 0;
+    if (isBatteryCamera(camera)) {
+      const ch = camera!.rtspChannel ?? 0;
       void api.getBatteryStatus(ch).then((battery) => {
         if (battery.batteryPercent !== undefined) {
           seedCameraBatteryState(cameraId, {

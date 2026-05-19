@@ -1,5 +1,6 @@
 import { router, publicProcedure, adminProcedure } from "../trpc.js";
 import { z } from "zod";
+import { isBatteryCamera } from "../camera-traits.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
@@ -69,7 +70,7 @@ export const camerasRouter = router({
           rtspChannel: camConfig?.rtspChannel ?? 0,
           isNvr: camConfig?.isNvr ?? false,
           nvrId: camConfig?.nvrId,
-          isBattery: camConfig?.isBattery ?? false,
+          isBattery: isBatteryCamera(camConfig),
           batteryMode: camConfig?.batteryMode ?? "streamOnly",
           sleepStatus: getCameraSleepStatus(cam.id),
           batteryState: getCameraBatteryState(cam.id),
@@ -98,7 +99,7 @@ export const camerasRouter = router({
         rtspChannel: camConfig?.rtspChannel ?? 0,
         isNvr: camConfig?.isNvr ?? false,
         nvrId: camConfig?.nvrId,
-        isBattery: camConfig?.isBattery ?? false,
+        isBattery: isBatteryCamera(camConfig),
         batteryMode: camConfig?.batteryMode ?? "streamOnly",
         sleepStatus: getCameraSleepStatus(input.id),
         batteryState: getCameraBatteryState(input.id),
@@ -177,6 +178,10 @@ export const camerasRouter = router({
         const isNvr = detection.type === "nvr" || input.isNvr;
         const isBattery = detection.hasBattery === true || detection.type === "battery-cam";
         const channelCount = detection.channelNum ?? 1;
+        // Battery cams must persist transport=udp — that's the new single
+        // source of truth for "this camera should sleep / use UDP". The
+        // legacy isBattery flag was removed in 0.4.21.
+        const transportToPersist = isBattery ? "udp" : detection.transport;
 
         // Configure NVR/multifocal flags on the API before registering
         detection.api.setIsNvr(isNvr);
@@ -185,7 +190,7 @@ export const camerasRouter = router({
         }
 
         logger.info(
-          `Detected: type=${detection.type}, transport=${detection.transport}, ` +
+          `Detected: type=${detection.type}, transport=${transportToPersist}, ` +
           `channels=${channelCount}, battery=${isBattery}, model=${deviceInfo.type ?? "unknown"}`,
         );
 
@@ -196,9 +201,8 @@ export const camerasRouter = router({
           name: cameraName,
           channels: channelCount,
           isNvr,
-          isBattery,
           batteryMode: "streamOnly" as const,
-          transport: detection.transport,
+          transport: transportToPersist,
           uid: detection.uid || input.uid,
           udpDiscoveryMethod: detection.udpDiscoveryMethod ?? input.udpDiscoveryMethod,
           autoStart: true,
@@ -344,6 +348,7 @@ export const camerasRouter = router({
         const isNvr = detection.type === "nvr" || camera.isNvr;
         const isBattery = detection.hasBattery === true || detection.type === "battery-cam";
         const channelCount = detection.channelNum ?? 1;
+        const transportToPersist = isBattery ? "udp" : detection.transport;
 
         detection.api.setIsNvr(isNvr);
         if (detection.type === "multifocal") {
@@ -351,7 +356,7 @@ export const camerasRouter = router({
         }
 
         logger.info(
-          `Detected: type=${detection.type}, transport=${detection.transport}, ` +
+          `Detected: type=${detection.type}, transport=${transportToPersist}, ` +
           `channels=${channelCount}, battery=${isBattery}, model=${deviceInfo.type ?? "unknown"}`,
         );
 
@@ -359,9 +364,8 @@ export const camerasRouter = router({
           name: camera.name === camera.host ? (deviceInfo.name || deviceInfo.type || camera.host) : camera.name,
           channels: channelCount,
           isNvr,
-          isBattery,
           batteryMode: "streamOnly" as const,
-          transport: detection.transport,
+          transport: transportToPersist,
           uid: detection.uid || camera.uid,
           udpDiscoveryMethod: detection.udpDiscoveryMethod ?? camera.udpDiscoveryMethod,
         });
@@ -417,7 +421,7 @@ export const camerasRouter = router({
       // skips stream creation to avoid waking the camera on startup.
       // Manual connect is an explicit user action, so start streams now
       // to re-register go2rtc sources (prevents 404 on MP4/HLS URLs).
-      if (camera?.isBattery) {
+      if (isBatteryCamera(camera)) {
         const { getGo2rtcManager } = await import("../go2rtc-manager.js");
         const go2rtcMgr = getGo2rtcManager();
         if (go2rtcMgr?.isRunning) {
@@ -509,7 +513,7 @@ export const camerasRouter = router({
       // For sleeping battery cameras, skip the API call (which would wake the camera).
       // Return a minimal stream list derived from the camera's configured rtspStreams,
       // or a default [main, sub] set so the UI can show preview/URL buttons.
-      if (camera?.isBattery && getCameraSleepStatus(input.id) === "sleeping") {
+      if (camera && isBatteryCamera(camera) && getCameraSleepStatus(input.id) === "sleeping") {
         const profiles: Array<"main" | "sub" | "ext"> =
           (camera.rtspStreams ?? []).length > 0
             ? (camera.rtspStreams.map((s) => s.profile).filter(Boolean) as Array<"main" | "sub" | "ext">)
@@ -658,7 +662,7 @@ export const camerasRouter = router({
       // Calling getOrCreateApiConnection on an idle-disconnected battery camera triggers
       // ensureConnected() which wakes the camera. The UI queries getControlsState whenever
       // isConnected/sleepStatus changes, so we must not cause a reconnect here.
-      if (camera.isBattery) {
+      if (isBatteryCamera(camera)) {
         const existingApi = getExistingApiConnection(input.id);
         if (!existingApi?.isReady) {
           // Camera is sleeping or idle-disconnected; return capabilities from cache if
