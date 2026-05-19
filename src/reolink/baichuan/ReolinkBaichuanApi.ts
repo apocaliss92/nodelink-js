@@ -967,6 +967,25 @@ export class ReolinkBaichuanApi {
   private simpleEventResubscribeTimer: NodeJS.Timeout | undefined;
   private simpleEventResubscribeInFlight: Promise<void> | undefined;
   private readonly simpleEventResubscribeIntervalMs = 5 * 60_000;
+  /**
+   * Default `true` for non-UDP transports (TCP / `auto`), `false` for UDP.
+   *
+   * On TCP the periodic 5-min `subscribeEvents` renewal is cheap belt-and-
+   * braces for firmwares that silently drop the push subscription.
+   *
+   * On UDP (battery cameras) every renewal sends cmd_id 31 which wakes
+   * the device, driving an exact-5-minute sleep/awake cycle visible
+   * downstream in MQTT / Home Assistant (continuation of issue #18). The
+   * reactive `simpleEventWatchdog` (10s tick, 5 min silence threshold)
+   * already recovers silent-drop cases without periodic wakes, so the
+   * renewal is disabled by default for UDP.
+   *
+   * `startSimpleEventResubscribeTimer` also re-checks the live transport
+   * before arming the timer, so callers that pick `transport: "auto"` and
+   * end up on UDP at runtime get the safer behaviour even if the flag
+   * was left default-on.
+   */
+  private eventResubscribeEnabled: boolean = true;
 
   // Event watchdog: auto-recovery when events stop flowing or subscription fails
   private simpleEventWatchdogTimer: NodeJS.Timeout | undefined;
@@ -2249,6 +2268,21 @@ export class ReolinkBaichuanApi {
        * even then the lib skips the poll on UDP transport.
        */
       enableSessionGuard?: boolean;
+      /**
+       * Enable proactive simple-event subscription renewal: every 5 minutes
+       * the lib re-sends `subscribeEvents` (cmd_id 31) so firmwares that
+       * silently drop the push subscription keep delivering events.
+       *
+       * Default: `true` for non-UDP transports (TCP / `auto`), `false` for
+       * UDP (battery cameras). The renewal is harmless on TCP and useful
+       * as belt-and-braces for the rare firmwares that drop subscriptions
+       * without producing event silence. On UDP every renewal wakes the
+       * device, driving an exact 5-minute sleep/awake cycle (continuation
+       * of issue #18); the reactive `simpleEventWatchdog` covers the same
+       * failure mode without the wake-up. Pass `false` explicitly to opt
+       * out on TCP, or `true` to opt in on UDP (not recommended).
+       */
+      enableEventResubscribe?: boolean;
     },
   ) {
     const dbg = normalizeDebugOptions(opts.debugOptions);
@@ -2322,6 +2356,15 @@ export class ReolinkBaichuanApi {
     // Session guard: reboot if too many dedicated sessions are open.
     // Opt-in (see field doc on `sessionGuardEnabled`).
     this.sessionGuardEnabled = opts.enableSessionGuard === true;
+    // Periodic event-subscription renewal — defaults to enabled on non-UDP
+    // transports and disabled on UDP (battery cameras). See field doc on
+    // `eventResubscribeEnabled` for the rationale.
+    const explicitResubscribe = opts.enableEventResubscribe;
+    if (typeof explicitResubscribe === "boolean") {
+      this.eventResubscribeEnabled = explicitResubscribe;
+    } else {
+      this.eventResubscribeEnabled = opts.transport !== "udp";
+    }
     const maxSessions = opts.maxDedicatedSessionsBeforeReboot;
     if (
       typeof maxSessions === "number" &&
@@ -3308,6 +3351,14 @@ export class ReolinkBaichuanApi {
   private startSimpleEventResubscribeTimer(): void {
     if (this.simpleEventResubscribeTimer) return;
     if (this.simpleEventListeners.size === 0) return;
+    // Configurable on/off (see field doc on `eventResubscribeEnabled`).
+    if (!this.eventResubscribeEnabled) return;
+    // Defense in depth: even if the caller left the default on, never run
+    // the renewal once the transport has actually resolved to UDP. The
+    // `transport: "auto"` path doesn't know its final transport at
+    // construction time, so this check is what protects battery cameras
+    // configured via auto-detect.
+    if (this.client.getTransport?.() === "udp") return;
 
     this.simpleEventResubscribeTimer = setInterval(() => {
       // Best-effort renew: some devices silently drop subscriptions without closing the socket.
