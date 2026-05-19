@@ -519,12 +519,30 @@ export function initEventsManager(): void {
     registerCameraEvents(cameraId, api);
     emitSystemEvent(cameraId, "camera_connected");
 
+    const config = getConfig();
+    const camera = config.cameras.find((c) => c.id === cameraId);
+
+    // Persist the resolved transport when `auto` lands on UDP. Without this
+    // every reconnect (e.g. after `idle_disconnect`, or after a manager
+    // restart) pays the 4s TCP timeout before falling back to UDP — and
+    // logs a noisy `ECONNREFUSED` for each cycle on battery cameras that
+    // don't expose port 9000 over TCP. Once we know UDP is the working
+    // transport, write it back so the next `new ReolinkBaichuanApi({...})`
+    // skips the TCP attempt entirely.
+    if (camera) {
+      const resolved = api.client.getTransport?.();
+      if (resolved === "udp" && camera.transport !== "udp") {
+        updateCamera(cameraId, { transport: "udp" });
+        logger.info(
+          `Persisted resolved transport=udp for camera ${cameraId} (was ${camera.transport ?? "auto"}); future reconnects will skip the TCP probe`,
+        );
+      }
+    }
+
     // For battery cameras: do a one-time battery query right after connect
     // while the camera is still awake, to seed the initial % before it sleeps.
     // getBatteryStatus() has a built-in sleeping guard and won't wake a camera
     // that already went to sleep before this runs.
-    const config = getConfig();
-    const camera = config.cameras.find((c) => c.id === cameraId);
     if (camera?.isBattery) {
       const ch = camera.rtspChannel ?? 0;
       void api.getBatteryStatus(ch).then((battery) => {
