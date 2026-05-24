@@ -233,11 +233,25 @@ export function decodePrivacyMaskZones(xml: string): PrivacyMaskZones {
 
   const enable =
     Number(getXmlText(xml, "enable") ?? "0") === 1;
-  const maxNum = Number(getXmlText(xml, "maxNum") ?? "0") | 0;
   const trackEnable =
     Number(getXmlText(xml, "trackEnable") ?? "0") === 1;
   const maxTrackShelterNum =
     Number(getXmlText(xml, "maxTrackShelterNum") ?? "0") | 0;
+  // Some firmwares OMIT <maxNum> entirely while still fully supporting privacy
+  // masks (the Shelter block still carries enable + shelterList +
+  // maxTrackShelterNum) — observed on E1 Outdoor PoE fw v3.1.0, whereas E1 Zoom
+  // v3.2.0 includes <maxNum>4</maxNum>. Reading the absent tag as 0 made
+  // getMaskZones report zero capacity AND made setMaskZones' read-modify-write
+  // emit an empty <shelterList/> (wiping the mask). When <maxNum> is ABSENT,
+  // fall back to the paired maxTrackShelterNum (typically equal) or 4; a
+  // PRESENT <maxNum> (even "0") is respected as authoritative.
+  const rawMaxNum = getXmlText(xml, "maxNum");
+  const maxNum =
+    rawMaxNum !== undefined
+      ? Number(rawMaxNum) | 0
+      : maxTrackShelterNum > 0
+        ? maxTrackShelterNum
+        : 4;
 
   const shelterList: ShelterRect[] = [];
   const shelterListBlock = xml.match(
