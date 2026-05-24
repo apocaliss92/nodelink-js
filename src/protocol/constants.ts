@@ -118,7 +118,8 @@ export const BC_CMD_ID_ALARM_EVENT_LIST = 33; // AlarmEventList push - contains 
 
 // AI Detection command IDs
 export const BC_CMD_ID_GET_AI_ALARM = 342; // GetAiAlarm - Get AI detection state
-export const BC_CMD_ID_SET_AI_ALARM = 343; // SetAiAlarm - Set AI detection
+export const BC_CMD_ID_SET_AI_ALARM = 343; // SetAiAlarm - full setter for all <AiDetectCfg> fields (sensitivity, stayTime, min/maxTarget*, area mask)
+// cmd_id=345 — observed in app traffic but exact semantics not yet reverse-engineered (not a SetAiDetectCfg variant).
 
 // Siren/Audio Alarm command IDs
 export const BC_CMD_ID_GET_AUDIO_ALARM = 547; // GetAudioAlarm - Get siren status (push event)
@@ -140,6 +141,12 @@ export const BC_CMD_ID_SUPPORT = 199; // MSG_ID_SUPPORT
 
 // Ping command ID
 export const BC_CMD_ID_PING = 93; // MSG_ID_PING - Keep connection alive / check status
+
+// Snapshot command ID — JPEG stream delivered via push frames (Extension/binaryData)
+export const BC_CMD_ID_GET_SNAPSHOT = 109;
+
+// Misc identity / handshake commands
+export const BC_CMD_ID_GET_UID = 114; // <Uid><uid>...</uid></Uid> — device serial / UID
 
 // Channel Info command IDs
 export const BC_CMD_ID_CHANNEL_INFO_ALL = 145; // Get channel info for all channels in a single request

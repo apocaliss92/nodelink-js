@@ -24,6 +24,22 @@ const looksLikeConnectionDrop = (e: unknown): boolean => {
   );
 };
 
+/**
+ * Probe cmd_id=342 (GetAiAlarm) per AI type to derive a coarse support flag.
+ *
+ * The cmd_id=342 response is `<AiDetectCfg>` with sensitivity, stayTime,
+ * min/maxTarget* and a base64 area mask — it does NOT carry an
+ * `<alarm_state>` or `<support>` tag. The live alarm state is delivered
+ * via push events on `<AlarmEventList>` (cmd_id=33), and per-AI-type
+ * capability is exposed via `<AbilitySuppport>` (cmd_id=58).
+ *
+ * For backwards-compat we keep returning `AIState` here, with:
+ *   - `support = 1` when the camera returned a valid `<AiDetectCfg>`
+ *     for at least one of the probed types (= the camera supports AI
+ *     detection on this channel),
+ *   - `alarm_state = 0` always (use `onSimpleEvent` for the real alarm
+ *     transitions instead).
+ */
 export const getAiStateViaGetAiAlarm = async (params: {
   sendXml: SendXmlLike;
   channel: number;
@@ -69,15 +85,16 @@ export const getAiStateViaGetAiAlarm = async (params: {
     );
   };
 
+  const isSupportedResponse = (xml: string): boolean => {
+    // A configured camera ships <AiDetectCfg> with at least <type> filled.
+    return /<AiDetectCfg[\s>]/i.test(xml) && getXmlText(xml, "type") != null;
+  };
+
   for (const type of candidateTypes) {
     try {
       const xml = await tryOnce(type, ch);
-      if (xml) {
-        return {
-          channel: ch,
-          alarm_state: Number(getXmlText(xml, "alarm_state") ?? "0"),
-          support: Number(getXmlText(xml, "support") ?? "0"),
-        };
+      if (xml && isSupportedResponse(xml)) {
+        return { channel: ch, alarm_state: 0, support: 1 };
       }
     } catch (e) {
       if (looksLikeConnectionDrop(e)) throw e;
@@ -88,12 +105,8 @@ export const getAiStateViaGetAiAlarm = async (params: {
   for (const type of candidateTypes) {
     try {
       const xml = await tryOnce(type, undefined);
-      if (xml) {
-        return {
-          channel: ch,
-          alarm_state: Number(getXmlText(xml, "alarm_state") ?? "0"),
-          support: Number(getXmlText(xml, "support") ?? "0"),
-        };
+      if (xml && isSupportedResponse(xml)) {
+        return { channel: ch, alarm_state: 0, support: 1 };
       }
     } catch (e) {
       if (looksLikeConnectionDrop(e)) throw e;

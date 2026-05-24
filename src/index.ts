@@ -90,6 +90,38 @@ export {
 } from "./reolink/baichuan/utils/motionZone";
 export type { MotionZoneScope } from "./reolink/baichuan/utils/motionZone";
 
+// Privacy-mask (Shelter) helpers — normalized 0..1 rectangle codec.
+export {
+  DEFAULT_SHELTER_CANVAS,
+  decodePrivacyMaskZones,
+  decodeShelterCoord,
+  encodeShelterCoord,
+  encodeShelterListXml,
+  encodeTrackShelterListXml,
+  extractCanvasFromShelterXml,
+  patchShelterXml,
+} from "./reolink/baichuan/utils/privacyMask";
+export type {
+  PrivacyMaskZones,
+  ShelterCanvas,
+  ShelterRect,
+  TrackShelterRect,
+} from "./reolink/baichuan/utils/privacyMask";
+
+// AI detect cfg helpers (cmd_id 342 GET / 345 SET full).
+export {
+  decodeAiDetectCfg,
+  patchAiDetectCfgXml,
+} from "./reolink/baichuan/utils/aiDetectCfg";
+export type { AiDetectCfgZone } from "./reolink/baichuan/utils/aiDetectCfg";
+
+// Motion sensitivity schedule (per-time-band) helpers.
+export {
+  encodeMotionSensitivityListXml,
+  patchMotionSensitivityListXml,
+} from "./reolink/baichuan/utils/motionSensitivity";
+export type { MotionSensitivityBand } from "./reolink/baichuan/utils/motionSensitivity";
+
 // Auxiliary public types referenced by ReolinkBaichuanApi method signatures
 export type {
   XmlJsonPrimitive,

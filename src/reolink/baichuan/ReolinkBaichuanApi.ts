@@ -98,6 +98,8 @@ import {
   BC_CMD_ID_PUSH_SLEEP_STATUS,
   BC_CMD_ID_PUSH_VIDEO_INPUT,
   BC_CMD_ID_SET_AI_ALARM,
+  BC_CMD_ID_GET_SNAPSHOT,
+  BC_CMD_ID_GET_UID,
   BC_CMD_ID_SET_AI_DENOISE,
   BC_CMD_ID_SET_AUDIO_CFG,
   BC_CMD_ID_SET_AUDIO_TASK,
@@ -331,6 +333,23 @@ import { mapToSimpleEvent } from "./utils/events";
 import { formatClientIoForLog, formatErrorForLog } from "./utils/logging";
 import { parseBoolean01, parseNumber } from "./utils/parsing";
 import { calculatePipOverlayPosition, resolvePipMarginPx } from "./utils/pip";
+import {
+  decodePrivacyMaskZones,
+  patchShelterXml,
+  type PrivacyMaskZones,
+  type ShelterCanvas,
+  type ShelterRect,
+  type TrackShelterRect,
+} from "./utils/privacyMask";
+import {
+  decodeAiDetectCfg,
+  patchAiDetectCfgXml,
+  type AiDetectCfgZone,
+} from "./utils/aiDetectCfg";
+import {
+  patchMotionSensitivityListXml,
+  type MotionSensitivityBand,
+} from "./utils/motionSensitivity";
 import {
   buildDeletePtzPresetAttempts,
   extractFrameErrorDetails,
@@ -5671,7 +5690,7 @@ export class ReolinkBaichuanApi {
       timeoutMs?: number;
     },
   ): Promise<Buffer> {
-    const cmdId = 109;
+    const cmdId = BC_CMD_ID_GET_SNAPSHOT;
 
     // Composite snapshot for multifocal devices: channel=undefined indicates "composite".
     // The plugin passes PiP config via compositeOptions.
@@ -10822,6 +10841,22 @@ export class ReolinkBaichuanApi {
     enabled?: boolean;
     sensitivity?: number;
     valueTable?: string;
+    /**
+     * Per-time-band sensitivity schedule.
+     *
+     * KNOWN ISSUE (verified on E1 Zoom firmware, May 2026):
+     * the cmd_id=46 response ships TWO sensitivity blocks —
+     *   1. `<sensitivityInfoList>` (legacy, 4 fixed time bands)
+     *   2. `<sensInfoNew><sensInfoList>` (modern, dynamic schedule)
+     * On this firmware, writing the legacy `<sensitivityInfoList>` is
+     * silently ignored — the camera only reads from `sensInfoNew`. The
+     * camera ships an empty `<sensInfoList />` so the effective sensitivity
+     * is `<sensInfoNew><sensitivityDefault>` (use `sensitivity` above for
+     * that). A populated `<sensInfoNew><sensInfoList>` capture is needed
+     * to wire up the modern per-band setter. Use `sensitivity` (single
+     * default value) until then.
+     */
+    sensitivitySchedule?: MotionSensitivityBand[];
   }): Promise<void> {
     const ch = this.normalizeChannel(opts.channel);
     const currentXml = await this.sendXml({
@@ -10846,6 +10881,12 @@ export class ReolinkBaichuanApi {
       modifiedXml = modifiedXml.replace(
         /<valueTable>[^<]*<\/valueTable>/,
         `<valueTable>${opts.valueTable}</valueTable>`,
+      );
+    }
+    if (opts.sensitivitySchedule !== undefined) {
+      modifiedXml = patchMotionSensitivityListXml(
+        modifiedXml,
+        opts.sensitivitySchedule,
       );
     }
 
@@ -10936,6 +10977,95 @@ export class ReolinkBaichuanApi {
       channel: ch,
       payloadXml: modifiedXml,
     });
+  }
+
+  /**
+   * SetAiDetectionFull (cmd_id=343 — same as `setAiDetection`).
+   *
+   * Pcap-confirmed (May 2026, E1 Zoom): the Reolink app sends the full
+   * `<AiDetectCfg>` block via cmd_id=343 for ALL fields — area mask,
+   * min/maxTarget* thresholds, sensitivity, stayTime — in one round-trip.
+   * There's no separate "full setter" command (we previously suspected
+   * cmd_id=345 but that's used for something else not yet identified).
+   *
+   * Wire format note: min/maxTarget* fractions are serialized in
+   * scientific notation with 6 decimal places (e.g. "5.000000e-01" for
+   * 0.5). The helper {@link patchAiDetectCfgXml} handles the formatting.
+   *
+   * @param channel 0-based channel
+   * @param aiType one of "people" / "vehicle" / "dog_cat" / "face" / "package"
+   * @param patch partial edit; any omitted field is preserved as-is
+   */
+  async setAiDetectionFull(
+    channel: number,
+    aiType: string,
+    patch: {
+      sensitivity?: number;
+      stayTime?: number;
+      minTargetWidth?: number;
+      minTargetHeight?: number;
+      maxTargetWidth?: number;
+      maxTargetHeight?: number;
+      area?: string;
+    },
+  ): Promise<void> {
+    const ch = this.normalizeChannel(channel);
+    const resolvedAiType = await this.resolveAiTypeForSetAiDetection(
+      ch,
+      aiType,
+    );
+
+    const getXml = `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<AiDetectCfg version="1.1">
+<chn>${ch}</chn>
+<type>${xmlEscape(resolvedAiType)}</type>
+</AiDetectCfg>
+</body>`;
+
+    const currentXml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_AI_ALARM,
+      channel: ch,
+      payloadXml: getXml,
+    });
+
+    const patchedXml = patchAiDetectCfgXml(currentXml, patch);
+
+    await this.sendXml({
+      cmdId: BC_CMD_ID_SET_AI_ALARM,
+      channel: ch,
+      payloadXml: patchedXml,
+    });
+  }
+
+  /**
+   * GetAiDetectionFull (cmd_id=342). Typed version of `getAiAlarmRaw`
+   * returning the full {@link AiDetectCfgZone} for a single AI type.
+   */
+  async getAiDetectionFull(
+    channel: number,
+    aiType: string,
+  ): Promise<AiDetectCfgZone> {
+    const ch = this.normalizeChannel(channel);
+    const resolvedAiType = await this.resolveAiTypeForSetAiDetection(
+      ch,
+      aiType,
+    );
+
+    const getXml = `<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<AiDetectCfg version="1.1">
+<chn>${ch}</chn>
+<type>${xmlEscape(resolvedAiType)}</type>
+</AiDetectCfg>
+</body>`;
+
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_AI_ALARM,
+      channel: ch,
+      payloadXml: getXml,
+    });
+    return decodeAiDetectCfg(xml);
   }
 
   // --------------------
@@ -13231,6 +13361,87 @@ export class ReolinkBaichuanApi {
   }
 
   /**
+   * GetMaskZones (cmdId=52) returning a typed structure with normalized
+   * 0..1 rectangles instead of the raw camera fixed-point integers.
+   *
+   * The camera-side coord system is `(pixel << 16) | canvas_dim` where
+   * `canvas_dim` is the firmware-specific mask canvas (E1 Zoom = 540×304).
+   * The returned `canvas` block remembers those dims so callers can
+   * round-trip without re-fetching.
+   *
+   * @see decodePrivacyMaskZones — pure helper exported for UI consumers.
+   */
+  async getMaskZones(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<PrivacyMaskZones> {
+    const xml = await this.sendPcapDerivedSettingsGetXml({
+      cmdId: BC_CMD_ID_GET_PRIVACY_MASK,
+      ...(channel != null ? { channel } : {}),
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+    return decodePrivacyMaskZones(xml);
+  }
+
+  /**
+   * SetMaskZones (cmdId=53, read-modify-write of cmdId=52).
+   *
+   * Edits the rectangular shelter list and/or PTZ-tracking shelter list
+   * in one call. Coordinates are normalized 0..1 of the camera mask
+   * canvas — the lib re-fetches the current Shelter block, extracts the
+   * canvas dims from the wire (low-16 of any non-zero coord), and
+   * denormalizes back to the camera's pixel × canvas encoding.
+   *
+   * Pass `enable`/`trackEnable` to toggle the master enable flags without
+   * touching the rectangle data. Pass `shelterList`/`trackShelterList` to
+   * replace the corresponding list — missing slots are padded with
+   * disabled zero-rects matching the camera's idle pattern.
+   *
+   * @param channel 0-based channel
+   * @param patch partial edit; any omitted field is preserved as-is
+   * @param options.canvas override the auto-detected mask canvas (only
+   *   needed when the GET response has no non-zero coords to extract from)
+   * @param options.timeoutMs custom request timeout
+   */
+  async setMaskZones(
+    channel: number,
+    patch: {
+      enable?: boolean;
+      shelterList?: ShelterRect[];
+      trackEnable?: boolean;
+      trackShelterList?: TrackShelterRect[];
+    },
+    options?: { canvas?: ShelterCanvas; timeoutMs?: number },
+  ): Promise<void> {
+    const ch = this.normalizeChannel(channel);
+    const timeoutOpts =
+      options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {};
+
+    const currentXml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_PRIVACY_MASK,
+      channel: ch,
+      ...timeoutOpts,
+    });
+    const current = decodePrivacyMaskZones(currentXml);
+    const canvas = options?.canvas ?? current.canvas;
+
+    const patchedXml = patchShelterXml(
+      currentXml,
+      patch,
+      canvas,
+      current.maxNum,
+      current.maxTrackShelterNum,
+    );
+
+    await this.sendXml({
+      cmdId: BC_CMD_ID_SET_PRIVACY_MASK,
+      channel: ch,
+      payloadXml: ensureXmlHeader(patchedXml),
+      ...timeoutOpts,
+    });
+  }
+
+  /**
    * GetAudioNoise via Baichuan (cmdId=439). Reads `enable` + `level`
    * from the aiDenoise block. Mirrors reolink_aio's `GetAudioNoise`.
    *
@@ -14204,6 +14415,19 @@ export class ReolinkBaichuanApi {
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
     return parseVersionInfo(xml);
+  }
+
+  /**
+   * GetUid (cmd_id=114). Returns the device UID / serial visible in the
+   * Reolink app. Response shape: `<Uid><uid>9527000XXXXX</uid></Uid>`.
+   * Device-global — no channel parameter.
+   */
+  async getUid(options?: { timeoutMs?: number }): Promise<string> {
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_UID,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+    return (getXmlText(xml, "uid") ?? "").trim();
   }
 
   async getLedState(

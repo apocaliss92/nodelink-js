@@ -1,0 +1,8 @@
+{
+  "source": "in-app capture (Reolink Studio E1 Zoom firmware)",
+  "cmdId": 342,
+  "type": "people",
+  "note": "GET response for cmd_342 AI alarm config: sensitivity, stayTime, min/maxTarget*, width/height grid, base64 area mask.",
+  "bodyLen": 720,
+  "body": "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<body>\n<AiDetectCfg version=\"1.1\">\n<chn>0</chn>\n<type>people</type>\n<sensitivity>60</sensitivity>\n<stayTime>0</stayTime>\n<minTargetHeight>0.5</minTargetHeight>\n<minTargetWidth>0.5</minTargetWidth>\n<maxTargetHeight>0.5</maxTargetHeight>\n<maxTargetWidth>0.5</maxTargetWidth>\n<width>60</width>\n<height>33</height>\n<area>//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////A=</area>\n</AiDetectCfg>\n</body>\n"
+}
