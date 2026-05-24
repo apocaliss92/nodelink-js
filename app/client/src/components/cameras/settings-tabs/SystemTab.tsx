@@ -37,6 +37,7 @@ interface BatteryInfo {
  */
 export function SystemTab({ cameraId, channel }: TabProps) {
   const [version, setVersion] = useState<VersionInfo | null>(null);
+  const [uid, setUid] = useState<string | null>(null);
   const [system, setSystem] = useState<SystemGeneral | null>(null);
   const [battery, setBattery] = useState<BatteryInfo | null>(null);
   const [versionErr, setVersionErr] = useState<string | null>(null);
@@ -47,6 +48,11 @@ export function SystemTab({ cameraId, channel }: TabProps) {
     void trpcQuery<VersionInfo>("baichuan.getVersionInfo", { cameraId })
       .then(setVersion)
       .catch((e) => setVersionErr(e instanceof Error ? e.message : String(e)));
+    // UID is independent of the rest — older firmwares may not support
+    // cmd_id=114; swallow the failure and just leave the field blank.
+    void trpcQuery<string>("baichuan.getUid", { cameraId })
+      .then((v) => setUid(typeof v === "string" ? v : null))
+      .catch(() => setUid(null));
     void trpcQuery<SystemGeneral>("baichuan.getSystemGeneral", { cameraId, channel })
       .then(setSystem)
       .catch((e) => setSystemErr(e instanceof Error ? e.message : String(e)));
@@ -71,6 +77,7 @@ export function SystemTab({ cameraId, channel }: TabProps) {
             <KV label="Model" value={version.type} />
             <KV label="Item no." value={version.itemNo} />
             <KV label="Serial number" value={version.serialNumber} />
+            <KV label="UID" value={uid ?? undefined} />
             <KV label="Firmware" value={version.firmwareVersion} />
             <KV label="Build" value={version.buildDay} />
             <KV label="Hardware" value={version.hardwareVersion} />

@@ -1,11 +1,15 @@
-import { useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Plus, Camera } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { trpcMutation } from '../../api';
 import { CameraGrid } from './CameraGrid';
 import { CameraDetailPanel } from './CameraDetailPanel';
 import { CamerasProvider } from './CamerasContext';
 import { AddCameraDialog } from './AddCameraDialog';
 import { AddNvrDialog } from './AddNvrDialog';
+import { NvrCard } from './NvrCard';
+import { NvrSettingsModal } from './NvrSettingsModal';
+import { buildGridItems, type SortMode } from './groupAndSort';
 import { PreviewPanel } from './PreviewPanel';
 import { FloatingPanel } from './FloatingPanel';
 import { PtzFloatingContent } from './PtzFloatingContent';
@@ -19,7 +23,7 @@ import { getStreamName, getWebrtcStreamName } from './utils';
 import { useCameras } from './hooks/useCameras';
 import { useSelectedCamera } from './hooks/useSelectedCamera';
 import { useAuth } from '../../auth';
-import type { CameraInfo, AvailableStream } from './types';
+import type { CameraInfo, AvailableStream, NvrInfo } from './types';
 
 type FloatingPanelEntry =
   | { id: string; type: 'ptz'; camera: CameraInfo }
@@ -30,7 +34,7 @@ type FloatingPanelEntry =
 
 export function CamerasPage() {
   const camerasHook = useCameras();
-  const { cameras, connectingByCamera, rtspServers, streamsByCamera, savingAutoStart, setAutoStartForCamera } = camerasHook;
+  const { cameras, connectingByCamera, rtspServers, streamsByCamera, savingAutoStart, setAutoStartForCamera, nvrs } = camerasHook;
   const { selectedCamera, selectCamera } = useSelectedCamera(cameras);
   const navigate = useNavigate();
   const { state: authState } = useAuth();
@@ -41,8 +45,30 @@ export function CamerasPage() {
     authState.enabled === false || authState.user?.role === 'admin';
 
   const [floatingPanels, setFloatingPanels] = useState<FloatingPanelEntry[]>([]);
+  // The NVR whose device-level settings modal is currently open (null = none).
+  const [openNvrSettings, setOpenNvrSettings] = useState<NvrInfo | null>(null);
+  const [sortMode, setSortMode] = useState<SortMode>('group');
 
   const onlineCount = cameras.filter((c) => c.status === 'connected').length;
+
+  const gridItems = useMemo(
+    () => buildGridItems(cameras, nvrs, sortMode),
+    [cameras, nvrs, sortMode],
+  );
+
+  const handleReorder = useCallback(
+    async (orderedCameraIds: string[]) => {
+      try {
+        await trpcMutation('cameras.reorder', { orderedCameraIds });
+        await camerasHook.refresh();
+      } catch (err) {
+        // Swallow — the grid will revert to its previous order on refresh.
+        // A toast/log hook is the next polish step.
+        console.error('cameras.reorder failed', err);
+      }
+    },
+    [camerasHook],
+  );
 
   const handleSelectCamera = (camera: CameraInfo) => {
     if (window.innerWidth < 768) {
@@ -91,18 +117,26 @@ export function CamerasPage() {
 
   return (
     <CamerasProvider value={camerasHook}>
-      {cameras.length === 0 ? (
+      {cameras.length === 0 && nvrs.length === 0 ? (
         <div className="flex-1 flex items-center justify-center p-8">
           <div className="text-center">
             <Camera size={48} className="mx-auto mb-4 text-[var(--color-foreground-subtle)]" />
             <h2 className="text-lg font-semibold mb-2">No cameras configured</h2>
-            <p className="text-sm text-[var(--color-foreground-muted)] mb-4">Add your first Reolink camera to get started</p>
-            <button
-              onClick={() => camerasHook.setAddOpen(true)}
-              className="inline-flex items-center gap-1 rounded-md bg-[var(--color-primary)] px-4 py-2 text-sm text-white"
-            >
-              <Plus size={14} /> Add Camera
-            </button>
+            <p className="text-sm text-[var(--color-foreground-muted)] mb-4">Add your first Reolink camera or NVR to get started</p>
+            <div className="flex items-center justify-center gap-2">
+              <button
+                onClick={() => camerasHook.setAddOpen(true)}
+                className="inline-flex items-center gap-1 rounded-md bg-[var(--color-primary)] px-4 py-2 text-sm text-white"
+              >
+                <Plus size={14} /> Add Camera
+              </button>
+              <button
+                onClick={() => camerasHook.setAddNvrOpen(true)}
+                className="inline-flex items-center gap-1 rounded-md bg-[var(--color-surface-hover)] px-4 py-2 text-sm"
+              >
+                <Plus size={14} /> Add NVR
+              </button>
+            </div>
           </div>
         </div>
       ) : (
@@ -114,6 +148,19 @@ export function CamerasPage() {
               <p className="text-[11px] text-[var(--color-foreground-muted)] mt-0.5">{cameras.length} cameras · {onlineCount} online</p>
             </div>
             <div className="flex items-center gap-2">
+              <label className="flex items-center gap-1 text-[11px] text-[var(--color-foreground-muted)]">
+                <span>Sort:</span>
+                <select
+                  value={sortMode}
+                  onChange={(e) => setSortMode(e.target.value as SortMode)}
+                  className="rounded-md border border-[var(--color-border)] bg-[var(--color-background)] text-[var(--color-foreground)] text-[11px] px-2 py-1"
+                >
+                  <option value="group">Group by parent</option>
+                  <option value="name">Name (A–Z)</option>
+                  <option value="status">Status (online first)</option>
+                  <option value="custom">Custom (drag to reorder)</option>
+                </select>
+              </label>
               <button
                 onClick={() => camerasHook.setAddOpen(true)}
                 className="inline-flex items-center gap-1 rounded-md bg-[var(--color-primary)] px-3 py-1.5 text-xs text-white"
@@ -129,10 +176,29 @@ export function CamerasPage() {
             </div>
           </div>
 
+          {/* NVR access bar — shown only when the grid is NOT grouping by
+              parent (in "group" mode the headers inside the grid already
+              expose the NVR settings button, so the bar would be redundant). */}
+          {nvrs.length > 0 && sortMode !== 'group' && (
+            <div className="px-5 py-3 border-b border-[var(--color-border)] bg-[var(--color-surface)] flex flex-col gap-2">
+              <div className="text-[10px] uppercase tracking-wider text-[var(--color-foreground-subtle)]">
+                NVRs / Hubs
+              </div>
+              {nvrs.map((nvr) => (
+                <NvrCard
+                  key={nvr.id}
+                  nvr={nvr}
+                  childCameras={cameras.filter((c) => c.nvrId === nvr.id)}
+                  onOpenSettings={(n) => setOpenNvrSettings(n)}
+                />
+              ))}
+            </div>
+          )}
+
           {/* Grid + Detail Panel */}
           <div className="flex flex-1 min-h-0">
             <CameraGrid
-              cameras={cameras}
+              items={gridItems}
               streamsByCamera={streamsByCamera}
               rtspServers={rtspServers}
               connectingByCamera={connectingByCamera}
@@ -145,6 +211,8 @@ export function CamerasPage() {
               onOpenSessions={handleOpenSessions}
               onOpenDeviceControls={handleOpenDeviceControls}
               onOpenStream={handleOpenStream}
+              onOpenNvrSettings={(n) => setOpenNvrSettings(n)}
+              onReorder={sortMode === 'custom' ? handleReorder : undefined}
             />
             {selectedCamera && (
               <CameraDetailPanel
@@ -193,6 +261,20 @@ export function CamerasPage() {
         <PreviewPanel
           state={camerasHook.previewModal}
           onClose={() => camerasHook.setPreviewModal({ open: false })}
+        />
+      )}
+
+      {/* NVR-level settings modal (device-global ops) */}
+      {openNvrSettings && (
+        <NvrSettingsModal
+          open
+          nvrId={openNvrSettings.id}
+          nvrName={openNvrSettings.name}
+          existingChildren={cameras
+            .filter((c) => c.nvrId === openNvrSettings.id)
+            .map((c) => ({ id: c.id, channel: c.rtspChannel ?? 0 }))}
+          onChannelAdded={() => void camerasHook.refresh()}
+          onClose={() => setOpenNvrSettings(null)}
         />
       )}
 

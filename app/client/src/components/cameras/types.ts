@@ -39,6 +39,9 @@ export type CameraInfo = {
   rtspChannel: number;
   isNvr: boolean;
   nvrId?: string;
+  /** Custom-sort position written by `cameras.reorder`. Undefined means the
+   * item hasn't been re-ordered yet — falls back to insertion order. */
+  position?: number;
   isBattery?: boolean;
   batteryMode?: "alwaysOn" | "streamOnly";
   sleepStatus?: "awake" | "sleeping";
@@ -130,6 +133,8 @@ export type NvrInfo = {
   name: string;
   host: string;
   port: number;
+  /** Same as `CameraInfo.position` — sort key for the "Custom" grid mode. */
+  position?: number;
 };
 
 export type ControlsState = {

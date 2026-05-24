@@ -6,6 +6,7 @@ import {
   Image as ImageIcon,
   Eye,
   Grid3x3,
+  Shield,
   Type,
   Cpu,
   Volume2,
@@ -21,6 +22,7 @@ import { StreamsTab } from "./settings-tabs/StreamsTab";
 import { ImageTab } from "./settings-tabs/ImageTab";
 import { DetectionTab } from "./settings-tabs/DetectionTab";
 import { MotionZonesTab } from "./settings-tabs/MotionZonesTab";
+import { PrivacyMaskTab } from "./settings-tabs/PrivacyMaskTab";
 import { OsdTab } from "./settings-tabs/OsdTab";
 import { AudioTab } from "./settings-tabs/AudioTab";
 import { PtzTab } from "./settings-tabs/PtzTab";
@@ -66,6 +68,13 @@ const TABS: TabDef[] = [
     icon: Grid3x3,
     hint: "Paint the detection grid over the camera frame.",
     Component: MotionZonesTab,
+  },
+  {
+    id: "privacy-mask",
+    label: "Privacy mask",
+    icon: Shield,
+    hint: "Block out portions of the frame before they're encoded (cmd_id 52/53).",
+    Component: PrivacyMaskTab,
   },
   {
     id: "osd",
