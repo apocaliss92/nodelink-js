@@ -15,6 +15,7 @@ import {
   deleteNvr,
   getNvrs,
   getNvr,
+  reorderDevices,
 } from "../settings-store.js";
 import {
   getOrCreateApiConnection,
@@ -1258,5 +1259,34 @@ export const camerasRouter = router({
       if (!fs.existsSync(zipPath)) throw new Error("Dump not found");
       fs.unlinkSync(zipPath);
       return { deleted: true };
+    }),
+
+  /**
+   * Re-order cameras and/or NVRs for the "Custom" grid sort mode. Pass the
+   * IDs in the new display order; the backend writes each item's `position`
+   * field to its index. Items omitted from the input keep their existing
+   * relative order at the tail.
+   */
+  reorder: publicProcedure
+    .meta({
+      description:
+        "Persist the user-defined display order for cameras / NVRs (the 'Custom' sort mode).",
+    })
+    .input(
+      z.object({
+        orderedCameraIds: z.array(z.string()).optional(),
+        orderedNvrIds: z.array(z.string()).optional(),
+      }),
+    )
+    .mutation(({ input }) => {
+      reorderDevices({
+        ...(input.orderedCameraIds !== undefined
+          ? { orderedCameraIds: input.orderedCameraIds }
+          : {}),
+        ...(input.orderedNvrIds !== undefined
+          ? { orderedNvrIds: input.orderedNvrIds }
+          : {}),
+      });
+      return { success: true };
     }),
 });

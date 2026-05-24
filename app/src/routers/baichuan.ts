@@ -25,6 +25,12 @@ const OptionalConnectionInput = z.object({
     .describe(
       "Camera ID or name (from cameras.list / baichuan.listCameras), or 'manual' for host/port/username/password below",
     ),
+  nvrId: z
+    .string()
+    .optional()
+    .describe(
+      "NVR ID (from cameras.listNvrs). Takes precedence over cameraId — used to address the NVR itself for device-global commands.",
+    ),
   host: z.string().optional().describe("Host (when cameraId is 'manual' or empty)"),
   port: z.number().optional().describe("Port (default 9000)"),
   username: z.string().optional().describe("Username (when cameraId is 'manual' or empty)"),
@@ -446,6 +452,36 @@ export const baichuanRouter = router({
       return { success: true };
     }),
 
+  setMotionSensitivitySchedule: publicProcedure
+    .meta({
+      description:
+        "Replace the motion-detection per-time-band sensitivity schedule (cmd_id=47). ⚠️ KNOWN ISSUE on E1 Zoom firmware: writes to the legacy `<sensitivityInfoList>` block are silently ignored — the modern schedule lives in `<sensInfoNew><sensInfoList>` (currently empty on the test rig). Until a populated capture is available, use `setMotionAlarm`/`setMotionAlarmZone` with `sensitivity` to update `<sensInfoNew><sensitivityDefault>` instead.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        bands: z
+          .array(
+            z.object({
+              id: z.number().int().min(0),
+              sensitivity: z.number().int().min(0).max(50),
+              beginHour: z.number().int().min(0).max(23),
+              beginMinute: z.number().int().min(0).max(59),
+              endHour: z.number().int().min(0).max(23),
+              endMinute: z.number().int().min(0).max(59),
+            }),
+          )
+          .min(1),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      await api.setMotionAlarmFull({
+        channel: input.channel,
+        sensitivitySchedule: input.bands,
+      });
+      return { success: true };
+    }),
+
   getAiState: publicProcedure
     .meta({ description: "Get AI detection state" })
     .input(ConnectionWithChannel)
@@ -508,6 +544,56 @@ export const baichuanRouter = router({
         input.sensitivity,
         input.stayTime,
       );
+      return { success: true };
+    }),
+
+  getAiDetectionFull: publicProcedure
+    .meta({
+      description:
+        "Get the full <AiDetectCfg> for one AI type (cmd_id=342). Includes sensitivity, stayTime, min/maxTarget fractions, and the base64 area bitmap.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        aiType: z.string().min(1),
+      }),
+    )
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getAiDetectionFull(input.channel, input.aiType);
+    }),
+
+  setAiDetectionFull: publicProcedure
+    .meta({
+      description:
+        "Full AI detect setter (cmd_id=343). Edits area bitmap, min/maxTarget fractions, sensitivity and stayTime in one read-modify-write. Any omitted field is preserved. Verified working on E1 Zoom firmware — min/maxTarget are serialized in scientific notation per the camera wire format.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        aiType: z.string().min(1),
+        sensitivity: z.number().int().min(0).max(100).optional(),
+        stayTime: z.number().int().min(0).max(600).optional(),
+        minTargetWidth: z.number().min(0).max(1).optional(),
+        minTargetHeight: z.number().min(0).max(1).optional(),
+        maxTargetWidth: z.number().min(0).max(1).optional(),
+        maxTargetHeight: z.number().min(0).max(1).optional(),
+        area: z.string().min(1).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      const patch: Parameters<typeof api.setAiDetectionFull>[2] = {};
+      if (input.sensitivity !== undefined) patch.sensitivity = input.sensitivity;
+      if (input.stayTime !== undefined) patch.stayTime = input.stayTime;
+      if (input.minTargetWidth !== undefined)
+        patch.minTargetWidth = input.minTargetWidth;
+      if (input.minTargetHeight !== undefined)
+        patch.minTargetHeight = input.minTargetHeight;
+      if (input.maxTargetWidth !== undefined)
+        patch.maxTargetWidth = input.maxTargetWidth;
+      if (input.maxTargetHeight !== undefined)
+        patch.maxTargetHeight = input.maxTargetHeight;
+      if (input.area !== undefined) patch.area = input.area;
+      await api.setAiDetectionFull(input.channel, input.aiType, patch);
       return { success: true };
     }),
 
@@ -686,6 +772,17 @@ export const baichuanRouter = router({
     .query(async ({ input }) => {
       const api = await getApi(input);
       return await api.getVersionInfo();
+    }),
+
+  getUid: publicProcedure
+    .meta({
+      description:
+        "Get the camera UID / serial visible in the Reolink app (cmd_id=114). Device-global.",
+    })
+    .input(OptionalConnectionInput)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getUid();
     }),
 
   getStreamMetadata: publicProcedure
@@ -1547,6 +1644,83 @@ export const baichuanRouter = router({
       return { success: true };
     }),
 
+  getMaskZones: publicProcedure
+    .meta({
+      description:
+        "Get privacy mask configuration (cmd_id=52) decoded with normalized 0..1 rectangle coordinates. Returns shelterList (static rectangles) + trackShelterList (PTZ-tracking rectangles with pPos/tPos/zPos) + canvas (camera mask coord space).",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.getMaskZones(input.channel);
+    }),
+
+  setMaskZones: publicProcedure
+    .meta({
+      description:
+        "Set privacy mask zones (cmd_id=53). Accepts normalized 0..1 rectangles; the lib denormalizes against the camera's current mask canvas (read-modify-write of cmd_id=52). Pass shelterList/trackShelterList partially — any omitted list is preserved.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        enable: z.boolean().optional(),
+        shelterList: z
+          .array(
+            z.object({
+              id: z.number().int().min(0),
+              enable: z.boolean(),
+              layer: z.number().int().min(0).default(0),
+              color: z.number().int().min(0).default(0),
+              x: z.number().min(0).max(1),
+              y: z.number().min(0).max(1),
+              width: z.number().min(0).max(1),
+              height: z.number().min(0).max(1),
+            }),
+          )
+          .optional(),
+        trackEnable: z.boolean().optional(),
+        trackShelterList: z
+          .array(
+            z.object({
+              id: z.number().int().min(0),
+              enable: z.boolean(),
+              layer: z.number().int().min(0).default(0),
+              color: z.number().int().min(0).default(0),
+              x: z.number().min(0).max(1),
+              y: z.number().min(0).max(1),
+              width: z.number().min(0).max(1),
+              height: z.number().min(0).max(1),
+              pPos: z.number().int().default(-1),
+              tPos: z.number().int().default(-1),
+              zPos: z.number().int().default(-1),
+            }),
+          )
+          .optional(),
+        canvas: z
+          .object({
+            width: z.number().int().positive(),
+            height: z.number().int().positive(),
+          })
+          .optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      const patch: Parameters<typeof api.setMaskZones>[1] = {};
+      if (input.enable !== undefined) patch.enable = input.enable;
+      if (input.shelterList !== undefined)
+        patch.shelterList = input.shelterList;
+      if (input.trackEnable !== undefined)
+        patch.trackEnable = input.trackEnable;
+      if (input.trackShelterList !== undefined)
+        patch.trackShelterList = input.trackShelterList;
+      await api.setMaskZones(
+        input.channel,
+        patch,
+        input.canvas ? { canvas: input.canvas } : undefined,
+      );
+      return { success: true };
+    }),
+
   // ============ ISP / VIDEO INPUT ============
 
   getIsp: publicProcedure
@@ -2200,9 +2374,17 @@ export const baichuanRouter = router({
     )
     .mutation(async ({ input }) => {
       const api = await getApi(input);
-      const { cameraId: _c, host: _h, port: _p, username: _u, password: _pw, ...patch } =
-        input;
+      const {
+        cameraId: _c,
+        nvrId: _n,
+        host: _h,
+        port: _p,
+        username: _u,
+        password: _pw,
+        ...patch
+      } = input;
       void _c;
+      void _n;
       void _h;
       void _p;
       void _u;
@@ -2240,6 +2422,7 @@ export const baichuanRouter = router({
       const api = await getApi(input);
       const {
         cameraId: _c,
+        nvrId: _n,
         host: _h,
         port: _p,
         username: _u,
@@ -2248,6 +2431,7 @@ export const baichuanRouter = router({
         ...patch
       } = input;
       void _c;
+      void _n;
       void _h;
       void _p;
       void _u;
@@ -2315,9 +2499,17 @@ export const baichuanRouter = router({
     )
     .mutation(async ({ input }) => {
       const api = await getApi(input);
-      const { cameraId: _c, host: _h, port: _p, username: _u, password: _pw, ...patch } =
-        input;
+      const {
+        cameraId: _c,
+        nvrId: _n,
+        host: _h,
+        port: _p,
+        username: _u,
+        password: _pw,
+        ...patch
+      } = input;
       void _c;
+      void _n;
       void _h;
       void _p;
       void _u;
@@ -2366,9 +2558,17 @@ export const baichuanRouter = router({
     )
     .mutation(async ({ input }) => {
       const api = await getApi(input);
-      const { cameraId: _c, host: _h, port: _p, username: _u, password: _pw, ...patch } =
-        input;
+      const {
+        cameraId: _c,
+        nvrId: _n,
+        host: _h,
+        port: _p,
+        username: _u,
+        password: _pw,
+        ...patch
+      } = input;
       void _c;
+      void _n;
       void _h;
       void _p;
       void _u;
@@ -2433,9 +2633,17 @@ export const baichuanRouter = router({
     )
     .mutation(async ({ input }) => {
       const api = await getApi(input);
-      const { cameraId: _c, host: _h, port: _p, username: _u, password: _pw, ...patch } =
-        input;
+      const {
+        cameraId: _c,
+        nvrId: _n,
+        host: _h,
+        port: _p,
+        username: _u,
+        password: _pw,
+        ...patch
+      } = input;
       void _c;
+      void _n;
       void _h;
       void _p;
       void _u;
@@ -2517,6 +2725,7 @@ export const baichuanRouter = router({
       const api = await getApi(input);
       const {
         cameraId: _c,
+        nvrId: _n,
         host: _h,
         port: _p,
         username: _u,
@@ -2525,6 +2734,7 @@ export const baichuanRouter = router({
         ...rest
       } = input;
       void _c;
+      void _n;
       void _h;
       void _p;
       void _u;
@@ -2560,9 +2770,17 @@ export const baichuanRouter = router({
     )
     .mutation(async ({ input }) => {
       const api = await getApi(input);
-      const { cameraId: _c, host: _h, port: _p, username: _u, password: _pw, ...patch } =
-        input;
+      const {
+        cameraId: _c,
+        nvrId: _n,
+        host: _h,
+        port: _p,
+        username: _u,
+        password: _pw,
+        ...patch
+      } = input;
       void _c;
+      void _n;
       void _h;
       void _p;
       void _u;

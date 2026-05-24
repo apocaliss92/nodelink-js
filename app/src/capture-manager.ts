@@ -132,8 +132,22 @@ export interface CaptureFrameLogEntry {
    * `<redacted>` because they contain username + password digests.
    * `null` means the decryption pass didn't run; `""` means it ran but
    * produced no usable text (binary body, decryption failed, etc.).
+   *
+   * IMPORTANT: this field is a UTF-8 string. Bodies with non-UTF-8 bytes
+   * (e.g. cmd_id=345 SetAiDetectCfg, which appears to use a mixed
+   * XML-header + binary-payload format) will have those bytes replaced
+   * with U+FFFD, making them unsuitable for byte-accurate reverse
+   * engineering. For RE work always use {@link bodyDecryptedBase64}.
    */
   bodyDecrypted: string | null;
+  /**
+   * Decrypted body as base64. Same lifecycle as {@link bodyDecrypted} but
+   * preserves every byte exactly — required when the body contains
+   * non-UTF-8 bytes (binary payloads, mixed XML+struct envelopes such as
+   * cmd_id=345). `null` means decryption didn't run; `""` means it ran
+   * but produced empty bytes.
+   */
+  bodyDecryptedBase64: string | null;
 }
 
 interface CaptureSession {
@@ -847,6 +861,7 @@ function handleTsharkLine(session: CaptureSession, line: string): void {
       bodyLen: f.header.bodyLen,
       bodyHexPreview,
       bodyDecrypted: null,
+      bodyDecryptedBase64: null,
     });
     // Phase transitions driven by the auth handshake.
     //   cmd_id=1, responseCode=56594 → server returned the challenge nonce
@@ -1034,6 +1049,7 @@ function parseLineForReparse(
       bodyLen: f.header.bodyLen,
       bodyHexPreview,
       bodyDecrypted: null,
+      bodyDecryptedBase64: null,
     });
     fullBodies.push(f.body ?? Buffer.alloc(0));
 
@@ -1118,31 +1134,64 @@ function decryptCapturedBodies(s: CaptureSession, fullBodies: Buffer[]): void {
     const body = fullBodies[i]!;
     if (body.length === 0) {
       fr.bodyDecrypted = "";
+      fr.bodyDecryptedBase64 = "";
       continue;
     }
     // Login frame always stays redacted — its plaintext contains the
     // username and password digests. Signal "decrypted ran but redacted".
     if (fr.cmdId === 1) {
       fr.bodyDecrypted = REDACTED_PLACEHOLDER;
+      fr.bodyDecryptedBase64 = REDACTED_PLACEHOLDER;
       continue;
     }
-    let plaintext: string | undefined;
+    // Decrypt to raw bytes first (preserves binary), then derive both the
+    // UTF-8 string view and the lossless base64 view.
+    //
+    // IMPORTANT: BaichuanClient encrypts the wire body as TWO separate
+    // AES-CFB streams concatenated:
+    //   1. Extension XML envelope (offset 0..payloadOffset) — fresh IV
+    //   2. Body payload     (offset payloadOffset..bodyLen) — fresh IV again
+    // (see BaichuanClient.ts encodeBody — two `aesEncrypt()` calls).
+    // Decrypting the whole thing as one continuous stream gets the
+    // Extension right but corrupts the payload (CFB chaining mismatch).
+    // We split at payloadOffset and run two fresh decrypt passes.
+    const splitAt =
+      fr.payloadOffset != null && fr.payloadOffset > 0 && fr.payloadOffset < body.length
+        ? fr.payloadOffset
+        : 0;
+    let rawBytes: Buffer | undefined;
     try {
       if (encType === 0x00) {
-        plaintext = body.toString("utf8");
+        rawBytes = body;
       } else if (encType === 0x01) {
-        plaintext = bcDecrypt(body, fr.channelId).toString("utf8");
-      } else if (encType === 0x02 && aesKey) {
-        plaintext = aesDecrypt(body, aesKey).toString("utf8");
-      } else if (encType === 0x12 && aesKey) {
-        // full_aes — body still uses standard AES-128-CFB; header is encrypted
-        // too but we already decoded the header from the wire (tshark gave us
-        // unencrypted bytes — header decryption happens at a different layer).
-        plaintext = aesDecrypt(body, aesKey).toString("utf8");
+        if (splitAt > 0) {
+          rawBytes = Buffer.concat([
+            bcDecrypt(body.subarray(0, splitAt), fr.channelId),
+            bcDecrypt(body.subarray(splitAt), fr.channelId),
+          ]);
+        } else {
+          rawBytes = bcDecrypt(body, fr.channelId);
+        }
+      } else if ((encType === 0x02 || encType === 0x12) && aesKey) {
+        if (splitAt > 0) {
+          rawBytes = Buffer.concat([
+            aesDecrypt(body.subarray(0, splitAt), aesKey),
+            aesDecrypt(body.subarray(splitAt), aesKey),
+          ]);
+        } else {
+          rawBytes = aesDecrypt(body, aesKey);
+        }
       }
     } catch {
-      plaintext = undefined;
+      rawBytes = undefined;
     }
+    if (!rawBytes) {
+      fr.bodyDecrypted = "";
+      fr.bodyDecryptedBase64 = "";
+      continue;
+    }
+    fr.bodyDecryptedBase64 = rawBytes.toString("base64");
+    const plaintext: string = rawBytes.toString("utf8");
     if (!plaintext) {
       fr.bodyDecrypted = "";
       continue;

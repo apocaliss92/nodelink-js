@@ -1082,7 +1082,7 @@ server.listen(PORT, async () => {
 
   const go2rtcApiPort = settings.go2rtc?.apiPort ?? 11984;
   const go2rtcRtspPort = settings.go2rtc?.rtspPort ?? 18554;
-  const VITE_PORT = 5173;
+  const VITE_PORT = Number(process.env.VITE_PORT) || 5173;
   appLogger.info(
     `\n╔═══════════════════════════════════════════════════════════════╗\n` +
       `║              Nodelink.js Manager                                 ║\n` +

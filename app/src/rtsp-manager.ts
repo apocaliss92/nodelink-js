@@ -206,6 +206,12 @@ export interface CameraInfo {
   host: string;
   port: number;
   status: "connected" | "disconnected" | "error";
+  /** Parent NVR id if this camera is an NVR child — used by the grid's
+   * "Group by parent" sort and the NvrSettingsModal channels tab. */
+  nvrId?: string;
+  /** User-defined position for the "Custom" sort mode. Sourced from
+   * `CameraConfig.position` written by `cameras.reorder`. */
+  position?: number;
   deviceInfo?: {
     model?: string;
     firmwareVersion?: string;
@@ -934,12 +940,20 @@ export function getAllCamerasInfo(): CameraInfo[] {
   return config.cameras.map((camera) => {
     const cached = cameraInfoCache.get(camera.id);
 
+    // Lookup-and-augment fields that live in config (not in the runtime
+    // cache) — position + nvrId. The cache may pre-date the latest config
+    // reorder so we always read the live values here.
+    const augment = {
+      ...(camera.nvrId !== undefined ? { nvrId: camera.nvrId } : {}),
+      ...(camera.position !== undefined ? { position: camera.position } : {}),
+    };
+
     // NVR children that are disabled show as disconnected even if the NVR socket is alive
     if (cached && disabledNvrCameras.has(camera.id)) {
-      return { ...cached, status: "disconnected" as const };
+      return { ...cached, status: "disconnected" as const, ...augment };
     }
 
-    if (cached) return cached;
+    if (cached) return { ...cached, ...augment };
 
     return {
       id: camera.id,
@@ -947,6 +961,7 @@ export function getAllCamerasInfo(): CameraInfo[] {
       host: camera.host,
       port: camera.port,
       status: "disconnected" as const,
+      ...augment,
     };
   });
 }

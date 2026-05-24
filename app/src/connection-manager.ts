@@ -7,6 +7,7 @@ import { createSourceLogger } from "./logger.js";
 import {
   getCamera,
   getCameras,
+  getNvr,
   getRtspServers,
   updateRtspServer,
 } from "./settings-store.js";
@@ -54,11 +55,41 @@ export function clearActiveCredentials(): void {
 
 export type ResolveCredentialsInput = Partial<ConnectionParams> & {
   cameraId?: string;
+  nvrId?: string;
 };
 
 export function resolveCredentials(
   partial?: ResolveCredentialsInput,
 ): ConnectionParams {
+  // NVR ID takes precedence over cameraId — used by NvrSettingsModal and any
+  // tRPC procedure that wants to address the NVR directly (device-global
+  // commands like getHddInfoList, getAccessUserList, etc.).
+  const nvrId = partial?.nvrId?.trim();
+  if (nvrId) {
+    const nvr = getNvr(nvrId);
+    if (nvr) {
+      const base: ConnectionParams = {
+        host: nvr.host,
+        port: nvr.port ?? 9000,
+        username: nvr.username,
+        password: nvr.password,
+      };
+      const overrides: Partial<ConnectionParams> = {};
+      if (partial?.host && String(partial.host).trim()) {
+        overrides.host = partial.host.trim();
+      }
+      if (partial?.port !== undefined && partial?.port !== null && !isNaN(Number(partial.port))) {
+        overrides.port = Number(partial.port);
+      }
+      if (partial?.username && String(partial.username).trim()) {
+        overrides.username = partial.username.trim();
+      }
+      if (partial?.password !== undefined) {
+        overrides.password = partial.password;
+      }
+      return { ...base, ...overrides };
+    }
+  }
   // Use configured camera when cameraId is provided (not "manual" or empty)
   const cameraId = partial?.cameraId?.trim();
   if (cameraId && cameraId !== "manual") {

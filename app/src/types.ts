@@ -58,6 +58,9 @@ export const CameraConfigSchema = z.object({
   rtspProfile: z.enum(["main", "sub", "ext"]).default("main"),
   rtspChannel: z.number().default(0),
   // Note: RTSP authentication credentials are now managed globally in settings
+  // Display order in the cameras grid when the user selects "Custom" sort.
+  // Assigned automatically on first save (matches insertion order).
+  position: z.number().optional(),
 });
 
 export type CameraConfig = z.infer<typeof CameraConfigSchema>;
@@ -82,6 +85,9 @@ export const NvrConfigSchema = z.object({
   port: z.number().default(9000),
   username: z.string(),
   password: z.string(),
+  // Display order, paired with CameraConfig.position so users can mix NVR
+  // sections and standalone cameras into one custom order on the grid.
+  position: z.number().optional(),
 });
 
 export type NvrConfig = z.infer<typeof NvrConfigSchema>;

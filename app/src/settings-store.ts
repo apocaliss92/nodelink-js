@@ -407,6 +407,49 @@ export function deleteCamera(id: string): boolean {
   return true;
 }
 
+/**
+ * Apply a user-defined ordering to cameras and/or NVRs. `orderedCameraIds` /
+ * `orderedNvrIds` are the new ordering; items not present in those lists
+ * keep their existing relative order at the tail. Sets the `position`
+ * field on each item to its index in the new ordering — that's what the
+ * grid's "Custom" sort mode reads.
+ */
+export function reorderDevices(input: {
+  orderedCameraIds?: string[];
+  orderedNvrIds?: string[];
+}): void {
+  let touched = false;
+
+  if (input.orderedCameraIds) {
+    const wantedOrder = new Map<string, number>(
+      input.orderedCameraIds.map((id, idx) => [id, idx] as const),
+    );
+    const nextPosFor = (id: string, fallback: number): number => {
+      const w = wantedOrder.get(id);
+      return w !== undefined ? w : input.orderedCameraIds!.length + fallback;
+    };
+    settings.cameras = settings.cameras.map((c, idx) => ({
+      ...c,
+      position: nextPosFor(c.id, idx),
+    }));
+    touched = true;
+  }
+
+  if (input.orderedNvrIds) {
+    const wantedOrder = new Map<string, number>(
+      input.orderedNvrIds.map((id, idx) => [id, idx] as const),
+    );
+    settings.nvrs = settings.nvrs.map((n, idx) => ({
+      ...n,
+      position:
+        wantedOrder.get(n.id) ?? input.orderedNvrIds!.length + idx,
+    }));
+    touched = true;
+  }
+
+  if (touched) saveSettings(settings);
+}
+
 // ==================== NVRs ====================
 
 export function getNvrs(): NvrConfig[] {
