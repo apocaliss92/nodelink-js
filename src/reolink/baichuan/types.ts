@@ -354,6 +354,33 @@ export type BaichuanCoordinatePointListPush = {
   points?: Array<{ x: number; y: number }>;
 };
 
+/**
+ * Floodlight status push (cmd_id 291 / MSG_ID_FLOODLIGHT_STATUS_LIST).
+ * Emitted by the camera whenever the floodlight transitions on/off
+ * (including the auto-off after the FloodlightManual duration expires).
+ * `<status>0|1</status>` carries the actual current ON/OFF — this is the
+ * only reliable source for the current manual state, since cmd 289 only
+ * returns the FloodlightTask config.
+ */
+export type BaichuanFloodlightStatusPush = {
+  /** True when the floodlight is currently emitting light. */
+  status: boolean;
+};
+
+/**
+ * Siren status push (cmd_id 547 / MSG_ID_AUDIO_ALARM).
+ * Emitted when the siren starts or stops playing. The Reolink firmware
+ * stops the siren automatically after its built-in playback duration,
+ * so polling cmd 547 by itself can race the auto-off; the push catches
+ * the actual transitions.
+ */
+export type BaichuanSirenStatusPush = {
+  /** True when the siren is currently audible. */
+  status: boolean;
+  /** Whether the camera reports the siren as actively playing (some firmwares emit only this). */
+  playing?: boolean;
+};
+
 export type BaichuanSettingsPushCacheEntry = {
   /** Map key (0-based) when known; -1 for host-level pushes. */
   channel: number;
@@ -363,6 +390,8 @@ export type BaichuanSettingsPushCacheEntry = {
   dingdongList?: BaichuanCachedPush<BaichuanDingdongListPush>;
   sleepStatus?: BaichuanCachedPush<BaichuanSleepStatusPush>;
   coordinatePointList?: BaichuanCachedPush<BaichuanCoordinatePointListPush>;
+  floodlightStatus?: BaichuanCachedPush<BaichuanFloodlightStatusPush>;
+  sirenStatus?: BaichuanCachedPush<BaichuanSirenStatusPush>;
 };
 
 // --------------------

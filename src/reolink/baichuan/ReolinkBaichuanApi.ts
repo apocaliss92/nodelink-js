@@ -173,6 +173,7 @@ import type {
   BaichuanCachedPush,
   BaichuanCoordinatePointListPush,
   BaichuanDingdongListPush,
+  BaichuanFloodlightStatusPush,
   BaichuanGetOsdDatetimeResult,
   BaichuanLedState,
   BaichuanNetInfoPush,
@@ -182,6 +183,7 @@ import type {
   BaichuanRecordSchedule,
   BaichuanSerialPush,
   BaichuanSettingsPushCacheEntry,
+  BaichuanSirenStatusPush,
   BaichuanSleepState,
   BaichuanSleepStatusPush,
   BaichuanStreamInfoList,
@@ -419,6 +421,8 @@ import {
   parseFloodlightTaskFromXml,
   parseWhiteLedStateFromXml,
 } from "./utils/whiteLed";
+import { parseFloodlightStatusListPushXml } from "./utils/whiteLedStatusPush";
+import { parseSirenStatusListPushXml } from "./utils/sirenStatusPush";
 
 type TalkAbility = import("./types").TalkAbility;
 type TalkSession = import("./types").TalkSession;
@@ -811,7 +815,9 @@ export class ReolinkBaichuanApi {
         cmdId !== BC_CMD_ID_PUSH_NET_INFO &&
         cmdId !== BC_CMD_ID_PUSH_DINGDONG_LIST &&
         cmdId !== BC_CMD_ID_PUSH_SLEEP_STATUS &&
-        cmdId !== BC_CMD_ID_PUSH_COORDINATE_POINT_LIST
+        cmdId !== BC_CMD_ID_PUSH_COORDINATE_POINT_LIST &&
+        cmdId !== BC_CMD_ID_FLOODLIGHT_STATUS_LIST &&
+        cmdId !== BC_CMD_ID_GET_AUDIO_ALARM
       ) {
         return;
       }
@@ -13804,6 +13810,37 @@ export class ReolinkBaichuanApi {
       };
       return;
     }
+
+    if (cmdId === BC_CMD_ID_FLOODLIGHT_STATUS_LIST) {
+      const entries = parseFloodlightStatusListPushXml(xml);
+      if (entries.length === 0) return;
+      for (const entry of entries) {
+        const channel = normalizePushChannel(entry.channel) ?? channelFromHeader;
+        getEntry(channel).floodlightStatus = {
+          updatedAtMs: now,
+          value: { status: entry.status === 1 },
+        };
+      }
+      return;
+    }
+
+    if (cmdId === BC_CMD_ID_GET_AUDIO_ALARM) {
+      const entries = parseSirenStatusListPushXml(xml);
+      if (entries.length === 0) return;
+      for (const entry of entries) {
+        const channel = normalizePushChannel(entry.channel) ?? channelFromHeader;
+        getEntry(channel).sirenStatus = {
+          updatedAtMs: now,
+          value: {
+            status: entry.status === 1,
+            ...(entry.playing !== undefined
+              ? { playing: entry.playing === 1 }
+              : {}),
+          },
+        };
+      }
+      return;
+    }
   }
 
   /** Read-only snapshot of cached settings pushes (cmd_id 78/79/464/484/623/723). */
@@ -13850,6 +13887,22 @@ export class ReolinkBaichuanApi {
               },
             }
           : {}),
+        ...(entry.floodlightStatus
+          ? {
+              floodlightStatus: {
+                ...entry.floodlightStatus,
+                value: { ...entry.floodlightStatus.value },
+              },
+            }
+          : {}),
+        ...(entry.sirenStatus
+          ? {
+              sirenStatus: {
+                ...entry.sirenStatus,
+                value: { ...entry.sirenStatus.value },
+              },
+            }
+          : {}),
       });
     }
     return out;
@@ -13885,6 +13938,35 @@ export class ReolinkBaichuanApi {
     channel = 0,
   ): BaichuanCachedPush<BaichuanCoordinatePointListPush> | undefined {
     return this.settingsPushCache.get(channel)?.coordinatePointList;
+  }
+
+  /**
+   * Last cmd_id 291 (FloodlightStatusList) push observed for the channel.
+   * The camera emits this whenever the floodlight transitions on/off,
+   * including the auto-off after the FloodlightManual duration. This is
+   * the only reliable source for the current manual state because cmd 289
+   * only returns the FloodlightTask config.
+   *
+   * Returns undefined when no push has been received yet.
+   */
+  getCachedFloodlightStatus(
+    channel = 0,
+  ): BaichuanCachedPush<BaichuanFloodlightStatusPush> | undefined {
+    return this.settingsPushCache.get(channel)?.floodlightStatus;
+  }
+
+  /**
+   * Last cmd_id 547 (SirenStatusList) push observed for the channel.
+   * Captures the actual on/off transitions including the firmware's
+   * built-in auto-off after the siren playback duration expires —
+   * polling cmd 547 alone can race that auto-off.
+   *
+   * Returns undefined when no push has been received yet.
+   */
+  getCachedSirenStatus(
+    channel = 0,
+  ): BaichuanCachedPush<BaichuanSirenStatusPush> | undefined {
+    return this.settingsPushCache.get(channel)?.sirenStatus;
   }
 
   // --------------------
