@@ -34,7 +34,7 @@ class FakeVideoStream extends EventEmitter {
 let lastFakeStream: FakeVideoStream | null = null;
 
 vi.mock("../../src/baichuan/stream/BaichuanVideoStream.js", () => ({
-  BaichuanVideoStream: vi.fn().mockImplementation(() => {
+  BaichuanVideoStream: vi.fn().mockImplementation(function () {
     const s = new FakeVideoStream();
     lastFakeStream = s;
     return s;
