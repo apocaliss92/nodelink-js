@@ -129,3 +129,8 @@ export type {
   XmlJsonObject,
 } from "./reolink/baichuan/utils/xml";
 export type { FloodlightTaskState } from "./reolink/baichuan/utils/whiteLed";
+
+// Email-push SMTP intake + bus — re-exported so consumers (Scrypted
+// plugin, manager app, integration tests) can stand up an instance
+// without depending on app/-only modules.
+export * from "./emailPush/index";

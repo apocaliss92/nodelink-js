@@ -14,7 +14,7 @@ import { getConfig, getSettings, updateCamera } from "./settings-store.js";
 import {
   onEmailPushEvent,
   type EmailPushEvent,
-} from "./email-push-bus.js";
+} from "./email-push-server.js";
 import { getCameraInfo } from "./rtsp-manager.js";
 import { sanitizeCameraName } from "./rtsp-manager.js";
 import { createSourceLogger } from "./logger.js";

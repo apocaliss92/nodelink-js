@@ -1,18 +1,21 @@
 /**
  * Email push event bus.
  *
- * Kept in a dedicated module — and intentionally free of `smtp-server` /
- * `mailparser` dependencies — so consumers (the events-manager, MQTT
- * bridge, integration tests, …) can subscribe to email-push events
- * without pulling in the SMTP server's native deps. The actual SMTP
- * intake (`email-push-server.ts`) lives next to this file and emits
- * through this bus.
+ * Stateless in-memory dispatcher. Lives in the library so any consumer
+ * (the manager app, the Scrypted plugin, integration tests) can subscribe
+ * and emit through the same surface without dragging in the
+ * `smtp-server` / `mailparser` native deps.
  *
- * The bus is **stateless**: it does NOT persist snapshots to disk and
- * does NOT keep a per-camera ring buffer of recent events. Images for
- * motion/AI events are expected to flow on the MQTT/HomeAssistant
- * integration directly from the live camera snapshot, decoupled from
- * the email transport.
+ * The bus is intentionally:
+ * - **Process-local** — every consumer has its own bus instance (the
+ *   module-level state below). No cross-process or cross-import sharing.
+ * - **Bounded** — keeps the last `MAX_GLOBAL_EVENTS` (default 300) for
+ *   the "recent emails" panel, and a single-event reference per camera
+ *   for the verifyDelivery race short-circuit. Footprint is O(cameras)
+ *   plus O(MAX_GLOBAL_EVENTS).
+ * - **Attachment-free** — only metadata (subject, from, body excerpt,
+ *   classified type) is retained; the actual JPEG/MP4 payloads from the
+ *   camera are never persisted by the bus.
  */
 
 import { EventEmitter } from "node:events";
@@ -47,19 +50,12 @@ type CameraResolver = (recipient: string) => string | undefined;
 const emitter = new EventEmitter();
 let cameraResolver: CameraResolver = () => undefined;
 
-// Single most recent event per camera. NOT a buffer / not for UI display —
+// Single most-recent event per camera. NOT a buffer / not for UI display —
 // only used by verifyDelivery as a race-safe short-circuit when an event
 // landed in the gap between the caller capturing `sinceMs` and the
-// listener actually attaching (the camera SMTP send fires immediately
-// after the cmd_id=141 ack, often before the client has finished firing
-// the second tRPC call). Footprint is O(cameras), one event reference.
+// listener actually attaching.
 const lastEventByCamera = new Map<string, EmailPushEvent>();
 
-// Global ring of the last `MAX_GLOBAL_EVENTS` received emails — used to
-// power the diagnostic log in Settings → Email Push. Metadata only
-// (subject, from, body excerpt, classified type) — no attachments or
-// snapshots are retained anywhere in this manager process, matching the
-// stateless intake design.
 const MAX_GLOBAL_EVENTS = 300;
 const globalRecentEvents: EmailPushEvent[] = [];
 
@@ -88,9 +84,6 @@ export function onEmailPushEvent(handler: EventHandler): () => void {
 /** Internal: SMTP server uses this to dispatch an event into the bus. */
 export function emitEmailPushEvent(event: EmailPushEvent): void {
   lastEventByCamera.set(event.cameraId, event);
-  // unshift so callers reading the ring get the most recent event first;
-  // bounded trim keeps memory at O(MAX_GLOBAL_EVENTS) regardless of how
-  // many cameras are pushing.
   globalRecentEvents.unshift(event);
   if (globalRecentEvents.length > MAX_GLOBAL_EVENTS) {
     globalRecentEvents.length = MAX_GLOBAL_EVENTS;
@@ -100,9 +93,7 @@ export function emitEmailPushEvent(event: EmailPushEvent): void {
 
 /**
  * Read the most recent event observed for a camera. Returns `undefined`
- * when no email-push event has been received since the manager booted.
- * Used by `emailPush.verifyDelivery` to short-circuit when the event we
- * are waiting for already arrived between `sinceMs` and listener attach.
+ * when no email-push event has been received since the consumer started.
  */
 export function getLastEmailPushEvent(
   cameraId: string,
@@ -113,7 +104,6 @@ export function getLastEmailPushEvent(
 /**
  * Return a snapshot of the most recent email-push events across all
  * cameras (most recent first). Capped at `MAX_GLOBAL_EVENTS` (300).
- * Powers the diagnostic log in Settings → Email Push.
  *
  * `limit` is clamped to the buffer cap so callers can ask for a smaller
  * page without juggling the storage limit.
@@ -125,7 +115,7 @@ export function getRecentEmailPushEvents(
   return globalRecentEvents.slice(0, clamped);
 }
 
-/** Test hook: drop all subscribers and reset the resolver. */
+/** Test hook: drop all subscribers, recent events, and reset the resolver. */
 export function _resetEmailPushBusForTests(): void {
   emitter.removeAllListeners();
   cameraResolver = () => undefined;

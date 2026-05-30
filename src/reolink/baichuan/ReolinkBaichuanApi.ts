@@ -14949,10 +14949,19 @@ export class ReolinkBaichuanApi {
     const attachmentType = params.attachmentType ?? "picture";
     const interval = params.interval ?? 30;
 
+    // Reolink firmwares reuse `userName` as the SMTP envelope sender,
+    // so it must be `<localpart@domain>` (RFC 5321). If the caller passes
+    // a bare username (`nodelink-XXXX` is the common case for the random
+    // creds bootstrapped by the manager) wrap it with the configured
+    // domain so MAIL FROM:<…> is well-formed and our SMTP intake doesn't
+    // hang up with 501 on the very first message.
+    const rawUser = params.authUsername ?? recipient;
+    const wireUser = rawUser.includes("@") ? rawUser : `${rawUser}@${domain}`;
+
     const emailPatch: EmailConfigPatch = {
       smtpServer: params.managerHost,
       smtpPort: port,
-      userName: params.authUsername ?? recipient,
+      userName: wireUser,
       password: params.authPassword ?? "",
       address1: recipient,
       address2: "",
