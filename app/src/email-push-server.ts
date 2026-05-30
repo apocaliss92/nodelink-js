@@ -27,6 +27,7 @@ import {
   emitEmailPushEvent,
   getEmailPushCameraResolver,
   getLastEmailPushEvent,
+  getRecentEmailPushEvents,
   onEmailPushEvent,
   setEmailPushCameraResolver,
   type EmailPushEvent,
@@ -36,6 +37,7 @@ import {
 // Re-export bus surface so callers don't need to know the file split.
 export {
   getLastEmailPushEvent,
+  getRecentEmailPushEvents,
   onEmailPushEvent,
   setEmailPushCameraResolver,
   type EmailPushEvent,

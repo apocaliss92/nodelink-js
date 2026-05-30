@@ -39,6 +39,16 @@ interface EmailPushStatus {
   lastErrorMessage: string | undefined;
 }
 
+interface RecentEmailEvent {
+  cameraId: string;
+  recipient: string;
+  inferredType: string;
+  receivedAtMs: number;
+  subject: string;
+  from: string;
+  bodyExcerpt: string;
+}
+
 interface Form {
   enabled: boolean;
   port: number;
@@ -74,6 +84,7 @@ export function EmailPushSettingsSection() {
   const [settings, setSettings] = useState<EmailPushSettings | null>(null);
   const [status, setStatus] = useState<EmailPushStatus | null>(null);
   const [form, setForm] = useState<Form | null>(null);
+  const [recent, setRecent] = useState<RecentEmailEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -83,18 +94,34 @@ export function EmailPushSettingsSection() {
     setLoading(true);
     setError(null);
     try {
-      const [s, st] = await Promise.all([
+      const [s, st, ev] = await Promise.all([
         trpcQuery<EmailPushSettings>("emailPush.getSettings"),
         trpcQuery<EmailPushStatus>("emailPush.status"),
+        trpcQuery<RecentEmailEvent[]>("emailPush.recentEvents", { limit: 300 }),
       ]);
       setSettings(s);
       setStatus(st);
       setForm(settingsToForm(s));
+      setRecent(ev);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  // Poll the recent-events ring while the panel is visible so a new email
+  // arriving from a camera shows up without the user having to click
+  // refresh. 5s is generous — these are diagnostic logs, not live frames.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      trpcQuery<RecentEmailEvent[]>("emailPush.recentEvents", { limit: 300 })
+        .then(setRecent)
+        .catch(() => {
+          /* transient — keep the previous list */
+        });
+    }, 5000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -419,6 +446,72 @@ export function EmailPushSettingsSection() {
           </div>
         </div>
       )}
+
+      <div className={cardCls}>
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h3 className="text-sm font-semibold">
+              Recent emails ({recent.length})
+            </h3>
+            <p className="text-[11px] text-[var(--color-foreground-muted)]">
+              In-memory log of the last 300 messages the SMTP intake received,
+              most recent first. Cleared on restart. Metadata only — no
+              attachments are stored.
+            </p>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => void refresh()}
+            disabled={loading}
+            className="gap-1"
+          >
+            <RefreshCw size={12} /> Refresh
+          </Button>
+        </div>
+        {recent.length === 0 ? (
+          <p className="text-[12px] text-[var(--color-foreground-muted)]">
+            No emails received yet.
+          </p>
+        ) : (
+          <div className="max-h-[480px] overflow-y-auto pr-1 -mr-1 flex flex-col gap-2">
+            {recent.map((ev, idx) => (
+              <div
+                key={`${ev.receivedAtMs}-${idx}`}
+                className="rounded border border-[var(--color-border)] bg-[var(--color-background)] p-2 text-[12px]"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium">{ev.inferredType}</span>
+                  <span className="text-[10px] text-[var(--color-foreground-muted)] tabular-nums">
+                    {new Date(ev.receivedAtMs).toLocaleString()}
+                  </span>
+                </div>
+                <div className="mt-1 text-[11px] text-[var(--color-foreground-muted)] truncate">
+                  <span className="opacity-70">subject:</span>{" "}
+                  {ev.subject || "(none)"}
+                </div>
+                <div className="text-[10px] text-[var(--color-foreground-subtle)] truncate">
+                  <span className="opacity-70">from:</span> {ev.from || "?"}{" "}
+                  · <span className="opacity-70">to:</span> {ev.recipient}
+                </div>
+                <div className="text-[10px] text-[var(--color-foreground-subtle)] truncate">
+                  <span className="opacity-70">cam:</span> {ev.cameraId}
+                </div>
+                {ev.bodyExcerpt ? (
+                  <details className="mt-1">
+                    <summary className="cursor-pointer text-[10px] text-[var(--color-foreground-muted)] hover:text-[var(--color-foreground)]">
+                      Body excerpt ({ev.bodyExcerpt.length} chars)
+                    </summary>
+                    <pre className="mt-1 whitespace-pre-wrap break-words text-[10px] leading-snug text-[var(--color-foreground-muted)]">
+                      {ev.bodyExcerpt}
+                    </pre>
+                  </details>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

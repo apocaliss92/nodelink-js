@@ -55,6 +55,14 @@ let cameraResolver: CameraResolver = () => undefined;
 // the second tRPC call). Footprint is O(cameras), one event reference.
 const lastEventByCamera = new Map<string, EmailPushEvent>();
 
+// Global ring of the last `MAX_GLOBAL_EVENTS` received emails — used to
+// power the diagnostic log in Settings → Email Push. Metadata only
+// (subject, from, body excerpt, classified type) — no attachments or
+// snapshots are retained anywhere in this manager process, matching the
+// stateless intake design.
+const MAX_GLOBAL_EVENTS = 300;
+const globalRecentEvents: EmailPushEvent[] = [];
+
 /**
  * Set the callback that maps a recipient address (e.g.
  * `cam-abc@nodelink.local`) to a known cameraId. Returning `undefined`
@@ -80,6 +88,13 @@ export function onEmailPushEvent(handler: EventHandler): () => void {
 /** Internal: SMTP server uses this to dispatch an event into the bus. */
 export function emitEmailPushEvent(event: EmailPushEvent): void {
   lastEventByCamera.set(event.cameraId, event);
+  // unshift so callers reading the ring get the most recent event first;
+  // bounded trim keeps memory at O(MAX_GLOBAL_EVENTS) regardless of how
+  // many cameras are pushing.
+  globalRecentEvents.unshift(event);
+  if (globalRecentEvents.length > MAX_GLOBAL_EVENTS) {
+    globalRecentEvents.length = MAX_GLOBAL_EVENTS;
+  }
   emitter.emit("event", event);
 }
 
@@ -95,9 +110,25 @@ export function getLastEmailPushEvent(
   return lastEventByCamera.get(cameraId);
 }
 
+/**
+ * Return a snapshot of the most recent email-push events across all
+ * cameras (most recent first). Capped at `MAX_GLOBAL_EVENTS` (300).
+ * Powers the diagnostic log in Settings → Email Push.
+ *
+ * `limit` is clamped to the buffer cap so callers can ask for a smaller
+ * page without juggling the storage limit.
+ */
+export function getRecentEmailPushEvents(
+  limit: number = MAX_GLOBAL_EVENTS,
+): EmailPushEvent[] {
+  const clamped = Math.max(0, Math.min(limit, MAX_GLOBAL_EVENTS));
+  return globalRecentEvents.slice(0, clamped);
+}
+
 /** Test hook: drop all subscribers and reset the resolver. */
 export function _resetEmailPushBusForTests(): void {
   emitter.removeAllListeners();
   cameraResolver = () => undefined;
   lastEventByCamera.clear();
+  globalRecentEvents.length = 0;
 }

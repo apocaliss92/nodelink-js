@@ -9,6 +9,7 @@ import {
   getCameraEmailAddress,
   emitSyntheticEmailPushEventForTest,
   getLastEmailPushEvent,
+  getRecentEmailPushEvents,
   onEmailPushEvent,
   type EmailPushEvent,
 } from "../email-push-server.js";
@@ -223,6 +224,26 @@ export const emailPushRouter = router({
         }, input.timeoutMs);
       });
     }),
+
+  /**
+   * Return the most recent received emails across all cameras (most
+   * recent first). Capped at 300 events in the bus. No attachments are
+   * retained — the response carries only metadata plus the body excerpt
+   * so the Settings → Email Push panel can show a diagnostic log.
+   */
+  recentEvents: publicProcedure
+    .meta({
+      description:
+        "Return the last N received emails (most recent first, cap 300). Metadata + body excerpt only — no attachments are stored.",
+    })
+    .input(
+      z.object({
+        limit: z.number().int().min(1).max(300).optional().default(300),
+      }),
+    )
+    .query(({ input }) =>
+      getRecentEmailPushEvents(input.limit).map(serializeEvent),
+    ),
 
   /**
    * Return the LAN IPv4 addresses of the manager. The "auto-configure" UI
