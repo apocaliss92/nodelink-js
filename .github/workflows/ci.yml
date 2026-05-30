@@ -36,6 +36,14 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # The lib's test suite includes integration tests under `test/app/**`
+      # that import `app/src/*`. Those files now import the lib via package
+      # name (`@apocaliss92/nodelink-js`), which only resolves when the
+      # manager-app's own `node_modules` is populated (it carries the
+      # `file:..` dep). Install it before running tests.
+      - name: Install app dependencies (needed by integration tests)
+        run: cd app && npm ci
+
       - name: Run tests
         run: npm test
 
