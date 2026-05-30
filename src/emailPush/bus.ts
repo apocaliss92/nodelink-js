@@ -42,19 +42,6 @@ export interface EmailPushEvent {
   from: string;
   /** Raw body text excerpt (max 500 chars). */
   bodyExcerpt: string;
-  /**
-   * First image attachment from the e-mail, when present. The camera
-   * sends a JPEG snapshot of the trigger frame on motion when
-   * `attachmentType=picture`; consumers can republish it to MQTT image
-   * entities or cache it as the camera's `lastPicture` so battery
-   * cameras don't have to be woken up to get a fresh thumbnail.
-   * Kept in memory only — the bus does not persist it.
-   */
-  attachment?: {
-    contentType: string;
-    data: Buffer;
-    filename?: string;
-  };
 }
 
 type EventHandler = (event: EmailPushEvent) => void;

@@ -155,8 +155,17 @@ export function createEmailPushServer(
   function parseRecipient(
     rcpt: string,
   ): { local: string; domain: string } | undefined {
-    const [local, domain] = rcpt.toLowerCase().split("@");
-    if (!local || !domain) return undefined;
+    // Keep the local-part case as-is — Reolink UIDs (and therefore the
+    // nativeIds consumers register against) contain uppercase chars
+    // like `9527000HZ56U1ORU`. Lowercasing here was making
+    // `findCameraByNativeId` fail to match and every motion landed as
+    // `550 Unknown recipient`. Only the domain is compared
+    // case-insensitively (RFC 5321 §2.3.11 — domain part is canonical
+    // lowercase, local-part SHOULD be preserved).
+    const at = rcpt.lastIndexOf("@");
+    if (at <= 0 || at === rcpt.length - 1) return undefined;
+    const local = rcpt.slice(0, at);
+    const domain = rcpt.slice(at + 1).toLowerCase();
     return { local, domain };
   }
 
@@ -186,19 +195,6 @@ export function createEmailPushServer(
     }
 
     const receivedAtMs = Date.now();
-    // mailparser exposes every attachment in `parsed.attachments`; we
-    // keep only the first inline image (the snapshot Reolink sends
-    // when `attachmentType=picture`) so consumers can refresh the
-    // camera's cached thumbnail without waking the device. Multiple
-    // attachments are rare from Reolink firmwares; we pick the first
-    // image and drop the rest to keep the bus event light.
-    const imageAttachment = (parsed.attachments ?? []).find(
-      (a) =>
-        a &&
-        typeof a.contentType === "string" &&
-        a.contentType.toLowerCase().startsWith("image/") &&
-        Buffer.isBuffer(a.content),
-    );
     const event: EmailPushEvent = {
       cameraId,
       recipient,
@@ -212,23 +208,16 @@ export function createEmailPushServer(
           ? String(parsed.from.text)
           : "",
       bodyExcerpt: (parsed.text ?? "").slice(0, 500),
-      ...(imageAttachment
-        ? {
-            attachment: {
-              contentType: imageAttachment.contentType,
-              data: imageAttachment.content as Buffer,
-              ...(imageAttachment.filename
-                ? { filename: imageAttachment.filename }
-                : {}),
-            },
-          }
-        : {}),
     };
 
     status.messagesAccepted++;
+    // Consumers fetch a live snapshot via the Baichuan snapshot API
+    // when reacting to the event — the camera is guaranteed awake at
+    // delivery time so the round-trip is cheap and the result is
+    // higher quality than the e-mail attachment. We therefore drop
+    // attachments here without parsing them.
     log.info(
       `Email push for camera=${cameraId} type=${event.inferredType} ` +
-        `attachment=${event.attachment ? `${event.attachment.contentType} ${event.attachment.data.length}B` : "none"} ` +
         `subject="${event.subject.slice(0, 80)}"`,
     );
     emitEmailPushEvent(event);
