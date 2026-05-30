@@ -218,4 +218,36 @@ describe("settings-store email-push auth bootstrap migration", () => {
 
     expect(loaded.emailPush.enabled).toBe(false);
   });
+
+  it("drops the legacy emailPush.featureEnabled field from settings.json", async () => {
+    const settingsPath = path.join(tmpDir, "settings.json");
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        emailPush: {
+          featureEnabled: false,
+          enabled: true,
+          requireAuth: true,
+          authUsername: "u",
+          authPassword: "p",
+        },
+        _migrationsApplied: [
+          "email-push-auth-defaults-v1",
+          "email-push-enabled-default-v1",
+        ],
+      }),
+    );
+
+    const store = await freshStore();
+    const loaded = store.loadSettings();
+
+    expect((loaded.emailPush as { featureEnabled?: boolean }).featureEnabled).toBeUndefined();
+    expect(loaded._migrationsApplied).toContain(
+      "email-push-drop-featureEnabled-v1",
+    );
+
+    // And the on-disk file must no longer carry the field after the migration save.
+    const onDisk = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    expect(onDisk.emailPush).not.toHaveProperty("featureEnabled");
+  });
 });

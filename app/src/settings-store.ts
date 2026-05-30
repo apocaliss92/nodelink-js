@@ -233,18 +233,16 @@ export const SettingsSchema = z.object({
    */
   emailPush: z
     .object({
-      /**
-       * Legacy master kill-switch. The subsystem is now always enabled in
-       * code paths (the UI gate has been removed); this flag still defaults
-       * to `true` so historical installs with an explicit `false` keep the
-       * SMTP intake suppressed until the user opts in via `enabled` below.
-       * New installs activate automatically when `enabled` is flipped on.
-       */
-      featureEnabled: z.boolean().default(true),
       // Default `true` so fresh installs spin up the SMTP intake immediately
       // (battery-cam owners get email-delivered motion out of the box). Users
       // who don't want it can flip the user-facing toggle off from
       // Settings → Email Push; that change is honoured by the boot path.
+      //
+      // NOTE: the legacy `featureEnabled` master kill-switch has been removed
+      // from the schema. The `email-push-drop-featureEnabled-v1` migration
+      // strips it from existing settings.json files on first load; Zod
+      // silently drops unknown keys at parse time so the field is gone
+      // after the first save regardless.
       enabled: z.boolean().default(true),
       /** SMTP listen port. Default 2525 (avoid privileged 25). */
       port: z.number().int().min(1).max(65535).default(2525),
@@ -369,6 +367,17 @@ export function loadSettings(): Settings {
         s.emailPush.enabled
           ? null
           : { emailPush: { ...s.emailPush, enabled: true } },
+    },
+    {
+      // featureEnabled was a master kill-switch from the experimental
+      // phase. The schema no longer declares it and the boot path no
+      // longer checks it — but legacy settings.json files still carry
+      // the field, which now silently confuses readers. The migration
+      // is a marker-only no-op: the runner records the marker via
+      // saveSettings(), which re-parses through SettingsSchema and
+      // drops the unknown key on the rewrite.
+      id: "email-push-drop-featureEnabled-v1",
+      apply: () => null,
     },
   ];
 
