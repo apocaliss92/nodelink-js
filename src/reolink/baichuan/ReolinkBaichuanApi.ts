@@ -3034,10 +3034,28 @@ export class ReolinkBaichuanApi {
    */
   subscribeEmailPushEvents(
     params:
-      | { cameraId: string; channel?: number }
-      | { match: (event: EmailPushEvent) => boolean; channel?: number },
+      | {
+          cameraId: string;
+          channel?: number;
+          /**
+           * Optional handler invoked with the *full* `EmailPushEvent`
+           * after the simple-event dispatch. Useful for consumers that
+           * need fields beyond what `onSimpleEvent` carries — most
+           * notably `event.attachment` (the JPEG snapshot from the
+           * trigger frame) which a downstream plugin can republish to
+           * MQTT or cache as the camera's last picture.
+           */
+          onEvent?: (event: EmailPushEvent) => void;
+        }
+      | {
+          match: (event: EmailPushEvent) => boolean;
+          channel?: number;
+          onEvent?: (event: EmailPushEvent) => void;
+        },
   ): () => void {
     const channel = (params as { channel?: number }).channel ?? 0;
+    const onEvent = (params as { onEvent?: (e: EmailPushEvent) => void })
+      .onEvent;
     const matches: (event: EmailPushEvent) => boolean =
       "match" in params
         ? params.match
@@ -3062,6 +3080,18 @@ export class ReolinkBaichuanApi {
           channel,
           timestamp: event.receivedAtMs,
         });
+      }
+      // Expose the raw event last so the onSimpleEvent listeners run
+      // first (consistent with how native Baichuan events propagate)
+      // and the consumer can react to the attachment without races.
+      if (onEvent) {
+        try {
+          onEvent(event);
+        } catch (err) {
+          this.logger.warn?.(
+            `[ReolinkBaichuanApi] subscribeEmailPushEvents onEvent threw: ${err instanceof Error ? err.message : err}`,
+          );
+        }
       }
     });
     return off;

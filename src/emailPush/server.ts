@@ -186,6 +186,19 @@ export function createEmailPushServer(
     }
 
     const receivedAtMs = Date.now();
+    // mailparser exposes every attachment in `parsed.attachments`; we
+    // keep only the first inline image (the snapshot Reolink sends
+    // when `attachmentType=picture`) so consumers can refresh the
+    // camera's cached thumbnail without waking the device. Multiple
+    // attachments are rare from Reolink firmwares; we pick the first
+    // image and drop the rest to keep the bus event light.
+    const imageAttachment = (parsed.attachments ?? []).find(
+      (a) =>
+        a &&
+        typeof a.contentType === "string" &&
+        a.contentType.toLowerCase().startsWith("image/") &&
+        Buffer.isBuffer(a.content),
+    );
     const event: EmailPushEvent = {
       cameraId,
       recipient,
@@ -199,11 +212,24 @@ export function createEmailPushServer(
           ? String(parsed.from.text)
           : "",
       bodyExcerpt: (parsed.text ?? "").slice(0, 500),
+      ...(imageAttachment
+        ? {
+            attachment: {
+              contentType: imageAttachment.contentType,
+              data: imageAttachment.content as Buffer,
+              ...(imageAttachment.filename
+                ? { filename: imageAttachment.filename }
+                : {}),
+            },
+          }
+        : {}),
     };
 
     status.messagesAccepted++;
     log.info(
-      `Email push for camera=${cameraId} type=${event.inferredType} subject="${event.subject.slice(0, 80)}"`,
+      `Email push for camera=${cameraId} type=${event.inferredType} ` +
+        `attachment=${event.attachment ? `${event.attachment.contentType} ${event.attachment.data.length}B` : "none"} ` +
+        `subject="${event.subject.slice(0, 80)}"`,
     );
     emitEmailPushEvent(event);
   }
