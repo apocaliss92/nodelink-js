@@ -474,41 +474,57 @@ export function EmailPushSettingsSection() {
             No emails received yet.
           </p>
         ) : (
-          <div className="max-h-[480px] overflow-y-auto pr-1 -mr-1 flex flex-col gap-2">
-            {recent.map((ev, idx) => (
-              <div
-                key={`${ev.receivedAtMs}-${idx}`}
-                className="rounded border border-[var(--color-border)] bg-[var(--color-background)] p-2 text-[12px]"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium">{ev.inferredType}</span>
-                  <span className="text-[10px] text-[var(--color-foreground-muted)] tabular-nums">
-                    {new Date(ev.receivedAtMs).toLocaleString()}
-                  </span>
-                </div>
-                <div className="mt-1 text-[11px] text-[var(--color-foreground-muted)] truncate">
-                  <span className="opacity-70">subject:</span>{" "}
-                  {ev.subject || "(none)"}
-                </div>
-                <div className="text-[10px] text-[var(--color-foreground-subtle)] truncate">
-                  <span className="opacity-70">from:</span> {ev.from || "?"}{" "}
-                  · <span className="opacity-70">to:</span> {ev.recipient}
-                </div>
-                <div className="text-[10px] text-[var(--color-foreground-subtle)] truncate">
-                  <span className="opacity-70">cam:</span> {ev.cameraId}
-                </div>
-                {ev.bodyExcerpt ? (
-                  <details className="mt-1">
-                    <summary className="cursor-pointer text-[10px] text-[var(--color-foreground-muted)] hover:text-[var(--color-foreground)]">
-                      Body excerpt ({ev.bodyExcerpt.length} chars)
-                    </summary>
-                    <pre className="mt-1 whitespace-pre-wrap break-words text-[10px] leading-snug text-[var(--color-foreground-muted)]">
-                      {ev.bodyExcerpt}
-                    </pre>
-                  </details>
-                ) : null}
-              </div>
-            ))}
+          <div className="max-h-72 overflow-y-auto pr-1 -mr-1 border border-[var(--color-border)] rounded divide-y divide-[var(--color-border)]">
+            {recent.map((ev, idx) => {
+              // Show only the cameraId head so the row stays compact;
+              // full id is in the accordion body for copy/paste.
+              const camShort = ev.cameraId.slice(0, 8);
+              return (
+                <details
+                  key={`${ev.receivedAtMs}-${idx}`}
+                  className="group bg-[var(--color-background)] open:bg-[var(--color-surface)]"
+                >
+                  <summary className="flex items-center gap-2 px-2 py-1 cursor-pointer text-[11px] hover:bg-[var(--color-surface-hover)] select-none list-none [&::-webkit-details-marker]:hidden">
+                    <span className="text-[var(--color-foreground-muted)] tabular-nums w-[140px] shrink-0">
+                      {new Date(ev.receivedAtMs).toLocaleString()}
+                    </span>
+                    <span className="font-medium w-[64px] shrink-0">
+                      {ev.inferredType}
+                    </span>
+                    <span className="text-[var(--color-foreground-muted)] w-[80px] shrink-0 truncate font-mono">
+                      {camShort}…
+                    </span>
+                    <span className="flex-1 truncate">
+                      {ev.subject || (
+                        <span className="text-[var(--color-foreground-subtle)] italic">
+                          (no subject)
+                        </span>
+                      )}
+                    </span>
+                    <span className="text-[10px] text-[var(--color-foreground-subtle)] group-open:rotate-90 transition-transform">
+                      ▸
+                    </span>
+                  </summary>
+                  <div className="px-2 pb-2 pt-1 text-[10px] text-[var(--color-foreground-muted)] space-y-0.5">
+                    <div>
+                      <span className="opacity-70">from:</span> {ev.from || "?"}
+                    </div>
+                    <div>
+                      <span className="opacity-70">to:</span> {ev.recipient}
+                    </div>
+                    <div className="font-mono">
+                      <span className="opacity-70 font-sans">cam:</span>{" "}
+                      {ev.cameraId}
+                    </div>
+                    {ev.bodyExcerpt ? (
+                      <pre className="mt-1 whitespace-pre-wrap break-words leading-snug bg-[var(--color-background)] border border-[var(--color-border)] rounded p-2 max-h-40 overflow-y-auto">
+                        {ev.bodyExcerpt}
+                      </pre>
+                    ) : null}
+                  </div>
+                </details>
+              );
+            })}
           </div>
         )}
       </div>
