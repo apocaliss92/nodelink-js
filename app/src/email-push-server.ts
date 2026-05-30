@@ -212,7 +212,18 @@ export async function startEmailPushServer(): Promise<void> {
     disabledCommands: settings.emailPush.requireAuth ? [] : ["AUTH"],
     allowInsecureAuth: !settings.emailPush.tls,
     size: settings.emailPush.maxMessageBytes,
-    logger: false,
+    // Pipe smtp-server's protocol logs into our logger at debug level so
+    // diagnostic info (EHLO greeting, AUTH method negotiation, STARTTLS
+    // requests, error replies) shows up alongside the connect/close
+    // events when a Reolink firmware hangs up early.
+    logger: {
+      info: (...args: unknown[]) =>
+        logger.debug(`[smtp] ${args.map((a) => String(a)).join(" ")}`),
+      debug: (...args: unknown[]) =>
+        logger.debug(`[smtp] ${args.map((a) => String(a)).join(" ")}`),
+      error: (...args: unknown[]) =>
+        logger.warn(`[smtp] ${args.map((a) => String(a)).join(" ")}`),
+    } as unknown as false,
     ...(tlsOptions ? { secure: false, ...tlsOptions } : {}),
     onConnect(session, callback) {
       logger.info(
@@ -231,15 +242,45 @@ export async function startEmailPushServer(): Promise<void> {
       );
       callback();
     },
-    onAuth(auth, _session, callback) {
+    onAuth(auth, session, callback) {
       const expectedUser = settings.emailPush.authUsername;
       const expectedPass = settings.emailPush.authPassword;
       if (!expectedUser || !expectedPass) {
+        logger.warn(
+          `SMTP AUTH rejected from ${session.remoteAddress} (sessionId=${session.id}): server has no credentials configured`,
+        );
         return callback(new Error("Email push auth not configured"));
       }
-      if (auth.username === expectedUser && auth.password === expectedPass) {
+      // Reolink firmwares are configured with `userName = bareUser@domain`
+      // (auto-configure wraps the bare username in an email-shaped form so
+      // the camera can use it in `MAIL FROM`). On AUTH the camera sends
+      // back the wrapped form too, so strip the configured domain suffix
+      // before comparing — that way `nodelink-5f6a1620@nodelink.local`
+      // matches the stored `nodelink-5f6a1620` and the user is free to
+      // keep credentials in either form in settings.json.
+      const stripDomain = (u: string): string => {
+        const at = u.lastIndexOf("@");
+        if (at < 0) return u;
+        const local = u.slice(0, at);
+        const domain = u.slice(at + 1).toLowerCase();
+        return domain === settings.emailPush.domain.toLowerCase() ? local : u;
+      };
+      const triedUserNorm = stripDomain(auth.username ?? "");
+      const expectedUserNorm = stripDomain(expectedUser);
+      if (
+        triedUserNorm === expectedUserNorm &&
+        auth.password === expectedPass
+      ) {
+        logger.info(
+          `SMTP AUTH ok method=${auth.method} user=${auth.username} (sessionId=${session.id})`,
+        );
         return callback(null, { user: auth.username });
       }
+      logger.warn(
+        `SMTP AUTH FAIL method=${auth.method} from=${session.remoteAddress} ` +
+          `triedUser="${auth.username}" expectedUser="${expectedUser}" ` +
+          `triedPasswordLen=${auth.password?.length ?? 0} (sessionId=${session.id})`,
+      );
       return callback(new Error("Invalid username or password"));
     },
     onRcptTo(address, _session, callback) {

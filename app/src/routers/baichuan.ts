@@ -2748,13 +2748,24 @@ export const baichuanRouter = router({
       // credentials we expect the camera to use — the UI never has the
       // password in plaintext (only an `authPasswordConfigured` flag).
       const { emailPush } = getSettings();
+      // Reolink firmwares pass `userName` straight into the SMTP `MAIL FROM`
+      // header. RFC 5321 requires a `<localpart@domain>` form there, so a
+      // bare username (the random `nodelink-XXXX` we generate at bootstrap)
+      // makes smtp-server reply 501 "Bad sender address syntax" the moment
+      // the camera tries to deliver. Append `@<domain>` here so the wire
+      // form is always valid; the server-side AUTH check normalises the
+      // received username back to its bare form before comparing.
+      const wireUsername =
+        emailPush.authUsername.includes("@")
+          ? emailPush.authUsername
+          : `${emailPush.authUsername}@${emailPush.domain}`;
       const params = {
         ...rest,
         managerPort: emailPush.port,
         domain: emailPush.domain,
         ...(emailPush.requireAuth
           ? {
-              authUsername: emailPush.authUsername,
+              authUsername: wireUsername,
               authPassword: emailPush.authPassword,
             }
           : {}),
