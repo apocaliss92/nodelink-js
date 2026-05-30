@@ -15,6 +15,7 @@ import {
   onEmailPushEvent,
   type EmailPushEvent,
 } from "./email-push-server.js";
+import { mapEmailPushInferredType } from "@apocaliss92/nodelink-js";
 import { getCameraInfo } from "./rtsp-manager.js";
 import { sanitizeCameraName } from "./rtsp-manager.js";
 import { createSourceLogger } from "./logger.js";
@@ -440,6 +441,16 @@ function registerCameraEvents(cameraId: string, api: ReolinkBaichuanApi): void {
     handleCameraEvent(cameraId, event);
   });
 
+  // Email-push events are handled at the global bus level below — see
+  // `onEmailPushEvent` below `onApiDisconnected`. We do NOT call
+  // `api.subscribeEmailPushEvents` here because the manager has more
+  // than one module that listens on the same api per camera
+  // (events-manager + homeassistant-mqtt). A per-api bridge would
+  // duplicate dispatches through both consumers. The new
+  // `subscribeEmailPushEvents` lib method is meant for single-owner
+  // consumers like the Scrypted plugin where each api has exactly one
+  // wrapper that listens on `onSimpleEvent`.
+
   // Detection events fire per-frame from the BcMedia overlay channel. We
   // always register the listener (it's cheap) but the broadcast short-circuits
   // when no SSE client is subscribed to the detection firehose.
@@ -570,20 +581,24 @@ export function initEventsManager(): void {
     logger.debug(`Unregistered events for camera ${cameraId}`);
   });
 
-  // Forward email-push notifications (from battery cameras that can't keep
-  // a TCP/ONVIF push subscription alive) as synthetic motion events.
+  // Global email-push bus → manager pipeline. We subscribe once and
+  // route every event through handleCameraEvent so cameras that aren't
+  // currently in `registeredApis` (e.g. only used via wakeUp/getApi
+  // with no streaming session) still produce MQTT/SSE/recent-events
+  // entries. The lib's `mapEmailPushInferredType` keeps us in sync
+  // with the per-api `subscribeEmailPushEvents` helper used by
+  // single-owner consumers (Scrypted plugin).
   onEmailPushEvent((event: EmailPushEvent) => {
-    const mappedType = mapEmailPushType(event.inferredType);
+    const mapped = mapEmailPushInferredType(event.inferredType);
     const channel = inferChannelForCamera(event.cameraId);
     handleCameraEvent(event.cameraId, {
-      type: mappedType,
+      type: mapped,
       channel,
       timestamp: event.receivedAtMs,
     });
-    // When the email carries an AI class, also fire a generic "motion" so
-    // motion-only consumers (Frigate bridge, basic SSE listeners) still see
-    // it — mirrors how native Baichuan push delivers both events.
-    if (mappedType !== "motion" && mappedType !== "doorbell") {
+    // AI sub-type also fans out a generic "motion" so motion-only
+    // consumers still see it — mirrors the lib's per-api behaviour.
+    if (mapped !== "motion" && mapped !== "doorbell") {
       handleCameraEvent(event.cameraId, {
         type: "motion",
         channel,
@@ -593,29 +608,6 @@ export function initEventsManager(): void {
   });
 
   logger.info("Events manager initialized");
-}
-
-function mapEmailPushType(
-  inferred: EmailPushEvent["inferredType"],
-): ReolinkSimpleEvent["type"] {
-  switch (inferred) {
-    case "people":
-      return "people";
-    case "vehicle":
-      return "vehicle";
-    case "animal":
-      return "animal";
-    case "face":
-      return "face";
-    case "package":
-      return "package";
-    case "doorbell":
-      return "doorbell";
-    case "motion":
-    case "other":
-    default:
-      return "motion";
-  }
 }
 
 function inferChannelForCamera(cameraId: string): number {

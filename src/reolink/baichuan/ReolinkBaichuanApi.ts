@@ -423,6 +423,11 @@ import {
 } from "./utils/whiteLed";
 import { parseFloodlightStatusListPushXml } from "./utils/whiteLedStatusPush";
 import { parseSirenStatusListPushXml } from "./utils/sirenStatusPush";
+import {
+  mapEmailPushInferredType,
+  onEmailPushEvent,
+  type EmailPushEvent,
+} from "../../emailPush/bus";
 
 type TalkAbility = import("./types").TalkAbility;
 type TalkSession = import("./types").TalkSession;
@@ -3011,6 +3016,55 @@ export class ReolinkBaichuanApi {
       .finally(() => {
         this.econnresetStormRebootInFlight = undefined;
       });
+  }
+
+  /**
+   * Bind this API instance to the global email-push bus so that incoming
+   * SMTP-delivered motion / AI events for the matching camera surface on
+   * this instance's standard `onSimpleEvent` channel. The consumer keeps
+   * a single subscription (`onSimpleEvent`) and gets both the native
+   * Baichuan push and the email-push transport on the same stream.
+   *
+   * - `cameraId` shorthand: match events with `event.cameraId === cameraId`.
+   * - `match`: arbitrary predicate (e.g. when the consumer uses a
+   *   nickname-based mapping or wants to handle multiple recipients).
+   *
+   * Returns an `off()` handle. Safe to call repeatedly — each call
+   * registers its own listener.
+   */
+  subscribeEmailPushEvents(
+    params:
+      | { cameraId: string; channel?: number }
+      | { match: (event: EmailPushEvent) => boolean; channel?: number },
+  ): () => void {
+    const channel = (params as { channel?: number }).channel ?? 0;
+    const matches: (event: EmailPushEvent) => boolean =
+      "match" in params
+        ? params.match
+        : (event) => event.cameraId === params.cameraId;
+    const off = onEmailPushEvent((event) => {
+      if (!matches(event)) return;
+      this.dispatchSimpleEvent({
+        type: mapEmailPushInferredType(event.inferredType),
+        channel,
+        timestamp: event.receivedAtMs,
+      });
+      // When the camera carries an AI sub-type, also fan out a generic
+      // "motion" so motion-only consumers still see it — mirrors how
+      // native Baichuan push delivers both events.
+      if (
+        event.inferredType !== "motion" &&
+        event.inferredType !== "doorbell" &&
+        event.inferredType !== "other"
+      ) {
+        this.dispatchSimpleEvent({
+          type: "motion",
+          channel,
+          timestamp: event.receivedAtMs,
+        });
+      }
+    });
+    return off;
   }
 
   /**

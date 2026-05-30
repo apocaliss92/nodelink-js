@@ -115,6 +115,38 @@ export function getRecentEmailPushEvents(
   return globalRecentEvents.slice(0, clamped);
 }
 
+/**
+ * Map the email-push classifier output onto the lib's broader
+ * ReolinkSimpleEvent type union. Shared by `ReolinkBaichuanApi
+ * .subscribeEmailPushEvents` (the per-camera bridge) and any consumer
+ * that wants the same mapping at the global bus level (e.g. the
+ * manager-app's events-manager) so both code paths stay in sync.
+ */
+export function mapEmailPushInferredType(
+  inferred: EmailPushInferredType,
+):
+  | "motion"
+  | "doorbell"
+  | "people"
+  | "vehicle"
+  | "animal"
+  | "face"
+  | "package" {
+  switch (inferred) {
+    case "motion":
+    case "doorbell":
+    case "people":
+    case "vehicle":
+    case "animal":
+    case "face":
+    case "package":
+      return inferred;
+    case "other":
+    default:
+      return "motion";
+  }
+}
+
 /** Test hook: drop all subscribers, recent events, and reset the resolver. */
 export function _resetEmailPushBusForTests(): void {
   emitter.removeAllListeners();

@@ -15,6 +15,7 @@ export {
   getLastEmailPushEvent,
   setEmailPushCameraResolver,
   getEmailPushCameraResolver,
+  mapEmailPushInferredType,
   _resetEmailPushBusForTests,
   type EmailPushEvent,
   type EmailPushInferredType,

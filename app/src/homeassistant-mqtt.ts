@@ -27,10 +27,6 @@ import {
   onApiDisconnected,
   getCameraInfo,
 } from "./rtsp-manager.js";
-import {
-  onEmailPushEvent,
-  type EmailPushEvent,
-} from "./email-push-server.js";
 import { getConfig, getSettings } from "./settings-store.js";
 import { isBatteryCamera } from "./camera-traits.js";
 import { readAppVersion } from "./app-version.js";
@@ -96,8 +92,6 @@ interface RegisteredCamera {
   detectionResetTimers: Map<string, NodeJS.Timeout>;
   /** Listener registered with `api.onSimpleEvent` — kept for `offSimpleEvent`. */
   eventListener?: (event: ReolinkSimpleEvent) => void;
-  /** Unsubscribe handle for the email-push bus listener. */
-  emailPushOff?: () => void;
   /** Last snapshot timestamp for debounce. */
   lastSnapshotAtMs: number;
   /** True while a snapshot fetch is in flight (avoid overlapping). */
@@ -600,29 +594,6 @@ function captureAndPublishSnapshot(cam: RegisteredCamera): void {
   })();
 }
 
-/**
- * Map an email-push event into the SimpleEvent shape so it flows
- * through `handleSimpleEvent` exactly like a native baichuan push —
- * keeping the binary_sensor publish + snapshot capture in a single
- * code path no matter where the event was sourced from.
- */
-function emailPushToSimpleEvent(
-  inferredType: EmailPushEvent["inferredType"],
-  channel: number,
-): ReolinkSimpleEvent {
-  const map: Record<EmailPushEvent["inferredType"], ReolinkSimpleEvent["type"]> = {
-    motion: "motion",
-    people: "people",
-    vehicle: "vehicle",
-    animal: "animal",
-    face: "face",
-    package: "package",
-    doorbell: "doorbell",
-    other: "motion",
-  };
-  return { type: map[inferredType], channel } as ReolinkSimpleEvent;
-}
-
 function handleSimpleEvent(
   cam: RegisteredCamera,
   event: ReolinkSimpleEvent,
@@ -731,13 +702,10 @@ async function registerCamera(
   cam.eventListener = listener;
   void api.onSimpleEvent(listener);
 
-  // Email-push events bypass api.onSimpleEvent (they live on a separate
-  // global bus). Bridge them here so battery cameras that deliver motion
-  // via SMTP also light up the HA binary_sensor and trigger a snapshot.
-  cam.emailPushOff = onEmailPushEvent((event: EmailPushEvent) => {
-    if (event.cameraId !== cameraId) return;
-    handleSimpleEvent(cam, emailPushToSimpleEvent(event.inferredType, channel));
-  });
+  // NOTE: email-push events are bridged into `api.onSimpleEvent` by the
+  // events-manager via `api.subscribeEmailPushEvents({cameraId})`. The
+  // listener registered above therefore receives both native and SMTP
+  // events on the same stream — no second subscription needed here.
 
   logger.info(
     `Registered camera ${cameraName} (${cameraId}) for Home Assistant: ${entities.length} entities`,
@@ -755,10 +723,6 @@ async function unregisterCamera(cameraId: string): Promise<void> {
   if (cam.eventListener) {
     void cam.api.offSimpleEvent(cam.eventListener).catch(() => {});
     delete cam.eventListener;
-  }
-  if (cam.emailPushOff) {
-    cam.emailPushOff();
-    delete cam.emailPushOff;
   }
 
   await unsubscribeCommandTopics(cam).catch(() => {});
@@ -780,10 +744,6 @@ async function handleCameraDisconnected(cameraId: string): Promise<void> {
   if (cam.eventListener) {
     void cam.api.offSimpleEvent(cam.eventListener).catch(() => {});
     delete cam.eventListener;
-  }
-  if (cam.emailPushOff) {
-    cam.emailPushOff();
-    delete cam.emailPushOff;
   }
   await publishEntityState(cameraId, "online", PAYLOAD_OFF).catch(() => {});
 }
