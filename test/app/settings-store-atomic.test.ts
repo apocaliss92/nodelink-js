@@ -102,3 +102,69 @@ describe("settings-store atomic save (issue #17)", () => {
     }
   });
 });
+
+describe("settings-store email-push auth bootstrap migration", () => {
+  it("forces requireAuth=true and generates random credentials on legacy installs", async () => {
+    // Simulate a legacy settings.json with the old defaults: auth disabled
+    // and empty credentials, no migration marker recorded.
+    fs.writeFileSync(
+      path.join(tmpDir, "settings.json"),
+      JSON.stringify({
+        emailPush: {
+          requireAuth: false,
+          authUsername: "",
+          authPassword: "",
+        },
+      }),
+    );
+
+    const store = await freshStore();
+    const loaded = store.loadSettings();
+
+    expect(loaded.emailPush.requireAuth).toBe(true);
+    expect(loaded.emailPush.authUsername).toMatch(/^nodelink-[0-9a-f]{8}$/);
+    expect(loaded.emailPush.authPassword.length).toBeGreaterThanOrEqual(20);
+    expect(loaded._migrationsApplied).toContain("email-push-auth-defaults-v1");
+  });
+
+  it("does not re-run when the marker is already present", async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "settings.json"),
+      JSON.stringify({
+        emailPush: {
+          requireAuth: true,
+          authUsername: "preserved-user",
+          authPassword: "preserved-pass",
+        },
+        _migrationsApplied: ["email-push-auth-defaults-v1"],
+      }),
+    );
+
+    const store = await freshStore();
+    const loaded = store.loadSettings();
+
+    expect(loaded.emailPush.authUsername).toBe("preserved-user");
+    expect(loaded.emailPush.authPassword).toBe("preserved-pass");
+  });
+
+  it("respects user-set credentials even on first migration run", async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "settings.json"),
+      JSON.stringify({
+        emailPush: {
+          requireAuth: false,
+          authUsername: "myuser",
+          authPassword: "mypass",
+        },
+      }),
+    );
+
+    const store = await freshStore();
+    const loaded = store.loadSettings();
+
+    expect(loaded.emailPush.requireAuth).toBe(true);
+    expect(loaded.emailPush.authUsername).toBe("myuser");
+    expect(loaded.emailPush.authPassword).toBe("mypass");
+    expect(loaded._migrationsApplied).toContain("email-push-auth-defaults-v1");
+  });
+});

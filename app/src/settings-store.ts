@@ -1,6 +1,6 @@
 import { z } from "zod";
 import path from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   CameraConfigSchema,
   NvrConfigSchema,
@@ -272,6 +272,14 @@ export const SettingsSchema = z.object({
       motionResetMs: z.number().int().min(500).default(15_000),
     })
     .default({}),
+
+  /**
+   * Internal: list of one-shot migration IDs that have already been applied
+   * to this settings file. Read and updated by `loadSettings()` only — never
+   * exposed in the UI. New IDs added here when we ship a migration so it
+   * runs at most once per install.
+   */
+  _migrationsApplied: z.array(z.string()).default([]),
 });
 
 export type Settings = z.infer<typeof SettingsSchema>;
@@ -318,6 +326,33 @@ export function loadSettings(): Settings {
       `[settings] Migrated ${migrated} legacy standalone battery camera(s) to transport=udp; rewriting settings.json`,
     );
     saveSettings({ cameras: settings.cameras });
+  }
+
+  // One-shot migration: bring legacy emailPush blocks up to the new
+  // defaults (requireAuth=true) and bootstrap random AUTH credentials
+  // when the install was previously running without them. Tracked by a
+  // marker in `_migrationsApplied` so it runs at most once per install
+  // even if the user later clears the fields manually.
+  const EMAIL_PUSH_AUTH_MIGRATION = "email-push-auth-defaults-v1";
+  if (!settings._migrationsApplied.includes(EMAIL_PUSH_AUTH_MIGRATION)) {
+    const ep = settings.emailPush;
+    const nextEmailPush = {
+      ...ep,
+      requireAuth: true,
+      authUsername: ep.authUsername || `nodelink-${randomBytes(4).toString("hex")}`,
+      authPassword: ep.authPassword || randomBytes(18).toString("base64url"),
+    };
+    const reasons: string[] = [];
+    if (ep.requireAuth !== nextEmailPush.requireAuth) reasons.push("requireAuth=true");
+    if (ep.authUsername !== nextEmailPush.authUsername) reasons.push("authUsername");
+    if (ep.authPassword !== nextEmailPush.authPassword) reasons.push("authPassword");
+    console.log(
+      `[settings] Email-push auth migration: ${reasons.length ? reasons.join(", ") : "marker only"}; rewriting settings.json`,
+    );
+    saveSettings({
+      emailPush: nextEmailPush,
+      _migrationsApplied: [...settings._migrationsApplied, EMAIL_PUSH_AUTH_MIGRATION],
+    });
   }
 
   return settings;
