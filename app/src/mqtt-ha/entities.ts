@@ -77,6 +77,23 @@ export function getDetectionEntities(): MqttEntity[] {
   ];
 }
 
+/**
+ * Snapshot entity — exposes a Home Assistant `image` entity that updates
+ * on every detection event. The integration captures a fresh JPEG from
+ * the camera (cmd_id 109) and republishes it as base64 on the entity's
+ * state topic. The discovery builder maps `domain: "image"` to
+ * `image_topic` + `image_encoding: "b64"` automatically.
+ */
+export function getSnapshotEntity(): MqttEntity {
+  return {
+    entity: "snapshot",
+    domain: "image",
+    name: "Snapshot",
+    icon: "mdi:image",
+    retain: false,
+  };
+}
+
 /** Lifecycle/status entities present on every camera. */
 export function getStatusEntities(): MqttEntity[] {
   return [

@@ -27,6 +27,10 @@ import {
   onApiDisconnected,
   getCameraInfo,
 } from "./rtsp-manager.js";
+import {
+  onEmailPushEvent,
+  type EmailPushEvent,
+} from "./email-push-server.js";
 import { getConfig, getSettings } from "./settings-store.js";
 import { isBatteryCamera } from "./camera-traits.js";
 import { readAppVersion } from "./app-version.js";
@@ -39,6 +43,7 @@ import {
   getMqttTopics,
   getControlEntities,
   getDetectionEntities,
+  getSnapshotEntity,
   getStatusEntities,
   getBatteryEntities,
   getWifiEntities,
@@ -63,6 +68,15 @@ const BRIDGE_DEVICE_ID = "nodelink-manager";
 /** How long a momentary detection event stays "on" before auto-resetting. */
 const DETECTION_RESET_MS = 30_000;
 
+/**
+ * Minimum interval between snapshot fetches for the same camera. A burst
+ * of motion + people + vehicle events arriving in the same 1-2 seconds
+ * is the common case; without this guard we would hit the camera with
+ * three back-to-back cmd_id=109 calls, wake battery devices unnecessarily,
+ * and republish near-identical JPEGs.
+ */
+const SNAPSHOT_DEBOUNCE_MS = 5_000;
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -82,6 +96,12 @@ interface RegisteredCamera {
   detectionResetTimers: Map<string, NodeJS.Timeout>;
   /** Listener registered with `api.onSimpleEvent` — kept for `offSimpleEvent`. */
   eventListener?: (event: ReolinkSimpleEvent) => void;
+  /** Unsubscribe handle for the email-push bus listener. */
+  emailPushOff?: () => void;
+  /** Last snapshot timestamp for debounce. */
+  lastSnapshotAtMs: number;
+  /** True while a snapshot fetch is in flight (avoid overlapping). */
+  snapshotInFlight: boolean;
 }
 
 const cameras = new Map<string, RegisteredCamera>();
@@ -220,6 +240,7 @@ async function buildCameraEntities(
 
   const entities: MqttEntity[] = [
     ...getDetectionEntities(),
+    getSnapshotEntity(),
     ...getStatusEntities(),
     ...getWifiEntities(),
     ...getControlEntities(controlCaps),
@@ -545,6 +566,63 @@ function scheduleDetectionReset(
   cam.detectionResetTimers.set(entityName, timer);
 }
 
+/**
+ * Capture a fresh JPEG from the camera (cmd_id 109) and publish it as
+ * base64 to the `snapshot` image entity's state topic. Debounced per
+ * camera so an event burst doesn't trigger overlapping fetches; battery
+ * cameras silently skip when they're sleeping (the wake cost is not
+ * worth it for an idle-state snapshot, and the AI/motion event itself
+ * means the camera just woke up anyway).
+ */
+function captureAndPublishSnapshot(cam: RegisteredCamera): void {
+  const now = Date.now();
+  if (cam.snapshotInFlight) return;
+  if (now - cam.lastSnapshotAtMs < SNAPSHOT_DEBOUNCE_MS) return;
+  cam.snapshotInFlight = true;
+  cam.lastSnapshotAtMs = now;
+  void (async () => {
+    try {
+      const jpeg = await cam.api.getSnapshot(cam.channel, {
+        timeoutMs: 5_000,
+      });
+      const base64 = jpeg.toString("base64");
+      await publishEntityState(cam.cameraId, "snapshot", base64, false);
+      logger.debug(
+        `Published snapshot for ${cam.cameraId} (${base64.length} chars)`,
+      );
+    } catch (e) {
+      logger.debug(
+        `Snapshot capture failed for ${cam.cameraId}: ${e instanceof Error ? e.message : e}`,
+      );
+    } finally {
+      cam.snapshotInFlight = false;
+    }
+  })();
+}
+
+/**
+ * Map an email-push event into the SimpleEvent shape so it flows
+ * through `handleSimpleEvent` exactly like a native baichuan push —
+ * keeping the binary_sensor publish + snapshot capture in a single
+ * code path no matter where the event was sourced from.
+ */
+function emailPushToSimpleEvent(
+  inferredType: EmailPushEvent["inferredType"],
+  channel: number,
+): ReolinkSimpleEvent {
+  const map: Record<EmailPushEvent["inferredType"], ReolinkSimpleEvent["type"]> = {
+    motion: "motion",
+    people: "people",
+    vehicle: "vehicle",
+    animal: "animal",
+    face: "face",
+    package: "package",
+    doorbell: "doorbell",
+    other: "motion",
+  };
+  return { type: map[inferredType], channel } as ReolinkSimpleEvent;
+}
+
 function handleSimpleEvent(
   cam: RegisteredCamera,
   event: ReolinkSimpleEvent,
@@ -590,6 +668,9 @@ function handleSimpleEvent(
   if (!entityName) return;
   void publishEntityState(cam.cameraId, entityName, PAYLOAD_ON, false);
   scheduleDetectionReset(cam, entityName);
+  // Capture and publish a fresh snapshot to the `image` entity so HA
+  // automations can attach the picture to the motion notification.
+  captureAndPublishSnapshot(cam);
 }
 
 // ---------------------------------------------------------------------------
@@ -627,6 +708,8 @@ async function registerCamera(
     deviceInfo,
     commandTopics: new Set(),
     detectionResetTimers: new Map(),
+    lastSnapshotAtMs: 0,
+    snapshotInFlight: false,
   };
   cameras.set(cameraId, cam);
 
@@ -648,6 +731,14 @@ async function registerCamera(
   cam.eventListener = listener;
   void api.onSimpleEvent(listener);
 
+  // Email-push events bypass api.onSimpleEvent (they live on a separate
+  // global bus). Bridge them here so battery cameras that deliver motion
+  // via SMTP also light up the HA binary_sensor and trigger a snapshot.
+  cam.emailPushOff = onEmailPushEvent((event: EmailPushEvent) => {
+    if (event.cameraId !== cameraId) return;
+    handleSimpleEvent(cam, emailPushToSimpleEvent(event.inferredType, channel));
+  });
+
   logger.info(
     `Registered camera ${cameraName} (${cameraId}) for Home Assistant: ${entities.length} entities`,
   );
@@ -664,6 +755,10 @@ async function unregisterCamera(cameraId: string): Promise<void> {
   if (cam.eventListener) {
     void cam.api.offSimpleEvent(cam.eventListener).catch(() => {});
     delete cam.eventListener;
+  }
+  if (cam.emailPushOff) {
+    cam.emailPushOff();
+    delete cam.emailPushOff;
   }
 
   await unsubscribeCommandTopics(cam).catch(() => {});
@@ -685,6 +780,10 @@ async function handleCameraDisconnected(cameraId: string): Promise<void> {
   if (cam.eventListener) {
     void cam.api.offSimpleEvent(cam.eventListener).catch(() => {});
     delete cam.eventListener;
+  }
+  if (cam.emailPushOff) {
+    cam.emailPushOff();
+    delete cam.emailPushOff;
   }
   await publishEntityState(cameraId, "online", PAYLOAD_OFF).catch(() => {});
 }
