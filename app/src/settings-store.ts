@@ -250,10 +250,12 @@ export const SettingsSchema = z.object({
       domain: z.string().default("nodelink.local"),
       /**
        * If true, the SMTP server requires AUTH PLAIN/LOGIN with the credentials below.
-       * Camera firmwares all support SMTP auth, so this is recommended when the
-       * port is reachable outside LAN.
+       * Camera firmwares all support SMTP auth. Default is `true` because
+       * Reolink firmwares are noticeably more reliable when AUTH PLAIN is
+       * negotiated on the SMTP session, and leaving the port reachable
+       * without auth invites anyone on the LAN to forge motion events.
        */
-      requireAuth: z.boolean().default(false),
+      requireAuth: z.boolean().default(true),
       authUsername: z.string().default(""),
       authPassword: z.string().default(""),
       /**

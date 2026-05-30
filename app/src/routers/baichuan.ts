@@ -7,7 +7,7 @@ import {
   clearActiveCredentials,
   resolveCredentials,
 } from "../connection-manager.js";
-import { getCameras } from "../settings-store.js";
+import { getCameras, getSettings } from "../settings-store.js";
 
 // Full connection input for setActiveCredentials and explicit connections
 const ConnectionInput = z.object({
@@ -2704,19 +2704,15 @@ export const baichuanRouter = router({
   setupEmailPushToManager: publicProcedure
     .meta({
       description:
-        "Auto-configure the camera to deliver motion emails to the local manager SMTP server. Orchestrates `setEmail` + `setEmailTask` (and optionally `testEmail`).",
+        "Auto-configure the camera to deliver motion emails to the local manager SMTP server. Orchestrates `setEmail` + `setEmailTask` (and optionally `testEmail`). Auth credentials, port and domain are sourced from the server's emailPush settings so the camera always matches what the local SMTP intake expects.",
     })
     .input(
       ConnectionWithChannel.extend({
         managerHost: z.string().min(1),
-        managerPort: z.number().int().min(1).max(65535).optional(),
         recipientLocalPart: z.string().min(1),
-        domain: z.string().optional(),
         attachmentType: z.enum(["picture", "video", "none"]).optional(),
         sendNickname: z.string().optional(),
         interval: z.number().int().min(0).max(3600).optional(),
-        authUsername: z.string().optional(),
-        authPassword: z.string().optional(),
         triggerTypes: z.array(z.string().min(1)).optional(),
         runTest: z.boolean().optional(),
       }),
@@ -2740,7 +2736,24 @@ export const baichuanRouter = router({
       void _u;
       void _pw;
       void _ch;
-      return await api.setupEmailPushToManager(rest, input.channel);
+      // Pull port / domain / auth from the live server settings so the
+      // camera is always configured against what the local SMTP intake
+      // actually accepts. When the server requires AUTH, push the same
+      // credentials we expect the camera to use — the UI never has the
+      // password in plaintext (only an `authPasswordConfigured` flag).
+      const { emailPush } = getSettings();
+      const params = {
+        ...rest,
+        managerPort: emailPush.port,
+        domain: emailPush.domain,
+        ...(emailPush.requireAuth
+          ? {
+              authUsername: emailPush.authUsername,
+              authPassword: emailPush.authPassword,
+            }
+          : {}),
+      };
+      return await api.setupEmailPushToManager(params, input.channel);
     }),
 
   setAutoReboot: publicProcedure

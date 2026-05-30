@@ -165,9 +165,10 @@ export function EmailPushTab({ cameraId, channel }: TabProps) {
         cameraId,
         channel,
         managerHost,
-        managerPort: status.port,
+        // managerPort, domain, auth credentials are pulled server-side from the
+        // emailPush settings so the camera always matches what the local SMTP
+        // intake expects (including the password we never expose to the UI).
         recipientLocalPart: address.address.split("@")[0],
-        domain: status.domain,
         attachmentType: "picture",
         sendNickname: address.cameraName,
         runTest: false,
