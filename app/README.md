@@ -11,7 +11,52 @@ A **complete web-based management interface** for camera configuration and strea
 - Real-time events via SSE, NDJSON stream, and MQTT
 - Real-time logs and go2rtc process output
 - Settings for go2rtc ports, MQTT broker, and Home Assistant discovery
+- Embedded SMTP intake for reliable motion alerts on battery cameras (see below)
 - PWA support, responsive design
+
+## Email Push for Battery Cameras
+
+Battery cameras drop TCP/ONVIF push subscriptions while sleeping. The manager embeds an SMTP server so cameras can deliver alerts via e-mail — the most resilient path for sleep-heavy devices. Every accepted e-mail is parsed, classified (`MD` / `people` / `vehicle`), and emitted on the same event bus that native Baichuan push uses, so downstream consumers (Home Assistant, MQTT, Frigate adapters, the in-app events feed) see motion events transparently.
+
+### Server pane — Settings → Email Push
+
+The manager exposes the whole server lifecycle from this single pane:
+
+- **Server status** (running, port, bind host, accepted/rejected counts, last error)
+- **Connection settings** — port (default `2525`), bind host, virtual domain, max message size
+- **Auth** — username + password used by cameras for `AUTH LOGIN/PLAIN`. Random `nodelink-<hex>` / 18-byte base64url credentials are generated on first boot; **Regenerate random credentials** rotates them in one click. The username is auto-wrapped as `<user@domain>` when written to the camera so MAIL FROM stays RFC-compliant.
+- **TLS** — optional STARTTLS using `cert.pem`/`key.pem` from the configured TLS directory.
+- **Recent events** — accordion list of the last 300 deliveries (timestamp, camera, inferred type, subject, body excerpt). One-row-per-event with on-demand details so it stays scrollable inside the modal.
+
+Saving any field triggers a hot restart of the SMTP server — no manual stop/start needed.
+
+### Per-camera pane — Camera modal → Email Push tab
+
+Each camera has its own tab to wire the camera to the manager's intake:
+
+1. **Auto-configure** — one click pushes the manager-side SMTP target (host, port, AUTH, recipient, sender nickname) and a 24/7 trigger schedule down to the camera over Baichuan. The recipient is `cam-<cameraId>@<domain>`; cameras hosted under an NVR don't show this tab (the NVR handles mail centrally).
+2. **Send test e-mail** — asks the camera to perform a real SMTP send against its saved target. Returns within ~60s with success / 482 failure.
+3. **Read current config** — shows what's actually on the camera (smtp server, port, recipient, schedule) so you can verify before/after Auto-configure.
+4. **Manual edit** — every Baichuan e-mail field is exposed if you need to point the camera elsewhere or pre-fill it from the Reolink app yourself.
+
+### Manual flow (no Auto-configure)
+
+If you'd rather configure the camera from the Reolink app:
+
+- **SMTP server**: the manager host's LAN address (the *Recommended camera-facing host* shown in the server pane)
+- **Port**: `2525` (or whatever you changed it to)
+- **Sender / username**: the auto-generated `nodelink-<hex>` (auto-wrapped to `<user@<domain>>` is also accepted)
+- **Password**: from the Auth group
+- **TLS**: off (unless you've configured certs)
+- **Recipient**: `cam-<cameraId>@<domain>` — copy it from the camera's Email Push tab
+
+### Persistence & data layout
+
+- Server settings live in `settings.json` under the `emailPush.*` keys
+- Recent events are kept in an in-memory ring (last 300) for the UI; they are not written to disk
+- Snapshots attached to motion e-mails are kept in memory only — they're republished to MQTT (when configured) within the 5s per-camera debounce window and dropped afterwards
+
+See [../README.md#email-push-for-battery-cameras](../README.md#email-push-for-battery-cameras) and [../documentation/baichuan-api/email.md](../documentation/baichuan-api/email.md) for the underlying tRPC + Baichuan APIs.
 
 ## Docker Deployment (Recommended)
 

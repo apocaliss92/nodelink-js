@@ -12,6 +12,7 @@
  * `onEmailPushEvent(...)` regardless of which app started the server.
  */
 
+import { format as utilFormat } from "node:util";
 import { SMTPServer } from "smtp-server";
 import { simpleParser, type ParsedMail } from "mailparser";
 import {
@@ -227,13 +228,19 @@ export function createEmailPushServer(
       disabledCommands: config.requireAuth ? [] : ["AUTH"],
       allowInsecureAuth: !config.tls,
       size: config.maxMessageBytes,
+      // smtp-server invokes its internal logger as
+      //   logger.info(metadata, formatString, ...args)
+      // where `metadata` is an opaque session/connection object and
+      // `formatString` may contain printf-style placeholders.
+      // Naive `.map(String).join(" ")` would surface `[object Object]`
+      // and leave `%s` unresolved (which is what the user was seeing).
+      // Here we strip the metadata (keeping a compact `tnx`/`cid` tag
+      // when present), then apply `util.format` so placeholders are
+      // expanded by Node exactly like the smtp-server defaults do.
       logger: {
-        info: (...args: unknown[]) =>
-          log.debug(`[smtp] ${args.map((a) => String(a)).join(" ")}`),
-        debug: (...args: unknown[]) =>
-          log.debug(`[smtp] ${args.map((a) => String(a)).join(" ")}`),
-        error: (...args: unknown[]) =>
-          log.warn(`[smtp] ${args.map((a) => String(a)).join(" ")}`),
+        info: (...args: unknown[]) => log.info(formatSmtpLogArgs(args)),
+        debug: (...args: unknown[]) => log.debug(formatSmtpLogArgs(args)),
+        error: (...args: unknown[]) => log.warn(formatSmtpLogArgs(args)),
       } as unknown as false,
       ...(tlsOptions ? { secure: false, ...tlsOptions } : {}),
       onConnect(session, callback) {
@@ -287,25 +294,41 @@ export function createEmailPushServer(
         );
         return callback(new Error("Invalid username or password"));
       },
-      onRcptTo(address, _session, callback) {
+      onRcptTo(address, session, callback) {
         const cameraId = resolveCameraIdFromRecipient(address.address);
         if (!cameraId) {
           status.messagesRejected++;
+          log.warn(
+            `SMTP RCPT TO rejected ${address.address} — unknown recipient ` +
+              `(sessionId=${session.id})`,
+          );
           return callback(
             new Error(
               `Unknown recipient ${address.address} (not registered)`,
             ),
           );
         }
+        log.info(
+          `SMTP RCPT TO ${address.address} → camera=${cameraId} ` +
+            `(sessionId=${session.id})`,
+        );
         callback();
       },
       onData(stream, session, callback) {
+        const startedAt = Date.now();
+        log.debug(
+          `SMTP DATA start (sessionId=${session.id} from=${session.envelope.mailFrom ? (session.envelope.mailFrom as { address: string }).address : "?"})`,
+        );
         const chunks: Buffer[] = [];
         stream.on("data", (chunk: Buffer) => chunks.push(chunk));
         stream.on("end", () => {
           const recipients =
             session.envelope.rcptTo?.map((r) => r.address) ?? [];
           const buffer = Buffer.concat(chunks);
+          log.info(
+            `SMTP DATA received ${buffer.length}B in ${Date.now() - startedAt}ms ` +
+              `for ${recipients.length} recipient(s) (sessionId=${session.id})`,
+          );
           const matched = recipients
             .map((r) => ({
               recipient: r,
@@ -316,6 +339,10 @@ export function createEmailPushServer(
             );
           if (matched.length === 0) {
             status.messagesRejected++;
+            log.warn(
+              `SMTP DATA dropped — no recognised recipients in [${recipients.join(", ")}] ` +
+                `(sessionId=${session.id})`,
+            );
             return callback(new Error("No recognised recipients"));
           }
           Promise.all(
@@ -326,13 +353,15 @@ export function createEmailPushServer(
             .then(() => callback())
             .catch((err: unknown) => {
               const msg = err instanceof Error ? err.message : String(err);
-              log.error(`Email push pipeline error: ${msg}`);
+              log.error(
+                `Email push pipeline error (sessionId=${session.id}): ${msg}`,
+              );
               status.lastErrorMessage = msg;
               callback(new Error(msg));
             });
         });
         stream.on("error", (err: Error) => {
-          log.warn(`SMTP stream error: ${err.message}`);
+          log.warn(`SMTP stream error (sessionId=${session.id}): ${err.message}`);
           callback(err);
         });
       },
@@ -386,6 +415,38 @@ export function createEmailPushServer(
       config = next;
     },
   };
+}
+
+/**
+ * Format smtp-server's `(metadata, formatString, ...args)` log calls
+ * back into a single printable string. smtp-server prepends a
+ * session/connection metadata object to every log line; we strip it
+ * (keeping `tnx`/`cid` when present) and apply Node's `util.format`
+ * so `%s` / `%d` placeholders in the format string are resolved.
+ */
+function formatSmtpLogArgs(args: unknown[]): string {
+  if (args.length === 0) return "[smtp]";
+  const [first, ...rest] = args;
+  // smtp-server first arg is the metadata bag — extract a compact tag
+  // so we can correlate lines without dumping the full object.
+  let tag = "";
+  let formatArgs: unknown[] = args;
+  if (first && typeof first === "object" && !Array.isArray(first)) {
+    const meta = first as Record<string, unknown>;
+    const tnx = typeof meta.tnx === "string" ? meta.tnx : undefined;
+    const cid = typeof meta.cid === "string" ? meta.cid : undefined;
+    const sid = typeof meta.sid === "string" ? meta.sid : undefined;
+    const bits: string[] = [];
+    if (tnx) bits.push(tnx);
+    if (cid) bits.push(`cid=${cid}`);
+    if (sid) bits.push(`sid=${sid}`);
+    if (bits.length > 0) tag = ` [${bits.join(" ")}]`;
+    formatArgs = rest;
+  }
+  // `formatArgs[0]` is typically the printf-style format string.
+  // util.format gracefully handles both "no placeholders + extra args"
+  // (concatenates with spaces) and "format + matching args".
+  return `[smtp]${tag} ${utilFormat(...(formatArgs as [unknown, ...unknown[]]))}`;
 }
 
 function buildInitialStatus(

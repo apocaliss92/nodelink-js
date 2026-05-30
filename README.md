@@ -39,27 +39,34 @@ await api.onSimpleEvent((event) => {
 
 ## Email Push for Battery Cameras
 
-> 🧪 **Experimental** — the feature is officially enabled but still under active testing. The default flow uses the manager's built-in SMTP server; expect rough edges and please report any issue you hit.
-
-Battery cameras (Argus, Go, …) can't reliably keep a TCP/ONVIF push subscription alive while sleeping. The manager app embeds an SMTP server so the camera can deliver motion alerts via email — the most resilient path for sleep-heavy devices.
+Battery cameras (Argus, Go, …) can't reliably keep a TCP/ONVIF push subscription alive while sleeping. The library ships an embedded SMTP intake (`createEmailPushServer`) so cameras can deliver motion alerts via e-mail — the most resilient path for sleep-heavy devices. Both the manager UI and the [Scrypted Reolink Native plugin](https://github.com/apocaliss92/scrypted-reolink-native) consume the same intake.
 
 **Flow**:
 
-1. Enable the manager's built-in SMTP server (**Settings → Email Push**, default port `2525`). All settings (host, port, domain, auth) remain manually editable.
-2. Each camera gets a unique recipient `cam-<id>@<domain>` (`emailPush.getCameraAddress`).
-3. From the camera's **Email Push** tab in the manager UI (Camera Settings modal), click **Auto-configure** — the manager pushes the right SMTP server, recipients and 24/7 schedule to the camera via Baichuan (`baichuan.setupEmailPushToManager`). You can also fill the fields by hand in the Reolink app: server = your manager `domain`, sender = `authUsername`, password = `authPassword`, port = `2525`, TLS off, receiver = `cam-<id>@<domain>`.
-4. On motion, the camera sends an email. The manager parses it, classifies the trigger (people/vehicle/motion), saves the snapshot under `${DATA_PATH}/email-push/<cameraId>/`, and emits a synthetic motion event into the same bus used by native Baichuan push — so MQTT, Home Assistant, Frigate, etc. see it transparently.
+1. Spin up the SMTP server. In the manager UI: **Settings → Email Push** (default port `2525`, random `nodelink-<hex>` + 18-byte base64url credentials auto-generated on first boot). Programmatic: `createEmailPushServer({ config, cameraResolver, logger })` from this package.
+2. Each camera is reachable at `cam-<cameraId>@<domain>`. The intake matches the recipient local-part against the consumer's `cameraResolver` callback to decide which camera owns the message.
+3. Configure the camera-side SMTP one of three ways:
+   - **Auto** — manager: **Email Push** tab in the camera modal → *Auto-configure*. Scrypted: open the camera's Settings → **E-mail Push** group → *Auto-configure from Email Push Server*. Both call `setupEmailPushToManager` under the hood.
+   - **API** — `await api.setupEmailPushToManager({ managerHost, managerPort, recipientLocalPart, domain, authUsername, authPassword, triggerTypes, attachmentType }, channel)`. The lib auto-wraps a bare username as `<user@domain>` so MAIL FROM stays RFC 5321 compliant.
+   - **Manual** — fill the Reolink app form: server = manager LAN IP, port = `2525`, sender = `authUsername`, password = `authPassword`, TLS off, receiver = `cam-<id>@<domain>`.
+4. On motion, the camera sends an e-mail. The intake parses it, classifies the trigger (`MD` / `people` / `vehicle`), and emits an `EmailPushEvent` on the shared bus. Snapshots are kept in memory only (no disk persistence) — they're forwarded to whatever per-event handler the consumer wires (MQTT image entities in the manager, `motionDetected` flip in the Scrypted plugin).
 
-See [documentation/baichuan-api/email.md](./documentation/baichuan-api/email.md) for the full API and [documentation/baichuan-api/time.md](./documentation/baichuan-api/time.md) for the related NTP / DST / system clock setters.
+See [documentation/baichuan-api/email.md](./documentation/baichuan-api/email.md) for the full Baichuan API surface and [documentation/baichuan-api/time.md](./documentation/baichuan-api/time.md) for the related NTP / DST / system clock setters.
 
-**Key tRPC procedures**:
+**Library entry points**:
+
+- `createEmailPushServer({ config, cameraResolver, logger, loadTls? })` — factory returning `{ start, stop, restart, updateConfig, getStatus }`
+- `subscribeEmailPushEvents({ cameraId? | match?, channel? })` on a `ReolinkBaichuanApi` instance — bridges per-camera SMTP events into the same `onSimpleEvent` stream native Baichuan push uses
+- `getRecentEmailPushEvents(limit)` — bounded in-memory ring buffer of accepted deliveries
+- `setupEmailPushToManager(params, channel)` — orchestrator: `setEmail` + `setEmailTask` + optional `testEmail`
+- `getEmail`, `setEmail`, `testEmail`, `getEmailTask`, `setEmailTask` — low-level Baichuan accessors
+
+**Key manager tRPC procedures**:
 
 - `emailPush.status`, `emailPush.start/stop/restart`, `emailPush.updateSettings`
 - `emailPush.getCameraAddress`, `emailPush.listCameraAddresses`
-- `emailPush.recentEvents`, `emailPush.injectTestEvent`
-- `baichuan.getEmail`, `baichuan.setEmail`, `baichuan.testEmail`
-- `baichuan.getEmailTask`, `baichuan.setEmailTask`
-- `baichuan.setupEmailPushToManager` (one-shot orchestrator)
+- `emailPush.recentEvents` (last 300, in-memory)
+- `baichuan.setupEmailPushToManager`, `baichuan.getEmail/setEmail/testEmail`, `baichuan.getEmailTask/setEmailTask`
 
 ---
 
