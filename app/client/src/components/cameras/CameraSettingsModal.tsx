@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Dialog, DialogContent } from "@camstack/ui-library";
 import { useEmailPushFeature } from "../../hooks/useEmailPushFeature";
+import { trpcMutation } from "../../api";
 import {
   Video,
   Image as ImageIcon,
@@ -15,6 +16,7 @@ import {
   Mail,
   Clock,
   Sliders,
+  Loader2,
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -169,6 +171,35 @@ export function CameraSettingsModal({
     visibleTabs.find((t) => t.id === activeTabId) ?? visibleTabs[0]!;
   const ActiveComponent = activeTab.Component;
 
+  // Wake the camera the moment the modal opens. Battery cameras sleep most
+  // of the time, and every per-tab Baichuan query (getEmail, getEnc, getPir
+  // …) would otherwise hit a sleeping socket and return immediately with no
+  // data, leaving the panels blank and writes silently failing. The wake
+  // call is a harmless `GetEnc` ping on AC-powered cameras; we don't know
+  // in this component whether the camera is battery, so we fire it
+  // unconditionally. Failures don't block the UI — individual tabs will
+  // surface their own errors if the wake didn't take.
+  const [waking, setWaking] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setWaking(true);
+    void trpcMutation("baichuan.wakeUp", {
+      cameraId,
+      channel,
+      attempts: 3,
+      timeoutMs: 2000,
+      waitAfterWakeMs: 250,
+    })
+      .catch(() => { /* tabs will display their own errors */ })
+      .finally(() => {
+        if (!cancelled) setWaking(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, cameraId, channel]);
+
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
       <DialogContent
@@ -229,7 +260,13 @@ export function CameraSettingsModal({
                 <X size={16} />
               </button>
             </header>
-            <main className="flex-1 overflow-y-auto p-4 bg-[var(--color-background)]">
+            <main className="flex-1 overflow-y-auto p-4 bg-[var(--color-background)] relative">
+              {waking ? (
+                <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-center gap-2 bg-[var(--color-surface)] border-b border-[var(--color-border)] py-1.5 text-[11px] text-[var(--color-foreground-muted)]">
+                  <Loader2 size={12} className="animate-spin" />
+                  Waking camera…
+                </div>
+              ) : null}
               <ActiveComponent cameraId={cameraId} channel={channel} />
             </main>
           </section>

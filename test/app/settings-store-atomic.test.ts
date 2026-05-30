@@ -167,4 +167,55 @@ describe("settings-store email-push auth bootstrap migration", () => {
     expect(loaded.emailPush.authPassword).toBe("mypass");
     expect(loaded._migrationsApplied).toContain("email-push-auth-defaults-v1");
   });
+
+  it("flips emailPush.enabled to true on installs that previously had it off", async () => {
+    // Simulate an install where v1 already ran but enabled was explicitly off.
+    fs.writeFileSync(
+      path.join(tmpDir, "settings.json"),
+      JSON.stringify({
+        emailPush: {
+          enabled: false,
+          requireAuth: true,
+          authUsername: "preserved-user",
+          authPassword: "preserved-pass",
+        },
+        _migrationsApplied: ["email-push-auth-defaults-v1"],
+      }),
+    );
+
+    const store = await freshStore();
+    const loaded = store.loadSettings();
+
+    expect(loaded.emailPush.enabled).toBe(true);
+    expect(loaded.emailPush.authUsername).toBe("preserved-user");
+    expect(loaded._migrationsApplied).toContain(
+      "email-push-enabled-default-v1",
+    );
+    expect(loaded._migrationsApplied).toContain("email-push-auth-defaults-v1");
+  });
+
+  it("does not re-enable emailPush after the user manually disabled it post-migration", async () => {
+    // Both migrations already recorded; user has since flipped enabled back
+    // off. The migration runner must respect that decision.
+    fs.writeFileSync(
+      path.join(tmpDir, "settings.json"),
+      JSON.stringify({
+        emailPush: {
+          enabled: false,
+          requireAuth: true,
+          authUsername: "u",
+          authPassword: "p",
+        },
+        _migrationsApplied: [
+          "email-push-auth-defaults-v1",
+          "email-push-enabled-default-v1",
+        ],
+      }),
+    );
+
+    const store = await freshStore();
+    const loaded = store.loadSettings();
+
+    expect(loaded.emailPush.enabled).toBe(false);
+  });
 });

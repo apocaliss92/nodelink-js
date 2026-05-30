@@ -241,7 +241,11 @@ export const SettingsSchema = z.object({
        * New installs activate automatically when `enabled` is flipped on.
        */
       featureEnabled: z.boolean().default(true),
-      enabled: z.boolean().default(false),
+      // Default `true` so fresh installs spin up the SMTP intake immediately
+      // (battery-cam owners get email-delivered motion out of the box). Users
+      // who don't want it can flip the user-facing toggle off from
+      // Settings → Email Push; that change is honoured by the boot path.
+      enabled: z.boolean().default(true),
       /** SMTP listen port. Default 2525 (avoid privileged 25). */
       port: z.number().int().min(1).max(65535).default(2525),
       /** Bind host (0.0.0.0 to accept on LAN). */
@@ -328,30 +332,62 @@ export function loadSettings(): Settings {
     saveSettings({ cameras: settings.cameras });
   }
 
-  // One-shot migration: bring legacy emailPush blocks up to the new
-  // defaults (requireAuth=true) and bootstrap random AUTH credentials
-  // when the install was previously running without them. Tracked by a
-  // marker in `_migrationsApplied` so it runs at most once per install
-  // even if the user later clears the fields manually.
-  const EMAIL_PUSH_AUTH_MIGRATION = "email-push-auth-defaults-v1";
-  if (!settings._migrationsApplied.includes(EMAIL_PUSH_AUTH_MIGRATION)) {
-    const ep = settings.emailPush;
-    const nextEmailPush = {
-      ...ep,
-      requireAuth: true,
-      authUsername: ep.authUsername || `nodelink-${randomBytes(4).toString("hex")}`,
-      authPassword: ep.authPassword || randomBytes(18).toString("base64url"),
-    };
-    const reasons: string[] = [];
-    if (ep.requireAuth !== nextEmailPush.requireAuth) reasons.push("requireAuth=true");
-    if (ep.authUsername !== nextEmailPush.authUsername) reasons.push("authUsername");
-    if (ep.authPassword !== nextEmailPush.authPassword) reasons.push("authPassword");
-    console.log(
-      `[settings] Email-push auth migration: ${reasons.length ? reasons.join(", ") : "marker only"}; rewriting settings.json`,
-    );
+  // Generic one-shot migration runner. Each step is an idempotent
+  // mutation of the live settings tagged with a stable ID. Once applied
+  // the ID is appended to `_migrationsApplied` and never replays. Steps
+  // are kept small and atomic so we can stack them safely across releases.
+  type SettingsMigration = {
+    id: string;
+    apply: (s: Settings) => Partial<Settings> | null;
+  };
+  const migrations: SettingsMigration[] = [
+    {
+      // Forces requireAuth=true and bootstraps random AUTH credentials when
+      // the install was previously running without them. Pre-existing
+      // user-set creds are preserved verbatim.
+      id: "email-push-auth-defaults-v1",
+      apply: (s) => {
+        const ep = s.emailPush;
+        const next = {
+          ...ep,
+          requireAuth: true,
+          authUsername:
+            ep.authUsername || `nodelink-${randomBytes(4).toString("hex")}`,
+          authPassword:
+            ep.authPassword || randomBytes(18).toString("base64url"),
+        };
+        return { emailPush: next };
+      },
+    },
+    {
+      // Turn the SMTP intake on by default so battery-cam owners get
+      // email-delivered motion without having to hunt for a toggle. Users
+      // who don't want it can flip it back off in the UI; once flipped
+      // back this migration does NOT re-enable it (marker is permanent).
+      id: "email-push-enabled-default-v1",
+      apply: (s) =>
+        s.emailPush.enabled
+          ? null
+          : { emailPush: { ...s.emailPush, enabled: true } },
+    },
+  ];
+
+  for (const m of migrations) {
+    if (settings._migrationsApplied.includes(m.id)) continue;
+    const patch = m.apply(settings);
+    if (patch === null) {
+      console.log(
+        `[settings] Migration ${m.id}: no-op for this install; recording marker`,
+      );
+      saveSettings({
+        _migrationsApplied: [...settings._migrationsApplied, m.id],
+      });
+      continue;
+    }
+    console.log(`[settings] Applying migration ${m.id}`);
     saveSettings({
-      emailPush: nextEmailPush,
-      _migrationsApplied: [...settings._migrationsApplied, EMAIL_PUSH_AUTH_MIGRATION],
+      ...patch,
+      _migrationsApplied: [...settings._migrationsApplied, m.id],
     });
   }
 
