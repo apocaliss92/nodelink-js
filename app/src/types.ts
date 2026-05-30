@@ -107,6 +107,14 @@ export const ConnectionParamsSchema = z.object({
   port: z.number().default(9000),
   username: z.string(),
   password: z.string(),
+  // Transport-layer hints. When the caller resolves from a configured
+  // camera these are populated from CameraConfig so battery / UDP-only
+  // devices (transport=udp) don't get a TCP socket against `:9000`.
+  transport: z.enum(["tcp", "udp", "auto"]).optional(),
+  uid: z.string().optional(),
+  udpDiscoveryMethod: z
+    .enum(["local-broadcast", "local-direct", "remote", "map", "relay"])
+    .optional(),
 });
 
 export type ConnectionParams = z.infer<typeof ConnectionParamsSchema>;

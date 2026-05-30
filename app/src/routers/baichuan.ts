@@ -49,7 +49,13 @@ async function getApi(
   params?: z.infer<typeof OptionalConnectionInput>,
 ): Promise<import("@apocaliss92/nodelink-js").ReolinkBaichuanApi> {
   const creds = resolveCredentials(params);
-  return getConnection(creds.host, creds.port, creds.username, creds.password);
+  return getConnection(creds.host, creds.port, creds.username, creds.password, {
+    ...(creds.transport ? { transport: creds.transport } : {}),
+    ...(creds.uid ? { uid: creds.uid } : {}),
+    ...(creds.udpDiscoveryMethod
+      ? { udpDiscoveryMethod: creds.udpDiscoveryMethod }
+      : {}),
+  });
 }
 
 export const baichuanRouter = router({

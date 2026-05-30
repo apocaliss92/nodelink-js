@@ -97,11 +97,20 @@ export function resolveCredentials(
       getCamera(cameraId) ??
       getCameras().find((c) => c.name === cameraId);
     if (camera) {
+      // Carry the camera's transport hints alongside the credentials so the
+      // downstream API client honours `transport: "udp"` on battery cams.
+      // Without this the API constructor defaults to TCP and connect() lands
+      // on a closed `:9000` socket → ECONNREFUSED on Argus / Go / Solo / …
       const base: ConnectionParams = {
         host: camera.host,
         port: camera.port ?? 9000,
         username: camera.username,
         password: camera.password,
+        ...(camera.transport ? { transport: camera.transport } : {}),
+        ...(camera.uid ? { uid: camera.uid } : {}),
+        ...(camera.udpDiscoveryMethod
+          ? { udpDiscoveryMethod: camera.udpDiscoveryMethod }
+          : {}),
       };
       // Apply manual overrides if provided
       const overrides: Partial<ConnectionParams> = {};
@@ -184,6 +193,16 @@ export async function getConnection(
   port: number,
   username: string,
   password: string,
+  opts?: {
+    transport?: "tcp" | "udp" | "auto";
+    uid?: string;
+    udpDiscoveryMethod?:
+      | "local-broadcast"
+      | "local-direct"
+      | "remote"
+      | "map"
+      | "relay";
+  },
 ): Promise<ReolinkBaichuanApi> {
   const key = `${host}:${port}:${username}`;
 
@@ -210,12 +229,23 @@ export async function getConnection(
     port,
     username,
     password,
+    // Forward transport hints so battery / UDP-only devices get a BCUDP
+    // socket instead of a TCP connect to a closed :9000 port. When the
+    // caller doesn't pass them the API falls back to its own default
+    // (TCP), which is correct for AC-powered cameras.
+    ...(opts?.transport ? { transport: opts.transport } : {}),
+    ...(opts?.uid ? { uid: opts.uid } : {}),
+    ...(opts?.udpDiscoveryMethod
+      ? { udpDiscoveryMethod: opts.udpDiscoveryMethod }
+      : {}),
   });
 
   await api.login();
 
   connectionCache.set(key, { api, lastUsed: Date.now() });
-  logger.info(`New connection established: ${key}`);
+  logger.info(
+    `New connection established: ${key}${opts?.transport ? ` transport=${opts.transport}` : ""}`,
+  );
 
   return api;
 }
@@ -232,6 +262,13 @@ export async function getConnectionFromCamera(
     camera.port,
     camera.username,
     camera.password,
+    {
+      ...(camera.transport ? { transport: camera.transport } : {}),
+      ...(camera.uid ? { uid: camera.uid } : {}),
+      ...(camera.udpDiscoveryMethod
+        ? { udpDiscoveryMethod: camera.udpDiscoveryMethod }
+        : {}),
+    },
   );
 }
 
