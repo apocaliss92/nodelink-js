@@ -82,7 +82,7 @@ function DraggableTargetRect({
   // Keep draftSize in sync with the parent (e.g. when refresh reloads).
   useEffect(() => {
     setDraftSize(size);
-  }, [size.width, size.height]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [size.width, size.height]);
 
   const dragRef = useRef<{
     mode: "move" | "resize";
@@ -214,7 +214,6 @@ export function TargetSizeOverlay({
         data-target-canvas
         className="relative w-full aspect-video bg-[var(--color-background)]"
       >
-        {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={snapshotUrl}
           alt="snapshot"

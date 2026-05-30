@@ -390,7 +390,18 @@ export async function* createNativeStream(
   // try-body throws before the listener is wired up (or after, on any exit path).
   const signal = options?.signal;
   let sleepResolve: (() => void) | null = null;
+  // Tracks the active sleep's fallback timer so that frame arrivals and aborts
+  // can cancel it eagerly instead of leaving up-to-1s of stale callbacks queued
+  // (each closure retains the resolve/sleepResolve refs until it fires).
+  let sleepTimer: NodeJS.Timeout | null = null;
+  const clearSleepTimer = () => {
+    if (sleepTimer) {
+      clearTimeout(sleepTimer);
+      sleepTimer = null;
+    }
+  };
   const handleAbort = () => {
+    clearSleepTimer();
     const r = sleepResolve;
     sleepResolve = null;
     r?.();
@@ -576,7 +587,8 @@ export async function* createNativeStream(
         await new Promise<void>((resolve) => {
           frameResolve = resolve;
           sleepResolve = resolve;
-          const timer = setTimeout(() => {
+          sleepTimer = setTimeout(() => {
+            sleepTimer = null;
             // Guard against a stale timer (from a previous sleep cycle) clearing the
             // current iteration's sleepResolve / frameResolve.
             if (sleepResolve === resolve) sleepResolve = null;
@@ -586,19 +598,21 @@ export async function* createNativeStream(
             }
           }, 1000);
           if (signal?.aborted) {
-            clearTimeout(timer);
+            clearSleepTimer();
             sleepResolve = null;
             frameResolve = null;
             resolve();
           }
         });
         sleepResolve = null;
+        clearSleepTimer();
       }
     }
   } finally {
     // Cleanup
     closed = true;
     if (signal) signal.removeEventListener("abort", handleAbort);
+    clearSleepTimer();
     try {
       await videoStream.stop();
     } catch {
