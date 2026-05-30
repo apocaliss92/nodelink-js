@@ -22,6 +22,62 @@ export interface NewsItem {
 
 export const NEWS_ITEMS: NewsItem[] = [
   {
+    id: "2026-05-30-email-events",
+    date: "2026-05-30",
+    title: "Reliable motion alerts for battery cameras (e-mail push)",
+    body: (
+      <div className="space-y-2 text-sm text-[var(--color-foreground-muted)]">
+        <p>
+          Battery cameras like Argus, Go and Solo can&apos;t keep a live
+          connection open while they sleep, so motion events used to arrive
+          late — or get lost entirely. The manager now ships with a built-in
+          mail receiver that catches the alert e-mails the camera sends
+          when something happens. The result: motion, person, vehicle and
+          animal detections light up in real time, exactly like an
+          AC-powered camera, with{" "}
+          <strong className="text-[var(--color-foreground)]">
+            zero extra services to install
+          </strong>
+          .
+        </p>
+        <p>
+          Setup is one click. Open a camera&apos;s settings → tab{" "}
+          <strong className="text-[var(--color-foreground)]">
+            E-mail Push
+          </strong>
+          {" "}→{" "}
+          <strong className="text-[var(--color-foreground)]">
+            Auto-configure
+          </strong>
+          . The manager pushes the right server, credentials and 24/7
+          schedule to the camera for you. Press{" "}
+          <strong className="text-[var(--color-foreground)]">
+            Verify delivery
+          </strong>
+          {" "}right after to see the first test mail land in seconds.
+        </p>
+        <p>
+          The events show up everywhere the manager already publishes:
+          dashboard, MQTT topics, Home Assistant (with a fresh{" "}
+          <strong className="text-[var(--color-foreground)]">snapshot</strong>{" "}
+          attached to each detection), Frigate, and the SSE / JSON event
+          stream. You can also browse the last{" "}
+          <strong className="text-[var(--color-foreground)]">300 received
+          e-mails</strong>{" "}from{" "}
+          <strong className="text-[var(--color-foreground)]">Settings →
+          E-mail Push</strong>
+          {" "}— handy when a new camera doesn&apos;t seem to be talking.
+        </p>
+        <p>
+          New installs get the receiver on by default, with random
+          credentials generated on first boot. Existing installs are
+          migrated automatically — no manual editing of settings.json
+          required.
+        </p>
+      </div>
+    ),
+  },
+  {
     id: "2026-05-15-talk-to-camera",
     date: "2026-05-15",
     title: "Talk to the camera from the browser",
