@@ -228,16 +228,14 @@ export function EmailPushTab({ cameraId, channel }: TabProps) {
     setError(null);
     const sinceMs = Date.now();
     try {
-      // Fire test send (camera-side) and then wait for the manager to see
-      // a fresh email-push event. This bypasses firmware bugs where
-      // cmd_id=141 returns success without actually sending.
-      await trpcMutation("baichuan.testEmail", {
-        cameraId,
-        timeoutMs: 90_000,
-      }).catch(() => {
-        /* Some firmwares 482 — keep going, mail may still arrive. */
-      });
-      const result = await trpcMutation<
+      // Race fix: attach the manager-side listener BEFORE the camera ACKs
+      // cmd_id=141. The Reolink firmware sends the SMTP message immediately
+      // after acking, so if we awaited testEmail first the mail would land
+      // before verifyDelivery's listener was wired up and be missed —
+      // appearing as a 60s "hung" wait that always resolves `delivered:false`.
+      // Both mutations fly in parallel via fetch; the server-side listener
+      // is registered before the camera even starts its SMTP send.
+      const verifyPromise = trpcMutation<
         | { delivered: true; event: { inferredType: string; subject: string } }
         | { delivered: false }
       >("emailPush.verifyDelivery", {
@@ -245,6 +243,13 @@ export function EmailPushTab({ cameraId, channel }: TabProps) {
         timeoutMs: 60_000,
         sinceMs,
       });
+      await trpcMutation("baichuan.testEmail", {
+        cameraId,
+        timeoutMs: 90_000,
+      }).catch(() => {
+        /* Some firmwares 482 — keep going, mail may still arrive. */
+      });
+      const result = await verifyPromise;
       if (result.delivered) {
         showFeedback(
           `Delivery confirmed — manager received \"${result.event.subject || result.event.inferredType}\"`,

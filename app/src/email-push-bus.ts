@@ -47,6 +47,14 @@ type CameraResolver = (recipient: string) => string | undefined;
 const emitter = new EventEmitter();
 let cameraResolver: CameraResolver = () => undefined;
 
+// Single most recent event per camera. NOT a buffer / not for UI display —
+// only used by verifyDelivery as a race-safe short-circuit when an event
+// landed in the gap between the caller capturing `sinceMs` and the
+// listener actually attaching (the camera SMTP send fires immediately
+// after the cmd_id=141 ack, often before the client has finished firing
+// the second tRPC call). Footprint is O(cameras), one event reference.
+const lastEventByCamera = new Map<string, EmailPushEvent>();
+
 /**
  * Set the callback that maps a recipient address (e.g.
  * `cam-abc@nodelink.local`) to a known cameraId. Returning `undefined`
@@ -71,11 +79,25 @@ export function onEmailPushEvent(handler: EventHandler): () => void {
 
 /** Internal: SMTP server uses this to dispatch an event into the bus. */
 export function emitEmailPushEvent(event: EmailPushEvent): void {
+  lastEventByCamera.set(event.cameraId, event);
   emitter.emit("event", event);
+}
+
+/**
+ * Read the most recent event observed for a camera. Returns `undefined`
+ * when no email-push event has been received since the manager booted.
+ * Used by `emailPush.verifyDelivery` to short-circuit when the event we
+ * are waiting for already arrived between `sinceMs` and listener attach.
+ */
+export function getLastEmailPushEvent(
+  cameraId: string,
+): EmailPushEvent | undefined {
+  return lastEventByCamera.get(cameraId);
 }
 
 /** Test hook: drop all subscribers and reset the resolver. */
 export function _resetEmailPushBusForTests(): void {
   emitter.removeAllListeners();
   cameraResolver = () => undefined;
+  lastEventByCamera.clear();
 }

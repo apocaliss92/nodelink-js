@@ -26,6 +26,7 @@ import { getSettings } from "./settings-store.js";
 import {
   emitEmailPushEvent,
   getEmailPushCameraResolver,
+  getLastEmailPushEvent,
   onEmailPushEvent,
   setEmailPushCameraResolver,
   type EmailPushEvent,
@@ -34,6 +35,7 @@ import {
 
 // Re-export bus surface so callers don't need to know the file split.
 export {
+  getLastEmailPushEvent,
   onEmailPushEvent,
   setEmailPushCameraResolver,
   type EmailPushEvent,

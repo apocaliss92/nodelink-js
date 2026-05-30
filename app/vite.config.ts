@@ -1,7 +1,15 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import dotenv from "dotenv";
 import path from "node:path";
+
+// Share a single source of truth for ports / data path with the backend.
+// The server already does `import "dotenv/config"` which loads app/.env into
+// its own process; vite runs as a sibling child of `concurrently` and would
+// otherwise see an empty process.env, leaving the dev script anchored to
+// the hard-coded default ports.
+dotenv.config({ path: path.resolve(__dirname, ".env") });
 
 export default defineConfig(({ mode }) => {
   const isDev = mode === "development";

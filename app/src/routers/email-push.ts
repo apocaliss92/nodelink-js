@@ -8,6 +8,7 @@ import {
   getEmailPushServerStatus,
   getCameraEmailAddress,
   emitSyntheticEmailPushEventForTest,
+  getLastEmailPushEvent,
   onEmailPushEvent,
   type EmailPushEvent,
 } from "../email-push-server.js";
@@ -194,6 +195,17 @@ export const emailPushRouter = router({
     )
     .mutation(async ({ input }) => {
       const sinceMs = input.sinceMs ?? Date.now();
+
+      // Race-safe short-circuit: an event might have arrived in the gap
+      // between the caller capturing `sinceMs` and this handler attaching
+      // its listener (the camera SMTP send often races the client tRPC
+      // round-trip). Check the bus's `lastEventByCamera` reference first
+      // and resolve immediately if it already matches.
+      const last = getLastEmailPushEvent(input.cameraId);
+      if (last && last.receivedAtMs > sinceMs) {
+        return { delivered: true, event: serializeEvent(last) } as const;
+      }
+
       return await new Promise<
         | { delivered: true; event: ReturnType<typeof serializeEvent> }
         | { delivered: false }
