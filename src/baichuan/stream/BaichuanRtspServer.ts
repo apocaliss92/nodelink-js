@@ -420,6 +420,7 @@ export class BaichuanRtspServer extends EventEmitter<{
     sampleRate: number | null;
     microseconds: number | null;
     videoType?: "H264" | "H265";
+    isKeyframe?: boolean;
   }> | null = null;
   private noClientAutoStopTimer: NodeJS.Timeout | undefined;
   /** Fires if camera never sends frames after stream start (sleeping), even with clients connected. */
@@ -2671,15 +2672,22 @@ export class BaichuanRtspServer extends EventEmitter<{
           this.setFlowVideoType(frame.videoType, "native stream");
         }
 
-        // Extract parameter sets for SDP.
-        this.flow.extractParameterSets(frame.data);
-        const { hasParamSets } = this.flow.getFmtp();
-        if (hasParamSets) {
+        // Extract parameter sets for SDP — only until we have them.
+        // Calling extractParameterSets on every frame (after SPS/PPS are known) performs
+        // an O(frame_size) NAL scan for nothing; skip it once params are in hand.
+        if (!this.flow.getFmtp().hasParamSets) {
+          this.flow.extractParameterSets(frame.data);
+        }
+        if (this.flow.getFmtp().hasParamSets) {
           this.markFirstFrameReceived();
         }
 
         // Add to prebuffer ring for IDR-aligned fast startup on client connect.
-        const isKeyframe = this.isRawFrameKeyframe(frame);
+        // Prefer the isKeyframe flag already set by createNativeStream/videoAccessUnit;
+        // fall back to NAL inspection only when the field is absent.
+        const isKeyframe = typeof frame.isKeyframe === "boolean"
+          ? frame.isKeyframe
+          : this.isRawFrameKeyframe(frame);
         this.prebuffer.push({
           frame: { ...frame, data: Buffer.from(frame.data) },
           time: Date.now(),

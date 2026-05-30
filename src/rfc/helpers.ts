@@ -386,6 +386,16 @@ export async function* createNativeStream(
   let streamStarted = false;
   let closed = false;
 
+  // Hoisted so the finally block can detach the abort listener even when the
+  // try-body throws before the listener is wired up (or after, on any exit path).
+  const signal = options?.signal;
+  let sleepResolve: (() => void) | null = null;
+  const handleAbort = () => {
+    const r = sleepResolve;
+    sleepResolve = null;
+    r?.();
+  };
+
   const onError = (_error: Error) => {
     closed = true;
     // Do not throw from an event callback: it can crash the process asynchronously.
@@ -542,7 +552,18 @@ export async function* createNativeStream(
 
     streamStarted = true;
 
-    const signal = options?.signal;
+    // Single abort listener for the generator's entire lifetime.
+    // Per-sleep-cycle listeners would accumulate because each sleep adds one listener
+    // that is never removed until the signal is aborted (the Promise resolves but the
+    // listener stays). At 30 fps this grows to tens of thousands of closures in < 1 hour,
+    // causing progressive heap growth and increasing GC CPU.
+    if (signal) {
+      if (signal.aborted) {
+        closed = true;
+      } else {
+        signal.addEventListener("abort", handleAbort);
+      }
+    }
 
     // Yield frames as they arrive
     while (!closed && !(signal?.aborted)) {
@@ -551,37 +572,33 @@ export async function* createNativeStream(
         yield frame;
       } else {
         // Wait for next frame, waking immediately if the fanout signals cancellation.
-        // Without the abort listener the generator loops indefinitely with 1-second
-        // sleeps when no frames arrive (sleeping camera), making generator.return()
-        // unable to process because no yield ever occurs.
+        // The single handleAbort listener (registered above) wakes us here when aborted.
         await new Promise<void>((resolve) => {
           frameResolve = resolve;
+          sleepResolve = resolve;
           const timer = setTimeout(() => {
+            // Guard against a stale timer (from a previous sleep cycle) clearing the
+            // current iteration's sleepResolve / frameResolve.
+            if (sleepResolve === resolve) sleepResolve = null;
             if (frameResolve === resolve) {
               frameResolve = null;
               resolve();
             }
           }, 1000);
-          if (signal) {
-            const onAbort = () => {
-              clearTimeout(timer);
-              if (frameResolve === resolve) frameResolve = null;
-              resolve();
-            };
-            if (signal.aborted) {
-              clearTimeout(timer);
-              frameResolve = null;
-              resolve();
-            } else {
-              signal.addEventListener("abort", onAbort, { once: true });
-            }
+          if (signal?.aborted) {
+            clearTimeout(timer);
+            sleepResolve = null;
+            frameResolve = null;
+            resolve();
           }
         });
+        sleepResolve = null;
       }
     }
   } finally {
     // Cleanup
     closed = true;
+    if (signal) signal.removeEventListener("abort", handleAbort);
     try {
       await videoStream.stop();
     } catch {
