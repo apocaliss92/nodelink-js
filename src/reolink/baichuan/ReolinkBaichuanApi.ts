@@ -638,7 +638,7 @@ export class ReolinkBaichuanApi {
    * general socket is created, logged in, and all event/push/guard listeners
    * are re-attached automatically.
    *
-   * This is a **no-op** when the API is already {@link isReady}.
+   * This is a **no-op** when the API is already ready (see `isReadyState()`).
    *
    * @throws If `close()` was called — the API is permanently closed and a new
    *         instance must be created.
@@ -741,7 +741,7 @@ export class ReolinkBaichuanApi {
   /**
    * Attach event, push, channelInfo, and guard listeners to the current
    * "general" client.  Called from the constructor and from
-   * {@link reconnectGeneralSocket}.
+   * `reconnectGeneralSocket()`.
    */
   private setupGeneralClientListeners(): void {
     const client = this.client; // cache to avoid repeated getter look-ups
@@ -3082,7 +3082,7 @@ export class ReolinkBaichuanApi {
    * Subscribe to per-frame detection events sourced from the BcMedia
    * `additionalHeader` block on active video streams.
    *
-   * Mirrors {@link onSimpleEvent} but is fed by the streaming side-channel:
+   * Mirrors `onSimpleEvent()` but is fed by the streaming side-channel:
    * one event fires for every I-frame / P-frame that carries an overlay block.
    * Coordinates are reported in normalized [0, 1] fractions of the source
    * frame, so the same box renders correctly on mainStream, subStream, and
@@ -3115,7 +3115,7 @@ export class ReolinkBaichuanApi {
    * Subscribe to AI object detections (people / vehicle / animal / face boxes
    * with class label and confidence) without managing a video stream yourself.
    *
-   * Mirrors {@link onSimpleEvent} end-to-end: on the first listener for a given
+   * Mirrors `onSimpleEvent()` end-to-end: on the first listener for a given
    * `(channel, profile)` tuple the API ensures the corresponding video stream
    * is running (the pool socket may already be shared with a regular consumer),
    * forwards every box-bearing `additionalHeader` to your callback, and tears
@@ -13005,7 +13005,7 @@ export class ReolinkBaichuanApi {
    * Field meaning per stream:
    *  - `audio`           — 0/1 toggle
    *  - `width`/`height`  — resolution in pixels. Must be one of the
-   *                        resolutions returned by {@link getStreamInfoList}.
+   *                        resolutions returned by `getStreamInfoList()`.
    *  - `bitRate`         — kbps. Must match the table from `getStreamInfoList`.
    *  - `frameRate`       — fps. Must match the table from `getStreamInfoList`.
    *  - `videoEncType`    — `"h264"` or `"h265"`

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@camstack/ui-library";
 import { fetchUpdates, trpcMutation, trpcQuery, type UpdateInfo } from "../api";
 import { useAuth } from "../auth";
 import { getStoredAuthToken, setStoredAuthToken } from "../authToken";
@@ -734,7 +735,7 @@ export default function SettingsPage() {
             {(
               [
                 ["general", "General"],
-                ["go2rtc", "go2rtc"],
+                ["go2rtc", "Restreamer"],
                 ["frigate", "Frigate"],
                 ["auth", "Auth"],
                 ["mqtt", "MQTT"],
@@ -1334,9 +1335,14 @@ export default function SettingsPage() {
             </div>
           ) : null}
 
-          {/* go2rtc tab */}
+          {/* Restreamer tab */}
           {activeTab === "go2rtc" ? (
-            <>
+            <Tabs
+              value={settings.restreamer ?? "go2rtc"}
+              onValueChange={(next) =>
+                setSettings({ ...settings, restreamer: next as "go2rtc" | "local" })
+              }
+            >
             {/* Restreamer selection */}
             <div className={cardCls}>
               <span className={labelCls}>Restreamer backend</span>
@@ -1347,30 +1353,11 @@ export default function SettingsPage() {
                 <br />
                 <strong>local</strong> uses the library&apos;s built-in RTSP server directly. Only RTSP is available — WebRTC / HLS / MJPEG previews are disabled. Snapshots (CGI) keep working.
               </div>
-              <div className="flex gap-2 mt-1">
-                {(["go2rtc", "local"] as const).map((mode) => {
-                  const selected = (settings.restreamer ?? "go2rtc") === mode;
-                  return (
-                    <button
-                      key={mode}
-                      type="button"
-                      onClick={() => setSettings({ ...settings, restreamer: mode })}
-                      className={btnCls}
-                      style={{
-                        padding: "6px 14px",
-                        fontSize: 12,
-                        background: selected ? "var(--color-brand)" : undefined,
-                        color: selected ? "#fff" : undefined,
-                        fontWeight: selected ? 600 : 400,
-                      }}
-                    >
-                      {mode === "go2rtc" ? "go2rtc (default)" : "local (RTSP only)"}
-                    </button>
-                  );
-                })}
-              </div>
-              {(settings.restreamer ?? "go2rtc") === "local" && (
-                <>
+              <TabsList className="border-b border-[var(--color-border)] gap-3">
+                <TabsTrigger value="go2rtc">go2rtc (default)</TabsTrigger>
+                <TabsTrigger value="local">local (RTSP only)</TabsTrigger>
+              </TabsList>
+              <TabsContent value="local">
                 <div className="mt-3">
                   <span className={labelCls} style={{ fontSize: 12 }}>Local RTSP port</span>
                   <input
@@ -1401,10 +1388,10 @@ export default function SettingsPage() {
                   list. Digest auth uses pre-computed HA1 stored at password
                   set time; the server never holds plaintext passwords.
                 </div>
-                </>
-              )}
+              </TabsContent>
             </div>
 
+            <TabsContent value="go2rtc">
             <div className={cardCls}>
               <span className={labelCls}>go2rtc Restreamer</span>
               <div className="text-[var(--color-foreground-muted)] text-xs">
@@ -1573,7 +1560,8 @@ export default function SettingsPage() {
                 );
               })()}
             </div>
-            </>
+            </TabsContent>
+            </Tabs>
           ) : null}
 
           {/* Frigate tab */}

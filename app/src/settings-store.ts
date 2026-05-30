@@ -234,17 +234,13 @@ export const SettingsSchema = z.object({
   emailPush: z
     .object({
       /**
-       * Master feature flag. The whole subsystem (SMTP intake, UI tabs,
-       * Manager settings panel) stays hidden and inactive while this is
-       * `false`. Not exposed in the UI on purpose — flip it manually in
-       * `DATA_PATH/settings.json` (or via env override at startup) when
-       * you want to experiment with the email-push pipeline.
-       *
-       * `enabled` below is the user-facing toggle that turns the running
-       * server on/off, but it's a no-op as long as `featureEnabled` is
-       * false.
+       * Legacy master kill-switch. The subsystem is now always enabled in
+       * code paths (the UI gate has been removed); this flag still defaults
+       * to `true` so historical installs with an explicit `false` keep the
+       * SMTP intake suppressed until the user opts in via `enabled` below.
+       * New installs activate automatically when `enabled` is flipped on.
        */
-      featureEnabled: z.boolean().default(false),
+      featureEnabled: z.boolean().default(true),
       enabled: z.boolean().default(false),
       /** SMTP listen port. Default 2525 (avoid privileged 25). */
       port: z.number().int().min(1).max(65535).default(2525),

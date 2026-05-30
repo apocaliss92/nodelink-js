@@ -8,6 +8,7 @@ export default [
       "dist/**",
       "app/dist/**",
       "app/public/**",
+      "app/client/dist/**",
       "app/client/public/**",
       "node_modules/**",
       "app/node_modules/**",

@@ -41,6 +41,18 @@
       },
       "tsdoc-escape-greater-than": {
         "logLevel": "none"
+      },
+      "tsdoc-escape-right-brace": {
+        "logLevel": "none"
+      },
+      "tsdoc-malformed-inline-tag": {
+        "logLevel": "none"
+      },
+      "tsdoc-param-tag-missing-hyphen": {
+        "logLevel": "none"
+      },
+      "tsdoc-param-tag-with-invalid-name": {
+        "logLevel": "none"
       }
     }
   }
