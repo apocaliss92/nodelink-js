@@ -28,7 +28,7 @@ import { trpcQuery, trpcMutation } from "../../../api";
  * - the camera-side schedule + triggers (cmd_id 216/217, `EmailTask`)
  * - the manager-side address assigned to this camera
  * - a one-click auto-configure that points the camera at the manager
- * - a live list of recent received events for this camera
+ * - a debug button to inject a synthetic event into the bus
  */
 
 const ATTACHMENT_TYPES = [
@@ -86,28 +86,11 @@ interface CameraAddress {
   address: string;
 }
 
-interface RecentEvent {
-  cameraId: string;
-  recipient: string;
-  inferredType: string;
-  receivedAtMs: number;
-  subject: string;
-  from: string;
-  snapshotPath: string | undefined;
-  snapshotBase64: string | undefined;
-  bodyExcerpt: string;
-}
-
-function formatTimestamp(ms: number): string {
-  return new Date(ms).toLocaleString();
-}
-
 export function EmailPushTab({ cameraId, channel }: TabProps) {
   const [status, setStatus] = useState<EmailPushStatus | null>(null);
   const [address, setAddress] = useState<CameraAddress | null>(null);
   const [emailCfg, setEmailCfg] = useState<EmailConfig | null>(null);
   const [emailTask, setEmailTask] = useState<EmailTaskConfig | null>(null);
-  const [recent, setRecent] = useState<RecentEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<
@@ -127,7 +110,7 @@ export function EmailPushTab({ cameraId, channel }: TabProps) {
     setLoading(true);
     setError(null);
     try {
-      const [s, addr, cfg, task, events] = await Promise.all([
+      const [s, addr, cfg, task] = await Promise.all([
         trpcQuery<EmailPushStatus>("emailPush.status"),
         trpcQuery<CameraAddress>("emailPush.getCameraAddress", { cameraId }),
         trpcQuery<EmailConfig>("baichuan.getEmail", { cameraId }),
@@ -135,17 +118,11 @@ export function EmailPushTab({ cameraId, channel }: TabProps) {
           cameraId,
           channel,
         }),
-        trpcQuery<RecentEvent[]>("emailPush.recentEvents", {
-          cameraId,
-          limit: 10,
-          includeSnapshot: true,
-        }),
       ]);
       setStatus(s);
       setAddress(addr);
       setEmailCfg(cfg);
       setEmailTask(task);
-      setRecent(events);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -712,65 +689,23 @@ export function EmailPushTab({ cameraId, channel }: TabProps) {
       )}
 
       <Section
-        title="Recent received events"
-        description="In-memory ring of the most recent emails this camera delivered to the manager. Cleared on restart."
+        title="Debug: inject synthetic event"
+        description="Push a fake email-push event into the bus to verify the downstream events-manager / MQTT / Home Assistant wiring without waiting for a real camera trigger."
       >
-        <div className="flex items-center gap-2 mb-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={injectTest}
-            disabled={busy !== null}
-            className="gap-1"
-          >
-            {busy === "injectTest" ? (
-              <Loader2 size={12} className="animate-spin" />
-            ) : (
-              <Mail size={12} />
-            )}
-            Inject synthetic event
-          </Button>
-        </div>
-        {recent.length === 0 ? (
-          <p className="text-[12px] text-[var(--color-foreground-muted)]">
-            No events received yet.
-          </p>
-        ) : (
-          <ul className="space-y-2">
-            {recent.map((ev, idx) => (
-              <li
-                key={`${ev.receivedAtMs}-${idx}`}
-                className="flex gap-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-2"
-              >
-                {ev.snapshotBase64 ? (
-                  <img
-                    src={`data:image/jpeg;base64,${ev.snapshotBase64}`}
-                    alt="snapshot"
-                    className="w-24 h-16 object-cover rounded"
-                  />
-                ) : (
-                  <div className="w-24 h-16 rounded bg-[var(--color-surface-elevated)] flex items-center justify-center text-[10px] text-[var(--color-foreground-subtle)]">
-                    no image
-                  </div>
-                )}
-                <div className="flex-1 min-w-0">
-                  <div className="text-[12px] font-medium">
-                    {ev.inferredType} ·{" "}
-                    <span className="text-[var(--color-foreground-muted)] font-normal">
-                      {formatTimestamp(ev.receivedAtMs)}
-                    </span>
-                  </div>
-                  <div className="text-[11px] text-[var(--color-foreground-muted)] truncate">
-                    {ev.subject || "(no subject)"}
-                  </div>
-                  <div className="text-[10px] text-[var(--color-foreground-subtle)] truncate">
-                    from {ev.from || "?"} · to {ev.recipient}
-                  </div>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={injectTest}
+          disabled={busy !== null}
+          className="gap-1"
+        >
+          {busy === "injectTest" ? (
+            <Loader2 size={12} className="animate-spin" />
+          ) : (
+            <Mail size={12} />
+          )}
+          Inject synthetic event
+        </Button>
       </Section>
     </div>
   );

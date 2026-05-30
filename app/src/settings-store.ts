@@ -264,14 +264,6 @@ export const SettingsSchema = z.object({
       /** Maximum accepted message size in bytes (default 25 MB). */
       maxMessageBytes: z.number().int().min(1024).default(25 * 1024 * 1024),
       /**
-       * Retention for saved snapshot attachments (days). 0 = keep forever.
-       */
-      snapshotRetentionDays: z.number().int().min(0).default(7),
-      /**
-       * Max recent events to keep in memory per camera (for the UI panel).
-       */
-      recentEventsPerCamera: z.number().int().min(0).default(20),
-      /**
        * Auto-reset delay for the synthetic motion event in ms. After this
        * window with no more emails, the motion state goes back to clear.
        */

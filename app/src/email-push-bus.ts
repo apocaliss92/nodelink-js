@@ -7,6 +7,12 @@
  * without pulling in the SMTP server's native deps. The actual SMTP
  * intake (`email-push-server.ts`) lives next to this file and emits
  * through this bus.
+ *
+ * The bus is **stateless**: it does NOT persist snapshots to disk and
+ * does NOT keep a per-camera ring buffer of recent events. Images for
+ * motion/AI events are expected to flow on the MQTT/HomeAssistant
+ * integration directly from the live camera snapshot, decoupled from
+ * the email transport.
  */
 
 import { EventEmitter } from "node:events";
@@ -31,8 +37,6 @@ export interface EmailPushEvent {
   receivedAtMs: number;
   subject: string;
   from: string;
-  /** Path of the saved snapshot attachment, if any. Relative to DATA_PATH. */
-  snapshotPath?: string;
   /** Raw body text excerpt (max 500 chars). */
   bodyExcerpt: string;
 }
@@ -41,7 +45,6 @@ type EventHandler = (event: EmailPushEvent) => void;
 type CameraResolver = (recipient: string) => string | undefined;
 
 const emitter = new EventEmitter();
-const recentEventsByCamera = new Map<string, EmailPushEvent[]>();
 let cameraResolver: CameraResolver = () => undefined;
 
 /**
@@ -68,39 +71,11 @@ export function onEmailPushEvent(handler: EventHandler): () => void {
 
 /** Internal: SMTP server uses this to dispatch an event into the bus. */
 export function emitEmailPushEvent(event: EmailPushEvent): void {
-  pushRecentEvent(event);
   emitter.emit("event", event);
 }
 
-/** Recover the recent events buffered in memory for a given camera. */
-export function getRecentEmailPushEvents(
-  cameraId: string,
-  limit?: number,
-): EmailPushEvent[] {
-  const list = recentEventsByCamera.get(cameraId) ?? [];
-  return typeof limit === "number" ? list.slice(0, limit) : [...list];
-}
-
-let maxRecentEventsPerCamera = 20;
-
-/** Configure the ring-buffer size per camera. SMTP server calls this on start. */
-export function setRecentEventsPerCamera(n: number): void {
-  maxRecentEventsPerCamera = Math.max(0, n);
-}
-
-function pushRecentEvent(event: EmailPushEvent): void {
-  if (maxRecentEventsPerCamera <= 0) return;
-  const list = recentEventsByCamera.get(event.cameraId) ?? [];
-  list.unshift(event);
-  if (list.length > maxRecentEventsPerCamera) {
-    list.length = maxRecentEventsPerCamera;
-  }
-  recentEventsByCamera.set(event.cameraId, list);
-}
-
-/** Test hook: clear the ring buffer entirely. */
+/** Test hook: drop all subscribers and reset the resolver. */
 export function _resetEmailPushBusForTests(): void {
   emitter.removeAllListeners();
-  recentEventsByCamera.clear();
   cameraResolver = () => undefined;
 }

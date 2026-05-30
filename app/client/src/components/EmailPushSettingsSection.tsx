@@ -22,8 +22,6 @@ interface EmailPushSettings {
   authPasswordConfigured: boolean;
   tls: boolean;
   maxMessageBytes: number;
-  snapshotRetentionDays: number;
-  recentEventsPerCamera: number;
   motionResetMs: number;
 }
 
@@ -51,8 +49,6 @@ interface Form {
   authPassword: string;
   tls: boolean;
   maxMessageBytes: number;
-  snapshotRetentionDays: number;
-  recentEventsPerCamera: number;
   motionResetMs: number;
 }
 
@@ -70,8 +66,6 @@ function settingsToForm(s: EmailPushSettings): Form {
     authPassword: "",
     tls: s.tls,
     maxMessageBytes: s.maxMessageBytes,
-    snapshotRetentionDays: s.snapshotRetentionDays,
-    recentEventsPerCamera: s.recentEventsPerCamera,
     motionResetMs: s.motionResetMs,
   };
 }
@@ -126,8 +120,6 @@ export function EmailPushSettingsSection() {
         authUsername: form.authUsername,
         tls: form.tls,
         maxMessageBytes: form.maxMessageBytes,
-        snapshotRetentionDays: form.snapshotRetentionDays,
-        recentEventsPerCamera: form.recentEventsPerCamera,
         motionResetMs: form.motionResetMs,
       };
       // Only send the password when the user actually typed one — empty
@@ -315,35 +307,6 @@ export function EmailPushSettingsSection() {
                 const n = Number(e.currentTarget.value);
                 if (Number.isFinite(n))
                   setForm({ ...form, maxMessageBytes: n });
-              }}
-            />
-          </div>
-          <div>
-            <span className={labelCls}>Snapshot retention (days)</span>
-            <Input
-              type="number"
-              className={inputCls}
-              value={form.snapshotRetentionDays}
-              onChange={(e) => {
-                const n = Number(e.currentTarget.value);
-                if (Number.isFinite(n))
-                  setForm({ ...form, snapshotRetentionDays: n });
-              }}
-            />
-            <span className="text-[10px] text-[var(--color-foreground-muted)]">
-              0 = keep forever
-            </span>
-          </div>
-          <div>
-            <span className={labelCls}>Recent events per camera</span>
-            <Input
-              type="number"
-              className={inputCls}
-              value={form.recentEventsPerCamera}
-              onChange={(e) => {
-                const n = Number(e.currentTarget.value);
-                if (Number.isFinite(n))
-                  setForm({ ...form, recentEventsPerCamera: n });
               }}
             />
           </div>

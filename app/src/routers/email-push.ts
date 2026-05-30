@@ -1,7 +1,5 @@
 import { router, publicProcedure } from "../trpc.js";
 import { z } from "zod";
-import path from "node:path";
-import fs from "node:fs";
 import os from "node:os";
 import {
   startEmailPushServer,
@@ -9,13 +7,11 @@ import {
   restartEmailPushServer,
   getEmailPushServerStatus,
   getCameraEmailAddress,
-  getRecentEmailPushEvents,
   emitSyntheticEmailPushEventForTest,
+  onEmailPushEvent,
   type EmailPushEvent,
 } from "../email-push-server.js";
 import { getCameras, getSettings, saveSettings } from "../settings-store.js";
-
-const DATA_DIR = process.env.DATA_PATH || ".";
 
 const SettingsInputSchema = z.object({
   enabled: z.boolean().optional(),
@@ -27,8 +23,6 @@ const SettingsInputSchema = z.object({
   authPassword: z.string().optional(),
   tls: z.boolean().optional(),
   maxMessageBytes: z.number().int().min(1024).optional(),
-  snapshotRetentionDays: z.number().int().min(0).optional(),
-  recentEventsPerCamera: z.number().int().min(0).optional(),
   motionResetMs: z.number().int().min(500).optional(),
 });
 
@@ -39,22 +33,8 @@ function serializeEvent(event: EmailPushEvent): {
   receivedAtMs: number;
   subject: string;
   from: string;
-  snapshotPath: string | undefined;
-  snapshotBase64: string | undefined;
   bodyExcerpt: string;
 } {
-  let snapshotBase64: string | undefined;
-  if (event.snapshotPath) {
-    try {
-      const absolute = path.isAbsolute(event.snapshotPath)
-        ? event.snapshotPath
-        : path.join(DATA_DIR, event.snapshotPath);
-      const buf = fs.readFileSync(absolute);
-      snapshotBase64 = buf.toString("base64");
-    } catch {
-      // ignore — file may have been pruned already
-    }
-  }
   return {
     cameraId: event.cameraId,
     recipient: event.recipient,
@@ -62,8 +42,6 @@ function serializeEvent(event: EmailPushEvent): {
     receivedAtMs: event.receivedAtMs,
     subject: event.subject,
     from: event.from,
-    snapshotPath: event.snapshotPath,
-    snapshotBase64,
     bodyExcerpt: event.bodyExcerpt,
   };
 }
@@ -189,33 +167,11 @@ export const emailPushRouter = router({
       })),
     ),
 
-  /** Recent in-memory events for a specific camera (most recent first). */
-  recentEvents: publicProcedure
-    .meta({
-      description:
-        "Return the last N email-push events buffered in memory for a camera.",
-    })
-    .input(
-      z.object({
-        cameraId: z.string().min(1),
-        limit: z.number().int().min(1).max(200).optional(),
-        includeSnapshot: z.boolean().optional().default(false),
-      }),
-    )
-    .query(({ input }) => {
-      const events = getRecentEmailPushEvents(input.cameraId, input.limit);
-      return events.map((e) =>
-        input.includeSnapshot
-          ? serializeEvent(e)
-          : { ...serializeEvent(e), snapshotBase64: undefined },
-      );
-    }),
-
   /**
-   * Wait for at least one new email-push event for the given camera. Polls
-   * the in-memory ring every 500ms up to `timeoutMs`. Useful as an
-   * end-to-end verification: trigger something (motion, manual SMTP from a
-   * camera, …) and check whether the manager actually received it.
+   * Wait for at least one new email-push event for the given camera. Attaches
+   * a transient listener to the bus for the duration of the wait so callers
+   * can verify end-to-end delivery (trigger something — motion, manual SMTP
+   * from a camera, … — and check whether the manager actually received it).
    *
    * Resolves to `{ delivered: true, event }` when a new event lands, or
    * `{ delivered: false }` after the timeout.
@@ -240,16 +196,22 @@ export const emailPushRouter = router({
     )
     .mutation(async ({ input }) => {
       const sinceMs = input.sinceMs ?? Date.now();
-      const deadline = Date.now() + input.timeoutMs;
-      while (Date.now() < deadline) {
-        const events = getRecentEmailPushEvents(input.cameraId, 5);
-        const fresh = events.find((e) => e.receivedAtMs > sinceMs);
-        if (fresh) {
-          return { delivered: true, event: serializeEvent(fresh) };
-        }
-        await new Promise((r) => setTimeout(r, 500));
-      }
-      return { delivered: false };
+      return await new Promise<
+        | { delivered: true; event: ReturnType<typeof serializeEvent> }
+        | { delivered: false }
+      >((resolve) => {
+        const off = onEmailPushEvent((event) => {
+          if (event.cameraId !== input.cameraId) return;
+          if (event.receivedAtMs <= sinceMs) return;
+          off();
+          clearTimeout(timer);
+          resolve({ delivered: true, event: serializeEvent(event) });
+        });
+        const timer = setTimeout(() => {
+          off();
+          resolve({ delivered: false });
+        }, input.timeoutMs);
+      });
     }),
 
   /**

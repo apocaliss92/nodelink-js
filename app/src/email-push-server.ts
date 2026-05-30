@@ -19,19 +19,15 @@
  */
 
 import { SMTPServer, type SMTPServerSession } from "smtp-server";
-import { simpleParser, type ParsedMail, type Attachment } from "mailparser";
-import fs from "node:fs";
-import path from "node:path";
+import { simpleParser, type ParsedMail } from "mailparser";
 import { createSelfSignedTlsCert } from "./email-push-tls.js";
 import { createSourceLogger } from "./logger.js";
 import { getSettings } from "./settings-store.js";
 import {
   emitEmailPushEvent,
   getEmailPushCameraResolver,
-  getRecentEmailPushEvents,
   onEmailPushEvent,
   setEmailPushCameraResolver,
-  setRecentEventsPerCamera,
   type EmailPushEvent,
   type EmailPushInferredType,
 } from "./email-push-bus.js";
@@ -40,18 +36,11 @@ import {
 export {
   onEmailPushEvent,
   setEmailPushCameraResolver,
-  getRecentEmailPushEvents,
   type EmailPushEvent,
   type EmailPushInferredType,
 };
 
 const logger = createSourceLogger("email-push");
-
-const DATA_DIR = process.env.DATA_PATH || ".";
-const SNAPSHOT_ROOT = path.join(DATA_DIR, "email-push");
-
-/** Maximum size of a single attachment we'll persist (best-effort safety). */
-const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
 // `EmailPushEvent` / `EmailPushInferredType` live in email-push-bus.ts so the
 // events-manager and integration tests can import them without dragging in
@@ -77,7 +66,6 @@ export interface EmailPushServerStatus {
 interface ServerState {
   server: SMTPServer;
   status: EmailPushServerStatus;
-  pruneTimer: NodeJS.Timeout | undefined;
 }
 
 let state: ServerState | undefined;
@@ -98,97 +86,6 @@ function classifyMessage(parsed: ParsedMail): EmailPushEvent["inferredType"] {
   if (/doorbell|ring(?:ing)?\s+button/.test(haystack)) return "doorbell";
   if (/motion|alarm|alert|detect/.test(haystack)) return "motion";
   return "other";
-}
-
-/**
- * Extract the first image attachment likely to be a snapshot. Reolink ships
- * either a single JPEG or an MP4 clip; we save both but flag only the image
- * as the preview snapshot.
- */
-function pickSnapshotAttachment(parsed: ParsedMail): Attachment | undefined {
-  const attachments = parsed.attachments ?? [];
-  return attachments.find(
-    (a) =>
-      typeof a.contentType === "string" &&
-      a.contentType.toLowerCase().startsWith("image/"),
-  );
-}
-
-/**
- * Persist all attachments (max 10MB each) under a per-camera/per-timestamp
- * folder. Returns the relative path of the snapshot image when present.
- */
-async function persistAttachments(
-  cameraId: string,
-  receivedAtMs: number,
-  parsed: ParsedMail,
-): Promise<string | undefined> {
-  const attachments = parsed.attachments ?? [];
-  if (attachments.length === 0) return undefined;
-
-  const dir = path.join(SNAPSHOT_ROOT, cameraId, String(receivedAtMs));
-  fs.mkdirSync(dir, { recursive: true });
-
-  let snapshotRelative: string | undefined;
-  for (const att of attachments) {
-    if (!att.content) continue;
-    if (att.content.length > MAX_ATTACHMENT_BYTES) {
-      logger.warn(
-        `Attachment too large (${att.content.length} bytes) on camera ${cameraId}, skipping`,
-      );
-      continue;
-    }
-    const safeName =
-      att.filename?.replace(/[^a-zA-Z0-9._-]/g, "_") ??
-      `attachment-${Date.now()}`;
-    const filePath = path.join(dir, safeName);
-    try {
-      fs.writeFileSync(filePath, att.content);
-      if (!snapshotRelative && att.contentType?.toLowerCase().startsWith("image/")) {
-        snapshotRelative = path.relative(DATA_DIR, filePath);
-      }
-    } catch (err) {
-      logger.warn(
-        `Failed to write attachment ${safeName} for camera ${cameraId}: ${err instanceof Error ? err.message : err}`,
-      );
-    }
-  }
-
-  return snapshotRelative;
-}
-
-/**
- * Best-effort cleanup of expired snapshot folders. Runs every hour while the
- * server is active. Retention `0` means keep forever.
- */
-function pruneOldSnapshots(): void {
-  const settings = getSettings();
-  const retentionDays = settings.emailPush.snapshotRetentionDays;
-  if (retentionDays <= 0) return;
-  const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
-  if (!fs.existsSync(SNAPSHOT_ROOT)) return;
-
-  for (const cameraDir of fs.readdirSync(SNAPSHOT_ROOT)) {
-    const cameraPath = path.join(SNAPSHOT_ROOT, cameraDir);
-    let entries: string[];
-    try {
-      entries = fs.readdirSync(cameraPath);
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      const ts = Number(entry);
-      if (!Number.isFinite(ts) || ts >= cutoffMs) continue;
-      const dirPath = path.join(cameraPath, entry);
-      try {
-        fs.rmSync(dirPath, { recursive: true, force: true });
-      } catch (err) {
-        logger.warn(
-          `Failed to prune ${dirPath}: ${err instanceof Error ? err.message : err}`,
-        );
-      }
-    }
-  }
 }
 
 export function getEmailPushServerStatus(): EmailPushServerStatus {
@@ -236,7 +133,6 @@ async function handleIncomingMessage(
   // skew vs. the manager), which breaks `verifyDelivery` polling that
   // compares against a high-resolution "since" timestamp.
   const receivedAtMs = Date.now();
-  const snapshotPath = await persistAttachments(cameraId, receivedAtMs, parsed);
 
   const event: EmailPushEvent = {
     cameraId,
@@ -248,7 +144,6 @@ async function handleIncomingMessage(
       typeof parsed.from === "object" && parsed.from !== null && "text" in parsed.from
         ? String(parsed.from.text)
         : "",
-    ...(snapshotPath ? { snapshotPath } : {}),
     bodyExcerpt: (parsed.text ?? "").slice(0, 500),
   };
 
@@ -291,9 +186,6 @@ export async function startEmailPushServer(): Promise<void> {
     logger.debug("Email push is disabled in settings; not starting");
     return;
   }
-
-  fs.mkdirSync(SNAPSHOT_ROOT, { recursive: true });
-  setRecentEventsPerCamera(settings.emailPush.recentEventsPerCamera);
 
   const tlsOptions = settings.emailPush.tls
     ? await createSelfSignedTlsCert()
@@ -420,17 +312,13 @@ export async function startEmailPushServer(): Promise<void> {
     server.once("error", reject);
   });
 
-  const pruneTimer = setInterval(pruneOldSnapshots, 60 * 60 * 1000);
-  pruneTimer.unref();
-
-  state = { server, status, pruneTimer };
+  state = { server, status };
 }
 
 /** Stop the SMTP server. Safe to call when already stopped. */
 export async function stopEmailPushServer(): Promise<void> {
   if (!state) return;
-  const { server, pruneTimer } = state;
-  if (pruneTimer) clearInterval(pruneTimer);
+  const { server } = state;
   await new Promise<void>((resolve) => {
     server.close(() => resolve());
   });
