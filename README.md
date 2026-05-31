@@ -49,14 +49,46 @@ Battery cameras (Argus, Go, …) can't reliably keep a TCP/ONVIF push subscripti
    - **Auto** — manager: **Email Push** tab in the camera modal → *Auto-configure*. Scrypted: open the camera's Settings → **E-mail Push** group → *Auto-configure from Email Push Server*. Both call `setupEmailPushToManager` under the hood.
    - **API** — `await api.setupEmailPushToManager({ managerHost, managerPort, recipientLocalPart, domain, authUsername, authPassword, triggerTypes, attachmentType }, channel)`. The lib auto-wraps a bare username as `<user@domain>` so MAIL FROM stays RFC 5321 compliant.
    - **Manual** — fill the Reolink app form: server = manager LAN IP, port = `2525`, sender = `authUsername`, password = `authPassword`, TLS off, receiver = `cam-<id>@<domain>`.
-4. On motion, the camera sends an e-mail. The intake parses it, classifies the trigger (`MD` / `people` / `vehicle`), and emits an `EmailPushEvent` on the shared bus. Snapshots are kept in memory only (no disk persistence) — they're forwarded to whatever per-event handler the consumer wires (MQTT image entities in the manager, `motionDetected` flip in the Scrypted plugin).
+4. On motion, the camera sends an e-mail. The intake parses it, classifies the trigger (`MD` / `people` / `vehicle`), and emits an `EmailPushEvent` on the shared bus. From there it lands on `api.onSimpleEvent` automatically — see "Unified event stream" below.
 
 See [documentation/baichuan-api/email.md](./documentation/baichuan-api/email.md) for the full Baichuan API surface and [documentation/baichuan-api/time.md](./documentation/baichuan-api/time.md) for the related NTP / DST / system clock setters.
+
+### Unified event stream (since 0.4.32)
+
+Construct the api with `emailPushCameraId` (and optionally `emailPushChannel`) and the library wires the SMTP bus into the api's internal `simpleEventListeners` for you. Every consumer registered via `api.onSimpleEvent(...)` then receives native Baichuan push **and** SMTP-delivered motion through the same stream — no separate `onEmailPushEvent` subscription needed. The bridge survives TCP transient disconnects (it's a pure JS fan-out, not a network operation) and is released automatically by `close()`.
+
+```ts
+import { ReolinkBaichuanApi } from "@apocaliss92/nodelink-js";
+
+const api = new ReolinkBaichuanApi({
+  host: "192.168.1.100",
+  username: "admin",
+  password: "secret",
+  transport: "udp",
+  uid: "REOLINK-UID-HERE",
+
+  // Auto-bridge SMTP motion into api.onSimpleEvent. Match the same
+  // cameraId your `createEmailPushServer({ cameraResolver })` returns
+  // (typically the camera's nativeId / stable identifier).
+  emailPushCameraId: "my-battery-cam",
+  emailPushChannel: 0, // optional, default 0
+});
+
+await api.login();
+await api.onSimpleEvent((event) => {
+  // Fires for both native Baichuan push AND SMTP motion.
+  console.log(event.type, "on ch", event.channel, "@", event.timestamp);
+});
+```
+
+For single-owner consumers that already manage their own bridge (e.g. a custom resolver scheme), the lower-level `api.subscribeEmailPushEvents({ cameraId | match, channel })` is still exposed.
 
 **Library entry points**:
 
 - `createEmailPushServer({ config, cameraResolver, logger, loadTls? })` — factory returning `{ start, stop, restart, updateConfig, getStatus }`
-- `subscribeEmailPushEvents({ cameraId? | match?, channel? })` on a `ReolinkBaichuanApi` instance — bridges per-camera SMTP events into the same `onSimpleEvent` stream native Baichuan push uses
+- `new ReolinkBaichuanApi({ ..., emailPushCameraId, emailPushChannel? })` — auto-bridge into `onSimpleEvent` (recommended)
+- `api.subscribeEmailPushEvents({ cameraId | match, channel? })` — manual per-api bridge with custom matcher
+- `onEmailPushEvent(handler)` — raw global bus subscription (use when you need the full `EmailPushEvent` payload, not just the synthesised `ReolinkSimpleEvent`)
 - `getRecentEmailPushEvents(limit)` — bounded in-memory ring buffer of accepted deliveries
 - `setupEmailPushToManager(params, channel)` — orchestrator: `setEmail` + `setEmailTask` + optional `testEmail`
 - `getEmail`, `setEmail`, `testEmail`, `getEmailTask`, `setEmailTask` — low-level Baichuan accessors

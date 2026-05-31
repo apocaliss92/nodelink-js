@@ -56,6 +56,10 @@ If you'd rather configure the camera from the Reolink app:
 - Recent events are kept in an in-memory ring (last 300) for the UI; they are not written to disk
 - Snapshots attached to motion e-mails are kept in memory only — they're republished to MQTT (when configured) within the 5s per-camera debounce window and dropped afterwards
 
+### Internals (since 0.4.32)
+
+The manager doesn't subscribe to the email-push bus per-module any more. The Baichuan api created in `rtsp-manager` for each configured camera is constructed with `emailPushCameraId: camera.id`, and the lib auto-bridges every matching SMTP delivery into that api's `simpleEventListeners`. Both consumers (`events-manager` for SSE/JSON broadcast, `homeassistant-mqtt` for entity republish + snapshot capture) listen via the existing `api.onSimpleEvent` registration, so native Baichuan push and SMTP-delivered motion now flow through the same code path — fixing the snapshot republish regression on battery cameras that only deliver via SMTP ([#32](https://github.com/apocaliss92/nodelink-js/issues/32)).
+
 See [../README.md#email-push-for-battery-cameras](../README.md#email-push-for-battery-cameras) and [../documentation/baichuan-api/email.md](../documentation/baichuan-api/email.md) for the underlying tRPC + Baichuan APIs.
 
 ## Docker Deployment (Recommended)
