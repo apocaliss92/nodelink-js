@@ -21,10 +21,6 @@ import type {
   ReolinkSimpleEvent,
   DeviceCapabilities,
 } from "@apocaliss92/nodelink-js";
-import {
-  onEmailPushEvent,
-  mapEmailPushInferredType,
-} from "@apocaliss92/nodelink-js";
 
 import {
   onApiConnected,
@@ -96,16 +92,6 @@ interface RegisteredCamera {
   detectionResetTimers: Map<string, NodeJS.Timeout>;
   /** Listener registered with `api.onSimpleEvent` — kept for `offSimpleEvent`. */
   eventListener?: (event: ReolinkSimpleEvent) => void;
-  /**
-   * Off-handle for the global email-push bus subscription. We register
-   * directly on `onEmailPushEvent` (not on `api.subscribeEmailPushEvents`)
-   * because events-manager has its own global handler — using the
-   * per-api lib helper here would dispatch through this api's
-   * `simpleEventListeners`, which includes the listener that events-
-   * manager registered at `api.onSimpleEvent`, causing double-handling.
-   * The global path keeps each module to exactly one listener per event.
-   */
-  emailPushBusOff?: () => void;
   /** Last snapshot timestamp for debounce. */
   lastSnapshotAtMs: number;
   /** True while a snapshot fetch is in flight (avoid overlapping). */
@@ -716,33 +702,12 @@ async function registerCamera(
   cam.eventListener = listener;
   void api.onSimpleEvent(listener);
 
-  // Subscribe to the lib's global email-push bus and translate every
-  // matching SMTP delivery into a synthetic `ReolinkSimpleEvent` fed
-  // to `handleSimpleEvent` — same code path used by native Baichuan
-  // push, so motion entities + snapshot republish + detection-reset
-  // timers all work uniformly for SMTP-only motion (battery cams).
-  // events-manager has its own global handler for SSE/JSON dispatch —
-  // both modules listen independently on the global bus to avoid
-  // double-dispatch through `api.simpleEventListeners`.
-  cam.emailPushBusOff = onEmailPushEvent((event) => {
-    if (event.cameraId !== cameraId) return;
-    const channel = cam.channel;
-    const mapped = mapEmailPushInferredType(event.inferredType);
-    handleSimpleEvent(cam, {
-      type: mapped,
-      channel,
-      timestamp: event.receivedAtMs,
-    });
-    // Fan out a generic motion for AI sub-types so motion-only
-    // consumers still flip (mirrors lib + events-manager behaviour).
-    if (mapped !== "motion" && mapped !== "doorbell") {
-      handleSimpleEvent(cam, {
-        type: "motion",
-        channel,
-        timestamp: event.receivedAtMs,
-      });
-    }
-  });
+  // SMTP email-push motion is fanned into this same listener by the
+  // lib: `rtsp-manager.connectApi` creates the api with
+  // `emailPushCameraId: camera.id`, so the lib's auto-bridge calls
+  // `api.dispatchSimpleEvent` on every matching delivery — the
+  // listener registered above therefore handles both native and SMTP
+  // events without HA-MQTT needing its own bus subscription.
 
   logger.info(
     `Registered camera ${cameraName} (${cameraId}) for Home Assistant: ${entities.length} entities`,
@@ -762,17 +727,8 @@ async function unregisterCamera(cameraId: string): Promise<void> {
     delete cam.eventListener;
   }
 
-  // Always drop the email-push subscription on full unregister so
-  // we don't leak listeners on the global bus across reconfigure.
-  // (`handleCameraDisconnected` intentionally leaves it in place
-  // — the api going dark is exactly when SMTP delivery matters most
-  // for battery cameras.)
-  if (cam.emailPushBusOff) {
-    try {
-      cam.emailPushBusOff();
-    } catch {}
-    delete cam.emailPushBusOff;
-  }
+  // The lib's email-push auto-bridge is released by `api.close()`
+  // — nothing to tear down here.
 
   await unsubscribeCommandTopics(cam).catch(() => {});
 

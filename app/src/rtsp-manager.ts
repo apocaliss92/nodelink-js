@@ -677,6 +677,20 @@ export async function getOrCreateApiConnection(
       transport: isNvrConnection ? "tcp" : (camera.transport ?? "auto"),
       ...(!isNvrConnection && camera.udpDiscoveryMethod ? { udpDiscoveryMethod: camera.udpDiscoveryMethod } : {}),
       debugOptions,
+      // Auto-bridge SMTP email-push into this api's onSimpleEvent
+      // stream — the manager's EmailPushServer dispatches events on
+      // the global bus keyed by `camera.id` (the same value used as
+      // the recipient local-part `cam-<camera.id>@<domain>`), so
+      // events-manager and ha-mqtt receive native + SMTP motion
+      // through `api.onSimpleEvent` uniformly without each needing
+      // its own global bus subscription. Skipped for NVR connections
+      // (the parent NVR owns the mail path, channels share its bus).
+      ...(!isNvrConnection
+        ? {
+            emailPushCameraId: camera.id,
+            emailPushChannel: camera.rtspChannel ?? 0,
+          }
+        : {}),
       logger: {
         log: (msg: unknown) => cameraLogger.info(String(msg)),
         info: (msg: string) => cameraLogger.info(msg),

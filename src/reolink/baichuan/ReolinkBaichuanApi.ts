@@ -537,6 +537,14 @@ export class ReolinkBaichuanApi {
    */
   private _closed = false;
 
+  /**
+   * Off-handle for the auto-bridge between the global email-push bus
+   * and this api's `simpleEventListeners`. Set in the constructor
+   * when `emailPushCameraId` is provided; released in `close()`.
+   * `undefined` means no bridge was requested for this api.
+   */
+  private emailPushAutoBridgeOff: (() => void) | undefined;
+
   // ─────────────────────────────────────────────────────────────────────────────
   // SOCKET POOL - Tag-based socket management
   // ─────────────────────────────────────────────────────────────────────────────
@@ -2313,6 +2321,23 @@ export class ReolinkBaichuanApi {
        * out on TCP, or `true` to opt in on UDP (not recommended).
        */
       enableEventResubscribe?: boolean;
+      /**
+       * When set, the api auto-subscribes to the global email-push bus
+       * and translates each matching delivery (`event.cameraId ===
+       * emailPushCameraId`) into `dispatchSimpleEvent` — so any
+       * consumer registered via `api.onSimpleEvent(...)` receives
+       * native Baichuan push AND SMTP-delivered motion through the
+       * exact same stream, with no second subscription needed. The
+       * bridge survives TCP transient disconnects (it's a JS-level
+       * fan-out, not a network operation) and is released
+       * automatically by `close()`.
+       *
+       * Pair with `emailPushChannel` when the camera lives on a
+       * non-zero channel (NVR children, multi-channel cams).
+       */
+      emailPushCameraId?: string;
+      /** Channel reported on the synthesised event. Default 0. */
+      emailPushChannel?: number;
     },
   ) {
     const dbg = normalizeDebugOptions(opts.debugOptions);
@@ -2425,6 +2450,20 @@ export class ReolinkBaichuanApi {
     // Attach event, push, channelInfo, and guard listeners on the general client.
     // Extracted to a helper so ensureConnected() can re-attach them after reconnecting.
     this.setupGeneralClientListeners();
+
+    // Auto-bridge SMTP email-push events into this api's
+    // simpleEventListeners stream when the caller asked for it. The
+    // bridge is set up exactly once per api lifetime — it survives
+    // every TCP reconnect because `dispatchSimpleEvent` is a pure
+    // JavaScript fan-out (no socket I/O), so even battery cameras
+    // whose underlying TCP comes and goes keep receiving SMTP motion
+    // through `onSimpleEvent` as if it were native Baichuan push.
+    if (opts.emailPushCameraId) {
+      this.emailPushAutoBridgeOff = this.subscribeEmailPushEvents({
+        cameraId: opts.emailPushCameraId,
+        channel: opts.emailPushChannel ?? 0,
+      });
+    }
   }
 
   /**
@@ -3952,6 +3991,15 @@ export class ReolinkBaichuanApi {
     // would crash on this.client accesses inside stopAllActiveStreams, etc.
     if (this._closed) return;
     this._closed = true;
+
+    // Release the email-push auto-bridge so we don't leak a global
+    // bus listener after the api is gone.
+    if (this.emailPushAutoBridgeOff) {
+      try {
+        this.emailPushAutoBridgeOff();
+      } catch {}
+      this.emailPushAutoBridgeOff = undefined;
+    }
 
     // Stop periodic session guard
     if (this.sessionGuardIntervalTimer) {

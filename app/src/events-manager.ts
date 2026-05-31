@@ -11,11 +11,6 @@ import type { ReolinkBaichuanApi } from "@apocaliss92/nodelink-js";
 import type { Response } from "express";
 import { onApiConnected, onApiDisconnected } from "./rtsp-manager.js";
 import { getConfig, getSettings, updateCamera } from "./settings-store.js";
-import {
-  onEmailPushEvent,
-  type EmailPushEvent,
-} from "./email-push-server.js";
-import { mapEmailPushInferredType } from "@apocaliss92/nodelink-js";
 import { getCameraInfo } from "./rtsp-manager.js";
 import { sanitizeCameraName } from "./rtsp-manager.js";
 import { createSourceLogger } from "./logger.js";
@@ -441,15 +436,11 @@ function registerCameraEvents(cameraId: string, api: ReolinkBaichuanApi): void {
     handleCameraEvent(cameraId, event);
   });
 
-  // Email-push events are handled at the global bus level below — see
-  // `onEmailPushEvent` below `onApiDisconnected`. We do NOT call
-  // `api.subscribeEmailPushEvents` here because the manager has more
-  // than one module that listens on the same api per camera
-  // (events-manager + homeassistant-mqtt). A per-api bridge would
-  // duplicate dispatches through both consumers. The new
-  // `subscribeEmailPushEvents` lib method is meant for single-owner
-  // consumers like the Scrypted plugin where each api has exactly one
-  // wrapper that listens on `onSimpleEvent`.
+  // SMTP email-push motion now arrives on this same `api.onSimpleEvent`
+  // stream — the lib auto-bridges the global email-push bus into the
+  // api's `simpleEventListeners` when the manager creates the api with
+  // `emailPushCameraId: camera.id` (see `rtsp-manager.connectApi`).
+  // No separate `onEmailPushEvent` subscription is needed here.
 
   // Detection events fire per-frame from the BcMedia overlay channel. We
   // always register the listener (it's cheap) but the broadcast short-circuits
@@ -581,39 +572,16 @@ export function initEventsManager(): void {
     logger.debug(`Unregistered events for camera ${cameraId}`);
   });
 
-  // Global email-push bus → manager pipeline. We subscribe once and
-  // route every event through handleCameraEvent so cameras that aren't
-  // currently in `registeredApis` (e.g. only used via wakeUp/getApi
-  // with no streaming session) still produce MQTT/SSE/recent-events
-  // entries. The lib's `mapEmailPushInferredType` keeps us in sync
-  // with the per-api `subscribeEmailPushEvents` helper used by
-  // single-owner consumers (Scrypted plugin).
-  onEmailPushEvent((event: EmailPushEvent) => {
-    const mapped = mapEmailPushInferredType(event.inferredType);
-    const channel = inferChannelForCamera(event.cameraId);
-    handleCameraEvent(event.cameraId, {
-      type: mapped,
-      channel,
-      timestamp: event.receivedAtMs,
-    });
-    // AI sub-type also fans out a generic "motion" so motion-only
-    // consumers still see it — mirrors the lib's per-api behaviour.
-    if (mapped !== "motion" && mapped !== "doorbell") {
-      handleCameraEvent(event.cameraId, {
-        type: "motion",
-        channel,
-        timestamp: event.receivedAtMs,
-      });
-    }
-  });
+  // No global `onEmailPushEvent` subscription here — the lib's per-api
+  // auto-bridge (configured in `rtsp-manager.connectApi` via
+  // `emailPushCameraId: camera.id`) dispatches SMTP motion through
+  // `api.onSimpleEvent`, so the `api.onSimpleEvent` listener
+  // registered in `registerCameraEvents` (above) handles both native
+  // and SMTP events uniformly. Cameras that never connect (no api)
+  // also can't emit native events, so they don't reach this point
+  // either way — the previous "no-api fallback" path was dead code.
 
   logger.info("Events manager initialized");
-}
-
-function inferChannelForCamera(cameraId: string): number {
-  const config = getConfig();
-  const camera = config.cameras.find((c) => c.id === cameraId);
-  return camera?.rtspChannel ?? 0;
 }
 
 /**
