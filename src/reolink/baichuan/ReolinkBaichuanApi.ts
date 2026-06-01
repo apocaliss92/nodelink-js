@@ -1032,6 +1032,21 @@ export class ReolinkBaichuanApi {
   private simpleEventWatchdogLastRecoveryAt: number = 0;
   private readonly simpleEventWatchdogIntervalMs = 10_000; // check every 10s
   private readonly simpleEventWatchdogSilenceThresholdMs = 5 * 60_000; // 5 min without events
+  /**
+   * Whether the silence-based resubscribe path of the watchdog is
+   * enabled. On UDP (battery cameras) silence is the *normal* state
+   * while the device sleeps — firing `ensureSimpleEventSubscribed`
+   * every 5 minutes wakes the camera on every tick, drains the
+   * battery, and is observably wrong because the cam emits a
+   * sleep/awake push when it actually wakes for motion.
+   *
+   * Defaults: `false` on UDP, `true` on TCP / `auto`. The subscription-
+   * failed recovery path (Case 2) stays active regardless — it only
+   * runs when the connection is alive, doesn't wake anyone, and is
+   * useful on every transport when the initial subscribe call lost
+   * the response packet.
+   */
+  private eventWatchdogSilenceResubscribeEnabled: boolean = true;
   private statePollingInterval: NodeJS.Timeout | undefined;
   private udpSleepInferenceInterval: NodeJS.Timeout | undefined;
   private readonly udpLastInferredSleepStateByChannel = new Map<
@@ -2338,6 +2353,20 @@ export class ReolinkBaichuanApi {
       emailPushCameraId?: string;
       /** Channel reported on the synthesised event. Default 0. */
       emailPushChannel?: number;
+      /**
+       * Enable the watchdog's silence-based resubscribe path (Case 1
+       * in `simpleEventWatchdogTick`): when no event arrives for 5
+       * minutes the lib forces an `ensureSimpleEventSubscribed` call.
+       *
+       * Default: `true` for non-UDP transports (TCP / `auto`),
+       * `false` for UDP. On UDP (battery cams) silence is the normal
+       * state while the device sleeps — running this path wakes the
+       * cam every 5 minutes for no real benefit, since the cam emits
+       * its own sleep/awake push when it actually wakes for motion.
+       * The subscription-failed recovery path (Case 2) stays active
+       * regardless and is safe on every transport.
+       */
+      enableEventWatchdogSilenceResubscribe?: boolean;
     },
   ) {
     const dbg = normalizeDebugOptions(opts.debugOptions);
@@ -2419,6 +2448,16 @@ export class ReolinkBaichuanApi {
       this.eventResubscribeEnabled = explicitResubscribe;
     } else {
       this.eventResubscribeEnabled = opts.transport !== "udp";
+    }
+    // Same UDP default for the silence-based watchdog: battery cams
+    // shouldn't be woken every 5 minutes just because their normal
+    // sleeping silence triggers the resubscribe path.
+    const explicitWatchdogResubscribe =
+      opts.enableEventWatchdogSilenceResubscribe;
+    if (typeof explicitWatchdogResubscribe === "boolean") {
+      this.eventWatchdogSilenceResubscribeEnabled = explicitWatchdogResubscribe;
+    } else {
+      this.eventWatchdogSilenceResubscribeEnabled = opts.transport !== "udp";
     }
     const maxSessions = opts.maxDedicatedSessionsBeforeReboot;
     if (
@@ -3576,6 +3615,21 @@ export class ReolinkBaichuanApi {
     if (this.simpleEventSubscribed && this.simpleEventLastReceivedAt > 0) {
       const silence = now - this.simpleEventLastReceivedAt;
       if (silence < this.simpleEventWatchdogSilenceThresholdMs) return; // events flowing normally
+
+      // Battery cameras on UDP transport spend most of their lifetime
+      // asleep — silence in the event stream is the *normal* operating
+      // mode, not a failure. Re-running `ensureSimpleEventSubscribed`
+      // here would wake the device every 5 minutes and quietly drain
+      // its battery. Skip the resubscribe and just reset the
+      // last-received timer so the next tick has a fresh baseline.
+      if (!this.eventWatchdogSilenceResubscribeEnabled) {
+        this.logger.debug?.(
+          `[ReolinkBaichuanApi] event watchdog: silence-based resubscribe disabled (UDP / battery), skipping`,
+          { host: this.host, silenceMs: silence },
+        );
+        this.simpleEventLastReceivedAt = now;
+        return;
+      }
 
       // Events stopped flowing → force resubscribe
       (this.logger.warn ?? this.logger.log).call(
