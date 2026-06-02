@@ -709,6 +709,41 @@ async function registerCamera(
   // listener registered above therefore handles both native and SMTP
   // events without HA-MQTT needing its own bus subscription.
 
+  // Mirror the Web UI's one-time battery seed (events-manager does the
+  // same call to populate the in-memory state). `getBatteryStatus` has
+  // a built-in sleeping guard — it returns early without sending any
+  // request when the cam is inferred asleep — so this is non-waking.
+  // Issue #33: without this, HA stays on the last value pushed by the
+  // cam (often hours/days old) until the next cmd-252 push arrives.
+  if (isBattery) {
+    void api
+      .getBatteryStatus(channel)
+      .then((battery) => {
+        if (battery.batteryPercent == null) return;
+        void publishEntityState(
+          cameraId,
+          "battery",
+          battery.batteryPercent,
+        );
+        const charging =
+          battery.adapterStatus === "charge" ||
+          battery.adapterStatus === "charging" ||
+          battery.chargeStatus === "chargeComplete" ||
+          battery.chargeStatus === "charging";
+        void publishEntityState(
+          cameraId,
+          "charger",
+          charging ? PAYLOAD_ON : PAYLOAD_OFF,
+        );
+        logger.debug(
+          `Seeded MQTT battery for ${cameraId}: ${battery.batteryPercent}%`,
+        );
+      })
+      .catch(() => {
+        // best-effort — same posture as events-manager's seed
+      });
+  }
+
   logger.info(
     `Registered camera ${cameraName} (${cameraId}) for Home Assistant: ${entities.length} entities`,
   );
