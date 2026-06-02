@@ -2331,9 +2331,16 @@ export class ReolinkBaichuanApi {
        * as belt-and-braces for the rare firmwares that drop subscriptions
        * without producing event silence. On UDP every renewal wakes the
        * device, driving an exact 5-minute sleep/awake cycle (continuation
-       * of issue #18); the reactive `simpleEventWatchdog` covers the same
-       * failure mode without the wake-up. Pass `false` explicitly to opt
-       * out on TCP, or `true` to opt in on UDP (not recommended).
+       * of issue #18). Pass `false` explicitly to opt out on TCP, or
+       * `true` to opt in on UDP (not recommended).
+       *
+       * Note: the reactive `simpleEventWatchdog` has its own silence
+       * resubscribe path that ALSO wakes UDP cams (it calls the same
+       * `ensureSimpleEventSubscribed` under the hood). For battery
+       * cams disable both via this flag AND
+       * `enableEventWatchdogSilenceResubscribe` (both default off on
+       * UDP — opting out of one without the other still wakes the
+       * cam every 5 min).
        */
       enableEventResubscribe?: boolean;
       /**
