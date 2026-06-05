@@ -87,7 +87,10 @@
     "subStreamRecord_ro": 1,
     "osdName_rw": 1,
     "osdTime_rw": 1,
-    "shelter_rw": 1
+    "shelter_rw": 1,
+    "ispBasic_rw": 1,
+    "ispAdvance_rw": 1,
+    "ledState_rw": 1
   },
   "4": {
     "preview_rw": 1,

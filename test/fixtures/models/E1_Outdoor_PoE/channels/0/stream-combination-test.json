@@ -8,10 +8,10 @@
         "sub"
       ],
       "ok": true,
-      "framesA": 282,
-      "framesB": 180,
+      "framesA": 270,
+      "framesB": 179,
       "mismatches": 0,
-      "durationMs": 4161,
+      "durationMs": 4135,
       "expectedOk": true,
       "expectedReason": "different streamTypes (0 vs 1)",
       "matchesExpected": true
@@ -22,10 +22,10 @@
         "ext"
       ],
       "ok": false,
-      "framesA": 505,
+      "framesA": 506,
       "framesB": 0,
       "mismatches": 0,
-      "durationMs": 4167,
+      "durationMs": 4182,
       "expectedOk": false,
       "expectedReason": "same streamType (0) on same channel",
       "matchesExpected": true
@@ -36,10 +36,10 @@
         "ext"
       ],
       "ok": true,
-      "framesA": 184,
-      "framesB": 223,
+      "framesA": 182,
+      "framesB": 225,
       "mismatches": 0,
-      "durationMs": 4169,
+      "durationMs": 4357,
       "expectedOk": true,
       "expectedReason": "different streamTypes (1 vs 0)",
       "matchesExpected": true

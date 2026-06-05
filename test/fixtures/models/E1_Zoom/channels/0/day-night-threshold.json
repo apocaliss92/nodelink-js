@@ -3,7 +3,7 @@
     "DayNightThreshold": {
       "channelId": 0,
       "threshold": "custom",
-      "stat": "night",
+      "stat": "day",
       "thresholdval": {
         "min": 0,
         "max": 100,

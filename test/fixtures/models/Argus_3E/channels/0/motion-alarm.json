@@ -2,11 +2,8 @@
   "body": {
     "MD": {
       "channelId": 0,
-      "separateCfg": {
-        "nonDetectArea": 0
-      },
       "enable": 1,
-      "usepir": 0,
+      "usepir": 2,
       "width": 72,
       "height": 40,
       "scope": {
@@ -55,6 +52,11 @@
         "sensInfoList": ""
       },
       "timeBlockList": "",
+      "handleException": {
+        "handleType": "none",
+        "chnHandleType": "",
+        "relAlarmOut": ""
+      },
       "@_version": 1.1
     }
   }

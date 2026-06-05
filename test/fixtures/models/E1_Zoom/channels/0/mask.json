@@ -2,7 +2,7 @@
   "body": {
     "Shelter": {
       "channelId": 0,
-      "enable": 0,
+      "enable": 1,
       "maxNum": 4,
       "shelterList": "",
       "trackEnable": 0,

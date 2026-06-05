@@ -10,9 +10,9 @@
   },
   "osdChannelName": {
     "channelId": 0,
-    "name": "Videocamera lavanderia",
+    "name": "Baby monitor",
     "enable": false,
-    "topLeftX": 1,
+    "topLeftX": 65536,
     "topLeftY": 65536,
     "enWatermark": false,
     "enBgcolor": false

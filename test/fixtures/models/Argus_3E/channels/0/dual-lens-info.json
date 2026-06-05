@@ -1,8 +1,8 @@
 {
   "isDualLens": false,
   "model": "Argus 3E",
-  "streamChannelCount": 8,
-  "logicalChannelCount": 8,
+  "streamChannelCount": 1,
+  "logicalChannelCount": 1,
   "channels": [],
   "capabilityChannels": {
     "pan": [],

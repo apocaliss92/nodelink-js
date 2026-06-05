@@ -1,16 +1,15 @@
 {
-  "collectedAt": "2026-05-17T21:35:21.374Z",
+  "collectedAt": "2026-06-05T11:51:25.391Z",
   "model": "Argus 3E",
   "itemNo": "unknown",
   "firmwareVersion": "v3.0.0.3623_24060675",
   "channel": 0,
-  "total": 39,
-  "ok": 35,
-  "failed": 4,
+  "total": 40,
+  "ok": 37,
+  "failed": 3,
   "errors": [
-    "cmd289-WhiteLed: Baichuan timeout cmdId=289 msgNum=47",
-    "getDayNightThreshold: Baichuan timeout cmdId=296 msgNum=80",
-    "getPtzPosition: Baichuan request failed (responseCode 400, empty body). Possible causes: expired session, invalid username/password, or unsupported command on NVR/Hub.",
+    "getAutoFocus: Baichuan request failed (responseCode 400, empty body). Possible causes: expired session, invalid username/password, or unsupported command on NVR/Hub.",
+    "getDayNightThreshold: Baichuan timeout cmdId=296 msgNum=58",
     "getZoomFocus: Baichuan request failed (responseCode 400, empty body). Possible causes: expired session, invalid username/password, or unsupported command on NVR/Hub."
   ],
   "calls": {
@@ -19,7 +18,7 @@
     "getSupportInfo": "ok",
     "getAbilityInfo": "ok",
     "getDeviceCapabilities": "ok",
-    "cmd289-WhiteLed": "FAILED: Baichuan timeout cmdId=289 msgNum=47",
+    "cmd289-WhiteLed": "ok",
     "getStreamMetadata": "ok",
     "getEncXml": "ok",
     "getPorts": "ok",
@@ -42,16 +41,17 @@
     "getEncOptions": "ok",
     "getEnc": "ok",
     "getStreamInfoList": "ok",
-    "getAutoFocus": "ok",
+    "getAutoFocus": "FAILED: Baichuan request failed (responseCode 400, empty body). Possible causes: expired session, invalid username/password, or unsupported command on NVR/Hub.",
     "getLedState": "ok",
     "getIrLights": "ok",
     "getImage": "ok",
     "getIsp": "ok",
-    "getDayNightThreshold": "FAILED: Baichuan timeout cmdId=296 msgNum=80",
+    "getDayNightThreshold": "FAILED: Baichuan timeout cmdId=296 msgNum=58",
     "getMask": "ok",
     "getAudioCfg": "ok",
     "getOsdDatetime": "ok",
-    "getPtzPosition": "FAILED: Baichuan request failed (responseCode 400, empty body). Possible causes: expired session, invalid username/password, or unsupported command on NVR/Hub.",
-    "getZoomFocus": "FAILED: Baichuan request failed (responseCode 400, empty body). Possible causes: expired session, invalid username/password, or unsupported command on NVR/Hub."
+    "getPtzPosition": "ok",
+    "getZoomFocus": "FAILED: Baichuan request failed (responseCode 400, empty body). Possible causes: expired session, invalid username/password, or unsupported command on NVR/Hub.",
+    "streamCombinationTest": "ok"
   }
 }

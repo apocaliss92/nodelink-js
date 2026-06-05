@@ -1,26 +1,55 @@
 {
   "isMultifocal": false,
-  "cameraChannels": [
-    0
-  ],
+  "channelCount": 1,
   "results": [
     {
-      "pair": "main+sub",
+      "pair": [
+        "main",
+        "sub"
+      ],
       "ok": true,
-      "framesA": 92,
-      "framesB": 84
+      "framesA": 201,
+      "framesB": 170,
+      "mismatches": 0,
+      "durationMs": 4601,
+      "expectedOk": true,
+      "expectedReason": "different streamTypes (0 vs 1)",
+      "matchesExpected": true
     },
     {
-      "pair": "main+ext",
+      "pair": [
+        "main",
+        "ext"
+      ],
       "ok": false,
-      "framesA": 161,
-      "framesB": 0
+      "framesA": 402,
+      "framesB": 0,
+      "mismatches": 13,
+      "durationMs": 4649,
+      "expectedOk": false,
+      "expectedReason": "same streamType (0) on same channel",
+      "matchesExpected": true
     },
     {
-      "pair": "sub+ext",
+      "pair": [
+        "sub",
+        "ext"
+      ],
       "ok": true,
-      "framesA": 93,
-      "framesB": 1
+      "framesA": 192,
+      "framesB": 192,
+      "mismatches": 0,
+      "durationMs": 4552,
+      "expectedOk": true,
+      "expectedReason": "different streamTypes (1 vs 0)",
+      "matchesExpected": true
     }
-  ]
+  ],
+  "summary": {
+    "total": 3,
+    "ok": 2,
+    "failed": 1,
+    "matchesExpected": 3,
+    "unexpected": []
+  }
 }

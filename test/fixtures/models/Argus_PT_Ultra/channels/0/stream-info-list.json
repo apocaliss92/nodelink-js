@@ -92,6 +92,41 @@
           "defaultGop": 0
         }
       ]
+    },
+    {
+      "channelBits": 8,
+      "encodeTables": [
+        {
+          "type": "mainStream",
+          "width": 1920,
+          "height": 1080,
+          "videoEncType": 1,
+          "defaultFramerate": 15,
+          "defaultBitrate": 1024,
+          "framerateTable": [
+            15
+          ],
+          "bitrateTable": [
+            1024
+          ],
+          "defaultGop": 0
+        },
+        {
+          "type": "subStream",
+          "width": 1920,
+          "height": 1080,
+          "videoEncType": 0,
+          "defaultFramerate": 15,
+          "defaultBitrate": 1024,
+          "framerateTable": [
+            15
+          ],
+          "bitrateTable": [
+            1024
+          ],
+          "defaultGop": 0
+        }
+      ]
     }
   ]
 }

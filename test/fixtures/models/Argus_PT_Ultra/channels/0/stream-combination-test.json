@@ -7,20 +7,20 @@
     {
       "pair": "main+sub",
       "ok": true,
-      "framesA": 179,
-      "framesB": 158
+      "framesA": 206,
+      "framesB": 183
     },
     {
       "pair": "main+ext",
       "ok": false,
-      "framesA": 345,
+      "framesA": 408,
       "framesB": 0
     },
     {
       "pair": "sub+ext",
       "ok": true,
-      "framesA": 159,
-      "framesB": 177
+      "framesA": 94,
+      "framesB": 198
     }
   ]
 }
