@@ -130,6 +130,35 @@ export type {
 } from "./reolink/baichuan/utils/xml";
 export type { FloodlightTaskState } from "./reolink/baichuan/utils/whiteLed";
 
+// Audio helpers — IMA ADPCM encoder used to feed TalkSession.sendAudio() from
+// raw 16-bit PCM, plus the μ-law / A-law decoders and integer-factor upsampler
+// that the RTSP Backchannel bridge needs to translate RTP PCMU / PCMA payloads
+// into the 16 kHz mono PCM that Reolink's TalkAbility advertises.
+export { encodeImaAdpcm } from "./reolink/baichuan/utils/imaAdpcm";
+export {
+  mulawToPcm16,
+  alawToPcm16,
+} from "./reolink/baichuan/utils/audioMulaw";
+export { upsamplePcm16 } from "./reolink/baichuan/utils/audioResample";
+
+// RTSP backchannel: a per-camera RTSP listener that feeds inbound RTP
+// PCMU / PCMA audio packets into a Reolink TalkSession so a 2-way audio
+// client (Frigate via go2rtc, ffmpeg, ONVIF surveillance app) can talk
+// to the camera. The dedicated `BaichuanRtspBackchannelServer` lives
+// next to the per-profile `BaichuanRtspServer` instances and exposes a
+// profile-independent path because TalkSession is per-camera, never
+// per-stream-profile.
+export {
+  RtspBackchannel,
+  parseRtpPacket,
+} from "./baichuan/stream/RtspBackchannel";
+export type {
+  RtspBackchannelOptions,
+  BackchannelCodec,
+} from "./baichuan/stream/RtspBackchannel";
+export { BaichuanRtspBackchannelServer } from "./baichuan/stream/BaichuanRtspBackchannelServer";
+export type { BaichuanRtspBackchannelServerOptions } from "./baichuan/stream/BaichuanRtspBackchannelServer";
+
 // Email-push SMTP intake + bus — re-exported so consumers (Scrypted
 // plugin, manager app, integration tests) can stand up an instance
 // without depending on app/-only modules.

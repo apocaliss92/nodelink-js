@@ -33,6 +33,7 @@ Full project overview, installation, and examples: **[Main README](../README.md)
 | -------------------------------------------------- | -------------------------------------------- |
 | [Manager REST API](./manager-api.md)               | Auth, streaming, events, metrics             |
 | [Streaming Servers](./streaming.md)                | RTSP, RFC4571, HTTP servers                  |
+| [Frigate 2-Way Audio](./frigate-backchannel.md)    | RTSP backchannel bridge for Frigate intercom |
 | [Network Discovery](./discovery.md)                | UDP autodiscovery                            |
 | [Authentik + NGINX](./authentik-nginx.md)          | SSO / Trusted Proxy setup                   |
 | [Reverse Engineering](./reverse-engineering.md)    | Firmware analysis, protocol internals, troubleshooting |
