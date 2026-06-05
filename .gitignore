@@ -7,6 +7,7 @@ _refs
 .nx
 log.txt
 AGENT_REFERENCE.md
+.npmrc
 
 # Local integration test config (IPs / credentials)
 test/devices.config.json
