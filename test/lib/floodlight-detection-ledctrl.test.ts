@@ -46,6 +46,14 @@ describe("Floodlight detection — driven by captured SupportInfo / AbilityInfo"
   it("Reolink E1 Zoom (lightType=0 + ledCtrl=1) → no floodlight (status LED only)", () => {
     expect(detect("E1_Zoom")).toBe(false);
   });
+
+  it("Reolink Video Doorbell (UID 9527…, lightType=0 + ledCtrl=3073 + doorbellVersion=31) → no floodlight", () => {
+    // Regression for a doorbell whose owner confirmed the hardware has no
+    // spotlight, yet ledCtrl=3073 (>1) would historically promote the rescue
+    // path to hasFloodlight=true. Rule: when the firmware says lightType=0
+    // on a doorbell (doorbellVersion > 0), trust it. See capabilities.ts.
+    expect(detect("Reolink_Video_Doorbell")).toBe(false);
+  });
 });
 
 describe("xmlIndicatesFloodlight caveat", () => {

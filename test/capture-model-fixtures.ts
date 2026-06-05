@@ -37,11 +37,19 @@ const runs = (() => {
   return idx >= 0 ? parseInt(process.argv[idx + 1]!, 10) || 1 : 1;
 })();
 
+const targetFilter = (() => {
+  const idx = process.argv.indexOf("--target");
+  return idx >= 0 ? process.argv[idx + 1]?.toUpperCase() : undefined;
+})();
+
 interface CameraConfig {
   name: string;
   host: string;
   username: string;
   password: string;
+  /** UDP/BCUDP only — required for battery cams and doorbells. */
+  uid?: string;
+  transport: "tcp" | "udp";
 }
 
 function getCameras(): CameraConfig[] {
@@ -53,6 +61,7 @@ function getCameras(): CameraConfig[] {
       host: process.env.TCP_HOST,
       username: process.env.TCP_USERNAME ?? "admin",
       password: process.env.TCP_PASSWORD ?? "",
+      transport: "tcp",
     });
   }
   if (process.env.TCP265_HOST) {
@@ -61,6 +70,7 @@ function getCameras(): CameraConfig[] {
       host: process.env.TCP265_HOST,
       username: process.env.TCP265_USERNAME ?? "admin",
       password: process.env.TCP265_PASSWORD ?? "",
+      transport: "tcp",
     });
   }
   if (process.env.NVR_HOST) {
@@ -69,6 +79,7 @@ function getCameras(): CameraConfig[] {
       host: process.env.NVR_HOST,
       username: process.env.NVR_USERNAME ?? "admin",
       password: process.env.NVR_PASSWORD ?? "",
+      transport: "tcp",
     });
   }
   if (process.env.HUB_HOST) {
@@ -77,6 +88,28 @@ function getCameras(): CameraConfig[] {
       host: process.env.HUB_HOST,
       username: process.env.HUB_USERNAME ?? "admin",
       password: process.env.HUB_PASSWORD ?? "",
+      transport: "tcp",
+    });
+  }
+
+  // UDP / battery / doorbell cameras. All four UDP slots in env.template are honoured
+  // so we can dump model fixtures for sleeping doorbells and battery cams too.
+  const udpSlots = [
+    { name: "UDP", host: "UDP_HOST", user: "UDP_USERNAME", pass: "UDP_PASSWORD", uid: "UDP_UID" },
+    { name: "UDP_STANDALONE", host: "UDP_STANDALONE_HOST", user: "UDP_STANDALONE_USERNAME", pass: "UDP_STANDALONE_PASSWORD", uid: "UDP_STANDALONE_UID" },
+    { name: "UDP_SLEEP", host: "UDP_SLEEP_HOST", user: "UDP_SLEEP_USERNAME", pass: "UDP_SLEEP_PASSWORD", uid: "UDP_SLEEP_UID" },
+    { name: "DOORBELL", host: "DOORBELL_HOST", user: "DOORBELL_USERNAME", pass: "DOORBELL_PASSWORD", uid: "DOORBELL_UID" },
+  ] as const;
+  for (const slot of udpSlots) {
+    const host = process.env[slot.host];
+    if (!host) continue;
+    cameras.push({
+      name: slot.name,
+      host,
+      username: process.env[slot.user] ?? process.env.UDP_USERNAME ?? "admin",
+      password: process.env[slot.pass] ?? process.env.UDP_PASSWORD ?? "",
+      ...(process.env[slot.uid] ? { uid: process.env[slot.uid] as string } : {}),
+      transport: "udp",
     });
   }
 
@@ -306,14 +339,30 @@ async function captureNvr(
 
 async function captureCamera(config: CameraConfig, run: number) {
   console.log(`\n${"=".repeat(60)}`);
-  console.log(`Camera: ${config.name} (${config.host}) — run ${run}/${runs}`);
+  console.log(
+    `Camera: ${config.name} (${config.host}) [${config.transport}${config.uid ? ", uid=…" + config.uid.slice(-4) : ""}] — run ${run}/${runs}`,
+  );
   console.log("=".repeat(60));
+
+  if (config.transport === "udp" && !config.uid) {
+    console.log(
+      "  WARN: UDP camera without UID — only local-direct will be tried; sleeping devices will time out.",
+    );
+  }
 
   const api = new ReolinkBaichuanApi({
     host: config.host,
     port: 9000,
     username: config.username,
     password: config.password,
+    transport: config.transport,
+    ...(config.transport === "udp"
+      ? {
+          ...(config.uid ? { uid: config.uid } : {}),
+          // local-direct first; the lib doesn't retry remote/relay without UID anyway.
+          udpDiscoveryMethod: "local-direct",
+        }
+      : {}),
   });
 
   try {
@@ -358,7 +407,11 @@ async function captureCamera(config: CameraConfig, run: number) {
 }
 
 async function main() {
-  const cameras = getCameras();
+  let cameras = getCameras();
+  if (targetFilter) {
+    cameras = cameras.filter((c) => c.name.toUpperCase() === targetFilter);
+    console.log(`Filtering to --target=${targetFilter}: ${cameras.length} camera(s)`);
+  }
   console.log(`Found ${cameras.length} camera(s) in .env`);
   console.log(`Runs: ${runs}`);
   console.log(`Saving fixtures to: test/fixtures/models/\n`);

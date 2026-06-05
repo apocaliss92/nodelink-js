@@ -1,0 +1,18 @@
+{
+  "duplexList": [
+    "FDX"
+  ],
+  "audioStreamModeList": [
+    "followVideoStream"
+  ],
+  "audioConfigList": [
+    {
+      "audioType": "adpcm",
+      "sampleRate": 16000,
+      "samplePrecision": 16,
+      "lengthPerEncoder": 1024,
+      "soundTrack": "mono",
+      "priority": 0
+    }
+  ]
+}

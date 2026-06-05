@@ -1,0 +1,18 @@
+{
+  "timeZone": -3600,
+  "osdFormat": "DMY",
+  "year": 2026,
+  "month": 6,
+  "day": 5,
+  "hour": 13,
+  "minute": 53,
+  "second": 15,
+  "deviceId": 0,
+  "timeFormat": 0,
+  "language": "English",
+  "deviceName": "Campanello",
+  "loginLock": 0,
+  "lockTime": 300,
+  "allowedTimes": 10,
+  "isDst": 1
+}

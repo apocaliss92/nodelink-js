@@ -1,0 +1,48 @@
+{
+  "streams": [
+    {
+      "channelBits": 1,
+      "encodeTables": [
+        {
+          "type": "mainStream",
+          "width": 2048,
+          "height": 2048,
+          "videoEncType": 1,
+          "defaultFramerate": 15,
+          "defaultBitrate": 2048,
+          "framerateTable": [
+            15,
+            12,
+            10
+          ],
+          "bitrateTable": [
+            1024,
+            1536,
+            2048,
+            3072,
+            4096
+          ]
+        },
+        {
+          "type": "subStream",
+          "width": 1024,
+          "height": 1024,
+          "videoEncType": 0,
+          "defaultFramerate": 15,
+          "defaultBitrate": 672,
+          "framerateTable": [
+            15,
+            10
+          ],
+          "bitrateTable": [
+            64,
+            128,
+            256,
+            512,
+            672
+          ]
+        }
+      ]
+    }
+  ]
+}

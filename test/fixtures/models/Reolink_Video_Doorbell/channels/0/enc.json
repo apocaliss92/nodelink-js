@@ -1,0 +1,39 @@
+{
+  "body": {
+    "Compression": {
+      "channelId": 0,
+      "isNoTranslateFrame": 1,
+      "mainStream": {
+        "audio": 1,
+        "resolutionName": "2048*2048",
+        "width": 2048,
+        "height": 2048,
+        "frame": 15,
+        "bitRate": 2048,
+        "encoderProfile": "high",
+        "videoEncType": 1
+      },
+      "subStream": {
+        "audio": 1,
+        "resolutionName": "1024*1024",
+        "width": 1024,
+        "height": 1024,
+        "frame": 15,
+        "bitRate": 672,
+        "encoderProfile": "high",
+        "videoEncType": 0
+      },
+      "thirdStream": {
+        "audio": 0,
+        "resolutionName": "",
+        "width": 0,
+        "height": 0,
+        "frame": 0,
+        "bitRate": 0,
+        "encoderProfile": "default",
+        "videoEncType": 0
+      },
+      "@_version": 1.1
+    }
+  }
+}

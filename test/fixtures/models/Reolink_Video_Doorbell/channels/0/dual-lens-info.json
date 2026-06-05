@@ -1,0 +1,15 @@
+{
+  "isDualLens": false,
+  "model": "Reolink Video Doorbell",
+  "streamChannelCount": 1,
+  "logicalChannelCount": 1,
+  "channels": [],
+  "capabilityChannels": {
+    "pan": [],
+    "tilt": [],
+    "zoom": [],
+    "motion": [],
+    "intercom": [],
+    "presets": []
+  }
+}

@@ -388,8 +388,22 @@ export function computeDeviceCapabilities(params: {
     // lightType >= 2 indicates controllable white LED / floodlight (1 = IR only).
     // ledCtrl > 1 is a secondary signal that rescues firmwares like the Duo 3
     // WiFi which under-report lightType (=1) despite having a real spotlight.
+    //
+    // Doorbell exception: the Reolink desktop app's native SDK exposes
+    // three SEPARATE ability flags — `supportFloodLight`, `supportDoorbellLight`
+    // (with KeepOff/KeepOn sub-flags) and `supportIndicatorLight`. Doorbell-class
+    // devices route the ring / button-area LED through `supportDoorbellLight`,
+    // which is NOT a controllable white-light floodlight. We don't have a
+    // documented bit-level mapping for ledCtrl, so we use the narrowest
+    // rule that matches Reolink's own taxonomy: when the firmware is
+    // categorical with lightType=0 AND the device identifies itself as a
+    // doorbell (doorbellVersion > 0), trust lightType=0 and ignore the
+    // ledCtrl bitmask. Verified against UID 9527000ICL1T1MDS (lightType=0,
+    // ledCtrl=3073, doorbellVersion=31, no spotlight hardware).
     hasFloodlight: Number.isFinite(lightType as number)
-      ? (lightType as number) >= 2 || hasFloodlightFromLedCtrl
+      ? (lightType as number) >= 2 ||
+        (hasFloodlightFromLedCtrl &&
+          !(isDoorbellFromSupport && (lightType as number) === 0))
       : hasFloodlightFromAbilities || hasFloodlightFromLedCtrl,
     hasPir: hasPirFromAbilities || hasPirFromSupport,
     isDoorbell,

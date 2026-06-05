@@ -1,0 +1,59 @@
+{
+  "isMultifocal": false,
+  "channelCount": 1,
+  "results": [
+    {
+      "pair": [
+        "main",
+        "sub"
+      ],
+      "ok": true,
+      "framesA": 210,
+      "framesB": 185,
+      "mismatches": 0,
+      "durationMs": 4441,
+      "expectedOk": true,
+      "expectedReason": "different streamTypes (0 vs 1)",
+      "matchesExpected": true
+    },
+    {
+      "pair": [
+        "main",
+        "ext"
+      ],
+      "ok": false,
+      "framesA": 37,
+      "framesB": 0,
+      "mismatches": 12,
+      "error": "Video stream request rejected (response_code 400). Expected response_code 200, camera returned 400",
+      "durationMs": 944,
+      "expectedOk": false,
+      "expectedReason": "same streamType (0) on same channel",
+      "matchesExpected": true
+    },
+    {
+      "pair": [
+        "sub",
+        "ext"
+      ],
+      "ok": false,
+      "framesA": 5,
+      "framesB": 30,
+      "mismatches": 0,
+      "error": "Video stream request rejected (response_code 400). Expected response_code 200, camera returned 400",
+      "durationMs": 880,
+      "expectedOk": true,
+      "expectedReason": "different streamTypes (1 vs 0)",
+      "matchesExpected": false
+    }
+  ],
+  "summary": {
+    "total": 3,
+    "ok": 1,
+    "failed": 2,
+    "matchesExpected": 2,
+    "unexpected": [
+      "sub+ext: got FAIL, expected OK"
+    ]
+  }
+}

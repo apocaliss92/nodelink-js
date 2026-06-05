@@ -1,0 +1,72 @@
+{
+  "channel": 0,
+  "mainStream": {
+    "type": "mainStream",
+    "resolutions": [
+      {
+        "width": 2048,
+        "height": 2048,
+        "videoEncTypes": [
+          "h265"
+        ],
+        "defaultFramerate": 15,
+        "defaultBitrate": 2048,
+        "framerateOptions": [
+          15,
+          12,
+          10
+        ],
+        "bitrateOptions": [
+          1024,
+          1536,
+          2048,
+          3072,
+          4096
+        ]
+      }
+    ],
+    "encoderTypes": [
+      "vbr",
+      "cbr"
+    ],
+    "encoderProfiles": [
+      "high",
+      "main",
+      "baseline"
+    ]
+  },
+  "subStream": {
+    "type": "subStream",
+    "resolutions": [
+      {
+        "width": 1024,
+        "height": 1024,
+        "videoEncTypes": [
+          "h264"
+        ],
+        "defaultFramerate": 15,
+        "defaultBitrate": 672,
+        "framerateOptions": [
+          15,
+          10
+        ],
+        "bitrateOptions": [
+          64,
+          128,
+          256,
+          512,
+          672
+        ]
+      }
+    ],
+    "encoderTypes": [
+      "vbr",
+      "cbr"
+    ],
+    "encoderProfiles": [
+      "high",
+      "main",
+      "baseline"
+    ]
+  }
+}
