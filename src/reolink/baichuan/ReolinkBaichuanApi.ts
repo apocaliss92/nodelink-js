@@ -11686,13 +11686,23 @@ export class ReolinkBaichuanApi {
    * This is more reliable than autoPt in SupportInfo which can be a false positive
    * (e.g., NVR channels report autoPt=1 but don't actually support autotracking).
    *
+   * Doorbell exception (mirrors the {@link computeDeviceCapabilities} floodlight
+   * rule): video-doorbell firmwares (doorbellVersion > 0) ship AiCfg with
+   * `smartTrackMode=1` (the current mode) yet `smartTrackModeAbility=0` (the
+   * firmware's own "no, this device cannot autotrack" flag). Without a PT
+   * motor a doorbell physically cannot autotrack, so when the caller flags the
+   * device as a doorbell AND the firmware admits `smartTrackModeAbility=0`,
+   * trust the firmware and return false. Verified against UID
+   * 9527000ICL1T1MDS: smartTrackMode=1, smartTrackModeAbility=0,
+   * ptzType=0, ptzMode="none", doorbellVersion=31.
+   *
    * @param channel - Channel number (0-based)
-   * @param options - Optional timeout
+   * @param options - Optional timeout and doorbell context hint
    * @returns true if autotracking is supported, false otherwise
    */
   async probeAutotrackingSupport(
     channel: number,
-    options?: { timeoutMs?: number },
+    options?: { timeoutMs?: number; isDoorbell?: boolean },
   ): Promise<boolean> {
     const ch = this.normalizeChannel(channel);
     const timeoutMs = options?.timeoutMs ?? 1500;
@@ -11701,6 +11711,20 @@ export class ReolinkBaichuanApi {
       const xml = await this.sendXml({ cmdId: 299, channel: ch, timeoutMs });
       const smartTrackModeRaw = getXmlText(xml, "smartTrackMode");
       const smartTrackMode = Number(smartTrackModeRaw ?? 0);
+      const smartTrackModeAbilityRaw = getXmlText(
+        xml,
+        "smartTrackModeAbility",
+      );
+      const smartTrackModeAbility = smartTrackModeAbilityRaw === undefined
+        ? undefined
+        : Number(smartTrackModeAbilityRaw);
+      if (
+        options?.isDoorbell &&
+        Number.isFinite(smartTrackModeAbility) &&
+        smartTrackModeAbility === 0
+      ) {
+        return false;
+      }
       return smartTrackMode > 0;
     } catch {
       return false;
@@ -11850,9 +11874,13 @@ export class ReolinkBaichuanApi {
     // Probe autotracking support via AiCfg (cmd 299)
     // smartTrackMode > 0 indicates the device truly supports autotracking
     // Note: autoPt in SupportInfo can be a false positive (e.g., NVR channels report autoPt=1
-    // but aiTrack.ver=0 in CGI abilities and smartTrackMode=0 in AiCfg)
+    // but aiTrack.ver=0 in CGI abilities and smartTrackMode=0 in AiCfg). Doorbell-class
+    // firmwares ship smartTrackMode=1 with smartTrackModeAbility=0 even on PT-less
+    // hardware; passing `isDoorbell` makes the probe trust the firmware's
+    // categorical "0" ability flag on doorbells (mirrors the floodlight rule).
     const autotrackingProbed = await this.probeAutotrackingSupport(ch, {
       timeoutMs: 1500,
+      isDoorbell: capabilities.isDoorbell === true,
     });
     capabilities.hasAutotracking = autotrackingProbed;
 

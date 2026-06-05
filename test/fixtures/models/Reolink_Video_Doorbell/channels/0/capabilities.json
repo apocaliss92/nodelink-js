@@ -12,7 +12,7 @@
     "hasFloodlight": false,
     "hasPir": true,
     "isDoorbell": true,
-    "hasAutotracking": true,
+    "hasAutotracking": false,
     "hasWirelessChime": false,
     "ptzMode": "none"
   },
