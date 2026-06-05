@@ -38,6 +38,38 @@ export type AutoDetectInputs = {
   udpDiscoveryMethod?: BaichuanClientOptions["udpDiscoveryMethod"];
 };
 
+export type UdpDiscoveryMethod = NonNullable<
+  BaichuanClientOptions["udpDiscoveryMethod"]
+>;
+
+/**
+ * All BCUDP discovery methods, in the order they should be raced when a UID is available.
+ */
+export const ALL_UDP_DISCOVERY_METHODS: readonly UdpDiscoveryMethod[] = [
+  "local-direct",
+  "local-broadcast",
+  "remote",
+  "relay",
+  "map",
+] as const;
+
+/**
+ * Select which BCUDP discovery methods can actually run given the current UID state.
+ *
+ * Without a UID, only `local-direct` works: it is the sole method that does not require
+ * BCUDP P2P UID lookup. All other methods (`local-broadcast`, `remote`, `relay`, `map`)
+ * need the UID either to broadcast a "find UID X" query on the LAN or to look the device
+ * up via Reolink's P2P servers, and `createBaichuanApi()` rejects them synchronously when
+ * the UID is missing — so including them in the race is dead code that only spams errors.
+ */
+export function selectViableUdpMethods(
+  hasUid: boolean,
+  methods: readonly UdpDiscoveryMethod[] = ALL_UDP_DISCOVERY_METHODS,
+): UdpDiscoveryMethod[] {
+  if (hasUid) return [...methods];
+  return methods.filter((m) => m === "local-direct");
+}
+
 /**
  * Device types detected by autodetect.
  * - camera: Regular TCP camera
@@ -793,10 +825,11 @@ export async function autoDetectDeviceType(
       }
       if (!normalizedUid) {
         logger?.log?.(
-          `[AutoDetect] UID discovery failed; will try local-direct without UID first.`,
+          `[AutoDetect] UID discovery failed; only local-direct can run without a UID. ` +
+            `If the camera is sleeping or on a different subnet, supply its UID to enable ` +
+            `BCUDP P2P fallback (remote/relay/map) which can wake it via Reolink's servers.`,
         );
-        // Don't throw here - local-direct can work without UID
-        // Other methods will fail if UID is required
+        // Don't throw here - local-direct can still work if the camera is awake on the LAN
       }
     }
 
@@ -887,15 +920,10 @@ export async function autoDetectDeviceType(
         };
       };
 
-      const methodsToTry: Array<
-        NonNullable<BaichuanClientOptions["udpDiscoveryMethod"]>
-      > = ["local-direct", "local-broadcast", "remote", "relay", "map"];
-
-      // Filter to only methods that can work without a UID — remote/relay/map
-      // require P2P UID lookup and will fail immediately if none is available.
-      const viableMethods = normalizedUid
-        ? methodsToTry
-        : methodsToTry.filter((m) => m === "local-direct" || m === "local-broadcast");
+      // Filter to only methods that can work without a UID. Only local-direct can run
+      // without one — every other BCUDP method requires UID lookup (LAN broadcast for the
+      // device, or P2P via Reolink servers) and createBaichuanApi() rejects them synchronously.
+      const viableMethods = selectViableUdpMethods(Boolean(normalizedUid));
 
       return await runUdpMethodsParallel(
         viableMethods,
