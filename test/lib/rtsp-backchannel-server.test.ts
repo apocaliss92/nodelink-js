@@ -489,4 +489,56 @@ describe("BaichuanRtspBackchannelServer — multi-tenant path routing", () => {
         }),
     ).toThrow();
   });
+
+  it("injectSocket lets LocalRtspMux hand off a connection after path dispatch", async () => {
+    // Simulate what LocalRtspMux does: accept the connection, parse the
+    // first line, then hand the socket to the backchannel server with the
+    // bytes it already pulled off the socket.
+    //
+    // This is the same-port scenario: video servers and the backchannel
+    // share one TCP listener (the mux), so the backchannel server is
+    // never start()ed — it's only fed sockets.
+    const apiA = makeApi();
+    const server = new BaichuanRtspBackchannelServer({
+      routes: { "/cameraA": { api: apiA, channel: 0 } },
+      listenHost: "127.0.0.1",
+      listenPort: 0, // unused — mux owns the port
+      logger: silentLogger,
+    });
+
+    // Stand up a tiny ad-hoc TCP listener that mimics the mux: read up
+    // to the first CRLF, then call injectSocket with the buffered bytes.
+    const muxListener = net.createServer((socket) => {
+      let buf = Buffer.alloc(0);
+      const onData = (chunk: Buffer) => {
+        buf = Buffer.concat([buf, chunk]);
+        if (buf.indexOf("\r\n") < 0) return;
+        socket.off("data", onData);
+        socket.pause();
+        server.injectSocket(socket, buf);
+        socket.resume();
+      };
+      socket.on("data", onData);
+    });
+    await new Promise<void>((resolve) =>
+      muxListener.listen(0, "127.0.0.1", () => resolve()),
+    );
+    const port = (muxListener.address() as net.AddressInfo).port;
+
+    try {
+      const sock = net.createConnection(port, "127.0.0.1");
+      await new Promise<void>((r) => sock.once("connect", () => r()));
+
+      const describe = await rtspRequest(
+        sock,
+        "DESCRIBE rtsp://127.0.0.1/cameraA RTSP/1.0\r\nCSeq: 1\r\n\r\n",
+      );
+      expect(describe.status).toBe(200);
+      expect(describe.body).toContain("audiobackchannel");
+
+      sock.destroy();
+    } finally {
+      await new Promise<void>((resolve) => muxListener.close(() => resolve()));
+    }
+  });
 });

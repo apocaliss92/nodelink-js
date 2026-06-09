@@ -1572,17 +1572,23 @@ export default function SettingsPage() {
 
             {/* RTSP backchannel — orthogonal to restreamer choice. Frigate's
                 bundled go2rtc sends operator audio over RTSP RECORD; the
-                shared listener serves every camera under `/<cameraName>`. */}
+                shared listener serves every camera under `/<cameraName>`.
+                In local restreamer mode it piggy-backs on the same
+                LocalRtspMux port that already serves video. */}
             <div className={cardCls}>
               <span className={labelCls}>RTSP Backchannel (Frigate 2-way audio)</span>
               <div className="text-[var(--color-foreground-muted)] text-xs mb-2">
-                Exposes one shared RTSP listener that accepts operator-mic audio
-                from Frigate / go2rtc and forwards it to the camera&apos;s talk
-                channel. Path scheme: <code>/&lt;cameraName&gt;</code> — one port
-                serves every configured camera.
+                Accepts operator-mic audio from Frigate / go2rtc and forwards it
+                to the camera&apos;s talk channel. Path scheme:{" "}
+                <code>/&lt;cameraName&gt;</code> — one port serves every camera.
               </div>
               {(() => {
-                const t = settings.talk ?? { enabled: false, port: 8555, bindHost: "0.0.0.0" };
+                const t = settings.talk ?? { enabled: false, port: 18556, bindHost: "0.0.0.0" };
+                const isLocal = (settings.restreamer ?? "go2rtc") === "local";
+                const localPort = settings.localRtsp?.port ?? 8554;
+                const localBind = settings.localRtsp?.bindHost ?? "0.0.0.0";
+                const effectivePort = isLocal ? localPort : t.port;
+                const effectiveBind = isLocal ? localBind : t.bindHost;
                 return (
                   <>
                     <label className="flex items-center gap-2 mb-2">
@@ -1598,45 +1604,57 @@ export default function SettingsPage() {
                       />
                       <span>Enable backchannel listener</span>
                     </label>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <span className={labelCls} style={{ fontSize: 12 }}>Port</span>
-                        <input
-                          type="number"
-                          value={t.port}
-                          min={1}
-                          max={65535}
-                          onChange={(e) =>
-                            setSettings({
-                              ...settings,
-                              talk: { ...t, port: Number(e.target.value) },
-                            })
-                          }
-                          className={inputCls}
-                          style={{ width: 140 }}
-                        />
+                    {isLocal ? (
+                      <div className="text-[var(--color-foreground-muted)] text-xs mb-2">
+                        <strong>Local restreamer mode</strong>: talk shares the
+                        RTSP mux port ({localBind}:{localPort}). Video paths use{" "}
+                        <code>/&lt;cameraName&gt;/main</code>, backchannel uses{" "}
+                        <code>/&lt;cameraName&gt;</code>. No separate port to
+                        open.
                       </div>
-                      <div>
-                        <span className={labelCls} style={{ fontSize: 12 }}>Bind host</span>
-                        <input
-                          type="text"
-                          value={t.bindHost}
-                          onChange={(e) =>
-                            setSettings({
-                              ...settings,
-                              talk: { ...t, bindHost: e.target.value },
-                            })
-                          }
-                          className={inputCls}
-                        />
+                    ) : (
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <span className={labelCls} style={{ fontSize: 12 }}>Port</span>
+                          <input
+                            type="number"
+                            value={t.port}
+                            min={1}
+                            max={65535}
+                            onChange={(e) =>
+                              setSettings({
+                                ...settings,
+                                talk: { ...t, port: Number(e.target.value) },
+                              })
+                            }
+                            className={inputCls}
+                            style={{ width: 140 }}
+                          />
+                        </div>
+                        <div>
+                          <span className={labelCls} style={{ fontSize: 12 }}>Bind host</span>
+                          <input
+                            type="text"
+                            value={t.bindHost}
+                            onChange={(e) =>
+                              setSettings({
+                                ...settings,
+                                talk: { ...t, bindHost: e.target.value },
+                              })
+                            }
+                            className={inputCls}
+                          />
+                        </div>
                       </div>
-                    </div>
+                    )}
                     <div className="text-[var(--color-foreground-muted)] text-xs mt-2">
-                      Example Frigate go2rtc URL once enabled:
-                      {" "}
+                      Example Frigate go2rtc URL once enabled:{" "}
                       <code>
-                        rtsp://&lt;host&gt;:{t.port}/&lt;cameraName&gt;?backchannel=1
+                        rtsp://&lt;host&gt;:{effectivePort}/&lt;cameraName&gt;?backchannel=1
                       </code>
+                      {effectiveBind === "127.0.0.1" && (
+                        <span> — bind <code>0.0.0.0</code> if Frigate runs in a separate container.</span>
+                      )}
                     </div>
                   </>
                 );

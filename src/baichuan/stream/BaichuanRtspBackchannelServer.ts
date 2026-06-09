@@ -302,6 +302,26 @@ export class BaichuanRtspBackchannelServer extends EventEmitter<{
     });
   }
 
+  /**
+   * Inject an already-accepted client socket from a multiplexer (e.g.
+   * `LocalRtspMux`) that owns the listening port. The mux reads the first
+   * RTSP request line to dispatch on path, then hands the socket over;
+   * any bytes already consumed during routing are replayed via
+   * `socket.unshift()` so the RTSP parser in `handleConnection` sees the
+   * full original request.
+   *
+   * This lets the same backchannel server share a TCP port with the
+   * per-profile video servers when the manager runs in local restreamer
+   * mode. The server doesn't need to be `start()`ed in that mode — `stop()`
+   * still tears down any in-flight talk sessions correctly.
+   */
+  injectSocket(socket: net.Socket, preReadData: Buffer): void {
+    if (preReadData && preReadData.length > 0) {
+      socket.unshift(preReadData);
+    }
+    this.handleConnection(socket);
+  }
+
   async stop(): Promise<void> {
     const server = this.server;
     this.server = undefined;
