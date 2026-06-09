@@ -1,4 +1,6 @@
-import { mulaw, alaw } from "alawmulaw";
+import alawmulaw from "alawmulaw";
+
+const { mulaw, alaw } = alawmulaw;
 
 // Thin typed wrappers around the `alawmulaw` package so consumers don't depend
 // on its untyped surface. Used to decode RTP PCMU (RFC 3551 payload type 0)
