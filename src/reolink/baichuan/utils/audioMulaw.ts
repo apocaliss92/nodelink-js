@@ -1,24 +1,43 @@
-// `alawmulaw` is a CJS-only package without an `exports` field. Two
-// consumers care about this:
-//
-// 1. Native Node ESM. When Node loads our dist/index.js it can use
-//    `import { mulaw, alaw } from "alawmulaw"` if cjs-module-lexer can
-//    pick the names out of the CJS module — but on this version it
-//    cannot, so the only stable form is a default + destructure.
-// 2. Webpack (e.g. the Scrypted plugin bundling our ESM dist). Webpack
-//    does static analysis and rejects the default import with
-//    "export 'default' was not found" because `alawmulaw` has no real
-//    `default` export.
-//
-// `import * as ns from "alawmulaw"` is the one syntax that works for
-// both: Node treats the namespace as the CJS module.exports, and
-// webpack hoists the named members from the namespace.
-import * as alawmulaw from "alawmulaw";
+// `alawmulaw` is a UMD/CJS-only package whose named codecs live on
+// `module.exports`. Different runtimes surface them differently:
+//   - tsup CJS / webpack: __toESM interop hoists the names onto the
+//     namespace, so `ns.mulaw`/`ns.alaw` work directly.
+//   - Node ESM loading our ESM bundle: cjs-module-lexer can't see the
+//     UMD-style `d.mulaw = ...; d.alaw = ...;` assignments in
+//     `dist/alawmulaw.js`, so the namespace exposes only `default`
+//     (= the full `module.exports`); `ns.mulaw`/`ns.alaw` are undefined
+//     and calling `.decode()` on them throws.
+// Probe both shapes at runtime so the same source works for every
+// consumer (Node ESM via our dist, Node CJS via dist/index.cjs, and
+// webpack-bundled consumers like the Scrypted plugin).
+import * as alawmulawNs from "alawmulaw";
 
-const { mulaw, alaw } = alawmulaw as unknown as {
-  mulaw: { decode(bytes: Uint8Array | Buffer): Int16Array };
-  alaw: { decode(bytes: Uint8Array | Buffer): Int16Array };
-};
+interface AlawmulawCodec {
+  decode(bytes: Uint8Array | Buffer): Int16Array;
+}
+
+interface AlawmulawShape {
+  mulaw: AlawmulawCodec;
+  alaw: AlawmulawCodec;
+}
+
+function resolveAlawmulaw(): AlawmulawShape {
+  const ns = alawmulawNs as unknown as Partial<AlawmulawShape> & {
+    default?: Partial<AlawmulawShape>;
+  };
+  if (ns.mulaw && ns.alaw) {
+    return { mulaw: ns.mulaw, alaw: ns.alaw };
+  }
+  const fallback = ns.default;
+  if (fallback?.mulaw && fallback?.alaw) {
+    return { mulaw: fallback.mulaw, alaw: fallback.alaw };
+  }
+  throw new Error(
+    "alawmulaw: unable to resolve mulaw/alaw codecs from module exports",
+  );
+}
+
+const { mulaw, alaw } = resolveAlawmulaw();
 
 // Thin typed wrappers around the `alawmulaw` package so consumers don't depend
 // on its untyped surface. Used to decode RTP PCMU (RFC 3551 payload type 0)
