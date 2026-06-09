@@ -1,5 +1,5 @@
 /**
- * Multi-camera RTSP backchannel for Frigate 2-way audio.
+ * Multi-camera RTSP backchannel for Frigate 2-way audio. Always-on.
  *
  * Piggy-backs on the same LocalRtspMux that serves video. Video paths take
  * `/<cameraName>/<profile>`, backchannel takes `/<cameraName>` (no profile
@@ -11,7 +11,7 @@
 import type { ReolinkBaichuanApi } from "@apocaliss92/nodelink-js";
 import { BaichuanRtspBackchannelServer } from "@apocaliss92/nodelink-js";
 import { createSourceLogger } from "./logger.js";
-import { getSettings, getCamera } from "./settings-store.js";
+import { getCamera } from "./settings-store.js";
 import {
   onApiConnected,
   onApiDisconnected,
@@ -102,6 +102,7 @@ function ensureListenersWired(): void {
 }
 
 export interface BackchannelStatus {
+  /** Always true now — kept for API stability with older clients. */
   readonly enabled: boolean;
   readonly listening: boolean;
   readonly host: string | null;
@@ -110,10 +111,6 @@ export interface BackchannelStatus {
 }
 
 export function getBackchannelStatus(): BackchannelStatus {
-  const cfg = getSettings().talk;
-  if (!cfg.enabled) {
-    return { enabled: false, listening: false, host: null, port: null, routes: [] };
-  }
   const mux = getLocalRtspMux();
   return {
     enabled: true,
@@ -125,16 +122,10 @@ export function getBackchannelStatus(): BackchannelStatus {
 }
 
 /**
- * Attach the backchannel to the shared LocalRtspMux when enabled in settings.
- * Safe to call repeatedly. When disabled in settings the call is a no-op
- * (and any running attachment is torn down, so the toggle takes effect).
+ * Attach the backchannel to the shared LocalRtspMux. Called once at boot —
+ * always-on now, no settings flag to consult.
  */
 export async function startBackchannelServer(): Promise<void> {
-  const cfg = getSettings().talk;
-  if (!cfg.enabled) {
-    if (server) await stopBackchannelServer();
-    return;
-  }
   if (server) return;
 
   ensureListenersWired();
@@ -170,14 +161,4 @@ export async function stopBackchannelServer(): Promise<void> {
       `error while stopping: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
-}
-
-/** Settings-update hook — call after `talk.enabled` changes. */
-export async function reconcileBackchannelServer(): Promise<void> {
-  const cfg = getSettings().talk;
-  if (!cfg.enabled) {
-    if (server) await stopBackchannelServer();
-    return;
-  }
-  if (!server) await startBackchannelServer();
 }

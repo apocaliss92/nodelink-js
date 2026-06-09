@@ -319,6 +319,133 @@ describe("parseShowInfo", () => {
 });
 
 // ---------------------------------------------------------------------------
+// ffmpeg stats parser + verdict — exercised against the real module exports
+// (these are pure + side-effect-free so we can import them directly).
+// ---------------------------------------------------------------------------
+
+import {
+  parseFfmpegStats,
+  computeVerdict,
+  type DiagnosticEvent as RealDiagnosticEvent,
+  type DiagnosticReport as RealDiagnosticReport,
+} from "../../app/src/stream-diagnostic";
+
+describe("parseFfmpegStats", () => {
+  it("parses a full progress line", () => {
+    const line =
+      "frame=  240 fps= 25 q=-1.0 Lsize=N/A time=00:00:09.60 bitrate=N/A dup=2 drop=4 speed=1.02x";
+    expect(parseFfmpegStats(line)).toEqual({ frame: 240, dup: 2, drop: 4 });
+  });
+
+  it("defaults dup/drop to 0 when ffmpeg omits them", () => {
+    const line = "frame=  100 fps= 25 q=-1.0 size=N/A time=00:00:04.00 speed=1x";
+    expect(parseFfmpegStats(line)).toEqual({ frame: 100, dup: 0, drop: 0 });
+  });
+
+  it("returns null when there is no `frame=` field", () => {
+    expect(parseFfmpegStats("[h264 @ 0x...] reference picture missing")).toBeNull();
+  });
+
+  it("tolerates a leading carriage-return continuation", () => {
+    const line = "\rframe=  500 fps= 25 dup=0 drop=12 speed=1x";
+    expect(parseFfmpegStats(line)).toEqual({ frame: 500, dup: 0, drop: 12 });
+  });
+});
+
+describe("computeVerdict", () => {
+  const baseVideo: RealDiagnosticReport["video"] = {
+    codec: "H264",
+    resolution: { width: 1920, height: 1080 },
+    fpsAvg: 15,
+    fpsMin: 14,
+    expectedFps: 15,
+    bitrateAvgKbps: 2048,
+    bitratePeakKbps: 3000,
+    keyframeIntervalAvgMs: 2000,
+    keyframeIntervalMaxMs: 2100,
+    totalFrames: 4500,
+    totalKeyframes: 75,
+    droppedFrames: 0,
+    duplicatedFrames: 0,
+  };
+  const baseProtocol: RealDiagnosticReport["protocol"] = {
+    totalBaichuanFrames: 4500,
+    avgFrameSizeBytes: 4096,
+    maxFrameSizeBytes: 8192,
+    avgInterFrameGapMs: 33,
+    maxInterFrameGapMs: 50,
+    decryptionErrors: 0,
+    corruptedHeaders: 0,
+    connectionResets: 0,
+  };
+
+  it("returns ok with empty reasons when every signal is in range", () => {
+    const v = computeVerdict(baseVideo, baseProtocol, []);
+    expect(v.severity).toBe("ok");
+    expect(v.reasons).toEqual([]);
+    expect(v.fpsDeltaPct).toBe(0);
+    expect(v.dropRatePct).toBe(0);
+  });
+
+  it("warns when fps observed drifts > 5% from expected", () => {
+    const v = computeVerdict({ ...baseVideo, fpsAvg: 14 }, baseProtocol, []);
+    expect(v.severity).toBe("warn");
+    expect(v.fpsDeltaPct).toBe(-7);
+    expect(v.reasons[0]).toMatch(/Observed FPS/);
+  });
+
+  it("errors when fps observed drifts > 15% from expected", () => {
+    const v = computeVerdict({ ...baseVideo, fpsAvg: 12 }, baseProtocol, []);
+    expect(v.severity).toBe("error");
+    expect(v.fpsDeltaPct).toBe(-20);
+  });
+
+  it("warns at >0.5% ffmpeg drop rate", () => {
+    const v = computeVerdict(
+      { ...baseVideo, droppedFrames: 50 }, // 50 / 4500 = 1.11%
+      baseProtocol,
+      [],
+    );
+    expect(v.severity).toBe("warn");
+    expect(v.dropRatePct).toBeGreaterThan(0.5);
+    expect(v.reasons.some((r) => r.includes("ffmpeg dropped"))).toBe(true);
+  });
+
+  it("errors at >2% ffmpeg drop rate AND keeps the worse severity", () => {
+    const v = computeVerdict(
+      { ...baseVideo, fpsAvg: 14, droppedFrames: 200 }, // 4.4% drop
+      baseProtocol,
+      [],
+    );
+    expect(v.severity).toBe("error"); // drop > 2% escalates even if fps only warns
+  });
+
+  it("escalates to error on a single connection reset", () => {
+    const v = computeVerdict(baseVideo, { ...baseProtocol, connectionResets: 1 }, []);
+    expect(v.severity).toBe("error");
+    expect(v.reasons.some((r) => r.includes("connection reset"))).toBe(true);
+  });
+
+  it("propagates severity from the events list", () => {
+    const errorEvt: RealDiagnosticEvent = {
+      timestamp: new Date().toISOString(),
+      offsetMs: 1000,
+      type: "frame_corruption",
+      severity: "error",
+      details: "x",
+    };
+    const v = computeVerdict(baseVideo, baseProtocol, [errorEvt]);
+    expect(v.severity).toBe("error");
+  });
+
+  it("leaves fpsDeltaPct null when expectedFps is unknown", () => {
+    const v = computeVerdict({ ...baseVideo, expectedFps: null }, baseProtocol, []);
+    expect(v.fpsDeltaPct).toBeNull();
+    expect(v.severity).toBe("ok");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Session key
 // ---------------------------------------------------------------------------
 

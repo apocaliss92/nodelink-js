@@ -561,7 +561,6 @@ export default function SettingsPage() {
         homeassistant: settings.homeassistant,
         localRtsp: settings.localRtsp,
         frigate: settings.frigate,
-        talk: settings.talk,
       });
       // Re-connect to Frigate after saving (connection params may have changed)
       if (settings.frigate?.host) {
@@ -1298,46 +1297,30 @@ export default function SettingsPage() {
               </div>
             </div>
 
-            {/* RTSP backchannel — piggy-backs on the LocalRtspMux port and
-                handles Frigate's RTSP RECORD operator-mic audio. */}
+            {/* RTSP backchannel — always-on, info-only card. The listener
+                piggy-backs on the LocalRtspMux port above. */}
             <div className={cardCls}>
-              <span className={labelCls}>RTSP Backchannel (Frigate 2-way audio)</span>
-              <div className="text-[var(--color-foreground-muted)] text-xs mb-2">
-                Accepts operator-mic audio from Frigate and forwards it to the
-                camera&apos;s talk channel. Shares the LocalRtspMux port; path
-                scheme: <code>/&lt;cameraName&gt;</code> for backchannel,{" "}
+              <span className={labelCls}>RTSP Backchannel (2-way audio)</span>
+              <div className="text-[var(--color-foreground-muted)] text-xs">
+                Always on. Accepts operator-mic audio over RTSP RECORD and
+                forwards it to the camera&apos;s talk channel. Shares the RTSP
+                port above; path scheme:{" "}
+                <code>/&lt;cameraName&gt;</code> for backchannel,{" "}
                 <code>/&lt;cameraName&gt;/&lt;profile&gt;</code> for video.
               </div>
               {(() => {
-                const t = settings.talk ?? { enabled: false };
                 const port = settings.localRtsp?.port ?? 8554;
                 const bind = settings.localRtsp?.bindHost ?? "0.0.0.0";
                 return (
-                  <>
-                    <label className="flex items-center gap-2 mb-2">
-                      <input
-                        type="checkbox"
-                        checked={t.enabled}
-                        disabled={!canEditSettings}
-                        onChange={(e) =>
-                          setSettings({
-                            ...settings,
-                            talk: { ...t, enabled: e.target.checked },
-                          })
-                        }
-                      />
-                      <span>Enable backchannel listener</span>
-                    </label>
-                    <div className="text-[var(--color-foreground-muted)] text-xs mt-2">
-                      Example Frigate URL once enabled:{" "}
-                      <code>
-                        rtsp://&lt;host&gt;:{port}/&lt;cameraName&gt;?backchannel=1
-                      </code>
-                      {bind === "127.0.0.1" && (
-                        <span> — bind <code>0.0.0.0</code> if Frigate runs in a separate container.</span>
-                      )}
-                    </div>
-                  </>
+                  <div className="text-[var(--color-foreground-muted)] text-xs mt-2">
+                    Talk URL:{" "}
+                    <code>
+                      rtsp://&lt;host&gt;:{port}/&lt;cameraName&gt;?backchannel=1
+                    </code>
+                    {bind === "127.0.0.1" && (
+                      <span> — set the RTSP bind host to <code>0.0.0.0</code> if the consumer runs in a separate container.</span>
+                    )}
+                  </div>
                 );
               })()}
             </div>

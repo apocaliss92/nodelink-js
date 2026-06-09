@@ -22,6 +22,66 @@ export interface NewsItem {
 
 export const NEWS_ITEMS: NewsItem[] = [
   {
+    id: "2026-06-09-analyzer-verdict",
+    date: "2026-06-09",
+    title: "Stream analyzer now reports drops + a verdict",
+    body: (
+      <div className="space-y-2 text-sm text-[var(--color-foreground-muted)]">
+        <p>
+          When you run <strong className="text-[var(--color-foreground)]">Analyze</strong>{" "}
+          on a stream now, the report includes two new signals on the video
+          block:
+          {" "}
+          <strong className="text-[var(--color-foreground)]">
+            droppedFrames
+          </strong>{" "}
+          / <strong className="text-[var(--color-foreground)]">duplicatedFrames</strong>{" "}
+          parsed from ffmpeg&apos;s progress line, and{" "}
+          <strong className="text-[var(--color-foreground)]">expectedFps</strong>{" "}
+          read from the camera&apos;s own stream metadata. That tells you,
+          without guesswork, whether the server-side stream was actually
+          delivered at the rate the camera advertised.
+        </p>
+        <p>
+          On top of those, every report now has a{" "}
+          <strong className="text-[var(--color-foreground)]">verdict</strong>{" "}
+          field with a top-line{" "}
+          <code>severity</code> (<code>ok</code> / <code>warn</code> /{" "}
+          <code>error</code>) and the list of reasons that pushed it there
+          — fps drift, ffmpeg drop rate, Baichuan connection resets,
+          decryption / corruption events. If downstream consumers (Frigate,
+          Home Assistant, an NVR) report missing or dropped frames, run the
+          analyzer first: a green verdict tells you the server stream was
+          healthy and the loss happened downstream.
+        </p>
+      </div>
+    ),
+  },
+  {
+    id: "2026-06-09-talk-always-on",
+    date: "2026-06-09",
+    title: "Two-way audio is on by default",
+    body: (
+      <div className="space-y-2 text-sm text-[var(--color-foreground-muted)]">
+        <p>
+          The RTSP backchannel — the path Frigate and any other RTSP RECORD
+          consumer uses to push operator-mic audio to a camera — is now{" "}
+          <strong className="text-[var(--color-foreground)]">always on</strong>.
+          The enable/disable toggle in Settings has been removed; the
+          listener shares the same RTSP port as video and serves every
+          configured camera under <code>/&lt;cameraName&gt;</code> the
+          moment the camera connects.
+        </p>
+        <p>
+          If you had the toggle off in your existing install, the migration
+          turns it on at first boot. The endpoint is generic RTSP RECORD —
+          any client that speaks ONVIF backchannel can use it, not just
+          Frigate.
+        </p>
+      </div>
+    ),
+  },
+  {
     id: "2026-06-09-go2rtc-removed",
     date: "2026-06-09",
     title: "Streaming now runs natively — go2rtc sidecar removed",

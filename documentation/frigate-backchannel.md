@@ -101,9 +101,9 @@ shared across all profiles of the same camera.
 
 ## Manager setup (Docker)
 
-Enable in **Settings → RTSP → RTSP Backchannel** (off by default). Once on,
-every configured camera is auto-registered under `/<sanitized-camera-name>`
-as its underlying API connects, and removed on disconnect.
+**Always on.** Every configured camera is auto-registered under
+`/<sanitized-camera-name>` as its underlying API connects, and removed on
+disconnect. No settings toggle.
 
 The backchannel piggy-backs on the same `LocalRtspMux` TCP port that serves
 video. Video paths take `/<cameraName>/<profile>`, backchannel takes

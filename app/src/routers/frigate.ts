@@ -225,6 +225,42 @@ function buildFrigateCameraBlock(
   return block;
 }
 
+/**
+ * Build the two-source go2rtc stream definition for a camera so Frigate's
+ * bundled go2rtc can serve both the live feed and the talk-back leg to
+ * the manager. Frigate's web UI talk button only works when the camera's
+ * `live.stream_name` points at a go2rtc stream that has a backchannel
+ * source — that's exactly what this builds.
+ *
+ * Returns:
+ *   - The first entry is the main video URL (highest resolution profile,
+ *     or whatever the caller passed first).
+ *   - The second entry is the camera-level backchannel URL on the same
+ *     port (`?backchannel=1` is a hint to go2rtc to use RECORD).
+ *
+ * Skip when the manager doesn't expose a main-profile RTSP URL (e.g.,
+ * battery cam never came online and we only have placeholders).
+ */
+function buildGo2rtcStreamSources(
+  serviceIp: string,
+  rtspPort: number,
+  cameraName: string,
+  streams: StreamInput[],
+): string[] {
+  const sorted = [...streams].sort((a, b) => {
+    const pa = parseResolution(a.resolution);
+    const pb = parseResolution(b.resolution);
+    return ((pb?.width ?? 0) * (pb?.height ?? 0)) - ((pa?.width ?? 0) * (pa?.height ?? 0));
+  });
+  const main = sorted.find((s) => s.profile === "main") ?? sorted[0];
+  if (!main) return [];
+  const sanitized = sanitizeCameraName(cameraName);
+  return [
+    main.rtspUrl,
+    `rtsp://${serviceIp}:${rtspPort}/${sanitized}?backchannel=1`,
+  ];
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -543,7 +579,7 @@ export const frigateRouter = router({
         alreadyInFrigate: boolean;
         block: Record<string, any>;
         yaml: string;
-        go2rtcStreams: Record<string, string>;
+        go2rtcStreams: Record<string, string[]>;
         go2rtcYaml: string;
         /** Stream info with codec/resolution for display. */
         streamInfo: Array<{
@@ -613,12 +649,22 @@ export const frigateRouter = router({
           }
         }
 
-        // Preview always uses direct RTSP (nodelink) as default.
-        // Per-camera _useFrigateGo2rtc override is applied client-side in rebuildYaml.
         const block = buildFrigateCameraBlock(streams, true);
 
-        // go2rtc streams are populated client-side when _useFrigateGo2rtc is toggled
-        const go2rtcStreams: Record<string, string> = {};
+        // Always-on go2rtc stream so Frigate's UI / talk button picks up
+        // the backchannel without manual config. Pointed via `live.stream_name`
+        // below.
+        const go2rtcSources = buildGo2rtcStreamSources(
+          serviceIp,
+          rtspPort,
+          camera.name,
+          streams,
+        );
+        const go2rtcStreams: Record<string, string[]> =
+          go2rtcSources.length > 0 ? { [frigateName]: go2rtcSources } : {};
+        if (go2rtcSources.length > 0) {
+          block.live = { stream_name: frigateName };
+        }
 
         // Generate YAML preview using the yaml package
         const cameraYaml = YAML.stringify(
@@ -686,7 +732,9 @@ export const frigateRouter = router({
          *  Each value is the YAML text for that camera (parsed server-side). */
         cameras: z.record(z.string(), z.string()),
         /** go2rtc stream definitions to merge (for Frigate go2rtc restream mode). */
-        go2rtcStreams: z.record(z.string(), z.string()).default({}),
+        go2rtcStreams: z
+          .record(z.string(), z.union([z.string(), z.array(z.string())]))
+          .default({}),
         /** Frigate camera names to remove. */
         removeNames: z.array(z.string()).default([]),
         /** Whether to restart Frigate after saving. */

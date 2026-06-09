@@ -166,16 +166,10 @@ export const SettingsSchema = z.object({
     })
     .default({}),
 
-  /**
-   * RTSP backchannel (Frigate 2-way audio). Enabled below adds backchannel
-   * routes to the same LocalRtspMux that already serves video — no extra
-   * port. Each camera is reachable at `/<sanitized-cameraName>`.
-   */
-  talk: z
-    .object({
-      enabled: z.boolean().default(false),
-    })
-    .default({}),
+  // RTSP backchannel (Frigate 2-way audio) is always-on and rides the same
+  // LocalRtspMux that serves video. Each camera is reachable at
+  // `/<sanitizedCameraName>` on `settings.localRtsp.port`. There used to be
+  // a `talk.enabled` toggle here — see migration `drop-talk-enabled-v1`.
 
   // Frigate integration (config management)
   frigate: z
@@ -365,6 +359,14 @@ export function loadSettings(): Settings {
       // legacy keys are gone from disk too — keeps backups and downgrade
       // diffs clean.
       id: "drop-go2rtc-v1",
+      apply: () => null,
+    },
+    {
+      // talk.enabled / talk.port / talk.bindHost are gone — the backchannel
+      // is always on and shares the LocalRtspMux port. Marker-only: Zod
+      // already strips the unknown keys on parse, the migration just forces
+      // a rewrite so legacy installs no longer carry a stale `talk` block.
+      id: "drop-talk-enabled-v1",
       apply: () => null,
     },
   ];

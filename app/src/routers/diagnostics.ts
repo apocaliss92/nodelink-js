@@ -93,11 +93,40 @@ export const diagnosticsRouter = router({
       const camera = config.cameras.find((c: { id: string }) => c.id === input.cameraId);
       const cameraName = camera?.name ?? input.cameraId;
 
+      // Best-effort: read the camera's advertised frame rate for this
+      // profile so the report can score `verdict.fpsDeltaPct`. Skipped if
+      // the camera isn't reachable or the lookup throws — the diagnostic
+      // still works, just without the expected/observed delta signal.
+      let expectedFps: number | null = null;
+      try {
+        const { getOrCreateApiConnection } = await import("../rtsp-manager.js");
+        const api = await getOrCreateApiConnection(input.cameraId);
+        const isNvr = camera?.isNvr || !!camera?.nvrId;
+        const opts = await api.buildVideoStreamOptions({
+          channel: input.channel,
+          onNvr: isNvr,
+        });
+        const match = opts.nativeStreams.find(
+          (s) =>
+            s.profile === input.profile &&
+            (s.channel ?? 0) === input.channel,
+        );
+        const fr = match?.metadata?.frameRate;
+        if (typeof fr === "number" && fr > 0) expectedFps = fr;
+      } catch (err) {
+        logger.warn(
+          `Diagnostic ${key}: failed to read expectedFps (continuing without it): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+
       const diagnostic = new StreamDiagnostic(server, cameraName, {
         cameraId: input.cameraId,
         profile: input.profile,
         channel: input.channel,
         durationMinutes: input.durationMinutes,
+        expectedFps,
       });
 
       // Fire-and-forget: start() awaits the full feed loop (up to

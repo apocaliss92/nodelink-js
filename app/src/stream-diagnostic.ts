@@ -22,6 +22,13 @@ export interface DiagnosticOptions {
   readonly profile: string;
   readonly channel: number;
   readonly durationMinutes: number;
+  /**
+   * Frame rate the camera advertises for this profile (`getStreamMetadata`
+   * `frameRate`). Optional — the router may or may not have it ready when
+   * the diagnostic is started. Surfaces in the report as
+   * `video.expectedFps` and powers the `verdict.fpsDeltaPct` signal.
+   */
+  readonly expectedFps?: number | null;
 }
 
 export interface DiagnosticReport {
@@ -37,12 +44,26 @@ export interface DiagnosticReport {
     readonly resolution: { readonly width: number; readonly height: number };
     readonly fpsAvg: number;
     readonly fpsMin: number;
+    /**
+     * Frame rate the camera advertises for this profile (`getStreamMetadata`
+     * `frameRate`). Null when the camera didn't report one. Compared against
+     * `fpsAvg` to produce the `verdict.fpsDeltaPct` signal.
+     */
+    readonly expectedFps: number | null;
     readonly bitrateAvgKbps: number;
     readonly bitratePeakKbps: number;
     readonly keyframeIntervalAvgMs: number;
     readonly keyframeIntervalMaxMs: number;
     readonly totalFrames: number;
     readonly totalKeyframes: number;
+    /**
+     * Frames ffmpeg explicitly dropped during the analysis window — from
+     * `frame=N drop=N` in ffmpeg's stderr status line. Includes drops caused
+     * by PTS jumps, decoder overload, or the input stream not keeping up.
+     */
+    readonly droppedFrames: number;
+    /** Frames ffmpeg duplicated to keep the timebase steady (`dup=N`). */
+    readonly duplicatedFrames: number;
   };
   readonly audio: {
     readonly detected: boolean;
@@ -61,6 +82,22 @@ export interface DiagnosticReport {
     readonly connectionResets: number;
   };
   readonly events: readonly DiagnosticEvent[];
+  /**
+   * Deterministic top-line summary computed from the metrics above. Lets the
+   * UI answer "is the server-side stream healthy?" without forcing the user
+   * to interpret every field by hand. Severity escalates through ok / warn /
+   * error; `reasons` lists every signal that contributed (empty when ok).
+   */
+  readonly verdict: DiagnosticVerdict;
+}
+
+export interface DiagnosticVerdict {
+  readonly severity: "ok" | "warn" | "error";
+  readonly reasons: readonly string[];
+  /** `100 * (fpsAvg / expectedFps - 1)`, rounded. Null when expected is unknown. */
+  readonly fpsDeltaPct: number | null;
+  /** `100 * droppedFrames / totalFrames`, rounded to 2 decimals. */
+  readonly dropRatePct: number;
 }
 
 export interface DiagnosticEvent {
@@ -245,6 +282,124 @@ export function parseShowInfo(line: string): ParsedShowInfo | null {
   };
 }
 
+export interface ParsedFfmpegStats {
+  readonly frame: number;
+  readonly dup: number;
+  readonly drop: number;
+}
+
+/**
+ * Parse the periodic ffmpeg progress line:
+ *   `frame=  123 fps= 25 q=-1.0 Lsize=N/A time=00:00:05.00 bitrate=N/A
+ *    dup=2 drop=4 speed=1.02x`
+ *
+ * ffmpeg only emits `dup=` / `drop=` when those counters are non-zero, so
+ * the parser tolerates either or both being absent. Returns null when the
+ * line doesn't look like a progress line.
+ */
+export function parseFfmpegStats(line: string): ParsedFfmpegStats | null {
+  // `frame=` is mandatory on every progress line; if it's missing this is
+  // not a stats update.
+  const frameMatch = line.match(/(?:^|\s)frame=\s*(\d+)/);
+  if (!frameMatch) return null;
+  const dupMatch = line.match(/(?:^|\s)dup=\s*(\d+)/);
+  const dropMatch = line.match(/(?:^|\s)drop=\s*(\d+)/);
+  return {
+    frame: parseInt(frameMatch[1]!, 10),
+    dup: dupMatch ? parseInt(dupMatch[1]!, 10) : 0,
+    drop: dropMatch ? parseInt(dropMatch[1]!, 10) : 0,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Verdict computation — deterministic, no side effects.
+// ---------------------------------------------------------------------------
+
+/**
+ * Thresholds used to escalate the verdict severity. Tuned so the typical
+ * "healthy server, network's fine, just lossy downstream consumer" report
+ * comes out `"ok"` even at 28-30fps mainstream throughput.
+ */
+const FPS_DELTA_WARN_PCT = 5;   // |observed/expected - 1| > 5%  → warn
+const FPS_DELTA_ERROR_PCT = 15; // > 15%                          → error
+const DROP_RATE_WARN_PCT = 0.5; // ffmpeg drop rate > 0.5%        → warn
+const DROP_RATE_ERROR_PCT = 2;  // > 2%                            → error
+
+export function computeVerdict(
+  video: DiagnosticReport["video"],
+  protocol: DiagnosticReport["protocol"],
+  events: readonly DiagnosticEvent[],
+): DiagnosticVerdict {
+  const reasons: string[] = [];
+  let severity: DiagnosticVerdict["severity"] = "ok";
+
+  const escalate = (next: "warn" | "error") => {
+    if (severity === "error") return;
+    if (next === "error") severity = "error";
+    else if (severity === "ok") severity = "warn";
+  };
+
+  const fpsDeltaPct =
+    video.expectedFps && video.expectedFps > 0
+      ? Math.round((video.fpsAvg / video.expectedFps - 1) * 100)
+      : null;
+  if (fpsDeltaPct !== null) {
+    const abs = Math.abs(fpsDeltaPct);
+    if (abs > FPS_DELTA_ERROR_PCT) {
+      escalate("error");
+      reasons.push(
+        `Observed FPS ${video.fpsAvg.toFixed(1)} vs expected ${video.expectedFps} (${fpsDeltaPct > 0 ? "+" : ""}${fpsDeltaPct}%)`,
+      );
+    } else if (abs > FPS_DELTA_WARN_PCT) {
+      escalate("warn");
+      reasons.push(
+        `Observed FPS ${video.fpsAvg.toFixed(1)} vs expected ${video.expectedFps} (${fpsDeltaPct > 0 ? "+" : ""}${fpsDeltaPct}%)`,
+      );
+    }
+  }
+
+  const dropRatePct =
+    video.totalFrames > 0
+      ? Math.round((video.droppedFrames / video.totalFrames) * 10_000) / 100
+      : 0;
+  if (dropRatePct > DROP_RATE_ERROR_PCT) {
+    escalate("error");
+    reasons.push(
+      `ffmpeg dropped ${video.droppedFrames}/${video.totalFrames} frames (${dropRatePct}%)`,
+    );
+  } else if (dropRatePct > DROP_RATE_WARN_PCT) {
+    escalate("warn");
+    reasons.push(
+      `ffmpeg dropped ${video.droppedFrames}/${video.totalFrames} frames (${dropRatePct}%)`,
+    );
+  }
+
+  if (protocol.connectionResets > 0) {
+    escalate("error");
+    reasons.push(`${protocol.connectionResets} connection reset(s) on the Baichuan socket`);
+  }
+  if (protocol.decryptionErrors > 0) {
+    escalate("warn");
+    reasons.push(`${protocol.decryptionErrors} decryption error(s)`);
+  }
+  if (protocol.corruptedHeaders > 0) {
+    escalate("warn");
+    reasons.push(`${protocol.corruptedHeaders} corrupted Baichuan header(s)`);
+  }
+
+  const eventErrors = events.filter((e) => e.severity === "error").length;
+  const eventWarns = events.filter((e) => e.severity === "warning").length;
+  if (eventErrors > 0) {
+    escalate("error");
+    reasons.push(`${eventErrors} error event(s) — see events list for details`);
+  } else if (eventWarns > 0) {
+    escalate("warn");
+    reasons.push(`${eventWarns} warning event(s) — see events list for details`);
+  }
+
+  return { severity, reasons, fpsDeltaPct, dropRatePct };
+}
+
 // ---------------------------------------------------------------------------
 // StreamDiagnostic class
 // ---------------------------------------------------------------------------
@@ -291,6 +446,12 @@ export class StreamDiagnostic extends EventEmitter<DiagnosticEvents> {
   private corruptedHeaders = 0;
   private connectionResets = 0;
   private totalKeyframes = 0;
+  // ffmpeg `dup=N drop=N` counters from the progress line. ffmpeg only
+  // emits these once they leave zero, so the parser may skip the first
+  // few progress lines; we keep the highest seen value (counters are
+  // monotonically non-decreasing inside one run).
+  private ffmpegDuplicatedFrames = 0;
+  private ffmpegDroppedFrames = 0;
 
   constructor(
     server: DiagnosticStreamServer,
@@ -352,11 +513,16 @@ export class StreamDiagnostic extends EventEmitter<DiagnosticEvents> {
         stdio: ["pipe", "ignore", "pipe"],
       });
 
-      // Parse ffmpeg stderr
+      // Parse ffmpeg stderr. ffmpeg uses `\r` to overwrite the periodic
+      // progress line ("frame=… fps=… dup=… drop=…") in place, then emits a
+      // `\n` only when the process flushes. Split on EITHER delimiter so each
+      // progress update lands in the parser as it arrives — otherwise the
+      // dup/drop counters lag the actual ffmpeg state by 30+ seconds and a
+      // short analysis would report drop=0 even when ffmpeg is dropping.
       let stderrBuffer = "";
       this.ffmpeg.stderr?.on("data", (chunk: Buffer) => {
         stderrBuffer += chunk.toString();
-        const lines = stderrBuffer.split("\n");
+        const lines = stderrBuffer.split(/[\r\n]/);
         stderrBuffer = lines.pop() ?? "";
         for (const line of lines) {
           this.parseFfmpegLine(line);
@@ -536,6 +702,21 @@ export class StreamDiagnostic extends EventEmitter<DiagnosticEvents> {
           this.detectedResolution = { width: w, height: h };
         }
       }
+      return;
+    }
+
+    // ffmpeg progress line. The counters are monotonic within a run so we
+    // simply keep the highest value we've seen — protects against parser
+    // races where a later progress update arrives before an earlier one
+    // (we splice on both `\r` and `\n`).
+    const stats = parseFfmpegStats(line);
+    if (stats) {
+      if (stats.drop > this.ffmpegDroppedFrames) {
+        this.ffmpegDroppedFrames = stats.drop;
+      }
+      if (stats.dup > this.ffmpegDuplicatedFrames) {
+        this.ffmpegDuplicatedFrames = stats.dup;
+      }
     }
   }
 
@@ -623,6 +804,36 @@ export class StreamDiagnostic extends EventEmitter<DiagnosticEvents> {
     const maxFrameSize =
       this.frameSizes.length > 0 ? Math.max(...this.frameSizes) : 0;
 
+    const video: DiagnosticReport["video"] = {
+      codec: this.detectedCodec,
+      resolution: this.detectedResolution,
+      fpsAvg: Math.round(fpsAvg * 100) / 100,
+      fpsMin: Math.round(fpsMin * 100) / 100,
+      expectedFps:
+        typeof this.options.expectedFps === "number" && this.options.expectedFps > 0
+          ? this.options.expectedFps
+          : null,
+      bitrateAvgKbps: Math.round(bitrateAvgKbps),
+      bitratePeakKbps: Math.round(bitratePeakKbps),
+      keyframeIntervalAvgMs: Math.round(avgKfInterval),
+      keyframeIntervalMaxMs: Math.round(maxKfInterval),
+      totalFrames: this.frameSizes.length,
+      totalKeyframes: this.totalKeyframes,
+      droppedFrames: this.ffmpegDroppedFrames,
+      duplicatedFrames: this.ffmpegDuplicatedFrames,
+    };
+    const protocol: DiagnosticReport["protocol"] = {
+      totalBaichuanFrames: this.frameSizes.length,
+      avgFrameSizeBytes: Math.round(avgFrameSize),
+      maxFrameSizeBytes: maxFrameSize,
+      avgInterFrameGapMs: Math.round(avgGap * 100) / 100,
+      maxInterFrameGapMs: Math.round(maxGap),
+      decryptionErrors: this.decryptionErrors,
+      corruptedHeaders: this.corruptedHeaders,
+      connectionResets: this.connectionResets,
+    };
+    const events = this.diagEvents;
+
     return {
       cameraId: this.options.cameraId,
       cameraName: this.cameraName,
@@ -631,35 +842,16 @@ export class StreamDiagnostic extends EventEmitter<DiagnosticEvents> {
       startedAt: new Date(this.startTime).toISOString(),
       completedAt,
       durationSeconds: Math.round(durationSeconds * 100) / 100,
-      video: {
-        codec: this.detectedCodec,
-        resolution: this.detectedResolution,
-        fpsAvg: Math.round(fpsAvg * 100) / 100,
-        fpsMin: Math.round(fpsMin * 100) / 100,
-        bitrateAvgKbps: Math.round(bitrateAvgKbps),
-        bitratePeakKbps: Math.round(bitratePeakKbps),
-        keyframeIntervalAvgMs: Math.round(avgKfInterval),
-        keyframeIntervalMaxMs: Math.round(maxKfInterval),
-        totalFrames: this.frameSizes.length,
-        totalKeyframes: this.totalKeyframes,
-      },
+      video,
       audio: {
         detected: audioInfo !== null,
         codec: audioInfo ? audioInfo.codec : null,
         sampleRate: audioInfo ? audioInfo.sampleRate : null,
         channels: audioInfo ? audioInfo.channels : null,
       },
-      protocol: {
-        totalBaichuanFrames: this.frameSizes.length,
-        avgFrameSizeBytes: Math.round(avgFrameSize),
-        maxFrameSizeBytes: maxFrameSize,
-        avgInterFrameGapMs: Math.round(avgGap * 100) / 100,
-        maxInterFrameGapMs: Math.round(maxGap),
-        decryptionErrors: this.decryptionErrors,
-        corruptedHeaders: this.corruptedHeaders,
-        connectionResets: this.connectionResets,
-      },
-      events: this.diagEvents,
+      protocol,
+      events,
+      verdict: computeVerdict(video, protocol, events),
     };
   }
 
