@@ -1,8 +1,25 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Eye, Activity, Link, Copy, Users } from 'lucide-react';
-import { trpcMutation } from '../../api';
+import { trpcMutation, trpcQuery } from '../../api';
 import type { AvailableStream } from './types';
 import { copyToClipboard } from './utils';
+
+type DiagStatus = 'idle' | 'running' | 'complete' | 'error';
+type DiagStatusResponse =
+  | { status: 'idle' | 'running' | 'completed' | 'error' | 'stopping'; progress: number }
+  | { status: 'not_found'; progress: 0 };
+
+function mapBackendStatus(
+  remote: DiagStatusResponse['status'],
+  current: DiagStatus,
+): DiagStatus {
+  if (remote === 'running' || remote === 'stopping') return 'running';
+  if (remote === 'completed') return 'complete';
+  if (remote === 'error') return 'error';
+  // not_found / idle: if we were running, the session was cleaned up after
+  // its grace period — treat as complete (best-effort), otherwise stay idle.
+  return current === 'running' ? 'complete' : 'idle';
+}
 
 interface StreamProfileCardProps {
   cameraId: string;
@@ -38,9 +55,65 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, str
   // Battery cameras stream on-demand: show preview/URLs even when the native stream
   // is not running (idle). Clicking Preview will wake the camera.
   const showOnDemand = isBattery && !isActive;
-  const [diagStatus, setDiagStatus] = useState<'idle' | 'running' | 'complete' | 'error'>('idle');
+  const [diagStatus, setDiagStatus] = useState<DiagStatus>('idle');
+  const [diagProgress, setDiagProgress] = useState(0);
   const [urlsOpen, setUrlsOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
+
+  // Deterministic sessionId mirrors stream-diagnostic.ts:sessionKey().
+  const diagSessionId = `${cameraId}:${stream.profile}:${stream.channel}`;
+
+  // Mount-time reconciliation: a session may already be running because the
+  // user navigated away mid-analysis and came back, or another client kicked
+  // it off. Read the backend once and seed local state.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await trpcQuery<DiagStatusResponse>('diagnostics.status', {
+          sessionId: diagSessionId,
+        });
+        if (cancelled) return;
+        setDiagStatus(mapBackendStatus(res.status, 'idle'));
+        setDiagProgress(res.progress ?? 0);
+      } catch {
+        /* leave state untouched */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [diagSessionId]);
+
+  // Poll while we believe a session is running. Triggered both by the
+  // mount-time reconciliation above and by startAnalysis() setting 'running'.
+  useEffect(() => {
+    if (diagStatus !== 'running') return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = async () => {
+      try {
+        const res = await trpcQuery<DiagStatusResponse>('diagnostics.status', {
+          sessionId: diagSessionId,
+        });
+        if (cancelled) return;
+        const next = mapBackendStatus(res.status, 'running');
+        setDiagProgress(res.progress ?? 0);
+        setDiagStatus(next);
+        if (next === 'running') {
+          timer = setTimeout(tick, 1500);
+        }
+      } catch {
+        if (cancelled) return;
+        timer = setTimeout(tick, 3000);
+      }
+    };
+    timer = setTimeout(tick, 1500);
+
+    return () => {
+      cancelled = true;
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [diagStatus, diagSessionId]);
 
   // Resolve effective mode: per-server mode wins (backend truth),
   // fall back to the global settings flag when the server is idle.
@@ -90,15 +163,18 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, str
   const hasPreview = !isLocal;
 
   const startAnalysis = async () => {
+    setDiagProgress(0);
     setDiagStatus('running');
     try {
+      // The mutation now returns immediately after the backend kicks off the
+      // session; the polling effect above takes over and drives the UI to
+      // complete/error.
       await trpcMutation('diagnostics.start', {
         cameraId,
         profile: stream.profile,
         channel: stream.channel,
         durationMinutes: 5,
       });
-      setDiagStatus('complete');
     } catch {
       setDiagStatus('error');
     }
@@ -224,7 +300,7 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, str
         )}
         {diagStatus === 'running' && (
           <span className="flex items-center gap-1 text-[10px] text-[var(--color-warning)] px-2 py-0.5">
-            <Activity size={10} /> Analyzing...
+            <Activity size={10} /> Analyzing… {diagProgress}%
           </span>
         )}
         {diagStatus === 'complete' && (

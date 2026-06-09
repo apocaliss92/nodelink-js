@@ -2,6 +2,7 @@ import { z } from "zod";
 import { router, publicProcedure } from "../trpc.js";
 import {
   StreamDiagnostic,
+  checkFfmpeg,
   getActiveSession,
   getActiveSessions,
   sessionKey,
@@ -13,6 +14,9 @@ import {
 } from "../stream-diagnostic.js";
 import { getRtspServerInstance } from "../rtsp-manager.js";
 import { getConfig } from "../settings-store.js";
+import { createSourceLogger } from "../logger.js";
+
+const logger = createSourceLogger("diagnostic");
 
 /**
  * Duck-type check: any stream server that implements the three required
@@ -78,12 +82,17 @@ export const diagnosticsRouter = router({
         );
       }
 
+      // Preflight ffmpeg here so the client sees a synchronous error instead
+      // of a session that silently fails right after we return.
+      if (!checkFfmpeg()) {
+        throw new Error("ffmpeg not found on PATH");
+      }
+
       // Resolve camera name
       const config = getConfig();
       const camera = config.cameras.find((c: { id: string }) => c.id === input.cameraId);
       const cameraName = camera?.name ?? input.cameraId;
 
-      // Create and start the diagnostic session
       const diagnostic = new StreamDiagnostic(server, cameraName, {
         cameraId: input.cameraId,
         profile: input.profile,
@@ -91,7 +100,15 @@ export const diagnosticsRouter = router({
         durationMinutes: input.durationMinutes,
       });
 
-      await diagnostic.start();
+      // Fire-and-forget: start() awaits the full feed loop (up to
+      // durationMinutes). Returning the sessionId immediately lets the
+      // client navigate away and reconcile via diagnostics.status without
+      // holding open a multi-minute HTTP request.
+      void diagnostic.start().catch((err) => {
+        logger.error(
+          `Diagnostic session ${key} failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
       return { sessionId: key };
     }),
 

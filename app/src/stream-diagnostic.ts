@@ -84,6 +84,7 @@ export interface DiagnosticEvent {
 }
 
 export const MAX_CONCURRENT_SESSIONS = 5;
+const TERMINAL_SESSION_TTL_MS = 60_000;
 
 // ---------------------------------------------------------------------------
 // Lightweight interface for the server dependency (avoids importing the heavy
@@ -437,15 +438,22 @@ export class StreamDiagnostic extends EventEmitter<DiagnosticEvents> {
       this.emit("error", error);
       throw error;
     } finally {
-      // Cleanup
       this.server.unsubscribeDiagnostic(this.diagId);
+      this.generator = null;
+      // Keep the session reachable for a short grace period so a polling
+      // client can observe the terminal status (completed/error) after the
+      // feed loop finishes. Without this delay the next /status call would
+      // return "not_found" and the UI would lose the result.
       const key = sessionKey(
         this.options.cameraId,
         this.options.profile,
         this.options.channel,
       );
-      activeSessions.delete(key);
-      this.generator = null;
+      setTimeout(() => {
+        if (activeSessions.get(key) === this) {
+          activeSessions.delete(key);
+        }
+      }, TERMINAL_SESSION_TTL_MS);
     }
   }
 
