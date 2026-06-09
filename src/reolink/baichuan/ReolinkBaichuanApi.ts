@@ -12559,6 +12559,61 @@ export class ReolinkBaichuanApi {
       );
     }
 
+    // Augment the model-name match with the firmware-level signals that
+    // `getDualLensChannelInfo` uses — otherwise new dual-lens devices that
+    // are NOT yet in our DUAL_LENS_MODELS allowlist (e.g. Reolink OMVI 3i,
+    // CES 2026) end up classified as single-lens by this code path while
+    // the rest of the lib correctly reports them as dual. That mismatch
+    // makes the `compositeOnly` branch return an empty stream list, which
+    // breaks the Scrypted plugin's parent-device VideoCamera registration
+    // ("Cannot read properties of undefined (reading 'destinations')" in
+    // the Scrypted NVR).
+    //
+    // Cheap to check: SupportInfo carries `channelNum` and a per-channel
+    // `binoCfg` flag; either firing is enough to classify the device as
+    // multifocal here without changing detection results for any model the
+    // allowlist already covers.
+    if (!isMultiFocal) {
+      try {
+        const caps = await this.getDeviceCapabilities(channel);
+        const channelNumRaw = caps.support?.channelNum;
+        const channelNum =
+          typeof channelNumRaw === "string"
+            ? Number.parseInt(channelNumRaw, 10)
+            : channelNumRaw;
+        if (Number.isFinite(channelNum) && (channelNum as number) >= 2) {
+          isMultiFocal = true;
+        }
+        if (!isMultiFocal) {
+          const items = (caps.support as { items?: Array<Record<string, unknown>> })
+            ?.items;
+          if (Array.isArray(items)) {
+            for (const it of items) {
+              const raw = (it as { binoCfg?: unknown }).binoCfg;
+              const v =
+                typeof raw === "number"
+                  ? raw
+                  : typeof raw === "string"
+                    ? Number(raw)
+                    : 0;
+              if (Number.isFinite(v) && v > 0) {
+                isMultiFocal = true;
+                break;
+              }
+            }
+          }
+        }
+      } catch (e) {
+        logDebug(
+          "[ReolinkBaichuanApi] buildVideoStreamOptions: SupportInfo dual-lens probe failed",
+          {
+            host: this.host,
+            err: e instanceof Error ? e.message : String(e),
+          },
+        );
+      }
+    }
+
     logDebug("[ReolinkBaichuanApi] buildVideoStreamOptions: inputs", {
       host: this.host,
       onNvr,
