@@ -147,7 +147,7 @@ async function newServerOnEphemeralPort(
 }
 
 describe("BaichuanRtspBackchannelServer", () => {
-  it("OPTIONS advertises only the backchannel-relevant methods", async () => {
+  it("OPTIONS advertises the backchannel-relevant methods (RECORD + PLAY compat)", async () => {
     const { server, port } = await newServerOnEphemeralPort(makeApi());
     try {
       const socket = net.createConnection(port, "127.0.0.1");
@@ -162,8 +162,12 @@ describe("BaichuanRtspBackchannelServer", () => {
       expect(resp.headers.Public).toContain("SETUP");
       expect(resp.headers.Public).toContain("RECORD");
       expect(resp.headers.Public).toContain("TEARDOWN");
-      // No PLAY/PAUSE — this server is talk-only.
-      expect(resp.headers.Public).not.toContain("PLAY");
+      // PLAY is advertised as a compatibility synonym for RECORD — Frigate's
+      // bundled go2rtc 1.9.x sends it instead of RECORD on backchannel
+      // sources. We still don't advertise PAUSE (this server is talk-only,
+      // not a regular RTSP playback server).
+      expect(resp.headers.Public).toContain("PLAY");
+      expect(resp.headers.Public).not.toContain("PAUSE");
       socket.destroy();
     } finally {
       await server.stop();
@@ -269,6 +273,63 @@ describe("BaichuanRtspBackchannelServer", () => {
       expect(teardown.status).toBe(200);
       await new Promise((r) => setTimeout(r, 20));
       expect(fake.stopped()).toBe(true);
+      socket.destroy();
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("accepts PLAY as a synonym for RECORD (Frigate go2rtc 1.9.x compat)", async () => {
+    // Frigate's bundled go2rtc opens SETUP with RTP/AVP/TCP, gets back a
+    // Transport with `mode=record`, then sends PLAY instead of RECORD. The
+    // server must treat PLAY on an open backchannel session as if it were
+    // RECORD — otherwise every Frigate-driven talk session dies on a 501.
+    const fake = makeFakeTalk();
+    const createSpy = vi.fn(async () => fake.session);
+    const api = makeApi({ talk: fake.session, createSpy });
+    const { server, port } = await newServerOnEphemeralPort(api);
+    try {
+      const socket = net.createConnection(port, "127.0.0.1");
+      await new Promise<void>((r) => socket.once("connect", () => r()));
+
+      const setup = await rtspRequest(
+        socket,
+        "SETUP rtsp://127.0.0.1/talk/audiobackchannel RTSP/1.0\r\n" +
+          "CSeq: 1\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n",
+      );
+      expect(setup.status).toBe(200);
+      const sessionId = setup.headers.Session ?? "";
+
+      const play = await rtspRequest(
+        socket,
+        `PLAY rtsp://127.0.0.1/talk RTSP/1.0\r\nCSeq: 2\r\nSession: ${sessionId}\r\n\r\n`,
+      );
+      expect(play.status).toBe(200);
+      expect(createSpy).toHaveBeenCalledTimes(1);
+      socket.destroy();
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("DESCRIBE Content-Base reflects the request URL host (not the bind config)", async () => {
+    // In mux mode the bind host/port are placeholders (127.0.0.1:0). The
+    // SDP's Content-Base must point at the host:port the CLIENT used to
+    // dial us so the follow-up PLAY/RECORD URLs are valid — Frigate's
+    // go2rtc parses Content-Base and uses it for the next request URLs.
+    const { server, port } = await newServerOnEphemeralPort(makeApi());
+    try {
+      const socket = net.createConnection(port, "127.0.0.1");
+      await new Promise<void>((r) => socket.once("connect", () => r()));
+      const resp = await rtspRequest(
+        socket,
+        `DESCRIBE rtsp://manager.local:8554/talk?backchannel=1 RTSP/1.0\r\n` +
+          `CSeq: 1\r\nHost: manager.local:8554\r\n\r\n`,
+      );
+      expect(resp.status).toBe(200);
+      expect(resp.headers["Content-Base"]).toBe(
+        "rtsp://manager.local:8554/talk/",
+      );
       socket.destroy();
     } finally {
       await server.stop();

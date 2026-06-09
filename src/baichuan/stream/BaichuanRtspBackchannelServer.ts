@@ -146,6 +146,28 @@ function extractBasePath(url: string): string | null {
   return normalizePath(pathPart);
 }
 
+/**
+ * Pull the `host[:port]` the client used to dial us out of the request.
+ * Prefers the absolute Request-URI (`rtsp://host:port/path`) which is what
+ * RTSP clients always send for the first request, then falls back to the
+ * Host header — necessary in mux mode where our own `listenHost:listenPort`
+ * are placeholder values (the listener is owned by the LocalRtspMux). The
+ * server uses this to build a Content-Base the client can actually dial.
+ */
+function extractPublicEndpoint(url: string, requestText: string): string | null {
+  if (url && (url.startsWith("rtsp://") || url.startsWith("rtsps://"))) {
+    try {
+      const u = new URL(url.replace(/^rtsps?:/, "http:"));
+      if (u.host) return u.host;
+    } catch {
+      // fall through to Host header lookup
+    }
+  }
+  const hostHeader = requestText.match(/^Host:\s*([^\r\n]+)/im)?.[1]?.trim();
+  if (hostHeader) return hostHeader;
+  return null;
+}
+
 export class BaichuanRtspBackchannelServer extends EventEmitter<{
   client: [string];
   clientDisconnected: [string];
@@ -539,8 +561,13 @@ export class BaichuanRtspBackchannelServer extends EventEmitter<{
 
     switch (method) {
       case "OPTIONS":
+        // Advertise PLAY too. Some clients (Frigate's bundled go2rtc 1.9.x,
+        // older ffmpeg) send PLAY after a SETUP that returned `mode=record`
+        // and expect a 200 OK; we accept PLAY as a synonym for RECORD on
+        // the audiobackchannel track so those clients can open the talk
+        // session without manually downgrading their behaviour.
         send(200, "OK", {
-          Public: "OPTIONS, DESCRIBE, SETUP, RECORD, TEARDOWN",
+          Public: "OPTIONS, DESCRIBE, SETUP, PLAY, RECORD, TEARDOWN",
         });
         return;
 
@@ -553,16 +580,25 @@ export class BaichuanRtspBackchannelServer extends EventEmitter<{
           send(404, "Not Found");
           return;
         }
+        // Content-Base needs to reflect the host:port the CLIENT used to
+        // dial us, not the server's bind config — in mux mode bind is
+        // `127.0.0.1:0` (the listener is shared with the video mux) so
+        // emitting that here makes the client follow up with PLAY on an
+        // unreachable URL. Pull the public endpoint from the request URL
+        // first, fall back to the Host header, fall back to the bind
+        // config only as last resort.
+        const publicEndpoint = extractPublicEndpoint(url, requestText) ??
+          `${this.listenHost}:${this.listenPort}`;
         const sdp = this.buildSdp();
         this.logger.debug?.(
-          `[BaichuanRtspBackchannelServer] DESCRIBE sdp for ${clientId} path=${resolved.path}:\n${sdp.trimEnd()}`,
+          `[BaichuanRtspBackchannelServer] DESCRIBE sdp for ${clientId} path=${resolved.path} publicEndpoint=${publicEndpoint}:\n${sdp.trimEnd()}`,
         );
         send(
           200,
           "OK",
           {
             "Content-Type": "application/sdp",
-            "Content-Base": `rtsp://${this.listenHost}:${this.listenPort}${resolved.path}/`,
+            "Content-Base": `rtsp://${publicEndpoint}${resolved.path}/`,
           },
           sdp,
         );
@@ -627,6 +663,15 @@ export class BaichuanRtspBackchannelServer extends EventEmitter<{
         return;
       }
 
+      // PLAY falls through to RECORD on the audiobackchannel track.
+      // ONVIF-style backchannel SDP advertises `a=sendonly` and SETUP
+      // returns `mode=record`, but Frigate's bundled go2rtc 1.9.10 still
+      // sends PLAY after that — it decides the method from the source
+      // role, not from the SETUP transport mode. Replying 501 here breaks
+      // every Frigate 0.17 setup. Treating PLAY as RECORD on an open
+      // backchannel session is safe: the interleaved RTP bytes flow the
+      // same way regardless of the verb that opened the data leg.
+      case "PLAY":
       case "RECORD": {
         const session = sessionId
           ? Array.from(this.sessionByClient.values()).find(
@@ -635,7 +680,7 @@ export class BaichuanRtspBackchannelServer extends EventEmitter<{
           : this.sessionByClient.get(clientId);
         if (!session) {
           this.logger.warn?.(
-            `[BaichuanRtspBackchannelServer] RECORD without active session client=${clientId} requestedSession=${sessionId ?? "(none)"}`,
+            `[BaichuanRtspBackchannelServer] ${method} without active session client=${clientId} requestedSession=${sessionId ?? "(none)"}`,
           );
           send(454, "Session Not Found");
           return;
