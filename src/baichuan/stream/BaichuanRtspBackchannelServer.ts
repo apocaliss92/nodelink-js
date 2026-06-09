@@ -23,19 +23,56 @@ import { RtspBackchannel } from "./RtspBackchannel";
  * TalkSession on the underlying API and `RtspBackchannel` pumps audio.
  */
 
-export interface BaichuanRtspBackchannelServerOptions {
+/**
+ * A single camera registered on the multi-tenant backchannel server. The
+ * incoming RTSP URL path selects which route handles the RECORD: each route
+ * binds a path (e.g. `/cameraA`) to a `(api, channel)` pair.
+ */
+export interface BackchannelRoute {
   api: ReolinkBaichuanApi;
   /** Camera channel on the device (NVR child or 0 for standalone). */
   channel: number;
+  /**
+   * Optional identifier passed to `createDedicatedTalkSession` so log lines
+   * downstream (BaichuanClient, socket pool) attribute the talk socket to a
+   * specific camera.
+   */
+  deviceId?: string;
+}
+
+export interface BaichuanRtspBackchannelServerOptions {
+  /**
+   * Single-camera (legacy) mode: bind the server to one camera. The `path`
+   * field below is registered as the only route; requests to any path are
+   * accepted (permissive fallback) to preserve existing behavior.
+   *
+   * Mutually exclusive with `routes`. When using multi-tenant mode prefer
+   * passing `routes` (or `addRoute()` after construction) and leave these
+   * three fields undefined.
+   */
+  api?: ReolinkBaichuanApi;
+  channel?: number;
+  /**
+   * Camera-level RTSP path served by this listener in single-camera mode —
+   * e.g. `/talk` (default), `/talk/camera_studio`, `/camera_studio`.
+   */
+  path?: string;
+  /** Single-camera `deviceId` shortcut. See {@link BackchannelRoute}. */
+  deviceId?: string;
+
+  /**
+   * Multi-tenant mode: map of URL path → camera route. The server validates
+   * the incoming RTSP URL against this map and responds 404 to DESCRIBE on
+   * unknown paths. Routes can be added/removed at runtime via
+   * {@link BaichuanRtspBackchannelServer.addRoute} /
+   * {@link BaichuanRtspBackchannelServer.removeRoute}.
+   */
+  routes?: Record<string, BackchannelRoute>;
+
   /** Host to bind the listener to. Default 127.0.0.1. */
   listenHost?: string;
   /** TCP port to bind. Default 8555. */
   listenPort?: number;
-  /**
-   * Camera-level RTSP path served by this listener. Profile-agnostic by
-   * design — e.g. `/talk/camera_studio` or `/camera_studio`. Default: `/talk`.
-   */
-  path?: string;
   logger?: Logger;
 
   /**
@@ -48,12 +85,6 @@ export interface BaichuanRtspBackchannelServerOptions {
   >;
   requireAuth?: boolean;
   authRealm?: string;
-  /**
-   * Optional identifier passed to `createDedicatedTalkSession` so log lines
-   * downstream (BaichuanClient, socket pool) attribute the talk socket to a
-   * specific camera/device.
-   */
-  deviceId?: string;
 }
 
 type AuthCredential = {
@@ -71,7 +102,48 @@ interface BackchannelSessionState {
   socket: net.Socket;
   rtpChannel: number;
   rtcpChannel: number;
+  /** Resolved at SETUP from the request URL path. */
+  route: BackchannelRoute;
+  /** Matched route path (for logging only). */
+  routePath: string;
   handler?: RtspBackchannel;
+}
+
+/** Strip leading/trailing slashes and lowercase nothing (paths are case-sensitive in RTSP). */
+function normalizePath(path: string): string {
+  if (!path) return "/";
+  let p = path;
+  if (!p.startsWith("/")) p = "/" + p;
+  // Drop trailing slash unless root.
+  while (p.length > 1 && p.endsWith("/")) p = p.slice(0, -1);
+  return p;
+}
+
+/**
+ * Extract the camera-level base path from an RTSP request URL, stripping
+ * any `/audiobackchannel` control suffix that SETUP appends and any
+ * `?backchannel=1` style query.
+ */
+function extractBasePath(url: string): string | null {
+  if (!url || url === "*") return null;
+  let pathPart: string;
+  if (url.startsWith("rtsp://") || url.startsWith("rtsps://")) {
+    try {
+      // URL needs a scheme it understands; swap to http for parsing only.
+      const u = new URL(url.replace(/^rtsps?:/, "http:"));
+      pathPart = u.pathname || "/";
+    } catch {
+      return null;
+    }
+  } else {
+    const q = url.indexOf("?");
+    pathPart = q >= 0 ? url.slice(0, q) : url;
+  }
+  // SETUP target is "<basePath>/audiobackchannel" (per our SDP control attr).
+  if (pathPart.endsWith("/audiobackchannel")) {
+    pathPart = pathPart.slice(0, -"/audiobackchannel".length);
+  }
+  return normalizePath(pathPart);
 }
 
 export class BaichuanRtspBackchannelServer extends EventEmitter<{
@@ -79,16 +151,21 @@ export class BaichuanRtspBackchannelServer extends EventEmitter<{
   clientDisconnected: [string];
   error: [Error];
 }> {
-  private readonly api: ReolinkBaichuanApi;
-  private readonly channel: number;
   private readonly listenHost: string;
   private readonly listenPort: number;
-  private readonly path: string;
   private readonly logger: Logger;
   private readonly authCredentials: AuthCredential[];
   private readonly requireAuth: boolean;
   private readonly authRealm: string;
-  private readonly deviceId: string | undefined;
+
+  /**
+   * Path → route table. Single-camera mode stores one entry; multi-tenant
+   * mode can have many. The internal `singleCameraFallback` flag (below)
+   * controls whether an unmatched request falls through to the sole
+   * registered route (legacy behavior) or returns 404 (strict).
+   */
+  private readonly routes = new Map<string, BackchannelRoute>();
+  private readonly singleCameraFallback: boolean;
 
   private server: net.Server | undefined = undefined;
   /** Active backchannel sessions keyed by their per-client unique id. */
@@ -98,11 +175,8 @@ export class BaichuanRtspBackchannelServer extends EventEmitter<{
 
   constructor(options: BaichuanRtspBackchannelServerOptions) {
     super();
-    this.api = options.api;
-    this.channel = options.channel;
     this.listenHost = options.listenHost ?? "127.0.0.1";
     this.listenPort = options.listenPort ?? 8555;
-    this.path = options.path ?? "/talk";
     this.logger = options.logger ?? console;
     this.authCredentials = (options.credentials ?? []).map((c) => ({
       username: c.username,
@@ -113,11 +187,98 @@ export class BaichuanRtspBackchannelServer extends EventEmitter<{
     }));
     this.requireAuth = options.requireAuth ?? this.authCredentials.length > 0;
     this.authRealm = options.authRealm ?? "BaichuanRtspBackchannelServer";
-    this.deviceId = options.deviceId;
+
+    const singleCamera = options.api !== undefined && options.channel !== undefined;
+    const hasRoutes =
+      options.routes !== undefined && Object.keys(options.routes).length > 0;
+    if (singleCamera && hasRoutes) {
+      throw new Error(
+        "BaichuanRtspBackchannelServer: pass either { api, channel } (single camera) or { routes } (multi tenant), not both",
+      );
+    }
+    if (!singleCamera && options.routes === undefined) {
+      throw new Error(
+        "BaichuanRtspBackchannelServer: provide { api, channel } or { routes } (or both via constructor; addRoute() works too)",
+      );
+    }
+
+    if (singleCamera) {
+      const path = normalizePath(options.path ?? "/talk");
+      this.routes.set(path, {
+        api: options.api as ReolinkBaichuanApi,
+        channel: options.channel as number,
+        ...(options.deviceId !== undefined ? { deviceId: options.deviceId } : {}),
+      });
+      this.singleCameraFallback = true;
+    } else {
+      this.singleCameraFallback = false;
+      if (options.routes) {
+        for (const [path, route] of Object.entries(options.routes)) {
+          this.routes.set(normalizePath(path), { ...route });
+        }
+      }
+    }
   }
 
   get listening(): boolean {
     return this.server !== undefined && this.server.listening;
+  }
+
+  /**
+   * Register (or replace) a camera route at runtime. The path is normalized
+   * (leading slash, no trailing slash). The manager uses this to wire a
+   * single shared port to N cameras as they come online.
+   */
+  addRoute(path: string, route: BackchannelRoute): void {
+    const normalized = normalizePath(path);
+    this.routes.set(normalized, { ...route });
+    this.logger.info?.(
+      `[BaichuanRtspBackchannelServer] route registered path=${normalized} channel=${route.channel}${route.deviceId ? ` deviceId="${route.deviceId}"` : ""} totalRoutes=${this.routes.size}`,
+    );
+  }
+
+  /** Remove a route. Returns true if a route was actually removed. */
+  removeRoute(path: string): boolean {
+    const normalized = normalizePath(path);
+    const had = this.routes.delete(normalized);
+    if (had) {
+      this.logger.info?.(
+        `[BaichuanRtspBackchannelServer] route unregistered path=${normalized} totalRoutes=${this.routes.size}`,
+      );
+    }
+    return had;
+  }
+
+  /** Cheap presence check. */
+  hasRoute(path: string): boolean {
+    return this.routes.has(normalizePath(path));
+  }
+
+  /** Snapshot of currently registered route paths. */
+  listRoutes(): readonly string[] {
+    return Array.from(this.routes.keys());
+  }
+
+  /**
+   * Resolve the {@link BackchannelRoute} for an incoming RTSP request URL.
+   * In single-camera mode this falls back to the only registered route to
+   * preserve permissive legacy behavior; in multi-tenant mode unmatched
+   * paths return undefined so the caller can reply 404.
+   */
+  private resolveRouteForRequest(
+    url: string,
+  ): { route: BackchannelRoute; path: string } | undefined {
+    const base = extractBasePath(url);
+    if (base !== null) {
+      const exact = this.routes.get(base);
+      if (exact) return { route: exact, path: base };
+    }
+    if (this.singleCameraFallback && this.routes.size === 1) {
+      const path = this.routes.keys().next().value as string;
+      const route = this.routes.get(path) as BackchannelRoute;
+      return { route, path };
+    }
+    return undefined;
   }
 
   async start(): Promise<void> {
@@ -132,8 +293,9 @@ export class BaichuanRtspBackchannelServer extends EventEmitter<{
       server.listen(this.listenPort, this.listenHost, () => {
         server.removeListener("error", onError);
         this.server = server;
+        const routeList = Array.from(this.routes.keys()).join(", ") || "(none)";
         this.logger.info?.(
-          `[BaichuanRtspBackchannelServer] listening on ${this.listenHost}:${this.listenPort} path=${this.path}`,
+          `[BaichuanRtspBackchannelServer] listening on ${this.listenHost}:${this.listenPort} routes=[${routeList}]`,
         );
         resolve();
       });
@@ -166,7 +328,7 @@ export class BaichuanRtspBackchannelServer extends EventEmitter<{
     const connectedAt = Date.now();
     let buffer = Buffer.alloc(0);
     this.logger.info?.(
-      `[BaichuanRtspBackchannelServer] client connected client=${clientId} path=${this.path}`,
+      `[BaichuanRtspBackchannelServer] client connected client=${clientId}`,
     );
     this.emit("client", clientId);
 
@@ -363,16 +525,24 @@ export class BaichuanRtspBackchannelServer extends EventEmitter<{
         return;
 
       case "DESCRIBE": {
+        const resolved = this.resolveRouteForRequest(url);
+        if (!resolved) {
+          this.logger.warn?.(
+            `[BaichuanRtspBackchannelServer] DESCRIBE no route matches url="${url}" client=${clientId} known=[${Array.from(this.routes.keys()).join(", ")}]`,
+          );
+          send(404, "Not Found");
+          return;
+        }
         const sdp = this.buildSdp();
         this.logger.debug?.(
-          `[BaichuanRtspBackchannelServer] DESCRIBE sdp for ${clientId}:\n${sdp.trimEnd()}`,
+          `[BaichuanRtspBackchannelServer] DESCRIBE sdp for ${clientId} path=${resolved.path}:\n${sdp.trimEnd()}`,
         );
         send(
           200,
           "OK",
           {
             "Content-Type": "application/sdp",
-            "Content-Base": `rtsp://${this.listenHost}:${this.listenPort}${this.path}/`,
+            "Content-Base": `rtsp://${this.listenHost}:${this.listenPort}${resolved.path}/`,
           },
           sdp,
         );
@@ -387,9 +557,17 @@ export class BaichuanRtspBackchannelServer extends EventEmitter<{
           send(404, "Not Found");
           return;
         }
+        const resolved = this.resolveRouteForRequest(url);
+        if (!resolved) {
+          this.logger.warn?.(
+            `[BaichuanRtspBackchannelServer] SETUP no route matches url="${url}" client=${clientId} known=[${Array.from(this.routes.keys()).join(", ")}]`,
+          );
+          send(404, "Not Found");
+          return;
+        }
         const transportLine = requestText.match(/Transport:\s*([^\r\n]+)/i)?.[1] ?? "";
         this.logger.info?.(
-          `[BaichuanRtspBackchannelServer] SETUP transport="${transportLine}" client=${clientId}`,
+          `[BaichuanRtspBackchannelServer] SETUP transport="${transportLine}" client=${clientId} path=${resolved.path}`,
         );
         if (
           !transportLine.toUpperCase().includes("RTP/AVP/TCP") &&
@@ -416,9 +594,11 @@ export class BaichuanRtspBackchannelServer extends EventEmitter<{
           socket,
           rtpChannel: interleaved.rtp,
           rtcpChannel: interleaved.rtcp,
+          route: resolved.route,
+          routePath: resolved.path,
         });
         this.logger.info?.(
-          `[BaichuanRtspBackchannelServer] SETUP ok client=${clientId} session=${sessionId} interleaved=${interleaved.rtp}-${interleaved.rtcp}`,
+          `[BaichuanRtspBackchannelServer] SETUP ok client=${clientId} session=${sessionId} interleaved=${interleaved.rtp}-${interleaved.rtcp} path=${resolved.path}`,
         );
         send(200, "OK", {
           Transport: `RTP/AVP/TCP;unicast;interleaved=${interleaved.rtp}-${interleaved.rtcp};mode=record`,
@@ -447,10 +627,11 @@ export class BaichuanRtspBackchannelServer extends EventEmitter<{
           send(200, "OK", { Session: session.sessionId });
           return;
         }
-        const apiRef = this.api;
-        const channelForCamera = this.channel;
+        const apiRef = session.route.api;
+        const channelForCamera = session.route.channel;
         const loggerRef = this.logger;
-        const deviceIdRef = this.deviceId ?? `rtsp-backchannel-${clientId}`;
+        const deviceIdRef =
+          session.route.deviceId ?? `rtsp-backchannel-${clientId}`;
         const handler = new RtspBackchannel({
           openTalkSession: () =>
             apiRef.createDedicatedTalkSession(channelForCamera, {
@@ -461,7 +642,7 @@ export class BaichuanRtspBackchannelServer extends EventEmitter<{
         });
         const recordStart = Date.now();
         this.logger.info?.(
-          `[BaichuanRtspBackchannelServer] RECORD opening TalkSession client=${clientId} session=${session.sessionId} channel=${channelForCamera} deviceId="${deviceIdRef}"`,
+          `[BaichuanRtspBackchannelServer] RECORD opening TalkSession client=${clientId} session=${session.sessionId} path=${session.routePath} channel=${channelForCamera} deviceId="${deviceIdRef}"`,
         );
         try {
           const talk = await handler.start();

@@ -157,7 +157,10 @@ export type {
   BackchannelCodec,
 } from "./baichuan/stream/RtspBackchannel";
 export { BaichuanRtspBackchannelServer } from "./baichuan/stream/BaichuanRtspBackchannelServer";
-export type { BaichuanRtspBackchannelServerOptions } from "./baichuan/stream/BaichuanRtspBackchannelServer";
+export type {
+  BaichuanRtspBackchannelServerOptions,
+  BackchannelRoute,
+} from "./baichuan/stream/BaichuanRtspBackchannelServer";
 
 // Email-push SMTP intake + bus — re-exported so consumers (Scrypted
 // plugin, manager app, integration tests) can stand up an instance

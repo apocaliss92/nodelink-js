@@ -183,6 +183,27 @@ export const SettingsSchema = z.object({
     })
     .default({}),
 
+  /**
+   * RTSP backchannel (Frigate 2-way audio).
+   *
+   * Single shared TCP listener serves every camera under its own URL path
+   * (`/{cameraName}`), so adding a new camera doesn't require opening a new
+   * port. Disabled by default — flip `enabled` and rely on the path scheme
+   * to point Frigate's bundled go2rtc at the right camera.
+   *
+   * Default port 18556 continues the manager's go2rtc-side numbering
+   * (18554 RTSP, 18555 WebRTC, 18556 talk) and avoids clashing with the
+   * bundled go2rtc binary, which holds 8555 inside the container.
+   */
+  talk: z
+    .object({
+      enabled: z.boolean().default(false),
+      port: z.number().int().min(1).max(65535).default(18556),
+      /** Bind host. Default 0.0.0.0 so Frigate (separate container) can reach it. */
+      bindHost: z.string().default("0.0.0.0"),
+    })
+    .default({}),
+
   // go2rtc restreamer — active when restreamer === "go2rtc"
   go2rtc: z
     .object({

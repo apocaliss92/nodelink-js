@@ -12,6 +12,7 @@ import { diagnosticsRouter } from "./routers/diagnostics.js";
 import { webrtcRouter } from "./routers/webrtc.js";
 import { captureRouter } from "./routers/capture.js";
 import { emailPushRouter } from "./routers/email-push.js";
+import { talkRouter } from "./routers/talk.js";
 export const appRouter = router({
   capture: captureRouter,
   config: configRouter,
@@ -26,6 +27,7 @@ export const appRouter = router({
   diagnostics: diagnosticsRouter,
   webrtc: webrtcRouter,
   emailPush: emailPushRouter,
+  talk: talkRouter,
 });
 
 export type AppRouter = typeof appRouter;

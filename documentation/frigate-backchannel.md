@@ -54,61 +54,97 @@ recognises to switch the audio track from `PLAY` to `RECORD`.
 
 ## Library example
 
+The library supports two construction modes. **Single-camera** (legacy)
+binds one `(api, channel)` to one listener — useful for embedded uses.
+**Multi-tenant** mode shares one TCP listener across N cameras, routing
+incoming RTSP requests by URL path. The Manager Docker container uses
+multi-tenant mode (see the next section).
+
 ```ts
 import {
   ReolinkBaichuanApi,
   BaichuanRtspServer,            // per-profile, video only
-  BaichuanRtspBackchannelServer, // per-camera, talk only
+  BaichuanRtspBackchannelServer, // shared talk listener
 } from "@apocaliss92/nodelink-js";
 
-const api = new ReolinkBaichuanApi({ /* … */ });
+const apiA = new ReolinkBaichuanApi({ /* … */ });
+const apiB = new ReolinkBaichuanApi({ /* … */ });
 
 // One video server per profile (unchanged):
 const videoMain = new BaichuanRtspServer({
-  api, channel: 0, profile: "main",
+  api: apiA, channel: 0, profile: "main",
   listenPort: 8554, path: "/cam/main",
 });
 await videoMain.start();
 
-// One backchannel server per camera (no profile in the path):
+// Single shared backchannel listener, one route per camera. Either pass
+// `routes` up front or call `addRoute(path, route)` at runtime:
 const talk = new BaichuanRtspBackchannelServer({
-  api, channel: 0,
-  listenPort: 8555, path: "/cam",
+  listenPort: 8555,
+  routes: {
+    "/cameraA": { api: apiA, channel: 0 },
+    "/cameraB": { api: apiB, channel: 0 },
+  },
 });
 await talk.start();
+talk.addRoute("/cameraC", { api: apiC, channel: 7 });
+
+// Legacy single-camera form still works — path defaults to "/talk":
+const talkOne = new BaichuanRtspBackchannelServer({
+  api: apiA, channel: 0,
+  listenPort: 8555, path: "/cam",
+});
 ```
 
 The talk server has no hard dependency on the video servers and can be
 shared across all profiles of the same camera.
 
+## Manager setup (Docker)
+
+The Manager image owns a single shared backchannel listener. Enable it in
+**Settings → Restreamer → RTSP Backchannel** (defaults to off). Once
+enabled, every configured camera is registered automatically under
+`/<sanitized-camera-name>` as its underlying API connects, and removed on
+disconnect. The default port is `8555`; bind host defaults to `0.0.0.0`
+so a separate Frigate container can reach it.
+
+Status (including the active route list) is exposed via tRPC at
+`talk.status`.
+
 ## Frigate configuration
 
-Point go2rtc at the video URL and the talk URL separately:
+Point Frigate's bundled go2rtc at the video URL and the talk URL
+separately. With the Manager-managed listener the talk URL shares one
+port for every camera — only the path changes.
 
 ```yaml
 go2rtc:
   streams:
-    camera_studio:
-      # Outbound video served by BaichuanRtspServer
-      - rtsp://manager.local:8554/cam/main
-      # Inbound backchannel served by BaichuanRtspBackchannelServer
-      - rtsp://manager.local:8555/cam?backchannel=1
+    cameretta_daniel:
+      # Outbound video served by the manager's go2rtc (default 18554) or
+      # by BaichuanRtspServer in legacy mode.
+      - rtsp://manager.local:18554/cameretta_daniel/main
+      # Inbound backchannel — single shared listener on port 8555, one path
+      # per camera. The path is the sanitized camera name (lowercased,
+      # non-alphanumerics replaced with "_").
+      - rtsp://manager.local:8555/cameretta_daniel?backchannel=1
 
 cameras:
-  camera_studio:
+  cameretta_daniel:
     ffmpeg:
       inputs:
-        - path: rtsp://127.0.0.1:8554/camera_studio
+        - path: rtsp://127.0.0.1:8554/cameretta_daniel
           roles: [record, detect]
     live:
-      stream_name: camera_studio
+      stream_name: cameretta_daniel
     audio:
       enabled: true
 ```
 
 The `?backchannel=1` query is a hint to go2rtc — it tells go2rtc to use
-RECORD on the audio track instead of PLAY. The dedicated server accepts
-any URL under its bound path; the query is for go2rtc, not for us.
+RECORD on the audio track instead of PLAY. The server validates the
+request URL against its registered routes and responds 404 to DESCRIBE
+on unknown paths (so a typo fails fast).
 
 ## Caveats
 

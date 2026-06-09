@@ -67,6 +67,10 @@ import {
   stopEmailPushServer,
   setEmailPushCameraResolver,
 } from "./email-push-server.js";
+import {
+  startBackchannelServer,
+  stopBackchannelServer,
+} from "./backchannel-manager.js";
 import { stopAllWebRTCSessions } from "./webrtc-native.js";
 import { getActiveSessions } from "./stream-diagnostic.js";
 import {
@@ -1046,6 +1050,15 @@ async function shutdown() {
     });
   }
 
+  // Stop the RTSP backchannel listener so its port is released on restart.
+  try {
+    await stopBackchannelServer();
+  } catch (error) {
+    appLogger.error(`Error stopping backchannel server: ${error}`, {
+      source: "server",
+    });
+  }
+
   server.close();
   process.exit(0);
 }
@@ -1229,6 +1242,18 @@ server.listen(PORT, async () => {
     appLogger.info("Auto-started camera streams", { source: "server" });
   } catch (error) {
     appLogger.error(`Error auto-starting streams: ${error}`, {
+      source: "server",
+    });
+  }
+
+  // Step 2.5: Bring up the shared RTSP backchannel listener (Frigate
+  // 2-way audio). Off by default — only binds when settings.talk.enabled
+  // is true. Routes are populated lazily via onApiConnected listeners
+  // registered inside the backchannel manager.
+  try {
+    await startBackchannelServer();
+  } catch (error) {
+    appLogger.error(`Error starting backchannel server: ${error}`, {
       source: "server",
     });
   }

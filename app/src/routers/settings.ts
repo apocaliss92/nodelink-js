@@ -16,6 +16,7 @@ import {
 } from "../settings-store.js";
 import { reloadLogger } from "../logger.js";
 import { updateRtspUrls } from "../rtsp-manager.js";
+import { reconcileBackchannelServer } from "../backchannel-manager.js";
 import {
   connectMqtt,
   disconnectMqtt,
@@ -147,6 +148,13 @@ export const settingsRouter = router({
             streamMode: z.enum(["nodelink", "frigate"]).optional(),
           })
           .optional(),
+        talk: z
+          .object({
+            enabled: z.boolean().optional(),
+            port: z.number().int().min(1).max(65535).optional(),
+            bindHost: z.string().optional(),
+          })
+          .optional(),
       }),
     )
     .mutation(({ input }) => {
@@ -192,7 +200,17 @@ export const settingsRouter = router({
         patch.frigate = { ...current.frigate, ...input.frigate };
       }
 
+      if (input.talk) {
+        patch.talk = { ...current.talk, ...input.talk };
+      }
+
       const settings = saveSettings(patch);
+
+      // Restart the RTSP backchannel listener if its config changed so the
+      // toggle / port edit takes effect without a manager restart.
+      if (input.talk) {
+        void reconcileBackchannelServer();
+      }
       // Reload logger if log settings changed
       if (
         input.logLevel !== undefined ||

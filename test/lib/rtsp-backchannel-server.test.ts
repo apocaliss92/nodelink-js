@@ -317,3 +317,176 @@ describe("BaichuanRtspBackchannelServer", () => {
     }
   });
 });
+
+describe("BaichuanRtspBackchannelServer — multi-tenant path routing", () => {
+  const silentLogger = {
+    log: () => {},
+    info: () => {},
+    warn: () => {},
+    debug: () => {},
+    error: () => {},
+  } as any;
+
+  async function newMultiCameraServer(routes: {
+    [path: string]: { api: any; channel: number };
+  }): Promise<{ server: BaichuanRtspBackchannelServer; port: number }> {
+    const server = new BaichuanRtspBackchannelServer({
+      routes,
+      listenHost: "127.0.0.1",
+      listenPort: 0,
+      logger: silentLogger,
+    });
+    await server.start();
+    const port = (server as any).server.address().port as number;
+    return { server, port };
+  }
+
+  it("routes DESCRIBE to the correct camera and 404s unknown paths", async () => {
+    const apiA = makeApi();
+    const apiB = makeApi();
+    const { server, port } = await newMultiCameraServer({
+      "/camA": { api: apiA, channel: 0 },
+      "/camB": { api: apiB, channel: 1 },
+    });
+    try {
+      const sock = net.createConnection(port, "127.0.0.1");
+      await new Promise<void>((r) => sock.once("connect", () => r()));
+
+      const a = await rtspRequest(
+        sock,
+        "DESCRIBE rtsp://127.0.0.1/camA RTSP/1.0\r\nCSeq: 1\r\n\r\n",
+      );
+      expect(a.status).toBe(200);
+      expect(a.headers["Content-Base"]).toContain("/camA/");
+
+      const b = await rtspRequest(
+        sock,
+        "DESCRIBE rtsp://127.0.0.1/camB?backchannel=1 RTSP/1.0\r\nCSeq: 2\r\n\r\n",
+      );
+      expect(b.status).toBe(200);
+      expect(b.headers["Content-Base"]).toContain("/camB/");
+
+      const miss = await rtspRequest(
+        sock,
+        "DESCRIBE rtsp://127.0.0.1/unknown RTSP/1.0\r\nCSeq: 3\r\n\r\n",
+      );
+      expect(miss.status).toBe(404);
+      sock.destroy();
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("RECORD opens the TalkSession on the camera matching the SETUP path", async () => {
+    const fakeA = makeFakeTalk();
+    const fakeB = makeFakeTalk();
+    const createA = vi.fn(async () => fakeA.session);
+    const createB = vi.fn(async () => fakeB.session);
+    const apiA = makeApi({ talk: fakeA.session, createSpy: createA });
+    const apiB = makeApi({ talk: fakeB.session, createSpy: createB });
+
+    const { server, port } = await newMultiCameraServer({
+      "/camA": { api: apiA, channel: 0 },
+      "/camB": { api: apiB, channel: 7 },
+    });
+    try {
+      const sock = net.createConnection(port, "127.0.0.1");
+      await new Promise<void>((r) => sock.once("connect", () => r()));
+
+      const setup = await rtspRequest(
+        sock,
+        "SETUP rtsp://127.0.0.1/camB/audiobackchannel RTSP/1.0\r\n" +
+          "CSeq: 1\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n",
+      );
+      expect(setup.status).toBe(200);
+      const sessionId = setup.headers.Session ?? "";
+      expect(sessionId).not.toBe("");
+
+      const record = await rtspRequest(
+        sock,
+        `RECORD rtsp://127.0.0.1/camB RTSP/1.0\r\nCSeq: 2\r\nSession: ${sessionId}\r\n\r\n`,
+      );
+      expect(record.status).toBe(200);
+
+      expect(createA).not.toHaveBeenCalled();
+      expect(createB).toHaveBeenCalledTimes(1);
+      // First positional argument is the channel.
+      expect(createB.mock.calls[0]?.[0]).toBe(7);
+
+      sock.destroy();
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("addRoute / removeRoute work at runtime", async () => {
+    const apiA = makeApi();
+    const apiB = makeApi();
+    const { server, port } = await newMultiCameraServer({
+      "/camA": { api: apiA, channel: 0 },
+    });
+    try {
+      // Initially camB is unknown.
+      let sock = net.createConnection(port, "127.0.0.1");
+      await new Promise<void>((r) => sock.once("connect", () => r()));
+      const before = await rtspRequest(
+        sock,
+        "DESCRIBE rtsp://127.0.0.1/camB RTSP/1.0\r\nCSeq: 1\r\n\r\n",
+      );
+      expect(before.status).toBe(404);
+      sock.destroy();
+
+      // Register at runtime.
+      server.addRoute("/camB", { api: apiB, channel: 3 });
+      expect(server.hasRoute("/camB")).toBe(true);
+      expect(server.listRoutes().sort()).toEqual(["/camA", "/camB"]);
+
+      sock = net.createConnection(port, "127.0.0.1");
+      await new Promise<void>((r) => sock.once("connect", () => r()));
+      const after = await rtspRequest(
+        sock,
+        "DESCRIBE rtsp://127.0.0.1/camB RTSP/1.0\r\nCSeq: 1\r\n\r\n",
+      );
+      expect(after.status).toBe(200);
+      sock.destroy();
+
+      // Unregister; goes back to 404.
+      expect(server.removeRoute("/camB")).toBe(true);
+      sock = net.createConnection(port, "127.0.0.1");
+      await new Promise<void>((r) => sock.once("connect", () => r()));
+      const gone = await rtspRequest(
+        sock,
+        "DESCRIBE rtsp://127.0.0.1/camB RTSP/1.0\r\nCSeq: 1\r\n\r\n",
+      );
+      expect(gone.status).toBe(404);
+      sock.destroy();
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("rejects construction with both single-camera and multi-tenant config", () => {
+    expect(
+      () =>
+        new BaichuanRtspBackchannelServer({
+          api: makeApi(),
+          channel: 0,
+          routes: { "/x": { api: makeApi(), channel: 0 } },
+          listenHost: "127.0.0.1",
+          listenPort: 0,
+          logger: silentLogger,
+        }),
+    ).toThrow(/single camera.*multi tenant|both/i);
+  });
+
+  it("requires at least one configuration mode", () => {
+    expect(
+      () =>
+        new BaichuanRtspBackchannelServer({
+          listenHost: "127.0.0.1",
+          listenPort: 0,
+          logger: silentLogger,
+        }),
+    ).toThrow();
+  });
+});
