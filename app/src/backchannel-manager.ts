@@ -128,10 +128,17 @@ export function getBackchannelStatus(): BackchannelStatus {
 export async function startBackchannelServer(): Promise<void> {
   if (server) return;
 
-  ensureListenersWired();
-
-  // The server instance is never start()ed — it lives purely as a registry
-  // + injectSocket() target driven by LocalRtspMux dispatch.
+  // Create the server FIRST. `onApiConnected` (called by
+  // `ensureListenersWired`) flushes the listener for every camera that
+  // already connected during boot; that flush invokes the listener
+  // synchronously, and the listener checks `if (!server) return;` before
+  // touching the route table. If we wired listeners before assigning
+  // `server`, the flush would bail for every already-connected camera and
+  // their backchannel routes would never land on the mux — the symptom
+  // being a 404 on /<cameraName> for go2rtc's talk URL and the mic button
+  // disappearing in Frigate's UI. The server instance itself is never
+  // start()ed: it lives purely as a registry + injectSocket() target
+  // driven by LocalRtspMux dispatch.
   server = new BaichuanRtspBackchannelServer({
     routes: {},
     listenHost: "127.0.0.1",
@@ -144,6 +151,9 @@ export async function startBackchannelServer(): Promise<void> {
       log: (m: string) => logger.info(m),
     },
   });
+
+  ensureListenersWired();
+
   const mux = getLocalRtspMux();
   logger.info(`attached to LocalRtspMux mux=${mux ? "ready" : "pending"}`);
 }
