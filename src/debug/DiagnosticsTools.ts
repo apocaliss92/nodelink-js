@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 
 import type { ReolinkBaichuanApi } from "../reolink/baichuan/ReolinkBaichuanApi";
@@ -1957,6 +1958,16 @@ export interface RunMultifocalDiagnosticsConsecutivelyParams {
   probeFull?: boolean;
   /** Treat the target as NVR/Hub channel mapping (0-based). Default: true */
   onNvr?: boolean;
+  /**
+   * Maximum number of standalone channels to probe (0..N-1). Useful for
+   * uncatalogued multi-imager cameras (e.g. OMVI-style triple-lens devices)
+   * where the firmware advertises a single channel but actually responds to
+   * stream subscriptions on extra channelIds. Default 2 (TrackMix shape);
+   * `probeFull` raises the default to 4 so the standard "deep" diagnostic
+   * sweep catches any extra imager without the caller having to opt in by
+   * hand.
+   */
+  maxStandaloneChannels?: number;
   logger?: Logger;
 }
 
@@ -2242,6 +2253,54 @@ export async function runMultifocalDiagnosticsConsecutively(
     }),
   );
 
+  // Decide how many standalone channels to probe. Default 2 (the historical
+  // TrackMix/Duo shape) so existing callers see no behaviour change; bump
+  // to 4 in probeFull mode so the "deep" diagnostic catches a third or
+  // fourth imager on uncatalogued cameras without an explicit opt-in.
+  const maxStandaloneChannels = Math.max(
+    1,
+    params.maxStandaloneChannels ?? (params.probeFull ? 4 : 2),
+  );
+
+  // Per-channel capability pre-probe. For each candidate channel in
+  // standalone mode, ask the camera the three "what do you describe for
+  // this channel?" metadata calls. This is the cleanest evidence to tell
+  // apart a real second imager (each channel describes its own Compression
+  // XML / Support block) from a channelId that just echoes another. The
+  // entries land under `channelProbe[ch]` in the results JSON so anyone
+  // reading the dump can diff channels at a glance — without having to
+  // open the Annex-B clips.
+  const candidateChannels: number[] = [];
+  for (let i = 0; i < maxStandaloneChannels; i++) candidateChannels.push(i);
+  if (
+    Number.isFinite(params.channel) &&
+    params.channel >= 0 &&
+    !candidateChannels.includes(params.channel)
+  ) {
+    candidateChannels.push(params.channel);
+  }
+  results.channelProbe = {} as Record<string, unknown>;
+  for (const ch of candidateChannels) {
+    const probe: Record<string, unknown> = { channel: ch };
+    probe.getDeviceCapabilities = await tryCall(() =>
+      params.api.getDeviceCapabilities(ch),
+    );
+    probe.getEncXml = await tryCall(() => params.api.getEncXml(ch));
+    probe.getStreamMetadata = await tryCall(() =>
+      params.api.getStreamMetadata(ch),
+    );
+    // Heuristic: a channel is "described" by the firmware if at least one
+    // of the three calls returned a non-null OK payload. Useful summary
+    // when channelN responds to stream subscriptions but the camera's
+    // metadata layer claims it doesn't exist (e.g. echo channels).
+    const described =
+      ((probe.getDeviceCapabilities as { ok?: boolean })?.ok ?? false) ||
+      ((probe.getEncXml as { ok?: boolean })?.ok ?? false) ||
+      ((probe.getStreamMetadata as { ok?: boolean })?.ok ?? false);
+    probe.describedByMetadata = described;
+    (results.channelProbe as Record<string, unknown>)[String(ch)] = probe;
+  }
+
   const nativeModes: Array<"nvr" | "standalone"> =
     params.onNvr === false && !params.probeFull
       ? ["standalone"]
@@ -2251,8 +2310,9 @@ export async function runMultifocalDiagnosticsConsecutively(
     [...new Set(arr)].filter((n) => Number.isFinite(n) && n >= 0);
   const channelsForMode = (mode: "nvr" | "standalone"): number[] => {
     if (mode === "nvr") return [params.channel];
-    // Standalone TrackMix usually uses channels 0 (wide) and 1 (tele). Keep current channel if it matches.
-    return uniqNums([0, 1, params.channel].filter((n) => n === 0 || n === 1));
+    const range: number[] = [];
+    for (let i = 0; i < maxStandaloneChannels; i++) range.push(i);
+    return uniqNums([...range, params.channel]);
   };
 
   const nativeProfiles: StreamProfile[] = params.probeFull
@@ -2327,6 +2387,14 @@ export async function runMultifocalDiagnosticsConsecutively(
           let rawBytes = 0;
           let lockedChannelId: number | undefined;
           let lockedMsgNum: number | undefined;
+          // Fingerprint of the FIRST keyframe of this (mode, ch, profile,
+          // variant) tuple — SHA-256 over the keyframe Annex-B bytes plus
+          // length. Cheap to compute, very effective at telling apart
+          // "channelN is a real second imager" (distinct fingerprints) from
+          // "channelN echoes channel0" (identical fingerprints). Surfaced
+          // in the per-clip JSON and rolled up into the run's summary.
+          let firstKeyframeSha: string | undefined;
+          let firstKeyframeBytes: number | undefined;
 
           const onPush = (frame: BaichuanFrame) => {
             if (!frame?.header) return;
@@ -2420,6 +2488,12 @@ export async function runMultifocalDiagnosticsConsecutively(
 
             if (u.isKeyframe && firstKeyframeAtMs == null)
               firstKeyframeAtMs = Date.now();
+            if (u.isKeyframe && firstKeyframeSha === undefined) {
+              firstKeyframeBytes = u.data.length;
+              firstKeyframeSha = createHash("sha256")
+                .update(u.data)
+                .digest("hex");
+            }
 
             const nalTypes = nalTypesSummary(u.videoType, u.data);
             appendNdjson(eventsPath, {
@@ -2829,6 +2903,8 @@ export async function runMultifocalDiagnosticsConsecutively(
             rawBytes,
             lockedChannelId,
             lockedMsgNum,
+            firstKeyframeSha: firstKeyframeSha ?? null,
+            firstKeyframeBytes: firstKeyframeBytes ?? null,
             annexbPath: clipAnnexBPath,
             audioPath: clipAudioPath,
             mkvPath: fs.existsSync(mkvPath) ? mkvPath : undefined,
@@ -2912,10 +2988,59 @@ export async function runMultifocalDiagnosticsConsecutively(
     width: x.width,
     height: x.height,
   }));
+
+  // Per-(mode, profile, variant) channel comparison summary. Groups the
+  // native OK entries by their first-keyframe SHA-256 so a reader can tell
+  // at a glance whether channel N is a real distinct imager (different
+  // sha) or an echo of channel 0 (identical sha). Indispensable on
+  // uncatalogued multi-imager cameras (OMVI-class triple-lens devices)
+  // where the firmware advertises one channel but responds on several.
+  type ChannelGroup = {
+    mode: string;
+    profile: string;
+    variant: string;
+    fingerprints: Record<string, number[]>; // sha → channels
+  };
+  const groups = new Map<string, ChannelGroup>();
+  for (const x of results.ok as any[]) {
+    if (x.kind !== "native") continue;
+    const sha: string | null = x.firstKeyframeSha ?? null;
+    if (!sha) continue;
+    const key = `${x.mode}::${x.profile}::${x.variant}`;
+    let g = groups.get(key);
+    if (!g) {
+      g = {
+        mode: x.mode,
+        profile: x.profile,
+        variant: x.variant,
+        fingerprints: {},
+      };
+      groups.set(key, g);
+    }
+    const bucket = g.fingerprints[sha] ?? [];
+    bucket.push(x.channel);
+    g.fingerprints[sha] = bucket;
+  }
+  results.channelComparison = Array.from(groups.values()).map((g) => {
+    const buckets = Object.entries(g.fingerprints).map(([sha, channels]) => ({
+      sha,
+      channels: [...channels].sort((a, b) => a - b),
+    }));
+    return {
+      mode: g.mode,
+      profile: g.profile,
+      variant: g.variant,
+      distinct: buckets.length > 1,
+      buckets,
+    };
+  });
+
   log("log", "[MultifocalDiagnostics] summary", {
     ok: results.ok.length,
     failed: results.failed.length,
     streamsDir,
+    channelProbeChannels: Object.keys(results.channelProbe ?? {}),
+    channelComparison: results.channelComparison,
     okStreams: okIds,
   });
   const resultsPath = join(runDir, "multifocal_diagnostics.json");
