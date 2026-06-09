@@ -107,6 +107,42 @@ interface BackchannelSessionState {
   /** Matched route path (for logging only). */
   routePath: string;
   handler?: RtspBackchannel;
+  /**
+   * Timer that emits an RTCP RR every {@link RTCP_KEEPALIVE_INTERVAL_MS} on
+   * the interleaved RTCP channel after RECORD is accepted. Without periodic
+   * writes back, go2rtc 1.9.10's producer hits its TCP read deadline
+   * (~30s) and tears the connection down with "i/o timeout" — even
+   * though audio is flowing fine the other way.
+   */
+  rtcpKeepaliveTimer?: NodeJS.Timeout;
+  /** SSRC used in the RTCP RR sender header. Stable per session. */
+  rtcpSsrc?: number;
+}
+
+const RTCP_KEEPALIVE_INTERVAL_MS = 10_000;
+
+/**
+ * Build an interleaved RTCP RR (Receiver Report) frame for sending back on
+ * the rtcp channel. RFC 3550 §6.4.2 RR with no report blocks:
+ *
+ *   V=2, P=0, RC=0, PT=201, length=1, SSRC=ssrc
+ *
+ * Length (in 32-bit words minus one) is 1 because the body is just the
+ * 4-byte SSRC after the 4-byte fixed header. Wrapped in TCP-interleaved
+ * framing: `$ <channel> <len BE16> <8-byte RTCP packet>`.
+ */
+function buildInterleavedRtcpRr(channel: number, ssrc: number): Buffer {
+  const rtcp = Buffer.alloc(8);
+  rtcp[0] = 0x80; // V=2, P=0, RC=0
+  rtcp[1] = 0xc9; // PT=201 (RR)
+  rtcp.writeUInt16BE(1, 2);
+  rtcp.writeUInt32BE(ssrc >>> 0, 4);
+  const frame = Buffer.alloc(4 + rtcp.length);
+  frame[0] = 0x24;
+  frame[1] = channel & 0xff;
+  frame.writeUInt16BE(rtcp.length, 2);
+  rtcp.copy(frame, 4);
+  return frame;
 }
 
 /** Strip leading/trailing slashes and lowercase nothing (paths are case-sensitive in RTSP). */
@@ -350,6 +386,7 @@ export class BaichuanRtspBackchannelServer extends EventEmitter<{
     // Tear down any in-flight sessions.
     for (const session of this.sessionByClient.values()) {
       this.sessionByClient.delete(session.clientId);
+      this.stopRtcpKeepalive(session);
       if (session.handler) {
         void session.handler.stop();
       }
@@ -379,6 +416,7 @@ export class BaichuanRtspBackchannelServer extends EventEmitter<{
       const durationMs = Date.now() - connectedAt;
       if (session) {
         this.sessionByClient.delete(clientId);
+        this.stopRtcpKeepalive(session);
         if (session.handler) {
           const stats = session.handler.stats;
           this.logger.info?.(
@@ -737,6 +775,7 @@ export class BaichuanRtspBackchannelServer extends EventEmitter<{
         }
         session.handler = handler;
         send(200, "OK", { Session: session.sessionId });
+        this.startRtcpKeepalive(session);
         return;
       }
 
@@ -744,6 +783,7 @@ export class BaichuanRtspBackchannelServer extends EventEmitter<{
         const session = this.sessionByClient.get(clientId);
         if (session) {
           this.sessionByClient.delete(clientId);
+          this.stopRtcpKeepalive(session);
           if (session.handler) {
             const stats = session.handler.stats;
             this.logger.info?.(
@@ -775,6 +815,42 @@ export class BaichuanRtspBackchannelServer extends EventEmitter<{
         );
         send(501, "Not Implemented");
     }
+  }
+
+  /**
+   * Start emitting an interleaved RTCP RR every
+   * {@link RTCP_KEEPALIVE_INTERVAL_MS}. The RR carries no report blocks —
+   * its purpose is to push *some* bytes back onto the TCP connection so
+   * the producer's read deadline keeps resetting. Idempotent.
+   */
+  private startRtcpKeepalive(session: BackchannelSessionState): void {
+    if (session.rtcpKeepaliveTimer) return;
+    session.rtcpSsrc = Math.floor(Math.random() * 0xffffffff) >>> 0;
+    const frame = buildInterleavedRtcpRr(session.rtcpChannel, session.rtcpSsrc);
+    const writeOne = () => {
+      if (!session.socket.writable) return;
+      try {
+        session.socket.write(frame);
+      } catch (e) {
+        this.logger.debug?.(
+          `[BaichuanRtspBackchannelServer] RTCP RR write failed client=${session.clientId} session=${session.sessionId} error="${(e as Error).message}"`,
+        );
+      }
+    };
+    session.rtcpKeepaliveTimer = setInterval(writeOne, RTCP_KEEPALIVE_INTERVAL_MS);
+    // Don't keep the event loop alive just for the keepalive.
+    if (typeof session.rtcpKeepaliveTimer.unref === "function") {
+      session.rtcpKeepaliveTimer.unref();
+    }
+    this.logger.debug?.(
+      `[BaichuanRtspBackchannelServer] RTCP RR keepalive started client=${session.clientId} session=${session.sessionId} channel=${session.rtcpChannel} ssrc=${session.rtcpSsrc?.toString(16)} interval=${RTCP_KEEPALIVE_INTERVAL_MS}ms`,
+    );
+  }
+
+  private stopRtcpKeepalive(session: BackchannelSessionState): void {
+    if (!session.rtcpKeepaliveTimer) return;
+    clearInterval(session.rtcpKeepaliveTimer);
+    delete session.rtcpKeepaliveTimer;
   }
 
   private buildSdp(): string {
