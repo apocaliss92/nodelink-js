@@ -4,15 +4,6 @@ import { z } from "zod";
 // Re-create the settings schemas inline to test validation without importing
 // the full app (which has side-effects like loading settings files).
 
-const Go2rtcSchema = z.object({
-  enabled: z.boolean().default(true),
-  binaryPath: z.string().default("go2rtc"),
-  apiPort: z.number().int().min(1).max(65535).default(11984),
-  rtspPort: z.number().int().min(1).max(65535).default(18554),
-  webrtcPort: z.number().int().min(1).max(65535).default(18555),
-  iceServers: z.array(z.string()).default([]),
-});
-
 const FrigateSchema = z.object({
   host: z.string().default(""),
   username: z.string().default(""),
@@ -20,36 +11,25 @@ const FrigateSchema = z.object({
   streamMode: z.enum(["nodelink", "frigate"]).default("nodelink"),
 });
 
+const LocalRtspSchema = z.object({
+  port: z.number().int().min(1).max(65535).default(8554),
+  bindHost: z.string().default("0.0.0.0"),
+  requireAuth: z.boolean().optional(),
+});
+
 describe("Settings schema validation", () => {
-  describe("go2rtc", () => {
+  describe("localRtsp", () => {
     it("has correct defaults", () => {
-      const result = Go2rtcSchema.parse({});
-      expect(result.enabled).toBe(true);
-      expect(result.apiPort).toBe(11984);
-      expect(result.rtspPort).toBe(18554);
-      expect(result.webrtcPort).toBe(18555);
-      expect(result.binaryPath).toBe("go2rtc");
-      expect(result.iceServers).toEqual([]);
+      const result = LocalRtspSchema.parse({});
+      expect(result.port).toBe(8554);
+      expect(result.bindHost).toBe("0.0.0.0");
     });
 
     it("validates port ranges", () => {
-      expect(() => Go2rtcSchema.parse({ apiPort: 0 })).toThrow();
-      expect(() => Go2rtcSchema.parse({ apiPort: 70000 })).toThrow();
-      expect(() => Go2rtcSchema.parse({ apiPort: 1984 })).not.toThrow();
+      expect(() => LocalRtspSchema.parse({ port: 0 })).toThrow();
+      expect(() => LocalRtspSchema.parse({ port: 70000 })).toThrow();
+      expect(() => LocalRtspSchema.parse({ port: 8554 })).not.toThrow();
     });
-
-    it("accepts custom config", () => {
-      const result = Go2rtcSchema.parse({
-        enabled: false,
-        apiPort: 1984,
-        rtspPort: 8554,
-        webrtcPort: 8555,
-        iceServers: ["stun:stun.l.google.com:19302"],
-      });
-      expect(result.enabled).toBe(false);
-      expect(result.iceServers).toHaveLength(1);
-    });
-
   });
 
   describe("frigate", () => {

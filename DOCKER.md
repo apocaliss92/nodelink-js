@@ -71,10 +71,8 @@ docker run -d \
 | --- | --- | --- |
 | `PORT` | `3000` | Web UI and API port |
 | `DATA_PATH` | `/data` | Directory for settings.json and logs |
-| `GO2RTC_PATH` | (auto) | Path to go2rtc binary (falls back to bundled `go2rtc-static`) |
-| `GO2RTC_API_PORT` | `11984` | go2rtc REST API + web dashboard port |
-| `GO2RTC_RTSP_PORT` | `18554` | go2rtc RTSP output port |
-| `GO2RTC_WEBRTC_PORT` | `18555` | go2rtc WebRTC ICE port |
+
+> The shared RTSP port (default `8554`), the optional RTSP backchannel toggle, and the WebRTC ICE UDP range are configured from **Settings -> RTSP** and **Settings -> WebRTC (ICE)** in the dashboard — they live in `settings.json` rather than environment variables.
 
 **Dashboard authentication (optional):**
 

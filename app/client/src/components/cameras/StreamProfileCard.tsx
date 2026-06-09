@@ -24,33 +24,27 @@ function mapBackendStatus(
 interface StreamProfileCardProps {
   cameraId: string;
   stream: AvailableStream;
-  rtspServer?: { status?: string; connections?: number; rtspUrl?: string; go2rtcStreamName?: string; mode?: string; port?: number };
+  rtspServer?: { status?: string; connections?: number; rtspUrl?: string; port?: number };
   onPreview: () => void;
+  /** Path part of the RTSP URL — `<sanitizedCameraName>/<profile>`. */
   streamName: string;
-  go2rtcApiPort: number | null;
-  go2rtcRtspPort: number | null;
   serviceIp: string;
   isBattery?: boolean;
   /**
-   * Restreamer mode from settings. When "local", go2rtc-based previews
-   * (WebRTC/HLS/MJPEG/MSE/MP4/snapshot) are hidden — only the RTSP URL
-   * remains copyable.
-   */
-  restreamer?: "go2rtc" | "local";
-  /**
    * Per-stream saved port from camera.rtspStreams config. Used as a fallback
-   * for building an RTSP URL in local mode when the stream is idle (not yet bound).
-   * Takes precedence over the global localRtspPort base port.
+   * for building an RTSP URL when the stream is idle (not yet bound).
+   * Takes precedence over the global rtspPort base port.
    */
   savedPort?: number | null;
   /**
-   * Default local RTSP port from settings. Used as a last-resort fallback for
-   * building an RTSP URL in local mode when no per-stream port is known.
+   * Default LocalRtspMux port from settings (`settings.localRtsp.port`).
+   * Used as a last-resort fallback for building an RTSP URL when no
+   * per-stream port is known.
    */
-  localRtspPort?: number | null;
+  rtspPort?: number | null;
 }
 
-export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, streamName, go2rtcApiPort, go2rtcRtspPort, serviceIp, isBattery, restreamer, savedPort, localRtspPort }: StreamProfileCardProps) {
+export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, streamName, serviceIp, isBattery, savedPort, rtspPort }: StreamProfileCardProps) {
   const isActive = rtspServer?.status === 'running';
   // Battery cameras stream on-demand: show preview/URLs even when the native stream
   // is not running (idle). Clicking Preview will wake the camera.
@@ -58,7 +52,6 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, str
   const [diagStatus, setDiagStatus] = useState<DiagStatus>('idle');
   const [diagProgress, setDiagProgress] = useState(0);
   const [urlsOpen, setUrlsOpen] = useState(false);
-  const [previewOpen, setPreviewOpen] = useState(false);
 
   // Deterministic sessionId mirrors stream-diagnostic.ts:sessionKey().
   const diagSessionId = `${cameraId}:${stream.profile}:${stream.channel}`;
@@ -115,52 +108,21 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, str
     };
   }, [diagStatus, diagSessionId]);
 
-  // Resolve effective mode: per-server mode wins (backend truth),
-  // fall back to the global settings flag when the server is idle.
-  const effectiveMode = rtspServer?.mode === "local" || rtspServer?.mode === "go2rtc"
-    ? rtspServer.mode
-    : (restreamer ?? "go2rtc");
-  const isLocal = effectiveMode === "local";
-
   const viewers = isActive ? (rtspServer?.connections ?? 0) : 0;
-  const go2rtcHost = serviceIp || window.location.hostname;
-  // When served over HTTPS (nginx reverse proxy) go2rtc's port is plain HTTP —
-  // direct https://host:port requests fail with ERR_SSL_PROTOCOL_ERROR.
-  // Route through the Express /go2rtc/* proxy instead so the same-origin HTTPS
-  // path is used. On HTTP, hit go2rtc directly.
-  const isHttps = window.location.protocol === 'https:';
-  // go2rtc-derived URLs are unavailable in local mode — gate the base so
-  // every preview/URL button below folds into "hidden" cleanly.
-  const go2rtcBase = !isLocal && go2rtcApiPort
-    ? (isHttps ? `${window.location.origin}/go2rtc` : `http://${go2rtcHost}:${go2rtcApiPort}`)
-    : null;
-  const src = encodeURIComponent(streamName);
-  const hlsUrl = go2rtcBase ? `${go2rtcBase}/api/stream.m3u8?src=${src}` : '';
-  const snapshotUrl = go2rtcBase ? `${go2rtcBase}/api/frame.jpeg?src=${src}` : '';
-  const mp4Url = go2rtcBase ? `${go2rtcBase}/api/stream.mp4?src=${src}` : '';
-  const mseUrl = go2rtcBase ? `${go2rtcBase}/stream.html?src=${src}&mode=mse` : '';
-  // RTSP URL:
-  //  - local mode: prefer the per-server rtspUrl; fall back to a deterministic
-  //    URL from the known port (per-stream info.port if any, else the
-  //    default local RTSP port) so users can copy it even while the
-  //    BaichuanRtspServer is idle / not yet bound.
-  //  - go2rtc mode: deterministic from the stream name + go2rtc RTSP port
+  const rtspHost = serviceIp || window.location.hostname;
+  // RTSP URL: prefer the per-server rtspUrl when running; fall back to a
+  // deterministic URL from the known port (per-stream info.port if any,
+  // else the default LocalRtspMux port) so users can copy it even while
+  // the server is idle / not yet bound.
+  //
   // Port resolution for idle fallback URL:
   // 1. Running server's bound port (most accurate)
   // 2. Saved per-stream port from camera config (correct even when idle — fixes the bug
   //    where ALL idle streams showed port 8554 regardless of their configured port)
-  // 3. Global localRtsp base port (last resort, same for all streams — wrong for non-first streams)
-  const localPortForUrl = rtspServer?.port ?? savedPort ?? localRtspPort ?? null;
-  const rtspUrl = isLocal
-    ? rtspServer?.rtspUrl
-      || (localPortForUrl
-        ? `rtsp://${go2rtcHost}:${localPortForUrl}/${streamName}`
-        : '')
-    : go2rtcRtspPort
-      ? `rtsp://${go2rtcHost}:${go2rtcRtspPort}/${streamName}`
-      : rtspServer?.rtspUrl ?? '';
-  // Preview-button gating: WebRTC/MSE need go2rtc.
-  const hasPreview = !isLocal;
+  // 3. Global rtspPort base port (last resort, same for all streams)
+  const portForUrl = rtspServer?.port ?? savedPort ?? rtspPort ?? null;
+  const rtspUrl = rtspServer?.rtspUrl
+    || (portForUrl ? `rtsp://${rtspHost}:${portForUrl}/${streamName}` : '');
 
   const startAnalysis = async () => {
     setDiagProgress(0);
@@ -212,82 +174,34 @@ export function StreamProfileCard({ cameraId, stream, rtspServer, onPreview, str
       )}
 
       <div className="flex flex-wrap gap-1 mt-1.5">
-        {/* Preview — requires go2rtc (WebRTC/MSE). Hidden in local mode. */}
-        {(isActive || showOnDemand) && hasPreview && (
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => { setPreviewOpen(!previewOpen); setUrlsOpen(false); }}
-              className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] bg-[var(--color-surface-hover)] hover:bg-[var(--color-surface)] transition-colors"
-            >
-              <Eye size={10} /> Preview ▾
-            </button>
-            {previewOpen && (
-              <div className="absolute bottom-full left-0 mb-1 z-10 rounded-md border border-[var(--color-border)] bg-[var(--color-background-elevated)] shadow-lg py-1 min-w-[160px]">
-                <button
-                  type="button"
-                  onClick={() => { onPreview(); setPreviewOpen(false); }}
-                  className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)]"
-                >
-                  WebRTC Preview
-                </button>
-                {mseUrl && (
-                  <button
-                    type="button"
-                    onClick={() => { window.open(mseUrl, '_blank'); setPreviewOpen(false); }}
-                    className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)]"
-                  >
-                    MSE Stream
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
+        {/* WebRTC preview — driven by the in-process BaichuanWebRTCServer. */}
+        {(isActive || showOnDemand) && (
+          <button
+            type="button"
+            onClick={onPreview}
+            className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] bg-[var(--color-surface-hover)] hover:bg-[var(--color-surface)] transition-colors"
+          >
+            <Eye size={10} /> WebRTC Preview
+          </button>
         )}
 
-        {/* URLs dropdown — RTSP always available; go2rtc URLs when active or battery on-demand */}
-        {(rtspUrl || (go2rtcBase && (isActive || showOnDemand))) && (
+        {/* RTSP URL copy */}
+        {rtspUrl && (
           <div className="relative">
             <button
-              onClick={() => { setUrlsOpen(!urlsOpen); setPreviewOpen(false); }}
+              onClick={() => { setUrlsOpen(!urlsOpen); }}
               className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] bg-[var(--color-surface-hover)] hover:bg-[var(--color-surface)] transition-colors"
             >
-              <Link size={10} /> URLs
+              <Link size={10} /> RTSP
             </button>
             {urlsOpen && (
               <div className="absolute bottom-full left-0 mb-1 z-10 rounded-md border border-[var(--color-border)] bg-[var(--color-background-elevated)] shadow-lg py-1 min-w-[160px]">
-                {rtspUrl && (
-                  <button
-                    onClick={() => { void copyToClipboard(rtspUrl); setUrlsOpen(false); }}
-                    className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)] flex items-center gap-1.5"
-                  >
-                    <Copy size={9} /> Copy RTSP URL
-                  </button>
-                )}
-                {(isActive || showOnDemand) && hlsUrl && (
-                  <button
-                    onClick={() => { void copyToClipboard(hlsUrl); setUrlsOpen(false); }}
-                    className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)] flex items-center gap-1.5"
-                  >
-                    <Copy size={9} /> Copy HLS URL
-                  </button>
-                )}
-                {(isActive || showOnDemand) && mp4Url && (
-                  <button
-                    onClick={() => { void copyToClipboard(mp4Url); setUrlsOpen(false); }}
-                    className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)] flex items-center gap-1.5"
-                  >
-                    <Copy size={9} /> Copy MP4 URL
-                  </button>
-                )}
-                {(isActive || showOnDemand) && snapshotUrl && (
-                  <button
-                    onClick={() => { void copyToClipboard(snapshotUrl); setUrlsOpen(false); }}
-                    className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)] flex items-center gap-1.5"
-                  >
-                    <Copy size={9} /> Copy Snapshot URL
-                  </button>
-                )}
+                <button
+                  onClick={() => { void copyToClipboard(rtspUrl); setUrlsOpen(false); }}
+                  className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-[var(--color-surface-hover)] flex items-center gap-1.5"
+                >
+                  <Copy size={9} /> Copy RTSP URL
+                </button>
               </div>
             )}
           </div>

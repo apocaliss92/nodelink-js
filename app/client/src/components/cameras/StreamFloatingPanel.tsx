@@ -8,10 +8,6 @@ export interface StreamFloatingPanelProps {
   panelId: string;
   camera: CameraInfo;
   stream: AvailableStream;
-  streamName: string;
-  go2rtcApiPort?: number | null;
-  serviceIp?: string;
-  useNative?: boolean;
   offsetIndex: number;
   onClose: () => void;
 }
@@ -25,10 +21,6 @@ export function StreamFloatingPanel({
   panelId,
   camera,
   stream,
-  streamName,
-  go2rtcApiPort,
-  serviceIp,
-  useNative,
   offsetIndex,
   onClose,
 }: StreamFloatingPanelProps) {
@@ -58,12 +50,8 @@ export function StreamFloatingPanel({
         </div>
         <div className="flex-1 relative">
           <WebRTCInlinePlayer
-            streamName={streamName}
-            go2rtcApiPort={go2rtcApiPort}
-            serviceIp={serviceIp}
             cameraId={camera.id}
             profile={stream.profile}
-            useNative={useNative}
             overlayRender={(video) =>
               showBoxes ? (
                 <DetectionBoxOverlay

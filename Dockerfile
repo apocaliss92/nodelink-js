@@ -1,9 +1,7 @@
 # =============================================================================
 # Reolink Baichuan Dashboard - Docker Build
-# Multi-stage build — NO QEMU emulation needed.
-#
-# Strategy: build everything on amd64 (JS is cross-platform), then use
-# TARGETARCH to select the correct go2rtc binary and base image.
+# Multi-stage build — NO QEMU emulation needed (JS is cross-platform; the
+# alpine base image is per-arch).
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -37,16 +35,6 @@ RUN npm install --ignore-scripts && npm run build
 # Production deps only
 RUN rm -rf node_modules && npm install --ignore-scripts --omit=dev
 
-# Download go2rtc binaries for all target architectures
-RUN apk add --no-cache curl && \
-    GO2RTC_VERSION="1.9.14" && \
-    mkdir -p /go2rtc && \
-    curl -fSL --retry 3 -o /go2rtc/go2rtc-amd64 \
-      "https://github.com/AlexxIT/go2rtc/releases/download/v${GO2RTC_VERSION}/go2rtc_linux_amd64" && \
-    curl -fSL --retry 3 -o /go2rtc/go2rtc-arm64 \
-      "https://github.com/AlexxIT/go2rtc/releases/download/v${GO2RTC_VERSION}/go2rtc_linux_arm64" && \
-    chmod +x /go2rtc/go2rtc-*
-
 # -----------------------------------------------------------------------------
 # Stage 2: Production runtime (multi-arch via base image, zero emulation)
 # -----------------------------------------------------------------------------
@@ -54,12 +42,13 @@ FROM node:22-alpine AS production
 
 ARG TARGETARCH
 
-# Install ffmpeg for snapshot transcoding, su-exec for entrypoint, and tshark
-# for the in-app packet capture tool. tshark+dumpcap need CAP_NET_RAW +
-# CAP_NET_ADMIN to capture packets; we set them on the binaries so the
-# container's non-root nodejs user can use them without --privileged.
-# At runtime the container also needs the caps from `docker run` (or compose)
-# — see README for the recommended `--cap-add` / `--net=host` flags.
+# Install ffmpeg (snapshot transcoding for the diagnostics analyzer),
+# su-exec (entrypoint user drop) and tshark (in-app packet capture). The
+# capture tool needs CAP_NET_RAW + CAP_NET_ADMIN; we set them on the
+# binaries so the container's non-root nodejs user can capture without
+# --privileged. At runtime the container also needs the caps from
+# `docker run` / compose — see README for the recommended `--cap-add` /
+# `--net=host` flags.
 RUN apk add --no-cache ffmpeg su-exec tshark libcap && \
     setcap 'cap_net_raw,cap_net_admin+eip' /usr/bin/dumpcap || true
 
@@ -79,9 +68,6 @@ COPY --from=builder /build/dist ./dist
 COPY --from=builder /build/package.json ./package.json
 COPY --from=builder /build/node_modules ./node_modules
 
-# Copy the correct go2rtc binary for this architecture
-COPY --from=builder /go2rtc/go2rtc-${TARGETARCH} /usr/local/bin/go2rtc
-
 # Copy entrypoint
 COPY docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
@@ -96,12 +82,10 @@ ENV APP_VERSION=${APP_VERSION}
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV DATA_PATH=/data
-ENV GO2RTC_PATH=/usr/local/bin/go2rtc
-ENV GO2RTC_API_PORT=1984
-ENV GO2RTC_RTSP_PORT=8554
-ENV GO2RTC_WEBRTC_PORT=8555
 
-EXPOSE 3000 1984 8554 8555
+# 3000 = manager UI / tRPC, 8554 = RTSP (video + Frigate backchannel),
+# 8555/udp = WebRTC ICE for the in-process player.
+EXPOSE 3000 8554 8555/udp
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1

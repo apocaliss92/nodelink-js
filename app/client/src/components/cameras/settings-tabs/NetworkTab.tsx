@@ -35,7 +35,7 @@ const PORTS: PortRow[] = [
   { key: "server", label: "Server (Baichuan)", hint: "TCP 9000 — this is the port the manager itself uses; turn off only if you know what you're doing." },
   { key: "http",   label: "HTTP",              hint: "Web UI / CGI API." },
   { key: "https",  label: "HTTPS",             hint: "Encrypted web UI / CGI." },
-  { key: "rtsp",   label: "RTSP",              hint: "What go2rtc / ffmpeg ingest from." },
+  { key: "rtsp",   label: "RTSP",              hint: "What ffmpeg / Frigate ingest from." },
   { key: "rtmp",   label: "RTMP",              hint: "Legacy stream protocol, mostly unused." },
   { key: "onvif",  label: "ONVIF",             hint: "Needed by some NVRs and third-party tools." },
 ];

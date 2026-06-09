@@ -13,7 +13,6 @@ import SettingsPage from "./pages/SettingsPage";
 import DocsPage from "./pages/DocsPage";
 import ReportsPage from "./pages/ReportsPage";
 import CapturePage from "./pages/CapturePage";
-import WebRTCPreviewPage from "./pages/WebRTCPreviewPage";
 import LoginPage from "./pages/LoginPage";
 import { fetchUpdates, trpcQuery, type UpdateInfo } from "./api";
 import { AppLayout } from "./components/layout";
@@ -64,14 +63,6 @@ function AppInner() {
     <Routes>
       {/* Full-screen routes (no layout) */}
       <Route path="/login" element={<LoginPage />} />
-      <Route
-        path="/preview/webrtc/:cameraName/:profile"
-        element={
-          <RequireAuth>
-            <WebRTCPreviewPage />
-          </RequireAuth>
-        }
-      />
 
       {/* Layout routes — all wrapped in RequireAuth + AppLayout */}
       <Route

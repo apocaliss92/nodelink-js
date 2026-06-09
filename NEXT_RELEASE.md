@@ -14,6 +14,14 @@
   - Fixed D340W doorbell falsely detected as having floodlight
 -->
 
+### Breaking changes
+
+- **go2rtc has been removed from the manager.** The bundled sidecar is gone — no more `go2rtc-static` binary download, no more YAML config generation, no more `/go2rtc/*` proxy. Streaming is now handled by two in-process components only: `BaichuanRtspServer` plugged into a single shared `LocalRtspMux` (RTSP, default port `8554`) and `BaichuanWebRTCServer` (in-process WebRTC via werift, for the in-browser preview).
+- **HLS, MSE, MJPEG, transcoded MP4 and transcoded snapshot outputs are gone.** They only existed because go2rtc generated them. Consumers must switch to RTSP (every NVR / Frigate / Home Assistant card / ffmpeg client speaks it natively) or to the WebRTC preview built into the manager. CGI snapshots from the camera continue to work.
+- **Bridge-mode Docker port mappings change.** Drop `11984`, `18554` and `18555`. Keep `3000` (UI/API), `8554` (RTSP + Frigate two-way audio path) and the WebRTC ICE UDP range configured in **Settings → WebRTC (ICE)**. `network_mode: host` continues to work without changes.
+- **Settings migration is silent on first boot.** `restreamer`, `settings.go2rtc.*` and `settings.webrtc.preferredBackend` are stripped from `settings.json` automatically (Zod drops unknown keys; a marker migration forces the rewrite). The Settings UI is shorter: the Restreamer tab is replaced by a smaller RTSP tab with the mux port, the backchannel toggle and the Frigate config builder.
+- **Frigate config builder targets the new endpoint.** The emitted YAML uses `rtsp://<host>:<localRtsp.port>/<cameraName>/<profile>` for video and `rtsp://<host>:<localRtsp.port>/<cameraName>?backchannel=1` for two-way audio — both on the same port.
+
 ### Features
 
 - New **Capture** page (server + UI) drives a live tshark capture against a chosen camera, parses Baichuan frames in real time, classifies cmd_ids as known/unknown, and walks the user through the auth handshake checklist (started → nonce captured → login successful). Sanitized JSON export and redacted `.pcapng` export — login XML bodies wiped, TCP checksums recomputed, nonce kept so maintainers can decrypt locally. Past captures persist under Reports → Packet Captures.

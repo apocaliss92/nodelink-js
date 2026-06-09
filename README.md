@@ -8,7 +8,7 @@
 
 ### [Manager UI (Web Dashboard)](./app/README.md)
 
-A complete web-based management interface for camera configuration and live streaming — no code required. Docker deployment, go2rtc restreamer, real-time events, MQTT, Home Assistant integration.
+A complete web-based management interface for camera configuration and live streaming — no code required. Docker deployment, native RTSP + WebRTC, real-time events, MQTT, Home Assistant integration.
 
 ### [Library (`@apocaliss92/nodelink-js`)](./documentation/baichuan-api/README.md)
 

@@ -1,8 +1,7 @@
 /**
- * WebRTC tRPC router — exposes the in-process BaichuanWebRTCServer as a
- * fallback for environments where go2rtc is not available (or the user
- * deliberately wants the native pipeline, e.g. to ship detection-box overlays
- * with a known frame timing).
+ * WebRTC tRPC router — exposes the in-process BaichuanWebRTCServer that
+ * powers the live preview player and ships detection-box overlays with a
+ * known frame timing.
  *
  * Signaling flow (server creates offer, browser answers):
  *   1. Browser calls `webrtc.create({ cameraId, profile })` → receives offer SDP

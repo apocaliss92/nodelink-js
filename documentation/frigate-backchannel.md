@@ -101,38 +101,21 @@ shared across all profiles of the same camera.
 
 ## Manager setup (Docker)
 
-Enable in **Settings → Restreamer → RTSP Backchannel** (off by default).
-Once on, every configured camera is auto-registered under
-`/<sanitized-camera-name>` as its underlying API connects, and removed on
-disconnect. The manager picks one of two transport modes automatically
-based on the restreamer setting:
+Enable in **Settings → RTSP → RTSP Backchannel** (off by default). Once on,
+every configured camera is auto-registered under `/<sanitized-camera-name>`
+as its underlying API connects, and removed on disconnect.
 
-- **`restreamer = "local"`** (recommended for Frigate-only setups):
-  backchannel piggy-backs on the same `LocalRtspMux` TCP port that
-  serves video. Video paths take `/<cameraName>/<profile>`, backchannel
-  takes `/<cameraName>` (no profile suffix), so they coexist on a single
-  port. The `talk.port` / `talk.bindHost` settings are ignored in this
-  mode — the mux owns the port (default `8554`).
+The backchannel piggy-backs on the same `LocalRtspMux` TCP port that serves
+video. Video paths take `/<cameraName>/<profile>`, backchannel takes
+`/<cameraName>` (no profile suffix), so they coexist on a single port. The
+port is configured by `settings.localRtsp.port` (default `8554`).
 
-- **`restreamer = "go2rtc"`**: go2rtc owns the video output port, so the
-  manager spins up a dedicated TCP listener for backchannel on
-  `talk.port` (default `18556` — continues the manager's go2rtc-side
-  numbering `18554`/`18555`/`18556` to avoid clashing with the bundled
-  go2rtc binary, which holds `8555` inside the container).
-
-Status (mode, active route list, last bind error) is exposed via tRPC
-at `talk.status`.
+Status (active route list) is exposed via tRPC at `talk.status`.
 
 ## Frigate configuration
 
 Point Frigate's bundled go2rtc at the video URL and the talk URL
-separately. With the Manager-managed listener every camera is reachable
-under the same port — only the path changes.
-
-### Local restreamer (same port for video + talk)
-
-Recommended setup. Video and backchannel share the LocalRtspMux port
-(`8554` by default):
+separately. They share one port — only the path changes.
 
 ```yaml
 go2rtc:
@@ -153,23 +136,10 @@ cameras:
       enabled: true
 ```
 
-### go2rtc restreamer (separate port for talk)
-
-When the manager runs go2rtc internally, talk uses a dedicated listener
-on `talk.port` (default `18556`):
-
-```yaml
-go2rtc:
-  streams:
-    cameretta_daniel:
-      - rtsp://manager.local:18554/cameretta_daniel/main
-      - rtsp://manager.local:18556/cameretta_daniel?backchannel=1
-```
-
-The `?backchannel=1` query is a hint to go2rtc — it tells it to use
-RECORD on the audio track instead of PLAY. The server validates the
-request URL against its registered routes and responds 404 to DESCRIBE
-on unknown paths (so a typo fails fast).
+The `?backchannel=1` query is a hint to Frigate's go2rtc — it tells go2rtc
+to use RECORD on the audio track instead of PLAY. The manager's
+backchannel server validates the request URL against its registered routes
+and responds 404 to DESCRIBE on unknown paths (so a typo fails fast).
 
 ## Caveats
 

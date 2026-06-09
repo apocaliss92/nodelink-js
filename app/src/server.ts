@@ -48,10 +48,9 @@ import {
   getOrCreateApiConnection,
 } from "./rtsp-manager.js";
 import { getSettings, loadSettings, getConfig } from "./settings-store.js";
-// go2rtc provides the primary streaming pipeline (WebRTC, HLS, MJPEG, RTSP).
-// The native modules (mjpeg-native, hls-native, webrtc-native, stream-pool)
-// stay on disk as fallbacks. webrtc-native is now exposed via the `webrtc`
-// tRPC router so the UI can use it when go2rtc is disabled or unavailable.
+// Streaming pipeline: RTSP via LocalRtspMux (BaichuanRtspServer) on a single
+// shared port, WebRTC via webrtc-native (BaichuanWebRTCServer, in-process
+// werift) exposed through the `webrtc` tRPC router.
 import {
   initEventsManager,
   addSseClient,
@@ -61,7 +60,6 @@ import {
   connectMqtt,
   disconnectMqtt,
 } from "./events-manager.js";
-import { initGo2rtc, stopGo2rtc, getGo2rtcManager } from "./go2rtc-manager.js";
 import {
   startEmailPushServer,
   stopEmailPushServer,
@@ -256,73 +254,6 @@ wss.on("connection", (ws, req) => {
 });
 
 app.use(cors());
-
-// go2rtc same-origin proxy. Required for browsers loading the dashboard over
-// HTTPS (reverse proxy with SSL): go2rtc only speaks plain HTTP, so a direct
-// `https://host:11984/api/webrtc` request from the page errors out with
-// ERR_SSL_PROTOCOL_ERROR. Routing through `/go2rtc/*` here lets the server
-// forward the request to go2rtc on loopback while the browser sees a
-// same-origin URL.
-//
-// Issue #11 (David Berdik): WebRTC failed for all cameras when the dashboard
-// was reverse-proxied over HTTPS because this proxy was missing — the client
-// in `WebRTCInlinePlayer.tsx` sends WHEP signaling to `/go2rtc/api/webrtc?...`
-// which previously returned 404 from the SPA fallback handler.
-//
-// Mounted BEFORE express.json() so the raw request body (WHEP SDP offers,
-// arbitrary JSON config payloads) is still readable as a stream.
-app.use("/go2rtc", (req, res) => {
-  const manager = getGo2rtcManager();
-  if (!manager || !manager.isRunning) {
-    res.status(503).type("text/plain").send("go2rtc not available");
-    return;
-  }
-
-  // Express strips the mount prefix, so `req.url` here is the path *under*
-  // /go2rtc (e.g. "/api/webrtc?src=foo"). Default to "/" for a bare
-  // /go2rtc request so the user lands on the go2rtc UI root.
-  const targetPath = req.url || "/";
-  const upstreamUrl = new URL(targetPath, manager.apiUrl);
-
-  const forwardedHeaders: http.OutgoingHttpHeaders = { ...req.headers };
-  forwardedHeaders.host = upstreamUrl.host;
-  delete forwardedHeaders["connection"];
-  delete forwardedHeaders["keep-alive"];
-  delete forwardedHeaders["transfer-encoding"];
-  delete forwardedHeaders["upgrade"];
-
-  const upstream = http.request(
-    {
-      hostname: upstreamUrl.hostname,
-      port: upstreamUrl.port,
-      method: req.method,
-      path: `${upstreamUrl.pathname}${upstreamUrl.search}`,
-      headers: forwardedHeaders,
-    },
-    (upRes) => {
-      res.status(upRes.statusCode ?? 502);
-      for (const [name, value] of Object.entries(upRes.headers)) {
-        if (value === undefined) continue;
-        if (name.toLowerCase() === "transfer-encoding") continue;
-        res.setHeader(name, value as string | string[]);
-      }
-      upRes.pipe(res);
-    },
-  );
-
-  upstream.on("error", (err) => {
-    if (!res.headersSent) {
-      res
-        .status(502)
-        .type("text/plain")
-        .send(`go2rtc upstream error: ${err.message}`);
-    } else {
-      res.destroy();
-    }
-  });
-
-  req.pipe(upstream);
-});
 
 app.use(express.json());
 
@@ -770,9 +701,6 @@ app.get("/api/metrics", (req, res) => {
   });
 });
 
-// MJPEG/HLS/WebRTC streaming endpoints removed — go2rtc provides all output
-// formats via the /go2rtc/ proxy (WebRTC, HLS, MJPEG, RTSP, snapshots).
-
 // ============================================================================
 // Events Endpoints (SSE, JSON stream, MQTT)
 // ============================================================================
@@ -919,10 +847,6 @@ app.get("/api/events/status", (req, res) => {
   res.json(getEventsManagerStatus());
 });
 
-// go2rtc same-origin proxy is mounted earlier (right after cors() and BEFORE
-// express.json()) so request bodies (WHEP SDP, JSON config writes) remain
-// pipeable. See the `/go2rtc` proxy near the top of this file for details.
-
 // Main dashboard - serve static HTML file
 app.get("/", (req, res) => {
   if (!hasBuiltUi) {
@@ -1034,13 +958,6 @@ async function shutdown() {
     });
   }
 
-  // Stop go2rtc
-  try {
-    await stopGo2rtc();
-  } catch (error) {
-    appLogger.error(`Error stopping go2rtc: ${error}`, { source: "server" });
-  }
-
   // Stop email push SMTP server.
   try {
     await stopEmailPushServer();
@@ -1093,8 +1010,7 @@ process.on("unhandledRejection", (reason) => {
 server.listen(PORT, async () => {
   appLogger.info(`Server started on port ${PORT}`, { source: "server" });
 
-  const go2rtcApiPort = settings.go2rtc?.apiPort ?? 11984;
-  const go2rtcRtspPort = settings.go2rtc?.rtspPort ?? 18554;
+  const rtspPort = settings.localRtsp?.port ?? 8554;
   const VITE_PORT = Number(process.env.VITE_PORT) || 5173;
   appLogger.info(
     `\n╔═══════════════════════════════════════════════════════════════╗\n` +
@@ -1104,9 +1020,7 @@ server.listen(PORT, async () => {
       `║  API Docs:   http://localhost:${String(PORT).padEnd(5)}/docs                     ║\n` +
       `║  tRPC API:   http://localhost:${String(PORT).padEnd(5)}/api/trpc                 ║\n` +
       `╠═══════════════════════════════════════════════════════════════╣\n` +
-      `║  go2rtc UI:  http://localhost:${String(PORT).padEnd(5)}/go2rtc/                  ║\n` +
-      `║  go2rtc API: http://localhost:${String(go2rtcApiPort).padEnd(5)}                          ║\n` +
-      `║  RTSP:       rtsp://localhost:${String(go2rtcRtspPort).padEnd(5)}/<stream_name>       ║\n` +
+      `║  RTSP:       rtsp://localhost:${String(rtspPort).padEnd(5)}/<camera>/<profile> ║\n` +
       `║  Events:     http://localhost:${String(PORT).padEnd(5)}/api/events/sse            ║\n` +
       `╚═══════════════════════════════════════════════════════════════╝\n`,
     { source: "server" },
@@ -1124,9 +1038,8 @@ server.listen(PORT, async () => {
     });
   }
 
-  // Init events manager (SSE, JSON stream, MQTT). Wrap in try/catch because
-  // a thrown error here used to take down the entire startup sequence,
-  // preventing go2rtc from ever starting.
+  // Init events manager (SSE, JSON stream, MQTT). Wrap in try/catch so a
+  // throw here doesn't take down the entire startup sequence.
   try {
     initEventsManager();
   } catch (error) {
@@ -1169,71 +1082,32 @@ server.listen(PORT, async () => {
     });
   }
 
-  // Step 1: Start go2rtc when it's the selected restreamer. If the user
-  // chose the local (BaichuanRtspServer) restreamer, skip go2rtc entirely —
-  // no binary download, no YAML, no sidecar process.
-  const restreamerMode = settings.restreamer ?? "go2rtc";
-  if (restreamerMode === "go2rtc") {
-    try {
-      const go2rtcConfig = {
-        binaryPath: process.env.GO2RTC_PATH || settings.go2rtc.binaryPath,
-        apiPort: Number(process.env.GO2RTC_API_PORT) || settings.go2rtc.apiPort,
-        rtspPort: Number(process.env.GO2RTC_RTSP_PORT) || settings.go2rtc.rtspPort,
-        webrtcPort: Number(process.env.GO2RTC_WEBRTC_PORT) || settings.go2rtc.webrtcPort,
-        iceServers: settings.go2rtc.iceServers,
-      };
-      await initGo2rtc(go2rtcConfig);
-      appLogger.info(
-        `go2rtc started (API: http://localhost:${go2rtcConfig.apiPort}, RTSP: ${go2rtcConfig.rtspPort}, WebRTC: ${go2rtcConfig.webrtcPort})`,
-        { source: "go2rtc" },
-      );
-      try {
-        await startStreamsForAllConnectedCameras();
-        appLogger.info("Started streams for already-connected cameras", {
-          source: "go2rtc",
-        });
-      } catch (flushErr) {
-        appLogger.error(`Error starting streams after go2rtc: ${flushErr}`, {
-          source: "go2rtc",
-        });
-      }
-    } catch (error) {
-      appLogger.error(`Error initializing go2rtc: ${error}`, {
-        source: "server",
-      });
-    }
-  } else {
+  // Step 1: Bring up the single-port LocalRtspMux BEFORE any camera stream
+  // is started. startRtspServer registers its path on the mux and assumes
+  // the listening socket is already bound. Camera video, the optional
+  // backchannel and the auto-connect path all share this one TCP port.
+  try {
+    const mux = await ensureLocalRtspMux();
     appLogger.info(
-      `Restreamer=${restreamerMode}: go2rtc disabled — using library BaichuanRtspServer (RTSP only, no WebRTC/HLS/MJPEG previews)`,
+      `LocalRtspMux listening on ${mux.listenHost}:${mux.listenPort}`,
       { source: "server" },
     );
+  } catch (muxErr) {
+    appLogger.error(
+      `Error initializing LocalRtspMux: ${muxErr}. Streams will fail to start.`,
+      { source: "server" },
+    );
+  }
 
-    // Bring up the single-port RTSP multiplexer BEFORE any camera stream
-    // is started. startRtspServer (local branch) registers its path on the
-    // mux and assumes the listening socket is already bound.
-    try {
-      const mux = await ensureLocalRtspMux();
-      appLogger.info(
-        `LocalRtspMux listening on ${mux.listenHost}:${mux.listenPort}`,
-        { source: "server" },
-      );
-    } catch (muxErr) {
-      appLogger.error(
-        `Error initializing LocalRtspMux: ${muxErr}. Local streams will fail to start.`,
-        { source: "server" },
-      );
-    }
-
-    try {
-      await startStreamsForAllConnectedCameras();
-      appLogger.info("Started streams for already-connected cameras", {
-        source: "server",
-      });
-    } catch (flushErr) {
-      appLogger.error(`Error starting streams: ${flushErr}`, {
-        source: "server",
-      });
-    }
+  try {
+    await startStreamsForAllConnectedCameras();
+    appLogger.info("Started streams for already-connected cameras", {
+      source: "server",
+    });
+  } catch (flushErr) {
+    appLogger.error(`Error starting streams: ${flushErr}`, {
+      source: "server",
+    });
   }
 
   // Step 2: Auto-start streams for cameras configured with autoStart.

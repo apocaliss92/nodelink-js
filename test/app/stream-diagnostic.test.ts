@@ -15,8 +15,8 @@ function hasDiagFixtures(): boolean {
 
 /**
  * Tests for stream-diagnostic.ts logic.
- * We inline pure functions here (same pattern as go2rtc-manager.test.ts)
- * to avoid importing the module which triggers winston/logger side-effects.
+ * We inline pure functions here to avoid importing the module, which
+ * triggers winston/logger side-effects at import time.
  */
 
 // ---------------------------------------------------------------------------

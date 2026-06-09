@@ -57,42 +57,14 @@ export function getCameraDisplayName(camera: CameraInfo): string {
 }
 
 /**
- * Resolve the go2rtc stream name for a given camera + profile.
- * Uses the server-reported name when available, falls back to `displayName/profile`.
- *
- * This is the PRIMARY stream — native codecs (H.264/H.265 video + AAC audio).
- * Suitable for RTSP, HLS, MSE clients. NOT suitable for WebRTC when the camera
- * is H.265 (browsers can't play H.265 over WebRTC) — use `getWebrtcStreamName`
- * for WebRTC consumers.
+ * Resolve the RTSP stream name for a camera + profile.
+ * Matches the LocalRtspMux path scheme: `<sanitizedCameraName>/<profile>`.
  */
 export function getStreamName(
   camera: CameraInfo,
   profile: StreamProfile,
-  rtspServer?: { go2rtcStreamName?: string },
 ): string {
-  return rtspServer?.go2rtcStreamName ?? `${getCameraDisplayName(camera)}/${profile}`;
-}
-
-/**
- * Resolve the go2rtc **WebRTC-compatible** stream name for a camera + profile.
- *
- * For every primary stream the backend registers a companion `{primary}/webrtc`
- * stream with a single-source ffmpeg transcode (H.264 + OPUS) — the only codec
- * combination modern browsers can negotiate over WHEP. Hitting the primary
- * stream for WebRTC fails with "codecs not matched" for H.265 cameras and
- * silently drops audio for H.264 cameras (AAC is not a WebRTC audio codec).
- *
- * Use this function as the `streamName` prop of `WebRTCInlinePlayer` and for
- * any direct `POST /api/webrtc?src=…` (WHEP) call.
- */
-export function getWebrtcStreamName(
-  camera: CameraInfo,
-  profile: StreamProfile,
-  rtspServer?: { go2rtcWebrtcStreamName?: string; go2rtcStreamName?: string },
-): string {
-  if (rtspServer?.go2rtcWebrtcStreamName) return rtspServer.go2rtcWebrtcStreamName;
-  const primary = rtspServer?.go2rtcStreamName ?? `${getCameraDisplayName(camera)}/${profile}`;
-  return `${primary}/webrtc`;
+  return `${getCameraDisplayName(camera)}/${profile}`;
 }
 
 export function eventBadgeColor(type: string): string {

@@ -122,17 +122,6 @@ export const settingsRouter = router({
             stateTopicPrefix: z.string().optional(),
           })
           .optional(),
-        go2rtc: z
-          .object({
-            enabled: z.boolean().optional(),
-            binaryPath: z.string().optional(),
-            apiPort: z.number().int().min(1).max(65535).optional(),
-            rtspPort: z.number().int().min(1).max(65535).optional(),
-            webrtcPort: z.number().int().min(1).max(65535).optional(),
-            iceServers: z.array(z.string()).optional(),
-          })
-          .optional(),
-        restreamer: z.enum(["go2rtc", "local"]).optional(),
         localRtsp: z
           .object({
             port: z.number().int().min(1).max(65535).optional(),
@@ -151,8 +140,6 @@ export const settingsRouter = router({
         talk: z
           .object({
             enabled: z.boolean().optional(),
-            port: z.number().int().min(1).max(65535).optional(),
-            bindHost: z.string().optional(),
           })
           .optional(),
       }),
@@ -186,10 +173,6 @@ export const settingsRouter = router({
           ...input.homeassistant,
         };
         updateHomeAssistantPolling();
-      }
-
-      if (input.go2rtc) {
-        patch.go2rtc = { ...current.go2rtc, ...input.go2rtc };
       }
 
       if (input.localRtsp) {

@@ -7,10 +7,12 @@ A **complete web-based management interface** for camera configuration and strea
 - Camera management with NVR/Hub support and channel discovery
 - Battery camera support with auto-detection, sleep/wake events, and per-camera mode
 - Camera controls: floodlight, siren, PTZ, auto-tracking, PIR sensor
-- Live streaming via embedded go2rtc (WebRTC, MSE/MP4, HLS, RTSP, snapshots)
+- Live streaming via a shared RTSP mux (`LocalRtspMux`, port 8554) plus in-process WebRTC preview for the UI
+- Optional RTSP backchannel on the same port for Frigate-style two-way audio
+- Snapshots served directly from the camera's CGI endpoint (no transcoding)
 - Real-time events via SSE, NDJSON stream, and MQTT
-- Real-time logs and go2rtc process output
-- Settings for go2rtc ports, MQTT broker, and Home Assistant discovery
+- Real-time logs and process metrics
+- Settings for RTSP port, WebRTC ICE, MQTT broker, and Home Assistant discovery
 - Embedded SMTP intake for reliable motion alerts on battery cameras (see below)
 - PWA support, responsive design
 
@@ -91,11 +93,12 @@ If you run the container in **bridge** mode (i.e. with `ports:` mappings), WebRT
 services:
   nodelink-manager:
     ports:
-      - "3000:3000"   # Web UI and API
-      - "11984:11984"  # go2rtc API + dashboard
-      - "18554:18554"  # go2rtc RTSP output
-      - "18555:18555/udp" # go2rtc WebRTC ICE
+      - "3000:3000"               # Web UI and API
+      - "8554:8554"               # Shared RTSP mux (video + optional talk path)
+      - "50000-50100:50000-50100/udp" # WebRTC ICE UDP range (configurable)
 ```
+
+The RTSP port matches `settings.localRtsp.port` (default `8554`). The UDP range must match the range you set in **Settings -> WebRTC (ICE)**.
 
 With `network_mode: host`, no port mapping is needed.
 
@@ -105,14 +108,10 @@ With `network_mode: host`, no port mapping is needed.
 | --- | --- | --- |
 | `PORT` | `3000` | HTTP server port |
 | `DATA_PATH` | `/data` | Directory for settings.json and logs |
-| `GO2RTC_PATH` | (auto) | Path to go2rtc binary (falls back to bundled `go2rtc-static`) |
-| `GO2RTC_API_PORT` | `11984` | go2rtc REST API + web dashboard port |
-| `GO2RTC_RTSP_PORT` | `18554` | go2rtc RTSP output port |
-| `GO2RTC_WEBRTC_PORT` | `18555` | go2rtc WebRTC ICE port |
 | `AUTH_ENABLED` | (unset) | Enable auth when set to `1/true`. Auto-enables when `ADMIN_PASSWORD` is set. |
 | `ADMIN_PASSWORD` | (unset) | Sets the `admin` password for web login and HTTP Basic auth. |
 
-Environment variables override `settings.json` values. Ports are also configurable in Settings.
+Environment variables override `settings.json` values. The shared RTSP port, the optional backchannel toggle, and the WebRTC ICE range live in **Settings** (see below).
 
 ## Development (without Docker)
 
@@ -126,31 +125,31 @@ npm run build && npm start   # Production build
 
 Open http://localhost:3000 in your browser.
 
-## Streaming via go2rtc
+## Streaming
 
-All streaming is handled by an embedded **go2rtc** process:
+The manager exposes camera streams in two places:
 
-| Format | URL | Notes |
+| Output | URL | Notes |
 |--------|-----|-------|
-| **WebRTC** | `POST http://HOST:11984/api/webrtc?src={name}` | WHEP signaling |
-| **MSE/MP4** | `http://HOST:11984/api/stream.mp4?src={name}` | Fragmented MP4 |
-| **HLS** | `http://HOST:11984/api/stream.m3u8?src={name}` | Adaptive streaming |
-| **RTSP** | `rtsp://HOST:18554/{name}` | For VLC, ffmpeg, NVR software |
-| **Snapshot** | `http://HOST:11984/api/frame.jpeg?src={name}` | Single JPEG (requires ffmpeg) |
-| **Dashboard** | `http://HOST:11984/` | go2rtc web UI |
+| **RTSP video** (per profile) | `rtsp://HOST:8554/{cameraName}/{profile}` | Shared `LocalRtspMux` listener. Profiles: `main`, `sub`, `ext`. Use any RTSP client (VLC, ffmpeg, Frigate, Home Assistant, NVR software). |
+| **RTSP backchannel** (talk) | `rtsp://HOST:8554/{cameraName}` | Same port, **no profile** in the path. Off by default — enable in **Settings -> RTSP -> "RTSP Backchannel"**. Used by Frigate for two-way audio. |
+| **WebRTC preview** (UI only) | tRPC `webrtc.create` / `webrtc.answer` / `webrtc.addIce` / `webrtc.close` | Driven by the in-process `BaichuanWebRTCServer` (werift). Server generates the offer; the browser answers. See [Manager API → WebRTC preview](../documentation/manager-api.md#webrtc-preview). |
+| **Snapshot** | Camera CGI URL (`/cgi-bin/api.cgi?cmd=Snap...`) | Raw JPEG straight from the camera — no transcoding. |
 
-Stream names follow the pattern `{sanitized_camera_name}_{profile}` (e.g. `studio_main`, `garage_sub`).
+`{cameraName}` is the sanitized camera name (lowercased, spaces/special chars replaced) — the same slug used in event payloads and MQTT topics.
+
+> HLS, MJPEG, MSE and transcoded-MP4 outputs have been removed. RTSP covers every consumer that used to need them, and WebRTC covers the in-browser preview.
 
 ## Authentication
 
-When enabled, Manager API endpoints require `Authorization: Bearer <token>` or session cookie. go2rtc streaming endpoints are unauthenticated (local network only).
+When enabled, Manager API and tRPC endpoints require `Authorization: Bearer <token>` or session cookie. The RTSP mux is unauthenticated by default (local network only); set `localRtsp.requireAuth: true` to demand the camera credentials over RTSP.
 
 ```bash
-# RTSP via go2rtc (no auth)
-ffmpeg -rtsp_transport tcp -i "rtsp://HOST:18554/studio_main" -f null -
+# RTSP main stream
+ffmpeg -rtsp_transport tcp -i "rtsp://HOST:8554/studio/main" -f null -
 
-# Snapshot
-curl -o snap.jpg "http://HOST:11984/api/frame.jpeg?src=studio_main"
+# Snapshot straight from the camera (no manager involvement)
+curl -o snap.jpg "http://CAMERA_HOST/cgi-bin/api.cgi?cmd=Snap&channel=0&user=admin&password=..."
 ```
 
 ## SSO (Authentik) via Trusted Proxy
@@ -162,8 +161,9 @@ See [../documentation/authentik-nginx.md](../documentation/authentik-nginx.md) f
 | Category | Endpoints |
 |----------|-----------|
 | **Auth** | `GET /api/auth/config`, `POST /api/auth/login`, `POST /api/auth/personal-token` |
-| **go2rtc Streaming** | Served directly by go2rtc (port `11984`): WebRTC, MSE/MP4, HLS, RTSP, Snapshot |
-| **go2rtc Management** | tRPC: `go2rtc.start`, `go2rtc.stop`, `go2rtc.status`, `go2rtc.listStreams` |
+| **RTSP streaming** | Shared mux on `rtsp://HOST:8554/{cameraName}/{profile}` (video) and `rtsp://HOST:8554/{cameraName}` (talk backchannel, when enabled) |
+| **WebRTC preview** | tRPC: `webrtc.create`, `webrtc.answer`, `webrtc.addIce`, `webrtc.close`, `webrtc.status` |
+| **Stream lifecycle** | tRPC: `rtsp.list`, `rtsp.start`, `rtsp.stop`, `rtsp.status` |
 | **Events** | `GET /api/events/sse` (SSE), `GET /api/events/stream` (NDJSON), `GET /api/events/status` |
 | **System** | `GET /api/health`, `GET /api/metrics`, `GET /api/updates` |
 

@@ -237,7 +237,6 @@ export function PtzTab({ cameraId, channel }: TabProps) {
             <WebRTCInlinePlayer
               cameraId={cameraId}
               profile="sub"
-              useNative
               autoStart
             />
           </div>

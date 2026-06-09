@@ -89,7 +89,7 @@ export const SettingsSchema = z.object({
 
   /**
    * Ms with zero clients on the RTSP proxy before stopping a running per-path backend.
-   * 0 = never stop automatically (keeps Baichuan/go2rtc source mounted for reconnects).
+   * 0 = never stop automatically (keeps the Baichuan source mounted for reconnects).
    * Set e.g. 30000 to restore previous “idle teardown” behaviour and save bandwidth.
    */
   rtspProxyBackendIdleTimeoutMs: z.number().int().min(0).default(0),
@@ -132,17 +132,6 @@ export const SettingsSchema = z.object({
       icePortRange: z.string().default(""),
       // CSV list of IPs/hostnames to advertise in ICE candidates (empty disables)
       iceAdditionalHostAddresses: z.string().default(""),
-      /**
-       * Which WebRTC backend the live preview player uses:
-       *  - "auto" (default): go2rtc if running, otherwise the native pipeline.
-       *  - "go2rtc": always go2rtc — fail if it's down.
-       *  - "native": always BaichuanWebRTCServer (in-process). Required when
-       *    rendering per-frame detection-box overlays, since the native path
-       *    is the only one with deterministic frame timing.
-       */
-      preferredBackend: z
-        .enum(["auto", "go2rtc", "native"])
-        .default("auto"),
     })
     .default({}),
 
@@ -161,17 +150,11 @@ export const SettingsSchema = z.object({
     .default({}),
 
   /**
-   * Restreamer mode.
-   *
-   * - "go2rtc" (default): starts the go2rtc sidecar and publishes the native
-   *   MPEG-TS stream to it. go2rtc serves RTSP/HLS/MJPEG/WebRTC/MSE.
-   * - "local": uses the library's BaichuanRtspServer directly. Only RTSP
-   *   output is available — HLS/MJPEG/WebRTC previews are disabled because
-   *   they rely on go2rtc's ffmpeg transcoding. Snapshots (CGI) still work.
+   * Local RTSP server options. The manager always uses the library's
+   * BaichuanRtspServer behind a LocalRtspMux — one port serves every
+   * camera (video paths `/<cameraName>/<profile>`, backchannel
+   * `/<cameraName>`). go2rtc has been removed from the manager.
    */
-  restreamer: z.enum(["go2rtc", "local"]).default("go2rtc"),
-
-  /** Local restreamer options (used when restreamer === "local"). */
   localRtsp: z
     .object({
       /** RTSP port for the local BaichuanRtspServer (default 8554). */
@@ -184,39 +167,13 @@ export const SettingsSchema = z.object({
     .default({}),
 
   /**
-   * RTSP backchannel (Frigate 2-way audio).
-   *
-   * Single shared TCP listener serves every camera under its own URL path
-   * (`/{cameraName}`), so adding a new camera doesn't require opening a new
-   * port. Disabled by default — flip `enabled` and rely on the path scheme
-   * to point Frigate's bundled go2rtc at the right camera.
-   *
-   * Default port 18556 continues the manager's go2rtc-side numbering
-   * (18554 RTSP, 18555 WebRTC, 18556 talk) and avoids clashing with the
-   * bundled go2rtc binary, which holds 8555 inside the container.
+   * RTSP backchannel (Frigate 2-way audio). Enabled below adds backchannel
+   * routes to the same LocalRtspMux that already serves video — no extra
+   * port. Each camera is reachable at `/<sanitized-cameraName>`.
    */
   talk: z
     .object({
       enabled: z.boolean().default(false),
-      port: z.number().int().min(1).max(65535).default(18556),
-      /** Bind host. Default 0.0.0.0 so Frigate (separate container) can reach it. */
-      bindHost: z.string().default("0.0.0.0"),
-    })
-    .default({}),
-
-  // go2rtc restreamer — active when restreamer === "go2rtc"
-  go2rtc: z
-    .object({
-      /** Path to go2rtc binary (e.g. "./bin/go2rtc" or "go2rtc"). */
-      binaryPath: z.string().default("go2rtc"),
-      /** go2rtc API port (default 11984). */
-      apiPort: z.number().int().min(1).max(65535).default(11984),
-      /** go2rtc RTSP listen port (default 18554). */
-      rtspPort: z.number().int().min(1).max(65535).default(18554),
-      /** go2rtc WebRTC listen port (default 18555). */
-      webrtcPort: z.number().int().min(1).max(65535).default(18555),
-      /** ICE servers for WebRTC (e.g. "stun:stun.l.google.com:19302"). */
-      iceServers: z.array(z.string()).default([]),
     })
     .default({}),
 
@@ -398,6 +355,16 @@ export function loadSettings(): Settings {
       // saveSettings(), which re-parses through SettingsSchema and
       // drops the unknown key on the rewrite.
       id: "email-push-drop-featureEnabled-v1",
+      apply: () => null,
+    },
+    {
+      // The bundled go2rtc sidecar was removed: settings.restreamer,
+      // settings.go2rtc.* and settings.webrtc.preferredBackend no longer
+      // exist in the schema and Zod silently drops them at parse time.
+      // This marker forces saveSettings() to rewrite the file once so the
+      // legacy keys are gone from disk too — keeps backups and downgrade
+      // diffs clean.
+      id: "drop-go2rtc-v1",
       apply: () => null,
     },
   ];

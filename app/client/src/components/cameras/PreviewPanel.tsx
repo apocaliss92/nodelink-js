@@ -34,10 +34,6 @@ export function PreviewPanel({ state, onClose }: PreviewPanelProps) {
         </div>
         <div className="flex-1 relative">
           <WebRTCInlinePlayer
-            streamName={state.streamName ?? `${state.cameraName}_${state.profile}`}
-            go2rtcApiPort={state.go2rtcApiPort}
-            serviceIp={state.serviceIp}
-            useNative={state.useNative}
             cameraId={state.cameraId}
             profile={state.profile}
             overlayRender={(video) =>

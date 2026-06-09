@@ -6,7 +6,6 @@ import { rtspRouter } from "./routers/rtsp.js";
 import { settingsRouter } from "./routers/settings.js";
 import { logsRouter } from "./routers/logs.js";
 import { eventsRouter } from "./routers/events.js";
-import { go2rtcRouter } from "./routers/go2rtc.js";
 import { frigateRouter } from "./routers/frigate.js";
 import { diagnosticsRouter } from "./routers/diagnostics.js";
 import { webrtcRouter } from "./routers/webrtc.js";
@@ -22,7 +21,6 @@ export const appRouter = router({
   settings: settingsRouter,
   logs: logsRouter,
   events: eventsRouter,
-  go2rtc: go2rtcRouter,
   frigate: frigateRouter,
   diagnostics: diagnosticsRouter,
   webrtc: webrtcRouter,

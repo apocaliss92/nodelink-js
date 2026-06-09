@@ -41,18 +41,13 @@ export function useCameras() {
       channel: number;
       status: string | undefined;
       connections: number | undefined;
-      go2rtcStreamName: string | undefined;
-      go2rtcWebrtcStreamName: string | undefined;
       rtspUrl: string | undefined;
-      mode: string | undefined;
       port: number | undefined;
     }>
   >([]);
-  const [go2rtcApiPort, setGo2rtcApiPort] = useState<number | null>(null);
-  const [go2rtcRtspPort, setGo2rtcRtspPort] = useState<number | null>(null);
   const [serviceIp, setServiceIp] = useState<string>("");
-  const [restreamer, setRestreamer] = useState<"go2rtc" | "local">("go2rtc");
-  const [localRtspPort, setLocalRtspPort] = useState<number | null>(null);
+  /** Default LocalRtspMux port from settings.localRtsp.port. */
+  const [rtspPort, setRtspPort] = useState<number | null>(null);
   const [streamsLoadingByCamera, setStreamsLoadingByCamera] = useState<
     Record<string, boolean>
   >({});
@@ -87,30 +82,17 @@ export function useCameras() {
       setError(null);
     }
     try {
-      const [list, rtspList, nvrList, go2rtcSt, settingsRes] = await Promise.all([
+      const [list, rtspList, nvrList, settingsRes] = await Promise.all([
         trpcQuery<CameraInfo[]>("cameras.list"),
         trpcQuery<any[]>("rtsp.list").catch(() => []),
         trpcQuery<NvrInfo[]>("cameras.listNvrs").catch(() => []),
-        trpcQuery<{ apiUrl: string | null; running: boolean; rtspPort?: number }>("go2rtc.status").catch(() => null),
         trpcQuery<{
           serviceIp?: string;
-          restreamer?: "go2rtc" | "local";
           localRtsp?: { port?: number };
         }>("settings.get").catch(() => null),
       ]);
       if (settingsRes?.serviceIp) setServiceIp(settingsRes.serviceIp);
-      if (settingsRes?.restreamer) setRestreamer(settingsRes.restreamer);
-      if (settingsRes?.localRtsp?.port) setLocalRtspPort(settingsRes.localRtsp.port);
-      if (go2rtcSt) {
-        setGo2rtcRunning(go2rtcSt.running);
-        if (go2rtcSt.apiUrl) {
-          try {
-            const port = new URL(go2rtcSt.apiUrl).port;
-            if (port) setGo2rtcApiPort(Number(port));
-          } catch { /* ignore */ }
-        }
-        if (go2rtcSt.rtspPort) setGo2rtcRtspPort(go2rtcSt.rtspPort);
-      }
+      if (settingsRes?.localRtsp?.port) setRtspPort(settingsRes.localRtsp.port);
       updateIfChanged(setCameras, list);
 
       // Clear discovered streams for cameras that are no longer connected,
@@ -157,10 +139,7 @@ export function useCameras() {
           channel: Number(x.channel ?? 0),
           status: x.status ? String(x.status) : undefined,
           connections: x.connections === undefined ? undefined : Number(x.connections),
-          go2rtcStreamName: x.go2rtcStreamName ? String(x.go2rtcStreamName) : undefined,
-          go2rtcWebrtcStreamName: x.go2rtcWebrtcStreamName ? String(x.go2rtcWebrtcStreamName) : undefined,
           rtspUrl: x.rtspUrl ? String(x.rtspUrl) : undefined,
-          mode: x.mode ? String(x.mode) : undefined,
           port: x.port === undefined ? undefined : Number(x.port),
         })),
       );
@@ -308,8 +287,6 @@ export function useCameras() {
     [refresh],
   );
 
-  const [go2rtcRunning, setGo2rtcRunning] = useState(false);
-
   const deleteCamera = useCallback(
     async (id: string) => {
       await trpcMutation("cameras.delete", { id });
@@ -398,12 +375,8 @@ export function useCameras() {
     error,
     connectingByCamera,
     rtspServers,
-    go2rtcApiPort,
-    go2rtcRtspPort,
     serviceIp,
-    restreamer,
-    localRtspPort,
-    go2rtcRunning,
+    rtspPort,
     streamsByCamera,
     streamsLoadingByCamera,
     streamsDiscoveryAttemptsByCamera,

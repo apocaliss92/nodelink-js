@@ -16,10 +16,7 @@ import { PtzFloatingContent } from './PtzFloatingContent';
 import { EventsFloatingContent } from './EventsFloatingContent';
 import { SessionsFloatingContent } from './SessionsFloatingContent';
 import { DeviceControlsContent } from './DeviceControlsContent';
-import { WebRTCInlinePlayer } from './WebRTCInlinePlayer';
-import { DetectionBoxOverlay } from './DetectionBoxOverlay';
 import { StreamFloatingPanel } from './StreamFloatingPanel';
-import { getStreamName, getWebrtcStreamName } from './utils';
 import { useCameras } from './hooks/useCameras';
 import { useSelectedCamera } from './hooks/useSelectedCamera';
 import { useAuth } from '../../auth';
@@ -203,7 +200,6 @@ export function CamerasPage() {
               rtspServers={rtspServers}
               connectingByCamera={connectingByCamera}
               selectedCamera={selectedCamera}
-              restreamer={camerasHook.restreamer}
               onSelectCamera={handleSelectCamera}
               onConnect={(cam) => camerasHook.connect(cam.id)}
               onOpenPtz={handleOpenPtz}
@@ -227,11 +223,8 @@ export function CamerasPage() {
                 onOpenPreview={(state) => camerasHook.setPreviewModal(state)}
                 savingAutoStart={savingAutoStart[selectedCamera.id] ?? false}
                 onToggleAutoStart={() => void setAutoStartForCamera(selectedCamera, !selectedCamera.autoStart)}
-                go2rtcApiPort={camerasHook.go2rtcApiPort}
-                go2rtcRtspPort={camerasHook.go2rtcRtspPort}
                 serviceIp={camerasHook.serviceIp}
-                restreamer={camerasHook.restreamer}
-                localRtspPort={camerasHook.localRtspPort}
+                rtspPort={camerasHook.rtspPort}
                 onClose={() => selectCamera(null)}
               />
             )}
@@ -341,19 +334,12 @@ export function CamerasPage() {
         }
 
         if (panel.type === 'stream') {
-          const server = rtspServers.find(
-            (s) => s.cameraId === panel.camera.id && s.profile === panel.stream.profile,
-          );
           return (
             <StreamFloatingPanel
               key={panel.id}
               panelId={panel.id}
               camera={panel.camera}
               stream={panel.stream}
-              streamName={getWebrtcStreamName(panel.camera, panel.stream.profile, server)}
-              go2rtcApiPort={camerasHook.go2rtcApiPort}
-              serviceIp={camerasHook.serviceIp}
-              useNative={camerasHook.restreamer === "local"}
               offsetIndex={i}
               onClose={() => closeFloatingPanel(panel.id)} />
           );

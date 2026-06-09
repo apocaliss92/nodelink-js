@@ -22,6 +22,66 @@ export interface NewsItem {
 
 export const NEWS_ITEMS: NewsItem[] = [
   {
+    id: "2026-06-09-go2rtc-removed",
+    date: "2026-06-09",
+    title: "Streaming now runs natively — go2rtc sidecar removed",
+    body: (
+      <div className="space-y-2 text-sm text-[var(--color-foreground-muted)]">
+        <p>
+          <strong className="text-[var(--color-foreground)]">Heads-up:
+          breaking change.</strong> The bundled <code>go2rtc</code> sidecar
+          has been removed from the manager. Streaming is now served by
+          two in-process components only:{" "}
+          <strong className="text-[var(--color-foreground)]">RTSP</strong>{" "}
+          (one shared TCP port, default <code>8554</code>, all cameras
+          multiplexed by URL path) and{" "}
+          <strong className="text-[var(--color-foreground)]">WebRTC</strong>{" "}
+          (native, in-process, for the in-browser preview).
+        </p>
+        <p>
+          <strong className="text-[var(--color-foreground)]">What still
+          works.</strong> RTSP output, WebRTC preview, the Frigate config
+          builder, two-way audio for Frigate (now sharing the same RTSP
+          port as video — path <code>/&lt;cameraName&gt;</code>), CGI
+          snapshots, and every event / MQTT / Home Assistant path.
+        </p>
+        <p>
+          <strong className="text-[var(--color-foreground)]">What is
+          gone.</strong> The transcoded outputs that only go2rtc could
+          serve:{" "}
+          <strong className="text-[var(--color-foreground)]">HLS</strong>,{" "}
+          <strong className="text-[var(--color-foreground)]">MSE</strong>,{" "}
+          <strong className="text-[var(--color-foreground)]">MJPEG</strong>{" "}
+          and the transcoded{" "}
+          <strong className="text-[var(--color-foreground)]">MP4 / snapshot</strong>{" "}
+          URLs that the dashboard exposed under <code>:11984</code>. If you
+          were consuming any of those endpoints (e.g. an HLS player in
+          another app), switch the consumer to RTSP — every NVR, ffmpeg
+          client, Frigate and Home Assistant card supports RTSP natively.
+        </p>
+        <p>
+          <strong className="text-[var(--color-foreground)]">Bridge-mode
+          Docker users.</strong> The compose port table is shorter now:
+          only <code>3000</code> (UI/API), <code>8554</code>{" "}
+          (RTSP + Frigate talk-back) and the WebRTC ICE range (configured
+          in{" "}
+          <strong className="text-[var(--color-foreground)]">
+            Settings → WebRTC (ICE)
+          </strong>
+          ). The old <code>11984</code>, <code>18554</code> and{" "}
+          <code>18555</code> mappings can be dropped.
+        </p>
+        <p>
+          <strong className="text-[var(--color-foreground)]">Settings
+          migration.</strong> Existing installs are migrated silently on
+          first boot: <code>restreamer</code>, <code>go2rtc.*</code> and{" "}
+          <code>webrtc.preferredBackend</code> are removed from{" "}
+          <code>settings.json</code>. No manual editing required.
+        </p>
+      </div>
+    ),
+  },
+  {
     id: "2026-05-30-email-events",
     date: "2026-05-30",
     title: "Reliable motion alerts for battery cameras (e-mail push)",

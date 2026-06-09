@@ -45,10 +45,6 @@ export function PreviewDialog({
 
             <div className="mt-2">
               <WebRTCInlinePlayer
-                streamName={state.streamName ?? state.cameraName}
-                go2rtcApiPort={state.go2rtcApiPort}
-                serviceIp={state.serviceIp}
-                useNative={state.useNative}
                 cameraId={state.cameraId}
                 profile={state.profile}
                 overlayRender={(video) =>

@@ -1,6 +1,5 @@
 import {
   ReolinkBaichuanApi,
-  Go2rtcTcpServer,
   BaichuanRtspServer,
 } from "@apocaliss92/nodelink-js";
 import {
@@ -19,7 +18,6 @@ import {
   upsertCameraStream,
   RTSP_DIGEST_REALM,
 } from "./settings-store.js";
-import { getGo2rtcManager } from "./go2rtc-manager.js";
 import { isBatteryCamera } from "./camera-traits.js";
 import {
   getLocalRtspMux,
@@ -45,8 +43,13 @@ export function generateStreamToken(): string {
   return crypto.randomBytes(8).toString("hex");
 }
 
-// Helper: build go2rtc-safe stream name (e.g. "camera_studio/main")
-export function buildGo2rtcStreamName(
+/**
+ * Build the URL path component for a camera stream, e.g.
+ * `camera_studio/main` or `camera_studio/main/2` for NVR child channel 2.
+ * Used both for the LocalRtspMux path and for any external integration
+ * (Frigate config emitter) that references the manager's RTSP endpoint.
+ */
+export function buildStreamName(
   cameraName: string,
   profile: string,
   channel: number,
@@ -97,7 +100,7 @@ export async function ensureLocalRtspMux() {
 
 /**
  * Check if a TCP port can be bound on the given host.
- * go2rtc ingest binds BaichuanRtspServer on 127.0.0.1 — checking only 0.0.0.0
+ * BaichuanRtspServer may bind 127.0.0.1 in some paths — checking only 0.0.0.0
  * misses conflicts and causes EADDRINUSE on sub/ext when they reuse main's saved port.
  */
 export function isPortAvailable(
@@ -181,23 +184,8 @@ export interface RtspServerInfo {
   streamKey: string;
   /** RTSP path (e.g., /token123) */
   path?: string;
-  /** When using go2rtc: the stream name registered in go2rtc. */
-  go2rtcStreamName?: string;
-  /**
-   * When using go2rtc: the companion stream name that exposes a WebRTC-
-   * compatible H.264 + OPUS transcode of the primary stream. WebRTC
-   * consumers must use this name instead of `go2rtcStreamName` since
-   * WebRTC cannot play H.265 and cannot accept AAC audio.
-   */
-  go2rtcWebrtcStreamName?: string;
-  /** When using go2rtc: the tcp:// source URL. */
-  go2rtcSourceUrl?: string;
-  /**
-   * Server mode:
-   *  - "go2rtc": Go2rtcTcpServer feeding the go2rtc sidecar (WebRTC/HLS/MJPEG/RTSP out)
-   *  - "local":  BaichuanRtspServer directly exposes RTSP (no previews)
-   */
-  mode?: "go2rtc" | "local";
+  /** Always "local" — kept as a literal so consumers branching on it still compile. */
+  mode?: "local";
 }
 
 export interface CameraInfo {
@@ -316,16 +304,13 @@ export function onApiDisconnected(
   apiDisconnectionListeners.push(callback);
 }
 
-// Store for RTSP servers. `server` may be either a Go2rtcTcpServer (when
-// settings.restreamer === "go2rtc") or a BaichuanRtspServer (when
-// settings.restreamer === "local"). Both expose an async `stop()` method.
+// Store for RTSP servers. Every camera stream is now served via a
+// BaichuanRtspServer plugged into LocalRtspMux.
 const rtspServers = new Map<
   string,
   {
-    server: Go2rtcTcpServer | BaichuanRtspServer;
+    server: BaichuanRtspServer;
     info: RtspServerInfo;
-    /** go2rtc stream name registered with the go2rtc process (go2rtc mode only). */
-    go2rtcStreamName?: string;
   }
 >();
 
@@ -463,7 +448,7 @@ function attachConnectionListeners(
       // Battery idle disconnect: the camera closed the TCP socket to save power.
       // The streaming session to the camera has already closed (prestartStream=false
       // + idle disconnect). The BaichuanRtspServer listener stays bound so that
-      // the next go2rtc client (e.g. WebRTC preview) can reconnect and wake the
+      // the next RTSP / WebRTC preview client can reconnect and wake the
       // camera on demand. The apiConnections entry is kept so ensureConnected()
       // can reopen the socket transparently without waking the camera prematurely.
       if (conn.pingInterval) {
@@ -1004,18 +989,14 @@ export async function enableNvrCamera(cameraId: string): Promise<void> {
   // Update cache to connected (refresh device info)
   await updateSingleCameraInfo(camera, conn.api);
 
-  // Start go2rtc streams for this camera (the onApiConnected listener won't
+  // Start RTSP streams for this camera (the onApiConnected listener won't
   // fire because the NVR socket was already connected — trigger manually).
-  const settings = getSettings();
-  const go2rtcMgr = getGo2rtcManager();
-  if (go2rtcMgr?.isRunning) {
-    const channel = camera.rtspChannel ?? 0;
-    const profiles = await getAvailableProfiles(cameraId);
-    for (const profile of profiles) {
-      const sk = getRtspServerKey(cameraId, profile, channel);
-      if (rtspServers.get(sk)?.info.status === "running") continue;
-      startRtspServer(cameraId, { profile, channel }).catch(() => {});
-    }
+  const channel = camera.rtspChannel ?? 0;
+  const profiles = await getAvailableProfiles(cameraId);
+  for (const profile of profiles) {
+    const sk = getRtspServerKey(cameraId, profile, channel);
+    if (rtspServers.get(sk)?.info.status === "running") continue;
+    startRtspServer(cameraId, { profile, channel }).catch(() => {});
   }
 }
 
@@ -1125,7 +1106,7 @@ export async function startRtspServer(
   // For battery cameras we force a short idle timeout (15s) so the native
   // Baichuan stream is torn down when no RTSP consumer is connected, letting
   // the camera go back to sleep. Without this, one-off probes (UI preview,
-  // go2rtc registration) keep the stream alive forever and the camera
+  // RTSP registration) keep the stream alive forever and the camera
   // drains its battery. AC-powered cameras use the user setting
   // (rtspProxyBackendIdleTimeoutMs, default 0 = always-on).
   const baseNativeIdleMs = settings.rtspProxyBackendIdleTimeoutMs;
@@ -1139,72 +1120,16 @@ export async function startRtspServer(
     nativeStreamPrimeIdleStopMs: nativeIdleMs > 0 ? 15_000 : 0,
   };
 
-  // Port availability host MUST match the actual bind host of the stream
-  // server, otherwise findNextAvailablePort may think a port is free on
-  // loopback while another process holds it on the public interface (or
-  // vice-versa), producing a confusing EADDRINUSE at bind time.
-  //  - go2rtc mode: Go2rtcTcpServer binds loopback only (feeds go2rtc).
-  //  - local mode:  BaichuanRtspServer binds on settings.localRtsp.bindHost
-  //                 (default 0.0.0.0) so external RTSP clients can connect.
-  const portBindHost =
-    settings.restreamer === "local"
-      ? (settings.localRtsp?.bindHost ?? "0.0.0.0")
-      : "127.0.0.1";
-
-  // Find saved stream config to get previously used port
+  // Find saved stream config to get previously used port (kept for
+  // backward-compat — port is now always the mux port).
   const savedStreamConfig = camera.rtspStreams?.find(
     (s) => s.profile === profile && s.channel === channel,
   );
 
-  const portsHeldByPeers = collectInProcessRtspPorts(streamKey);
-
-  // Auto-select port.
-  //
-  // In **local restreamer mode**, all streams share a single RTSP port owned
-  // by `LocalRtspMux` — there is no need to allocate per-stream ports, and
-  // reusing the mux port for every stream avoids bogus EADDRINUSE probing
-  // against a port we don't even bind ourselves. The mux reads the first
+  // Every stream shares the single LocalRtspMux port. No per-stream
+  // allocation, no port-availability probing — the mux reads the first
   // request line and dispatches by path.
-  //
-  // In **go2rtc mode** we keep the historical per-Go2rtcTcpServer port
-  // allocation (each TCP source needs its own loopback listener).
-  let port: number;
-  if (settings.restreamer === "local") {
-    port = settings.localRtsp?.port ?? 8554;
-  } else if (options?.port) {
-    port = options.port;
-    if (portsHeldByPeers.has(port)) {
-      logger.warn(
-        `Explicit port ${port} already used by another stream; picking next free on ${portBindHost}`,
-      );
-      const basePort =
-        camera.rtspPort ||
-        Number(process.env.RTSP_PORT) ||
-        8554;
-      port = await findNextAvailablePort(basePort, 100, portBindHost);
-    }
-  } else if (
-    savedStreamConfig?.port &&
-    !portsHeldByPeers.has(savedStreamConfig.port) &&
-    (await isPortAvailable(savedStreamConfig.port, portBindHost))
-  ) {
-    // Use previously saved port if still free on the bind host and not taken in-process
-    port = savedStreamConfig.port;
-    claimedPorts.add(port);
-    logger.info(`Reusing saved port ${port} for stream`);
-  } else {
-    if (
-      savedStreamConfig?.port &&
-      (portsHeldByPeers.has(savedStreamConfig.port) ||
-        !(await isPortAvailable(savedStreamConfig.port, portBindHost)))
-    ) {
-      logger.info(
-        `Saved port ${savedStreamConfig.port} unavailable for ${profile} (in use or wrong host); allocating next on ${portBindHost}`,
-      );
-    }
-    const basePort = camera.rtspPort || Number(process.env.RTSP_PORT) || 8554;
-    port = await findNextAvailablePort(basePort, 100, portBindHost);
-  }
+  const port = settings.localRtsp?.port ?? 8554;
 
   // Build RTSP path using friendly name (camera-name/profile or camera-name/profile/channel for multifocal)
   // For multifocal with channel > 0, append /channel to avoid path collision (e.g. /camera/main/1 for tele)
@@ -1235,40 +1160,6 @@ export async function startRtspServer(
 
   try {
     const api = await getOrCreateApiConnection(cameraId);
-    const restreamerMode = settings.restreamer ?? "go2rtc";
-    const go2rtcMgr = getGo2rtcManager();
-    const useGo2rtc = restreamerMode === "go2rtc" && go2rtcMgr?.isRunning === true;
-
-    /**
-     * Detect the camera's video codec so we can decide whether a WebRTC
-     * companion stream (H.264 + OPUS) is needed. Returns null when
-     * detection fails (e.g. battery camera sleeping at registration time).
-     */
-    const detectCodec = async (): Promise<"H.264" | "H.265" | null> => {
-      try {
-        const isNvr = camera.isNvr || !!camera.nvrId;
-        const opts = await api.buildVideoStreamOptions({ channel, onNvr: isNvr });
-        const match = opts.nativeStreams.find(
-          (s) => s.profile === profile && (s.channel ?? 0) === channel,
-        );
-        const codec = match?.metadata?.videoEncType;
-        if (codec === "H.264") return "H.264";
-        if (codec === "H.265") return "H.265";
-        return null;
-      } catch {
-        return null;
-      }
-    };
-
-    const go2rtcRtspPortForSources =
-      Number(process.env.GO2RTC_RTSP_PORT) || (settings.go2rtc?.rtspPort ?? 18554);
-
-    if (restreamerMode === "go2rtc" && !useGo2rtc) {
-      throw new Error(
-        `Cannot start stream ${profile}/ch${channel}: go2rtc is not running. ` +
-        `Check the go2rtc process status.`,
-      );
-    }
 
     const rtspLogger = {
       log: (msg: unknown) => logger.info(String(msg)),
@@ -1280,168 +1171,74 @@ export async function startRtspServer(
 
     const serviceIp = settings.serviceIp || "localhost";
 
-    // ─── Local restreamer mode ──────────────────────────────────────────────
-    // Use the library's built-in BaichuanRtspServer in **mux mode**: a
-    // single-port LocalRtspMux owns the listening socket and routes each
-    // RTSP connection to the correct per-stream server by URL path. No
-    // go2rtc sidecar, no WebRTC/HLS/MJPEG previews.
-    if (restreamerMode === "local") {
-      const mux = await ensureLocalRtspMux();
-      const muxPort = mux.listenPort;
-      const muxBindHost = mux.listenHost;
-      const localPath = `/${buildGo2rtcStreamName(camera.name, profile, channel)}`;
+    // Single-port LocalRtspMux + BaichuanRtspServer in mux mode. The mux
+    // owns the listening socket and routes each RTSP connection to the
+    // correct per-stream server by URL path. WebRTC for the in-browser
+    // preview is served separately via `webrtc-native` (werift in-process).
+    const mux = await ensureLocalRtspMux();
+    const muxPort = mux.listenPort;
+    const muxBindHost = mux.listenHost;
+    const localPath = `/${buildStreamName(camera.name, profile, channel)}`;
 
-      logger.info(
-        `Registering BaichuanRtspServer (local RTSP, mux) on ${muxBindHost}:${muxPort}${localPath} (${profile}, ch${channel})`,
+    logger.info(
+      `Registering BaichuanRtspServer on ${muxBindHost}:${muxPort}${localPath} (${profile}, ch${channel})`,
+    );
+
+    // Unified auth: reuse dashboard users as RTSP users. Their HA1 digest
+    // is pre-computed at password-set time ([settings-store.ts]
+    // addDashboardUser / setDashboardUserPassword) so the RTSP server can
+    // validate Digest challenges without ever seeing the plaintext.
+    const requireAuthSetting =
+      settings.localRtsp?.requireAuth ?? settings.rtspRequireAuth ?? false;
+    const credentials = (settings.dashboardUsers ?? [])
+      .filter((u) => u.rtspDigestHa1 && u.username)
+      .map((u) => ({ username: u.username, ha1: u.rtspDigestHa1! }));
+    if (requireAuthSetting && credentials.length === 0) {
+      logger.warn(
+        `rtspRequireAuth is set but no dashboard user has a pre-computed rtspDigestHa1. ` +
+        `Reset any user password from the Users tab to regenerate it, or clear rtspRequireAuth.`,
       );
-
-      // Unified auth: reuse dashboard users as RTSP users. Their HA1 digest
-      // is pre-computed at password-set time ([settings-store.ts]
-      // addDashboardUser / setDashboardUserPassword) so the RTSP server can
-      // validate Digest challenges without ever seeing the plaintext.
-      const requireAuthSetting =
-        settings.localRtsp?.requireAuth ?? settings.rtspRequireAuth ?? false;
-      const credentials = (settings.dashboardUsers ?? [])
-        .filter((u) => u.rtspDigestHa1 && u.username)
-        .map((u) => ({ username: u.username, ha1: u.rtspDigestHa1! }));
-      if (requireAuthSetting && credentials.length === 0) {
-        logger.warn(
-          `rtspRequireAuth is set but no dashboard user has a pre-computed rtspDigestHa1. ` +
-          `Reset any user password from the Users tab to regenerate it, or clear rtspRequireAuth.`,
-        );
-      }
-
-      const baichuanServer = new BaichuanRtspServer({
-        api,
-        channel,
-        profile,
-        // listenHost/listenPort are purely informational in mux mode — the
-        // server never binds them. They are still passed so that SDP/logs
-        // reflect the public endpoint users will dial.
-        listenHost: muxBindHost,
-        listenPort: muxPort,
-        path: localPath,
-        logger: rtspLogger,
-        deviceId: cameraId,
-        requireAuth: requireAuthSetting && credentials.length > 0,
-        credentials,
-        authRealm: RTSP_DIGEST_REALM,
-        muxMode: true,
-        // On-demand native stream:
-        // - lazyMetadata: don't wake the camera at boot just to grab SDP
-        //   fields; fetch on first DESCRIBE instead. Matches go2rtc's lazy
-        //   source-pull model.
-        // - nativeStreamIdleStopMs: stop the native Baichuan stream after
-        //   30s with no RTSP clients connected (user-configurable via
-        //   rtspProxyBackendIdleTimeoutMs).
-        lazyMetadata: true,
-        nativeStreamIdleStopMs:
-          rtspNativeIdleOpts.nativeStreamIdleStopMs > 0
-            ? rtspNativeIdleOpts.nativeStreamIdleStopMs
-            : 30_000,
-      });
-
-      await baichuanServer.start();
-      mux.register(localPath, baichuanServer);
-
-      info.status = "running";
-      info.mode = "local";
-      info.port = muxPort;
-      info.startedAt = new Date();
-      info.rtspUrl = `rtsp://${serviceIp}:${muxPort}${localPath}`;
-
-      rtspServers.set(streamKey, { server: baichuanServer, info });
-      logger.info(`RTSP (local, mux): ${info.rtspUrl}`);
-
-      upsertCameraStream(cameraId, {
-        profile,
-        channel,
-        port: muxPort,
-        token: streamToken,
-        enabled: true,
-        autoStart: true,
-      });
-
-      return info;
     }
 
-    // ─── go2rtc restreamer mode (default) ──────────────────────────────────
-    // Go2rtcTcpServer on loopback, feeding MPEG-TS (H.264/H.265 + AAC)
-    // directly to go2rtc via a tcp:// source — no intermediate RTSP stack.
-    logger.info(
-      `Starting Go2rtcTcpServer (MPEG-TS) on port ${port} (${profile}, ch${channel}) → go2rtc`,
-    );
-
-    const go2rtcName = buildGo2rtcStreamName(camera.name, profile, channel);
-
-    const server = new Go2rtcTcpServer({
+    const baichuanServer = new BaichuanRtspServer({
       api,
-      profile,
       channel,
-      listenPort: port,
-      listenHost: "127.0.0.1",
-      deviceId: cameraId,
+      profile,
+      // listenHost/listenPort are informational in mux mode — the server
+      // never binds them. They are still passed so SDP/logs reflect the
+      // public endpoint users will dial.
+      listenHost: muxBindHost,
+      listenPort: muxPort,
+      path: localPath,
       logger: rtspLogger,
-      prestartStream: !isBatteryCamera(camera),
-      gracePeriodMs: rtspNativeIdleOpts.nativeStreamIdleStopMs > 0
-        ? rtspNativeIdleOpts.nativeStreamIdleStopMs
-        : 30_000,
+      deviceId: cameraId,
+      requireAuth: requireAuthSetting && credentials.length > 0,
+      credentials,
+      authRealm: RTSP_DIGEST_REALM,
+      muxMode: true,
+      lazyMetadata: true,
+      nativeStreamIdleStopMs:
+        rtspNativeIdleOpts.nativeStreamIdleStopMs > 0
+          ? rtspNativeIdleOpts.nativeStreamIdleStopMs
+          : 30_000,
     });
 
-    await server.start();
-
-    const tcpSourceUrl = server.go2rtcSourceUrl!;
-
-    // Primary stream: MPEG-TS from our Go2rtcTcpServer, carrying native
-    // H.264/H.265 video + AAC audio.  Ingested 1:1 for RTSP / HLS / MSE
-    // consumers that can handle the native codecs.
-    await go2rtcMgr!.addStream(go2rtcName, tcpSourceUrl);
-    logger.info(`Go2rtc primary stream registered: ${go2rtcName} → ${tcpSourceUrl}`);
-
-    // WebRTC companion stream: single-source ffmpeg transcode to H.264+OPUS.
-    // We register it as a SEPARATE stream (not an additional source on the
-    // primary) because go2rtc's `PUT /api/streams` silently keeps only the
-    // first `src` parameter — multi-source entries only work from the static
-    // YAML, which go2rtc does not hot-reload.  Combining video + audio into
-    // one ffmpeg chain is fine here because both tracks are transcoded
-    // (no `audio=copy` AAC-over-RTSP negotiation failure).
-    //
-    // H.264 cameras still need the audio transcoded for WebRTC (AAC is not
-    // a WebRTC audio codec), but can leave video untouched. The combined
-    // ffmpeg chain handles both cases — ffmpeg is smart enough to copy
-    // video when the filter keeps the same codec.
-    const detectedCodec = await detectCodec();
-    const webrtcStreamName = `${go2rtcName}/webrtc`;
-    const webrtcInputUrl = `rtsp://127.0.0.1:${go2rtcRtspPortForSources}/${go2rtcName}`;
-    const webrtcVideoFilter =
-      detectedCodec === "H.264" ? "video=copy" : "video=h264";
-    const webrtcSource = `ffmpeg:${webrtcInputUrl}#${webrtcVideoFilter}#audio=opus`;
-    await go2rtcMgr!.addStream(webrtcStreamName, webrtcSource);
-    logger.info(
-      `Go2rtc WebRTC companion stream registered: ${webrtcStreamName} → ${webrtcSource} ` +
-      `(detected codec: ${detectedCodec ?? "unknown"})`,
-    );
+    await baichuanServer.start();
+    mux.register(localPath, baichuanServer);
 
     info.status = "running";
-    info.mode = "go2rtc";
-    info.go2rtcStreamName = go2rtcName;
-    info.go2rtcWebrtcStreamName = webrtcStreamName;
-    info.go2rtcSourceUrl = tcpSourceUrl;
-    info.port = port;
+    info.mode = "local";
+    info.port = muxPort;
     info.startedAt = new Date();
+    info.rtspUrl = `rtsp://${serviceIp}:${muxPort}${localPath}`;
 
-    const go2rtcRtspPort = Number(process.env.GO2RTC_RTSP_PORT) || (settings.go2rtc?.rtspPort ?? 18554);
-    info.rtspUrl = `rtsp://${serviceIp}:${go2rtcRtspPort}/${go2rtcName}`;
+    rtspServers.set(streamKey, { server: baichuanServer, info });
+    logger.info(`RTSP: ${info.rtspUrl}`);
 
-    rtspServers.set(streamKey, { server, info, go2rtcStreamName: go2rtcName });
-
-    logger.info(`RTSP via go2rtc: ${info.rtspUrl}`);
-
-    // Save stream configuration for auto-start on next server restart
     upsertCameraStream(cameraId, {
       profile,
       channel,
-      port,
+      port: muxPort,
       token: streamToken,
       enabled: true,
       autoStart: true,
@@ -1454,9 +1251,6 @@ export async function startRtspServer(
     info.error = String(error);
     rtspServers.set(streamKey, { server: null as any, info });
     throw error;
-  } finally {
-    // Release claimed port — the server has either bound it or failed
-    claimedPorts.delete(port);
   }
 }
 
@@ -1498,29 +1292,12 @@ export async function stopRtspServer(
   );
 
   try {
-    // Deregister both the primary and the WebRTC companion streams from go2rtc
-    // (only when running in go2rtc mode).
-    if (entry.info.mode === "go2rtc" && entry.go2rtcStreamName) {
-      const go2rtcMgr = getGo2rtcManager();
-      if (go2rtcMgr?.isRunning) {
-        await go2rtcMgr.removeStream(entry.go2rtcStreamName).catch(() => {});
-        const webrtcName = entry.info.go2rtcWebrtcStreamName;
-        if (webrtcName) {
-          await go2rtcMgr.removeStream(webrtcName).catch(() => {});
-        }
-      }
-    }
-
     if (entry.server) {
-      logger.info(
-        entry.info.mode === "local"
-          ? "Stopping BaichuanRtspServer (local)"
-          : "Stopping Go2rtc TCP server",
-      );
-      // In local (mux) mode, unregister the path BEFORE stopping the
-      // server so any new connection that races the teardown is rejected
-      // with a clean 404 instead of being handed to a stopped server.
-      if (entry.info.mode === "local" && entry.info.path) {
+      logger.info("Stopping BaichuanRtspServer");
+      // Unregister the mux path BEFORE stopping the server so any new
+      // connection that races the teardown is rejected with a clean 404
+      // instead of being handed to a stopped server.
+      if (entry.info.path) {
         const mux = getLocalRtspMux();
         mux?.unregister(entry.info.path);
       }
@@ -1529,9 +1306,6 @@ export async function stopRtspServer(
     entry.info.status = "stopped";
     entry.info.rtspUrl = undefined;
     entry.info.startedAt = undefined;
-    entry.info.go2rtcStreamName = undefined;
-    entry.info.go2rtcWebrtcStreamName = undefined;
-    entry.info.go2rtcSourceUrl = undefined;
 
     logger.info("Stream server stopped");
   } catch (error) {
@@ -1548,7 +1322,7 @@ export function getRtspServerInstance(
   cameraId: string,
   profile: "main" | "sub" | "ext",
   channel: number,
-): Go2rtcTcpServer | BaichuanRtspServer | undefined {
+): BaichuanRtspServer | undefined {
   const key = getRtspServerKey(cameraId, profile, channel);
   return rtspServers.get(key)?.server;
 }
@@ -1869,9 +1643,7 @@ export async function stopAllRtspServers() {
     }
   }
 
-  // Tear down the shared local-mode multiplexer after all streams are
-  // stopped. Safe no-op if the mux was never initialized (e.g. go2rtc
-  // mode only).
+  // Tear down the shared multiplexer after all streams are stopped.
   try {
     await stopLocalRtspMux();
   } catch (error) {
@@ -2017,32 +1789,15 @@ export function createCameraConnLogger(cameraId: string, label: string) {
 }
 
 /**
- * Start all stream profiles for cameras that already have a live Baichuan connection.
- * Used after go2rtc finishes starting (connections that happened earlier deferred).
+ * Start all stream profiles for cameras that already have a live Baichuan
+ * connection. Used at boot after the LocalRtspMux is up.
  */
 export async function startStreamsForAllConnectedCameras(): Promise<void> {
   const logger = createSourceLogger("auto-streams");
-  const go2rtcMgr = getGo2rtcManager();
-  const restreamerMode = getSettings().restreamer ?? "go2rtc";
-
-  // In go2rtc mode we must wait for the sidecar; in local mode the library
-  // binds the RTSP port directly and has no external dependency.
-  if (restreamerMode === "go2rtc" && !go2rtcMgr?.isRunning) {
-    return;
-  }
 
   const config = getConfig();
   for (const camera of config.cameras) {
     if (camera.nvrId && disabledNvrCameras.has(camera.id)) continue;
-
-    // Skip battery cameras in streamOnly+go2rtc mode: go2rtc reconnects
-    // every ~60s, continuously waking the camera and draining the battery.
-    // In local mode the BaichuanRtspServer handles wakeup on-demand via
-    // lazyMetadata — we must register the mux path now so it exists.
-    if (isBatteryCamera(camera) && (camera.batteryMode ?? "streamOnly") === "streamOnly" && restreamerMode !== "local") {
-      logger.info(`Flush: skip battery camera ${camera.name} (batteryMode=streamOnly)`);
-      continue;
-    }
 
     const connKey = getConnectionKey(camera.id);
     const conn = apiConnections.get(connKey);
@@ -2075,35 +1830,11 @@ export function enableAutoStreamsOnConnect(): void {
   const logger = createSourceLogger("auto-streams");
 
   onApiConnected(async (cameraId, _api) => {
-    const go2rtcMgr = getGo2rtcManager();
-    const restreamerMode = getSettings().restreamer ?? "go2rtc";
-
-    // Only go2rtc mode depends on the sidecar process — local mode owns
-    // the RTSP port itself and can start streams immediately.
-    if (restreamerMode === "go2rtc" && !go2rtcMgr?.isRunning) {
-      logger.debug(
-        `Defer auto-streams for camera ${cameraId}: go2rtc not running yet`,
-      );
-      return;
-    }
-
     if (disabledNvrCameras.has(cameraId)) return;
 
     const config = getConfig();
     const camera = config.cameras.find((c) => c.id === cameraId);
     if (!camera) return;
-
-    // Skip battery cameras in streamOnly mode when using go2rtc: go2rtc
-    // reconnects every ~60s even with no viewer, which continuously wakes
-    // the camera and drains the battery.  In local mode the BaichuanRtspServer
-    // handles on-demand wakeup via lazyMetadata — registering the mux path
-    // upfront is safe (and required so the path exists before any client connects).
-    if (isBatteryCamera(camera) && (camera.batteryMode ?? "streamOnly") === "streamOnly" && restreamerMode !== "local") {
-      logger.info(
-        `Skip auto-streams for battery camera ${camera.name} (batteryMode=streamOnly)`,
-      );
-      return;
-    }
 
     const channel = camera.rtspChannel ?? 0;
     const profiles = await getAvailableProfiles(cameraId);
@@ -2124,6 +1855,3 @@ export function enableAutoStreamsOnConnect(): void {
 
   logger.info("Auto-stream on camera connect listener registered");
 }
-
-/** @deprecated Use enableAutoStreamsOnConnect */
-export const enableGo2rtcAutoStreams = enableAutoStreamsOnConnect;

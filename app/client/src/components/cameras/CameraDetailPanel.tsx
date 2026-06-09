@@ -12,7 +12,7 @@ import { ConnectionPanel } from './ConnectionPanel';
 import { CameraSettingsModal } from './CameraSettingsModal';
 import { useConnectionLogs } from './hooks/useConnectionLogs';
 import { trpcQuery, trpcMutation } from '../../api';
-import { withAuthTokenQuery, getCameraDisplayName, getStreamName, getWebrtcStreamName } from './utils';
+import { withAuthTokenQuery, getCameraDisplayName, getStreamName } from './utils';
 import type {
   CameraInfo,
   AvailableStream,
@@ -35,7 +35,7 @@ interface CameraDetailPanelProps {
     status?: string;
     connections?: number;
     rtspUrl?: string;
-    go2rtcStreamName?: string;
+    port?: number;
   }>;
   connecting: boolean;
   onConnect: () => void;
@@ -45,11 +45,8 @@ interface CameraDetailPanelProps {
   onOpenPreview: (state: PreviewModalState) => void;
   savingAutoStart: boolean;
   onToggleAutoStart: () => void;
-  go2rtcApiPort: number | null;
-  go2rtcRtspPort: number | null;
   serviceIp: string;
-  restreamer?: "go2rtc" | "local";
-  localRtspPort?: number | null;
+  rtspPort?: number | null;
   onClose: () => void;
 }
 
@@ -65,11 +62,8 @@ export function CameraDetailPanel({
   onOpenPreview,
   savingAutoStart,
   onToggleAutoStart,
-  go2rtcApiPort,
-  go2rtcRtspPort,
   serviceIp,
-  restreamer,
-  localRtspPort,
+  rtspPort,
   onClose,
 }: CameraDetailPanelProps) {
   const isConnected = camera.status === 'connected';
@@ -279,8 +273,7 @@ export function CameraDetailPanel({
               const server = rtspServers.find(
                 (s) => s.cameraId === camera.id && s.profile === stream.profile,
               );
-              const name = getStreamName(camera, stream.profile, server);
-              const webrtcName = getWebrtcStreamName(camera, stream.profile, server);
+              const name = getStreamName(camera, stream.profile);
               // Look up the per-stream saved port so idle streams show the correct URL
               const savedPort = (camera.rtspStreams ?? []).find(
                 (s) => s.profile === stream.profile && (s.channel ?? 0) === (stream.channel ?? 0),
@@ -298,19 +291,14 @@ export function CameraDetailPanel({
                       title: `${camera.name || camera.host} - ${stream.profile}`,
                       cameraName: getCameraDisplayName(camera),
                       profile: stream.profile,
-                      streamName: webrtcName,
-                      go2rtcApiPort,
-                      serviceIp,
+                      cameraId: camera.id,
                     });
                   }}
                   streamName={name}
-                  go2rtcApiPort={go2rtcApiPort}
-                  go2rtcRtspPort={go2rtcRtspPort}
                   serviceIp={serviceIp}
                   isBattery={camera.isBattery}
-                  restreamer={restreamer}
                   savedPort={savedPort}
-                  localRtspPort={localRtspPort}
+                  rtspPort={rtspPort}
                 />
               );
             })

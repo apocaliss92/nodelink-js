@@ -39,47 +39,35 @@ No test suite exists — there is no `npm test` command.
 | `src/reolink/baichuan/utils/` | ~26 modules: each handles XML parsing/building for one feature area (PTZ, events, recordings, chime, etc.) |
 | `src/reolink/baichuan/capabilities.ts` | Device capability detection from Support/Abilities XML |
 | `src/reolink/baichuan/types.ts` | All API request/response type definitions |
-| `src/baichuan/stream/` | Streaming: Go2rtcTcpServer (raw TCP→go2rtc), BaichuanRtspServer (legacy RTSP), H264/H265 converters |
+| `src/baichuan/stream/` | Streaming: BaichuanRtspServer (RTSP video), BaichuanRtspBackchannelServer (RTSP talk-back for Frigate), BaichuanWebRTCServer (in-process WebRTC via werift), H264/H265 converters |
 | `src/reolink/cgi/` | Alternative HTTP/CGI API for cameras |
 | `src/bcudp/` | UDP transport for battery cameras |
 | `src/multifocal/` | Dual-lens composite streams (TrackMix, Duo cameras) |
 
-### go2rtc Restreamer Integration
+### Streaming pipeline
 
-The library includes `Go2rtcTcpServer` (`src/baichuan/stream/Go2rtcTcpServer.ts`) which feeds raw Annex-B H.264/H.265 video to go2rtc via a plain TCP connection. go2rtc auto-detects the codec and provides WebRTC, HLS, MJPEG, RTSP, and MSE output.
+- **RTSP**: every camera stream is served by `BaichuanRtspServer` plugged into a single shared `LocalRtspMux` (`app/src/local-rtsp-mux.ts`) listening on `settings.localRtsp.port` (default `8554`). Video paths take `/<sanitizedCameraName>/<profile>`. The mux reads the first request line, dispatches by path, and hands the socket to the matching `BaichuanRtspServer` via `injectSocket()`.
+- **RTSP backchannel (Frigate 2-way audio)**: same mux, path `/<sanitizedCameraName>` (no profile suffix). Off by default — flip `settings.talk.enabled`. See `app/src/backchannel-manager.ts`.
+- **WebRTC preview**: `BaichuanWebRTCServer` (werift, in-process). Driven by the `webrtc.*` tRPC router (`app/src/routers/webrtc.ts`) — browser calls `webrtc.create({cameraId,profile})`, receives an offer, posts back an answer, and optionally trickles ICE.
 
-**Key design decisions:**
-- **Video only over TCP** — Audio (ADTS AAC) is not sent because raw TCP Annex-B cannot multiplex audio. Future: MPEG-TS muxer would enable audio.
-- **Socket isolation** — Each stream profile (main/sub/ext) gets its own dedicated TCP socket via `createDedicatedSession` with key prefix `live:` so `resolveSocketTag()` assigns separate pool tags. Without the `live:` prefix, all streams fall back to the shared `general` socket causing streamType mismatches.
-- **Prestart mode** — AC-powered cameras pre-start the native stream immediately (`prestartStream: true`) so frames are in the prebuffer when go2rtc connects. Battery cameras use `prestartStream: false` for on-demand streaming with 30s wake timeout.
-- **go2rtc binary** — Provided by `go2rtc-static` npm package (auto-downloaded on `npm install`). Custom binary path configurable in settings.
+The bundled `go2rtc` sidecar was removed (see release notes). Frigate is still supported as a downstream consumer over RTSP; the Frigate config emitter (`app/src/routers/frigate.ts`) targets the LocalRtspMux URL.
 
 ### Manager UI (`app/`)
 
 Separate npm project using `file://..` symlink to the library. Tech stack: Express + tRPC + Zod (backend), React + Vite (frontend). The tRPC router in `app/src/routers/baichuan.ts` wraps all `ReolinkBaichuanApi` methods. Connection pooling lives in `app/src/rtsp-manager.ts`.
 
-**go2rtc is the default restreamer.** All streaming output (WebRTC, HLS, MJPEG, RTSP, MSE) is provided by go2rtc. The legacy custom MJPEG/HLS/WebRTC endpoints have been removed from `server.ts`. The go2rtc API is proxied at `/go2rtc/*` via Express for same-origin access (avoids CORS issues for WebRTC WHEP signaling).
-
 **Default ports (configurable in settings):**
 | Service | Port | Notes |
 |---------|------|-------|
 | Manager UI/API | 3000 | Express + tRPC |
-| go2rtc API | 11984 | REST API + web dashboard |
-| go2rtc RTSP | 18554 | RTSP output for all streams |
-| go2rtc WebRTC | 18555 | ICE/STUN |
-
-**Removed endpoints** (replaced by go2rtc):
-- `/api/mpeg/:cameraName/:profile` (MJPEG) → `http://host:11984/api/stream.mjpeg?src={name}`
-- `/api/hls/:cameraName/:profile/*` (HLS) → `http://host:11984/api/stream.m3u8?src={name}`
-- `/api/webrtc/session` (WebRTC) → WHEP via `/go2rtc/api/webrtc?src={name}`
-- `/api/mjpeg/status`, `/api/webrtc/status`, `/api/hls/status` → `go2rtc.status` tRPC query
+| RTSP (video + backchannel) | 8554 | `settings.localRtsp.port`, LocalRtspMux dispatches per path |
+| WebRTC ICE (native) | configurable via `settings.webrtc.icePortRange` | werift binds whatever the user sets |
 
 **Key tRPC routers:**
-- `go2rtc.*` — start/stop/restart, status, settings, stream management, binary resolution
-- `rtsp.*` — stream lifecycle (creates Go2rtcTcpServer when go2rtc enabled)
+- `rtsp.*` — stream lifecycle (registers a `BaichuanRtspServer` route on `LocalRtspMux`)
+- `webrtc.*` — in-process WebRTC signaling (offer/answer/ICE/close)
+- `talk.*` — backchannel status (mux mode, listed routes)
 - `cameras.*` — camera CRUD, connection management
-
-**go2rtc YAML config** is generated dynamically by `go2rtc-manager.ts` at startup, written to `{DATA_PATH}/go2rtc.yaml`. Includes API/RTSP/WebRTC ports, ffmpeg binary, CORS origin, ICE servers, and registered stream sources.
 
 ### Build Pipeline
 
@@ -116,8 +104,6 @@ test/
 │   ├── settings-schema.test.ts
 │   ├── frigate-config.test.ts
 │   ├── frigate-client.test.ts   # Mock HTTP server
-│   ├── go2rtc-manager.test.ts
-│   ├── go2rtc-integration.test.ts # Mock go2rtc API
 │   ├── rtsp-manager.test.ts
 │   └── events-manager.test.ts
 ├── fixtures/               # Captured from real cameras (committed to git)

@@ -9,7 +9,7 @@ import { getConfig } from "../settings-store.js";
 import {
   getAllRtspServersInfo,
   sanitizeCameraName,
-  buildGo2rtcStreamName,
+  buildStreamName,
 } from "../rtsp-manager.js";
 import { FrigateClient } from "../frigate-client.js";
 import { getOrCreateApiConnection } from "../rtsp-manager.js";
@@ -403,7 +403,7 @@ export const frigateRouter = router({
     .query(async ({ input }) => {
       const settings = getSettings();
       const config = getConfig();
-      const go2rtcRtspPort = Number(process.env.GO2RTC_RTSP_PORT) || (settings.go2rtc?.rtspPort ?? 18554);
+      const rtspPort = settings.localRtsp?.port ?? 8554;
       const serviceIp = settings.serviceIp || "localhost";
 
       const client = createClientFromInput(input);
@@ -420,8 +420,8 @@ export const frigateRouter = router({
       for (const nlCam of config.cameras) {
         const channel = nlCam.rtspChannel ?? 0;
         for (const profile of ["main", "sub", "ext"]) {
-          const go2rtcName = buildGo2rtcStreamName(nlCam.name, profile, channel);
-          const fullUrl = `rtsp://${serviceIp}:${go2rtcRtspPort}/${go2rtcName}`.toLowerCase();
+          const streamName = buildStreamName(nlCam.name, profile, channel);
+          const fullUrl = `rtsp://${serviceIp}:${rtspPort}/${streamName}`.toLowerCase();
           nodelinkUrlToCam.set(fullUrl, {
             id: nlCam.id,
             name: nlCam.name,
@@ -533,7 +533,7 @@ export const frigateRouter = router({
       const settings = getSettings();
       const config = getConfig();
       const rtspServers = getAllRtspServersInfo();
-      const go2rtcRtspPort = Number(process.env.GO2RTC_RTSP_PORT) || (settings.go2rtc?.rtspPort ?? 18554);
+      const rtspPort = settings.localRtsp?.port ?? 8554;
       const serviceIp = settings.serviceIp || "localhost";
 
       const camerasToAdd: Array<{
@@ -574,11 +574,11 @@ export const frigateRouter = router({
           streams = streamOpts.nativeStreams.map((s: any) => {
             const profile: string = s.profile ?? "main";
             const ch: number = s.channel ?? channel;
-            const go2rtcName = buildGo2rtcStreamName(camera.name, profile, ch);
+            const go2rtcName = buildStreamName(camera.name, profile, ch);
             return {
               profile,
               go2rtcName,
-              rtspUrl: `rtsp://${serviceIp}:${go2rtcRtspPort}/${go2rtcName}`,
+              rtspUrl: `rtsp://${serviceIp}:${rtspPort}/${go2rtcName}`,
               resolution: s.metadata ? `${s.metadata.width}x${s.metadata.height}` : undefined,
               codec: s.metadata?.videoEncType,
             };
@@ -590,11 +590,11 @@ export const frigateRouter = router({
           );
           if (cameraRtsp.length > 0) {
             streams = cameraRtsp.map((s) => {
-              const go2rtcName = buildGo2rtcStreamName(camera.name, s.profile, s.channel);
+              const go2rtcName = buildStreamName(camera.name, s.profile, s.channel);
               return {
                 profile: s.profile,
                 go2rtcName,
-                rtspUrl: `rtsp://${serviceIp}:${go2rtcRtspPort}/${go2rtcName}`,
+                rtspUrl: `rtsp://${serviceIp}:${rtspPort}/${go2rtcName}`,
                 resolution: undefined,
                 codec: undefined,
               };
@@ -605,8 +605,8 @@ export const frigateRouter = router({
             const defaultProfiles = ["main", "sub", "ext"];
             streams = defaultProfiles.map((profile) => ({
               profile,
-              go2rtcName: buildGo2rtcStreamName(camera.name, profile, channel),
-              rtspUrl: `rtsp://${serviceIp}:${go2rtcRtspPort}/${buildGo2rtcStreamName(camera.name, profile, channel)}`,
+              go2rtcName: buildStreamName(camera.name, profile, channel),
+              rtspUrl: `rtsp://${serviceIp}:${rtspPort}/${buildStreamName(camera.name, profile, channel)}`,
               resolution: undefined,
               codec: undefined,
             }));

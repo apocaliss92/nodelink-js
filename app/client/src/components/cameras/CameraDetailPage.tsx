@@ -13,7 +13,7 @@ import { ConnectionPanel } from './ConnectionPanel';
 import { useConnectionLogs } from './hooks/useConnectionLogs';
 import { useCamerasContext } from './CamerasContext';
 import { trpcQuery, trpcMutation } from '../../api';
-import { withAuthTokenQuery, getCameraDisplayName, getStreamName, getWebrtcStreamName } from './utils';
+import { withAuthTokenQuery, getCameraDisplayName, getStreamName } from './utils';
 import type { ControlsState, CameraEvent, DeviceSession } from './types';
 
 type SessionsPayload = { sessions: DeviceSession[]; total: number };
@@ -32,11 +32,8 @@ export function CameraDetailPage() {
     setPreviewModal,
     savingAutoStart,
     setAutoStartForCamera,
-    go2rtcApiPort,
-    go2rtcRtspPort,
     serviceIp,
-    restreamer,
-    localRtspPort,
+    rtspPort,
   } = useCamerasContext();
 
   const [showPtz, setShowPtz] = useState(false);
@@ -199,8 +196,7 @@ export function CameraDetailPage() {
               const server = rtspServers.find(
                 (s) => s.cameraId === camera.id && s.profile === stream.profile,
               );
-              const name = getStreamName(camera, stream.profile, server);
-              const webrtcName = getWebrtcStreamName(camera, stream.profile, server);
+              const name = getStreamName(camera, stream.profile);
               const savedPort = (camera.rtspStreams ?? []).find(
                 (s) => s.profile === stream.profile && (s.channel ?? 0) === (stream.channel ?? 0),
               )?.port ?? null;
@@ -218,22 +214,13 @@ export function CameraDetailPage() {
                       cameraName: getCameraDisplayName(camera),
                       cameraId: camera.id,
                       profile: stream.profile,
-                      streamName: webrtcName,
-                      go2rtcApiPort,
-                      serviceIp,
-                      // Force the in-process pipeline when restreamer is local
-                      // (no go2rtc sidecar to talk to).
-                      useNative: restreamer === "local",
                     });
                   }}
                   streamName={name}
-                  go2rtcApiPort={go2rtcApiPort}
-                  go2rtcRtspPort={go2rtcRtspPort}
                   serviceIp={serviceIp}
                   isBattery={camera.isBattery}
-                  restreamer={restreamer}
                   savedPort={savedPort}
-                  localRtspPort={localRtspPort}
+                  rtspPort={rtspPort}
                 />
               );
             })}

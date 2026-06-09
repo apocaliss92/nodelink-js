@@ -11,7 +11,7 @@ The nodelink-manager web application exposes a REST API for authentication, even
 - [Authentication](#authentication)
 - [Health & Updates](#health--updates)
 - [Metrics](#metrics)
-- [go2rtc Restreamer](#go2rtc-restreamer)
+- [Streaming (RTSP + WebRTC)](#streaming-rtsp--webrtc)
 - [Events (SSE, JSON stream)](#events-sse-json-stream)
 - [MQTT Topics](#mqtt-topics-when-configured)
 - [tRPC API](#trpc-api)
@@ -150,115 +150,78 @@ Returns resource usage metrics (CPU, memory, event loop). When auth is enabled, 
 
 ---
 
-## go2rtc Restreamer
+## Streaming (RTSP + WebRTC)
 
-All video streaming is handled by **go2rtc**, which runs as an embedded subprocess managed by the Manager. go2rtc provides WebRTC, MSE/MP4, HLS, RTSP, and snapshot output from camera streams.
+The manager exposes camera video in two ways:
+
+1. **RTSP** — every camera/profile is published through a single shared TCP listener (`LocalRtspMux`). External consumers (Frigate, Home Assistant, VLC, NVR software) consume the camera over this URL.
+2. **WebRTC** — in-process server (`BaichuanWebRTCServer`, werift) used by the UI's inline preview and any browser that needs sub-second latency. Driven through tRPC, no intermediate restreamer.
+
+Snapshots are taken straight from the camera's own CGI endpoint — the manager does not transcode or cache JPEGs.
 
 ### Architecture
 
 ```
-Camera → Baichuan Protocol → BaichuanRtspServer (internal, loopback)
-                                    ↓
-                        rtsp://127.0.0.1:{port}/path
-                                    ↓
-                              go2rtc ingest
-                                    ↓
-                  WebRTC / MSE / HLS / RTSP / Snapshot
+                                ┌─ Profile main ─┐
+Camera ── Baichuan Protocol ────┼─ Profile sub  ─┼─▶ LocalRtspMux (TCP 8554)
+                                └─ Profile ext  ─┘        │
+                                                          ├─▶ rtsp://HOST:8554/{cameraName}/{profile}   (video)
+                                                          └─▶ rtsp://HOST:8554/{cameraName}              (talk, optional)
+
+Camera ── Baichuan Protocol ───▶ BaichuanWebRTCServer ──▶ tRPC webrtc.* ──▶ Browser <video>
 ```
 
-Each camera stream profile (main/sub/ext) runs an internal `BaichuanRtspServer` on a unique loopback port. The RTSP URL is registered with go2rtc, which handles all output formats with audio+video support.
+All camera profiles share the same RTSP port; clients pick the profile via the URL path.
 
-### Ports & Environment Variables
+### Ports & Settings
 
-| Service | Default | Env Variable | Description |
-|---------|---------|-------------|-------------|
-| Manager UI/API | 3000 | `PORT` | Express + tRPC |
-| go2rtc API | 11984 | `GO2RTC_API_PORT` | REST API + web dashboard |
-| go2rtc RTSP | 18554 | `GO2RTC_RTSP_PORT` | RTSP output for all streams |
-| go2rtc WebRTC | 18555 | `GO2RTC_WEBRTC_PORT` | ICE/STUN for WebRTC |
-| go2rtc binary | (auto) | `GO2RTC_PATH` | Path to binary (falls back to bundled `go2rtc-static`) |
-| Data directory | `.` | `DATA_PATH` | Settings, logs, go2rtc.yaml |
+| Service | Default | Setting | Description |
+|---------|---------|---------|-------------|
+| Manager UI/API | `3000` | `PORT` env / `settings.port` | Express + tRPC |
+| Shared RTSP mux | `8554` | `settings.localRtsp.port` | Video for every camera, plus the optional talk backchannel on the same port |
+| Talk backchannel | (off) | `settings.talk.enabled` | When `true`, exposes `rtsp://HOST:8554/{cameraName}` (no profile) for Frigate-style two-way audio |
+| WebRTC ICE UDP range | (ephemeral) | `settings.webrtc.icePortRange` | e.g. `"50000-50100"` for firewall/Docker bridge mode |
+| WebRTC extra hosts | (empty) | `settings.webrtc.iceAdditionalHostAddresses` | CSV of additional host IPs to advertise as ICE candidates |
+| Data directory | `.` | `DATA_PATH` env | Settings file + logs |
 
-Environment variables override `settings.json`. Ports are also configurable in Settings → go2rtc tab.
+There are no environment variables for the RTSP port or WebRTC — those are set through the dashboard's **Settings -> RTSP** and **Settings -> WebRTC (ICE)** panels.
 
-### go2rtc Stream Endpoints
+### RTSP URLs
 
-All streaming endpoints are served directly by go2rtc on its API port (default `11984`). CORS is enabled (`origin: "*"`).
-
-| Format | URL | Notes |
+| Output | URL | Notes |
 |--------|-----|-------|
-| **WebRTC** (WHEP) | `POST http://HOST:11984/api/webrtc?src={name}` | Send SDP offer (`Content-Type: application/sdp`), receive SDP answer |
-| **MSE/MP4** | `http://HOST:11984/api/stream.mp4?src={name}` | Fragmented MP4 via HTTP (Media Source Extensions) |
-| **HLS** | `http://HOST:11984/api/stream.m3u8?src={name}` | HLS playlist + segments |
-| **RTSP** | `rtsp://HOST:18554/{name}` | Standard RTSP (e.g. for VLC, ffmpeg) |
-| **Snapshot** | `http://HOST:11984/api/frame.jpeg?src={name}` | Single JPEG frame (requires ffmpeg) |
-| **go2rtc Dashboard** | `http://HOST:11984/` | Web UI for stream management and debugging |
-| **MSE Player** | `http://HOST:11984/stream.html?src={name}` | Embedded MSE player page |
+| **Video** | `rtsp://HOST:8554/{cameraName}/{profile}` | `{profile}` ∈ `main` / `sub` / `ext`. `{cameraName}` is the sanitized camera slug (lowercase, no spaces). |
+| **Talk backchannel** | `rtsp://HOST:8554/{cameraName}` | No profile in the path. Off by default — enable in **Settings -> RTSP -> "RTSP Backchannel"**. Used by Frigate's RTSP RECORD for two-way audio. |
 
-### Stream Naming Convention
+The camera slug is the same one used everywhere else in the manager: event payloads (`cameraNameSlug`), MQTT topics, and Home Assistant discovery.
 
-Stream names are built from the camera name and profile:
+For multi-channel devices (NVR / Hub), each child camera has its own slug — the URL doesn't carry a channel index.
 
-```
-{sanitized_camera_name}_{profile}
-```
+### Authentication on the RTSP mux
 
-Examples:
-- `studio_main` — Studio camera, main stream
-- `cameretta_daniel_sub` — Cameretta Daniel camera, sub stream
-- `garage_ext` — Garage camera, ext stream
+By default the RTSP mux is unauthenticated and only intended for the LAN. Set `settings.localRtsp.requireAuth: true` to make the mux demand the camera credentials over RTSP Basic/Digest. The talk backchannel inherits the same setting.
 
-For multifocal cameras with channel > 0: `{name}_{profile}_ch{channel}`
+### Removed outputs
 
-### go2rtc tRPC API
+The following endpoints existed in earlier builds and are gone:
 
-The Manager exposes go2rtc management via tRPC:
+- HLS (`/api/stream.m3u8`)
+- MJPEG / MJPEG snapshot (`/api/stream.mjpeg`, `/api/frame.jpeg`)
+- MSE / fMP4 (`/api/stream.mp4`)
+- Any transcoded snapshot endpoint
+- The `restreamer`, `settings.go2rtc.*`, and `webrtc.preferredBackend` settings
 
-| Procedure | Type | Description |
-|-----------|------|-------------|
-| `go2rtc.status` | query | Get go2rtc status (running, apiUrl, streams) |
-| `go2rtc.getSettings` | query | Get go2rtc configuration |
-| `go2rtc.updateSettings` | mutation | Update go2rtc configuration |
-| `go2rtc.start` | mutation | Start go2rtc process |
-| `go2rtc.stop` | mutation | Stop go2rtc process |
-| `go2rtc.restart` | mutation | Restart go2rtc process |
-| `go2rtc.listStreams` | query | List registered streams |
-| `go2rtc.addStream` | mutation | Add a custom stream source |
-| `go2rtc.removeStream` | mutation | Remove a stream |
-| `go2rtc.ensureBinary` | mutation | Resolve/download go2rtc binary |
-
-### Known Limitations
-
-- **MJPEG stream** (`/api/stream.mjpeg`) does not work for H264/H265 sources in go2rtc 1.9.4. Use **Snapshot** (`/api/frame.jpeg`) for single frames or **MSE/WebRTC** for live preview.
-- **Audio over TCP** is not supported directly. Audio is delivered via the internal RTSP source (BaichuanRtspServer handles RTP audio). go2rtc re-exports audio via WebRTC, MSE, and HLS.
-- **ffmpeg** must be installed for snapshot generation and H265 transcoding.
+For browser previews use the WebRTC tRPC flow below; for everything else use the RTSP URLs above. Snapshots come straight from the camera's CGI (`/cgi-bin/api.cgi?cmd=Snap...`).
 
 ---
 
-## Native WebRTC Backend
+## WebRTC preview
 
-In addition to go2rtc, the Manager exposes an in-process WebRTC server
-(`BaichuanWebRTCServer` from the library) that streams native Baichuan frames
-to the browser **without an intermediate RTSP/MSE hop**. Useful when:
-
-- you need precise frame timing (e.g. to overlay AI detection boxes that align
-  with the decoded video frame)
-- go2rtc is not available in your environment
-- you want to ship two-way audio (intercom) on the same WebRTC peer connection
-
-The backend is selected by `settings.webrtc.preferredBackend`:
-
-| Value | Behaviour |
-|-------|-----------|
-| `auto` (default) | Use go2rtc if it's running; fall back to native otherwise. |
-| `go2rtc` | Always go2rtc. Error surfaced if go2rtc is down. |
-| `native` | Always `BaichuanWebRTCServer`. Required by the detection-box overlay. |
+The Manager runs an in-process WebRTC server (`BaichuanWebRTCServer` from the library) that streams native Baichuan frames straight to the browser — no intermediate RTSP/MSE hop. It powers the dashboard's inline preview and any custom client that wants sub-second latency with frame-accurate overlays (e.g. AI detection boxes).
 
 ### Signaling flow (server-driven offer)
 
-Unlike go2rtc (which takes the browser's offer via WHEP), the native server
-**generates the offer**. The browser answers, sets the local description, and
-optionally trickles ICE candidates back. Every step is a tRPC call:
+The native server **generates the offer**. The browser answers, sets the local description, and optionally trickles ICE candidates back. Every step is a tRPC call:
 
 ```
 1. POST /api/trpc/webrtc.create
@@ -332,7 +295,6 @@ so the browser knows whether to wire WebCodecs or just play the RTP track.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `webrtc.preferredBackend` | `auto` | `auto` / `go2rtc` / `native` |
 | `webrtc.stunServers` | Google STUN | Array of STUN URLs used for ICE gathering. |
 | `webrtc.icePortRange` | (empty) | e.g. `"10000-10100"` to constrain UDP ports for firewall pinholes. Empty = ephemeral. |
 | `webrtc.iceAdditionalHostAddresses` | (empty) | CSV of extra host IPs to advertise as ICE host candidates (useful in NAT'd / Docker `bridge` mode). |
@@ -441,9 +403,9 @@ When MQTT is enabled in Settings, the Manager publishes to the broker. Default `
 
 ## tRPC API
 
-The Manager also exposes a tRPC API at `/api/trpc` for cameras, settings, logs, events, and go2rtc management. Use the tRPC panel at `/panel` (requires auth) to explore all procedures.
+The Manager also exposes a tRPC API at `/api/trpc` for cameras, settings, logs, events, RTSP lifecycle, and WebRTC preview signaling. Use the tRPC panel at `/panel` (requires auth) to explore all procedures.
 
-Key routers: `cameras`, `rtsp`, `go2rtc`, `settings`, `baichuan`, `events`, `logs`
+Key routers: `cameras`, `rtsp`, `webrtc`, `settings`, `baichuan`, `events`, `logs`
 
 ---
 

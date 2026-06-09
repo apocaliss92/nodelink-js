@@ -1,17 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@camstack/ui-library";
 import { fetchUpdates, trpcMutation, trpcQuery, type UpdateInfo } from "../api";
 import { useAuth } from "../auth";
 import { getStoredAuthToken, setStoredAuthToken } from "../authToken";
 import { EmailPushSettingsSection } from "../components/EmailPushSettingsSection";
 import { useEmailPushFeature } from "../hooks/useEmailPushFeature";
 
-/** Build Frigate camera YAML from streamInfo + feature options. */
+/**
+ * Build Frigate camera YAML from streamInfo + feature options.
+ *
+ * The RTSP URL on each stream already points at the manager's LocalRtspMux
+ * (`rtsp://<serviceIp>:<localRtsp.port>/<streamName>`), so we feed it
+ * directly into the ffmpeg inputs without any sidecar/restreamer indirection.
+ */
 function buildFrigateYaml(
   streams: any[],
   frigateName: string,
   opts: {
-    useFrigateGo2rtc: boolean;
     recordEnabled: boolean;
     detectEnabled: boolean;
     snapshotsEnabled: boolean;
@@ -19,21 +23,14 @@ function buildFrigateYaml(
   },
 ): string {
   const inputs: any[] = [];
-  const go2rtcStreamsBlock: string[] = [];
   for (const s of streams) {
     if (!s.roles?.length) continue;
-    const streamPath = opts.useFrigateGo2rtc
-      ? `rtsp://127.0.0.1:8554/${s.go2rtcName}`
-      : s.rtspUrl;
-    const inp: any = { path: streamPath, roles: s.roles };
+    const inp: any = { path: s.rtspUrl, roles: s.roles };
     const inputArgs = s._inputArgs ?? "preset-rtsp-restream";
     if (inputArgs) inp.input_args = inputArgs;
     const hwaccel = s._hwaccelArgs ?? "";
     if (hwaccel) inp.hwaccel_args = hwaccel;
     inputs.push(inp);
-    if (opts.useFrigateGo2rtc) {
-      go2rtcStreamsBlock.push(`    ${s.go2rtcName}: "${s.rtspUrl}"`);
-    }
   }
   const cam: any = { enabled: true, ffmpeg: { inputs } };
   cam.detect = { enabled: opts.detectEnabled };
@@ -74,13 +71,6 @@ function buildFrigateYaml(
       }
     }
   };
-  if (go2rtcStreamsBlock.length > 0) {
-    yamlLines.push("# go2rtc streams (add to go2rtc section)");
-    yamlLines.push("go2rtc:");
-    yamlLines.push("  streams:");
-    for (const line of go2rtcStreamsBlock) yamlLines.push(line);
-    yamlLines.push("");
-  }
   yamlLines.push(`${frigateName}:`);
   write(cam, 1);
   return yamlLines.join("\n");
@@ -120,29 +110,18 @@ type Settings = {
     pollIntervalSeconds: number;
     stateTopicPrefix: string;
   };
-  restreamer?: "go2rtc" | "local";
   localRtsp?: {
     port: number;
     bindHost: string;
-    requireAuth?: boolean;
-  };
-  go2rtc?: {
-    enabled: boolean;
-    binaryPath: string;
-    apiPort: number;
-    rtspPort: number;
-    webrtcPort: number;
-    iceServers: string[];
   };
   frigate?: {
     host: string;
     username: string;
     password: string;
+    streamMode?: "nodelink" | "frigate";
   };
   talk?: {
     enabled: boolean;
-    port: number;
-    bindHost: string;
   };
 };
 
@@ -218,13 +197,6 @@ export default function SettingsPage() {
   const { state: authState, refresh: refreshAuth } = useAuth();
 
   const [settings, setSettings] = useState<Settings | null>(null);
-  // Last-loaded snapshot used to detect settings that require a server
-  // restart to take effect (e.g. restreamer backend).
-  const [loadedRestreamer, setLoadedRestreamer] = useState<
-    "go2rtc" | "local" | undefined
-  >(undefined);
-  const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
-  const [restarting, setRestarting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
@@ -240,13 +212,6 @@ export default function SettingsPage() {
 
   const [personalToken, setPersonalToken] = useState<string | null>(null);
   const [creatingPersonalToken, setCreatingPersonalToken] = useState(false);
-
-  const [go2rtcStatus, setGo2rtcStatus] = useState<{
-    running: boolean;
-    apiUrl: string | null;
-    streams: Record<string, unknown>;
-  } | null>(null);
-  const [go2rtcLoading, setGo2rtcLoading] = useState(false);
 
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [metricsError, setMetricsError] = useState<string | null>(null);
@@ -280,7 +245,7 @@ export default function SettingsPage() {
 
   type TabId =
     | "general"
-    | "go2rtc"
+    | "rtsp"
     | "frigate"
     | "auth"
     | "mqtt"
@@ -403,7 +368,6 @@ export default function SettingsPage() {
       try {
         const s = await trpcQuery<Settings>("settings.get");
         setSettings(s);
-        setLoadedRestreamer(s.restreamer ?? "go2rtc");
 
         const r = await trpcQuery<RuntimeInfo>("settings.getRuntime");
         setRuntime(r);
@@ -583,21 +547,6 @@ export default function SettingsPage() {
 
   async function save() {
     if (!settings) return;
-    // The restreamer backend swap requires a full process restart to take
-    // effect (go2rtc sidecar lifecycle is boot-time only). Detect the change
-    // and let the user confirm before we save + restart.
-    const newRestreamer = settings.restreamer ?? "go2rtc";
-    const needsRestart =
-      loadedRestreamer !== undefined && newRestreamer !== loadedRestreamer;
-    if (needsRestart) {
-      setRestartConfirmOpen(true);
-      return;
-    }
-    await persistSettings();
-  }
-
-  async function persistSettings() {
-    if (!settings) return;
     setSaving(true);
     setError(null);
     try {
@@ -610,13 +559,10 @@ export default function SettingsPage() {
         webrtc: settings.webrtc,
         mqtt: settings.mqtt,
         homeassistant: settings.homeassistant,
-        go2rtc: settings.go2rtc,
-        restreamer: settings.restreamer,
         localRtsp: settings.localRtsp,
         frigate: settings.frigate,
         talk: settings.talk,
       });
-      setLoadedRestreamer(settings.restreamer ?? "go2rtc");
       // Re-connect to Frigate after saving (connection params may have changed)
       if (settings.frigate?.host) {
         setFrigateConnected(null);
@@ -627,57 +573,6 @@ export default function SettingsPage() {
     } finally {
       setSaving(false);
     }
-  }
-
-  /**
-   * Save settings and then request a server restart. The backend exits the
-   * Node process; an external supervisor (systemd/docker/pm2) brings it
-   * back up. The UI shows a "Restarting..." state and reloads the page
-   * after a short delay so the user lands on the fresh instance.
-   */
-  async function saveAndRestart() {
-    setRestartConfirmOpen(false);
-    await persistSettings();
-    setRestarting(true);
-    try {
-      await trpcMutation("settings.restart", {});
-    } catch (e) {
-      // Server likely exited before the response came back — that's OK.
-      // Ignore connection errors, surface real schema/validation errors.
-      const msg = String(e);
-      if (
-        !msg.toLowerCase().includes("failed to fetch") &&
-        !msg.toLowerCase().includes("networkerror")
-      ) {
-        setError(msg);
-      }
-    }
-    // Poll the app until it responds again, then reload.
-    const startedAt = Date.now();
-    const timeoutMs = 60_000;
-    const poll = async () => {
-      if (Date.now() - startedAt > timeoutMs) {
-        setError(
-          "Server did not come back up within 60s. Check your supervisor (docker/systemd/pm2) and reload manually.",
-        );
-        setRestarting(false);
-        return;
-      }
-      try {
-        const res = await fetch("/api/trpc/settings.getRuntime", {
-          method: "GET",
-          cache: "no-store",
-        });
-        if (res.ok) {
-          window.location.reload();
-          return;
-        }
-      } catch {
-        // still down — keep polling
-      }
-      window.setTimeout(poll, 1_000);
-    };
-    window.setTimeout(poll, 2_000);
   }
 
   async function createPersonalToken() {
@@ -741,7 +636,7 @@ export default function SettingsPage() {
             {(
               [
                 ["general", "General"],
-                ["go2rtc", "Restreamer"],
+                ["rtsp", "RTSP"],
                 ["frigate", "Frigate"],
                 ["auth", "Auth"],
                 ["mqtt", "MQTT"],
@@ -1341,37 +1236,24 @@ export default function SettingsPage() {
             </div>
           ) : null}
 
-          {/* Restreamer tab */}
-          {activeTab === "go2rtc" ? (
+          {/* RTSP tab — LocalRtspMux configuration + Frigate backchannel. */}
+          {activeTab === "rtsp" ? (
             <>
-            <Tabs
-              value={settings.restreamer ?? "go2rtc"}
-              onValueChange={(next) =>
-                setSettings({ ...settings, restreamer: next as "go2rtc" | "local" })
-              }
-            >
-            {/* Restreamer selection */}
             <div className={cardCls}>
-              <span className={labelCls}>Restreamer backend</span>
-              <div className="text-[var(--color-foreground-muted)] text-xs mb-2">
-                Pick which streaming stack serves camera streams.
-                <br />
-                <strong>go2rtc</strong> (default) starts the go2rtc sidecar and exposes RTSP, WebRTC, HLS, MJPEG, MSE.
-                <br />
-                <strong>local</strong> uses the library&apos;s built-in RTSP server directly. Only RTSP is available — WebRTC / HLS / MJPEG previews are disabled. Snapshots (CGI) keep working.
+              <span className={labelCls}>Local RTSP (LocalRtspMux)</span>
+              <div className="text-[var(--color-foreground-muted)] text-xs mb-3">
+                One TCP port serves every camera. Stream paths follow{" "}
+                <code>rtsp://&lt;host&gt;:&lt;port&gt;/&lt;cameraName&gt;/&lt;profile&gt;</code>.
               </div>
-              <TabsList className="border-b border-[var(--color-border)] gap-3">
-                <TabsTrigger value="go2rtc">go2rtc (default)</TabsTrigger>
-                <TabsTrigger value="local">local (RTSP only)</TabsTrigger>
-              </TabsList>
-              <TabsContent value="local">
-                <div className="mt-3">
-                  <span className={labelCls} style={{ fontSize: 12 }}>Local RTSP port</span>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <span className={labelCls} style={{ fontSize: 12 }}>Port</span>
                   <input
                     type="number"
                     value={settings.localRtsp?.port ?? 8554}
                     min={1}
                     max={65535}
+                    disabled={!canEditSettings}
                     onChange={(e) =>
                       setSettings({
                         ...settings,
@@ -1384,217 +1266,59 @@ export default function SettingsPage() {
                     className={inputCls}
                     style={{ width: 140 }}
                   />
-                  <div className="text-[var(--color-foreground-muted)] text-xs mt-1">
-                    Each stream binds an independent port starting from this value. Restart the server after changing this setting.
-                  </div>
                 </div>
-                <div className="mt-3 text-xs text-[var(--color-foreground-muted)]">
-                  <strong>Authentication:</strong> when <em>Require auth for RTSP connections</em>
-                  {" "}is enabled (Auth tab), RTSP clients authenticate with the
-                  same <strong>dashboard users</strong> — no separate user
-                  list. Digest auth uses pre-computed HA1 stored at password
-                  set time; the server never holds plaintext passwords.
+                <div>
+                  <span className={labelCls} style={{ fontSize: 12 }}>Bind host</span>
+                  <input
+                    type="text"
+                    value={settings.localRtsp?.bindHost ?? "0.0.0.0"}
+                    disabled={!canEditSettings}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        localRtsp: {
+                          ...(settings.localRtsp ?? { port: 8554, bindHost: "0.0.0.0" }),
+                          bindHost: e.target.value,
+                        },
+                      })
+                    }
+                    className={inputCls}
+                  />
                 </div>
-              </TabsContent>
-            </div>
-
-            <TabsContent value="go2rtc">
-            <div className={cardCls}>
-              <span className={labelCls}>go2rtc Restreamer</span>
-              <div className="text-[var(--color-foreground-muted)] text-xs">
-                When enabled, camera streams are fed as raw video to go2rtc via TCP
-                instead of running individual RTSP servers. go2rtc then provides
-                WebRTC, HLS, MJPEG, and RTSP output automatically.
               </div>
-
-              {(() => {
-                const go2rtc = settings.go2rtc ?? {
-                  enabled: true,
-                  binaryPath: "go2rtc",
-                  apiPort: 11984,
-                  rtspPort: 18554,
-                  webrtcPort: 18555,
-                  iceServers: [],
-                };
-
-                const refreshStatus = async () => {
-                  try {
-                    const s = await trpcQuery("go2rtc.status");
-                    setGo2rtcStatus(s as any);
-                  } catch {
-                    setGo2rtcStatus(null);
-                  }
-                };
-
-                // Auto-refresh status when tab is active
-                if (!go2rtcStatus && !go2rtcLoading) {
-                  refreshStatus();
-                }
-
-                return (
-                  <>
-                    {go2rtcStatus && (
-                      <div
-                        className="flex items-center gap-2 mb-3 px-3 py-2 rounded-lg"
-                        style={{
-                          background: go2rtcStatus.running
-                            ? "rgba(34,197,94,0.1)"
-                            : "rgba(239,68,68,0.1)",
-                        }}
-                      >
-                        <span
-                          className="w-2 h-2 rounded-full flex-shrink-0"
-                          style={{
-                            background: go2rtcStatus.running ? "#22c55e" : "#ef4444",
-                          }}
-                        />
-                        <span className="flex-1 text-sm">
-                          {go2rtcStatus.running
-                            ? `Running — API: ${go2rtcStatus.apiUrl}`
-                            : "Not running (startup failed — check logs)"}
-                        </span>
-                        <button
-                          className={btnCls}
-                          style={{ padding: "4px 12px", fontSize: 12 }}
-                          onClick={refreshStatus}
-                        >
-                          Refresh
-                        </button>
-                        {go2rtcStatus.running && go2rtcStatus.apiUrl && (() => {
-                          try {
-                            const p = new URL(go2rtcStatus.apiUrl as string).port;
-                            const host = settings?.serviceIp || window.location.hostname;
-                            const href = `${window.location.protocol}//${host}:${p}/`;
-                            return (
-                              <a
-                                href={href}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className={btnCls}
-                                style={{ padding: "4px 12px", fontSize: 12, textDecoration: "none" }}
-                              >
-                                Dashboard
-                              </a>
-                            );
-                          } catch {
-                            return null;
-                          }
-                        })()}
-                      </div>
-                    )}
-
-                    {go2rtcStatus?.running &&
-                      Object.keys(go2rtcStatus.streams).length > 0 && (
-                        <div className="mb-3">
-                          <span className={labelCls} style={{ fontSize: 12 }}>
-                            Registered streams
-                          </span>
-                          <div
-                            className={monoCls}
-                            style={{
-                              fontSize: 12,
-                              background: "var(--color-surface)",
-                              padding: "8px 10px",
-                              borderRadius: 6,
-                              maxHeight: 150,
-                              overflow: "auto",
-                            }}
-                          >
-                            {Object.keys(go2rtcStatus.streams).map((name) => (
-                              <div key={name}>{name}</div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                    <div className="mt-3 grid grid-cols-3 gap-3">
-                      {(
-                        [
-                          { label: "API port", key: "apiPort", def: 11984 },
-                          { label: "RTSP port", key: "rtspPort", def: 18554 },
-                          { label: "WebRTC port", key: "webrtcPort", def: 18555 },
-                        ] as const
-                      ).map(({ label, key, def }) => (
-                        <div key={key}>
-                          <span className={labelCls} style={{ fontSize: 12 }}>{label}</span>
-                          <input
-                            type="number"
-                            value={go2rtc[key] ?? def}
-                            min={1}
-                            max={65535}
-                            disabled={!canEditSettings}
-                            onChange={(e) =>
-                              setSettings({
-                                ...settings,
-                                go2rtc: { ...go2rtc, [key]: Number(e.target.value) },
-                              })
-                            }
-                            className={inputCls}
-                            style={{ width: "100%" }}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                    <div className="text-[var(--color-foreground-muted)] text-xs mt-1">
-                      Port changes take effect after saving and restarting the server.
-                    </div>
-
-                    <div className="mt-2.5">
-                      <span className={labelCls}>ICE servers (one per line)</span>
-                      <textarea
-                        className={`${inputCls} ${monoCls}`}
-                        rows={3}
-                        placeholder={"stun:stun.l.google.com:19302"}
-                        value={(go2rtc.iceServers ?? []).join("\n")}
-                        disabled={!canEditSettings}
-                        onChange={(e) =>
-                          setSettings({
-                            ...settings,
-                            go2rtc: {
-                              ...go2rtc,
-                              iceServers: e.target.value
-                                .split("\n")
-                                .map((s) => s.trim())
-                                .filter(Boolean),
-                            },
-                          })
-                        }
-                        style={{ resize: "vertical" }}
-                      />
-                    </div>
-
-                  </>
-                );
-              })()}
+              <div className="mt-3 text-xs text-[var(--color-foreground-muted)]">
+                <strong>Authentication:</strong> when{" "}
+                <em>Require auth for RTSP connections</em> is enabled (Auth tab),
+                RTSP clients authenticate with the same <strong>dashboard users</strong>{" "}
+                — no separate user list. Digest auth uses pre-computed HA1 stored at
+                password set time; the server never holds plaintext passwords.
+              </div>
+              <div className="mt-1 text-xs text-[var(--color-foreground-muted)]">
+                Restart the server after changing the port or bind host.
+              </div>
             </div>
-            </TabsContent>
-            </Tabs>
 
-            {/* RTSP backchannel — orthogonal to restreamer choice. Frigate's
-                bundled go2rtc sends operator audio over RTSP RECORD; the
-                shared listener serves every camera under `/<cameraName>`.
-                In local restreamer mode it piggy-backs on the same
-                LocalRtspMux port that already serves video. */}
+            {/* RTSP backchannel — piggy-backs on the LocalRtspMux port and
+                handles Frigate's RTSP RECORD operator-mic audio. */}
             <div className={cardCls}>
               <span className={labelCls}>RTSP Backchannel (Frigate 2-way audio)</span>
               <div className="text-[var(--color-foreground-muted)] text-xs mb-2">
-                Accepts operator-mic audio from Frigate / go2rtc and forwards it
-                to the camera&apos;s talk channel. Path scheme:{" "}
-                <code>/&lt;cameraName&gt;</code> — one port serves every camera.
+                Accepts operator-mic audio from Frigate and forwards it to the
+                camera&apos;s talk channel. Shares the LocalRtspMux port; path
+                scheme: <code>/&lt;cameraName&gt;</code> for backchannel,{" "}
+                <code>/&lt;cameraName&gt;/&lt;profile&gt;</code> for video.
               </div>
               {(() => {
-                const t = settings.talk ?? { enabled: false, port: 18556, bindHost: "0.0.0.0" };
-                const isLocal = (settings.restreamer ?? "go2rtc") === "local";
-                const localPort = settings.localRtsp?.port ?? 8554;
-                const localBind = settings.localRtsp?.bindHost ?? "0.0.0.0";
-                const effectivePort = isLocal ? localPort : t.port;
-                const effectiveBind = isLocal ? localBind : t.bindHost;
+                const t = settings.talk ?? { enabled: false };
+                const port = settings.localRtsp?.port ?? 8554;
+                const bind = settings.localRtsp?.bindHost ?? "0.0.0.0";
                 return (
                   <>
                     <label className="flex items-center gap-2 mb-2">
                       <input
                         type="checkbox"
                         checked={t.enabled}
+                        disabled={!canEditSettings}
                         onChange={(e) =>
                           setSettings({
                             ...settings,
@@ -1604,55 +1328,12 @@ export default function SettingsPage() {
                       />
                       <span>Enable backchannel listener</span>
                     </label>
-                    {isLocal ? (
-                      <div className="text-[var(--color-foreground-muted)] text-xs mb-2">
-                        <strong>Local restreamer mode</strong>: talk shares the
-                        RTSP mux port ({localBind}:{localPort}). Video paths use{" "}
-                        <code>/&lt;cameraName&gt;/main</code>, backchannel uses{" "}
-                        <code>/&lt;cameraName&gt;</code>. No separate port to
-                        open.
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <span className={labelCls} style={{ fontSize: 12 }}>Port</span>
-                          <input
-                            type="number"
-                            value={t.port}
-                            min={1}
-                            max={65535}
-                            onChange={(e) =>
-                              setSettings({
-                                ...settings,
-                                talk: { ...t, port: Number(e.target.value) },
-                              })
-                            }
-                            className={inputCls}
-                            style={{ width: 140 }}
-                          />
-                        </div>
-                        <div>
-                          <span className={labelCls} style={{ fontSize: 12 }}>Bind host</span>
-                          <input
-                            type="text"
-                            value={t.bindHost}
-                            onChange={(e) =>
-                              setSettings({
-                                ...settings,
-                                talk: { ...t, bindHost: e.target.value },
-                              })
-                            }
-                            className={inputCls}
-                          />
-                        </div>
-                      </div>
-                    )}
                     <div className="text-[var(--color-foreground-muted)] text-xs mt-2">
-                      Example Frigate go2rtc URL once enabled:{" "}
+                      Example Frigate URL once enabled:{" "}
                       <code>
-                        rtsp://&lt;host&gt;:{effectivePort}/&lt;cameraName&gt;?backchannel=1
+                        rtsp://&lt;host&gt;:{port}/&lt;cameraName&gt;?backchannel=1
                       </code>
-                      {effectiveBind === "127.0.0.1" && (
+                      {bind === "127.0.0.1" && (
                         <span> — bind <code>0.0.0.0</code> if Frigate runs in a separate container.</span>
                       )}
                     </div>
@@ -1697,18 +1378,9 @@ export default function SettingsPage() {
                   try {
                     // Build camera blocks from the preview YAML (user-configured)
                     const cameras: Record<string, string> = {};
-                    const go2rtcStreams: Record<string, string> = {};
                     for (const cam of frigatePreview.cameras as any[]) {
                       if (!cam.yaml || !cam.frigateName) continue;
                       cameras[cam.frigateName] = cam.yaml;
-                      // If using Frigate go2rtc restream, include go2rtc stream defs
-                      if (cam._useFrigateGo2rtc && cam.streamInfo) {
-                        for (const s of cam.streamInfo as any[]) {
-                          if (s.go2rtcName && s.rtspUrl) {
-                            go2rtcStreams[s.go2rtcName] = s.rtspUrl;
-                          }
-                        }
-                      }
                     }
 
                     // Collect old names to remove when a camera was renamed
@@ -1719,11 +1391,9 @@ export default function SettingsPage() {
                       }
                     }
 
-                    console.log("[Frigate apply]", { cameras: Object.keys(cameras), removeNames, go2rtcStreams: Object.keys(go2rtcStreams) });
                     const res = await trpcMutation("frigate.apply", {
                       ...fgConn,
                       cameras,
-                      go2rtcStreams,
                       removeNames,
                       restart,
                     });
@@ -1785,7 +1455,6 @@ export default function SettingsPage() {
                         if (cam._manualEdit) continue;
                         const si = cam.streamInfo ?? [];
                         cam.yaml = buildFrigateYaml(si, cam.frigateName, {
-                          useFrigateGo2rtc: cam._useFrigateGo2rtc === true,
                           recordEnabled: cam._recordEnabled !== false,
                           detectEnabled: cam._detectEnabled !== false,
                           snapshotsEnabled: cam._snapshotsEnabled !== false,
@@ -1959,8 +1628,6 @@ export default function SettingsPage() {
                                         frigateName: fc.frigateName,
                                         streams: [],
                                         streamInfo: [],
-                                        go2rtcStreams: {},
-                                        go2rtcYaml: "",
                                       };
 
                                       setFrigatePreview({
@@ -2146,7 +1813,6 @@ export default function SettingsPage() {
                                 if (!merged._manualEdit) {
                                   const si = merged.streamInfo ?? streamInfoList;
                                   merged.yaml = rebuildYaml(si, merged.frigateName, {
-                                    useFrigateGo2rtc: merged._useFrigateGo2rtc === true,
                                     recordEnabled: merged._recordEnabled !== false,
                                     detectEnabled: merged._detectEnabled !== false,
                                     snapshotsEnabled: merged._snapshotsEnabled !== false,
@@ -2245,7 +1911,7 @@ export default function SettingsPage() {
                                           </thead>
                                           <tbody>
                                             {streamInfoList.map((s: any, sIdx: number) => (
-                                              <tr key={s.go2rtcName || sIdx} className="border-t border-[var(--color-border)]">
+                                              <tr key={`${s.profile ?? "stream"}-${sIdx}`} className="border-t border-[var(--color-border)]">
                                                 <td style={{ padding: "4px 6px", fontWeight: 600 }}>{s.profile}</td>
                                                 <td style={{ padding: "4px 6px" }}>
                                                   {s.codec ? (
@@ -2331,14 +1997,6 @@ export default function SettingsPage() {
                                             onChange={(e) => updateCam({ _audioEnabled: e.target.checked })}
                                           />
                                           Audio
-                                        </label>
-                                        <label className="flex items-center gap-1 cursor-pointer" style={{ fontSize: 11 }}>
-                                          <input
-                                            type="checkbox"
-                                            checked={c._useFrigateGo2rtc === true}
-                                            onChange={(e) => updateCam({ _useFrigateGo2rtc: e.target.checked })}
-                                          />
-                                          Frigate go2rtc restream
                                         </label>
                                       </div>
 
@@ -2849,66 +2507,6 @@ export default function SettingsPage() {
         </div>
       ) : null}
 
-      {/* Restart confirmation (fires when restreamer backend changed) */}
-      {restartConfirmOpen ? (
-        <div
-          role="dialog"
-          aria-modal="true"
-          className="fixed inset-0 z-50 p-4 grid place-items-center bg-black/[.66] backdrop-blur-sm"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setRestartConfirmOpen(false);
-          }}
-        >
-          <div
-            className="border border-[var(--color-border)] bg-[var(--color-background-elevated)] text-[var(--color-foreground)] rounded-xl p-4 shadow-2xl"
-            style={{ width: "min(480px, 100%)" }}
-          >
-            <div className="font-extrabold mb-1">Restart required</div>
-            <div className="text-sm text-[var(--color-foreground-muted)] mb-4">
-              Changing the restreamer backend requires a server restart to
-              take effect. Active RTSP clients will drop and reconnect when
-              the server comes back up.
-              <br />
-              <br />
-              Save and restart now?
-            </div>
-            <div className="flex justify-end gap-2">
-              <button
-                className={btnCls}
-                onClick={() => setRestartConfirmOpen(false)}
-              >
-                Cancel
-              </button>
-              <button
-                className={btnCls}
-                style={{ background: "var(--color-brand)", color: "#fff" }}
-                onClick={() => void saveAndRestart()}
-              >
-                Save &amp; restart
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {/* Restarting overlay */}
-      {restarting ? (
-        <div
-          role="status"
-          aria-live="polite"
-          className="fixed inset-0 z-50 p-4 grid place-items-center bg-black/[.75] backdrop-blur-sm"
-        >
-          <div
-            className="border border-[var(--color-border)] bg-[var(--color-background-elevated)] text-[var(--color-foreground)] rounded-xl p-6 shadow-2xl text-center"
-            style={{ width: "min(420px, 100%)" }}
-          >
-            <div className="font-extrabold mb-2">Restarting server…</div>
-            <div className="text-sm text-[var(--color-foreground-muted)]">
-              The page will reload automatically once the server is back up.
-            </div>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }

@@ -21,16 +21,9 @@ interface CameraCardProps {
     profile: StreamProfile;
     status?: string;
     connections?: number;
-    mode?: string;
   }>;
   selected: boolean;
   connecting: boolean;
-  /**
-   * Effective restreamer mode. In "local" mode the WebRTC inline preview is
-   * unavailable (no go2rtc sidecar), so the per-stream badge opens/opens a
-   * disabled state with a clear tooltip instead of a broken preview.
-   */
-  restreamer?: "go2rtc" | "local";
   onClick: () => void;
   onConnect?: () => void;
   onOpenPtz?: () => void;
@@ -46,7 +39,6 @@ export function CameraCard({
   rtspServers,
   selected,
   connecting,
-  restreamer,
   onClick,
   onConnect,
   onOpenPtz,
@@ -119,11 +111,8 @@ export function CameraCard({
         {camera.host}
       </div>
 
-      {/* Stream badges — clickable to open stream, show viewer count.
-          Both restreamer modes are now supported: go2rtc uses WHEP signaling
-          to the sidecar; local uses the in-process BaichuanWebRTCServer over
-          tRPC. The badge stays enabled in both modes — only the underlying
-          signaling path changes (the consumer wires it on the player side). */}
+      {/* Stream badges — clickable to open the WebRTC inline preview via the
+          in-process BaichuanWebRTCServer (tRPC `webrtc.*`). */}
       {streams.length > 0 && (
         <div className="flex gap-1 mt-2">
           {streams.map((s) => {
@@ -132,10 +121,6 @@ export function CameraCard({
             );
             const viewers =
               server?.status === "running" ? (server.connections ?? 0) : 0;
-            const effectiveMode =
-              server?.mode === "local" || server?.mode === "go2rtc"
-                ? server.mode
-                : (restreamer ?? "go2rtc");
             return (
               <button
                 key={s.profile}
@@ -149,7 +134,7 @@ export function CameraCard({
                     ? "bg-[var(--color-primary)]/20"
                     : "bg-[var(--color-surface-hover)]",
                 )}
-                title={`Open ${s.profile} stream via ${effectiveMode === "local" ? "native WebRTC" : "go2rtc"}${viewers > 0 ? ` (${viewers} viewer${viewers > 1 ? "s" : ""})` : ""}`}
+                title={`Open ${s.profile} stream${viewers > 0 ? ` (${viewers} viewer${viewers > 1 ? "s" : ""})` : ""}`}
               >
                 <Play size={8} />
                 {s.profile}

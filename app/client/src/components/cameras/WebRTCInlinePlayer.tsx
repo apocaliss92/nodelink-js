@@ -13,38 +13,22 @@ import { trpcMutation } from "../../api";
 import { ImaAdpcmEncoder, floatToPcm16 } from "./utils/imaAdpcm";
 
 /**
- * WebRTC player with two backends:
+ * WebRTC player driven by the in-process `BaichuanWebRTCServer` via the
+ * `webrtc` tRPC router. The SERVER drives the offer (its peer connection
+ * knows the camera codec); the browser answers and trickles its own ICE.
  *
- * 1. **go2rtc WHEP** (default): the browser drives the offer, posts SDP to
- *    `/go2rtc/api/webrtc?src=...`, receives the answer with ICE candidates
- *    pre-gathered, and the connection is up in one round-trip.
- *
- * 2. **Native** (when `useNative` is true OR `streamName` is empty): we call
- *    the in-process `BaichuanWebRTCServer` via the `webrtc` tRPC router. The
- *    SERVER drives the offer (its peer connection knows the camera codec); the
- *    browser answers and trickles its own ICE. Use this when go2rtc is not
- *    running or when you need exact frame timing for overlays.
- *
- * The native backend also opens a bidirectional `intercom` DataChannel on
- * demand: the browser captures the mic, encodes IMA-ADPCM at 16 kHz mono,
- * and ships chunks of 1024 samples to the server which forwards them as
- * BcMedia ADPCM Talk frames to the camera. Downstream audio (camera →
- * browser) already flows on the standard Opus RTP track.
+ * The server also opens a bidirectional `intercom` DataChannel on demand:
+ * the browser captures the mic, encodes IMA-ADPCM at 16 kHz mono, and ships
+ * chunks of 1024 samples to the server which forwards them as BcMedia ADPCM
+ * Talk frames to the camera. Downstream audio (camera → browser) already
+ * flows on the standard Opus RTP track.
  */
 type Profile = "main" | "sub" | "ext";
 
 export interface WebRTCInlinePlayerProps {
-  /** go2rtc stream name (used in WHEP mode only). */
-  streamName?: string;
-  /** go2rtc HTTP API port (used in WHEP mode only). */
-  go2rtcApiPort?: number | null;
-  /** Host serving go2rtc (used in WHEP mode only — defaults to current host). */
-  serviceIp?: string;
-  /** Force the native pipeline (BaichuanWebRTCServer) regardless of go2rtc state. */
-  useNative?: boolean;
-  /** Camera id (required for native mode). */
+  /** Camera id — required to open the native session. */
   cameraId?: string;
-  /** Profile (required for native mode; defaults to `sub`). */
+  /** Profile (defaults to `sub`). */
   profile?: Profile;
   /**
    * Auto-start the stream when the component mounts. Defaults to `true` so
@@ -68,10 +52,6 @@ const INTERCOM_SAMPLE_RATE = 16000;
 const INTERCOM_CHUNK_SAMPLES = 1024;
 
 export function WebRTCInlinePlayer({
-  streamName,
-  go2rtcApiPort,
-  serviceIp,
-  useNative,
   cameraId,
   profile,
   autoStart = true,
@@ -115,16 +95,12 @@ export function WebRTCInlinePlayer({
 
   const [status, setStatus] = useState<string>("Idle");
   const [error, setError] = useState<string | null>(null);
-  const [activeMode, setActiveMode] = useState<"go2rtc" | "native" | null>(null);
   const [renderTarget, setRenderTarget] = useState<"video" | "canvas">("video");
   const [muted, setMuted] = useState(true);
   const [streamActive, setStreamActive] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [intercomReady, setIntercomReady] = useState(false);
   const [micActive, setMicActive] = useState(false);
-
-  // The native path needs cameraId. go2rtc requires streamName + apiPort.
-  const wantNative = useNative === true && Boolean(cameraId);
 
   const log = useCallback((msg: string, extra?: unknown) => {
     console.log(`[WebRTC] ${msg}`, extra ?? "");
@@ -177,92 +153,14 @@ export function WebRTCInlinePlayer({
     }
     setStreamActive(false);
     setRenderTarget("video");
-    setActiveMode(null);
     setStatus("Idle");
   }, [stopIntercom]);
-
-  // ---------------------------------------------------------------------------
-  // go2rtc WHEP start
-  // ---------------------------------------------------------------------------
-  const startGo2rtc = useCallback(async () => {
-    setActiveMode("go2rtc");
-    const pc = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-    });
-    pcRef.current = pc;
-
-    const videoTransceiver = pc.addTransceiver("video", { direction: "recvonly" });
-    try {
-      const caps = RTCRtpReceiver.getCapabilities("video");
-      const h264Only = (caps?.codecs ?? []).filter(
-        (c) => c.mimeType.toLowerCase() === "video/h264",
-      );
-      if (h264Only.length > 0) videoTransceiver.setCodecPreferences(h264Only);
-    } catch {
-      // setCodecPreferences may be unavailable on some browsers
-    }
-    pc.addTransceiver("audio", { direction: "recvonly" });
-
-    pc.ontrack = (ev) => {
-      if (videoRef.current && ev.streams[0]) {
-        videoRef.current.srcObject = ev.streams[0];
-      }
-    };
-
-    pc.onconnectionstatechange = () => {
-      if (closedRef.current) return;
-      const state = pc.connectionState;
-      if (state === "connected") {
-        setStatus("Connected");
-        setError(null);
-      } else if (state === "disconnected" || state === "failed") {
-        setError(`Connection ${state}`);
-      }
-    };
-    pc.oniceconnectionstatechange = () => {
-      if (closedRef.current) return;
-      if (
-        pc.iceConnectionState === "connected" ||
-        pc.iceConnectionState === "completed"
-      ) {
-        setStatus("Streaming");
-      }
-    };
-
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    if (closedRef.current) return;
-    setStatus("Signaling…");
-
-    if (!go2rtcApiPort) throw new Error("go2rtc API port not available yet");
-    const isHttps = window.location.protocol === "https:";
-    let whepUrl: string;
-    if (isHttps) {
-      whepUrl = `/go2rtc/api/webrtc?src=${encodeURIComponent(streamName!)}`;
-    } else {
-      const go2rtcHost = serviceIp || window.location.hostname;
-      whepUrl = `http://${go2rtcHost}:${go2rtcApiPort}/api/webrtc?src=${encodeURIComponent(streamName!)}`;
-    }
-    const res = await fetch(whepUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/sdp" },
-      body: pc.localDescription!.sdp,
-    });
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`WHEP failed (${res.status}): ${body}`);
-    }
-    const sdpAnswer = await res.text();
-    if (closedRef.current) return;
-    await pc.setRemoteDescription({ type: "answer", sdp: sdpAnswer });
-    setStatus("Buffering…");
-  }, [streamName, go2rtcApiPort, serviceIp]);
 
   // ---------------------------------------------------------------------------
   // Native start (BaichuanWebRTCServer)
   // ---------------------------------------------------------------------------
   const startNative = useCallback(async () => {
-    setActiveMode("native");
+    if (!cameraId) throw new Error("cameraId is required");
 
     // 1) Ask the server for an offer. Always request intercom — the camera
     // will simply ignore the DataChannel if the user never speaks.
@@ -270,7 +168,7 @@ export function WebRTCInlinePlayer({
       sessionId: string;
       offer: { type: "offer"; sdp: string };
     }>("webrtc.create", {
-      cameraId: cameraId!,
+      cameraId,
       profile: profile ?? "sub",
       enableIntercom: true,
     });
@@ -510,11 +408,7 @@ export function WebRTCInlinePlayer({
       setStatus("Connecting…");
       setStreamActive(true);
       try {
-        if (wantNative) {
-          await startNative();
-        } else {
-          await startGo2rtc();
-        }
+        await startNative();
       } catch (err) {
         if (!closedRef.current) {
           setError(String(err));
@@ -526,7 +420,7 @@ export function WebRTCInlinePlayer({
     })();
     pendingOpRef.current = op;
     await op;
-  }, [wantNative, startGo2rtc, startNative, teardown]);
+  }, [startNative, teardown]);
 
   const stop = useCallback(async () => {
     const previous = pendingOpRef.current;
@@ -539,8 +433,8 @@ export function WebRTCInlinePlayer({
   }, [teardown]);
 
   // Auto-start on mount (default: true). When props change (camera /
-  // profile / restreamer), the cleanup tears down through the same
-  // serialization promise, then start can safely run again.
+  // profile), the cleanup tears down through the same serialization
+  // promise, then start can safely run again.
   useEffect(() => {
     if (autoStart) void start();
     return () => {
@@ -548,7 +442,7 @@ export function WebRTCInlinePlayer({
     };
     // Effect intentionally runs on prop-set changes only; `start` / `stop`
     // are stable callbacks but listing them would cause spurious re-runs.
-  }, [streamName, go2rtcApiPort, serviceIp, wantNative, cameraId, profile]);
+  }, [cameraId, profile]);
 
   // ---------------------------------------------------------------------------
   // Mic capture → IMA-ADPCM → intercom DataChannel
@@ -680,9 +574,6 @@ export function WebRTCInlinePlayer({
         }}
       >
         {status}
-        {activeMode && (
-          <span style={{ marginLeft: 8, opacity: 0.6 }}>({activeMode})</span>
-        )}
       </div>
       <div
         ref={mediaContainerRef}
@@ -765,7 +656,7 @@ export function WebRTCInlinePlayer({
         <ControlsBar
           streamActive={streamActive}
           muted={muted}
-          intercomReady={intercomReady && activeMode === "native"}
+          intercomReady={intercomReady}
           micActive={micActive}
           fullscreen={fullscreen}
           onPlayStop={() => (streamActive ? void stop() : void start())}
