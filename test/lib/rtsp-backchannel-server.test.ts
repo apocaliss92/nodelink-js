@@ -387,6 +387,99 @@ describe("BaichuanRtspBackchannelServer", () => {
     }
   });
 
+  it("SETUP advertises `timeout=60` in the Session header (RFC 2326 §3.4)", async () => {
+    // Per RFC the `timeout=<seconds>` Session parameter is emitted on SETUP
+    // responses so the client picks a keepalive cadence. We always advertise
+    // 60s — well above the server's own 10s RTCP RR interval so the keepalive
+    // RR always lands first.
+    const { server, port } = await newServerOnEphemeralPort(makeApi());
+    try {
+      const socket = net.createConnection(port, "127.0.0.1");
+      await new Promise<void>((r) => socket.once("connect", () => r()));
+      const setup = await rtspRequest(
+        socket,
+        "SETUP rtsp://127.0.0.1/talk/audiobackchannel RTSP/1.0\r\n" +
+          "CSeq: 1\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n",
+      );
+      expect(setup.status).toBe(200);
+      expect(setup.headers.Session).toMatch(/;\s*timeout\s*=\s*60(\s*$|;)/);
+      socket.destroy();
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("RECORD response echoes Range and includes RTP-Info with absolute control URL", async () => {
+    // RFC 2326 §12.39 (Range) — a server SHOULD echo back the play range.
+    // RFC 2326 §12.33 (RTP-Info) — server MUST include it on successful
+    // PLAY response to enable client-side synchronization. Some strict
+    // clients (ffmpeg builds) refuse to advance the state machine without
+    // a parseable RTP-Info; the backchannel itself never emits RTP from
+    // our side, but the placeholder url+seq+rtptime is harmless.
+    const fake = makeFakeTalk();
+    const api = makeApi({ talk: fake.session, createSpy: vi.fn(async () => fake.session) });
+    const { server, port } = await newServerOnEphemeralPort(api);
+    try {
+      const socket = net.createConnection(port, "127.0.0.1");
+      await new Promise<void>((r) => socket.once("connect", () => r()));
+      const setup = await rtspRequest(
+        socket,
+        "SETUP rtsp://manager.local:8554/talk/audiobackchannel RTSP/1.0\r\n" +
+          "CSeq: 1\r\nHost: manager.local:8554\r\n" +
+          "Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n",
+      );
+      expect(setup.status).toBe(200);
+      const sessionId = setup.headers.Session ?? "";
+
+      const record = await rtspRequest(
+        socket,
+        `RECORD rtsp://manager.local:8554/talk RTSP/1.0\r\n` +
+          `CSeq: 2\r\nHost: manager.local:8554\r\n` +
+          `Session: ${sessionId}\r\nRange: npt=0.000-\r\n\r\n`,
+      );
+      expect(record.status).toBe(200);
+      expect(record.headers.Range).toBe("npt=0.000-");
+      // Absolute URL using the host the client dialed us on — not the bind
+      // host. Same logic as Content-Base for SDP.
+      expect(record.headers["RTP-Info"]).toBe(
+        "url=rtsp://manager.local:8554/talk/audiobackchannel;seq=0;rtptime=0",
+      );
+      socket.destroy();
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("RECORD defaults Range to `npt=0.000-` when the request omits it", async () => {
+    // go2rtc 1.9.10's RECORD producer always sends `Range: npt=0.000-`, but
+    // simpler clients (and PLAY-as-RECORD compat path) may omit it. We must
+    // still emit a Range header for spec compliance.
+    const fake = makeFakeTalk();
+    const api = makeApi({ talk: fake.session, createSpy: vi.fn(async () => fake.session) });
+    const { server, port } = await newServerOnEphemeralPort(api);
+    try {
+      const socket = net.createConnection(port, "127.0.0.1");
+      await new Promise<void>((r) => socket.once("connect", () => r()));
+      const setup = await rtspRequest(
+        socket,
+        "SETUP rtsp://127.0.0.1/talk/audiobackchannel RTSP/1.0\r\n" +
+          "CSeq: 1\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n",
+      );
+      const sessionId = setup.headers.Session ?? "";
+      const play = await rtspRequest(
+        socket,
+        `PLAY rtsp://127.0.0.1/talk RTSP/1.0\r\nCSeq: 2\r\nSession: ${sessionId}\r\n\r\n`,
+      );
+      expect(play.status).toBe(200);
+      expect(play.headers.Range).toBe("npt=0.000-");
+      expect(play.headers["RTP-Info"]).toContain("seq=0");
+      expect(play.headers["RTP-Info"]).toContain("rtptime=0");
+      socket.destroy();
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("accepts PLAY as a synonym for RECORD (Frigate go2rtc 1.9.x compat)", async () => {
     // Frigate's bundled go2rtc opens SETUP with RTP/AVP/TCP, gets back a
     // Transport with `mode=record`, then sends PLAY instead of RECORD. The

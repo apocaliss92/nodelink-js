@@ -122,6 +122,15 @@ interface BackchannelSessionState {
 const RTCP_KEEPALIVE_INTERVAL_MS = 10_000;
 
 /**
+ * Session timeout advertised in the SETUP response. Per RFC 2326 §3.4 a
+ * client that doesn't see traffic for >= this many seconds should send a
+ * keepalive (OPTIONS / GET_PARAMETER) to keep the session alive. We pick
+ * 60s — well above the {@link RTCP_KEEPALIVE_INTERVAL_MS} interval so the
+ * server's own RR keepalive always lands first.
+ */
+const SESSION_TIMEOUT_SECONDS = 60;
+
+/**
  * Build an interleaved RTCP RR (Receiver Report) frame for sending back on
  * the rtcp channel. RFC 3550 §6.4.2 RR with no report blocks:
  *
@@ -710,7 +719,10 @@ export class BaichuanRtspBackchannelServer extends EventEmitter<{
         );
         send(200, "OK", {
           Transport: `RTP/AVP/TCP;unicast;interleaved=${interleaved.rtp}-${interleaved.rtcp};mode=record`,
-          Session: sessionId,
+          // `timeout=<seconds>` is the standard SETUP-only Session header
+          // parameter (RFC 2326 §3.4). Clients use it to pick a keepalive
+          // cadence and a TCP read-deadline ceiling.
+          Session: `${sessionId};timeout=${SESSION_TIMEOUT_SECONDS}`,
         });
         return;
       }
@@ -741,7 +753,11 @@ export class BaichuanRtspBackchannelServer extends EventEmitter<{
           this.logger.info?.(
             `[BaichuanRtspBackchannelServer] RECORD idempotent (already recording) client=${clientId} session=${session.sessionId}`,
           );
-          send(200, "OK", { Session: session.sessionId });
+          send(
+            200,
+            "OK",
+            buildPlayRecordHeaders(session, url, requestText),
+          );
           return;
         }
         const apiRef = session.route.api;
@@ -774,7 +790,11 @@ export class BaichuanRtspBackchannelServer extends EventEmitter<{
           return;
         }
         session.handler = handler;
-        send(200, "OK", { Session: session.sessionId });
+        send(
+          200,
+          "OK",
+          buildPlayRecordHeaders(session, url, requestText),
+        );
         this.startRtcpKeepalive(session);
         return;
       }
@@ -918,6 +938,37 @@ export class BaichuanRtspBackchannelServer extends EventEmitter<{
 
 function newSessionId(): string {
   return `talk_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+}
+
+/**
+ * Build the response headers for a successful PLAY/RECORD on the
+ * audiobackchannel track. Includes:
+ *  - `Session` (bare id; per RFC 2326 the `timeout=` parameter is only
+ *     emitted on SETUP responses).
+ *  - `Range`, echoed from the request when present (defaults to
+ *    `npt=0.000-` like real cameras do).
+ *  - `RTP-Info` with the absolute control URL the client used to dial us,
+ *    plus seq=0/rtptime=0 placeholders. The backchannel is a client→server
+ *    push so we never actually generate RTP from this end, but strict
+ *    clients (some ffmpeg builds) refuse to advance the PLAY state machine
+ *    without a parseable `RTP-Info`. The placeholder is harmless.
+ */
+function buildPlayRecordHeaders(
+  session: BackchannelSessionState,
+  requestUrl: string,
+  requestText: string,
+): Record<string, string> {
+  const rangeMatch = requestText.match(/^Range:\s*([^\r\n]+)/im);
+  const range = rangeMatch?.[1]?.trim() ?? "npt=0.000-";
+  const endpoint = extractPublicEndpoint(requestUrl, requestText);
+  const controlUrl = endpoint
+    ? `rtsp://${endpoint}${session.routePath}/audiobackchannel`
+    : `${session.routePath}/audiobackchannel`;
+  return {
+    Session: session.sessionId,
+    Range: range,
+    "RTP-Info": `url=${controlUrl};seq=0;rtptime=0`,
+  };
 }
 
 function parseInterleavedChannels(
