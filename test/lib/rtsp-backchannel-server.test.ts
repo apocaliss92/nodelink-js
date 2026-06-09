@@ -168,6 +168,47 @@ describe("BaichuanRtspBackchannelServer", () => {
       // not a regular RTSP playback server).
       expect(resp.headers.Public).toContain("PLAY");
       expect(resp.headers.Public).not.toContain("PAUSE");
+      // GET_PARAMETER is the RFC 2326 keepalive verb. go2rtc 1.9.10's
+      // RECORD producer sets a ~30s TCP read deadline and relies on a
+      // GET_PARAMETER reply to keep the socket alive; advertising it in
+      // OPTIONS makes the client pick it (instead of OPTIONS) for ping.
+      expect(resp.headers.Public).toContain("GET_PARAMETER");
+      socket.destroy();
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("GET_PARAMETER returns 200 OK so go2rtc keepalive doesn't time out", async () => {
+    const { server, port } = await newServerOnEphemeralPort(makeApi());
+    try {
+      const socket = net.createConnection(port, "127.0.0.1");
+      await new Promise<void>((r) => socket.once("connect", () => r()));
+      // Empty-body GET_PARAMETER is what go2rtc sends as the producer
+      // keepalive. We must reply 200 OK on the same TCP connection, with
+      // the Session header echoed back when one was provided.
+      const resp = await rtspRequest(
+        socket,
+        "GET_PARAMETER rtsp://127.0.0.1/talk RTSP/1.0\r\nCSeq: 9\r\nSession: abc123\r\n\r\n",
+      );
+      expect(resp.status).toBe(200);
+      expect(resp.headers.Session).toBe("abc123");
+      socket.destroy();
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("SET_PARAMETER returns 200 OK (some clients prefer it for keepalive)", async () => {
+    const { server, port } = await newServerOnEphemeralPort(makeApi());
+    try {
+      const socket = net.createConnection(port, "127.0.0.1");
+      await new Promise<void>((r) => socket.once("connect", () => r()));
+      const resp = await rtspRequest(
+        socket,
+        "SET_PARAMETER rtsp://127.0.0.1/talk RTSP/1.0\r\nCSeq: 10\r\n\r\n",
+      );
+      expect(resp.status).toBe(200);
       socket.destroy();
     } finally {
       await server.stop();

@@ -566,9 +566,23 @@ export class BaichuanRtspBackchannelServer extends EventEmitter<{
         // and expect a 200 OK; we accept PLAY as a synonym for RECORD on
         // the audiobackchannel track so those clients can open the talk
         // session without manually downgrading their behaviour.
+        // Also advertise GET_PARAMETER so clients pick it as the keepalive.
         send(200, "OK", {
-          Public: "OPTIONS, DESCRIBE, SETUP, PLAY, RECORD, TEARDOWN",
+          Public:
+            "OPTIONS, DESCRIBE, SETUP, PLAY, RECORD, TEARDOWN, GET_PARAMETER, SET_PARAMETER",
         });
+        return;
+
+      // RFC 2326 §10.8 keepalive. Frigate's bundled go2rtc 1.9.10 sets a
+      // ~30s read deadline on the producer socket during RECORD; without
+      // a periodic reply on the same TCP connection that deadline fires
+      // and the client gives up with "i/o timeout". go2rtc sends an empty
+      // GET_PARAMETER (no body) as the keepalive — we just need to
+      // acknowledge it. SET_PARAMETER is accepted for symmetry with
+      // clients that prefer it for keepalive.
+      case "GET_PARAMETER":
+      case "SET_PARAMETER":
+        send(200, "OK", sessionId ? { Session: sessionId } : {});
         return;
 
       case "DESCRIBE": {
