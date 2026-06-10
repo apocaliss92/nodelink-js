@@ -493,6 +493,22 @@ function attachConnectionListeners(
         cameraLogger.debug(`Error stopping streams after close: ${e}`);
       }
     }
+
+    // Don't wait up to {@link RECONNECT_CHECK_INTERVAL_MS} (30s) for the
+    // watchdog tick — kick a reconnect immediately. Without this, every
+    // transient EPIPE/network blip produces a 30s window of 404s on the
+    // mux for any client mid-DESCRIBE. Frigate's ffmpeg watchdog reads
+    // that as "stream gone", kills the process, and enters a slow
+    // exponential restart loop from which it recovers minutes later (or
+    // not at all). See nodelink-js#34. The fire-and-forget here is
+    // deliberate: `triggerImmediateReconnect` re-uses the watchdog's
+    // `reconnectState` map so concurrent attempts collapse onto a single
+    // in-flight connect and exponential backoff is preserved.
+    for (const camId of affectedIds) {
+      setImmediate(() => {
+        void triggerImmediateReconnect(camId);
+      });
+    }
   });
 }
 
@@ -1613,6 +1629,74 @@ async function runReconnectCheck(): Promise<void> {
         `Reconnect failed for ${camera.name}: ${(e as { message?: string })?.message ?? String(e)}`,
       );
     }
+  }
+}
+
+/**
+ * Trigger a reconnect attempt for a single camera as soon as it disconnects,
+ * instead of waiting up to {@link RECONNECT_CHECK_INTERVAL_MS} for the next
+ * watchdog tick. Called from `attachConnectionListeners`' close handler.
+ *
+ * Idempotent: if a reconnect is already in flight (via watchdog OR a previous
+ * immediate-reconnect that hasn't resolved yet), this no-ops. Re-uses
+ * `reconnectState` so the exponential backoff window applies uniformly across
+ * watchdog ticks and immediate triggers — if the camera is hard-down (camera
+ * power off, network split-brain), repeated EPIPEs do not produce a tight
+ * reconnect loop.
+ *
+ * Skips:
+ *  - cameras without `autoStart: true` (manual-only streams)
+ *  - battery cameras (their idle disconnect lifecycle is handled separately)
+ *  - NVR child cameras the user has explicitly disabled
+ *  - cameras whose config row vanished between disconnect and this call
+ */
+export async function triggerImmediateReconnect(cameraId: string): Promise<void> {
+  const cfg = getConfig();
+  const camera = cfg.cameras.find((c) => c.id === cameraId);
+  if (!camera) return;
+  if (camera.autoStart !== true) return;
+  if (isBatteryCamera(camera)) return;
+  if (camera.nvrId && disabledNvrCameras.has(cameraId)) return;
+
+  const connKey = getConnectionKey(cameraId);
+
+  // Watchdog or another close handler may already be reconnecting this
+  // connKey — collapse onto its in-flight promise so we don't queue a
+  // second login attempt against the camera.
+  const existing = apiConnections.get(connKey);
+  if (existing?.api?.isReady) return;
+  if (existing?.connectPromise) return;
+
+  // Respect the backoff window so repeated EPIPEs from a hard-down camera
+  // don't bypass the exponential retry schedule.
+  const state = reconnectState.get(connKey) ?? { attempts: 0, lastAttempt: 0 };
+  const now = Date.now();
+  if (
+    state.lastAttempt > 0 &&
+    now - state.lastAttempt < nextReconnectDelay(state.attempts)
+  ) {
+    return;
+  }
+  state.attempts += 1;
+  state.lastAttempt = now;
+  reconnectState.set(connKey, state);
+
+  const logger = createSourceLogger("reconnect-watchdog");
+  logger.info(
+    `Immediate reconnect for ${camera.name} (post-close, attempt ${state.attempts})`,
+  );
+  try {
+    if (camera.nvrId) {
+      await enableNvrCamera(cameraId);
+    } else {
+      await getOrCreateApiConnection(cameraId);
+    }
+    logger.info(`Immediate reconnect succeeded for ${camera.name}`);
+    reconnectState.delete(connKey);
+  } catch (e) {
+    logger.warn(
+      `Immediate reconnect failed for ${camera.name}: ${(e as { message?: string })?.message ?? String(e)} — watchdog will retry`,
+    );
   }
 }
 
