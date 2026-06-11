@@ -24,6 +24,8 @@ import { getServerBinding, pickP2pHostFromBinding } from "../src/cloud/server-bi
 
 loadDotenv();
 
+const VERBOSE = process.argv.includes("--verbose");
+
 interface CameraTarget {
   label: string;
   host: string | undefined;
@@ -129,13 +131,24 @@ async function probeOne(t: CameraTarget): Promise<Row> {
       ...(t.uid ? { uid: t.uid } : {}),
       mode: "auto",
       maxRetries: 1,
-      logger: {
-        log: () => {}, // quiet — wall-clock only
-        debug: () => {},
-        info: () => {},
-        warn: () => {},
-        error: () => {},
-      },
+      logger: VERBOSE
+        ? {
+            // Show the new [P2P] / [BCUDP] / [server-binding] / [AutoDetect]
+            // diagnostic milestones so the user can see exactly where each
+            // probe ends up. Pass `--verbose` to enable.
+            log: (...a: unknown[]) => console.log("  │", ...a),
+            debug: () => {}, // per-packet trace stays off
+            info: (...a: unknown[]) => console.log("  │", ...a),
+            warn: (...a: unknown[]) => console.warn("  │", ...a),
+            error: (...a: unknown[]) => console.error("  │", ...a),
+          }
+        : {
+            log: () => {}, // quiet — wall-clock only
+            debug: () => {},
+            info: () => {},
+            warn: () => {},
+            error: () => {},
+          },
     });
     const ms = Date.now() - t0;
     // Don't keep the api alive beyond the probe.
@@ -174,7 +187,10 @@ async function main(): Promise<void> {
   console.log(banner("Reolink autodetect local-E2E"));
   console.log(
     dim(
-      `Running against ${TARGETS.filter((t) => t.host).length} camera(s) from .env. Quiet mode (logs suppressed).`,
+      `Running against ${TARGETS.filter((t) => t.host).length} camera(s) from .env. ` +
+        (VERBOSE
+          ? "Verbose mode — [P2P]/[BCUDP] diagnostics ON."
+          : "Quiet mode — pass --verbose to surface [P2P]/[BCUDP] diagnostics."),
     ),
   );
   console.log();

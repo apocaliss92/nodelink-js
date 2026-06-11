@@ -102,6 +102,15 @@ export type BcUdpStreamOptions =
        * - `relay`: fully relayed via Reolink servers
        */
       discoveryMethod?: BcUdpDiscoveryMethod;
+      /**
+       * Override the default 15s timeout on local-direct / local-broadcast
+       * BCUDP discovery (the time we'll wait for a camera reply after
+       * sending C2D_S probes). Battery cams that are awake reply in
+       * 1-5s — keeping the default short collapses the user-visible
+       * failure path for off-LAN / sleeping cameras. Raise this only
+       * for pathologically slow LANs where 15s is genuinely not enough.
+       */
+      localDiscoveryTimeoutMs?: number;
     }
   | {
       /** Direct connection with already-known parameters. */
@@ -1064,7 +1073,19 @@ export class BcUdpStream extends EventEmitter<{
     const localMode = opts?.localMode ?? "local-broadcast";
     const directFirstWindowMs =
       localMode === "local-direct" && directHost ? 3_000 : 0;
-    const discoveryTimeout = 30_000;
+    // 15s default — battery cameras that are awake answer in 1-5s, and
+    // anything not responding by 15s is overwhelmingly "asleep" or
+    // "off-LAN", at which point a longer wait just delays the
+    // user-visible failure without changing the outcome. The previous
+    // 30s default pushed total autodetect failure time to ~100s for
+    // offline cameras (5 parallel methods × 30s) — drops to ~50s with
+    // 15s. Configurable so a pathologically slow LAN can opt back into
+    // the longer window.
+    const discoveryTimeout =
+      typeof this.opts.localDiscoveryTimeoutMs === "number" &&
+      this.opts.localDiscoveryTimeoutMs > 0
+        ? this.opts.localDiscoveryTimeoutMs
+        : 15_000;
     const retryInterval = 500;
 
     const startMs = Date.now();
