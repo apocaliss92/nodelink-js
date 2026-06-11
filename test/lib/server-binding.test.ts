@@ -89,6 +89,71 @@ describe("getServerBinding — HTTP contract", () => {
     expect(result).toBeUndefined();
   });
 
+  it("includes the response body in the diagnostic log on non-2xx", async () => {
+    // Without the body, an HTTP 400 from Reolink's API is opaque — could
+    // be a bad UID, a missing app-key header, a payload-version skew. The
+    // body usually reveals which. We want it captured even though the
+    // function still returns undefined (soft fallback contract).
+    const errorBody = JSON.stringify({ code: 1003, msg: "invalid uid" });
+    const fetchImpl = vi.fn(async () =>
+      new Response(errorBody, { status: 400, statusText: "Bad Request" }),
+    );
+    const logs: string[] = [];
+    const logger = { log: (m: string) => logs.push(m) };
+    const result = await getServerBinding("UID-400", { fetchImpl, logger });
+    expect(result).toBeUndefined();
+    const hit = logs.find((l) => l.includes("[server-binding]"));
+    expect(hit).toBeDefined();
+    expect(hit).toContain("HTTP 400 Bad Request");
+    expect(hit).toContain("body=");
+    expect(hit).toContain('"code":1003');
+    expect(hit).toContain('"msg":"invalid uid"');
+  });
+
+  it("caps the captured body at ~512 bytes so giant error pages don't blow up logs", async () => {
+    const huge = "X".repeat(5_000);
+    const fetchImpl = vi.fn(async () =>
+      new Response(huge, { status: 500, statusText: "Internal Server Error" }),
+    );
+    const logs: string[] = [];
+    const logger = { log: (m: string) => logs.push(m) };
+    await getServerBinding("UID-HUGE", { fetchImpl, logger });
+    const hit = logs.find((l) => l.includes("[server-binding]"));
+    expect(hit).toBeDefined();
+    // Body slice is capped at 512 chars. The full log line includes the
+    // "HTTP 500..." prefix plus the URL plus the body — the body slice
+    // alone must not exceed 512.
+    const bodyPart = /body=([\s\S]*)$/.exec(hit ?? "")?.[1] ?? "";
+    expect(bodyPart.length).toBeLessThanOrEqual(512);
+  });
+
+  it("tolerates a body that fails to read without throwing", async () => {
+    // Some fetch impls (or polyfills) throw on .text() when the body has
+    // already been consumed by an interceptor. We must still log the
+    // status code, just without the body slice.
+    const fetchImpl = vi.fn(async () => {
+      const fakeRes = {
+        ok: false,
+        status: 502,
+        statusText: "Bad Gateway",
+        async text() {
+          throw new Error("body already consumed");
+        },
+      } as unknown as Response;
+      return fakeRes;
+    });
+    const logs: string[] = [];
+    const logger = { log: (m: string) => logs.push(m) };
+    const result = await getServerBinding("UID-BODY-FAIL", {
+      fetchImpl,
+      logger,
+    });
+    expect(result).toBeUndefined();
+    const hit = logs.find((l) => l.includes("HTTP 502"));
+    expect(hit).toBeDefined();
+    expect(hit).not.toContain("body=");
+  });
+
   it("returns undefined on a malformed body (no throw)", async () => {
     const fetchImpl = vi.fn(async () =>
       new Response(JSON.stringify({ wrong: "shape" }), { status: 200 }),

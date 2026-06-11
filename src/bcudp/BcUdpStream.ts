@@ -39,6 +39,109 @@ import {
   pickP2pHostFromBinding,
 } from "../cloud/server-binding";
 
+/**
+ * Ask the kernel which local IP it would use to send a UDP packet to
+ * `destHost:destPort`. Uses `dgram.Socket.connect()` to bind a fresh
+ * socket on a wildcard, then reads back `address()` which now reports
+ * the kernel-selected source. Closes the probe socket before returning
+ * — never sends a real packet.
+ *
+ * Throws on EHOSTUNREACH / EAI_FAIL / connect timeout. Caller treats
+ * "throws" as "couldn't tell" rather than as a hard error.
+ */
+export async function probeEgressForHost(
+  destHost: string,
+  destPort: number,
+): Promise<{ localAddress: string; localPort: number }> {
+  return await new Promise((resolve, reject) => {
+    const probe = dgram.createSocket("udp4");
+    let settled = false;
+    const finish = (
+      err: Error | undefined,
+      out?: { localAddress: string; localPort: number },
+    ) => {
+      if (settled) return;
+      settled = true;
+      try {
+        probe.close();
+      } catch {
+        // ignore
+      }
+      if (err || !out) reject(err ?? new Error("egress probe failed"));
+      else resolve(out);
+    };
+    probe.on("error", (e) => finish(e as Error));
+    try {
+      probe.connect(destPort, destHost, () => {
+        try {
+          const a = probe.address();
+          if (typeof a === "string") return finish(new Error("probe address is string"));
+          finish(undefined, {
+            localAddress: (a as AddressInfo).address,
+            localPort: (a as AddressInfo).port,
+          });
+        } catch (e) {
+          finish(e as Error);
+        }
+      });
+    } catch (e) {
+      finish(e as Error);
+    }
+  });
+}
+
+/**
+ * Cheap IPv4-only same-subnet check.
+ *
+ * Returns:
+ * - `"same"` — `destHost` falls inside the subnet of the interface
+ *   that owns `srcInfo.localAddress`. The kernel picked the matching NIC.
+ * - `"mismatch"` — the kernel-picked source IP belongs to an interface
+ *   whose subnet does NOT contain `destHost`. Classic multi-NIC
+ *   misrouting: the dest is on the LAN but our packets are leaving via
+ *   Tailscale / VPN / Docker bridge with a source IP the cam will reject.
+ * - `"unknown"` — `destHost` isn't a parseable IPv4 literal (probably
+ *   a hostname), or none of our interfaces match the source IP. Don't
+ *   guess — say so.
+ */
+export function isSameSubnetAsAnyLocalIface(
+  destHost: string,
+  srcInfo: { localAddress: string },
+): "same" | "mismatch" | "unknown" {
+  if (!/^\d+\.\d+\.\d+\.\d+$/.test(destHost)) return "unknown";
+  const dest = destHost.split(".").map((s) => Number(s));
+  if (dest.some((n) => !Number.isFinite(n) || n < 0 || n > 255))
+    return "unknown";
+  const ifaces = networkInterfaces();
+  let ownerSubnet: { addr: number[]; mask: number[] } | undefined;
+  for (const name of Object.keys(ifaces)) {
+    const entries = ifaces[name];
+    if (!entries) continue;
+    for (const e of entries) {
+      if (e.family !== "IPv4" || e.internal) continue;
+      if (e.address !== srcInfo.localAddress) continue;
+      const addr = e.address.split(".").map((s) => Number(s));
+      const mask = e.netmask.split(".").map((s) => Number(s));
+      if (
+        addr.length !== 4 ||
+        mask.length !== 4 ||
+        addr.some((n) => !Number.isFinite(n)) ||
+        mask.some((n) => !Number.isFinite(n))
+      )
+        continue;
+      ownerSubnet = { addr, mask };
+      break;
+    }
+    if (ownerSubnet) break;
+  }
+  if (!ownerSubnet) return "unknown";
+  for (let i = 0; i < 4; i++) {
+    if ((ownerSubnet.addr[i]! & ownerSubnet.mask[i]!) !== (dest[i]! & ownerSubnet.mask[i]!))
+      return "mismatch";
+  }
+  return "same";
+}
+
 class AckLatency {
   private currentValues: number[] = [];
   private lastReceiveTime: number | null = null;
@@ -217,6 +320,41 @@ const P2P_RESEND_WAIT_MS = 500;
 
 type SendEntry = { packetId: number; buf: Buffer; ts: number };
 
+// ---------------------------------------------------------------------------
+// Race-method dedup state for `p2pUidLookup`. See the comment block on the
+// method itself for the rationale. These live at module scope (not on the
+// instance) because the whole point is to coalesce across multiple
+// BcUdpStream instances that share the same UID — autodetect spins up one
+// per concurrent UDP race method.
+// ---------------------------------------------------------------------------
+type P2pLookupResult = { reg: IpPort; relay: IpPort };
+const inflightP2pLookups = new Map<string, Promise<P2pLookupResult>>();
+const cachedP2pLookups = new Map<
+  string,
+  { result: P2pLookupResult; expires: number }
+>();
+const negCachedP2pLookups = new Map<
+  string,
+  { error: Error; expires: number }
+>();
+const P2P_LOOKUP_CACHE_TTL_MS = 30_000;
+// Negative TTL is intentionally short. Failure cases we want to cache are
+// network-shape problems (DNS sinkhole, all relays UDP-blocked, server-
+// binding HTTP 4xx) — these don't fix themselves in seconds but they DO
+// fix themselves in minutes (user whitelists a hostname, ISP unblocks
+// UDP/9999, region rebinding settles). 15s is enough to suppress the
+// next within-autodetect retry round (which lands ~1s after the first
+// failure) without keeping the user stuck on a stale verdict for longer
+// than necessary.
+const P2P_LOOKUP_NEG_CACHE_TTL_MS = 15_000;
+
+/** Test-only: wipe the dedup/cache state between specs. */
+export function _clearP2pLookupDedupForTests(): void {
+  inflightP2pLookups.clear();
+  cachedP2pLookups.clear();
+  negCachedP2pLookups.clear();
+}
+
 /**
  * Implements BCUDP as a reliable "byte stream" (ACK + resend).
  */
@@ -332,36 +470,23 @@ export class BcUdpStream extends EventEmitter<{
     sock.on("error", (e) => this.emit("error", e));
     sock.on("close", () => this.emit("close"));
 
-    // Bind to a port in the 53500-54000 range (matching neolink behavior).
-    // Shuffle the range and try each port until one succeeds.
-    const portRange = Array.from({ length: 500 }, (_, i) => 53500 + i);
-    for (let i = portRange.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [portRange[i], portRange[j]] = [portRange[j]!, portRange[i]!];
-    }
-
-    let bound = false;
-    for (const port of portRange) {
-      try {
-        await new Promise<void>((resolve, reject) => {
-          sock.once("error", reject);
-          sock.bind(port, "0.0.0.0", () => {
-            sock.removeListener("error", reject);
-            resolve();
-          });
-        });
-        bound = true;
-        break;
-      } catch {
-        // Port in use, try next
-      }
-    }
-    if (!bound) {
-      // Fallback: let the OS assign any available port
-      await new Promise<void>((resolve) =>
-        sock.bind(0, "0.0.0.0", () => resolve()),
-      );
-    }
+    // Let the kernel pick a free ephemeral source port.
+    //
+    // Earlier versions tried to randomly bind in the 53500-53999 range
+    // (matching neolink's heuristic). That range collides surprisingly
+    // often when 5 UDP discovery methods race in parallel — even with a
+    // shuffled retry the user-visible log showed `bind EADDRINUSE` in
+    // ~1% of cycles. There's no protocol reason BCUDP needs a specific
+    // local port — the camera always replies to the source port of our
+    // packet, not a hardcoded value. So we just ask the kernel.
+    await new Promise<void>((resolve, reject) => {
+      const onErr = (e: Error) => reject(e);
+      sock.once("error", onErr);
+      sock.bind(0, "0.0.0.0", () => {
+        sock.removeListener("error", onErr);
+        resolve();
+      });
+    });
 
     if (this.opts.mode === "direct") {
       this.remote = { host: this.opts.host, port: this.opts.port };
@@ -452,6 +577,73 @@ export class BcUdpStream extends EventEmitter<{
   }
 
   private async p2pUidLookup(
+    sock: dgram.Socket,
+    uid: string,
+  ): Promise<{ reg: IpPort; relay: IpPort }> {
+    const log = (msg: string) =>
+      this.discoveryLogger?.log?.(`[P2P] ${msg}`);
+    const shortUid = uid.length > 7 ? `${uid.slice(0, 5)}…${uid.slice(-2)}` : uid;
+
+    // Race-method dedup. autoDetect fires 3 P2P-based discovery methods
+    // (remote / relay / map) in parallel against the same UID. Without
+    // this guard each one runs the FULL lookup pipeline independently:
+    //   - cloud server-binding HTTP call → 3× duplicate traffic to Reolink
+    //   - DNS sweep of 24 relay hostnames → 3× duplicate DNS lookups (and
+    //     3× the user-visible sinkhole noise in logs)
+    //   - C2M_Q UDP probes against the resolved relay IPs → 3× wasted
+    //     packets, 3× the 15s budget burn
+    // The lookup result `{reg, relay}` is server-side data — it doesn't
+    // depend on which socket asked. So the first caller does the work
+    // for all of them. Short positive cache after the first success
+    // (30s, mirroring the server-binding negative TTL) lets retries that
+    // start AFTER the in-flight one resolves also skip the work.
+    const cached = cachedP2pLookups.get(uid);
+    if (cached && cached.expires > Date.now()) {
+      log(
+        `UID=${shortUid} cached lookup hit (relay=${cached.result.relay.ip}:${cached.result.relay.port})`,
+      );
+      return cached.result;
+    }
+    const negCached = negCachedP2pLookups.get(uid);
+    if (negCached && negCached.expires > Date.now()) {
+      // Quick-exit. The previous round already established that P2P is
+      // unreachable on this network shape (DNS sinkhole, every relay
+      // dropped UDP/9999, etc.) — repeating the 15s lookup tells us the
+      // same thing 15s later. Re-throw the original error so the caller
+      // sees the same actionable message it would have without dedup.
+      const remaining = negCached.expires - Date.now();
+      log(
+        `UID=${shortUid} negative-cache hit (fail-fast, retry in ${Math.ceil(remaining / 1000)}s)`,
+      );
+      throw negCached.error;
+    }
+    const inflight = inflightP2pLookups.get(uid);
+    if (inflight) {
+      log(`UID=${shortUid} sharing in-flight lookup with concurrent race lane`);
+      return await inflight;
+    }
+    const work = this._doP2pUidLookupWork(sock, uid);
+    inflightP2pLookups.set(uid, work);
+    try {
+      const result = await work;
+      cachedP2pLookups.set(uid, {
+        result,
+        expires: Date.now() + P2P_LOOKUP_CACHE_TTL_MS,
+      });
+      return result;
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      negCachedP2pLookups.set(uid, {
+        error: err,
+        expires: Date.now() + P2P_LOOKUP_NEG_CACHE_TTL_MS,
+      });
+      throw err;
+    } finally {
+      inflightP2pLookups.delete(uid);
+    }
+  }
+
+  private async _doP2pUidLookupWork(
     sock: dgram.Socket,
     uid: string,
   ): Promise<{ reg: IpPort; relay: IpPort }> {
@@ -1132,6 +1324,46 @@ export class BcUdpStream extends EventEmitter<{
         `broadcasts=[${broadcastHosts.join(", ")}]${directHost ? ` direct=${directHost}` : ""} ` +
         `localBindPort=${localPort} timeout=${discoveryTimeout}ms`,
     );
+
+    // Source-IP / multi-NIC diagnostic. When the host running this
+    // library has more than one local IPv4 interface (Tailscale,
+    // VPN, Docker bridge, Parallels, secondary VLAN), the kernel
+    // picks the egress NIC based on the routing table, which can
+    // surprise users behind setups where the "wrong" NIC has a
+    // lower-metric default route. Some Reolink battery cams
+    // (Argus B-series in particular) silently drop discovery
+    // packets whose source IP isn't in their own subnet — so if
+    // the kernel picks a NIC on a foreign subnet, our packets
+    // arrive at the cam and get filtered out at the application
+    // layer with no reply. The user sees "sent=N replies=0" and
+    // assumes the cam is sleeping when it isn't. This block
+    // turns that silent failure into one clear log line.
+    if (directHost && localMode === "local-direct") {
+      try {
+        const egress = await probeEgressForHost(directHost, ports[0] ?? 2015);
+        const sameSubnet = isSameSubnetAsAnyLocalIface(directHost, egress);
+        if (sameSubnet === "mismatch") {
+          log(
+            `WARN: kernel-chosen source IP ${egress.localAddress} is NOT in the same subnet as ${directHost}. ` +
+              `Some Reolink battery cams silently drop discovery packets with off-subnet source IPs. ` +
+              `If discovery fails, check your routing table — likely a Tailscale / VPN / secondary NIC stealing the default route.`,
+          );
+        } else {
+          log(
+            `egress for ${directHost} → src=${egress.localAddress}` +
+              (sameSubnet === "same"
+                ? ` (same subnet ✓)`
+                : ` (subnet relationship unknown)`),
+          );
+        }
+      } catch (e) {
+        // Probe is best-effort. A connect() against a battery cam
+        // that's truly asleep will EHOSTDOWN here, which is itself a
+        // useful diagnostic but not worth a noisy log line at this
+        // layer (the timeout path below already says it).
+        this.emit("debug", "egress_probe_failed", e);
+      }
+    }
     let bytesSent = 0;
     let pktsRecv = 0;
     sock.on("message", () => {

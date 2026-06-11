@@ -215,8 +215,25 @@ export async function getServerBinding(
       headers: { Accept: "application/json" },
     });
     if (!res.ok) {
+      // Capture a short slice of the response body. Reolink's API typically
+      // returns a JSON error like `{"code":1003,"msg":"invalid uid"}` on
+      // HTTP 400 — without this we have no way to tell whether the failure
+      // is a malformed request on our side, a bad UID, a missing app-key
+      // header, or a server-side change. Cap at 512 bytes so a stray HTML
+      // error page doesn't blow up logs.
+      let bodyPreview: string | undefined;
+      try {
+        const text = await res.text();
+        bodyPreview = text
+          .slice(0, 512)
+          .replace(/\s+/g, " ")
+          .trim();
+      } catch {
+        // ignore — keep bodyPreview undefined
+      }
       logger?.log?.(
-        `[server-binding] ${uid}: HTTP ${res.status} ${res.statusText} from ${url}`,
+        `[server-binding] ${uid}: HTTP ${res.status} ${res.statusText} from ${url}` +
+          (bodyPreview ? ` — body=${bodyPreview}` : ""),
       );
       cache.set(uid, { kind: "err", expires: now + NEGATIVE_TTL_MS });
       return undefined;
