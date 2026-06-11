@@ -730,6 +730,179 @@ export async function autoDetectDeviceType(
     );
   }
 
+  // ---------------------------------------------------------------------
+  // UDP "detect over established api" — hoisted out of the catch block so
+  // the speculative race below can reuse it without duplicating ~80 LOC.
+  // ---------------------------------------------------------------------
+  const detectOverUdpApi = async (
+    udpApi: ReolinkBaichuanApi,
+    udpDiscoveryMethod: NonNullable<
+      BaichuanClientOptions["udpDiscoveryMethod"]
+    >,
+    resolvedUid: string,
+  ): Promise<AutoDetectResult> => {
+    const [deviceInfo, capabilities, hostNetworkInfo] = await Promise.all([
+      udpApi.getInfo(),
+      udpApi.getDeviceCapabilities(),
+      udpApi.getNetworkInfo(undefined, { timeoutMs: 1200 }).catch(() => undefined),
+    ]);
+    const channelNum = capabilities?.support?.channelNum ?? 1;
+    const model = deviceInfo.type?.trim();
+    const normalizedModel = model ? model.trim() : undefined;
+    const isMultifocalByModel = normalizedModel
+      ? isDualLenseModel(normalizedModel)
+      : false;
+    const channelNumValue =
+      typeof channelNum === "string"
+        ? Number.parseInt(channelNum, 10)
+        : channelNum;
+    const hasDualLensChannelCount =
+      (channelNumValue === 2 || channelNumValue === 3) &&
+      Number.isFinite(channelNumValue);
+    const isMultifocal = isMultifocalByModel || hasDualLensChannelCount;
+    const hasBattery = capabilities?.capabilities?.hasBattery === true;
+    // Battery cams need idleDisconnect; AC-powered UDP cams (Elite
+    // Floodlight WiFi) don't and benefit from staying connected.
+    udpApi.setIdleDisconnect(hasBattery);
+
+    if (isMultifocal) {
+      const detectionMethod = isMultifocalByModel
+        ? "model match"
+        : "channelNum fallback";
+      logger?.log?.(
+        `[AutoDetect] UDP (${udpDiscoveryMethod}) connection successful. Detected multi-focal device (${detectionMethod}: model=${normalizedModel ?? "unknown"}, channelNum=${channelNum}, hasBattery=${hasBattery}).`,
+      );
+      return {
+        type: "multifocal",
+        transport: "udp",
+        uid: resolvedUid,
+        udpDiscoveryMethod,
+        deviceInfo,
+        ...(hostNetworkInfo ? { hostNetworkInfo } : {}),
+        channelNum,
+        hasBattery,
+        api: udpApi,
+      };
+    }
+
+    const deviceType: DeviceType = hasBattery ? "battery-cam" : "udp-camera";
+    logger?.log?.(
+      `[AutoDetect] UDP (${udpDiscoveryMethod}) connection successful. Detected ${deviceType} (hasBattery=${hasBattery}, model=${normalizedModel ?? "unknown"}).`,
+    );
+    return {
+      type: deviceType,
+      transport: "udp",
+      uid: resolvedUid,
+      udpDiscoveryMethod,
+      deviceInfo,
+      ...(hostNetworkInfo ? { hostNetworkInfo } : {}),
+      channelNum: 1,
+      hasBattery,
+      api: udpApi,
+    };
+  };
+
+  // ---------------------------------------------------------------------
+  // Speculative UDP race — only kicked off in `auto` mode. Runs in
+  // parallel with the TCP attempt; whoever logs in + finishes their post-
+  // login probes first wins, the loser is aborted and its api closed.
+  //
+  // For battery cameras (where TCP fast-fails on ECONNREFUSED in ~2s)
+  // this collapses the per-attempt latency further by getting UDP login
+  // in flight FROM THE FIRST INSTANT instead of waiting for TCP to give
+  // up first. For AC cameras (where TCP wins in <1s) the speculative
+  // UDP work is harmless — the winning TCP path closes the (rarely
+  // surfaced) UDP api when the race resolves.
+  //
+  // We re-use the same `runUdpMethodsParallel` machinery the post-fail
+  // fallback uses, just with an extra outer abort signal wired in.
+  // ---------------------------------------------------------------------
+  const udpRaceAbort = new AbortController();
+  const speculativeUdpRace: Promise<AutoDetectResult> | undefined =
+    mode === "auto"
+      ? (async () => {
+          const resolvedUid = await speculativeUidPromise;
+          const viableMethods = selectViableUdpMethods(Boolean(resolvedUid));
+          return await runUdpMethodsParallel(
+            viableMethods,
+            async (m, isInnerAborted) => {
+              const isAborted = () =>
+                udpRaceAbort.signal.aborted || isInnerAborted();
+              if (isAborted()) {
+                throw new Error(
+                  `UDP(${m}) speculative race aborted before start`,
+                );
+              }
+              logger?.log?.(
+                `[AutoDetect] (race) Trying UDP discovery method: ${m}...`,
+              );
+              const udpApi = await withRetries(
+                `UDP(${m})`,
+                maxRetries,
+                async (attempt) => {
+                  const apiInputs: AutoDetectInputs = {
+                    ...inputs,
+                    udpDiscoveryMethod: m,
+                  };
+                  if (resolvedUid) apiInputs.uid = resolvedUid;
+                  const api = createBaichuanApi(apiInputs, "udp");
+                  try {
+                    await api.login();
+                    return api;
+                  } catch (e) {
+                    try {
+                      await api.close({
+                        reason: `autodetect:udp_failed:${m}:attempt_${attempt}`,
+                      });
+                    } catch {
+                      // ignore
+                    }
+                    throw e;
+                  }
+                },
+                shouldRetryUdp,
+                isAborted,
+              );
+              if (isAborted()) {
+                // The UDP path won AFTER TCP already won. Close cleanly.
+                try {
+                  await udpApi.close({
+                    reason: "autodetect:udp_aborted_after_tcp_won",
+                  });
+                } catch {
+                  // ignore
+                }
+                throw new Error(
+                  `UDP(${m}) speculative race aborted after login`,
+                );
+              }
+              return detectOverUdpApi(udpApi, m, resolvedUid ?? "");
+            },
+            "Speculative UDP race failed for all methods.",
+          );
+        })()
+      : undefined;
+  // When the race resolves AFTER we've signaled abort (i.e. TCP won), the
+  // UDP-side post-login probes may already have produced a fully usable
+  // api by the time abort propagates. Close it silently so the caller
+  // never sees orphan sockets.
+  speculativeUdpRace?.then(
+    (udpResult) => {
+      if (udpRaceAbort.signal.aborted && udpResult?.api) {
+        udpResult.api
+          .close({ reason: "autodetect:tcp_won_race" })
+          .catch(() => undefined);
+      }
+    },
+    () => undefined,
+  );
+
+  /** Helper: TCP win shortcut — abort the speculative UDP race + return. */
+  const _tcpWin = <T>(result: T): T => {
+    udpRaceAbort.abort();
+    return result;
+  };
+
   // Try TCP first
   let tcpApi: ReolinkBaichuanApi | undefined;
   try {
@@ -898,15 +1071,15 @@ export async function autoDetectDeviceType(
         `[AutoDetect] Detected multi-focal device (${detectionMethod}: model=${normalizedModel ?? "unknown"}, channelNum=${channelNum})`,
       );
       // Don't close the API, return it for continued use
-      return {
-        type: "multifocal",
-        transport: "tcp",
+      return _tcpWin({
+        type: "multifocal" as const,
+        transport: "tcp" as const,
         uid: effectiveUid || uid || "",
         ...(deviceInfo ? { deviceInfo } : {}),
         // ...(hostNetworkInfo ? { hostNetworkInfo } : {}),
         channelNum: effectiveChannelNum,
         api,
-      };
+      });
     }
 
     // If channelNum > 1, it's likely an NVR
@@ -915,29 +1088,29 @@ export async function autoDetectDeviceType(
         `[AutoDetect] Detected NVR (${effectiveChannelNum} channels)`,
       );
       // Don't close the API, return it for continued use
-      return {
-        type: "nvr",
-        transport: "tcp",
+      return _tcpWin({
+        type: "nvr" as const,
+        transport: "tcp" as const,
         uid: effectiveUid || uid || "",
         ...(deviceInfo ? { deviceInfo } : {}),
         // ...(hostNetworkInfo ? { hostNetworkInfo } : {}),
         channelNum: effectiveChannelNum,
         api,
-      };
+      });
     }
 
     // Single channel device - regular camera
     logger?.log?.(`[AutoDetect] Detected regular camera (single channel)`);
     // Don't close the API, return it for continued use
-    return {
-      type: "camera",
-      transport: "tcp",
+    return _tcpWin({
+      type: "camera" as const,
+      transport: "tcp" as const,
       uid: effectiveUid || uid || "",
       ...(deviceInfo ? { deviceInfo } : {}),
       // ...(hostNetworkInfo ? { hostNetworkInfo } : {}),
       channelNum: 1,
       api,
-    };
+    });
   } catch (tcpError) {
     if (mode === "tcp") {
       // Forced TCP mode: never fallback.
@@ -959,151 +1132,28 @@ export async function autoDetectDeviceType(
     }
 
     logger?.log?.(`[AutoDetect] TCP failed, trying UDP...`);
-    // The speculative UID discovery was kicked off concurrently with the
-    // TCP attempt above. If TCP failed fast (e.g. immediate ECONNREFUSED
-    // from a battery cam), the broadcast may still be in flight — await
-    // it here. Either way we don't burn the extra ~3s the old serial
-    // path would have spent on the same broadcast.
-    let normalizedUid = await speculativeUidPromise;
-    if (!normalizedUid) {
-      logger?.log?.(
-        `[AutoDetect] UID discovery failed; only local-direct can run without a UID. ` +
-          `If the camera is sleeping or on a different subnet, supply its UID to enable ` +
-          `BCUDP P2P fallback (remote/relay/map) which can wake it via Reolink's servers.`,
-      );
-      // Don't throw here - local-direct can still work if the camera is awake on the LAN
-    } else if (effectiveUid === undefined) {
-      // Only log when we actually discovered a fresh UID — if the caller
-      // supplied one we just echoed it back.
-      logger?.log?.(
-        `[AutoDetect] UID resolved via concurrent broadcast discovery: ${normalizedUid}`,
+    // The speculative UDP race was kicked off in parallel with TCP at
+    // t=0 (see `speculativeUdpRace` definition above). For battery cams
+    // it has very likely already completed login + post-login probes
+    // by the time TCP fast-fails on ECONNREFUSED — awaiting it here is
+    // nearly always a no-op (microseconds). For AC cams where TCP is
+    // the right transport the speculative path failed long ago, and
+    // we'll surface the combined failure mode in the catch.
+    if (!speculativeUdpRace) {
+      // Defensive: speculativeUdpRace is undefined only when mode !== "auto",
+      // and the only `mode !== "auto"` path that reaches this catch is
+      // mode === "tcp", which we already rethrew above. So if we got
+      // here without a race, something is structurally wrong.
+      throw new Error(
+        `AutoDetect internal: speculative UDP race missing in mode=${mode}`,
       );
     }
-
     try {
-      const detectOverUdpApi = async (
-        udpApi: ReolinkBaichuanApi,
-        udpDiscoveryMethod: NonNullable<
-          BaichuanClientOptions["udpDiscoveryMethod"]
-        >,
-      ): Promise<AutoDetectResult> => {
-        const [deviceInfo, capabilities, hostNetworkInfo] = await Promise.all([
-          udpApi.getInfo(),
-          udpApi.getDeviceCapabilities(),
-          udpApi.getNetworkInfo(undefined, { timeoutMs: 1200 }).catch(() => undefined),
-        ]);
-        const channelNum = capabilities?.support?.channelNum ?? 1;
-        const model = deviceInfo.type?.trim();
-
-        // Check if it's a multi-focal device using the dual lens model map or channelNum fallback
-        // Multi-focal devices can also be UDP (battery multi-focal cameras)
-        const normalizedModel = model ? model.trim() : undefined;
-        const isMultifocalByModel = normalizedModel
-          ? isDualLenseModel(normalizedModel)
-          : false;
-
-        // Also check if channelNum suggests dual lens (2-3 channels)
-        // Handle both number and string types for channelNum
-        const channelNumValue =
-          typeof channelNum === "string"
-            ? Number.parseInt(channelNum, 10)
-            : channelNum;
-        const hasDualLensChannelCount =
-          (channelNumValue === 2 || channelNumValue === 3) &&
-          Number.isFinite(channelNumValue);
-
-        // Consider it dual lens if model matches OR if channelNum suggests it
-        const isMultifocal = isMultifocalByModel || hasDualLensChannelCount;
-
-        // Check if this is actually a battery camera by looking at capabilities
-        // UDP transport does NOT always mean battery camera (e.g., Elite Floodlight WiFi uses UDP but is AC-powered)
-        const hasBattery = capabilities?.capabilities?.hasBattery === true;
-
-        // Enable idle disconnect dynamically based on battery status
-        // This preserves battery life for battery cameras while keeping
-        // AC-powered UDP cameras (like Elite Floodlight WiFi) always connected
-        udpApi.setIdleDisconnect(hasBattery);
-
-        if (isMultifocal) {
-          const detectionMethod = isMultifocalByModel
-            ? "model match"
-            : "channelNum fallback";
-          logger?.log?.(
-            `[AutoDetect] UDP (${udpDiscoveryMethod}) connection successful. Detected multi-focal device (${detectionMethod}: model=${normalizedModel ?? "unknown"}, channelNum=${channelNum}, hasBattery=${hasBattery}).`,
-          );
-          return {
-            type: "multifocal",
-            transport: "udp",
-            uid: normalizedUid ?? "",
-            udpDiscoveryMethod,
-            deviceInfo,
-            ...(hostNetworkInfo ? { hostNetworkInfo } : {}),
-            channelNum,
-            hasBattery,
-            api: udpApi,
-          };
-        }
-
-        // Determine device type based on capabilities, not transport
-        // UDP transport does NOT always mean battery camera (e.g., Elite Floodlight WiFi uses UDP but is AC-powered)
-        // - battery-cam: Has battery, use idleDisconnect to preserve battery
-        // - udp-camera: No battery (AC-powered), no idleDisconnect needed
-        const deviceType: DeviceType = hasBattery
-          ? "battery-cam"
-          : "udp-camera";
-        logger?.log?.(
-          `[AutoDetect] UDP (${udpDiscoveryMethod}) connection successful. Detected ${deviceType} (hasBattery=${hasBattery}, model=${normalizedModel ?? "unknown"}).`,
-        );
-        return {
-          type: deviceType,
-          transport: "udp",
-          uid: normalizedUid ?? "",
-          udpDiscoveryMethod,
-          deviceInfo,
-          ...(hostNetworkInfo ? { hostNetworkInfo } : {}),
-          channelNum: 1,
-          hasBattery,
-          api: udpApi,
-        };
-      };
-
-      // Filter to only methods that can work without a UID. Only local-direct can run
-      // without one — every other BCUDP method requires UID lookup (LAN broadcast for the
-      // device, or P2P via Reolink servers) and createBaichuanApi() rejects them synchronously.
-      const viableMethods = selectViableUdpMethods(Boolean(normalizedUid));
-
-      return await runUdpMethodsParallel(
-        viableMethods,
-        async (m, isAborted) => {
-          logger?.log?.(`[AutoDetect] Trying UDP discovery method: ${m}...`);
-          const udpApi = await withRetries(
-            `UDP(${m})`,
-            maxRetries,
-            async (attempt) => {
-              const apiInputs: AutoDetectInputs = { ...inputs, udpDiscoveryMethod: m };
-              if (normalizedUid) apiInputs.uid = normalizedUid;
-              const api = createBaichuanApi(apiInputs, "udp");
-              try {
-                await api.login();
-                return api;
-              } catch (e) {
-                try {
-                  await api.close({
-                    reason: `autodetect:udp_failed:${m}:attempt_${attempt}`,
-                  });
-                } catch {
-                  // ignore
-                }
-                throw e;
-              }
-            },
-            shouldRetryUdp,
-            isAborted,
-          );
-          return detectOverUdpApi(udpApi, m);
-        },
-        "UDP discovery failed for all methods.",
+      const udpResult = await speculativeUdpRace;
+      logger?.log?.(
+        `[AutoDetect] UDP race won after TCP failure (transport=${udpResult.transport}, method=${udpResult.udpDiscoveryMethod ?? "n/a"})`,
       );
+      return udpResult;
     } catch (udpError) {
       logger?.log?.(
         `[AutoDetect] Both TCP and UDP failed. TCP error: ${tcpError}, UDP error: ${udpError}`,
