@@ -165,11 +165,43 @@ export async function getServerBinding(
 
   if (typeof fetchImpl !== "function") {
     // Node < 18 without polyfill. Don't crash — degrade silently.
-    logger?.debug?.(
+    logger?.log?.(
       `[server-binding] global fetch unavailable; skipping cloud lookup`,
     );
     cache.set(uid, { kind: "err", expires: now + NEGATIVE_TTL_MS });
     return undefined;
+  }
+
+  // Pre-flight: detect whether the cloud hostname itself is sinkholed
+  // before the fetch wastes its 4s budget. The Argus B360 / Pi-hole user
+  // who reported #34 hits this every time — getaddrinfo returns
+  // 127.0.0.1 for apis.reolink.com and the fetch then connects to local
+  // 443 (where nothing listens) and hangs until the controller aborts.
+  // A targeted DNS pre-check turns 4s of silent waiting into one clear
+  // log line.
+  try {
+    const apiHostname = new URL(baseUrl).hostname;
+    const dns = await import("node:dns/promises");
+    const answers = await dns.lookup(apiHostname, { family: 4, all: true });
+    const sinkholed = answers.find(
+      (a) =>
+        a.address?.startsWith("127.") ||
+        a.address === "0.0.0.0" ||
+        a.address?.startsWith("10.") ||
+        a.address?.startsWith("192.168.") ||
+        /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(a.address ?? ""),
+    );
+    if (sinkholed) {
+      logger?.log?.(
+        `[server-binding] ${uid}: DNS for ${apiHostname} resolves to ${sinkholed.address} (sinkhole / /etc/hosts override). ` +
+          `Cloud directory unreachable — falling back to the 22-hostname P2P sweep. Whitelist ${apiHostname} to enable.`,
+      );
+      cache.set(uid, { kind: "err", expires: now + NEGATIVE_TTL_MS });
+      return undefined;
+    }
+  } catch {
+    // DNS lookup itself failed — let the fetch run and surface the
+    // real error below (typically getaddrinfo ENOTFOUND).
   }
 
   const url = `${baseUrl}/devices/${encodeURIComponent(uid)}/server-binding?language=${encodeURIComponent(language)}`;
@@ -183,8 +215,8 @@ export async function getServerBinding(
       headers: { Accept: "application/json" },
     });
     if (!res.ok) {
-      logger?.debug?.(
-        `[server-binding] ${uid}: HTTP ${res.status} ${res.statusText}`,
+      logger?.log?.(
+        `[server-binding] ${uid}: HTTP ${res.status} ${res.statusText} from ${url}`,
       );
       cache.set(uid, { kind: "err", expires: now + NEGATIVE_TTL_MS });
       return undefined;
@@ -192,8 +224,15 @@ export async function getServerBinding(
     const json = (await res.json()) as unknown;
     const parsed = parseServerBindingResponse(json);
     if (!parsed) {
-      logger?.debug?.(
-        `[server-binding] ${uid}: response shape did not match expectations`,
+      logger?.log?.(
+        `[server-binding] ${uid}: response shape did not match expectations (Reolink schema change?)`,
+      );
+      cache.set(uid, { kind: "err", expires: now + NEGATIVE_TTL_MS });
+      return undefined;
+    }
+    if (parsed.availableZones.length === 0) {
+      logger?.log?.(
+        `[server-binding] ${uid}: cloud returned 0 zones — UID not registered with Reolink cloud (or wrong region)`,
       );
       cache.set(uid, { kind: "err", expires: now + NEGATIVE_TTL_MS });
       return undefined;
@@ -218,9 +257,27 @@ export async function getServerBinding(
     );
     return parsed;
   } catch (e) {
-    logger?.debug?.(
-      `[server-binding] ${uid}: ${(e as { message?: string })?.message ?? String(e)}`,
-    );
+    const msg = (e as { message?: string; name?: string })?.message ?? String(e);
+    const errName = (e as { name?: string })?.name;
+    if (errName === "AbortError" || msg.includes("aborted")) {
+      logger?.log?.(
+        `[server-binding] ${uid}: timed out after ${timeoutMs}ms (cloud unreachable)`,
+      );
+    } else if (msg.includes("ENOTFOUND") || msg.includes("EAI_AGAIN")) {
+      logger?.log?.(
+        `[server-binding] ${uid}: DNS failed (${msg}) — apis.reolink.com may be blocked at resolver`,
+      );
+    } else if (
+      msg.includes("ECONNREFUSED") ||
+      msg.includes("EHOSTUNREACH") ||
+      msg.includes("ENETUNREACH")
+    ) {
+      logger?.log?.(
+        `[server-binding] ${uid}: network unreachable (${msg}) — cloud port blocked`,
+      );
+    } else {
+      logger?.log?.(`[server-binding] ${uid}: fetch failed — ${msg}`);
+    }
     cache.set(uid, { kind: "err", expires: now + NEGATIVE_TTL_MS });
     return undefined;
   } finally {

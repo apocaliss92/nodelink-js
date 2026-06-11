@@ -607,18 +607,33 @@ export class BcUdpStream extends EventEmitter<{
     uid: string,
     dest: SockAddr,
     timeoutMs: number,
-  ): Promise<{ reg: IpPort; relay: IpPort }> {
+  ): Promise<{ reg: IpPort; relay: IpPort; sentBytes: number; rxBytes: number }> {
     const tid = (Math.floor(Math.random() * 0x7fffffff) | 0) >>> 0;
     const xml = buildC2mQ({ uid });
     const pkt = encodeDiscoveryPacket(tid, xml);
+    // Track outbound bytes (sum across the initial send + retries) and
+    // inbound bytes (anything that lands while we're waiting, even if it
+    // doesn't parse as a valid M2C_Q_R reply). Both surface in the
+    // timeout error message — without this it's impossible to tell
+    // "kernel send failed" from "send succeeded but nothing comes back"
+    // from "junk arrived but didn't parse".
+    const counters = { sentBytes: 0, rxBytes: 0 };
 
     return await new Promise((resolve, reject) => {
       const deadline = setTimeout(() => {
         cleanup();
-        reject(new Error(`P2P UID lookup timeout (${dest.host}:${dest.port})`));
+        const err = new Error(
+          `P2P UID lookup timeout (${dest.host}:${dest.port}) — sent=${counters.sentBytes}B rx=${counters.rxBytes}B`,
+        );
+        (err as { sentBytes?: number; rxBytes?: number }).sentBytes =
+          counters.sentBytes;
+        (err as { sentBytes?: number; rxBytes?: number }).rxBytes =
+          counters.rxBytes;
+        reject(err);
       }, timeoutMs);
 
       const onMsg = (msg: Buffer) => {
+        counters.rxBytes += msg.length;
         try {
           const p = decodeBcUdpPacket(msg);
           if (p.kind !== "discovery") return;
@@ -626,7 +641,12 @@ export class BcUdpStream extends EventEmitter<{
           const qr = parseM2cQr(p.xml);
           if (!qr?.reg || !qr?.relay) return;
           cleanup();
-          resolve({ reg: qr.reg, relay: qr.relay });
+          resolve({
+            reg: qr.reg,
+            relay: qr.relay,
+            sentBytes: counters.sentBytes,
+            rxBytes: counters.rxBytes,
+          });
         } catch {
           // ignore
         }
@@ -635,6 +655,7 @@ export class BcUdpStream extends EventEmitter<{
       const send = () => {
         try {
           sock.send(pkt, dest.port, dest.host);
+          counters.sentBytes += pkt.length;
         } catch {
           // ignore
         }
