@@ -125,7 +125,32 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * P2P relay hostnames the lookup walks through to find a master server
+ * willing to point us at the requested UID.
+ *
+ * Order matters — entries are tried in declaration order until ONE returns
+ * a routable IP. Reverse-engineering the Reolink desktop SDK
+ * (`libBCSDKWrapper.dylib` — see analysis in repo docs) revealed that the
+ * official client hits these BEFORE the numbered regional relays:
+ *
+ *  - `p2pm-abr.reolink.com` / `p2pm-ali.reolink.com` — master anycast
+ *    routers, multi-region routing. Tend to answer fastest and survive
+ *    individual regional outages, so we lead with them.
+ *
+ * Then the numbered regional pool we already used. China-region
+ * (`.com.cn`) variants come last — useful for users behind blocklists that
+ * filter `.com` but not `.com.cn`, OR for CN-bound cameras whose UID lives
+ * on the China cluster.
+ *
+ * `*.reolink.review` (staging) is intentionally excluded — it's a Reolink
+ * internal test cluster, not production.
+ */
 const P2P_RELAY_HOSTNAMES = [
+  // Master anycast routers — try first.
+  "p2pm-abr.reolink.com",
+  "p2pm-ali.reolink.com",
+  // Numbered regional relays.
   "p2p.reolink.com",
   "p2p1.reolink.com",
   "p2p2.reolink.com",
@@ -138,7 +163,39 @@ const P2P_RELAY_HOSTNAMES = [
   "p2p9.reolink.com",
   "p2p10.reolink.com",
   "p2p11.reolink.com",
+  // China-region fallbacks (intentionally last).
+  "p2p.reolink.com.cn",
+  "p2p1.reolink.com.cn",
+  "p2p2.reolink.com.cn",
+  "p2p3.reolink.com.cn",
+  "p2p4.reolink.com.cn",
+  "p2p5.reolink.com.cn",
+  "p2p6.reolink.com.cn",
+  "p2p7.reolink.com.cn",
+  "p2p8.reolink.com.cn",
+  "p2p9.reolink.com.cn",
 ];
+
+/**
+ * IPv4 sink-hole detection — `dns.lookup` uses `getaddrinfo` so it consults
+ * `/etc/hosts` and the system NSS chain BEFORE pure DNS. When a Pi-hole /
+ * AdGuard / NextDNS profile (or an `/etc/hosts` rewrite) blocks Reolink
+ * cloud, the answer is typically `127.0.0.1`, `0.0.0.0`, or a RFC1918 sink.
+ * We treat those as "not a real P2P server" and surface a clear error
+ * instead of silently hammering loopback with 30s of UDP timeouts.
+ */
+export function isUnroutableForP2P(ip: string): boolean {
+  if (!ip) return true;
+  if (ip === "0.0.0.0") return true;
+  if (ip.startsWith("127.")) return true;
+  // RFC1918 — a P2P relay should never resolve into a private network.
+  if (ip.startsWith("10.")) return true;
+  if (ip.startsWith("192.168.")) return true;
+  if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(ip)) return true;
+  // CGNAT — same reasoning.
+  if (/^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\./.test(ip)) return true;
+  return false;
+}
 
 const P2P_LOOKUP_PORT = 9999;
 const P2P_MAX_WAIT_MS = 15_000;
@@ -363,20 +420,45 @@ export class BcUdpStream extends EventEmitter<{
     uid: string,
   ): Promise<{ reg: IpPort; relay: IpPort }> {
     const resolved: string[] = [];
+    const sinkholed: Array<{ host: string; ip: string }> = [];
     for (const host of P2P_RELAY_HOSTNAMES) {
       try {
         const answers = await dns.lookup(host, { family: 4, all: true });
         for (const a of answers) {
-          if (a.address && !resolved.includes(a.address))
-            resolved.push(a.address);
+          if (!a.address) continue;
+          if (isUnroutableForP2P(a.address)) {
+            sinkholed.push({ host, ip: a.address });
+            continue;
+          }
+          if (!resolved.includes(a.address)) resolved.push(a.address);
         }
       } catch {
         // ignore DNS failures per-host
       }
     }
     if (resolved.length === 0) {
+      if (sinkholed.length > 0) {
+        // dns.lookup hit a sinkhole — most often /etc/hosts or a DNS filter.
+        // Show up to 3 representative samples so the user can grep for the
+        // offending entry without us dumping the full P2P_RELAY_HOSTNAMES
+        // table into the log. Note: `nslookup`/`dig` will NOT reproduce
+        // this because they bypass NSS/`/etc/hosts`; `getent hosts <name>`
+        // (or `dscacheutil -q host -a name <name>` on macOS) WILL.
+        const samples = sinkholed
+          .slice(0, 3)
+          .map((s) => `${s.host} → ${s.ip}`)
+          .join(", ");
+        throw new Error(
+          `P2P UID lookup failed: DNS resolves Reolink P2P hostnames to non-routable IPs (${samples}). ` +
+            `This is almost certainly an /etc/hosts rewrite or a DNS filter (Pi-hole, AdGuard, NextDNS) ` +
+            `blocking *.reolink.com. Battery cameras cannot connect without P2P — whitelist *.reolink.com ` +
+            `(at least p2p*.reolink.com on UDP/9999) or remove the override. Verify with ` +
+            `\`getent hosts p2p.reolink.com\` inside your container — if it differs from \`nslookup p2p.reolink.com\`, ` +
+            `the offender is /etc/hosts.`,
+        );
+      }
       throw new Error(
-        "P2P UID lookup failed: no p2p.reolink.com addresses resolved",
+        "P2P UID lookup failed: no p2p.reolink.com addresses resolved (DNS failure)",
       );
     }
 

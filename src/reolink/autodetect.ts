@@ -219,27 +219,150 @@ export function isTcpFailureThatShouldFallbackToUdp(e: unknown): boolean {
 }
 
 /**
- * Simple ping check to verify IP is reachable.
+ * Reachability probe with two-stage fallback:
+ *
+ * 1. **System `ping` via absolute path** (preferred). On macOS `/sbin/ping`
+ *    is set-uid root and works for unprivileged users, but a stripped
+ *    PATH (common inside Scrypted plugins, Docker scratch images,
+ *    Electron sandboxes) makes a bare `ping` exec hit `ENOENT` and we'd
+ *    misreport "not reachable". We probe a list of likely absolute paths
+ *    so that issue silently goes away.
+ *
+ * 2. **TCP RST probe** when ICMP isn't usable — many networks (hotel /
+ *    enterprise / some routers) silently drop ICMP echo, AND a healthy
+ *    Reolink camera doesn't always reply to ping either. We open a brief
+ *    TCP connection to a few likely-listening ports (9000 Baichuan,
+ *    443 https, 80 http). A `connect`/`ECONNREFUSED` both prove the
+ *    host is up at the IP layer — only a timeout / EHOSTUNREACH /
+ *    ENETUNREACH counts as truly unreachable.
+ *
+ * Either signal returning "reachable" short-circuits the rest.
  */
 async function pingHost(
   host: string,
   timeoutMs: number = 3000,
 ): Promise<boolean> {
-  const { exec } = await import("node:child_process");
-  const platform = process.platform;
-  const pingCmd =
-    platform === "win32"
-      ? `ping -n 1 -w ${timeoutMs} ${host}`
-      : platform === "darwin"
-        ? // macOS: -W is in milliseconds (Linux: seconds)
-          `ping -c 1 -W ${timeoutMs} ${host}`
-        : // Linux/BSD-ish: -W is in seconds on most distros
-          `ping -c 1 -W ${Math.max(1, Math.floor(timeoutMs / 1000))} ${host}`;
+  if (!host || typeof host !== "string") return false;
 
-  return new Promise((resolve) => {
-    exec(pingCmd, (error: unknown) => {
-      resolve(!error);
+  const platform = process.platform;
+  const pingCandidates =
+    platform === "win32"
+      ? ["ping"]
+      : platform === "darwin"
+        ? ["/sbin/ping", "/usr/sbin/ping", "ping"]
+        : ["/bin/ping", "/usr/bin/ping", "ping"];
+
+  const pingArgs = (bin: string): string[] => {
+    void bin;
+    if (platform === "win32") {
+      return ["-n", "1", "-w", String(timeoutMs), host];
+    }
+    if (platform === "darwin") {
+      // macOS / BSD ping: -W is in milliseconds.
+      return ["-c", "1", "-W", String(timeoutMs), host];
+    }
+    // Linux iputils ping: -W is in seconds (integer, floor to >=1).
+    return ["-c", "1", "-W", String(Math.max(1, Math.floor(timeoutMs / 1000))), host];
+  };
+
+  // Stage 1: try ping binaries until one runs.
+  const { spawn } = await import("node:child_process");
+  for (const bin of pingCandidates) {
+    const ranOk = await new Promise<boolean | "spawn-failed">((resolve) => {
+      let settled = false;
+      let child: import("node:child_process").ChildProcess | undefined;
+      try {
+        child = spawn(bin, pingArgs(bin), { stdio: "ignore" });
+      } catch {
+        resolve("spawn-failed");
+        return;
+      }
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try {
+          child?.kill("SIGKILL");
+        } catch {
+          // ignore
+        }
+        resolve(false);
+      }, timeoutMs + 500);
+
+      child.on("error", () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        // ENOENT or similar — try the next candidate path.
+        resolve("spawn-failed");
+      });
+      child.on("exit", (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(code === 0);
+      });
     });
+    if (ranOk === true) return true;
+    if (ranOk === "spawn-failed") continue;
+    // Ran but the host didn't answer ICMP — fall through to TCP probe.
+    break;
+  }
+
+  // Stage 2: TCP RST probe — useful when ICMP is blocked.
+  // 9000 first (a Reolink AC cam will answer SYN-ACK; a battery cam will
+  // RST = ECONNREFUSED, which still proves reachability at IP layer).
+  for (const port of [9000, 443, 80]) {
+    if (await tcpReachabilityProbe(host, port, 800)) return true;
+  }
+  return false;
+}
+
+/**
+ * Brief TCP connection attempt. Resolves true if the OS gets ANY response
+ * from the peer (connect-success, ECONNREFUSED, RST) — all three imply the
+ * host is up at L3. Resolves false on timeout / EHOSTUNREACH / ENETUNREACH.
+ */
+export async function tcpReachabilityProbe(
+  host: string,
+  port: number,
+  timeoutMs: number,
+): Promise<boolean> {
+  const net = await import("node:net");
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const socket = new net.Socket();
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try {
+        socket.destroy();
+      } catch {
+        // ignore
+      }
+      resolve(false);
+    }, timeoutMs);
+    const finish = (reachable: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        socket.destroy();
+      } catch {
+        // ignore
+      }
+      resolve(reachable);
+    };
+    socket.once("connect", () => finish(true));
+    socket.once("error", (err: NodeJS.ErrnoException) => {
+      // ECONNREFUSED = host responded with RST → reachable at IP layer.
+      if (err?.code === "ECONNREFUSED") finish(true);
+      else finish(false);
+    });
+    try {
+      socket.connect(port, host);
+    } catch {
+      finish(false);
+    }
   });
 }
 
