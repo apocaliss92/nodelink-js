@@ -1647,6 +1647,12 @@ export class BaichuanClient extends EventEmitter<{
     sock.on("debug", (event: string, data?: unknown) => {
       this.logDebug(`udp_${event}`, data);
     });
+    // Wire the info-level logger so BCUDP / P2P milestones (DNS lookups,
+    // outgoing C2M_Q probes, per-attempt timings) land in the user's
+    // logger sink without enabling the per-packet `debug` event trace.
+    // This is what surfaces the "[P2P] …" lines the user sees in the
+    // Scrypted plugin logs when diagnosing battery-cam connect issues.
+    sock.setLogger(this.logger);
 
     await sock.connect();
 

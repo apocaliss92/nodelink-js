@@ -203,8 +203,18 @@ export async function getServerBinding(
       response: parsed,
       expires: now + POSITIVE_TTL_MS,
     });
-    logger?.debug?.(
-      `[server-binding] ${uid}: cloud returned ${parsed.availableZones.length} zone(s)`,
+    // Surface the resolved hint at info level — the user-visible benefit
+    // of GAP-3 is that we narrowed 22 hostnames to ONE specific p2p host,
+    // and it's worth showing them which one (helps DNS-filter
+    // troubleshooting: "ah, the relay for my cam is p2p2.reolink.com,
+    // that's the only hostname I need to allow").
+    const pick = parsed.availableZones.find(
+      (z) => z.status === "active" && z.services.p2p?.server,
+    );
+    const hint =
+      pick?.services.p2p?.server ?? parsed.availableZones[0]?.services.p2p?.server;
+    logger?.log?.(
+      `[server-binding] ${uid}: ${parsed.availableZones.length} zone(s)${hint ? `, p2p hint=${hint}` : ""}`,
     );
     return parsed;
   } catch (e) {

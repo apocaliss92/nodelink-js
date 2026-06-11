@@ -36,6 +36,16 @@ export type AutoDetectInputs = {
    * If omitted, autodetect will try `local-direct`, then `local-broadcast`, then `remote`, then `relay`, then `map`.
    */
   udpDiscoveryMethod?: BaichuanClientOptions["udpDiscoveryMethod"];
+  /**
+   * Hard upper bound on the TCP connect + Baichuan login attempt. The
+   * macOS / Linux TCP stack normally takes 60-160s to return
+   * EHOSTDOWN / EHOSTUNREACH (ARP retry chain). Without a deadline,
+   * autodetect against an unreachable host blocks for that entire
+   * window even though the parallel UDP race already failed. Defaults
+   * to 8s — well above a healthy LAN login (~250ms) and well below
+   * the OS chain. Tune higher only for legitimately slow links.
+   */
+  tcpConnectTimeoutMs?: number;
 };
 
 export type UdpDiscoveryMethod = NonNullable<
@@ -206,10 +216,17 @@ export function isTcpFailureThatShouldFallbackToUdp(e: unknown): boolean {
   return (
     message.includes("ECONNREFUSED") ||
     message.includes("ETIMEDOUT") ||
+    message.includes("EHOSTDOWN") ||
     message.includes("EHOSTUNREACH") ||
     message.includes("ENETUNREACH") ||
+    message.includes("ENETDOWN") ||
     message.includes("socket hang up") ||
     message.includes("TCP connection timeout") ||
+    // Autodetect's own hard deadline on the TCP login attempt — see
+    // `withTcpDeadline` in `autoDetectDeviceType`. Without this entry the
+    // catch block would rethrow the deadline error instead of awaiting
+    // the speculative UDP race.
+    message.includes("TCP login deadline exceeded") ||
     message.includes("Baichuan socket closed") ||
     message.includes("timeout waiting for nonce") ||
     message.includes("expected encryption info") ||
@@ -466,6 +483,12 @@ export async function autoDetectDeviceType(
 ): Promise<AutoDetectResult> {
   const { host, uid, logger } = inputs;
 
+  // Wall-clock T=0 for the diagnostic summary line emitted at the very
+  // end of autodetect. Helps the user (and us) see at a glance how long
+  // the whole connect cycle took — a 200ms TCP win on an AC cam looks
+  // very different from a 30s UDP race on a battery cam.
+  const autodetectStartedAt = Date.now();
+
   const mode: AutoDetectMode = (inputs.mode ?? "auto") as AutoDetectMode;
   const maxRetriesRaw = inputs.maxRetries;
   const maxRetries = Math.max(
@@ -488,12 +511,20 @@ export async function autoDetectDeviceType(
 
   const shouldRetryTcp = (e: unknown): boolean => {
     const msg = fmtErr(e);
-    // ECONNREFUSED is a definitive "port 9000 is closed, host is RSTing"
-    // — retrying won't change that. For battery cameras this is the
-    // expected response (their Baichuan TCP listener is dormant), and
-    // burning 2-3 more retries delays the UDP fallback by 5-10s of
-    // wall-clock time. Bail straight to UDP on this signal.
-    if (msg.includes("ECONNREFUSED")) return false;
+    // Definitive "L4 says no" / "L3 says no" errors — retrying won't
+    // change anything. For battery cameras these are the expected
+    // responses (Baichuan TCP listener is dormant / cam is asleep /
+    // cam is off-LAN); burning another 2-3 retries just delays the UDP
+    // fallback. Bail straight to UDP on any of these signals.
+    if (
+      msg.includes("ECONNREFUSED") ||
+      msg.includes("EHOSTDOWN") ||
+      msg.includes("EHOSTUNREACH") ||
+      msg.includes("ENETUNREACH") ||
+      msg.includes("ENETDOWN")
+    ) {
+      return false;
+    }
     // Retry on transport errors, negotiation hiccups, or abrupt socket termination.
     return (
       isTcpFailureThatShouldFallbackToUdp(e) ||
@@ -503,6 +534,44 @@ export async function autoDetectDeviceType(
       msg.includes("ECONNRESET") ||
       msg.includes("EPIPE")
     );
+  };
+
+  // Hard deadline on the TCP connect+login attempt. Without this, a host
+  // that returns EHOSTDOWN / EHOSTUNREACH at the OS layer can take 60-160s
+  // to fail (macOS ARP-retry chain). With the deadline the user sees a
+  // bounded total time even when the host is truly down. The UDP race is
+  // already running in parallel — if UDP would have won, the catch block
+  // picks it up; if UDP also has nothing the user sees the timeout.
+  //
+  // 8s is well above a healthy LAN login (~250ms) and below the OS
+  // EHOSTDOWN window (~75s+). Configurable via inputs.tcpConnectTimeoutMs
+  // for hostile networks where TLS / Baichuan handshake legitimately
+  // takes longer.
+  const tcpDeadlineMs =
+    typeof inputs.tcpConnectTimeoutMs === "number" &&
+    Number.isFinite(inputs.tcpConnectTimeoutMs) &&
+    inputs.tcpConnectTimeoutMs > 0
+      ? inputs.tcpConnectTimeoutMs
+      : 8_000;
+  const withTcpDeadline = async <T>(op: Promise<T>): Promise<T> => {
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () =>
+          reject(
+            new Error(
+              `TCP login deadline exceeded (${tcpDeadlineMs}ms) — host unreachable`,
+            ),
+          ),
+        tcpDeadlineMs,
+      );
+      timer.unref?.();
+    });
+    try {
+      return await Promise.race([op, deadline]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   };
 
   const shouldRetryUdp = (e: unknown): boolean => {
@@ -898,8 +967,11 @@ export async function autoDetectDeviceType(
   );
 
   /** Helper: TCP win shortcut — abort the speculative UDP race + return. */
-  const _tcpWin = <T>(result: T): T => {
+  const _tcpWin = <T extends AutoDetectResult>(result: T): T => {
     udpRaceAbort.abort();
+    logger?.log?.(
+      `[AutoDetect] DONE in ${Date.now() - autodetectStartedAt}ms via TCP — type=${result.type} model=${result.deviceInfo?.type ?? "?"} channels=${result.channelNum}`,
+    );
     return result;
   };
 
@@ -914,7 +986,10 @@ export async function autoDetectDeviceType(
         // Create a fresh API for each attempt to avoid stale socket state.
         const api = createBaichuanApi(inputs, "tcp");
         try {
-          await api.login();
+          // Bound the OS-level connect chain (EHOSTDOWN / EHOSTUNREACH
+          // takes 60-160s on macOS without this). The login() promise
+          // races a hard deadline; whichever resolves first wins.
+          await withTcpDeadline(api.login());
           return api;
         } catch (e) {
           try {
@@ -1151,12 +1226,16 @@ export async function autoDetectDeviceType(
     try {
       const udpResult = await speculativeUdpRace;
       logger?.log?.(
-        `[AutoDetect] UDP race won after TCP failure (transport=${udpResult.transport}, method=${udpResult.udpDiscoveryMethod ?? "n/a"})`,
+        `[AutoDetect] DONE in ${Date.now() - autodetectStartedAt}ms via UDP — ` +
+          `type=${udpResult.type} method=${udpResult.udpDiscoveryMethod ?? "n/a"} ` +
+          `model=${udpResult.deviceInfo?.type ?? "?"} channels=${udpResult.channelNum}`,
       );
       return udpResult;
     } catch (udpError) {
       logger?.log?.(
-        `[AutoDetect] Both TCP and UDP failed. TCP error: ${tcpError}, UDP error: ${udpError}`,
+        `[AutoDetect] FAILED after ${Date.now() - autodetectStartedAt}ms — neither TCP nor UDP could reach the camera. ` +
+          `TCP: ${(tcpError as { message?: string })?.message ?? tcpError}. ` +
+          `UDP: ${(udpError as { message?: string })?.message ?? udpError}`,
       );
       throw new Error(
         `Failed to connect via both TCP and UDP. TCP: ${(tcpError as any)?.message || tcpError}, UDP: ${(udpError as any)?.message || udpError}`,

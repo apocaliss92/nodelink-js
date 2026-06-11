@@ -218,6 +218,16 @@ export class BcUdpStream extends EventEmitter<{
   debug: [string, unknown?];
 }> {
   private readonly opts: BcUdpStreamOptions;
+  /**
+   * Optional info-level logger for diagnostic milestones — set via
+   * {@link BcUdpStream.setLogger} by `BaichuanClient` so the lib's
+   * standard logger sink sees BCUDP / P2P progress (DNS resolutions,
+   * outgoing UDP probes, timeouts with elapsed times) without the user
+   * having to opt into the per-packet `debug` event firehose. Kept
+   * separate from `emit('debug', ...)` because that channel is intended
+   * for the per-packet debug trace and is gated by debugOptions.
+   */
+  private discoveryLogger: import("../debug/DebugConfig").Logger | undefined;
   private sock: dgram.Socket | undefined;
   private remote?: { host: string; port: number };
   private mtu: number;
@@ -274,6 +284,18 @@ export class BcUdpStream extends EventEmitter<{
   }
 
   /** True if the underlying UDP socket is open and the remote peer is known. */
+  /**
+   * Attach an info-level logger for high-signal diagnostic milestones
+   * (DNS resolution, outgoing UDP probe sends, P2P UID lookup wins/losses,
+   * BCUDP local discovery timeouts). The lib's `BaichuanClient` calls
+   * this immediately after constructing the stream so consumers get
+   * actionable progress logs without enabling the per-packet debug trace.
+   * Safe to call repeatedly; only the most recent logger is used.
+   */
+  setLogger(logger: import("../debug/DebugConfig").Logger | undefined): void {
+    this.discoveryLogger = logger;
+  }
+
   isConnected(): boolean {
     return !!this.sock && !!this.remote && this.cameraId != null;
   }
@@ -424,6 +446,11 @@ export class BcUdpStream extends EventEmitter<{
     sock: dgram.Socket,
     uid: string,
   ): Promise<{ reg: IpPort; relay: IpPort }> {
+    const log = (msg: string) =>
+      this.discoveryLogger?.log?.(`[P2P] ${msg}`);
+    const shortUid = uid.length > 7 ? `${uid.slice(0, 5)}…${uid.slice(-2)}` : uid;
+    const t0 = Date.now();
+
     // Cloud-directory shortcut: ask Reolink's unauthenticated server-binding
     // endpoint which P2P relay this UID is bound to. On success, we collapse
     // the 22-hostname sweep down to ONE — drops DNS lookups, drops UDP
@@ -435,9 +462,20 @@ export class BcUdpStream extends EventEmitter<{
     // change, server-binding returning a zone we can't route to) is silently
     // demoted to the legacy full sweep — never a hard error.
     const hostnamesToTry: string[] = [];
-    const binding = await getServerBinding(uid).catch(() => undefined);
+    const binding = await getServerBinding(uid, {
+      ...(this.discoveryLogger ? { logger: this.discoveryLogger } : {}),
+    }).catch(() => undefined);
     const hintedHost = pickP2pHostFromBinding(binding);
-    if (hintedHost) hostnamesToTry.push(hintedHost);
+    if (hintedHost) {
+      hostnamesToTry.push(hintedHost);
+      log(
+        `UID=${shortUid} cloud server-binding → hint=${hintedHost} (will try first)`,
+      );
+    } else {
+      log(
+        `UID=${shortUid} cloud server-binding → no hint (apis.reolink.com unreachable / no zone match) → sweeping ${P2P_RELAY_HOSTNAMES.length} fallback hostnames`,
+      );
+    }
     for (const host of P2P_RELAY_HOSTNAMES) {
       if (!hostnamesToTry.includes(host)) hostnamesToTry.push(host);
     }
@@ -447,16 +485,34 @@ export class BcUdpStream extends EventEmitter<{
     for (const host of hostnamesToTry) {
       try {
         const answers = await dns.lookup(host, { family: 4, all: true });
+        let publicCount = 0;
+        let sinkCount = 0;
         for (const a of answers) {
           if (!a.address) continue;
           if (isUnroutableForP2P(a.address)) {
             sinkholed.push({ host, ip: a.address });
+            sinkCount++;
             continue;
           }
-          if (!resolved.includes(a.address)) resolved.push(a.address);
+          if (!resolved.includes(a.address)) {
+            resolved.push(a.address);
+            publicCount++;
+          }
         }
-      } catch {
-        // ignore DNS failures per-host
+        if (sinkCount > 0 && publicCount === 0) {
+          log(
+            `DNS ${host} → sinkhole (${sinkholed[sinkholed.length - 1]?.ip}) — DNS filter / /etc/hosts override`,
+          );
+        } else if (publicCount > 0) {
+          // Only chatter about the cloud-hinted host (the one we care about)
+          // and host names that produced a fresh IP — keep the noise down on
+          // the fallback sweep.
+          if (host === hintedHost) {
+            log(`DNS ${host} → ${answers.find((a) => !isUnroutableForP2P(a.address))?.address} ✓`);
+          }
+        }
+      } catch (e) {
+        log(`DNS ${host} → ENOTFOUND/timeout (${(e as { code?: string })?.code ?? "?"})`);
       }
       // Short-circuit once we have the cloud-hinted host's IPs in hand AND
       // it's the first thing in the list — saves ~20 wasted DNS resolutions
@@ -497,11 +553,22 @@ export class BcUdpStream extends EventEmitter<{
       );
     }
 
+    log(
+      `Resolved ${resolved.length} P2P relay IP(s) (${resolved.slice(0, 3).join(", ")}${resolved.length > 3 ? "…" : ""}). Sending C2M_Q probes (3s budget each, ${P2P_MAX_WAIT_MS}ms total)`,
+    );
     const start = Date.now();
     let lastErr: Error | undefined;
+    let attemptsMade = 0;
     for (const ip of resolved) {
       const remaining = P2P_MAX_WAIT_MS - (Date.now() - start);
-      if (remaining <= 0) break;
+      if (remaining <= 0) {
+        log(
+          `Aborting after ${attemptsMade} attempt(s) — total budget ${P2P_MAX_WAIT_MS}ms exhausted`,
+        );
+        break;
+      }
+      attemptsMade++;
+      const probeStart = Date.now();
       try {
         const res = await this.p2pUidLookupOne(
           sock,
@@ -509,11 +576,20 @@ export class BcUdpStream extends EventEmitter<{
           { host: ip, port: P2P_LOOKUP_PORT },
           Math.min(remaining, 3_000),
         );
+        log(
+          `${ip}:${P2P_LOOKUP_PORT} replied in ${Date.now() - probeStart}ms ✓ (total ${Date.now() - t0}ms)`,
+        );
         return res;
       } catch (e) {
+        const ms = Date.now() - probeStart;
+        const msg = (e as { message?: string })?.message ?? String(e);
+        log(`${ip}:${P2P_LOOKUP_PORT} no reply after ${ms}ms (${msg})`);
         lastErr = e instanceof Error ? e : new Error(String(e));
       }
     }
+    log(
+      `Exhausted all ${attemptsMade} relay candidate(s) after ${Date.now() - t0}ms — UID lookup failed`,
+    );
     throw lastErr ?? new Error("P2P UID lookup failed");
   }
 
@@ -999,6 +1075,27 @@ export class BcUdpStream extends EventEmitter<{
     const localPort = typeof addr === "string" ? 0 : (addr as AddressInfo).port;
     const cid = Math.floor(Math.random() * 0x7fffffff) | 0 || 82000;
 
+    // Diagnostic milestone: tell the user what we're about to do. For
+    // battery cams that don't answer, this is often the only signal
+    // distinguishing "we never sent anything" from "we sent and got
+    // nothing back" — invaluable when diagnosing firewalls / VLANs.
+    const log = (msg: string) =>
+      this.discoveryLogger?.log?.(`[BCUDP] ${msg}`);
+    const shortUid =
+      this.opts.uid.length > 7
+        ? `${this.opts.uid.slice(0, 5)}…${this.opts.uid.slice(-2)}`
+        : this.opts.uid;
+    log(
+      `local discovery: mode=${localMode} uid=${shortUid} ports=[${ports.join(", ")}] ` +
+        `broadcasts=[${broadcastHosts.join(", ")}]${directHost ? ` direct=${directHost}` : ""} ` +
+        `localBindPort=${localPort} timeout=${discoveryTimeout}ms`,
+    );
+    let bytesSent = 0;
+    let pktsRecv = 0;
+    sock.on("message", () => {
+      pktsRecv++;
+    });
+
     // Build discovery packet (will be reused for retries)
     // Default OS is "MAC" for discovery
     const xml = buildC2dC({
@@ -1019,6 +1116,17 @@ export class BcUdpStream extends EventEmitter<{
       const timeout = setTimeout(() => {
         if (retryTimer) clearInterval(retryTimer);
         sock.off("message", onMsg);
+        // Diagnostic: tell the user EXACTLY what happened — how many
+        // bytes left the box vs how many came back. If bytesSent > 0
+        // and pktsRecv === 0, packets are leaving but nothing's coming
+        // back (camera asleep, off the LAN, or firewall is dropping
+        // replies). If bytesSent === 0, our outgoing path is broken
+        // (kernel send failed, no broadcast permission, etc.). The
+        // distinction is critical for unblocking the user.
+        log(
+          `local discovery timeout after ${discoveryTimeout}ms — sent=${bytesSent}B replies=${pktsRecv} ` +
+            `(camera likely sleeping / off-LAN / firewall dropping replies)`,
+        );
         reject(
           new Error(
             `BCUDP discovery timeout after ${discoveryTimeout}ms (camera may be sleeping or unreachable)`,
@@ -1257,6 +1365,7 @@ export class BcUdpStream extends EventEmitter<{
           for (const port of ports) {
             try {
               sock.send(packet, port, host);
+              bytesSent += packet.length;
               retryCount++;
               this.emit("debug", "discovery_send", { retryCount, host, port });
             } catch {
