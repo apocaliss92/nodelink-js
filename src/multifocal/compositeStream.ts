@@ -62,6 +62,94 @@ export interface CompositeStreamPipOptions {
   teleRtspUrl?: string;
   /** ffmpeg `-rtsp_transport` value (default: tcp). */
   rtspTransport?: 'tcp' | 'udp';
+  /**
+   * Absolute path to the `ffmpeg` binary the compositor should `spawn()`.
+   *
+   * When unset, falls back to the bare string `"ffmpeg"`, which relies on
+   * the host's `PATH`. This works on standard Linux / macOS Node setups
+   * but fails silently on environments where the embedding process
+   * strips PATH or ships its own ffmpeg in a non-discoverable location:
+   *
+   *  - Scrypted on Windows (the Electron host launches plugins with a
+   *    minimal PATH; the bundled ffmpeg lives at a static absolute path
+   *    only `sdk.mediaManager.getFFmpegPath()` knows about).
+   *  - Scrypted on macOS App Store / sandboxed installs.
+   *  - Distroless / minimal Docker base images where ffmpeg is mounted
+   *    at a fixed path but not in PATH.
+   *
+   * Consumers in any of those environments should resolve the path
+   * themselves (e.g. via the Scrypted SDK) and pass it through here.
+   */
+  ffmpegPath?: string;
+
+  /**
+   * Output video encoder name (passed verbatim as `-c:v`). Default
+   * `libx264` — pure software. On a host with hardware-accelerated
+   * H.264 encoding, switching this is the single biggest perf win
+   * available (5-10x less CPU for the same output bitrate). Supported
+   * by ffmpeg in the wild:
+   *
+   *  - Intel/AMD QuickSync:  `h264_qsv`
+   *  - Intel/AMD VAAPI:      `h264_vaapi`
+   *  - NVIDIA NVENC:         `h264_nvenc`
+   *  - Apple VideoToolbox:   `h264_videotoolbox`
+   *  - Raspberry Pi / ARM:   `h264_v4l2m2m`
+   *
+   * Caveat: when not `libx264`, the libx264-specific knobs
+   * (`encoderPreset`, `crf`, `x264-params`) are silently dropped because
+   * each HW encoder has its own option vocabulary. Use
+   * {@link extraOutputArgs} to pass encoder-specific options
+   * (e.g. `["-q:v","23"]` for QSV, `["-preset","fast"]` for NVENC).
+   */
+  videoEncoder?: string;
+
+  /**
+   * libx264 preset (default `ultrafast`). Only consulted when
+   * {@link videoEncoder} is left at its default (libx264). Valid:
+   * `ultrafast | superfast | veryfast | faster | fast | medium | slow |
+   * slower | veryslow | placebo`. Slower = better compression / more CPU.
+   */
+  encoderPreset?: string;
+
+  /**
+   * CRF (constant rate factor) for libx264. Default 23 (visually
+   * lossless-ish). Range 0 (lossless, huge) — 51 (worst, tiny). Lower
+   * by 2 to roughly halve the bitrate at a given quality. Only consulted
+   * when {@link videoEncoder} is libx264.
+   */
+  crf?: number;
+
+  /**
+   * Output keyframe interval in seconds. Default 1 — important for
+   * mid-stream join latency (a new HLS / RTSP client only starts
+   * decoding from the next keyframe). Lower = faster join, larger
+   * stream; higher = better compression, slower join.
+   */
+  gopSeconds?: number;
+
+  /**
+   * Free-form ffmpeg arguments inserted at the START of the argv (after
+   * `-hide_banner -loglevel`). Use for hardware-accel decode hints that
+   * must appear before any `-i`:
+   *
+   *   extraGlobalArgs: ["-hwaccel","videotoolbox"]
+   *   extraGlobalArgs: ["-hwaccel","qsv","-qsv_device","/dev/dri/renderD128"]
+   *
+   * No validation — invalid args here WILL crash ffmpeg.
+   */
+  extraGlobalArgs?: readonly string[];
+
+  /**
+   * Free-form ffmpeg arguments inserted just BEFORE the `pipe:1` output.
+   * Use for encoder-specific options when {@link videoEncoder} is not
+   * `libx264`:
+   *
+   *   extraOutputArgs: ["-q:v","23"]                  // qsv/vaapi
+   *   extraOutputArgs: ["-preset","fast","-rc","cbr"] // nvenc
+   *
+   * No validation — invalid args here WILL crash ffmpeg.
+   */
+  extraOutputArgs?: readonly string[];
 }
 
 export type CompositeStreamOptions = {
@@ -107,6 +195,24 @@ export type CompositeStreamOptions = {
   teleRtspUrl?: string;
   /** ffmpeg `-rtsp_transport` value (default: tcp). */
   rtspTransport?: 'tcp' | 'udp';
+  /**
+   * Absolute path to the `ffmpeg` binary the compositor should `spawn()`.
+   * Mirrors {@link CompositeStreamPipOptions.ffmpegPath} — see its docstring
+   * for the rationale. Defaults to `"ffmpeg"` (PATH lookup) when unset.
+   */
+  ffmpegPath?: string;
+  /** See {@link CompositeStreamPipOptions.videoEncoder}. */
+  videoEncoder?: string;
+  /** See {@link CompositeStreamPipOptions.encoderPreset}. */
+  encoderPreset?: string;
+  /** See {@link CompositeStreamPipOptions.crf}. */
+  crf?: number;
+  /** See {@link CompositeStreamPipOptions.gopSeconds}. */
+  gopSeconds?: number;
+  /** See {@link CompositeStreamPipOptions.extraGlobalArgs}. */
+  extraGlobalArgs?: readonly string[];
+  /** See {@link CompositeStreamPipOptions.extraOutputArgs}. */
+  extraOutputArgs?: readonly string[];
   /**
    * How long to wait for each input stream to produce frames before starting ffmpeg.
    * Battery cameras can take several seconds to wake and begin streaming.
@@ -554,10 +660,20 @@ export class CompositeStream extends EventEmitter<{
     teleRtspUrl: string,
     rtspTransport: 'tcp' | 'udp',
   ): Promise<void> {
+    // Same defaults + overrides surface as the pipe-input path above.
+    const videoEncoder = this.options.videoEncoder ?? 'libx264';
+    const isX264 = videoEncoder === 'libx264';
+    const encoderPreset = this.options.encoderPreset ?? 'ultrafast';
+    const crf = this.options.crf ?? 23;
+    const gopSeconds = this.options.gopSeconds ?? 1;
+    const assumedFps = 30;
+    const gopFrames = Math.max(1, Math.round(gopSeconds * assumedFps));
+
     // With RTSP inputs, ffmpeg handles ingest/demux. We still re-encode for overlay.
-    const ffmpegArgs = [
+    const ffmpegArgs: string[] = [
       '-hide_banner',
       '-loglevel', 'error',
+      ...(this.options.extraGlobalArgs ?? []),
       '-fflags', '+genpts',
 
       // Input 0: wider
@@ -575,21 +691,30 @@ export class CompositeStream extends EventEmitter<{
 
       // Output: always H.264 Annex-B
       '-an',
-      '-c:v', 'libx264',
-      '-g', '30',
-      '-keyint_min', '30',
+      '-c:v', videoEncoder,
+      '-g', String(gopFrames),
+      '-keyint_min', String(gopFrames),
       '-sc_threshold', '0',
-      '-x264-params', 'aud=1:repeat-headers=1:keyint=30:min-keyint=30:scenecut=0',
-      '-preset', 'ultrafast',
-      '-tune', 'zerolatency',
-      '-crf', '23',
+      ...(isX264
+        ? [
+            '-x264-params',
+            `aud=1:repeat-headers=1:keyint=${gopFrames}:min-keyint=${gopFrames}:scenecut=0`,
+            '-preset', encoderPreset,
+            '-tune', 'zerolatency',
+            '-crf', String(crf),
+          ]
+        : []),
+      ...(this.options.extraOutputArgs ?? []),
       '-f', 'h264',
       'pipe:1',
     ];
 
-    this.logger.log?.(`[CompositeStream] Starting ffmpeg (rtsp inputs): ${ffmpegArgs.join(' ')}`);
+    const ffmpegBin = this.options.ffmpegPath ?? 'ffmpeg';
+    this.logger.log?.(
+      `[CompositeStream] Starting ffmpeg (rtsp inputs): bin=${ffmpegBin} args=${ffmpegArgs.join(' ')}`,
+    );
 
-    this.ffmpegProcess = spawn('ffmpeg', ffmpegArgs, {
+    this.ffmpegProcess = spawn(ffmpegBin, ffmpegArgs, {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -692,9 +817,22 @@ export class CompositeStream extends EventEmitter<{
       "pipe:3",
     ];
 
-    const ffmpegArgs = [
+    // Defaults preserved for backwards compatibility — every override is opt-in.
+    const videoEncoder = this.options.videoEncoder ?? "libx264";
+    const isX264 = videoEncoder === "libx264";
+    const encoderPreset = this.options.encoderPreset ?? "ultrafast";
+    const crf = this.options.crf ?? 23;
+    const gopSeconds = this.options.gopSeconds ?? 1;
+    // Conservative fallback when we don't have FPS info — 30fps is the
+    // most common Reolink default and keeps the keyframe interval close
+    // to `gopSeconds` even on 25fps streams (off by ~17%).
+    const assumedFps = 30;
+    const gopFrames = Math.max(1, Math.round(gopSeconds * assumedFps));
+
+    const ffmpegArgs: string[] = [
       "-hide_banner",
       "-loglevel", "error",
+      ...(this.options.extraGlobalArgs ?? []),
       "-fflags", "+genpts",
       "-probesize", "32", // Small probe size for faster detection
       "-analyzeduration", "500000", // 0.5 seconds to analyze stream
@@ -706,27 +844,38 @@ export class CompositeStream extends EventEmitter<{
       "-filter_complex",
       `[0:v]scale=${mainWidth}:${mainHeight}[main];[1:v]scale=${pipWidth}:${pipHeight}[pip];[main][pip]overlay=${position.x}:${position.y}[out]`,
       "-map", "[out]",
-      "-c:v", "libx264", // Re-encode for compatibility
-      // Make the stream easy to join mid-flight: frequent IDRs + in-band headers + AUD.
-      // Without this, a new client may wait many seconds for the next keyframe.
-      "-g", "30",
-      "-keyint_min", "30",
+      "-c:v", videoEncoder,
+      // Make the stream easy to join mid-flight: frequent IDRs + in-band
+      // headers + AUD. Without this, a new client may wait many seconds
+      // for the next keyframe.
+      "-g", String(gopFrames),
+      "-keyint_min", String(gopFrames),
       "-sc_threshold", "0",
-      "-x264-params", "aud=1:repeat-headers=1:keyint=30:min-keyint=30:scenecut=0",
-      "-preset", "ultrafast",
-      "-tune", "zerolatency",
-      "-crf", "23",
+      // libx264-specific knobs. We deliberately skip these for HW encoders
+      // — each one has its own option vocabulary (`-q:v`, `-rc`, etc.)
+      // and the user is expected to express them via extraOutputArgs.
+      ...(isX264
+        ? [
+            "-x264-params",
+            `aud=1:repeat-headers=1:keyint=${gopFrames}:min-keyint=${gopFrames}:scenecut=0`,
+            "-preset", encoderPreset,
+            "-tune", "zerolatency",
+            "-crf", String(crf),
+          ]
+        : []),
+      ...(this.options.extraOutputArgs ?? []),
       "-f", "h264",
       "pipe:1", // Output (stdout)
     ];
 
+    const ffmpegBin = this.options.ffmpegPath ?? "ffmpeg";
     this.logger.log?.(
-      `[CompositeStream] Starting ffmpeg: ${ffmpegArgs.join(" ")}`
+      `[CompositeStream] Starting ffmpeg: bin=${ffmpegBin} args=${ffmpegArgs.join(" ")}`,
     );
 
     // We need two writable inputs: stdin (fd 0) for wider, and an extra fd (fd 3) for tele.
     // stdout (fd 1) is used for the composed H.264 output.
-    this.ffmpegProcess = spawn("ffmpeg", ffmpegArgs, {
+    this.ffmpegProcess = spawn(ffmpegBin, ffmpegArgs, {
       stdio: ["pipe", "pipe", "pipe", "pipe"],
     });
 

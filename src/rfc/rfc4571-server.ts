@@ -668,6 +668,34 @@ async function createRfc4571TcpServerInternal(
       ...(compositeOptions?.disableTranscode !== undefined
         ? { disableTranscode: compositeOptions.disableTranscode }
         : {}),
+      // Propagate ffmpeg binary path — required when the embedder strips
+      // PATH (Scrypted on Windows, Electron sandboxes, distroless Docker)
+      // and the bundled ffmpeg is at a fixed absolute path only the
+      // embedder knows.
+      ...(compositeOptions?.ffmpegPath
+        ? { ffmpegPath: compositeOptions.ffmpegPath }
+        : {}),
+      // Encoder tuning knobs — see CompositeStreamPipOptions for the
+      // semantic contract on each one. Plumbed verbatim so the
+      // CompositeStream layer can apply defaults.
+      ...(compositeOptions?.videoEncoder
+        ? { videoEncoder: compositeOptions.videoEncoder }
+        : {}),
+      ...(compositeOptions?.encoderPreset
+        ? { encoderPreset: compositeOptions.encoderPreset }
+        : {}),
+      ...(typeof compositeOptions?.crf === "number"
+        ? { crf: compositeOptions.crf }
+        : {}),
+      ...(typeof compositeOptions?.gopSeconds === "number"
+        ? { gopSeconds: compositeOptions.gopSeconds }
+        : {}),
+      ...(compositeOptions?.extraGlobalArgs
+        ? { extraGlobalArgs: compositeOptions.extraGlobalArgs }
+        : {}),
+      ...(compositeOptions?.extraOutputArgs
+        ? { extraOutputArgs: compositeOptions.extraOutputArgs }
+        : {}),
       logger,
     });
 
