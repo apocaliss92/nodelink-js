@@ -122,10 +122,31 @@ export type AutoDetectResult = {
 };
 
 /**
- * Normalize UID string (trim and return undefined if empty).
+ * Normalize UID string (trim, force uppercase, return undefined if empty).
+ *
+ * Uppercase is non-negotiable for two reasons:
+ *
+ * 1. Reolink's cloud API (`apis.reolink.com/v2/devices/{uid}/server-binding`)
+ *    is case-sensitive: a lowercase UID returns HTTP 400
+ *    `invalid_parameters` and we lose the per-UID zone hint, falling back
+ *    to the full 24-hostname sweep. Verified empirically against a known
+ *    good UID — uppercase returns 200 + zone allocation, lowercase
+ *    returns 400 + `invalid_parameters`.
+ *
+ * 2. The BCUDP discovery protocol embeds `<uid>...</uid>` in the C2D_C
+ *    packet. Cameras compare it against their own self-UID (which they
+ *    store uppercase). A lowercase mismatch is silently dropped — the
+ *    cam appears "asleep" from `sent=N replies=0` even though it's
+ *    awake and on the LAN. BaichuanClient already uppercases for the
+ *    XOR/AES nonce derivation; normalizing here makes the whole
+ *    pipeline consistent.
+ *
+ * Users in Scrypted / config files sometimes paste UIDs in lowercase
+ * (it works visually with Reolink's own UI, which normalizes
+ * internally) — we shouldn't punish them for that.
  */
 export function normalizeUid(uid?: string): string | undefined {
-  const v = uid?.trim();
+  const v = uid?.trim().toUpperCase();
   return v ? v : undefined;
 }
 

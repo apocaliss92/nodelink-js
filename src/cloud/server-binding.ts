@@ -148,6 +148,12 @@ export async function getServerBinding(
   options: GetServerBindingOptions = {},
 ): Promise<ServerBindingResponse | undefined> {
   if (!uid || typeof uid !== "string") return undefined;
+  // Reolink's cloud API is case-sensitive on UID — lowercase returns
+  // HTTP 400 invalid_parameters. Autodetect's normalizeUid already
+  // uppercases at the entry point, but external callers (including
+  // tests) may hand us a raw string from a config file. Normalize
+  // here too so the cache key and URL stay consistent regardless.
+  uid = uid.toUpperCase();
 
   // Hard-baked clock injection point — `_serverBindingNowMs` is overridable in
   // tests via top-level export below. Using Date.now() directly here keeps the

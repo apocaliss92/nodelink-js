@@ -127,6 +127,32 @@ describe("getServerBinding — HTTP contract", () => {
     expect(bodyPart.length).toBeLessThanOrEqual(512);
   });
 
+  it("uppercases the UID in the URL (Reolink API is case-sensitive)", async () => {
+    // Reolink's cloud API returns HTTP 400 invalid_parameters when the
+    // UID is lowercase. Verified empirically against the live API: an
+    // uppercase UID returns 200, the same string lowercase returns 400.
+    // So we must uppercase before constructing the URL — even if the
+    // caller did not normalize at autodetect entry.
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify(SAMPLE_RESPONSE), { status: 200 }),
+    );
+    await getServerBinding("aaaa1111bbbb2222", { fetchImpl });
+    const [url] = fetchImpl.mock.calls[0]!;
+    expect(url).toBe(
+      "https://apis.reolink.com/v2/devices/AAAA1111BBBB2222/server-binding?language=en",
+    );
+  });
+
+  it("treats mixed-case UID as the same cache entry as uppercase (case-insensitive cache key)", async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify(SAMPLE_RESPONSE), { status: 200 }),
+    );
+    // First call lowercase, second call uppercase — must hit cache, not refetch.
+    await getServerBinding("cccc3333dddd4444", { fetchImpl });
+    await getServerBinding("CCCC3333DDDD4444", { fetchImpl });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("tolerates a body that fails to read without throwing", async () => {
     // Some fetch impls (or polyfills) throw on .text() when the body has
     // already been consumed by an interceptor. We must still log the
