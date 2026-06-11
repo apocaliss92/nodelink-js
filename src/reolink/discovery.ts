@@ -8,7 +8,11 @@ import { ReolinkCgiApi } from "./cgi/ReolinkCgiApi";
 import type { Logger } from "../debug/DebugConfig";
 
 const execFileAsync = promisify(execFile);
-import { BCUDP_DISCOVERY_PORT_LOCAL_ANY, BCUDP_DISCOVERY_PORT_LOCAL_UID } from "../bcudp/constants";
+import {
+  BCUDP_DISCOVERY_PORT_LOCAL_ANY,
+  BCUDP_DISCOVERY_PORT_LOCAL_UID,
+  BCUDP_DISCOVERY_PORT_P2P_SCAN,
+} from "../bcudp/constants";
 import { decodeBcUdpPacket, encodeDiscoveryPacket } from "../bcudp/packets";
 import { buildC2dS, parseD2cCr, parseD2cDisc } from "../bcudp/xml";
 
@@ -101,7 +105,15 @@ export async function discoverViaUdpDirect(host: string, options: DiscoveryOptio
 
     socket.bind(() => {
       const localPort = socket.address().port;
-      const discoveryPorts = [BCUDP_DISCOVERY_PORT_LOCAL_ANY, BCUDP_DISCOVERY_PORT_LOCAL_UID];
+      // 9999 added per Reolink desktop SDK reverse-engineering — battery
+      // cameras (Argus / B-series) often bind their always-on discovery
+      // listener on the P2P scan port, NOT on 2015/2018. See the comment
+      // on BCUDP_DISCOVERY_PORT_P2P_SCAN for the full rationale.
+      const discoveryPorts = [
+        BCUDP_DISCOVERY_PORT_LOCAL_ANY,
+        BCUDP_DISCOVERY_PORT_LOCAL_UID,
+        BCUDP_DISCOVERY_PORT_P2P_SCAN,
+      ];
 
       for (const port of discoveryPorts) {
         try {
@@ -538,15 +550,21 @@ export async function discoverViaUdpBroadcast(options: DiscoveryOptions): Promis
       // Send discovery packets using proper C2D_S messages
       // Port 2015: general discovery (C2D_S without UID)
       // Port 2018: UID-specific discovery (would use C2D_C, but we don't have UIDs here)
-      const discoveryPorts = [BCUDP_DISCOVERY_PORT_LOCAL_ANY, BCUDP_DISCOVERY_PORT_LOCAL_UID];
-      
+      // Port 9999: P2P scan channel — battery cams listen here in addition
+      //            to / instead of 2015/2018 (see BCUDP_DISCOVERY_PORT_P2P_SCAN).
+      const discoveryPorts = [
+        BCUDP_DISCOVERY_PORT_LOCAL_ANY,
+        BCUDP_DISCOVERY_PORT_LOCAL_UID,
+        BCUDP_DISCOVERY_PORT_P2P_SCAN,
+      ];
+
       for (const port of discoveryPorts) {
         try {
           // Build C2D_S message for general discovery
           const tid = Math.floor(Math.random() * 0xff) || 1;
           const xml = buildC2dS({ clientPort: localPort });
           const packet = encodeDiscoveryPacket(tid, xml);
-          
+
           // Send to broadcast address
           socket.send(packet, port, "255.255.255.255", (err) => {
             if (err) {

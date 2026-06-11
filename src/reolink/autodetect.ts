@@ -488,6 +488,12 @@ export async function autoDetectDeviceType(
 
   const shouldRetryTcp = (e: unknown): boolean => {
     const msg = fmtErr(e);
+    // ECONNREFUSED is a definitive "port 9000 is closed, host is RSTing"
+    // — retrying won't change that. For battery cameras this is the
+    // expected response (their Baichuan TCP listener is dormant), and
+    // burning 2-3 more retries delays the UDP fallback by 5-10s of
+    // wall-clock time. Bail straight to UDP on this signal.
+    if (msg.includes("ECONNREFUSED")) return false;
     // Retry on transport errors, negotiation hiccups, or abrupt socket termination.
     return (
       isTcpFailureThatShouldFallbackToUdp(e) ||
@@ -577,11 +583,39 @@ export async function autoDetectDeviceType(
     }
   };
 
-  // Best-effort: discover UID if not provided (useful for BCUDP/battery cams).
-  // This is cheap and non-invasive (UDP broadcast).
-  // const discoveredUid = uid ? undefined : await discoverUidForHost(host, logger);
-  // const effectiveUid = normalizeUid(uid) ?? discoveredUid;
   const effectiveUid = normalizeUid(uid);
+
+  // ---------------------------------------------------------------------
+  // Speculative UID discovery (auto / forced-UDP mode only).
+  //
+  // For battery cams the UID is needed by EVERY UDP discovery method
+  // except `local-direct` (remote / relay / map all need it to ask the
+  // Reolink P2P servers where the camera lives). Without this, when TCP
+  // fails the code path runs a serial broadcast discovery before it can
+  // race the UDP methods — and that broadcast typically takes ~3s.
+  //
+  // We start it here, BEFORE the TCP attempt, so by the time TCP fails
+  // (which for a battery cam is ~immediate now that we skip ECONNREFUSED
+  // retries) the UID lookup is already done. Cost: a few UDP broadcast
+  // packets that get discarded when TCP wins on AC cams.
+  //
+  // Forced TCP mode skips this: no UDP fallback path will run, so the
+  // broadcast would be pure waste.
+  // ---------------------------------------------------------------------
+  const speculativeUidPromise: Promise<string | undefined> =
+    effectiveUid !== undefined
+      ? Promise.resolve(effectiveUid)
+      : mode === "tcp"
+        ? Promise.resolve(undefined)
+        : discoverUidForHost(host, logger)
+            .then((d) => normalizeUid(d) ?? undefined)
+            .catch(() => undefined);
+  // Silence the unhandled-rejection guard — we always observe this
+  // promise either in the UDP fallback below or via this no-op then().
+  speculativeUidPromise.then(
+    () => undefined,
+    () => undefined,
+  );
 
   // Ping the host first to verify it's reachable
   logger?.log?.(`[AutoDetect] Pinging ${host}...`);
@@ -599,19 +633,13 @@ export async function autoDetectDeviceType(
     logger?.log?.(
       `[AutoDetect] Forced mode=udp, skipping TCP and starting UDP discovery/login...`,
     );
-    let normalizedUid = effectiveUid;
+    // Re-use the speculative UID promise kicked off above so we don't
+    // run two broadcasts back to back.
+    let normalizedUid = await speculativeUidPromise;
     if (!normalizedUid) {
-      logger?.log?.(
-        `[AutoDetect] UID not provided; attempting UDP discovery for UID...`,
+      throw new Error(
+        `Forced UDP autodetect requires UID (or successful UDP UID discovery), but none was provided/discovered (ip=${host}).`,
       );
-      const discovered = await discoverUidForHost(host, logger);
-      const normalizedDiscovered = normalizeUid(discovered);
-      if (!normalizedDiscovered) {
-        throw new Error(
-          `Forced UDP autodetect requires UID (or successful UDP UID discovery), but none was provided/discovered (ip=${host}).`,
-        );
-      }
-      normalizedUid = normalizedDiscovered;
     }
 
     const methodsToTry: Array<
@@ -931,29 +959,25 @@ export async function autoDetectDeviceType(
     }
 
     logger?.log?.(`[AutoDetect] TCP failed, trying UDP...`);
-    let normalizedUid = effectiveUid;
+    // The speculative UID discovery was kicked off concurrently with the
+    // TCP attempt above. If TCP failed fast (e.g. immediate ECONNREFUSED
+    // from a battery cam), the broadcast may still be in flight — await
+    // it here. Either way we don't burn the extra ~3s the old serial
+    // path would have spent on the same broadcast.
+    let normalizedUid = await speculativeUidPromise;
     if (!normalizedUid) {
       logger?.log?.(
-        `[AutoDetect] UID not provided; attempting UDP broadcast discovery for UID...`,
+        `[AutoDetect] UID discovery failed; only local-direct can run without a UID. ` +
+          `If the camera is sleeping or on a different subnet, supply its UID to enable ` +
+          `BCUDP P2P fallback (remote/relay/map) which can wake it via Reolink's servers.`,
       );
-      const discovered = await discoverUidForHost(host, logger);
-      if (discovered) {
-        const normalizedDiscovered = normalizeUid(discovered);
-        if (normalizedDiscovered) {
-          normalizedUid = normalizedDiscovered;
-          logger?.log?.(
-            `[AutoDetect] UID discovered via broadcast: ${normalizedUid}`,
-          );
-        }
-      }
-      if (!normalizedUid) {
-        logger?.log?.(
-          `[AutoDetect] UID discovery failed; only local-direct can run without a UID. ` +
-            `If the camera is sleeping or on a different subnet, supply its UID to enable ` +
-            `BCUDP P2P fallback (remote/relay/map) which can wake it via Reolink's servers.`,
-        );
-        // Don't throw here - local-direct can still work if the camera is awake on the LAN
-      }
+      // Don't throw here - local-direct can still work if the camera is awake on the LAN
+    } else if (effectiveUid === undefined) {
+      // Only log when we actually discovered a fresh UID — if the caller
+      // supplied one we just echoed it back.
+      logger?.log?.(
+        `[AutoDetect] UID resolved via concurrent broadcast discovery: ${normalizedUid}`,
+      );
     }
 
     try {

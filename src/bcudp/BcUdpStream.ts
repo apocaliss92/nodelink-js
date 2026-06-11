@@ -9,6 +9,7 @@ import {
   BCUDP_DEFAULT_MTU,
   BCUDP_DISCOVERY_PORT_LOCAL_UID,
   BCUDP_DISCOVERY_PORT_LOCAL_ANY,
+  BCUDP_DISCOVERY_PORT_P2P_SCAN,
 } from "./constants";
 import {
   decodeBcUdpPacket,
@@ -915,11 +916,17 @@ export class BcUdpStream extends EventEmitter<{
       throw new Error("Internal: discoveryUidLocal called for non-uid mode");
     // Internal defaults (do not expose knobs):
     // - Battery cameras may be sleeping -> keep a longer timeout.
-    // - Send to both discovery ports 2015/2018.
+    // - Send to discovery ports 2015 / 2018 / 9999. The 9999 port is
+    //   the P2P scan listener — battery cameras (Argus / B-series) bind
+    //   here in addition to / instead of 2015/2018. Costs one extra
+    //   datagram per discovery cycle and substantially improves
+    //   local-direct discovery success for battery cams (see the
+    //   BCUDP_DISCOVERY_PORT_P2P_SCAN constant for the full rationale).
     // - Use broadcast to discover by UID.
     const ports = [
       BCUDP_DISCOVERY_PORT_LOCAL_ANY,
       BCUDP_DISCOVERY_PORT_LOCAL_UID,
+      BCUDP_DISCOVERY_PORT_P2P_SCAN,
     ];
     // Collect per-interface broadcast addresses (like neolink) + global broadcast.
     const broadcastHosts: string[] = ["255.255.255.255"];
