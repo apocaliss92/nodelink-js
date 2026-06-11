@@ -16,6 +16,12 @@ const distCjs = path.resolve(__dirname, "../../dist/index.cjs");
 // is called. So we actually invoke `mulawToPcm16` / `alawToPcm16` on real
 // bytes inside a subprocess and assert decoded length and sane values.
 describe("built bundle loads under real Node ESM/CJS interop", () => {
+  // Cold Node subprocess + full ESM/CJS import of a 5MB bundle is slow on
+  // disk-pressured CI runners (regularly 8-15s). The default 10s test
+  // timeout occasionally fires for no good reason; 60s is comfortably
+  // above the long tail.
+  const longTimeoutMs = 60_000;
+
   it.skipIf(!existsSync(distEsm))("dist/index.js imports without throwing", () => {
     const res = spawnSync(
       process.execPath,
@@ -24,7 +30,7 @@ describe("built bundle loads under real Node ESM/CJS interop", () => {
     );
     expect(res.stderr, res.stderr).toBe("");
     expect(res.status).toBe(0);
-  });
+  }, longTimeoutMs);
 
   it.skipIf(!existsSync(distCjs))("dist/index.cjs requires without throwing", () => {
     const res = spawnSync(
@@ -34,7 +40,7 @@ describe("built bundle loads under real Node ESM/CJS interop", () => {
     );
     expect(res.stderr, res.stderr).toBe("");
     expect(res.status).toBe(0);
-  });
+  }, longTimeoutMs);
 
   // Build a tiny PCMU/PCMA buffer and decode it through the bundled
   // exports. This is the actual codepath Frigate's RTP backchannel hits;

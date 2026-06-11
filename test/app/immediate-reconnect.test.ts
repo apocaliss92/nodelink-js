@@ -18,6 +18,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// `vi.resetModules()` in beforeEach pays for the full re-import of the
+// rtsp-manager dependency graph (which transitively pulls the BcUdpStream
+// + server-binding cloud helpers). The default 10s hook timeout
+// occasionally fires under CI cold-start load.
+vi.setConfig({ hookTimeout: 30_000 });
+
 const isBatteryCameraSpy = vi.fn((camera: any) => camera?.transport === "udp");
 
 // Mock the config store so we can rotate camera shapes per test.

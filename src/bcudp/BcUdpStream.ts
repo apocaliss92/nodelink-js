@@ -34,6 +34,10 @@ import {
   parseR2cCr,
   type IpPort,
 } from "./xml";
+import {
+  getServerBinding,
+  pickP2pHostFromBinding,
+} from "../cloud/server-binding";
 
 class AckLatency {
   private currentValues: number[] = [];
@@ -420,9 +424,27 @@ export class BcUdpStream extends EventEmitter<{
     sock: dgram.Socket,
     uid: string,
   ): Promise<{ reg: IpPort; relay: IpPort }> {
+    // Cloud-directory shortcut: ask Reolink's unauthenticated server-binding
+    // endpoint which P2P relay this UID is bound to. On success, we collapse
+    // the 22-hostname sweep down to ONE — drops DNS lookups, drops UDP
+    // round-trips, and dramatically shrinks the DNS-filter blast radius
+    // (users behind Pi-hole / AdGuard usually block *.reolink.com but only
+    // need to allow `apis.reolink.com` for this call to succeed).
+    //
+    // ANY failure here (network, sinkhole on apis.reolink.com itself, schema
+    // change, server-binding returning a zone we can't route to) is silently
+    // demoted to the legacy full sweep — never a hard error.
+    const hostnamesToTry: string[] = [];
+    const binding = await getServerBinding(uid).catch(() => undefined);
+    const hintedHost = pickP2pHostFromBinding(binding);
+    if (hintedHost) hostnamesToTry.push(hintedHost);
+    for (const host of P2P_RELAY_HOSTNAMES) {
+      if (!hostnamesToTry.includes(host)) hostnamesToTry.push(host);
+    }
+
     const resolved: string[] = [];
     const sinkholed: Array<{ host: string; ip: string }> = [];
-    for (const host of P2P_RELAY_HOSTNAMES) {
+    for (const host of hostnamesToTry) {
       try {
         const answers = await dns.lookup(host, { family: 4, all: true });
         for (const a of answers) {
@@ -435,6 +457,18 @@ export class BcUdpStream extends EventEmitter<{
         }
       } catch {
         // ignore DNS failures per-host
+      }
+      // Short-circuit once we have the cloud-hinted host's IPs in hand AND
+      // it's the first thing in the list — saves ~20 wasted DNS resolutions
+      // on the next-22 fallback list. If the cloud-hinted resolution
+      // sinkholes, we keep walking the fallback list as before.
+      if (
+        hintedHost &&
+        host === hintedHost &&
+        resolved.length > 0 &&
+        sinkholed.length === 0
+      ) {
+        break;
       }
     }
     if (resolved.length === 0) {

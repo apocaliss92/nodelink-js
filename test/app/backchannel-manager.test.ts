@@ -22,6 +22,12 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+// `vi.resetModules()` in beforeEach pays for the full re-import of the
+// rtsp-manager dependency graph (which now transitively pulls the
+// server-binding HTTP client and other cloud helpers). The default 10s
+// hook timeout occasionally fires under CI cold-start load.
+vi.setConfig({ hookTimeout: 30_000 });
+
 // Captured by the BaichuanRtspBackchannelServer mock so the test can
 // inspect every addRoute() call regardless of which instance was used.
 const addRouteSpy = vi.fn();
