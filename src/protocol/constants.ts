@@ -142,6 +142,32 @@ export const BC_CMD_ID_SUPPORT = 199; // MSG_ID_SUPPORT
 // Ping command ID
 export const BC_CMD_ID_PING = 93; // MSG_ID_PING - Keep connection alive / check status
 
+// Device-detect (lightweight ping) — Reolink SDK's `BCSDK_RemoteDeviceDetect`.
+//
+// What it is: a non-intrusive ping over an already-established session.
+// Distinct from BC_CMD_ID_PING — the desktop SDK's `libBCSDKWrapper.dylib`
+// exports both, and the XML root tag for this command is `<deviceDetect/>`
+// (lowercase d) where the regular ping uses `<Ping>`. Using the lighter
+// variant on battery cameras avoids waking the radio for the full keepalive
+// cycle.
+//
+// Why this is null: the SDK key (0x95d / 2397) we extracted statically maps
+// to the wire cmd_id through a `std::map<std::string, BCSDKConfigContextProxy*>`
+// populated at SDK init, NOT through a fixed offset. Without a packet capture
+// of the desktop app talking to a real camera, the candidates we cannot
+// rule out are 31, 132, 150. Empirical confirmation needed before we
+// implement the wrapper — sending the wrong cmd_id risks an unknown-command
+// reply on some firmwares.
+//
+// To confirm:
+//   1. tshark on TCP/9000 while running Reolink.app against any camera
+//   2. Let the desktop app idle for ~30s so it emits the keepalive
+//   3. Pick the cmd_id whose body parses as `<deviceDetect/>` (very short,
+//      no payload). Replace null below and add a wrapper in
+//      `src/reolink/baichuan/utils/devicedetect.ts`.
+export const BC_CMD_ID_DEVICE_DETECT_CANDIDATES = [31, 132, 150] as const;
+export const BC_CMD_ID_DEVICE_DETECT: number | null = null;
+
 // Snapshot command ID — JPEG stream delivered via push frames (Extension/binaryData)
 export const BC_CMD_ID_GET_SNAPSHOT = 109;
 
