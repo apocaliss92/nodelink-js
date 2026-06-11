@@ -1,4 +1,141 @@
 import { describe, it, expect } from "vitest";
+import {
+  getXmlText,
+  applyXmlTagPatch,
+  upsertXmlTag,
+  patchNestedTag,
+  applyStreamPatch,
+} from "../../src/protocol/xml";
+
+describe("xml.ts helpers (precompiled/cached RegExp behavior)", () => {
+  describe("getXmlText", () => {
+    it("extracts simple tag text", () => {
+      expect(getXmlText("<a>hello</a>", "a")).toBe("hello");
+      expect(getXmlText("<nonce>abc123</nonce>", "nonce")).toBe("abc123");
+    });
+
+    it("returns undefined when the tag is absent", () => {
+      expect(getXmlText("<a>hello</a>", "b")).toBeUndefined();
+    });
+
+    it("matches the first occurrence", () => {
+      expect(getXmlText("<x>1</x><x>2</x>", "x")).toBe("1");
+    });
+
+    it("does not match when text contains nested tags ([^<]* stops at '<')", () => {
+      // <x>([^<]*)</x> cannot match because the inner '<' breaks the run before
+      // the closing </x>. This documents the existing (intentional) semantics.
+      expect(getXmlText("<x>a<b>c</b></x>", "x")).toBeUndefined();
+    });
+
+    it("is stable across repeated calls (shared cached regex)", () => {
+      for (let i = 0; i < 5; i++) {
+        expect(getXmlText("<tag>val</tag>", "tag")).toBe("val");
+      }
+    });
+  });
+
+  describe("applyXmlTagPatch", () => {
+    it("replaces the first matching tag value", () => {
+      expect(applyXmlTagPatch("<enable>0</enable>", "enable", 1)).toBe(
+        "<enable>1</enable>",
+      );
+    });
+
+    it("coerces booleans to 1/0", () => {
+      expect(applyXmlTagPatch("<on>0</on>", "on", true)).toBe("<on>1</on>");
+      expect(applyXmlTagPatch("<on>1</on>", "on", false)).toBe("<on>0</on>");
+    });
+
+    it("is a no-op when value is undefined", () => {
+      expect(applyXmlTagPatch("<a>5</a>", "a", undefined)).toBe("<a>5</a>");
+    });
+
+    it("leaves the document untouched when the tag is missing", () => {
+      expect(applyXmlTagPatch("<a>5</a>", "b", 9)).toBe("<a>5</a>");
+    });
+
+    it("repeated patches with the same tag are deterministic", () => {
+      let xml = "<v>1</v>";
+      xml = applyXmlTagPatch(xml, "v", 2);
+      xml = applyXmlTagPatch(xml, "v", 3);
+      expect(xml).toBe("<v>3</v>");
+    });
+  });
+
+  describe("upsertXmlTag", () => {
+    it("replaces an existing tag", () => {
+      expect(upsertXmlTag("<a>1</a>", "a", 2)).toBe("<a>2</a>");
+    });
+
+    it("appends the tag when absent", () => {
+      expect(upsertXmlTag("<a>1</a>", "b", 9)).toBe("<a>1</a><b>9</b>");
+    });
+
+    it("test()+replace() share a non-global regex without lastIndex drift", () => {
+      // Calling twice must not be affected by any retained lastIndex.
+      expect(upsertXmlTag("<x>1</x>", "x", 2)).toBe("<x>2</x>");
+      expect(upsertXmlTag("<x>1</x>", "x", 2)).toBe("<x>2</x>");
+    });
+  });
+
+  describe("patchNestedTag", () => {
+    it("patches a child only inside the named parent", () => {
+      const xml = "<DayNight><mode>0</mode></DayNight><Other><mode>9</mode></Other>";
+      const out = patchNestedTag(xml, "DayNight", "mode", 1);
+      expect(out).toBe(
+        "<DayNight><mode>1</mode></DayNight><Other><mode>9</mode></Other>",
+      );
+    });
+
+    it("handles parent tags with attributes", () => {
+      const xml = '<P version="1.1"><c>0</c></P>';
+      expect(patchNestedTag(xml, "P", "c", 7)).toBe(
+        '<P version="1.1"><c>7</c></P>',
+      );
+    });
+
+    it("is a no-op when value is undefined", () => {
+      const xml = "<P><c>0</c></P>";
+      expect(patchNestedTag(xml, "P", "c", undefined)).toBe(xml);
+    });
+  });
+
+  describe("applyStreamPatch", () => {
+    const doc =
+      "<Compression>" +
+      "<mainStream><audio>0</audio><width>1920</width><gop><cur>30</cur></gop></mainStream>" +
+      "<subStream><audio>0</audio><width>640</width></subStream>" +
+      "</Compression>";
+
+    it("patches only the targeted stream block", () => {
+      const out = applyStreamPatch(doc, "mainStream", { audio: 1, width: 2560 });
+      expect(out).toContain("<mainStream><audio>1</audio><width>2560</width>");
+      // subStream untouched.
+      expect(out).toContain("<subStream><audio>0</audio><width>640</width>");
+    });
+
+    it("patches the gop <cur> value within the block", () => {
+      const out = applyStreamPatch(doc, "mainStream", { gop: 60 });
+      expect(out).toContain("<gop><cur>60</cur></gop>");
+    });
+
+    it("injects a gop block when missing on sub/third streams", () => {
+      const out = applyStreamPatch(doc, "subStream", { gop: 15 });
+      expect(out).toContain("<gop><cur>15</cur></gop>");
+    });
+
+    it("is a no-op when patch is undefined", () => {
+      expect(applyStreamPatch(doc, "mainStream", undefined)).toBe(doc);
+    });
+
+    it("repeated calls on the same stream tag are stable (cached block regex)", () => {
+      const a = applyStreamPatch(doc, "mainStream", { width: 1280 });
+      const b = applyStreamPatch(doc, "mainStream", { width: 1280 });
+      expect(a).toBe(b);
+    });
+  });
+});
 
 describe("XML parsing utilities", () => {
   // Test XML parsing without importing the full module (which may have heavy deps)

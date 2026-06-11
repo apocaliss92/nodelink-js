@@ -93,19 +93,79 @@ export function decodeHeader(buf: AnyBuffer): { header: BaichuanHeader; headerLe
  * - expects each message to start with the magic header
  * - supports multiple messages per TCP chunk
  * - waits for full body before emitting
+ *
+ * Accumulation strategy: incoming chunks are appended to a pending list
+ * (O(1) per chunk) and only concatenated into a contiguous `this.buffer`
+ * when a parse is actually attempted. This avoids the previous O(n²)
+ * behavior where every TCP chunk re-copied the whole retained buffer —
+ * costly for large video frames fragmented across many small chunks.
+ *
+ * The observable behavior (the exact sequence of frames emitted, magic
+ * realignment, multi-message chunks, waiting for a complete body) is
+ * identical to the prior `Buffer.concat`-per-chunk implementation.
  */
 export class BaichuanFrameParser {
+  /** Retained-but-unconsumed contiguous bytes from previous push() calls. */
   private buffer: AnyBuffer = Buffer.alloc(0) as AnyBuffer;
+  /** Chunks received since the last materialization, not yet concatenated. */
+  private pending: AnyBuffer[] = [];
+  /** Total bytes held in `pending` (kept in sync to avoid re-summing). */
+  private pendingLen = 0;
+  /**
+   * Total contiguous bytes (`buffer` + `pending`) required before the next
+   * parse attempt can make progress. While buffered bytes stay below this,
+   * incoming chunks are merely stashed in `pending` with no copy. This is
+   * the mechanism that turns the worst case (a large frame fragmented over
+   * many small TCP chunks) from O(n²) into O(n): we concatenate once, when
+   * enough bytes have arrived, instead of on every chunk.
+   *
+   * Starts at 4 — the minimum needed to inspect the magic header.
+   */
+  private needed = 4;
+
+  /**
+   * Collapse `this.buffer` + all `pending` chunks into a single contiguous
+   * buffer. The retained leftover is copied at most once per materialize(),
+   * and materialize() only runs when `needed` bytes are available — so a
+   * fragmented frame is assembled with a single concat, not one per chunk.
+   */
+  private materialize(): void {
+    if (this.pendingLen === 0) return;
+    if (this.buffer.length === 0 && this.pending.length === 1) {
+      // Fast path: single chunk, no leftover — adopt it without copying.
+      this.buffer = this.pending[0]!;
+    } else {
+      const parts =
+        this.buffer.length === 0 ? this.pending : [this.buffer, ...this.pending];
+      this.buffer = Buffer.concat(parts) as AnyBuffer;
+    }
+    this.pending = [];
+    this.pendingLen = 0;
+  }
+
+  /** Total buffered bytes, whether materialized or still pending. */
+  private get available(): number {
+    return this.buffer.length + this.pendingLen;
+  }
 
   push(chunk: Buffer): BaichuanFrame[] {
     if (chunk.length === 0) return [];
-    const c = chunk as AnyBuffer;
-    this.buffer = this.buffer.length === 0 ? c : (Buffer.concat([this.buffer, c]) as AnyBuffer);
+    // Defer concatenation: stash the chunk (O(1)). We only materialize and
+    // parse once enough bytes are available to advance past the point where
+    // the previous parse stopped — see `needed`.
+    this.pending.push(chunk as AnyBuffer);
+    this.pendingLen += chunk.length;
+    if (this.available < this.needed) return [];
+
+    this.materialize();
     const out: BaichuanFrame[] = [];
 
     while (true) {
       // Need at least 4 to check magic
-      if (this.buffer.length < 4) break;
+      if (this.buffer.length < 4) {
+        this.needed = 4;
+        break;
+      }
 
       // Realign to magic if needed
       if (!this.buffer.subarray(0, 4).equals(BC_MAGIC) && !this.buffer.subarray(0, 4).equals(BC_MAGIC_REV)) {
@@ -115,24 +175,35 @@ export class BaichuanFrameParser {
         if (next === -1) {
           // keep only last 3 bytes in case they start a magic prefix
           this.buffer = this.buffer.subarray(Math.max(0, this.buffer.length - 3));
+          this.needed = 4;
           break;
         }
         this.buffer = this.buffer.subarray(next);
-        if (this.buffer.length < 20) break;
+        if (this.buffer.length < 20) {
+          this.needed = 20;
+          break;
+        }
       }
 
-      if (this.buffer.length < 20) break;
+      if (this.buffer.length < 20) {
+        this.needed = 20;
+        break;
+      }
       let headerInfo: ReturnType<typeof decodeHeader>;
       try {
         headerInfo = decodeHeader(this.buffer);
       } catch {
         // not enough for 24 bytes or invalid; wait for more
+        this.needed = 24;
         break;
       }
 
       const { header, headerLen, messageKey } = headerInfo;
       const frameLen = headerLen + header.bodyLen;
-      if (this.buffer.length < frameLen) break;
+      if (this.buffer.length < frameLen) {
+        this.needed = frameLen;
+        break;
+      }
 
       const raw = this.buffer.subarray(0, frameLen);
       const body = raw.subarray(headerLen);
@@ -148,6 +219,9 @@ export class BaichuanFrameParser {
 
       out.push({ header, body, extension, payload, messageKey, raw });
       this.buffer = this.buffer.subarray(frameLen);
+      // Emitted a frame; the next iteration re-derives `needed`. Reset to the
+      // minimum so a fully-consumed buffer still re-arms on the next push.
+      this.needed = 4;
     }
 
     return out;
