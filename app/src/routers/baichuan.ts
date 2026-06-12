@@ -9,7 +9,7 @@ import {
 } from "../connection-manager.js";
 import { getCameras, getSettings } from "../settings-store.js";
 import {
-  getExistingApiConnection,
+  getOrCreateApiConnection,
   getExistingNvrApiConnection,
 } from "../rtsp-manager.js";
 
@@ -52,12 +52,14 @@ const ConnectionWithChannel = OptionalConnectionInput.merge(ChannelInput);
 async function getApi(
   params?: z.infer<typeof OptionalConnectionInput>,
 ): Promise<import("@apocaliss92/nodelink-js").ReolinkBaichuanApi> {
-  // Prefer the rtsp-manager's already-live connection for configured
-  // cameras/NVRs so the Manager doesn't open a second control socket — a
-  // redundant OnlineUser session on the device. Only reuse when the caller
-  // hasn't overridden host/credentials: explicit overrides mean a deliberately
-  // different connection (manual mode, credential testing) that must not piggy-
-  // back on the persistent connection.
+  // Match the Scrypted plugin's model: exactly ONE ReolinkBaichuanApi per
+  // configured camera/NVR, owned by the rtsp-manager (its `ensureClient()`
+  // equivalent). Route every query for a configured device through that single
+  // instance so the Manager never opens a second control+stream socket pair for
+  // the same camera — the library's socket pool already manages the dedicated
+  // streaming sockets internally. Only explicit host/credential overrides
+  // (manual mode, credential testing) bypass this and get a standalone
+  // connection-manager connection.
   const hasOverrides =
     !!params?.host?.trim() ||
     !!params?.username?.trim() ||
@@ -70,6 +72,9 @@ async function getApi(
     if (nvrId) {
       const existing = getExistingNvrApiConnection(nvrId);
       if (existing?.isReady) return existing;
+      // Establish (and own) the shared NVR socket via any child camera.
+      const child = getCameras().find((c) => c.nvrId === nvrId);
+      if (child) return getOrCreateApiConnection(child.id);
     } else {
       const camIdOrName = params?.cameraId?.trim();
       if (camIdOrName && camIdOrName !== "manual") {
@@ -78,10 +83,7 @@ async function getApi(
         const resolvedId = getCameras().find(
           (c) => c.id === camIdOrName || c.name === camIdOrName,
         )?.id;
-        if (resolvedId) {
-          const existing = getExistingApiConnection(resolvedId);
-          if (existing?.isReady) return existing;
-        }
+        if (resolvedId) return getOrCreateApiConnection(resolvedId);
       }
     }
   }
