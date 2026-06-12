@@ -82,6 +82,9 @@ ENV APP_VERSION=${APP_VERSION}
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV DATA_PATH=/data
+# Marks the container runtime so the app can disable local-only features
+# (e.g. the in-app packet Capture tab, which needs host networking + raw caps).
+ENV NODELINK_DOCKER=1
 
 # 3000 = manager UI / tRPC, 8554 = RTSP (video + Frigate backchannel),
 # 8555/udp = WebRTC ICE for the in-process player.

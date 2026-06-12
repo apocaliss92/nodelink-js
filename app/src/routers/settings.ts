@@ -26,6 +26,7 @@ import fs from "node:fs";
 import { createSourceLogger } from "../logger.js";
 import { inferGithubRepoSlug } from "../github-utils.js";
 import { readAppVersion } from "../app-version.js";
+import { isDockerRuntime, isCaptureAvailable } from "../runtime-env.js";
 
 export const settingsRouter = router({
   // Get current settings
@@ -69,6 +70,9 @@ export const settingsRouter = router({
         dataPath: path.resolve(dataDir),
         appVersion: readAppVersion(),
         docsUrl,
+        isDocker: isDockerRuntime(),
+        // Packet Capture is local-only (needs host networking + raw-socket caps).
+        captureAvailable: isCaptureAvailable(),
       };
     }),
 

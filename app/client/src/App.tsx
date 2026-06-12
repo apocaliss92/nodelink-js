@@ -31,15 +31,22 @@ function RequireAuth({ children }: { children: ReactNode }) {
 function AppInner() {
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  // Capture is local-only; default to visible until the runtime says otherwise
+  // (the server hides it under Docker).
+  const [captureAvailable, setCaptureAvailable] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const runtime = await trpcQuery<{ appVersion?: string | null }>(
-          "settings.getRuntime",
-        );
-        if (!cancelled) setAppVersion(runtime?.appVersion ?? null);
+        const runtime = await trpcQuery<{
+          appVersion?: string | null;
+          captureAvailable?: boolean;
+        }>("settings.getRuntime");
+        if (!cancelled) {
+          setAppVersion(runtime?.appVersion ?? null);
+          setCaptureAvailable(runtime?.captureAvailable ?? true);
+        }
       } catch {
         // ignore
       }
@@ -68,7 +75,11 @@ function AppInner() {
       <Route
         element={
           <RequireAuth>
-            <AppLayout version={version} updateAvailable={updateAvailable} />
+            <AppLayout
+              version={version}
+              updateAvailable={updateAvailable}
+              captureAvailable={captureAvailable}
+            />
           </RequireAuth>
         }
       >
@@ -81,7 +92,11 @@ function AppInner() {
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/docs" element={<DocsPage />} />
         <Route path="/reports" element={<ReportsPage />} />
-        <Route path="/capture" element={<CapturePage />} />
+        {/* Capture is local-only; under Docker the route is omitted and any
+            direct hit falls through to the catch-all redirect below. */}
+        {captureAvailable && (
+          <Route path="/capture" element={<CapturePage />} />
+        )}
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />

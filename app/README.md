@@ -115,15 +115,51 @@ Environment variables override `settings.json` values. The shared RTSP port, the
 
 ## Development (without Docker)
 
+### Prerequisites
+
+| Tool | Why | Install |
+|------|-----|---------|
+| **Node.js 18+** | runtime | nodejs.org / nvm |
+| **ffmpeg** | snapshot & stream transcoding | `brew install ffmpeg` · `apt install ffmpeg` |
+| **tshark / Wireshark** | **only** for the in-app **Capture** tool (live packet capture & analysis) — see below | `brew install wireshark` · `apt install tshark` |
+
+> The **Capture** tab is **local-only**. It is hidden (and its API rejected) under Docker because live packet capture needs host networking plus raw-socket capabilities. On a local install it appears automatically once the server detects it is not running in a container.
+
+### Run the dev server
+
+The Manager consumes the library via a `file:..` symlink, and the library is published from `dist/`, so **build the library first**, then start the app:
+
 ```bash
-# Requires ffmpeg installed on host (brew install ffmpeg / apt install ffmpeg)
+# 1. From the repo root — build the library (@apocaliss92/nodelink-js → dist/)
 npm install
-npm run dev        # Development mode (server + client with hot reload)
-# or
-npm run build && npm start   # Production build
+npm run build
+
+# 2. From app/ — install and run the Manager in dev mode (server + client, hot reload)
+cd app
+npm install
+npm run dev
 ```
 
-Open http://localhost:3000 in your browser.
+Then open **http://localhost:5173** (the Vite dev client; it proxies `/api` and websockets to the backend on `:3000`).
+
+For a production-style run instead:
+
+```bash
+cd app
+npm run build && npm start   # serves the built UI + API on http://localhost:3000
+```
+
+### Enabling the Capture / analysis feature locally
+
+`tshark` must be on `PATH` **and** allowed to capture on your interfaces:
+
+- **macOS** — install Wireshark (`brew install --cask wireshark`) and grant your user BPF access (the installer offers a "ChmodBPF" helper), or run with sufficient privileges.
+- **Linux** — `sudo apt install tshark`, then either add your user to the `wireshark` group or grant the capture binary raw-socket caps:
+  ```bash
+  sudo setcap 'cap_net_raw,cap_net_admin+eip' "$(command -v dumpcap)"
+  ```
+
+With `tshark` available, the **Capture** page lists interfaces (`tshark -D`), captures a camera's TCP 9000 traffic, and renders the live cmd_id / handshake analysis; finished `.pcapng` files are downloadable for offline inspection.
 
 ## Streaming
 

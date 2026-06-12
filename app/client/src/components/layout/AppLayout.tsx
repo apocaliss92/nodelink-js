@@ -6,7 +6,7 @@ import { useAuth } from '../../auth';
 import { NodelinkIcon } from './NodelinkIcon';
 import { NavSidebarItem } from './NavSidebarItem';
 import { BottomNav } from './BottomNav';
-import { navItems } from './nav-items';
+import { visibleNavItems } from './nav-items';
 import { NewsModal } from '../../news/NewsModal';
 import { useNews } from '../../news/useNews';
 
@@ -16,13 +16,19 @@ const THEME_LABELS = { dark: 'Dark', light: 'Light', system: 'System' } as const
 interface AppLayoutProps {
   version?: string;
   updateAvailable?: boolean;
+  captureAvailable?: boolean;
 }
 
-export function AppLayout({ version, updateAvailable }: AppLayoutProps) {
+export function AppLayout({
+  version,
+  updateAvailable,
+  captureAvailable = true,
+}: AppLayoutProps) {
   const { state, logout } = useAuth();
   const theme = useThemeMode();
   const { items: newsItems, hasUnread, markAllSeen } = useNews();
   const [newsOpen, setNewsOpen] = useState(false);
+  const items = visibleNavItems(captureAvailable);
 
   // Auto-open the news modal once when there's unread content. The user can
   // dismiss it; the `Got it` / close handlers call markAllSeen() which
@@ -51,7 +57,7 @@ export function AppLayout({ version, updateAvailable }: AppLayoutProps) {
 
           {/* Navigation */}
           <nav className="flex flex-col gap-0.5">
-            {navItems.map((item) => (
+            {items.map((item) => (
               <NavSidebarItem key={item.href} {...item} />
             ))}
           </nav>
@@ -139,7 +145,7 @@ export function AppLayout({ version, updateAvailable }: AppLayoutProps) {
       </main>
 
       {/* Mobile Bottom Nav */}
-      <BottomNav />
+      <BottomNav captureAvailable={captureAvailable} />
 
       {/* News / What's new modal */}
       <NewsModal open={newsOpen} items={newsItems} onClose={closeNews} />

@@ -1,13 +1,14 @@
 import { useNavigate, useLocation } from 'react-router-dom';
-import { navItems } from './nav-items';
+import { visibleNavItems } from './nav-items';
 
-export function BottomNav() {
+export function BottomNav({ captureAvailable = true }: { captureAvailable?: boolean }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const items = visibleNavItems(captureAvailable);
 
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-50 flex border-t border-[var(--color-border)] bg-[var(--color-background-elevated)] md:hidden">
-      {navItems.map((item) => {
+      {items.map((item) => {
         const active = location.pathname === item.href;
         return (
           <button

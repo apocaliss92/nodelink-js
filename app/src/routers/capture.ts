@@ -23,6 +23,7 @@ import {
   deleteSavedCapture,
 } from "../capture-manager.js";
 import { TRPCError } from "@trpc/server";
+import { isCaptureAvailable } from "../runtime-env.js";
 
 export const captureRouter = router({
   /** List the network interfaces tshark can capture on (wraps `tshark -D`). */
@@ -86,6 +87,13 @@ export const captureRouter = router({
       }),
     )
     .mutation(({ input }) => {
+      if (!isCaptureAvailable()) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message:
+            "Packet capture is only available on local installations, not under Docker.",
+        });
+      }
       const config = getConfig();
       const camera = config.cameras.find((c) => c.id === input.cameraId);
       if (!camera) {
