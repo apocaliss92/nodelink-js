@@ -949,6 +949,19 @@ export function getExistingApiConnection(
   return conn.api;
 }
 
+/**
+ * Get the live shared API connection for an NVR addressed directly by its id
+ * (device-global commands), if one is already established. Mirrors
+ * getExistingApiConnection but keyed by the `nvr:<nvrId>` shared-socket key.
+ */
+export function getExistingNvrApiConnection(
+  nvrId: string,
+): ReolinkBaichuanApi | undefined {
+  const conn = apiConnections.get(`nvr:${nvrId}`);
+  if (!conn || !conn.api || conn.api.isClosed) return undefined;
+  return conn.api;
+}
+
 // Get all cameras info
 export function getAllCamerasInfo(): CameraInfo[] {
   const config = getConfig();

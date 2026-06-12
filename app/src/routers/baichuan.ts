@@ -8,6 +8,10 @@ import {
   resolveCredentials,
 } from "../connection-manager.js";
 import { getCameras, getSettings } from "../settings-store.js";
+import {
+  getExistingApiConnection,
+  getExistingNvrApiConnection,
+} from "../rtsp-manager.js";
 
 // Full connection input for setActiveCredentials and explicit connections
 const ConnectionInput = z.object({
@@ -48,6 +52,40 @@ const ConnectionWithChannel = OptionalConnectionInput.merge(ChannelInput);
 async function getApi(
   params?: z.infer<typeof OptionalConnectionInput>,
 ): Promise<import("@apocaliss92/nodelink-js").ReolinkBaichuanApi> {
+  // Prefer the rtsp-manager's already-live connection for configured
+  // cameras/NVRs so the Manager doesn't open a second control socket — a
+  // redundant OnlineUser session on the device. Only reuse when the caller
+  // hasn't overridden host/credentials: explicit overrides mean a deliberately
+  // different connection (manual mode, credential testing) that must not piggy-
+  // back on the persistent connection.
+  const hasOverrides =
+    !!params?.host?.trim() ||
+    !!params?.username?.trim() ||
+    params?.password !== undefined ||
+    params?.port !== undefined;
+
+  if (!hasOverrides) {
+    // nvrId takes precedence over cameraId (mirrors resolveCredentials).
+    const nvrId = params?.nvrId?.trim();
+    if (nvrId) {
+      const existing = getExistingNvrApiConnection(nvrId);
+      if (existing?.isReady) return existing;
+    } else {
+      const camIdOrName = params?.cameraId?.trim();
+      if (camIdOrName && camIdOrName !== "manual") {
+        // resolveCredentials accepts a camera id OR name; normalise to the id
+        // so the rtsp-manager lookup (id-keyed, NVR-child aware) can match.
+        const resolvedId = getCameras().find(
+          (c) => c.id === camIdOrName || c.name === camIdOrName,
+        )?.id;
+        if (resolvedId) {
+          const existing = getExistingApiConnection(resolvedId);
+          if (existing?.isReady) return existing;
+        }
+      }
+    }
+  }
+
   const creds = resolveCredentials(params);
   return getConnection(creds.host, creds.port, creds.username, creds.password, {
     ...(creds.transport ? { transport: creds.transport } : {}),
