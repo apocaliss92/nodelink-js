@@ -139,18 +139,18 @@ export function CamerasPage() {
       ) : (
         <div className="flex flex-col h-full">
           {/* Page Header */}
-          <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--color-border)]">
-            <div>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between px-5 py-4 border-b border-[var(--color-border)]">
+            <div className="shrink-0">
               <h1 className="text-base font-semibold">Cameras</h1>
               <p className="text-[11px] text-[var(--color-foreground-muted)] mt-0.5">{cameras.length} cameras · {onlineCount} online</p>
             </div>
-            <div className="flex items-center gap-2">
-              <label className="flex items-center gap-1 text-[11px] text-[var(--color-foreground-muted)]">
-                <span>Sort:</span>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="flex min-w-[150px] flex-1 items-center gap-1 text-[11px] text-[var(--color-foreground-muted)] sm:flex-initial">
+                <span className="shrink-0">Sort:</span>
                 <select
                   value={sortMode}
                   onChange={(e) => setSortMode(e.target.value as SortMode)}
-                  className="rounded-md border border-[var(--color-border)] bg-[var(--color-background)] text-[var(--color-foreground)] text-[11px] px-2 py-1"
+                  className="min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-background)] text-[var(--color-foreground)] text-[11px] px-2 py-1 sm:flex-initial"
                 >
                   <option value="group">Group by parent</option>
                   <option value="name">Name (A–Z)</option>
@@ -158,18 +158,20 @@ export function CamerasPage() {
                   <option value="custom">Custom (drag to reorder)</option>
                 </select>
               </label>
-              <button
-                onClick={() => camerasHook.setAddOpen(true)}
-                className="inline-flex items-center gap-1 rounded-md bg-[var(--color-primary)] px-3 py-1.5 text-xs text-white"
-              >
-                <Plus size={12} /> Add Camera
-              </button>
-              <button
-                onClick={() => camerasHook.setAddNvrOpen(true)}
-                className="inline-flex items-center gap-1 rounded-md bg-[var(--color-surface-hover)] px-3 py-1.5 text-xs"
-              >
-                <Plus size={12} /> Add NVR
-              </button>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  onClick={() => camerasHook.setAddOpen(true)}
+                  className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-[var(--color-primary)] px-3 py-1.5 text-xs text-white"
+                >
+                  <Plus size={12} /> Add Camera
+                </button>
+                <button
+                  onClick={() => camerasHook.setAddNvrOpen(true)}
+                  className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-[var(--color-surface-hover)] px-3 py-1.5 text-xs"
+                >
+                  <Plus size={12} /> Add NVR
+                </button>
+              </div>
             </div>
           </div>
 
