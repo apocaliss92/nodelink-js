@@ -11,14 +11,29 @@ import { SessionsDialog } from './SessionsDialog';
 import { CameraLogsPanel } from './CameraLogsPanel';
 import { ConnectionPanel } from './ConnectionPanel';
 import { useConnectionLogs } from './hooks/useConnectionLogs';
-import { useCamerasContext } from './CamerasContext';
+import { useCameras } from './hooks/useCameras';
+import { useCamerasContext, CamerasProvider } from './CamerasContext';
 import { trpcQuery, trpcMutation } from '../../api';
 import { withAuthTokenQuery, getCameraDisplayName, getStreamName } from './utils';
 import type { ControlsState, CameraEvent, DeviceSession } from './types';
 
 type SessionsPayload = { sessions: DeviceSession[]; total: number };
 
+/**
+ * Mobile reaches this as a standalone route (`/cameras/:name`), outside the
+ * CamerasProvider that CamerasPage mounts for the desktop grid. Wrap it in its
+ * own provider so the page has the cameras context it needs to render.
+ */
 export function CameraDetailPage() {
+  const camerasHook = useCameras();
+  return (
+    <CamerasProvider value={camerasHook}>
+      <CameraDetailPageInner />
+    </CamerasProvider>
+  );
+}
+
+function CameraDetailPageInner() {
   const { cameraName } = useParams<{ cameraName: string }>();
   const navigate = useNavigate();
   const {
