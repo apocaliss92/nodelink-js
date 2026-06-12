@@ -10,6 +10,7 @@ import { SessionsPanel } from './SessionsPanel';
 import { SessionsDialog } from './SessionsDialog';
 import { CameraLogsPanel } from './CameraLogsPanel';
 import { ConnectionPanel } from './ConnectionPanel';
+import { CameraSettingsModal } from './CameraSettingsModal';
 import { useConnectionLogs } from './hooks/useConnectionLogs';
 import { useCameras } from './hooks/useCameras';
 import { useCamerasContext, CamerasProvider } from './CamerasContext';
@@ -56,7 +57,10 @@ function CameraDetailPageInner() {
   const [showSessions, setShowSessions] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
   const [showConnection, setShowConnection] = useState(false);
+  const [showStreamSettings, setShowStreamSettings] = useState(false);
   const [sessionsDialogOpen, setSessionsDialogOpen] = useState(false);
+  const [snapshotting, setSnapshotting] = useState(false);
+  const [rebooting, setRebooting] = useState(false);
   const [controlsState, setControlsState] = useState<ControlsState>(null);
   const [events, setEvents] = useState<CameraEvent[]>([]);
   const [eventsLoading, setEventsLoading] = useState(false);
@@ -177,6 +181,51 @@ function CameraDetailPageInner() {
     }
   }, [camera?.id]);
 
+  const handleSnapshot = useCallback(async () => {
+    if (!camera) return;
+    setSnapshotting(true);
+    try {
+      const url = withAuthTokenQuery(
+        `${window.location.origin}/api/cameras/${camera.id}/snapshot`,
+      );
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const blob = await resp.blob();
+      const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const filename = `${getCameraDisplayName(camera)}_${ts}.jpg`.replace(
+        /[^a-zA-Z0-9._-]/g,
+        "_",
+      );
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch (e) {
+      console.error("Snapshot failed:", e);
+    } finally {
+      setSnapshotting(false);
+    }
+  }, [camera]);
+
+  const handleReboot = useCallback(async () => {
+    if (!camera) return;
+    setRebooting(true);
+    try {
+      await trpcMutation<{ success: boolean; message?: string }>(
+        "baichuan.reboot",
+        { cameraId: camera.id },
+      );
+    } catch (e) {
+      console.error("Reboot failed:", e);
+    } finally {
+      setRebooting(false);
+    }
+  }, [camera?.id]);
+
   if (!camera) {
     return (
       <div className="flex items-center justify-center h-full text-[var(--color-foreground-muted)]">
@@ -248,10 +297,15 @@ function CameraDetailPageInner() {
           onSessions={() => setShowSessions((v) => !v)}
           onLogs={() => setShowLogs((v) => !v)}
           onConnection={() => setShowConnection((v) => !v)}
+          onStreamSettings={() => setShowStreamSettings((v) => !v)}
           onConnect={isConnected ? () => disconnect(camera.id) : () => connect(camera.id)}
           onDebug={() => setCameraDebug(camera.id, !camera.debugLogs)}
           onDump={handleDump}
+          onSnapshot={handleSnapshot}
+          onReboot={handleReboot}
           dumping={dumping}
+          snapshotting={snapshotting}
+          rebooting={rebooting}
           isConnected={isConnected}
           connecting={connectingByCamera[camera.id] ?? false}
           autoStart={camera.autoStart}
@@ -307,6 +361,14 @@ function CameraDetailPageInner() {
             onOpenDialog={() => setSessionsDialogOpen(true)}
           />
         )}
+
+        <CameraSettingsModal
+          open={showStreamSettings}
+          cameraId={camera.id}
+          cameraName={camera.name || camera.host}
+          channel={camera.rtspChannel ?? 0}
+          onClose={() => setShowStreamSettings(false)}
+        />
 
         <SessionsDialog
           open={sessionsDialogOpen}
