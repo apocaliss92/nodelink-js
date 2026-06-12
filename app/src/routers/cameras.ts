@@ -6,6 +6,7 @@ import * as path from "node:path";
 import * as crypto from "node:crypto";
 import { captureModelFixtures, zipDirectory, autoDetectDeviceType } from "@apocaliss92/nodelink-js";
 import type { AutoDetectResult } from "@apocaliss92/nodelink-js";
+import { createBaichuanApi } from "../baichuan-api-factory.js";
 import {
   getConfig,
   addCamera,
@@ -1081,8 +1082,10 @@ export const camerasRouter = router({
         ({ host, port, username, password } = input);
       }
 
-      const { ReolinkBaichuanApi } = await import("@apocaliss92/nodelink-js");
-      const api = new ReolinkBaichuanApi({ host, port, username, password });
+      const api = createBaichuanApi(
+        { host, port, username, password },
+        { source: "discover-nvr-channels" },
+      );
 
       try {
         await api.login();

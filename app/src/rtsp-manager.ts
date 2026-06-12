@@ -2,6 +2,7 @@ import {
   ReolinkBaichuanApi,
   BaichuanRtspServer,
 } from "@apocaliss92/nodelink-js";
+import { createBaichuanApi } from "./baichuan-api-factory.js";
 import {
   createSourceLogger,
   appendConnLog,
@@ -664,7 +665,7 @@ export async function getOrCreateApiConnection(
         }
       : undefined;
 
-    const api = new ReolinkBaichuanApi({
+    const api = createBaichuanApi({
       host,
       port,
       username,
@@ -699,7 +700,7 @@ export async function getOrCreateApiConnection(
         error: (msg: string) => cameraLogger.error(msg),
         debug: (msg: string) => cameraLogger.debug(msg),
       },
-    });
+    }, { source: "rtsp-manager", cameraId: camera.id });
 
     cameraLogger.info(`Connecting to ${host}:${port}`);
     await api.login();
@@ -1781,12 +1782,15 @@ export async function testCameraConnection(
 ): Promise<{ success: boolean; info?: any; error?: string }> {
   const logger = createSourceLogger("connection-test");
 
-  const api = new ReolinkBaichuanApi({
-    host,
-    port,
-    username,
-    password,
-  });
+  const api = createBaichuanApi(
+    {
+      host,
+      port,
+      username,
+      password,
+    },
+    { source: "test-camera-connection" },
+  );
 
   try {
     logger.debug(

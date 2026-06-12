@@ -2,6 +2,7 @@ import {
   ReolinkBaichuanApi,
   BaichuanRtspServer,
 } from "@apocaliss92/nodelink-js";
+import { createBaichuanApi } from "./baichuan-api-factory.js";
 import type { CameraConfig, RtspServerConfig, ConnectionParams } from "./types";
 import { createSourceLogger } from "./logger.js";
 import {
@@ -224,7 +225,7 @@ export async function getConnection(
     connectionCache.delete(key);
   }
 
-  const api = new ReolinkBaichuanApi({
+  const api = createBaichuanApi({
     host,
     port,
     username,
@@ -238,7 +239,7 @@ export async function getConnection(
     ...(opts?.udpDiscoveryMethod
       ? { udpDiscoveryMethod: opts.udpDiscoveryMethod }
       : {}),
-  });
+  }, { source: "connection-manager" });
 
   await api.login();
 
