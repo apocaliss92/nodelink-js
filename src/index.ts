@@ -74,6 +74,12 @@ export {
   extractSpsFromAnnexB,
   extractPpsFromAnnexB,
 } from "./baichuan/stream/H265Converter";
+export * from "./baichuan/stream/alwaysOnTypes";
+export { PlaceholderRenderer } from "./baichuan/stream/PlaceholderRenderer";
+export { ContinuousVideoStream } from "./baichuan/stream/ContinuousVideoStream";
+export type { ContinuousVideoStreamOptions } from "./baichuan/stream/ContinuousVideoStream";
+export { AlwaysOnController } from "./baichuan/stream/AlwaysOnController";
+export type { AlwaysOnControllerOptions } from "./baichuan/stream/AlwaysOnController";
 export type { DebugOptions, DebugConfig } from "./debug/DebugConfig";
 export * from "./debug/DiagnosticsTools";
 export * from "./debug/zip";
