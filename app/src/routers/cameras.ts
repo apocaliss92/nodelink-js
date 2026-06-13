@@ -106,6 +106,7 @@ export const camerasRouter = router({
         nvrId: camConfig?.nvrId,
         isBattery: isBatteryCamera(camConfig),
         batteryMode: camConfig?.batteryMode ?? "streamOnly",
+        permanentStream: camConfig?.permanentStream,
         sleepStatus: getCameraSleepStatus(input.id),
         batteryState: getCameraBatteryState(input.id),
         debugLogs: camConfig?.debugLogs ?? false,
