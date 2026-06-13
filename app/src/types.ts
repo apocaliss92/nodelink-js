@@ -37,6 +37,22 @@ export const CameraConfigSchema = z.object({
   // Battery behavior: "alwaysOn" keeps camera awake while connected,
   // "streamOnly" wakes on stream and sleeps after last client disconnects
   batteryMode: z.enum(["alwaysOn", "streamOnly"]).optional().default("streamOnly"),
+  // Permanent (continuous) RTSP stream for battery cameras. When enabled, the
+  // RTSP server keeps serving frames continuously (real frames during motion
+  // windows, a decorated "Sleeping" placeholder while the camera sleeps) so
+  // downstream consumers like Frigate get an uninterrupted stream. This is a
+  // SEPARATE concept from `batteryMode` above. Maps to BaichuanRtspServer's
+  // `alwaysOn` option in rtsp-manager.ts. windowSeconds maps to windowMs (×1000).
+  permanentStream: z
+    .object({
+      enabled: z.boolean().default(false),
+      windowSeconds: z.number().int().min(1).max(600).optional(),
+      idleFps: z.number().min(0.1).max(30).optional(),
+      placeholderText: z.string().optional(),
+      placeholderOpacity: z.number().min(0).max(1).optional(),
+      placeholderEnabled: z.boolean().optional(),
+    })
+    .optional(),
   // UID for BCUDP discovery (battery/wireless cameras). Required for UDP transport.
   // When omitted and transport is "auto", local-direct UDP discovery is attempted using the host IP.
   uid: z.string().optional(),

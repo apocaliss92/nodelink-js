@@ -1,0 +1,109 @@
+import { useState } from 'react';
+import { trpcMutation } from '../../api';
+import { Toggle, NumberInput, TextInput, RangeInput } from './settings-tabs/shared';
+import type { CameraInfo } from './types';
+
+type PermanentStreamValue = NonNullable<CameraInfo['permanentStream']>;
+
+interface PermanentStreamControlProps {
+  cameraId: string;
+  value?: PermanentStreamValue;
+}
+
+const DEFAULT_WINDOW_SECONDS = 15;
+const DEFAULT_PLACEHOLDER_TEXT = 'Sleeping';
+const DEFAULT_PLACEHOLDER_OPACITY = 0.5;
+
+/**
+ * Permanent (continuous) RTSP stream control for battery cameras. When
+ * enabled, the RTSP server keeps serving frames continuously so downstream
+ * consumers like Frigate get an uninterrupted stream. The parent is
+ * responsible for rendering this ONLY for battery cameras.
+ */
+export function PermanentStreamControl({ cameraId, value }: PermanentStreamControlProps) {
+  const [config, setConfig] = useState<PermanentStreamValue>(value ?? {});
+  const [saving, setSaving] = useState(false);
+
+  const enabled = Boolean(config.enabled);
+
+  const persist = (next: PermanentStreamValue) => {
+    setConfig(next);
+    setSaving(true);
+    void trpcMutation('cameras.setPermanentStream', {
+      id: cameraId,
+      config: {
+        enabled: Boolean(next.enabled),
+        ...(next.windowSeconds !== undefined ? { windowSeconds: next.windowSeconds } : {}),
+        ...(next.idleFps !== undefined ? { idleFps: next.idleFps } : {}),
+        ...(next.placeholderText !== undefined ? { placeholderText: next.placeholderText } : {}),
+        ...(next.placeholderOpacity !== undefined
+          ? { placeholderOpacity: next.placeholderOpacity }
+          : {}),
+        ...(next.placeholderEnabled !== undefined
+          ? { placeholderEnabled: next.placeholderEnabled }
+          : {}),
+      },
+    })
+      .catch(() => {
+        /* keep optimistic state; surfaced via server logs */
+      })
+      .finally(() => setSaving(false));
+  };
+
+  return (
+    <div className="rounded-lg bg-[var(--color-surface)] p-3 mb-3">
+      <div className="mb-2 flex items-center justify-between">
+        <div className="text-[10px] uppercase tracking-wider text-[var(--color-foreground-subtle)]">
+          Permanent stream
+          {saving ? <span className="ml-1 normal-case opacity-60">saving…</span> : null}
+        </div>
+        <Toggle value={enabled} onChange={(v) => persist({ ...config, enabled: v })} />
+      </div>
+      <div className="text-[11px] text-[var(--color-foreground-muted)] mb-2">
+        Continuous, Frigate-friendly stream. Serves real frames during motion and a
+        dimmed “Sleeping” placeholder while the camera sleeps.
+      </div>
+
+      {enabled ? (
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] text-[var(--color-foreground-muted)]">Window (s)</span>
+            <div className="w-24">
+              <NumberInput
+                value={config.windowSeconds ?? DEFAULT_WINDOW_SECONDS}
+                min={1}
+                max={600}
+                step={1}
+                onChange={(v) => persist({ ...config, windowSeconds: v })}
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] text-[var(--color-foreground-muted)]">Placeholder text</span>
+            <div className="w-36">
+              <TextInput
+                value={config.placeholderText ?? DEFAULT_PLACEHOLDER_TEXT}
+                placeholder={DEFAULT_PLACEHOLDER_TEXT}
+                onChange={(v) => persist({ ...config, placeholderText: v })}
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] text-[var(--color-foreground-muted)]">Dim (0–1)</span>
+            <div className="flex-1 max-w-[180px]">
+              <RangeInput
+                value={config.placeholderOpacity ?? DEFAULT_PLACEHOLDER_OPACITY}
+                min={0}
+                max={1}
+                step={0.05}
+                onChange={(v) => persist({ ...config, placeholderOpacity: v })}
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}

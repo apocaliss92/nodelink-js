@@ -11,6 +11,7 @@ import { SessionsDialog } from './SessionsDialog';
 import { CameraLogsPanel } from './CameraLogsPanel';
 import { ConnectionPanel } from './ConnectionPanel';
 import { CameraSettingsModal } from './CameraSettingsModal';
+import { PermanentStreamControl } from './PermanentStreamControl';
 import { useConnectionLogs } from './hooks/useConnectionLogs';
 import { useCameras } from './hooks/useCameras';
 import { useCamerasContext, CamerasProvider } from './CamerasContext';
@@ -290,6 +291,10 @@ function CameraDetailPageInner() {
             })}
           </div>
         </div>
+
+        {camera.isBattery ? (
+          <PermanentStreamControl cameraId={camera.id} value={camera.permanentStream} />
+        ) : null}
 
         <ActionsGrid
           onPtz={() => setShowPtz((v) => !v)}

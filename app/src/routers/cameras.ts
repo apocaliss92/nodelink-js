@@ -76,6 +76,7 @@ export const camerasRouter = router({
           nvrId: camConfig?.nvrId,
           isBattery: isBatteryCamera(camConfig),
           batteryMode: camConfig?.batteryMode ?? "streamOnly",
+          permanentStream: camConfig?.permanentStream,
           sleepStatus: getCameraSleepStatus(cam.id),
           batteryState: getCameraBatteryState(cam.id),
           debugLogs: camConfig?.debugLogs ?? false,
@@ -998,6 +999,27 @@ export const camerasRouter = router({
     .input(z.object({ id: z.string(), mode: z.enum(["alwaysOn", "streamOnly"]) }))
     .mutation(({ input }) => {
       updateCamera(input.id, { batteryMode: input.mode });
+      return { success: true };
+    }),
+
+  // Set permanent (continuous) stream config for a battery camera
+  setPermanentStream: publicProcedure
+    .meta({ description: "Set permanent (continuous) stream config for a battery camera" })
+    .input(
+      z.object({
+        id: z.string(),
+        config: z.object({
+          enabled: z.boolean(),
+          windowSeconds: z.number().int().min(1).max(600).optional(),
+          idleFps: z.number().min(0.1).max(30).optional(),
+          placeholderText: z.string().optional(),
+          placeholderOpacity: z.number().min(0).max(1).optional(),
+          placeholderEnabled: z.boolean().optional(),
+        }),
+      }),
+    )
+    .mutation(({ input }) => {
+      updateCamera(input.id, { permanentStream: input.config });
       return { success: true };
     }),
 

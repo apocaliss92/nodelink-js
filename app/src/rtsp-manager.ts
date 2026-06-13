@@ -1253,10 +1253,49 @@ export async function startRtspServer(
       );
     }
 
+    // Permanent (continuous) stream for battery cameras. Only enabled when
+    // the camera is a battery camera AND permanentStream.enabled is set.
+    // Maps windowSeconds → windowMs and only includes explicitly-set fields
+    // to respect exactOptionalPropertyTypes.
+    const ps = camera.permanentStream;
+    const alwaysOn =
+      isBatteryCamera(camera) && ps?.enabled
+        ? {
+            enabled: true,
+            ...(ps.windowSeconds !== undefined
+              ? { windowMs: ps.windowSeconds * 1000 }
+              : {}),
+            ...(ps.idleFps !== undefined ? { idleFps: ps.idleFps } : {}),
+            ...(ps.placeholderEnabled !== undefined ||
+            ps.placeholderText !== undefined ||
+            ps.placeholderOpacity !== undefined
+              ? {
+                  placeholder: {
+                    ...(ps.placeholderEnabled !== undefined
+                      ? { enabled: ps.placeholderEnabled }
+                      : {}),
+                    ...(ps.placeholderText !== undefined
+                      ? { text: ps.placeholderText }
+                      : {}),
+                    ...(ps.placeholderOpacity !== undefined
+                      ? { opacity: ps.placeholderOpacity }
+                      : {}),
+                  },
+                }
+              : {}),
+          }
+        : undefined;
+    if (alwaysOn) {
+      logger.info(
+        `Permanent stream enabled (windowMs=${alwaysOn.windowMs ?? "default"}, idleFps=${alwaysOn.idleFps ?? "default"})`,
+      );
+    }
+
     const baichuanServer = new BaichuanRtspServer({
       api,
       channel,
       profile,
+      ...(alwaysOn ? { alwaysOn } : {}),
       // listenHost/listenPort are informational in mux mode — the server
       // never binds them. They are still passed so SDP/logs reflect the
       // public endpoint users will dial.

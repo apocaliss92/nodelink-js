@@ -10,6 +10,7 @@ import { SessionsDialog } from './SessionsDialog';
 import { CameraLogsPanel } from './CameraLogsPanel';
 import { ConnectionPanel } from './ConnectionPanel';
 import { CameraSettingsModal } from './CameraSettingsModal';
+import { PermanentStreamControl } from './PermanentStreamControl';
 import { useConnectionLogs } from './hooks/useConnectionLogs';
 import { trpcQuery, trpcMutation } from '../../api';
 import { withAuthTokenQuery, getCameraDisplayName, getStreamName } from './utils';
@@ -309,6 +310,10 @@ export function CameraDetailPanel({
           )}
         </div>
       </div>
+
+      {camera.isBattery ? (
+        <PermanentStreamControl cameraId={camera.id} value={camera.permanentStream} />
+      ) : null}
 
       <ActionsGrid
         onPtz={() => setShowPtz((v) => !v)}

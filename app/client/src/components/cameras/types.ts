@@ -44,6 +44,14 @@ export type CameraInfo = {
   position?: number;
   isBattery?: boolean;
   batteryMode?: "alwaysOn" | "streamOnly";
+  permanentStream?: {
+    enabled?: boolean;
+    windowSeconds?: number;
+    idleFps?: number;
+    placeholderText?: string;
+    placeholderOpacity?: number;
+    placeholderEnabled?: boolean;
+  };
   sleepStatus?: "awake" | "sleeping";
   batteryState?: { percent: number; chargeStatus?: string; adapterStatus?: string };
   debugLogs: boolean;
