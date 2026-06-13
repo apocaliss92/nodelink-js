@@ -21,21 +21,18 @@ export interface Logger {
 function ffmpegCodec(videoType: "H264" | "H265"): {
   inputFormat: string;
   encoder: string;
-  bsf: string;
   outputFormat: string;
 } {
   if (videoType === "H265") {
     return {
       inputFormat: "hevc",
       encoder: "libx265",
-      bsf: "hevc_mp4toannexb",
       outputFormat: "hevc",
     };
   }
   return {
     inputFormat: "h264",
     encoder: "libx264",
-    bsf: "h264_mp4toannexb",
     outputFormat: "h264",
   };
 }
@@ -138,7 +135,11 @@ export class PlaceholderRenderer {
 
   /** Encodes the decorated JPEG into a single IDR access unit in the target codec. */
   private async encodeIdr(jpeg: Buffer, videoType: "H264" | "H265"): Promise<Buffer> {
-    const { encoder, bsf, outputFormat } = ffmpegCodec(videoType);
+    // NOTE: do NOT apply a *_mp4toannexb bitstream filter here. That BSF is for
+    // demuxing MP4/AVCC -> Annex-B; the `-f h264`/`-f hevc` elementary-stream
+    // muxer already emits Annex-B. Applying it is a no-op for H264 but CORRUPTS
+    // H265 output (silently falling back to raw for every H265 camera).
+    const { encoder, outputFormat } = ffmpegCodec(videoType);
     return runFfmpeg(
       [
         "-hide_banner",
@@ -154,8 +155,6 @@ export class PlaceholderRenderer {
         encoder,
         "-pix_fmt",
         "yuv420p",
-        "-bsf:v",
-        bsf,
         "-f",
         outputFormat,
         "pipe:1",

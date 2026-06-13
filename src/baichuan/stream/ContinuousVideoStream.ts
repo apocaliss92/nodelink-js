@@ -36,6 +36,7 @@ export class ContinuousVideoStream extends EventEmitter<{
   private readonly renderer: PlaceholderRenderer;
   private readonly logger: Logger | undefined;
   private stopped = false;
+  private starting = false;
   private idleTimer: ReturnType<typeof setInterval> | null = null;
   private idlePlaceholder: Buffer | null = null;
 
@@ -54,15 +55,23 @@ export class ContinuousVideoStream extends EventEmitter<{
   }
 
   async goLive(): Promise<void> {
-    if (this.stopped || this.live) return;
-    this.stopIdleLoop();
-    const stream = await this.opts.createLiveStream();
-    this.live = stream;
-    stream.on("videoAccessUnit", this.onLiveAccessUnit);
-    stream.on("additionalHeader", this.onAdditionalHeader);
-    stream.on("audioFrame", this.onAudioFrame);
-    stream.on("error", this.onLiveError);
-    await stream.start().catch((e) => this.emit("error", e as Error));
+    // `starting` is a synchronous re-entrancy guard: `this.live` is only assigned
+    // after the first await, so without it two concurrent goLive() calls could
+    // both create a live stream (leaking one). Set it before any await.
+    if (this.stopped || this.live || this.starting) return;
+    this.starting = true;
+    try {
+      this.stopIdleLoop();
+      const stream = await this.opts.createLiveStream();
+      this.live = stream;
+      stream.on("videoAccessUnit", this.onLiveAccessUnit);
+      stream.on("additionalHeader", this.onAdditionalHeader);
+      stream.on("audioFrame", this.onAudioFrame);
+      stream.on("error", this.onLiveError);
+      await stream.start().catch((e) => this.emit("error", e as Error));
+    } finally {
+      this.starting = false;
+    }
   }
 
   async goIdle(): Promise<void> {

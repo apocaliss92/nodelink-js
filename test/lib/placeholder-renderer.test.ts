@@ -5,10 +5,18 @@ import fs from "node:fs";
 import path from "node:path";
 import { PlaceholderRenderer } from "../../src/baichuan/stream/PlaceholderRenderer";
 import { isH264KeyframeAnnexB } from "../../src/baichuan/stream/H264Converter";
+import { isH265KeyframeAnnexB } from "../../src/baichuan/stream/H265Converter";
 
 function ffmpegAvailable(): boolean {
   try { execFileSync("ffmpeg", ["-version"], { stdio: "ignore" }); return true; }
   catch { return false; }
+}
+
+function libx265Available(): boolean {
+  try {
+    const out = execFileSync("ffmpeg", ["-hide_banner", "-encoders"], { encoding: "utf8" });
+    return /\blibx265\b/.test(out);
+  } catch { return false; }
 }
 
 describe("PlaceholderRenderer raw mode", () => {
@@ -43,6 +51,25 @@ describe("PlaceholderRenderer decorated mode", () => {
     const out = await renderer.render({ data: src, videoType: "H264" });
     expect(out).not.toBeNull();
     expect(isH264KeyframeAnnexB(out!)).toBe(true);
+    expect(out!.equals(src)).toBe(false); // decorated, not the raw keyframe
+  });
+
+  it("produces a valid H265 IDR with overlay from a real keyframe", async () => {
+    if (!ffmpegAvailable() || !libx265Available()) return; // skip where ffmpeg/libx265 missing
+    const tmp = path.join(process.env.TMPDIR || "/tmp", "ph-src.h265");
+    execFileSync("ffmpeg", [
+      "-hide_banner", "-loglevel", "error",
+      "-f", "lavfi", "-i", "color=c=black:s=320x240:d=0.1",
+      "-frames:v", "1", "-c:v", "libx265",
+      "-f", "hevc", "-y", tmp,
+    ]);
+    const src = fs.readFileSync(tmp);
+    const renderer = new PlaceholderRenderer({
+      placeholder: { enabled: true, text: "Sleeping", opacity: 0.5 },
+    });
+    const out = await renderer.render({ data: src, videoType: "H265" });
+    expect(out).not.toBeNull();
+    expect(isH265KeyframeAnnexB(out!)).toBe(true);
     expect(out!.equals(src)).toBe(false); // decorated, not the raw keyframe
   });
 });

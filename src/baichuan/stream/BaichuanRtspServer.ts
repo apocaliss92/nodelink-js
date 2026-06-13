@@ -343,6 +343,7 @@ export class BaichuanRtspServer extends EventEmitter<{
   // Client tracking
   private connectedClients = new Set<string>(); // Set of client IDs (IP:port)
   private nativeStreamActive = false; // Whether the native stream is currently active
+  private tearingDown = false; // True while stop() is running; suppresses onEnd-driven restarts
   private clientConnectionServer: net.Server | undefined; // TCP server to track connections
   private streamMetadata: {
     frameRate: number;
@@ -2974,6 +2975,10 @@ export class BaichuanRtspServer extends EventEmitter<{
             this.dedicatedSessionRelease = undefined;
             try { await release(); } catch { /* ignore */ }
           }
+          // Do not restart while the server is tearing down: stop() stops the
+          // ContinuousVideoStream which ends the source and fires this onEnd.
+          // Restarting here would resurrect the native stream mid-teardown.
+          if (this.tearingDown) return;
           if (this.connectedClients.size > 0 && hadFrames) {
             this.logger.info(
               `[rebroadcast] restarting native stream for ${this.connectedClients.size} active client(s)`,
@@ -3206,6 +3211,12 @@ export class BaichuanRtspServer extends EventEmitter<{
     if (!this.active) {
       return;
     }
+
+    // Mark teardown BEFORE stopping the controller/cvs/native stream. Stopping
+    // the ContinuousVideoStream emits "close", which ends createContinuousSource
+    // and fires the fanout onEnd; without this guard onEnd could restart the
+    // native stream mid-teardown when clients are still connected.
+    this.tearingDown = true;
 
     this.logger.info(
       `[BaichuanRtspServer] Stopping RTSP server on ${this.listenHost}:${this.listenPort}...`,

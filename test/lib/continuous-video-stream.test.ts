@@ -32,6 +32,27 @@ describe("ContinuousVideoStream live passthrough", () => {
   });
 });
 
+describe("ContinuousVideoStream goLive race", () => {
+  it("creates only one live stream when goLive() is called concurrently", async () => {
+    const fake = new FakeLiveStream();
+    const createLiveStream = vi.fn(async () => {
+      // Simulate async work so both goLive() calls overlap across the await.
+      await new Promise((r) => setTimeout(r, 10));
+      return fake as any;
+    });
+    const cvs = new ContinuousVideoStream({
+      idleFps: 1,
+      placeholder: { enabled: false },
+      createLiveStream,
+    });
+
+    await Promise.all([cvs.goLive(), cvs.goLive()]);
+    expect(createLiveStream).toHaveBeenCalledOnce();
+
+    await cvs.stop();
+  });
+});
+
 describe("ContinuousVideoStream idle placeholder", () => {
   it("emits the cached keyframe at idleFps while idle, with advancing microseconds", async () => {
     vi.useFakeTimers();
