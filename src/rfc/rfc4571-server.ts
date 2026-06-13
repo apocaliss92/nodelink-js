@@ -5,6 +5,8 @@ import type { NativeVideoStreamVariant } from "../reolink/baichuan/types";
 import type { StreamProfile } from "../reolink/baichuan/types";
 import type { BaichuanClient } from "../client/BaichuanClient";
 import { BaichuanVideoStream } from "../baichuan/stream/BaichuanVideoStream";
+import { ContinuousVideoStream } from "../baichuan/stream/ContinuousVideoStream";
+import { AlwaysOnController } from "../baichuan/stream/AlwaysOnController";
 import {
   CompositeStream,
   type CompositeStreamPipOptions,
@@ -112,6 +114,9 @@ export interface Rfc4571TcpServerOptions {
    * The dedicated socket is automatically closed when the stream ends.
    */
   deviceId?: string;
+
+  /** Battery always-on continuous stream (placeholder while asleep, real frames during motion). */
+  alwaysOn?: import("../baichuan/stream/alwaysOnTypes").AlwaysOnOptions;
 }
 
 export interface Rfc4571TcpServer {
@@ -124,7 +129,7 @@ export interface Rfc4571TcpServer {
   password: string;
 
   server: net.Server;
-  videoStream: BaichuanVideoStream | CompositeStream;
+  videoStream: BaichuanVideoStream | CompositeStream | ContinuousVideoStream;
 
   close: (reason?: unknown) => Promise<void>;
 }
@@ -454,9 +459,17 @@ async function createRfc4571TcpServerInternal(
   if (resolvedCompositeApis?.teleApi)
     apisToClose.add(resolvedCompositeApis.teleApi);
 
+  // alwaysOn battery streams legitimately go quiet while idle (placeholder
+  // repeats at idleFps) and the ContinuousVideoStream owns its own live<->idle
+  // recreation, so the RFC-level uptime watchdog must be disabled — restarting
+  // it would fight the controller and tear down the stream during idle periods.
+  const alwaysOnEnabled = Boolean(options.alwaysOn?.enabled) && !isComposite;
+
   // For composite (ffmpeg) streams, avoid over-aggressive restarts: a short burst of
   // backpressure or a long GOP on join can look like "no activity" even though the pipeline is alive.
-  const uptimeRestartMs = uptimeRestartMsOpt ?? (isComposite ? 60_000 : 10_000);
+  const uptimeRestartMs = alwaysOnEnabled
+    ? 0
+    : (uptimeRestartMsOpt ?? (isComposite ? 60_000 : 10_000));
   const variantSuffix =
     variant && variant !== "default" ? ` variant=${variant}` : "";
   const logPrefix = isComposite
@@ -485,8 +498,9 @@ async function createRfc4571TcpServerInternal(
     `starting (host=${host} videoPT=${videoPayloadType} audioPT=${audioPayloadType} expectedVideoType=${expectedVideoType ?? "n/a"} keyframeTimeoutMs=${keyframeTimeoutMs} uptimeRestartMs=${uptimeRestartMs} idleTeardownMs=${idleTeardownMs} composite=${isComposite})`,
   );
 
-  let videoStream: BaichuanVideoStream | CompositeStream;
+  let videoStream: BaichuanVideoStream | CompositeStream | ContinuousVideoStream;
   let isCompositeStream = false;
+  let alwaysOnController: AlwaysOnController | undefined;
 
   if (isComposite) {
     // Use composite stream for multifocal cameras
@@ -727,19 +741,57 @@ async function createRfc4571TcpServerInternal(
       streamClient = baseApi.client;
     }
 
-    videoStream = new BaichuanVideoStream({
-      client: streamClient,
-      api: baseApi,
-      channel: ch,
-      profile,
-      variant,
-      logger,
-    });
+    // Construct a fresh live BaichuanVideoStream. Reused on every alwaysOn
+    // live<->idle transition; the dedicated session (if any) is shared across
+    // recreations and released only on final teardown.
+    //
+    // NOTE: ContinuousVideoStream.goLive() calls start() on the returned stream
+    // itself, so this factory must return an *unstarted* stream. The
+    // non-alwaysOn path below starts it explicitly to preserve prior behavior.
+    const createLiveStream = async (): Promise<BaichuanVideoStream> =>
+      new BaichuanVideoStream({
+        client: streamClient,
+        api: baseApi,
+        channel: ch,
+        profile,
+        variant,
+        logger,
+      });
 
-    await videoStream.start();
-    log(
-      `stream started (ch=${ch} profile=${profile}${deviceId ? ` dedicated=${deviceId}` : ""})`,
-    );
+    if (options.alwaysOn?.enabled) {
+      const cvsOpts: ConstructorParameters<typeof ContinuousVideoStream>[0] = {
+        // ContinuousVideoStream owns the lifecycle: it calls createLiveStream
+        // (which returns a started stream) and re-starts it internally on goLive.
+        createLiveStream,
+        logger: logger as any,
+      };
+      if (options.alwaysOn.idleFps !== undefined)
+        cvsOpts.idleFps = options.alwaysOn.idleFps;
+      if (options.alwaysOn.placeholder !== undefined)
+        cvsOpts.placeholder = options.alwaysOn.placeholder;
+      const cvs = new ContinuousVideoStream(cvsOpts);
+
+      alwaysOnController = new AlwaysOnController({
+        api: baseApi,
+        channel: ch,
+        options: options.alwaysOn,
+        goLive: () => cvs.goLive(),
+        goIdle: () => cvs.goIdle(),
+        logger: logger as any,
+      });
+      await alwaysOnController.start();
+      videoStream = cvs;
+      log(
+        `always-on stream started (ch=${ch} profile=${profile}${deviceId ? ` dedicated=${deviceId}` : ""})`,
+      );
+    } else {
+      const live = await createLiveStream();
+      await live.start();
+      videoStream = live;
+      log(
+        `stream started (ch=${ch} profile=${profile}${deviceId ? ` dedicated=${deviceId}` : ""})`,
+      );
+    }
   }
 
   const waitForKeyframe = async (): Promise<
@@ -905,6 +957,13 @@ async function createRfc4571TcpServerInternal(
   } catch (e) {
     // IMPORTANT: if we fail before returning a server handle, no teardown will run.
     // Stop the native/composite stream pipeline here to avoid leaving watchdogs running.
+    if (alwaysOnController) {
+      try {
+        await alwaysOnController.stop();
+      } catch {
+        // ignore
+      }
+    }
     try {
       await videoStream.stop();
     } catch {
@@ -1244,13 +1303,17 @@ async function createRfc4571TcpServerInternal(
     muxer = makeMuxer();
 
     // Restart the native stream pipeline (best-effort).
+    // The uptime watchdog is disabled for alwaysOn (ContinuousVideoStream),
+    // so restart() only ever runs for BaichuanVideoStream | CompositeStream,
+    // both of which expose start(). Guard defensively in case that changes.
+    const restartable = videoStream as BaichuanVideoStream | CompositeStream;
     try {
-      await videoStream.stop();
+      await restartable.stop();
     } catch {
       // ignore
     }
     try {
-      await videoStream.start();
+      await restartable.start();
     } catch (e) {
       // If restart fails, escalate to teardown so callers don't hang forever.
       restarting = false;
@@ -1286,6 +1349,14 @@ async function createRfc4571TcpServerInternal(
       "requested";
 
     muxer.close();
+
+    if (alwaysOnController) {
+      try {
+        await alwaysOnController.stop();
+      } catch {
+        // ignore
+      }
+    }
 
     try {
       await videoStream.stop();
