@@ -323,6 +323,29 @@ const cameraInfoCache = new Map<string, CameraInfo>();
 // it's removed from this set and becomes visible for restreaming.
 const disabledNvrCameras = new Set<string>();
 
+// Standalone cameras the user has explicitly disconnected. Mirrors
+// `disabledNvrCameras` for non-NVR cameras: the reconnect watchdog and the
+// auto-stream-on-connect listener skip cameras in this set, so a manual
+// disconnect "sticks" instead of being undone by the autoStart reconnect loop.
+// An explicit user "connect" clears it. In-memory only (resets on restart),
+// matching `disabledNvrCameras`.
+const manuallyDisconnected = new Set<string>();
+
+/** Mark a standalone camera as user-disconnected so it is not auto-reconnected. */
+export function markManuallyDisconnected(cameraId: string): void {
+  manuallyDisconnected.add(cameraId);
+}
+
+/** Clear the user-disconnected flag (e.g. on an explicit connect). */
+export function clearManuallyDisconnected(cameraId: string): void {
+  manuallyDisconnected.delete(cameraId);
+}
+
+/** Whether the user has explicitly disconnected this camera. */
+export function isManuallyDisconnected(cameraId: string): boolean {
+  return manuallyDisconnected.has(cameraId);
+}
+
 /**
  * Cleanup a managed connection: remove listeners, stop ping, close API.
  * Safe to call multiple times (idempotent via cleanupInProgress guard).
@@ -1605,6 +1628,8 @@ async function runReconnectCheck(): Promise<void> {
     if (isBatteryCamera(camera)) continue;
     // NVR child explicitly disabled by user
     if (camera.nvrId && disabledNvrCameras.has(camera.id)) continue;
+    // Standalone camera explicitly disconnected by user
+    if (manuallyDisconnected.has(camera.id)) continue;
 
     const connKey = getConnectionKey(camera.id);
     if (seenKeys.has(connKey)) continue;
@@ -1671,6 +1696,9 @@ export async function triggerImmediateReconnect(cameraId: string): Promise<void>
   if (camera.autoStart !== true) return;
   if (isBatteryCamera(camera)) return;
   if (camera.nvrId && disabledNvrCameras.has(cameraId)) return;
+  // User explicitly disconnected this standalone camera — don't auto-reconnect
+  // on the close event that the disconnect itself produced.
+  if (manuallyDisconnected.has(cameraId)) return;
 
   const connKey = getConnectionKey(cameraId);
 
@@ -1932,6 +1960,7 @@ export function enableAutoStreamsOnConnect(): void {
 
   onApiConnected(async (cameraId, _api) => {
     if (disabledNvrCameras.has(cameraId)) return;
+    if (manuallyDisconnected.has(cameraId)) return;
 
     const config = getConfig();
     const camera = config.cameras.find((c) => c.id === cameraId);

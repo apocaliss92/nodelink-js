@@ -25,6 +25,8 @@ import {
   disconnectNvr,
   enableNvrCamera,
   disableNvrCamera,
+  markManuallyDisconnected,
+  clearManuallyDisconnected,
   getCameraInfo,
   getAllCamerasInfo,
   testCameraConnection,
@@ -413,6 +415,9 @@ export const camerasRouter = router({
     .mutation(async ({ input }) => {
       const config = getConfig();
       const camera = config.cameras.find((c) => c.id === input.id);
+      // Explicit user connect clears any prior manual-disconnect so the
+      // reconnect watchdog / auto-stream resume normally.
+      clearManuallyDisconnected(input.id);
       if (camera?.nvrId) {
         await enableNvrCamera(input.id);
       } else {
@@ -441,6 +446,9 @@ export const camerasRouter = router({
       if (camera?.nvrId) {
         await disableNvrCamera(input.id);
       } else {
+        // Mark as user-disconnected so the autoStart reconnect watchdog and the
+        // auto-stream-on-connect listener don't immediately bring it back.
+        markManuallyDisconnected(input.id);
         await stopAllCameraStreams(input.id);
         await closeApiConnection(input.id);
       }
