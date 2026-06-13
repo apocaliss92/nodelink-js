@@ -36,6 +36,8 @@ export class ContinuousVideoStream extends EventEmitter<{
   private readonly renderer: PlaceholderRenderer;
   private readonly logger: Logger | undefined;
   private stopped = false;
+  private idleTimer: ReturnType<typeof setInterval> | null = null;
+  private idlePlaceholder: Buffer | null = null;
 
   constructor(private readonly opts: ContinuousVideoStreamOptions) {
     super();
@@ -53,6 +55,7 @@ export class ContinuousVideoStream extends EventEmitter<{
 
   async goLive(): Promise<void> {
     if (this.stopped || this.live) return;
+    this.stopIdleLoop();
     const stream = await this.opts.createLiveStream();
     this.live = stream;
     stream.on("videoAccessUnit", this.onLiveAccessUnit);
@@ -71,13 +74,43 @@ export class ContinuousVideoStream extends EventEmitter<{
     s.off("audioFrame", this.onAudioFrame);
     s.off("error", this.onLiveError);
     await s.stop().catch(() => {});
-    // Idle placeholder loop is started in a later task.
+    await this.startIdleLoop();
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
     await this.goIdle();
+    this.stopIdleLoop();
     this.emit("close");
+  }
+
+  private async startIdleLoop(): Promise<void> {
+    if (this.stopped) return;
+    this.idlePlaceholder = await this.renderer.render(this.lastKeyframe);
+    if (!this.idlePlaceholder || !this.lastKeyframe) {
+      this.logger?.debug?.("[ContinuousVideoStream] no keyframe yet; idle loop deferred");
+      return;
+    }
+    const stepUs = Math.round(1_000_000 / this.idleFps);
+    const videoType = this.lastKeyframe.videoType;
+    this.idleTimer = setInterval(() => {
+      if (!this.idlePlaceholder) return;
+      this.lastMicroseconds += stepUs;
+      this.emit("videoAccessUnit", {
+        data: this.idlePlaceholder,
+        isKeyframe: true,
+        videoType,
+        microseconds: this.lastMicroseconds,
+      });
+    }, Math.round(1000 / this.idleFps));
+  }
+
+  private stopIdleLoop(): void {
+    if (this.idleTimer) {
+      clearInterval(this.idleTimer);
+      this.idleTimer = null;
+    }
+    this.idlePlaceholder = null;
   }
 
   private onLiveAccessUnit = (au: VideoAccessUnit) => {

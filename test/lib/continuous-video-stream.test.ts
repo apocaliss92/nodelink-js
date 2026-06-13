@@ -31,3 +31,33 @@ describe("ContinuousVideoStream live passthrough", () => {
     expect(fake.stop).toHaveBeenCalledOnce();
   });
 });
+
+describe("ContinuousVideoStream idle placeholder", () => {
+  it("emits the cached keyframe at idleFps while idle, with advancing microseconds", async () => {
+    vi.useFakeTimers();
+    const fake = new FakeLiveStream();
+    const cvs = new ContinuousVideoStream({
+      idleFps: 2, // every 500ms
+      placeholder: { enabled: false }, // raw → emits cached keyframe bytes
+      createLiveStream: async () => fake as any,
+    });
+    const seen: { data: Buffer; microseconds: number; isKeyframe: boolean }[] = [];
+    cvs.on("videoAccessUnit", (au) => seen.push({ data: au.data, microseconds: au.microseconds, isKeyframe: au.isKeyframe }));
+
+    await cvs.goLive();
+    const kf = { data: Buffer.from([0, 0, 0, 1, 0x65, 9]), isKeyframe: true, videoType: "H264" as const, microseconds: 1_000_000 };
+    fake.emit("videoAccessUnit", kf);
+    await cvs.goIdle();
+
+    await vi.advanceTimersByTimeAsync(1100); // ~2 placeholder frames at 2fps
+    const placeholders = seen.slice(1); // first was the live keyframe
+    expect(placeholders.length).toBeGreaterThanOrEqual(2);
+    expect(placeholders.every((p) => p.isKeyframe)).toBe(true);
+    expect(placeholders.every((p) => p.data.equals(kf.data))).toBe(true);
+    for (let i = 1; i < seen.length; i++) {
+      expect(seen[i].microseconds).toBeGreaterThan(seen[i - 1].microseconds);
+    }
+    await cvs.stop();
+    vi.useRealTimers();
+  });
+});
