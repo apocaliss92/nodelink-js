@@ -14,7 +14,7 @@ type VideoAccessUnit = {
 };
 
 export interface ContinuousVideoStreamOptions {
-  /** Starts and returns a live BaichuanVideoStream (already `start()`ed). */
+  /** Returns an un-started live BaichuanVideoStream; ContinuousVideoStream calls start() itself. */
   createLiveStream: () => Promise<BaichuanVideoStream>;
   idleFps?: number;
   placeholder?: PlaceholderOptions;
