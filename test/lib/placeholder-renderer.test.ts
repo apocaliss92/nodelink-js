@@ -1,6 +1,15 @@
 // test/lib/placeholder-renderer.test.ts
 import { describe, it, expect } from "vitest";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import { PlaceholderRenderer } from "../../src/baichuan/stream/PlaceholderRenderer";
+import { isH264KeyframeAnnexB } from "../../src/baichuan/stream/H264Converter";
+
+function ffmpegAvailable(): boolean {
+  try { execFileSync("ffmpeg", ["-version"], { stdio: "ignore" }); return true; }
+  catch { return false; }
+}
 
 describe("PlaceholderRenderer raw mode", () => {
   it("returns the cached keyframe unchanged when decoration disabled", async () => {
@@ -14,5 +23,26 @@ describe("PlaceholderRenderer raw mode", () => {
     const renderer = new PlaceholderRenderer({ placeholder: { enabled: false } });
     const out = await renderer.render(null);
     expect(out).toBeNull();
+  });
+});
+
+describe("PlaceholderRenderer decorated mode", () => {
+  it("produces a valid H264 IDR with overlay from a real keyframe", async () => {
+    if (!ffmpegAvailable()) return; // skip where ffmpeg missing
+    const tmp = path.join(process.env.TMPDIR || "/tmp", "ph-src.h264");
+    execFileSync("ffmpeg", [
+      "-hide_banner", "-loglevel", "error",
+      "-f", "lavfi", "-i", "color=c=black:s=320x240:d=0.1",
+      "-frames:v", "1", "-c:v", "libx264", "-bsf:v", "h264_mp4toannexb",
+      "-f", "h264", "-y", tmp,
+    ]);
+    const src = fs.readFileSync(tmp);
+    const renderer = new PlaceholderRenderer({
+      placeholder: { enabled: true, text: "Sleeping", opacity: 0.5 },
+    });
+    const out = await renderer.render({ data: src, videoType: "H264" });
+    expect(out).not.toBeNull();
+    expect(isH264KeyframeAnnexB(out!)).toBe(true);
+    expect(out!.equals(src)).toBe(false); // decorated, not the raw keyframe
   });
 });
