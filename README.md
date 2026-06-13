@@ -102,6 +102,32 @@ For single-owner consumers that already manage their own bridge (e.g. a custom r
 
 ---
 
+## Always-On Stream for Battery Cameras
+
+Battery cameras sleep between events, breaking continuous consumers like Frigate. Both `createRfc4571TcpServer` and `BaichuanRtspServer` accept an `alwaysOn` option that keeps the stream alive: the real feed is served during motion windows; while the camera sleeps the last keyframe is repeated at a low rate, optionally decorated with a dimmed placeholder overlay.
+
+```typescript
+const server = await createRfc4571TcpServer({
+  api,
+  profile: "sub",
+  channel: 0,
+  // ...auth/host...
+  alwaysOn: {
+    enabled: true,
+    triggers: ["motion", "people", "doorbell"], // events that open a live window
+    windowMs: 15000,                            // live window duration in ms
+    idleFps: 1,                                 // placeholder repeat rate while sleeping
+    placeholder: { enabled: true, text: "Sleeping", opacity: 0.5 },
+  },
+});
+```
+
+The decorated placeholder requires **ffmpeg** on PATH and the `jimp` package. Without them the library falls back to repeating the raw last keyframe — the stream stays uninterrupted either way. Works for battery cameras both standalone and attached to an NVR / Home Hub.
+
+See [documentation/streaming.md — Always-On Stream for Battery Cameras](./documentation/streaming.md#always-on-stream-for-battery-cameras) for the full option reference.
+
+---
+
 ## Contributing: Share Your Camera Fixtures
 
 Help improve device support by sharing the API responses from your camera model. The diagnostics dump captures all capability and configuration data (credentials, IPs, and serial numbers are **automatically sanitized**).

@@ -7,6 +7,7 @@ This library provides several streaming server implementations for restreaming c
 - [RTSP Server](#rtsp-server)
 - [RFC 4571 Server](#rfc-4571-server)
 - [HTTP Stream Server](#http-stream-server)
+- [Always-On Stream for Battery Cameras](#always-on-stream-for-battery-cameras)
 
 ---
 
@@ -370,6 +371,159 @@ rtspServer.on("error", async (error) => {
   await rtspServer.start();
 });
 ```
+
+---
+
+## Always-On Stream for Battery Cameras
+
+Battery cameras sleep between events to conserve power, which ordinarily breaks continuous RTSP / RFC 4571 consumers such as **Frigate**. The `alwaysOn` option keeps the stream alive by repeating the last captured keyframe while the camera sleeps and switching back to the live feed the moment a trigger event arrives.
+
+Both `createRfc4571TcpServer` and `BaichuanRtspServer` accept the same `alwaysOn` option.
+
+### How It Works
+
+1. On startup (when `primeOnStart: true`, the default) the library briefly wakes the camera to capture an initial keyframe.
+2. While the camera is awake and inside an active motion window, the real live stream is forwarded to clients.
+3. When the camera sleeps, the last keyframe is repeated at `idleFps` frames per second, optionally decorated with a dimmed overlay and "Sleeping" label via `placeholder`.
+4. Any configured trigger event (motion, doorbell, people, …) opens a new live window of `windowMs` milliseconds. Subsequent events within that window extend it.
+
+### Configuration
+
+```typescript
+alwaysOn?: {
+  /** Enable always-on mode (default: false) */
+  enabled: boolean;
+  /** Events that open a live window (default: ["motion", "doorbell"]) */
+  triggers?: ("motion" | "doorbell" | "people" | "vehicle" | "animal" | "face" | "package")[];
+  /** Live window duration in ms after the last trigger (default: 15000) */
+  windowMs?: number;
+  /** Keyframe repeat rate while sleeping, in fps (default: 1) */
+  idleFps?: number;
+  /** Wake the camera once on start to capture an initial keyframe (default: true) */
+  primeOnStart?: boolean;
+  /** Placeholder overlay shown during idle (requires ffmpeg on PATH + jimp) */
+  placeholder?: {
+    /** Render a decorated placeholder instead of a raw keyframe repeat (default: true) */
+    enabled?: boolean;
+    /** Overlay text (default: "Sleeping") */
+    text?: string;
+    /** Frame opacity 0–1, lower = darker (default: 0.5) */
+    opacity?: number;
+  };
+}
+```
+
+### Option Reference
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | `boolean` | `false` | Must be `true` to activate always-on mode |
+| `triggers` | `string[]` | `["motion","doorbell"]` | Event types that open a live window |
+| `windowMs` | `number` | `15000` | Live window length in ms; extended by new events |
+| `idleFps` | `number` | `1` | Placeholder keyframe repeat rate while sleeping |
+| `primeOnStart` | `boolean` | `true` | Wake camera on server start to capture an initial keyframe |
+| `placeholder.enabled` | `boolean` | `true` | Decorate the idle frame (requires ffmpeg + jimp) |
+| `placeholder.text` | `string` | `"Sleeping"` | Text drawn on the placeholder frame |
+| `placeholder.opacity` | `number` | `0.5` | Frame brightness during idle (0 = black, 1 = full) |
+
+### Usage with `createRfc4571TcpServer` (Scrypted)
+
+```typescript
+import { createRfc4571TcpServer, ReolinkBaichuanApi } from "@apocaliss92/nodelink-js";
+
+const api = new ReolinkBaichuanApi({
+  host: "192.168.1.100",
+  port: 9000,
+  username: "admin",
+  password: "your-password",
+  transport: "udp",
+  uid: "REOLINK-UID-HERE",
+});
+
+await api.login();
+
+const server = await createRfc4571TcpServer({
+  api,
+  profile: "sub",
+  channel: 0,
+  host: "0.0.0.0",
+  logger: console,
+  username: "admin",
+  password: "your-password",
+  alwaysOn: {
+    enabled: true,
+    triggers: ["motion", "people", "doorbell"],
+    windowMs: 20000,
+    idleFps: 1,
+    primeOnStart: true,
+    placeholder: { enabled: true, text: "Sleeping", opacity: 0.5 },
+  },
+});
+
+console.log("RFC 4571 server port:", server.port);
+console.log("SDP:", server.sdp);
+```
+
+### Usage with `BaichuanRtspServer` (Manager / direct use)
+
+```typescript
+import { BaichuanRtspServer, ReolinkBaichuanApi } from "@apocaliss92/nodelink-js";
+
+const rtspServer = new BaichuanRtspServer({
+  api,
+  profile: "sub",
+  channel: 0,
+  listenPort: 8554,
+  logger: console,
+  alwaysOn: {
+    enabled: true,
+    windowMs: 15000,
+  },
+});
+
+await rtspServer.start();
+console.log("RTSP URL:", rtspServer.url);
+// rtsp://localhost:8554/stream  — always live, even when the camera sleeps
+```
+
+### NVR / Home Hub
+
+Always-on works for battery cameras attached to an NVR or Home Hub. Pass the correct `channel` number; events and wake/pull operations are routed through the api for that channel automatically.
+
+```typescript
+// Channel 2 is a battery Argus on an NVR
+const server = await createRfc4571TcpServer({
+  api: nvrApi,
+  profile: "sub",
+  channel: 2,
+  // ...
+  alwaysOn: { enabled: true },
+});
+```
+
+### Dependencies and Fallback
+
+The decorated placeholder (dimmed frame + text overlay) requires:
+
+- **ffmpeg** available on `PATH` (the library already uses ffmpeg for composite/multifocal streams).
+- **`jimp`** npm package (listed as a library dependency).
+
+If ffmpeg is unavailable or `placeholder.enabled` is `false`, the library falls back to repeating the raw last keyframe at `idleFps` with no decoration. The stream remains uninterrupted; only the visual overlay is absent.
+
+### `primeOnStart` Caveat
+
+Keep `primeOnStart: true` (the default). The SDP and keyframe metadata needed to initialise the RTSP / RFC 4571 session are derived from the first real keyframe. With `primeOnStart: false` no keyframe arrives until the first trigger fires, so the server startup keyframe-wait can time out and clients may fail to negotiate the stream.
+
+### Public Exports
+
+The following types and classes are exported from `@apocaliss92/nodelink-js` for advanced use:
+
+| Export | Description |
+|---|---|
+| `AlwaysOnOptions` | Full type definition for the `alwaysOn` option object |
+| `AlwaysOnController` | Internal controller class (start/stop/trigger) |
+| `ContinuousVideoStream` | Wraps a `BaichuanVideoStream` with idle-frame injection |
+| `PlaceholderRenderer` | Generates decorated placeholder frames via ffmpeg + jimp |
 
 ---
 
