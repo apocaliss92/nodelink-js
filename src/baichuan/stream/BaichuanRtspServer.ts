@@ -19,6 +19,10 @@ import type { ReolinkBaichuanApi } from "../../reolink/baichuan/ReolinkBaichuanA
 import type { NativeVideoStreamVariant } from "../../reolink/baichuan/types";
 import type { Logger } from "../../debug/DebugConfig";
 import { createNativeStream } from "../../rfc/helpers";
+import { BaichuanVideoStream } from "./BaichuanVideoStream";
+import { ContinuousVideoStream } from "./ContinuousVideoStream";
+import { AlwaysOnController } from "./AlwaysOnController";
+import type { AlwaysOnOptions } from "./alwaysOnTypes";
 import { createRtspFlow, type RtspFlow, type RtspVideoType } from "./rtspFlow";
 import { convertToAnnexB as convertH264ToAnnexB } from "./H264Converter";
 import {
@@ -273,6 +277,16 @@ export interface BaichuanRtspServerOptions {
    * Default: false (keep existing behaviour).
    */
   lazyMetadata?: boolean;
+
+  /**
+   * Always-on continuous stream (battery cameras). When `enabled`, the server
+   * sources video from a {@link ContinuousVideoStream} (real frames during
+   * event-driven live windows, a low-fps placeholder while the camera sleeps)
+   * driven by an {@link AlwaysOnController}. The controller owns the sleep/wake
+   * decision, so the server's own battery idle-stop timers are suppressed.
+   * When omitted/disabled the server behaves exactly as before.
+   */
+  alwaysOn?: AlwaysOnOptions;
 }
 
 /**
@@ -306,6 +320,13 @@ export class BaichuanRtspServer extends EventEmitter<{
   private deviceId: string | undefined;
   private dedicatedSessionRelease: (() => Promise<void>) | undefined;
   private externalListener: boolean;
+
+  // Always-on continuous stream (battery cameras). Populated only when
+  // `options.alwaysOn?.enabled`; the default (non-alwaysOn) path leaves these
+  // null/undefined and is byte-for-byte equivalent in behaviour.
+  private readonly alwaysOnOptions: AlwaysOnOptions | undefined;
+  private continuousStream: ContinuousVideoStream | null = null;
+  private alwaysOnController: AlwaysOnController | null = null;
 
   // Authentication
   private authCredentials: Array<{
@@ -620,6 +641,7 @@ export class BaichuanRtspServer extends EventEmitter<{
     this.requireAuth = options.requireAuth ?? this.authCredentials.length > 0;
     this.AUTH_REALM = options.authRealm ?? "BaichuanRtspServer";
     this.lazyMetadata = options.lazyMetadata ?? false;
+    this.alwaysOnOptions = options.alwaysOn;
 
     // Default flow is conservative (tcp+h264); it will be refined from metadata or first frames.
     const transport = this.api.client.getTransport();
@@ -2555,6 +2577,198 @@ export class BaichuanRtspServer extends EventEmitter<{
   }
 
   /**
+   * Always-on source: bridge a {@link ContinuousVideoStream} into the existing
+   * fanout. Yields the same frame shape that `createNativeStream` produces, so
+   * the rest of the pipeline (prebuffer, param-set extraction, per-client
+   * subscribe, ffmpeg/direct-RTP) is unchanged.
+   *
+   * The CVS itself is long-lived (created once, reused across native-stream
+   * restarts) and is driven by the {@link AlwaysOnController}, which opens/closes
+   * live windows from camera events. Each fanout source generator only forwards
+   * CVS events to the fanout pump for as long as `signal` is not aborted.
+   */
+  private async *createContinuousSource(
+    dedicatedClient:
+      | import("../../client/BaichuanClient").BaichuanClient
+      | undefined,
+    signal: AbortSignal,
+  ): AsyncGenerator<
+    {
+      audio: boolean;
+      data: Buffer;
+      codec: string | null;
+      sampleRate: number | null;
+      microseconds: number | null;
+      videoType?: "H264" | "H265";
+      isKeyframe?: boolean;
+    },
+    void,
+    unknown
+  > {
+    const cvs = this.ensureContinuousStream(dedicatedClient);
+
+    type SourceFrame = {
+      audio: boolean;
+      data: Buffer;
+      codec: string | null;
+      sampleRate: number | null;
+      microseconds: number | null;
+      videoType?: "H264" | "H265";
+      isKeyframe?: boolean;
+    };
+
+    const queue: SourceFrame[] = [];
+    const MAX_QUEUE = 200;
+    let wake: (() => void) | null = null;
+    let done = false;
+
+    const push = (frame: SourceFrame) => {
+      queue.push(frame);
+      if (queue.length > MAX_QUEUE) {
+        queue.splice(0, queue.length - MAX_QUEUE);
+      }
+      if (wake) {
+        const w = wake;
+        wake = null;
+        w();
+      }
+    };
+
+    const onVideo = (au: {
+      data: Buffer;
+      isKeyframe: boolean;
+      videoType: "H264" | "H265";
+      microseconds: number;
+    }) => {
+      push({
+        audio: false,
+        data: au.data,
+        codec: null,
+        sampleRate: null,
+        microseconds: au.microseconds,
+        videoType: au.videoType,
+        isKeyframe: au.isKeyframe,
+      });
+    };
+    const onAudio = (frame: Buffer) => {
+      push({
+        audio: true,
+        data: frame,
+        codec: "aac",
+        sampleRate: 8000,
+        microseconds: null,
+      });
+    };
+    const finish = () => {
+      done = true;
+      if (wake) {
+        const w = wake;
+        wake = null;
+        w();
+      }
+    };
+    const onAbort = () => finish();
+
+    cvs.on("videoAccessUnit", onVideo);
+    cvs.on("audioFrame", onAudio);
+    cvs.on("close", finish);
+    if (signal.aborted) {
+      done = true;
+    } else {
+      signal.addEventListener("abort", onAbort);
+    }
+
+    try {
+      while (!done && !signal.aborted) {
+        if (queue.length > 0) {
+          yield queue.shift()!;
+        } else {
+          await new Promise<void>((resolve) => {
+            wake = resolve;
+            if (done || signal.aborted) {
+              wake = null;
+              resolve();
+            }
+          });
+        }
+      }
+      // Drain whatever is left so a clean close still delivers buffered frames.
+      while (queue.length > 0 && !signal.aborted) {
+        yield queue.shift()!;
+      }
+    } finally {
+      cvs.off("videoAccessUnit", onVideo);
+      cvs.off("audioFrame", onAudio);
+      cvs.off("close", finish);
+      signal.removeEventListener("abort", onAbort);
+    }
+  }
+
+  /**
+   * Lazily build the long-lived {@link ContinuousVideoStream} +
+   * {@link AlwaysOnController} for always-on mode. Both are created once and
+   * reused for the lifetime of the server (across native-stream restarts).
+   */
+  private ensureContinuousStream(
+    dedicatedClient:
+      | import("../../client/BaichuanClient").BaichuanClient
+      | undefined,
+  ): ContinuousVideoStream {
+    if (this.continuousStream) return this.continuousStream;
+
+    const createLiveStream = async (): Promise<BaichuanVideoStream> => {
+      // Return an UN-started BaichuanVideoStream — ContinuousVideoStream owns
+      // start() (calling start() twice throws "Video stream already active").
+      const client = dedicatedClient ?? this.api.client;
+      return new BaichuanVideoStream({
+        client,
+        api: this.api,
+        channel: this.channel,
+        profile: this.profile,
+        ...(this.variant !== "default" ? { variant: this.variant } : {}),
+        ...(this.logger ? { logger: this.logger } : {}),
+      });
+    };
+
+    const cvsOptions: import("./ContinuousVideoStream").ContinuousVideoStreamOptions =
+      {
+        createLiveStream,
+        ...(this.alwaysOnOptions?.idleFps !== undefined
+          ? { idleFps: this.alwaysOnOptions.idleFps }
+          : {}),
+        ...(this.alwaysOnOptions?.placeholder !== undefined
+          ? { placeholder: this.alwaysOnOptions.placeholder }
+          : {}),
+        ...(this.logger ? { logger: this.logger } : {}),
+      };
+    const cvs = new ContinuousVideoStream(cvsOptions);
+    cvs.on("error", (e) => {
+      this.logger.warn(
+        `[BaichuanRtspServer] ContinuousVideoStream error: ${e?.message ?? e}`,
+      );
+    });
+    this.continuousStream = cvs;
+
+    // The controller owns the sleep/wake decision; it primes once, opens a
+    // window per event, and calls goLive/goIdle on the CVS.
+    this.alwaysOnController = new AlwaysOnController({
+      api: this.api,
+      channel: this.channel,
+      options: this.alwaysOnOptions!,
+      goLive: () => cvs.goLive(),
+      goIdle: () => cvs.goIdle(),
+      ...(this.logger ? { logger: this.logger } : {}),
+    });
+    void this.alwaysOnController.start().catch((e) => {
+      this.logger.warn(
+        `[BaichuanRtspServer] AlwaysOnController start failed: ${(e as Error)?.message ?? e}`,
+      );
+    });
+
+    return cvs;
+  }
+
+  /**
    * Start native stream (mark as active).
    * Each client will create its own generator, so we just track that the stream is active.
    */
@@ -2636,11 +2850,13 @@ export class BaichuanRtspServer extends EventEmitter<{
     this.nativeFanout = new NativeStreamFanout({
       maxQueueItems: 200,
       createSource: (signal) =>
-        createNativeStream(this.api, this.channel, this.profile, {
-          variant: this.variant,
-          ...(dedicatedClient ? { client: dedicatedClient } : {}),
-          signal,
-        }),
+        this.alwaysOnOptions?.enabled
+          ? this.createContinuousSource(dedicatedClient, signal)
+          : createNativeStream(this.api, this.channel, this.profile, {
+              variant: this.variant,
+              ...(dedicatedClient ? { client: dedicatedClient } : {}),
+              signal,
+            }),
       onFrame: (frame) => {
         if (frame.audio) {
           // Detect audio from any transport (TCP or UDP/BCUDP both carry ADTS AAC).
@@ -2776,7 +2992,9 @@ export class BaichuanRtspServer extends EventEmitter<{
     // even when go2rtc is connected. Without this, the BaichuanVideoStream
     // watchdog fires after 60s idle and re-wakes the battery camera.
     this.clearNoFrameDeadlineTimer();
-    if (this.nativeStreamNoFrameDeadlineMs > 0) {
+    // Always-on mode: the AlwaysOnController owns the sleep/wake decision, so the
+    // server must NOT tear the stream down when the camera is idle/sleeping.
+    if (this.nativeStreamNoFrameDeadlineMs > 0 && !this.alwaysOnOptions?.enabled) {
       this.noFrameDeadlineTimer = setTimeout(() => {
         this.noFrameDeadlineTimer = undefined;
         if (!this.firstFrameReceived && this.nativeStreamActive) {
@@ -2794,7 +3012,9 @@ export class BaichuanRtspServer extends EventEmitter<{
     // auto-stop after a short window so battery cams can go back to sleep.
     // Disabled when nativeStreamPrimeIdleStopMs === 0 (always-mounted mode).
     this.clearNoClientAutoStopTimer();
-    if (this.nativeStreamPrimeIdleStopMs > 0) {
+    // Always-on mode: never auto-stop on a primed-but-no-client window; the
+    // controller keeps the continuous stream alive across viewer churn.
+    if (this.nativeStreamPrimeIdleStopMs > 0 && !this.alwaysOnOptions?.enabled) {
       this.noClientAutoStopTimer = setTimeout(() => {
         if (this.connectedClients.size === 0) {
           this.rtspDebugLog(
@@ -2902,7 +3122,9 @@ export class BaichuanRtspServer extends EventEmitter<{
       // nativeStreamIdleStopMs === 0: keep Baichuan stream running for go2rtc / remount.
       if (this.connectedClients.size === 0) {
         this.clearNoClientAutoStopTimer();
-        if (this.nativeStreamIdleStopMs > 0) {
+        // Always-on mode: the controller owns lifecycle — do not stop the
+        // native/continuous stream just because the last RTSP viewer left.
+        if (this.nativeStreamIdleStopMs > 0 && !this.alwaysOnOptions?.enabled) {
           this.noClientAutoStopTimer = setTimeout(() => {
             if (this.connectedClients.size === 0) {
               void this.stopNativeStream();
@@ -2988,6 +3210,20 @@ export class BaichuanRtspServer extends EventEmitter<{
     this.logger.info(
       `[BaichuanRtspServer] Stopping RTSP server on ${this.listenHost}:${this.listenPort}...`,
     );
+
+    // Always-on teardown: stop the controller (detaches event listeners,
+    // closes any open window) and the continuous stream (goes idle + closes)
+    // before tearing down the native stream and client sockets.
+    if (this.alwaysOnController) {
+      const controller = this.alwaysOnController;
+      this.alwaysOnController = null;
+      await controller.stop().catch(() => {});
+    }
+    if (this.continuousStream) {
+      const cvs = this.continuousStream;
+      this.continuousStream = null;
+      await cvs.stop().catch(() => {});
+    }
 
     // Stop native stream
     await this.stopNativeStream();
