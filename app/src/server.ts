@@ -1010,7 +1010,7 @@ process.on("unhandledRejection", (reason) => {
 server.listen(PORT, async () => {
   appLogger.info(`Server started on port ${PORT}`, { source: "server" });
 
-  const rtspPort = settings.localRtsp?.port ?? 8554;
+  const rtspPort = Number(process.env.RTSP_PORT) || settings.localRtsp?.port || 8554;
   const VITE_PORT = Number(process.env.VITE_PORT) || 5173;
   appLogger.info(
     `\n╔═══════════════════════════════════════════════════════════════╗\n` +

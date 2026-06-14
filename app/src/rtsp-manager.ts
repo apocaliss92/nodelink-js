@@ -81,7 +81,7 @@ export function getRtspServerKey(
  */
 export async function ensureLocalRtspMux() {
   const settings = getSettings();
-  const port = settings.localRtsp?.port ?? 8554;
+  const port = Number(process.env.RTSP_PORT) || settings.localRtsp?.port || 8554;
   const bindHost = settings.localRtsp?.bindHost ?? "0.0.0.0";
 
   const logger = createSourceLogger("rtsp-mux");
@@ -1182,7 +1182,7 @@ export async function startRtspServer(
   // Every stream shares the single LocalRtspMux port. No per-stream
   // allocation, no port-availability probing — the mux reads the first
   // request line and dispatches by path.
-  const port = settings.localRtsp?.port ?? 8554;
+  const port = Number(process.env.RTSP_PORT) || settings.localRtsp?.port || 8554;
 
   // Build RTSP path using friendly name (camera-name/profile or camera-name/profile/channel for multifocal)
   // For multifocal with channel > 0, append /channel to avoid path collision (e.g. /camera/main/1 for tele)

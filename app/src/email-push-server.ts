@@ -53,7 +53,7 @@ let instance: EmailPushServerInstance | undefined;
 function buildConfig(): EmailPushServerConfig {
   const s = getSettings().emailPush;
   return {
-    port: s.port,
+    port: Number(process.env.EMAIL_PUSH_PORT) || s.port,
     bindHost: s.bindHost,
     domain: s.domain,
     requireAuth: s.requireAuth,
