@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { trpcMutation } from '../../api';
 import { Toggle, NumberInput, TextInput, RangeInput } from './settings-tabs/shared';
-import type { CameraInfo } from './types';
+import type { CameraInfo, PermanentStreamTrigger } from './types';
 
 type PermanentStreamValue = NonNullable<CameraInfo['permanentStream']>;
 
@@ -14,6 +14,18 @@ const DEFAULT_WINDOW_SECONDS = 15;
 const DEFAULT_PLACEHOLDER_TEXT = 'Sleeping';
 const DEFAULT_PLACEHOLDER_OPACITY = 0.5;
 
+// Library default when triggers is omitted (AlwaysOnOptions defaults).
+const DEFAULT_TRIGGERS: PermanentStreamTrigger[] = ['motion', 'doorbell'];
+const TRIGGER_OPTIONS: { value: PermanentStreamTrigger; label: string }[] = [
+  { value: 'motion', label: 'Motion' },
+  { value: 'doorbell', label: 'Doorbell' },
+  { value: 'people', label: 'Person' },
+  { value: 'vehicle', label: 'Vehicle' },
+  { value: 'animal', label: 'Animal' },
+  { value: 'face', label: 'Face' },
+  { value: 'package', label: 'Package' },
+];
+
 /**
  * Permanent (continuous) RTSP stream control for battery cameras. When
  * enabled, the RTSP server keeps serving frames continuously so downstream
@@ -25,6 +37,16 @@ export function PermanentStreamControl({ cameraId, value }: PermanentStreamContr
   const [saving, setSaving] = useState(false);
 
   const enabled = Boolean(config.enabled);
+  const activeTriggers = config.triggers ?? DEFAULT_TRIGGERS;
+
+  const toggleTrigger = (t: PermanentStreamTrigger) => {
+    const next = activeTriggers.includes(t)
+      ? activeTriggers.filter((x) => x !== t)
+      : [...activeTriggers, t];
+    // Keep at least one trigger so the stream can still wake.
+    if (next.length === 0) return;
+    persist({ ...config, triggers: next });
+  };
 
   const persist = (next: PermanentStreamValue) => {
     setConfig(next);
@@ -33,6 +55,7 @@ export function PermanentStreamControl({ cameraId, value }: PermanentStreamContr
       id: cameraId,
       config: {
         enabled: Boolean(next.enabled),
+        ...(next.triggers !== undefined ? { triggers: next.triggers } : {}),
         ...(next.windowSeconds !== undefined ? { windowSeconds: next.windowSeconds } : {}),
         ...(next.idleFps !== undefined ? { idleFps: next.idleFps } : {}),
         ...(next.placeholderText !== undefined ? { placeholderText: next.placeholderText } : {}),
@@ -66,6 +89,35 @@ export function PermanentStreamControl({ cameraId, value }: PermanentStreamContr
 
       {enabled ? (
         <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-1">
+            <span className="text-[11px] text-[var(--color-foreground-muted)]">
+              Wake on
+            </span>
+            <div className="flex flex-wrap gap-1">
+              {TRIGGER_OPTIONS.map((opt) => {
+                const on = activeTriggers.includes(opt.value);
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => toggleTrigger(opt.value)}
+                    className={[
+                      'rounded-full px-2 py-0.5 text-[10px] border transition-colors',
+                      on
+                        ? 'border-[var(--color-primary)] bg-[var(--color-primary)] text-white'
+                        : 'border-[var(--color-border)] text-[var(--color-foreground-muted)] hover:bg-[var(--color-surface-hover)]',
+                    ].join(' ')}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+            <span className="text-[10px] text-[var(--color-foreground-subtle)]">
+              While the camera sleeps these arrive via Email Push.
+            </span>
+          </div>
+
           <div className="flex items-center justify-between gap-2">
             <span className="text-[11px] text-[var(--color-foreground-muted)]">Window (s)</span>
             <div className="w-24">

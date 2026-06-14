@@ -1011,6 +1011,19 @@ export const camerasRouter = router({
         id: z.string(),
         config: z.object({
           enabled: z.boolean(),
+          triggers: z
+            .array(
+              z.enum([
+                "motion",
+                "doorbell",
+                "people",
+                "vehicle",
+                "animal",
+                "face",
+                "package",
+              ]),
+            )
+            .optional(),
           windowSeconds: z.number().int().min(1).max(600).optional(),
           idleFps: z.number().min(0.1).max(30).optional(),
           placeholderText: z.string().optional(),

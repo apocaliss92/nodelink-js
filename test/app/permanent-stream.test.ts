@@ -45,6 +45,23 @@ describe("CameraConfigSchema permanentStream", () => {
     expect(parsed.permanentStream?.enabled).toBe(false);
   });
 
+  it("accepts a triggers array and round-trips it", () => {
+    const parsed = CameraConfigSchema.parse({
+      ...base,
+      permanentStream: { enabled: true, triggers: ["motion", "people"] },
+    });
+    expect(parsed.permanentStream?.triggers).toEqual(["motion", "people"]);
+  });
+
+  it("rejects an unknown trigger value", () => {
+    expect(() =>
+      CameraConfigSchema.parse({
+        ...base,
+        permanentStream: { enabled: true, triggers: ["bogus"] },
+      }),
+    ).toThrow();
+  });
+
   it("rejects windowSeconds out of range", () => {
     expect(() =>
       CameraConfigSchema.parse({

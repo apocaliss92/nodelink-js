@@ -1264,6 +1264,9 @@ export async function startRtspServer(
       ps?.enabled
         ? {
             enabled: true,
+            ...(ps.triggers !== undefined && ps.triggers.length > 0
+              ? { triggers: ps.triggers }
+              : {}),
             ...(ps.windowSeconds !== undefined
               ? { windowMs: ps.windowSeconds * 1000 }
               : {}),

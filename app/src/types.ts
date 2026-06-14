@@ -46,6 +46,21 @@ export const CameraConfigSchema = z.object({
   permanentStream: z
     .object({
       enabled: z.boolean().default(false),
+      // Event types that open a live window (wake + real stream). When omitted
+      // the library defaults to motion + doorbell.
+      triggers: z
+        .array(
+          z.enum([
+            "motion",
+            "doorbell",
+            "people",
+            "vehicle",
+            "animal",
+            "face",
+            "package",
+          ]),
+        )
+        .optional(),
       windowSeconds: z.number().int().min(1).max(600).optional(),
       idleFps: z.number().min(0.1).max(30).optional(),
       placeholderText: z.string().optional(),

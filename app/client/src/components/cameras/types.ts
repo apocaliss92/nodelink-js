@@ -1,5 +1,14 @@
 export type StreamProfile = "main" | "sub" | "ext";
 
+export type PermanentStreamTrigger =
+  | "motion"
+  | "doorbell"
+  | "people"
+  | "vehicle"
+  | "animal"
+  | "face"
+  | "package";
+
 export type AvailableStream = {
   id: string;
   profile: StreamProfile;
@@ -46,6 +55,7 @@ export type CameraInfo = {
   batteryMode?: "alwaysOn" | "streamOnly";
   permanentStream?: {
     enabled?: boolean;
+    triggers?: PermanentStreamTrigger[];
     windowSeconds?: number;
     idleFps?: number;
     placeholderText?: string;
