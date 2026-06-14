@@ -54,6 +54,41 @@ describe("PlaceholderRenderer decorated mode", () => {
     expect(out!.equals(src)).toBe(false); // decorated, not the raw keyframe
   });
 
+  it("dims the still WITHOUT blacking it out (regression: jimp v1 brightness)", async () => {
+    if (!ffmpegAvailable()) return; // skip where ffmpeg missing
+    // A mid-gray source: if the dim blacks the frame out (the old
+    // brightness(opacity-1) bug under jimp v1), the decoded mean luma collapses
+    // to ~0. With a correct multiply-by-opacity dim it stays clearly non-black.
+    const tmp = path.join(process.env.TMPDIR || "/tmp", "ph-src-gray.h264");
+    execFileSync("ffmpeg", [
+      "-hide_banner", "-loglevel", "error",
+      "-f", "lavfi", "-i", "color=c=gray:s=320x240:d=0.1",
+      "-frames:v", "1", "-c:v", "libx264", "-bsf:v", "h264_mp4toannexb",
+      "-f", "h264", "-y", tmp,
+    ]);
+    const src = fs.readFileSync(tmp);
+    const renderer = new PlaceholderRenderer({
+      placeholder: { enabled: true, text: "Sleeping", opacity: 0.5 },
+    });
+    const out = await renderer.render({ data: src, videoType: "H264" });
+    expect(out).not.toBeNull();
+    expect(isH264KeyframeAnnexB(out!)).toBe(true);
+
+    // Decode the produced IDR to a single averaged gray pixel and read its luma.
+    const meanLuma = execFileSync(
+      "ffmpeg",
+      [
+        "-hide_banner", "-loglevel", "error",
+        "-f", "h264", "-i", "pipe:0",
+        "-frames:v", "1", "-vf", "scale=1:1", "-pix_fmt", "gray",
+        "-f", "rawvideo", "pipe:1",
+      ],
+      { input: out!, maxBuffer: 1024 },
+    )[0]!;
+    // Mid-gray (~128) dimmed to ~50% ⇒ ~64. The bug produced ~0 (black).
+    expect(meanLuma).toBeGreaterThan(20);
+  });
+
   it("produces a valid H265 IDR with overlay from a real keyframe", async () => {
     if (!ffmpegAvailable() || !libx265Available()) return; // skip where ffmpeg/libx265 missing
     const tmp = path.join(process.env.TMPDIR || "/tmp", "ph-src.h265");

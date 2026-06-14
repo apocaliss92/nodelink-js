@@ -1,7 +1,7 @@
 // src/baichuan/stream/PlaceholderRenderer.ts
 import { spawn } from "node:child_process";
-import { Jimp, JimpMime, loadFont } from "jimp";
-import { SANS_32_WHITE } from "jimp/fonts";
+import { Jimp, JimpMime, loadFont, measureText, measureTextHeight } from "jimp";
+import { SANS_32_WHITE, SANS_64_WHITE, SANS_128_WHITE } from "jimp/fonts";
 import type { PlaceholderOptions } from "./alwaysOnTypes";
 import { ALWAYS_ON_DEFAULTS } from "./alwaysOnTypes";
 
@@ -122,14 +122,35 @@ export class PlaceholderRenderer {
   /** Dims the still and prints the overlay text using jimp, returning a JPEG buffer. */
   private async decorate(jpeg: Buffer): Promise<Buffer> {
     const image = await Jimp.read(jpeg);
-    // opacity is "1 = original brightness"; brightness() takes a delta where
-    // negative values darken. opacity 0.5 -> brightness(-0.5).
-    const delta = Math.max(0, Math.min(1, this.opts.opacity)) - 1;
-    if (delta !== 0) {
-      image.brightness(delta);
+    // Dim the still by multiplying each RGB channel by `opacity` (0.5 = 50%
+    // brightness). NOTE: do NOT use jimp's brightness() — in jimp v1 its
+    // semantics changed and brightness(opacity-1) blacks out the whole frame
+    // (e.g. brightness(-0.5) maps mid-gray to 0), which is why the placeholder
+    // used to render as a black background with only the text visible.
+    const op = Math.max(0, Math.min(1, this.opts.opacity));
+    if (op < 1) {
+      const data = image.bitmap.data;
+      for (let i = 0; i < data.length; i += 4) {
+        data[i] = data[i]! * op; // R
+        data[i + 1] = data[i + 1]! * op; // G
+        data[i + 2] = data[i + 2]! * op; // B
+        // alpha (i+3) untouched
+      }
     }
-    const font = await loadFont(SANS_32_WHITE);
-    image.print({ font, x: 10, y: 10, text: this.opts.text });
+    // Scale the overlay font to the frame size and center it.
+    const fontDef =
+      image.width >= 1280
+        ? SANS_128_WHITE
+        : image.width >= 640
+          ? SANS_64_WHITE
+          : SANS_32_WHITE;
+    const font = await loadFont(fontDef);
+    const text = this.opts.text;
+    const textWidth = measureText(font, text);
+    const textHeight = measureTextHeight(font, text, image.width);
+    const x = Math.max(0, Math.round((image.width - textWidth) / 2));
+    const y = Math.max(0, Math.round((image.height - textHeight) / 2));
+    image.print({ font, x, y, text });
     return image.getBuffer(JimpMime.jpeg);
   }
 
