@@ -1,7 +1,7 @@
 // src/baichuan/stream/PlaceholderRenderer.ts
 import { spawn } from "node:child_process";
-import { Jimp, JimpMime, loadFont } from "jimp";
-import { SANS_32_WHITE } from "jimp/fonts";
+import { Jimp, JimpMime, loadFont, measureText, measureTextHeight } from "jimp";
+import { SANS_32_WHITE, SANS_64_WHITE, SANS_128_WHITE } from "jimp/fonts";
 import type { PlaceholderOptions } from "./alwaysOnTypes";
 import { ALWAYS_ON_DEFAULTS } from "./alwaysOnTypes";
 
@@ -128,8 +128,21 @@ export class PlaceholderRenderer {
     if (delta !== 0) {
       image.brightness(delta);
     }
-    const font = await loadFont(SANS_32_WHITE);
-    image.print({ font, x: 10, y: 10, text: this.opts.text });
+    // Scale the overlay font to the frame size so the text is legible on both
+    // sub (≈640px) and main (≥1080p) streams, then center it.
+    const fontDef =
+      image.width >= 1280
+        ? SANS_128_WHITE
+        : image.width >= 640
+          ? SANS_64_WHITE
+          : SANS_32_WHITE;
+    const font = await loadFont(fontDef);
+    const text = this.opts.text;
+    const textWidth = measureText(font, text);
+    const textHeight = measureTextHeight(font, text, image.width);
+    const x = Math.max(0, Math.round((image.width - textWidth) / 2));
+    const y = Math.max(0, Math.round((image.height - textHeight) / 2));
+    image.print({ font, x, y, text });
     return image.getBuffer(JimpMime.jpeg);
   }
 

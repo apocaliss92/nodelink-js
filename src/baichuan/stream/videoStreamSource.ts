@@ -59,12 +59,14 @@ export async function* subscribeVideoStreamAsSource(
   const queue: SourceFrame[] = [];
   let wake: (() => void) | null = null;
   let done = false;
+  // When the queue overflows on inter-frame codecs (H.264/H.265), dropping
+  // arbitrary frames breaks the decoder reference chain (missing refs → the
+  // client can't render, especially H.265). Instead we discard the backlog and
+  // resync on the next keyframe, dropping non-keyframes until an IDR arrives.
+  // This mirrors createNativeStream's backpressure handling.
+  let needKeyframeResync = false;
 
-  const push = (frame: SourceFrame) => {
-    queue.push(frame);
-    if (queue.length > maxQueue) {
-      queue.splice(0, queue.length - maxQueue);
-    }
+  const wakeUp = () => {
     if (wake) {
       const w = wake;
       wake = null;
@@ -73,7 +75,11 @@ export async function* subscribeVideoStreamAsSource(
   };
 
   const onVideo = (au: VideoAccessUnitLike) => {
-    push({
+    // While resyncing, drop everything until the next keyframe.
+    if (needKeyframeResync && !au.isKeyframe) return;
+    if (needKeyframeResync && au.isKeyframe) needKeyframeResync = false;
+
+    queue.push({
       audio: false,
       data: au.data,
       codec: null,
@@ -82,15 +88,28 @@ export async function* subscribeVideoStreamAsSource(
       videoType: au.videoType,
       isKeyframe: au.isKeyframe,
     });
+
+    if (queue.length > maxQueue) {
+      // Discard the whole backlog (incl. stale audio) and wait for the next IDR
+      // instead of dropping arbitrary frames mid-GOP.
+      queue.length = 0;
+      needKeyframeResync = true;
+    }
+    wakeUp();
   };
   const onAudio = (frame: Buffer) => {
-    push({
+    queue.push({
       audio: true,
       data: frame,
       codec: audioCodec,
       sampleRate: audioSampleRate,
       microseconds: null,
     });
+    // Audio has no inter-frame references, so dropping the oldest is safe.
+    if (queue.length > maxQueue) {
+      queue.splice(0, queue.length - maxQueue);
+    }
+    wakeUp();
   };
   const finish = () => {
     done = true;

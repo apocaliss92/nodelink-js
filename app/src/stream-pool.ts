@@ -151,7 +151,15 @@ async function createSharedStream(
     // self-teardown must be disabled (it would otherwise drop the shared
     // source — especially once an always-on stream goes idle).
     disableIdleTeardown: true,
-    uptimeRestartMs: 10_000,
+    // The pool owns the source lifecycle (consumer refcount + the stream's own
+    // error/close handler), so the RFC-level uptime watchdog must stay OFF.
+    // With disableIdleTeardown the source is held open even with no active
+    // puller; on a battery camera with no consumers pulling, the camera goes to
+    // sleep and stops sending — a uptime-restart would then fight the sleep
+    // (restart → wake → D2C_DISC → cooldown → restart …), an endless loop.
+    // When the camera genuinely sleeps/disconnects, the stream emits close/error
+    // and the pool tears it down cleanly instead.
+    uptimeRestartMs: 0,
     logger: {
       log: (msg: unknown) => streamLogger.info(String(msg)),
       info: (msg: string) => streamLogger.info(msg),

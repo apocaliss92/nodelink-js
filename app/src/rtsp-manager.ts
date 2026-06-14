@@ -1502,6 +1502,75 @@ export async function restartRtspServer(
   return startRtspServer(cameraId, restartOptions);
 }
 
+/**
+ * Rebuild every running stream for a camera so a changed source-level setting
+ * (e.g. permanent/always-on stream) takes effect.
+ *
+ * The always-on config is baked into the shared pool source at creation time,
+ * and `acquireStream` returns the cached source — so a plain RTSP restart would
+ * re-attach to the same source with the OLD config. We therefore stop the RTSP
+ * servers, force-tear-down the shared pool sources (so they are recreated with
+ * the new config), then restart the servers.
+ */
+export async function rebuildCameraStreams(cameraId: string): Promise<void> {
+  const logger = createSourceLogger("rtsp-manager", cameraId);
+
+  // Snapshot the RTSP servers that are currently running for this camera.
+  const running: Array<{
+    profile: "main" | "sub" | "ext";
+    channel: number;
+    port: number;
+  }> = [];
+  for (const [, entry] of rtspServers) {
+    if (entry.info.cameraId === cameraId && entry.info.status === "running") {
+      running.push({
+        profile: entry.info.profile,
+        channel: entry.info.channel,
+        port: entry.info.port,
+      });
+    }
+  }
+
+  if (running.length === 0) {
+    // Nothing running — still drop any cached shared sources so the next
+    // consumer picks up the new config.
+    releaseStreamsByCamera(cameraId);
+    logger.info(
+      "rebuildCameraStreams: no running RTSP servers; cleared shared sources",
+    );
+    return;
+  }
+
+  logger.info(
+    `rebuildCameraStreams: restarting ${running.length} stream(s) to apply new source settings`,
+  );
+
+  // Stop the RTSP servers (releases their pool consumers + unregisters mux paths).
+  for (const r of running) {
+    await stopRtspServer(cameraId, {
+      profile: r.profile,
+      channel: r.channel,
+    }).catch(() => {});
+  }
+
+  // Force-tear-down the shared sources NOW so acquireStream rebuilds them with
+  // the new always-on config instead of returning the cached (old) source.
+  releaseStreamsByCamera(cameraId);
+
+  // Restart the servers → fresh shared sources with the new config.
+  for (const r of running) {
+    await startRtspServer(cameraId, {
+      profile: r.profile,
+      channel: r.channel,
+      port: r.port,
+    }).catch((err) =>
+      logger.error(
+        `rebuildCameraStreams: failed to restart ${r.profile}: ${err}`,
+      ),
+    );
+  }
+}
+
 // Start all configured streams for a camera
 export async function startAllCameraStreams(
   cameraId: string,

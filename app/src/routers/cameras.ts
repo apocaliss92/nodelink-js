@@ -39,6 +39,7 @@ import {
   clearConnLogs,
   appendConnLog,
   getExistingApiConnection,
+  rebuildCameraStreams,
 } from "../rtsp-manager.js";
 import { getCameraSleepStatus, getCameraBatteryState } from "../events-manager.js";
 import { RtspStreamConfigSchema } from "../types.js";
@@ -1032,8 +1033,11 @@ export const camerasRouter = router({
         }),
       }),
     )
-    .mutation(({ input }) => {
+    .mutation(async ({ input }) => {
       updateCamera(input.id, { permanentStream: input.config });
+      // The always-on config is baked into the shared pool source at creation
+      // time, so rebuild any running streams for this camera to apply it.
+      await rebuildCameraStreams(input.id).catch(() => {});
       return { success: true };
     }),
 

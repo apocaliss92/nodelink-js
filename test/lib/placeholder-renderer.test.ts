@@ -54,6 +54,26 @@ describe("PlaceholderRenderer decorated mode", () => {
     expect(out!.equals(src)).toBe(false); // decorated, not the raw keyframe
   });
 
+  it("centers and scales the overlay on a large (720p) frame without error", async () => {
+    if (!ffmpegAvailable()) return; // skip where ffmpeg missing
+    // 1280x720 exercises the SANS_128 font branch + centered placement.
+    const tmp = path.join(process.env.TMPDIR || "/tmp", "ph-src-720p.h264");
+    execFileSync("ffmpeg", [
+      "-hide_banner", "-loglevel", "error",
+      "-f", "lavfi", "-i", "color=c=black:s=1280x720:d=0.1",
+      "-frames:v", "1", "-c:v", "libx264", "-bsf:v", "h264_mp4toannexb",
+      "-f", "h264", "-y", tmp,
+    ]);
+    const src = fs.readFileSync(tmp);
+    const renderer = new PlaceholderRenderer({
+      placeholder: { enabled: true, text: "Sleeping", opacity: 0.5 },
+    });
+    const out = await renderer.render({ data: src, videoType: "H264" });
+    expect(out).not.toBeNull();
+    expect(isH264KeyframeAnnexB(out!)).toBe(true);
+    expect(out!.equals(src)).toBe(false); // decorated, not the raw keyframe
+  });
+
   it("produces a valid H265 IDR with overlay from a real keyframe", async () => {
     if (!ffmpegAvailable() || !libx265Available()) return; // skip where ffmpeg/libx265 missing
     const tmp = path.join(process.env.TMPDIR || "/tmp", "ph-src.h265");

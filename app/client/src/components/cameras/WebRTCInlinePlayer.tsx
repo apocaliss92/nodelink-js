@@ -254,6 +254,13 @@ export function WebRTCInlinePlayer({
       let chunkBuf: Uint8Array[] = [];
       let expectedChunks = 0;
       let nextChunkIndex = 0;
+      // --- H.265 decode diagnostics ---
+      let dbgChunks = 0; // binary chunks received
+      let dbgFramesAssembled = 0; // complete frames reassembled
+      let dbgDecodeCalls = 0; // decode() invocations
+      let dbgFramesDecoded = 0; // decoder output frames (rendered)
+      let dbgChunkDrops = 0; // frames dropped due to out-of-order chunks
+      let dbgLastAt = 0;
       dc.onmessage = (msg) => {
         if (typeof msg.data === "string") {
           try {
@@ -278,6 +285,12 @@ export function WebRTCInlinePlayer({
               }
               const dec = new VideoDecoder({
                 output: (frame) => {
+                  dbgFramesDecoded++;
+                  if (dbgFramesDecoded === 1)
+                    log("H265 FIRST decoded frame ✓", {
+                      w: frame.displayWidth,
+                      h: frame.displayHeight,
+                    });
                   const c = canvasRef.current;
                   if (c) {
                     const ctx = c.getContext("2d");
@@ -317,6 +330,7 @@ export function WebRTCInlinePlayer({
         if (!(msg.data instanceof ArrayBuffer) || !decoderRef.current) return;
         const raw = new Uint8Array(msg.data);
         if (raw.length < 4) return;
+        dbgChunks++;
         const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
         const chunkIndex = dv.getUint16(0);
         const totalChunks = dv.getUint16(2);
@@ -331,6 +345,15 @@ export function WebRTCInlinePlayer({
         ) {
           // Out-of-order or totalChunks mismatch → drop and resync on
           // next chunk-0.
+          dbgChunkDrops++;
+          if (dbgChunkDrops <= 3 || dbgChunkDrops % 50 === 0)
+            log("H265 chunk OUT-OF-ORDER → frame dropped", {
+              got: chunkIndex,
+              expected: nextChunkIndex,
+              totalChunks,
+              expectedTotal: expectedChunks,
+              drops: dbgChunkDrops,
+            });
           chunkBuf = [];
           expectedChunks = 0;
           nextChunkIndex = 0;
@@ -352,18 +375,41 @@ export function WebRTCInlinePlayer({
         expectedChunks = 0;
         nextChunkIndex = 0;
         if (frame.length < 12) return;
+        dbgFramesAssembled++;
         const headerKeyframe = frame[9] === 1;
         const nalBytes = frame.subarray(12);
+        const dec = decoderRef.current;
+        if (dbgFramesAssembled === 1)
+          log("H265 FIRST frame assembled", {
+            keyframe: headerKeyframe,
+            bytes: nalBytes.length,
+            decoderState: dec.state,
+          });
         try {
-          decoderRef.current.decode(
+          dec.decode(
             new EncodedVideoChunk({
               type: headerKeyframe ? "key" : "delta",
               timestamp: performance.now() * 1000,
               data: nalBytes,
             }),
           );
+          dbgDecodeCalls++;
         } catch (e) {
           log("decode threw", String(e));
+        }
+        // Periodic health line so we can see where the pipeline stalls.
+        const now = performance.now();
+        if (now - dbgLastAt > 3000) {
+          dbgLastAt = now;
+          log("H265 pipeline", {
+            chunks: dbgChunks,
+            assembled: dbgFramesAssembled,
+            decodeCalls: dbgDecodeCalls,
+            decoded: dbgFramesDecoded,
+            chunkDrops: dbgChunkDrops,
+            decoderState: dec.state,
+            decodeQueue: dec.decodeQueueSize,
+          });
         }
       };
     };
