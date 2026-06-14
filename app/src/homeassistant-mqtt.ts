@@ -31,6 +31,7 @@ import { getConfig, getSettings } from "./settings-store.js";
 import { isBatteryCamera } from "./camera-traits.js";
 import { readAppVersion } from "./app-version.js";
 import { createSourceLogger } from "./logger.js";
+import { fetchSnapshotWithWake } from "./snapshot-capture.js";
 
 import {
   MqttClient as HaMqttClient,
@@ -92,6 +93,8 @@ interface RegisteredCamera {
   detectionResetTimers: Map<string, NodeJS.Timeout>;
   /** Listener registered with `api.onSimpleEvent` — kept for `offSimpleEvent`. */
   eventListener?: (event: ReolinkSimpleEvent) => void;
+  /** True for battery cameras — gates the wakeUp-before-snapshot path. */
+  isBattery: boolean;
   /** Last snapshot timestamp for debounce. */
   lastSnapshotAtMs: number;
   /** True while a snapshot fetch is in flight (avoid overlapping). */
@@ -563,10 +566,16 @@ function scheduleDetectionReset(
 /**
  * Capture a fresh JPEG from the camera (cmd_id 109) and publish it as
  * base64 to the `snapshot` image entity's state topic. Debounced per
- * camera so an event burst doesn't trigger overlapping fetches; battery
- * cameras silently skip when they're sleeping (the wake cost is not
- * worth it for an idle-state snapshot, and the AI/motion event itself
- * means the camera just woke up anyway).
+ * camera so an event burst doesn't trigger overlapping fetches.
+ *
+ * Battery cameras go back to sleep within seconds of pushing a motion
+ * alert (native or SMTP e-mail). By the time `getSnapshot` reaches the
+ * device the cam may already be asleep, so the cmd_id 109 push never
+ * arrives and the fetch times out (issue #36). We therefore call
+ * `wakeUp()` first on battery cams — it keeps the cam awake on the
+ * existing Baichuan socket long enough to service the snapshot, mirroring
+ * the Scrypted plugin's `refreshSnapshotOnMotion` path. A miss is still
+ * non-fatal: HA keeps the previous frame.
  */
 function captureAndPublishSnapshot(cam: RegisteredCamera): void {
   const now = Date.now();
@@ -576,9 +585,18 @@ function captureAndPublishSnapshot(cam: RegisteredCamera): void {
   cam.lastSnapshotAtMs = now;
   void (async () => {
     try {
-      const jpeg = await cam.api.getSnapshot(cam.channel, {
-        timeoutMs: 5_000,
-      });
+      const jpeg = await fetchSnapshotWithWake(
+        cam.api,
+        cam.channel,
+        cam.isBattery,
+        {
+          timeoutMs: 5_000,
+          onWakeError: (e) =>
+            logger.debug(
+              `wakeUp before snapshot failed for ${cam.cameraId}: ${e instanceof Error ? e.message : e}`,
+            ),
+        },
+      );
       const base64 = jpeg.toString("base64");
       await publishEntityState(cam.cameraId, "snapshot", base64, false);
       logger.debug(
@@ -679,6 +697,7 @@ async function registerCamera(
     deviceInfo,
     commandTopics: new Set(),
     detectionResetTimers: new Map(),
+    isBattery,
     lastSnapshotAtMs: 0,
     snapshotInFlight: false,
   };
