@@ -20,6 +20,7 @@ import {
 } from "./rtsp-manager.js";
 import { getConfig, getSettings } from "./settings-store.js";
 import { emitStreamClientsChanged } from "./events-manager.js";
+import { acquireStream, addConsumer } from "./stream-pool.js";
 
 const logger = createSourceLogger("webrtc-native");
 
@@ -54,6 +55,8 @@ interface WebRTCCameraSession {
   profile: "main" | "sub" | "ext";
   server: BaichuanWebRTCServer;
   sessionId: string;
+  /** Release the shared-pool consumer registration for this session. */
+  releaseConsumer?: () => void;
 }
 
 // ============================================================================
@@ -126,6 +129,7 @@ export async function createWebRTCSession(
         try {
           await s.server.stop();
         } catch { /* noop */ }
+        s.releaseConsumer?.();
         activeSessions.delete(s.sessionId);
       }),
     );
@@ -138,6 +142,11 @@ export async function createWebRTCSession(
   // Get channel from rtspChannel config or default to 0
   const channel = camera.rtspChannel ?? 0;
 
+  // Acquire the single shared source for this camera:profile. Every output
+  // format (RTSP, WebRTC, …) consumes this same stream so the camera only ever
+  // has one native session, and always-on behavior is applied once at the pool.
+  const shared = await acquireStream(camera.id, profile);
+
   // Create WebRTC server for this session
   const settings = getSettings();
   const icePortRange = parsePortRange(settings.webrtc?.icePortRange);
@@ -149,6 +158,7 @@ export async function createWebRTCSession(
     api,
     channel,
     profile,
+    externalVideoStream: shared.videoStream,
     enableIntercom,
     icePortRange,
     iceAdditionalHostAddresses,
@@ -165,6 +175,7 @@ export async function createWebRTCSession(
   server.on("session-closed", ({ sessionId }: { sessionId: string }) => {
     logger.info(`WebRTC session ${sessionId} closed`);
     const session = activeSessions.get(sessionId);
+    session?.releaseConsumer?.();
     activeSessions.delete(sessionId);
     if (session) {
       const count = [...activeSessions.values()].filter(
@@ -185,12 +196,24 @@ export async function createWebRTCSession(
   // Create session
   const { sessionId, offer } = await server.createSession();
 
+  // Register this session as a consumer of the shared source. If the shared
+  // source is torn down (error/idle/shutdown), close this WebRTC session too.
+  const releaseConsumer = addConsumer(
+    shared,
+    `webrtc:${sessionId}`,
+    "webrtc",
+    () => {
+      void closeWebRTCSession(sessionId).catch(() => {});
+    },
+  );
+
   // Store session info
   activeSessions.set(sessionId, {
     cameraId: camera.id,
     profile,
     server,
     sessionId,
+    releaseConsumer,
   });
 
   const count = [...activeSessions.values()].filter(
@@ -247,6 +270,7 @@ export async function closeWebRTCSession(sessionId: string): Promise<void> {
 
   await session.server.closeSession(sessionId);
   await session.server.stop();
+  session.releaseConsumer?.();
   activeSessions.delete(sessionId);
   const count = [...activeSessions.values()].filter(
     (s) => s.cameraId === session.cameraId && s.profile === session.profile,
@@ -301,6 +325,7 @@ export async function stopAllWebRTCSessions(): Promise<void> {
 
   const promises: Promise<void>[] = [];
   for (const [sessionId, session] of activeSessions) {
+    session.releaseConsumer?.();
     promises.push(
       session.server
         .stop()

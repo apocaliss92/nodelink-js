@@ -36,6 +36,9 @@ import type { StreamProfile } from "../../reolink/baichuan/types";
 import type { ReolinkBaichuanApi } from "../../reolink/baichuan/ReolinkBaichuanApi";
 import type { NativeVideoStreamVariant } from "../../reolink/baichuan/types";
 import { createNativeStream, Intercom } from "../../rfc/helpers";
+import { subscribeVideoStreamAsSource } from "./videoStreamSource";
+import type { BaichuanVideoStream } from "./BaichuanVideoStream";
+import type { ContinuousVideoStream } from "./ContinuousVideoStream";
 import { detectVideoCodecFromNal } from "./BcMediaAnnexBDecoder";
 import { AacToOpusTranscoder } from "./AacToOpusTranscoder";
 import {
@@ -57,6 +60,14 @@ export interface BaichuanWebRTCServerOptions {
   profile: StreamProfile;
   /** Native-only: TrackMix tele/autotrack variants */
   variant?: NativeVideoStreamVariant;
+  /**
+   * Consume an externally-owned video stream (shared source) instead of opening
+   * a dedicated native camera stream. When set, this server attaches to the
+   * provided stream's `videoAccessUnit`/`audioFrame` events and does NOT acquire
+   * its own dedicated session — the external owner (e.g. the Manager stream
+   * pool) is the sole owner of the camera stream and any always-on behavior.
+   */
+  externalVideoStream?: BaichuanVideoStream | ContinuousVideoStream;
   /** Enable two-way audio intercom (default: false) */
   enableIntercom?: boolean;
   /** STUN servers for ICE (default: Google STUN) */
@@ -651,6 +662,34 @@ export class BaichuanWebRTCServer extends EventEmitter {
    * Start native Baichuan stream and pump frames to WebRTC
    */
   private async startNativeStream(session: WebRTCSession): Promise<void> {
+    if (this.options.externalVideoStream) {
+      this.log(
+        "info",
+        `Attaching to shared source for session ${session.id} (channel=${this.options.channel}, profile=${this.options.profile})`,
+      );
+
+      // Subscribe to the externally-owned shared stream instead of opening our
+      // own dedicated camera stream. An AbortController tied to the session's
+      // cleanup detaches the listeners when the session closes, so the shared
+      // source is never left with dangling subscriptions.
+      const abort = new AbortController();
+      const priorCleanup = session.cleanup;
+      session.cleanup = () => {
+        abort.abort();
+        priorCleanup?.();
+      };
+      session.nativeStream = subscribeVideoStreamAsSource(
+        this.options.externalVideoStream,
+        abort.signal,
+      );
+
+      this.pumpFramesToWebRTC(session).catch((err) => {
+        this.log("error", `Frame pump error for session ${session.id}: ${err}`);
+        this.closeSession(session.id).catch(() => {});
+      });
+      return;
+    }
+
     this.log(
       "info",
       `Starting native stream for session ${session.id} (channel=${this.options.channel}, profile=${this.options.profile})`,
