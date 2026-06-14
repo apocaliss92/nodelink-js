@@ -28,6 +28,7 @@ import {
 import * as net from "net";
 import * as crypto from "crypto";
 import { releaseStreamsByCamera } from "./stream-pool.js";
+import { buildAlwaysOnOptions } from "./permanent-stream.js";
 
 
 // ---------------------------------------------------------------------------
@@ -1253,43 +1254,10 @@ export async function startRtspServer(
       );
     }
 
-    // Permanent (continuous) stream. Honored whenever permanentStream.enabled
-    // is set — the UI only exposes the toggle for battery cameras, so we don't
-    // re-gate on transport here (battery cams may run transport="auto", with
-    // battery detected at runtime rather than via transport="udp").
-    // Maps windowSeconds → windowMs and only includes explicitly-set fields
-    // to respect exactOptionalPropertyTypes.
-    const ps = camera.permanentStream;
-    const alwaysOn =
-      ps?.enabled
-        ? {
-            enabled: true,
-            ...(ps.triggers !== undefined && ps.triggers.length > 0
-              ? { triggers: ps.triggers }
-              : {}),
-            ...(ps.windowSeconds !== undefined
-              ? { windowMs: ps.windowSeconds * 1000 }
-              : {}),
-            ...(ps.idleFps !== undefined ? { idleFps: ps.idleFps } : {}),
-            ...(ps.placeholderEnabled !== undefined ||
-            ps.placeholderText !== undefined ||
-            ps.placeholderOpacity !== undefined
-              ? {
-                  placeholder: {
-                    ...(ps.placeholderEnabled !== undefined
-                      ? { enabled: ps.placeholderEnabled }
-                      : {}),
-                    ...(ps.placeholderText !== undefined
-                      ? { text: ps.placeholderText }
-                      : {}),
-                    ...(ps.placeholderOpacity !== undefined
-                      ? { opacity: ps.placeholderOpacity }
-                      : {}),
-                  },
-                }
-              : {}),
-          }
-        : undefined;
+    // Permanent (continuous) stream, derived from the unified Manager config
+    // (see buildAlwaysOnOptions). Honored whenever permanentStream.enabled is
+    // set — the UI only exposes the toggle for battery cameras.
+    const alwaysOn = buildAlwaysOnOptions(camera);
     if (alwaysOn) {
       logger.info(
         `Permanent stream enabled (windowMs=${alwaysOn.windowMs ?? "default"}, idleFps=${alwaysOn.idleFps ?? "default"})`,

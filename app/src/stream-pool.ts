@@ -18,6 +18,7 @@ import type { StreamProfile } from "@apocaliss92/nodelink-js";
 import { createSourceLogger } from "./logger.js";
 import { getOrCreateApiConnection } from "./rtsp-manager.js";
 import { getConfig } from "./settings-store.js";
+import { buildAlwaysOnOptions } from "./permanent-stream.js";
 
 const logger = createSourceLogger("stream-pool");
 
@@ -126,11 +127,19 @@ async function createSharedStream(
 
   const streamLogger = createSourceLogger(`stream-pool:${camera.name}:${profile}`);
 
+  // Always-on (continuous/placeholder) comes from the unified Manager config,
+  // applied once here so every consumer of this shared source inherits it.
+  const alwaysOn = buildAlwaysOnOptions(camera);
+  if (alwaysOn) {
+    logger.info(`Shared stream ${key}: always-on enabled (from permanentStream settings)`);
+  }
+
   const rfc = await createRfc4571TcpServer({
     api,
     channel,
     profile,
     deviceId: cameraId,
+    ...(alwaysOn ? { alwaysOn } : {}),
     host: "127.0.0.1",
     username: "pool",
     password: `pool-${Date.now()}`,
