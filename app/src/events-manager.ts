@@ -341,6 +341,21 @@ export function handleCameraEvent(
         adapterStatus,
       });
     }
+    // A battery push is definitive proof this is a battery camera. Standalone
+    // battery cams added/imported with transport "auto" (or that connected over
+    // TCP while awake) never get `transport: "udp"` from the resolved-transport
+    // hook, so `isBatteryCamera` (transport-based) — and everything keyed off it
+    // (battery indicator, permanent-stream control, idle-disconnect) — wrongly
+    // reports them as non-battery. Persist transport=udp here so the flag is
+    // correct everywhere. NVR children derive battery-ness from a separate flag
+    // and must keep their NVR transport, so skip them.
+    const camera = getConfig().cameras.find((c) => c.id === cameraId);
+    if (camera && !camera.nvrId && camera.transport !== "udp") {
+      updateCamera(cameraId, { transport: "udp" });
+      logger.info(
+        `Persisted transport=udp for camera ${cameraId} after battery push (was ${camera.transport ?? "auto"}); now recognized as a battery camera`,
+      );
+    }
   }
 
   broadcastEventPayload(payload);

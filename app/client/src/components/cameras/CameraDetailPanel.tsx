@@ -311,7 +311,7 @@ export function CameraDetailPanel({
         </div>
       </div>
 
-      {camera.isBattery ? (
+      {camera.isBattery || camera.batteryState ? (
         <PermanentStreamControl cameraId={camera.id} value={camera.permanentStream} />
       ) : null}
 

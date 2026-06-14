@@ -292,7 +292,7 @@ function CameraDetailPageInner() {
           </div>
         </div>
 
-        {camera.isBattery ? (
+        {camera.isBattery || camera.batteryState ? (
           <PermanentStreamControl cameraId={camera.id} value={camera.permanentStream} />
         ) : null}
 

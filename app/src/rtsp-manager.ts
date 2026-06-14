@@ -1253,13 +1253,15 @@ export async function startRtspServer(
       );
     }
 
-    // Permanent (continuous) stream for battery cameras. Only enabled when
-    // the camera is a battery camera AND permanentStream.enabled is set.
+    // Permanent (continuous) stream. Honored whenever permanentStream.enabled
+    // is set — the UI only exposes the toggle for battery cameras, so we don't
+    // re-gate on transport here (battery cams may run transport="auto", with
+    // battery detected at runtime rather than via transport="udp").
     // Maps windowSeconds → windowMs and only includes explicitly-set fields
     // to respect exactOptionalPropertyTypes.
     const ps = camera.permanentStream;
     const alwaysOn =
-      isBatteryCamera(camera) && ps?.enabled
+      ps?.enabled
         ? {
             enabled: true,
             ...(ps.windowSeconds !== undefined
