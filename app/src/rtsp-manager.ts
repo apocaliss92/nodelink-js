@@ -27,7 +27,7 @@ import {
 } from "./local-rtsp-mux.js";
 import * as net from "net";
 import * as crypto from "crypto";
-import { releaseStreamsByCamera } from "./stream-pool.js";
+import { releaseStreamsByCamera, acquireStream, addConsumer } from "./stream-pool.js";
 import { buildAlwaysOnOptions } from "./permanent-stream.js";
 
 
@@ -313,6 +313,8 @@ const rtspServers = new Map<
   {
     server: BaichuanRtspServer;
     info: RtspServerInfo;
+    /** Releases this server's consumer ref on the shared stream-pool source. */
+    release?: () => void;
   }
 >();
 
@@ -1212,6 +1214,9 @@ export async function startRtspServer(
 
   rtspServers.set(streamKey, { server: null as any, info });
 
+  // Released on stop()/error to drop this server's ref on the shared source.
+  let releaseConsumer: (() => void) | undefined;
+
   try {
     const api = await getOrCreateApiConnection(cameraId);
 
@@ -1264,11 +1269,23 @@ export async function startRtspServer(
       );
     }
 
+    // Consume the shared per-camera source from the pool (single native stream
+    // shared across all consumers). The pool applies always-on once on the
+    // shared source, so we inject it here instead of giving this server its own
+    // always-on/native stream.
+    const shared = await acquireStream(cameraId, profile);
+    releaseConsumer = addConsumer(shared, streamKey, "rtsp", () => {
+      // Shared source torn down underneath us (e.g. camera disconnect): stop
+      // this RTSP server too. Re-entrancy-safe (the pool already removed the
+      // stream, so our own release() becomes a no-op).
+      void stopRtspServer(streamKey).catch(() => {});
+    });
+
     const baichuanServer = new BaichuanRtspServer({
       api,
       channel,
       profile,
-      ...(alwaysOn ? { alwaysOn } : {}),
+      externalVideoStream: shared.videoStream,
       // listenHost/listenPort are informational in mux mode — the server
       // never binds them. They are still passed so SDP/logs reflect the
       // public endpoint users will dial.
@@ -1297,7 +1314,7 @@ export async function startRtspServer(
     info.startedAt = new Date();
     info.rtspUrl = `rtsp://${serviceIp}:${muxPort}${localPath}`;
 
-    rtspServers.set(streamKey, { server: baichuanServer, info });
+    rtspServers.set(streamKey, { server: baichuanServer, info, release: releaseConsumer });
     logger.info(`RTSP: ${info.rtspUrl}`);
 
     upsertCameraStream(cameraId, {
@@ -1314,6 +1331,7 @@ export async function startRtspServer(
     logger.error(`Failed to start stream server: ${error}`);
     info.status = "error";
     info.error = String(error);
+    releaseConsumer?.(); // drop the shared-source ref if we acquired it
     rtspServers.set(streamKey, { server: null as any, info });
     throw error;
   }
@@ -1368,6 +1386,9 @@ export async function stopRtspServer(
       }
       await entry.server.stop();
     }
+    // Drop our ref on the shared pool source (it idle-tears-down when the last
+    // consumer leaves).
+    entry.release?.();
     entry.info.status = "stopped";
     entry.info.rtspUrl = undefined;
     entry.info.startedAt = undefined;

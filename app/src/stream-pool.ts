@@ -146,6 +146,11 @@ async function createSharedStream(
     requireAuth: false,
     closeApiOnTeardown: false,
     idleTeardownMs: 0, // Pool manages lifecycle, not the RFC server.
+    // The pool consumes `videoStream` directly and never connects an RFC4571
+    // client to this server's port, so the "no RFC4571 clients (idle)"
+    // self-teardown must be disabled (it would otherwise drop the shared
+    // source — especially once an always-on stream goes idle).
+    disableIdleTeardown: true,
     uptimeRestartMs: 10_000,
     logger: {
       log: (msg: unknown) => streamLogger.info(String(msg)),
