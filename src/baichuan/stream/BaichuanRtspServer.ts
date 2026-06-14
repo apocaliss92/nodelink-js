@@ -19,6 +19,7 @@ import type { ReolinkBaichuanApi } from "../../reolink/baichuan/ReolinkBaichuanA
 import type { NativeVideoStreamVariant } from "../../reolink/baichuan/types";
 import type { Logger } from "../../debug/DebugConfig";
 import { createNativeStream } from "../../rfc/helpers";
+import { subscribeVideoStreamAsSource } from "./videoStreamSource";
 import { BaichuanVideoStream } from "./BaichuanVideoStream";
 import { ContinuousVideoStream } from "./ContinuousVideoStream";
 import { AlwaysOnController } from "./AlwaysOnController";
@@ -287,6 +288,15 @@ export interface BaichuanRtspServerOptions {
    * When omitted/disabled the server behaves exactly as before.
    */
   alwaysOn?: AlwaysOnOptions;
+  /**
+   * Inject an external, already-managed video source (e.g. a shared
+   * per-camera stream from the app's stream-pool). When set, this server does
+   * NOT create its own native camera stream nor its own always-on layer — it
+   * subscribes to the provided stream and its idle-stop timers are suppressed
+   * (the owner of the source manages the camera lifecycle). Takes precedence
+   * over `alwaysOn`.
+   */
+  externalVideoStream?: BaichuanVideoStream | ContinuousVideoStream;
 }
 
 /**
@@ -325,6 +335,10 @@ export class BaichuanRtspServer extends EventEmitter<{
   // `options.alwaysOn?.enabled`; the default (non-alwaysOn) path leaves these
   // null/undefined and is byte-for-byte equivalent in behaviour.
   private readonly alwaysOnOptions: AlwaysOnOptions | undefined;
+  private readonly externalVideoStream:
+    | BaichuanVideoStream
+    | ContinuousVideoStream
+    | undefined;
   private continuousStream: ContinuousVideoStream | null = null;
   private alwaysOnController: AlwaysOnController | null = null;
 
@@ -643,6 +657,7 @@ export class BaichuanRtspServer extends EventEmitter<{
     this.AUTH_REALM = options.authRealm ?? "BaichuanRtspServer";
     this.lazyMetadata = options.lazyMetadata ?? false;
     this.alwaysOnOptions = options.alwaysOn;
+    this.externalVideoStream = options.externalVideoStream;
 
     // Default flow is conservative (tcp+h264); it will be refined from metadata or first frames.
     const transport = this.api.client.getTransport();
@@ -2851,13 +2866,15 @@ export class BaichuanRtspServer extends EventEmitter<{
     this.nativeFanout = new NativeStreamFanout({
       maxQueueItems: 200,
       createSource: (signal) =>
-        this.alwaysOnOptions?.enabled
-          ? this.createContinuousSource(dedicatedClient, signal)
-          : createNativeStream(this.api, this.channel, this.profile, {
-              variant: this.variant,
-              ...(dedicatedClient ? { client: dedicatedClient } : {}),
-              signal,
-            }),
+        this.externalVideoStream
+          ? subscribeVideoStreamAsSource(this.externalVideoStream, signal)
+          : this.alwaysOnOptions?.enabled
+            ? this.createContinuousSource(dedicatedClient, signal)
+            : createNativeStream(this.api, this.channel, this.profile, {
+                variant: this.variant,
+                ...(dedicatedClient ? { client: dedicatedClient } : {}),
+                signal,
+              }),
       onFrame: (frame) => {
         if (frame.audio) {
           // Detect audio from any transport (TCP or UDP/BCUDP both carry ADTS AAC).
@@ -2999,7 +3016,7 @@ export class BaichuanRtspServer extends EventEmitter<{
     this.clearNoFrameDeadlineTimer();
     // Always-on mode: the AlwaysOnController owns the sleep/wake decision, so the
     // server must NOT tear the stream down when the camera is idle/sleeping.
-    if (this.nativeStreamNoFrameDeadlineMs > 0 && !this.alwaysOnOptions?.enabled) {
+    if (this.nativeStreamNoFrameDeadlineMs > 0 && !this.alwaysOnOptions?.enabled && !this.externalVideoStream) {
       this.noFrameDeadlineTimer = setTimeout(() => {
         this.noFrameDeadlineTimer = undefined;
         if (!this.firstFrameReceived && this.nativeStreamActive) {
@@ -3019,7 +3036,7 @@ export class BaichuanRtspServer extends EventEmitter<{
     this.clearNoClientAutoStopTimer();
     // Always-on mode: never auto-stop on a primed-but-no-client window; the
     // controller keeps the continuous stream alive across viewer churn.
-    if (this.nativeStreamPrimeIdleStopMs > 0 && !this.alwaysOnOptions?.enabled) {
+    if (this.nativeStreamPrimeIdleStopMs > 0 && !this.alwaysOnOptions?.enabled && !this.externalVideoStream) {
       this.noClientAutoStopTimer = setTimeout(() => {
         if (this.connectedClients.size === 0) {
           this.rtspDebugLog(
@@ -3129,7 +3146,7 @@ export class BaichuanRtspServer extends EventEmitter<{
         this.clearNoClientAutoStopTimer();
         // Always-on mode: the controller owns lifecycle — do not stop the
         // native/continuous stream just because the last RTSP viewer left.
-        if (this.nativeStreamIdleStopMs > 0 && !this.alwaysOnOptions?.enabled) {
+        if (this.nativeStreamIdleStopMs > 0 && !this.alwaysOnOptions?.enabled && !this.externalVideoStream) {
           this.noClientAutoStopTimer = setTimeout(() => {
             if (this.connectedClients.size === 0) {
               void this.stopNativeStream();
