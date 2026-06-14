@@ -299,6 +299,7 @@ import {
   parseEmailTaskFromXml,
 } from "./utils/email";
 import { buildSetNtpXml, parseNtpConfigFromXml } from "./utils/ntp";
+import { resolveBaichuanChannels } from "./utils/channelEnumeration";
 import { buildSetDstXml, parseDstConfigFromXml } from "./utils/dst";
 import {
   buildSetAutoRebootXml,
@@ -4959,17 +4960,29 @@ export class ReolinkBaichuanApi {
    * @param options.source - Data source for the channel list (default: `"cgi"`):
    *   - `"cgi"`: Uses HTTP `GetChannelstatus` — returns the channel list immediately,
    *     no dependency on async push messages. Recommended for first-call discovery.
-   *   - `"baichuan"`: Uses the cmd_id 145 push cache populated when the NVR sends channel
-   *     info after login + event subscription. This push is *asynchronous*: if it has not
-   *     arrived yet, the result will have zero channels. Callers must retry (nvr.ts does this
-   *     with a 1-second loop). Note: explicitly requesting cmd_id 145 is not supported.
+   *   - `"baichuan"`: HTTP-free discovery. Prefers the cmd_id 145 push cache when
+   *     populated; otherwise actively probes the channel slots advertised by Support
+   *     (`items[].chnID`) via `getInfo`. Use this for hubs with HTTP disabled.
+   *
+   * When the api was constructed with `nativeOnly`, the source is forced to
+   * `"baichuan"` regardless of this option (no HTTP/CGI is ever attempted).
    */
   async getNvrChannelsSummary(options?: {
     channels?: number[];
     timeoutMs?: number;
     source?: "cgi" | "baichuan";
   }): Promise<NvrChannelsSummaryCacheEntry> {
-    const source = options?.source ?? "cgi";
+    const source = this.nativeOnly ? "baichuan" : (options?.source ?? "cgi");
+
+    // Support drives both the baichuan probe bound and the battery/doorbell
+    // flags below — fetch it once up front and reuse it (it is cheap and the
+    // baichuan path needs it before resolving the channel list).
+    const support = await this.getSupportInfo().catch(() => {
+      this.logger.error?.(
+        "[ReolinkBaichuanApi] getNvrChannelsSummary: failed to get support info",
+      );
+      return undefined;
+    });
 
     // ── Resolve channel list ─────────────────────────────────────────────────
     let channels: number[];
@@ -5003,19 +5016,39 @@ export class ReolinkBaichuanApi {
         channels = [];
       }
     } else {
-      // baichuan: derive channels from cmd_id 145 push cache
-      const pushInfo = this.getChannelInfoFromPushCache();
-      channels = Array.from(pushInfo.keys()).map((c) => Number(c)).filter((n) => Number.isFinite(n));
+      // baichuan (HTTP-free): cmd_id 145 push cache when populated, else
+      // probe the Support slot range. The push is unreliable on some Home
+      // Hub firmwares (issue #15), so the probe is the dependable path.
+      const pushChannels = Array.from(
+        this.getChannelInfoFromPushCache().keys(),
+      )
+        .map((c) => Number(c))
+        .filter((n) => Number.isFinite(n));
+      const supportChnIds = (support?.items ?? [])
+        .map((i) => Number((i as { chnID?: unknown }).chnID))
+        .filter((n) => Number.isFinite(n));
+      const probeTimeoutMs = options?.timeoutMs ?? 2500;
+      channels = await resolveBaichuanChannels({
+        pushChannels,
+        supportChnIds,
+        probe: async (channel) => {
+          try {
+            await this.getInfo(channel, {
+              timeoutMs: probeTimeoutMs,
+              tags: ["type", "name"],
+            });
+            return true;
+          } catch {
+            return false;
+          }
+        },
+      });
+      this.logger.debug?.(
+        `[ReolinkBaichuanApi] getNvrChannelsSummary: baichuan resolved ${channels.length} channel(s): [${channels.join(", ")}]`,
+      );
     }
 
     channels = channels.sort((a, b) => a - b);
-
-    // ── Support info for battery/doorbell flags ───────────────────────────────
-    const support = await this.getSupportInfo().catch(() => {
-      this.logger.error?.(
-        "[ReolinkBaichuanApi] getNvrChannelsSummary: failed to get support info",
-      );
-    });
 
     const truthyNumberLike = (v: unknown): boolean => {
       if (typeof v === "number") return v > 0;
