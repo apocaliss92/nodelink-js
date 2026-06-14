@@ -117,6 +117,15 @@ export interface Rfc4571TcpServerOptions {
 
   /** Battery always-on continuous stream (placeholder while asleep, real frames during motion). */
   alwaysOn?: import("../baichuan/stream/alwaysOnTypes").AlwaysOnOptions;
+
+  /**
+   * Disable the "no RFC4571 clients (idle)" self-teardown. Use when the caller
+   * consumes `videoStream` directly (e.g. the app stream-pool fans the shared
+   * source out to RTSP/WebRTC/MJPEG consumers and never connects an RFC4571
+   * client to this server's port) and manages the lifecycle itself. Honors
+   * idle-teardown-0 even for dedicated (deviceId) sessions.
+   */
+  disableIdleTeardown?: boolean;
 }
 
 export interface Rfc4571TcpServer {
@@ -228,9 +237,9 @@ export async function createRfc4571TcpServer(
   }
 
   const createPromise = (async () => {
-    const idleTeardownMs = normalizeDedicatedIdleTeardownMs(
-      options.idleTeardownMs,
-    );
+    const idleTeardownMs = options.disableIdleTeardown
+      ? 0
+      : normalizeDedicatedIdleTeardownMs(options.idleTeardownMs);
     sharedLog(
       `creating new shared RFC4571 server (idleTeardownMs=${idleTeardownMs})`,
     );
@@ -1250,7 +1259,7 @@ async function createRfc4571TcpServerInternal(
   const scheduleIdleTeardown = (
     closeFn: (reason?: unknown) => Promise<void>,
   ) => {
-    if (!idleTeardownMs) return;
+    if (!idleTeardownMs || options.disableIdleTeardown) return;
     if (idleTeardownTimer) return;
     idleTeardownTimer = setTimeout(() => {
       idleTeardownTimer = undefined;

@@ -2838,28 +2838,37 @@ export class BaichuanRtspServer extends EventEmitter<{
     // Without this, frames from other active streams (e.g. main) on the shared socket
     // can interleave, causing streamType mismatches and delayed time-to-first-frame.
     let dedicatedClient: import("../../client/BaichuanClient").BaichuanClient | undefined;
-    const variantSuffix = this.variant && this.variant !== "default" ? `:${this.variant}` : "";
-    const deviceIdPart = this.deviceId ?? "rtsp-server";
-    const sessionKey = `live:${deviceIdPart}:ch${this.channel}:${this.profile}${variantSuffix}`;
-    try {
-      const session = await this.api.createDedicatedSession(sessionKey, this.logger);
-      dedicatedClient = session.client;
-      this.dedicatedSessionRelease = session.release;
-      this.logger.info(
-        `[rebroadcast] dedicated session acquired  sessionKey=${sessionKey}`,
-      );
-    } catch (e) {
-      this.logger.warn(
-        `[rebroadcast] failed to acquire dedicated session, falling back to shared socket: ${e}`,
-      );
+    // With an injected external source the camera connection (dedicated socket,
+    // keep-alive, native stream) is owned by the source provider (the pool), so
+    // this server must NOT open its own session — it only fans out the shared
+    // stream. Skipping this avoids an extra camera session per consumer.
+    if (!this.externalVideoStream) {
+      const variantSuffix = this.variant && this.variant !== "default" ? `:${this.variant}` : "";
+      const deviceIdPart = this.deviceId ?? "rtsp-server";
+      const sessionKey = `live:${deviceIdPart}:ch${this.channel}:${this.profile}${variantSuffix}`;
+      try {
+        const session = await this.api.createDedicatedSession(sessionKey, this.logger);
+        dedicatedClient = session.client;
+        this.dedicatedSessionRelease = session.release;
+        this.logger.info(
+          `[rebroadcast] dedicated session acquired  sessionKey=${sessionKey}`,
+        );
+      } catch (e) {
+        this.logger.warn(
+          `[rebroadcast] failed to acquire dedicated session, falling back to shared socket: ${e}`,
+        );
+      }
     }
 
     this.logger.info(
-      `[rebroadcast] native stream starting  profile=${this.profile} channel=${this.channel} clients=${this.connectedClients.size} dedicated=${!!dedicatedClient}`,
+      `[rebroadcast] ${this.externalVideoStream ? "attaching to shared source" : "native stream starting"}  profile=${this.profile} channel=${this.channel} clients=${this.connectedClients.size} dedicated=${!!dedicatedClient}`,
     );
 
-    // Keep-alive behavior is part of the selected protocol flow.
-    await this.flow.startKeepAlive(this.api);
+    // Keep-alive behavior is part of the selected protocol flow. Skip when an
+    // external source owns the camera connection.
+    if (!this.externalVideoStream) {
+      await this.flow.startKeepAlive(this.api);
+    }
 
     // Use a single shared native stream and fan out frames to clients.
     // This avoids starting/stopping multiple camera streams (especially fragile on BCUDP/battery).
