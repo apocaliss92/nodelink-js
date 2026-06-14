@@ -22,6 +22,49 @@ export interface NewsItem {
 
 export const NEWS_ITEMS: NewsItem[] = [
   {
+    id: "2026-06-14-permanent-stream",
+    date: "2026-06-14",
+    title: "Permanent stream for battery cameras (always-on)",
+    body: (
+      <div className="space-y-2 text-sm text-[var(--color-foreground-muted)]">
+        <p>
+          Battery cameras normally drop their stream the moment they go to
+          sleep, which breaks continuous recorders like{" "}
+          <strong className="text-[var(--color-foreground)]">Frigate</strong>{" "}
+          or an NVR that expect an uninterrupted RTSP feed.{" "}
+          <strong className="text-[var(--color-foreground)]">
+            Permanent stream
+          </strong>{" "}
+          keeps the RTSP stream alive 24/7 without keeping the camera awake.
+        </p>
+        <p>
+          While the camera is awake (a short window after a motion/doorbell
+          event, plus a prime window when the stream starts) you get{" "}
+          <strong className="text-[var(--color-foreground)]">real video</strong>.
+          When the camera goes back to sleep, the server keeps the feed alive by
+          serving a dimmed{" "}
+          <strong className="text-[var(--color-foreground)]">
+            &ldquo;Sleeping&rdquo;
+          </strong>{" "}
+          placeholder (the last frame, low fps) — so the camera actually sleeps
+          and saves battery while the stream never disconnects.
+        </p>
+        <p>
+          <strong className="text-[var(--color-foreground)]">
+            How to enable:
+          </strong>{" "}
+          open a battery camera, and in the right-hand panel turn on{" "}
+          <strong className="text-[var(--color-foreground)]">
+            Permanent stream
+          </strong>
+          . You can pick the wake triggers (motion, doorbell, …), the awake
+          window length, and the placeholder text/dimming. After toggling it,
+          restart the stream so the new setting takes effect.
+        </p>
+      </div>
+    ),
+  },
+  {
     id: "2026-06-09-analyzer-verdict",
     date: "2026-06-09",
     title: "Stream analyzer now reports drops + a verdict",
