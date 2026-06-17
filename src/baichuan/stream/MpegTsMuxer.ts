@@ -1,9 +1,10 @@
 /**
  * MPEG-TS Muxer for H.264/H.265 video + ADTS AAC audio.
  *
- * Produces 188-byte MPEG-TS packets suitable for feeding to go2rtc via a
- * plain TCP connection (`tcp://127.0.0.1:{port}`).  go2rtc auto-detects the
- * container format from the 0x47 sync byte and extracts both video and audio.
+ * Produces 188-byte MPEG-TS packets with proper PTS/DTS timing, suitable for
+ * piping into ffmpeg (e.g. the recording-replay MP4 export path). Consumers
+ * auto-detect the container format from the 0x47 sync byte and extract both
+ * video and audio.
  *
  * Stream layout:
  *   PID 0x0000 — PAT (Program Association Table)

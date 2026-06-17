@@ -1,5 +1,6 @@
 /**
- * Unit tests for MpegTsMuxer — the MPEG-TS muxer that feeds Go2rtcTcpServer.
+ * Unit tests for MpegTsMuxer — the MPEG-TS muxer used by the recording-replay
+ * MP4 export path.
  *
  * Validates:
  *  1. Basic structural properties of emitted MPEG-TS packets (sync byte, length, PID).

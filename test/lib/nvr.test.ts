@@ -197,7 +197,7 @@ describe("Socket isolation logic (unit tests)", () => {
   });
 });
 
-describe("Go2rtcTcpServer battery behavior (unit tests)", () => {
+describe("native stream battery behavior (unit tests)", () => {
   it("prestartStream defaults based on battery mode", () => {
     // AC-powered: prestartStream = true (stream starts immediately)
     const acPowered = { isBattery: false, batteryMode: undefined };

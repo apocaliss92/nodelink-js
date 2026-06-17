@@ -21,8 +21,7 @@ const logger = createSourceLogger("diagnostic");
 /**
  * Duck-type check: any stream server that implements the three required
  * diagnostic methods can drive the StreamDiagnostic session.
- * Both BaichuanRtspServer (legacy) and Go2rtcTcpServer (current default)
- * implement this surface.
+ * BaichuanRtspServer implements this surface.
  */
 function implementsDiagnosticServer(s: unknown): s is DiagnosticStreamServer {
   if (s == null || typeof s !== "object") return false;
@@ -62,9 +61,9 @@ export const diagnosticsRouter = router({
         );
       }
 
-      // Get the stream server instance for this stream. Both Go2rtcTcpServer
-      // and BaichuanRtspServer implement DiagnosticStreamServer (duck-typed),
-      // so the diagnostic session works regardless of the underlying backend.
+      // Get the stream server instance for this stream. BaichuanRtspServer
+      // implements DiagnosticStreamServer (duck-typed), so the diagnostic
+      // session works against the underlying stream backend.
       const server = getRtspServerInstance(
         input.cameraId,
         input.profile,
