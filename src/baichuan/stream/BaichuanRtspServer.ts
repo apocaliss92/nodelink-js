@@ -24,6 +24,7 @@ import { ContinuousVideoStream } from "./ContinuousVideoStream";
 import { AlwaysOnController } from "./AlwaysOnController";
 import type { AlwaysOnOptions } from "./alwaysOnTypes";
 import { createRtspFlow, type RtspFlow, type RtspVideoType } from "./rtspFlow";
+import { deriveRtpVideoTimestamp } from "./rtpVideoTimestamp";
 import { convertToAnnexB as convertH264ToAnnexB } from "./H264Converter";
 import {
   convertToAnnexB as convertH265ToAnnexB,
@@ -373,6 +374,10 @@ export class BaichuanRtspServer extends EventEmitter<{
       rtpVideoBaseMicroseconds?: number;
       rtpVideoBaseTimestamp?: number;
       rtpVideoLastTimestamp?: number;
+      // Unwrapped 32-bit camera µs clock state (see rtpVideoTimestamp.ts).
+      rtpVideoUnwrappedUs?: number;
+      rtpVideoLastRawUs?: number;
+      rtpVideoBaseUnwrappedUs?: number;
       rtpVideoSsrc?: number;
       rtpAudioSeq?: number;
       rtpAudioTimestamp?: number;
@@ -956,7 +961,13 @@ export class BaichuanRtspServer extends EventEmitter<{
     let clientUdpSocket: dgram.Socket | null = null;
     let clientUdpSocketAudio: dgram.Socket | null = null;
 
+    let cleanedUp = false;
     const cleanup = () => {
+      // Bound to both 'close' and 'error'; run the teardown only once so we
+      // don't log a duplicate disconnect line (the second pass would read
+      // frames=0 after clientResources was already deleted).
+      if (cleanedUp) return;
+      cleanedUp = true;
       const sessionDurationMs = Date.now() - connectTime;
       const res = this.clientResources.get(clientId) as any;
       const framesSent: number = res?.framesSent ?? 0;
@@ -1918,26 +1929,32 @@ export class BaichuanRtspServer extends EventEmitter<{
       if (resources.rtpVideoBaseTimestamp === undefined)
         resources.rtpVideoBaseTimestamp = resources.rtpVideoTimestamp;
 
-      if (resources.rtpVideoBaseMicroseconds === undefined) {
+      // Unwrap the 32-bit camera µs clock so pacing stays correct past the
+      // 2^32 µs (~71.6 min) boundary instead of flatlining. See
+      // rtpVideoTimestamp.ts for the wrap details.
+      const { timestamp, state } = deriveRtpVideoTimestamp(
+        {
+          timestamp: resources.rtpVideoTimestamp,
+          baseTimestamp: resources.rtpVideoBaseTimestamp,
+          unwrappedUs: resources.rtpVideoUnwrappedUs,
+          lastRawUs: resources.rtpVideoLastRawUs,
+          baseUnwrappedUs: resources.rtpVideoBaseUnwrappedUs,
+        },
+        frameMicroseconds,
+        videoClockRate,
+      );
+
+      resources.rtpVideoTimestamp = timestamp;
+      resources.rtpVideoBaseTimestamp = state.baseTimestamp;
+      resources.rtpVideoUnwrappedUs = state.unwrappedUs;
+      resources.rtpVideoLastRawUs = state.lastRawUs;
+      resources.rtpVideoBaseUnwrappedUs = state.baseUnwrappedUs;
+      resources.rtpVideoLastTimestamp = timestamp;
+
+      // Mark the µs path active so sendVideoAccessUnit() does not also apply
+      // the fixed-FPS fallback increment.
+      if (resources.rtpVideoBaseMicroseconds === undefined)
         resources.rtpVideoBaseMicroseconds = frameMicroseconds >>> 0;
-        resources.rtpVideoLastTimestamp = resources.rtpVideoTimestamp;
-        return;
-      }
-
-      const baseUs = resources.rtpVideoBaseMicroseconds >>> 0;
-      const curUs = frameMicroseconds >>> 0;
-      const deltaUs = (curUs - baseUs) >>> 0;
-      const baseTs = (resources.rtpVideoBaseTimestamp ?? 0) >>> 0;
-      let ts =
-        (baseTs + Math.round((deltaUs * videoClockRate) / 1_000_000)) >>> 0;
-
-      const last = resources.rtpVideoLastTimestamp;
-      if (last !== undefined && ts <= last >>> 0) {
-        ts = ((last >>> 0) + 1) >>> 0;
-      }
-
-      resources.rtpVideoTimestamp = ts;
-      resources.rtpVideoLastTimestamp = ts;
     };
 
     const sendVideoAccessUnit = (
