@@ -37,7 +37,6 @@ import {
   stopAllRtspServers,
   autoConnectCameras,
   getCameraInfo,
-  sanitizeCameraName,
   enableAutoStreamsOnConnect,
   startStreamsForAllConnectedCameras,
   startReconnectWatchdog,
@@ -65,6 +64,7 @@ import {
   stopEmailPushServer,
   setEmailPushCameraResolver,
 } from "./email-push-server.js";
+import { resolveEmailPushCameraId } from "./email-push-resolver.js";
 import {
   startBackchannelServer,
   stopBackchannelServer,
@@ -1062,15 +1062,12 @@ server.listen(PORT, async () => {
   // registered camera; settings are persisted, so changes via the tRPC
   // router survive restarts.
   try {
-    setEmailPushCameraResolver((candidate) => {
-      const lower = candidate.toLowerCase();
-      const match = settings.cameras.find(
-        (c) =>
-          c.id.toLowerCase() === lower ||
-          sanitizeCameraName(c.name).toLowerCase() === lower,
-      );
-      return match?.id;
-    });
+    // NB: resolveEmailPushCameraId reads the camera list LIVE on every call.
+    // It must NOT close over the boot-time `settings` snapshot — `saveSettings`
+    // reassigns the store's settings object on every change, so a snapshot goes
+    // stale the moment a camera is added/edited and deliveries get rejected
+    // with `550 Unknown recipient` (issue #35).
+    setEmailPushCameraResolver(resolveEmailPushCameraId);
     // Email Push is officially on; the only toggle that matters at boot is
     // the user-facing `enabled` flag.
     if (settings.emailPush?.enabled) {

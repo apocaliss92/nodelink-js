@@ -28,16 +28,14 @@ import {
 import * as net from "net";
 import * as crypto from "crypto";
 import { releaseStreamsByCamera } from "./stream-pool.js";
+import { sanitizeCameraName } from "./camera-name.js";
 
 
 // ---------------------------------------------------------------------------
-// Helper: sanitize camera name for URL path (Camera Studio => camera_studio)
-export function sanitizeCameraName(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-}
+// Helper: sanitize camera name for URL path (Camera Studio => camera_studio).
+// Defined in the pure ./camera-name module; re-exported here so existing
+// importers keep working unchanged.
+export { sanitizeCameraName };
 
 // Helper: generate random token for RTSP path
 export function generateStreamToken(): string {
