@@ -244,6 +244,14 @@ export class BaichuanVideoStream extends EventEmitter<{
   private logger: Logger | undefined;
   private active = false;
   private videoFrameHandler: ((frame: BaichuanFrame) => void) | undefined;
+  // Fired when the underlying BaichuanClient socket closes/errors (e.g. the
+  // keepalive watchdog tears down a half-open socket after a camera reboot).
+  // Without this, the stream keeps believing it is active and only the idle
+  // watchdog would (eventually, and uselessly) try to restart on a dead
+  // client. Surfacing the socket death as a stream "close" lets the consumer
+  // (createNativeStream → fanout onEnd → BaichuanRtspServer) rebuild the
+  // stream on a fresh dedicated session.
+  private clientCloseHandler: (() => void) | undefined;
   private readonly expectedStreamTypes: Set<number>;
   private activeMsgNum: number | undefined;
   private readonly cmdId: number;
@@ -1518,6 +1526,26 @@ export class BaichuanVideoStream extends EventEmitter<{
     // Register the push handler BEFORE the VIDEO start command.
     // Some NVR/Hub firmwares begin streaming before replying to the start command.
     this.client.on("push", this.videoFrameHandler);
+
+    // Tear the stream down when the underlying socket dies. A half-open socket
+    // after a camera reboot is detected by the client keepalive, which destroys
+    // it and emits "close"; we propagate that as a stream "close" so the
+    // rebroadcast source ends and is rebuilt on a fresh session instead of
+    // silently stalling on a dead socket for hours.
+    this.clientCloseHandler = () => {
+      if (!this.active) return;
+      this.logger?.warn?.(
+        `[BaichuanVideoStream] underlying socket closed (channel=${this.channel} profile=${this.profile}) — ending stream for rebuild`,
+      );
+      this.active = false;
+      this.stopWatchdog();
+      if (this.videoFrameHandler)
+        this.client.off("push", this.videoFrameHandler);
+      this.videoFrameHandler = undefined;
+      this.emit("close");
+    };
+    this.client.on("close", this.clientCloseHandler);
+
     this.active = true;
     this.startWatchdog();
 
@@ -1631,6 +1659,10 @@ export class BaichuanVideoStream extends EventEmitter<{
           if (this.videoFrameHandler)
             this.client.off("push", this.videoFrameHandler);
           this.videoFrameHandler = undefined;
+          if (this.clientCloseHandler) {
+            this.client.off("close", this.clientCloseHandler);
+            this.clientCloseHandler = undefined;
+          }
           throw err;
         }
         this.emitSafeError(err);
@@ -1657,6 +1689,11 @@ export class BaichuanVideoStream extends EventEmitter<{
       this.client.removeListener("push", this.videoFrameHandler);
     }
     this.videoFrameHandler = undefined;
+
+    if (this.clientCloseHandler) {
+      this.client.removeListener("close", this.clientCloseHandler);
+      this.clientCloseHandler = undefined;
+    }
 
     // Note: stream-level decipher is not used here; we pick decrypted/raw before BcMedia decoding.
 

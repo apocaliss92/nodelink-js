@@ -281,6 +281,16 @@ export class BaichuanClient extends EventEmitter<{
 
   private keepAliveTimer: NodeJS.Timeout | undefined;
   private keepAlivePingInFlight = false;
+  // Consecutive TCP keepalive (PING) failures with no response. A half-open
+  // socket after a camera reboot is NOT reported as `destroyed`, so
+  // `isSocketConnected()` stays stale-true and recovery never triggers. We
+  // treat repeated unanswered pings as a hard liveness failure and tear the
+  // socket down so the 'close' handler fires (resetting loggedIn/subscribed
+  // and emitting "close"), which lets ensureConnected() rebuild it.
+  private consecutiveKeepalivePingFailures = 0;
+  // Number of unanswered keepalive pings tolerated before the TCP socket is
+  // declared dead. 2 misses ≈ up to ~2 keepalive intervals of silence.
+  private static readonly KEEPALIVE_MAX_PING_FAILURES = 2;
   // Battery/BCUDP cameras may actively terminate sessions (D2C_DISC) when overwhelmed
   // or sleeping. Without a cooldown, callers can end up in tight reconnect loops.
   private udpReconnectCooldownUntilMs = 0;
@@ -1191,7 +1201,6 @@ export class BaichuanClient extends EventEmitter<{
     // TCP keepalive: MSG_ID_PING (93)
     try {
       // We use sendFrame which waits for response.
-      // If it times out, it's fine, we just log it.
       await this.sendFrame({
         cmdId: BC_CMD_ID_PING,
         channel: this.opts.channel ?? 0,
@@ -1201,9 +1210,38 @@ export class BaichuanClient extends EventEmitter<{
         extensionXml: "", // Keepalive has empty body
         internal: true,
       });
+      // A reply proves the socket is genuinely alive — clear the failure run.
+      this.consecutiveKeepalivePingFailures = 0;
     } catch (e) {
-      // Ignore errors, just log debug
-      this.logDebug("keepalive_ping_failed", e);
+      // A failed/timed-out keepalive is the only signal that a half-open TCP
+      // socket (camera reboot, vanished peer, lost RST) is actually dead:
+      // `isSocketConnected()` only checks `!destroyed`, which stays false on a
+      // half-open socket, so it would otherwise report stale-true forever and
+      // block ensureConnected() from rebuilding. After a few unanswered pings
+      // we destroy the socket so the 'close' handler runs (resetting
+      // loggedIn/subscribed, emitting "close"), turning the undetectable
+      // half-open state into a normal close that recovery already handles.
+      this.consecutiveKeepalivePingFailures++;
+      this.logDebug("keepalive_ping_failed", {
+        error: e,
+        consecutiveFailures: this.consecutiveKeepalivePingFailures,
+      });
+      if (
+        this.transport === "tcp" &&
+        this.consecutiveKeepalivePingFailures >=
+          BaichuanClient.KEEPALIVE_MAX_PING_FAILURES &&
+        this.tcpSocket &&
+        !this.tcpSocket.destroyed
+      ) {
+        this.logFixed(
+          "keepalive_dead",
+          `transport=tcp host=${this.opts.host} consecutiveFailures=${this.consecutiveKeepalivePingFailures} — destroying half-open socket`,
+        );
+        this.consecutiveKeepalivePingFailures = 0;
+        // Triggers sock.on("close") which resets loggedIn/subscribed,
+        // clears tcpSocket, and emits "close" for upstream reconnect logic.
+        this.tcpSocket.destroy();
+      }
     }
   }
 
@@ -1318,6 +1356,7 @@ export class BaichuanClient extends EventEmitter<{
     this.tcpSocket = sock;
     this.transport = "tcp";
     this.socketClosed = false;
+    this.consecutiveKeepalivePingFailures = 0;
     this.socketSessionId = this.newSocketSessionId("tcp");
 
     // TCP keep-alive at OS level (helps prevent idle disconnects from NAT/camera).

@@ -483,6 +483,22 @@ export class BaichuanRtspServer extends EventEmitter<{
     isKeyframe: boolean;
   }> = [];
 
+  /**
+   * Hard cap on the userspace TCP send buffer for a single RTSP client. A
+   * healthy consumer drains near-instantly; if this much data backs up the
+   * client is dead or far too slow to keep up with the live stream.
+   */
+  static readonly MAX_CLIENT_BUFFERED_BYTES = 8 * 1024 * 1024;
+
+  /**
+   * Pure backpressure decision: should the client socket be disconnected
+   * because its send buffer has grown past the hard cap? Extracted so the
+   * decision can be unit-tested without a live socket.
+   */
+  static shouldDisconnectForBackpressure(bufferedBytes: number): boolean {
+    return bufferedBytes > BaichuanRtspServer.MAX_CLIENT_BUFFERED_BYTES;
+  }
+
   private static isAdtsAacFrame(b: Buffer): boolean {
     // ADTS syncword: 0xFFF (12 bits)
     return b.length >= 2 && b[0] === 0xff && (b[1]! & 0xf0) === 0xf0;
@@ -1755,9 +1771,31 @@ export class BaichuanRtspServer extends EventEmitter<{
     const rtspDebug = this.isRtspDebugEnabled();
     const rtspDebugLog = (message: string) => this.rtspDebugLog(message);
 
+    // Returns the socket's `write()` backpressure signal: `true` when the kernel
+    // accepted the data immediately, `false` when it was buffered (caller should
+    // pause and await 'drain' before sending more). Returns `true` on the
+    // not-writable / error fast paths so callers don't wait on a dead socket.
+    //
+    // The send-buffer hard cap below previously lived in an unreachable
+    // `useTcpInterleaved && !useDirectRtp` branch (useDirectRtp === useTcpInterleaved),
+    // so it never ran on the path consumers actually use. It now runs here.
     const sendInterleaved = (channel: number, msg: Buffer): boolean => {
       if (!rtspSocket || rtspSocket.destroyed || !rtspSocket.writable)
-        return false;
+        return true;
+      // Backpressure: a large backlog means the client is dead or too slow.
+      // Forwarding the ~94 FU-A packets of a 100 KB+ keyframe back-to-back can
+      // otherwise balloon the userspace buffer and stall delivery for everyone.
+      if (
+        BaichuanRtspServer.shouldDisconnectForBackpressure(
+          rtspSocket.writableLength,
+        )
+      ) {
+        this.logger.warn(
+          `[rebroadcast] backpressure: ${Math.round(rtspSocket.writableLength / 1024)}KB buffered for client=${clientId} — disconnecting`,
+        );
+        rtspSocket.destroy();
+        return true;
+      }
       try {
         return rtspSocket.write(frameRtpOverTcp(channel, msg));
       } catch (error) {
@@ -1767,9 +1805,28 @@ export class BaichuanRtspServer extends EventEmitter<{
           "code" in error &&
           (error as any).code === "EPIPE"
         )
-          return false;
+          return true;
       }
-      return false;
+      return true;
+    };
+
+    // Pause the feed loop until the client's TCP socket has drained its
+    // userspace buffer. Called after each full access unit so a keyframe burst
+    // (~94 FU-A writes for a 100 KB+ IDR) cannot pile up faster than the
+    // consumer reads it — the root cause of downstream "dropped/choppy frames"
+    // even though the source is clean. Resolves immediately when not buffered.
+    const awaitClientDrain = async (): Promise<void> => {
+      if (!rtspSocket || rtspSocket.destroyed) return;
+      if (!rtspSocket.writableNeedDrain) return;
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          rtspSocket.removeListener("drain", done);
+          rtspSocket.removeListener("close", done);
+          resolve();
+        };
+        rtspSocket.once("drain", done);
+        rtspSocket.once("close", done);
+      });
     };
 
     const getVideoChannel = (): number => resources?.track0RtpChannel ?? 0;
@@ -2520,6 +2577,9 @@ export class BaichuanRtspServer extends EventEmitter<{
               (resources as any).framesSent = ((resources as any).framesSent ?? 0) + 1;
             }
             sendVideoAccessUnit(videoType, normalizedVideoData, true);
+            // Backpressure: wait for the client socket to drain before pulling
+            // the next access unit, so bursts (keyframes) don't flood/coalesce.
+            await awaitClientDrain();
           } else {
             try {
               if (

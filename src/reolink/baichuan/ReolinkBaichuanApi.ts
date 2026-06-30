@@ -3602,11 +3602,64 @@ export class ReolinkBaichuanApi {
     const generalEntry = this.socketPool.get("general");
     if (!generalEntry) return;
 
-    // Connection must be alive for recovery to work
+    // Connection must be alive for an event resubscribe to work. If the control
+    // socket is down (e.g. the keepalive watchdog tore down a half-open socket
+    // after a camera reboot), a bare resubscribe cannot recover it — the socket
+    // itself must be rebuilt. Escalate to a full reconnect via ensureConnected(),
+    // which re-establishes the control socket AND re-subscribes events. Throttle
+    // with the same backoff so a sleeping/unreachable camera is not hammered.
     if (!generalEntry.client.isSocketConnected?.() || !generalEntry.client.loggedIn) {
-      this.logger.debug?.(
-        `[ReolinkBaichuanApi] event watchdog tick: skipping (connection not alive: connected=${generalEntry.client.isSocketConnected?.()} loggedIn=${generalEntry.client.loggedIn})`,
+      // Battery/UDP cameras disconnect on purpose to sleep; a down socket is
+      // their normal idle state, and forcing a reconnect would wake them every
+      // few minutes and drain the battery. Keep the original skip behaviour for
+      // those; only TCP (mains-powered) cameras escalate to a full reconnect.
+      if (!this.eventWatchdogSilenceResubscribeEnabled) {
+        this.logger.debug?.(
+          `[ReolinkBaichuanApi] event watchdog tick: skipping (connection not alive, battery/UDP — not forcing reconnect: ` +
+            `connected=${generalEntry.client.isSocketConnected?.()} loggedIn=${generalEntry.client.loggedIn})`,
+        );
+        return;
+      }
+      const now = Date.now();
+      const backoffMs = Math.min(
+        30_000 * Math.pow(2, this.simpleEventWatchdogRecoveryAttempts),
+        this.simpleEventWatchdogSilenceThresholdMs,
       );
+      if (now - this.simpleEventWatchdogLastRecoveryAt < backoffMs) {
+        this.logger.debug?.(
+          `[ReolinkBaichuanApi] event watchdog tick: connection down, reconnect backoff active ` +
+            `(connected=${generalEntry.client.isSocketConnected?.()} loggedIn=${generalEntry.client.loggedIn})`,
+        );
+        return;
+      }
+      this.simpleEventWatchdogRecoveryAttempts++;
+      this.simpleEventWatchdogLastRecoveryAt = now;
+      (this.logger.info ?? this.logger.log).call(
+        this.logger,
+        `[ReolinkBaichuanApi] event watchdog: control socket down, forcing full reconnect ` +
+          `(attempt #${this.simpleEventWatchdogRecoveryAttempts})`,
+        { host: this.host },
+      );
+      try {
+        // ensureConnected() rebuilds the general socket (reconnectGeneralSocket),
+        // which re-logs-in and re-subscribes events. The video rebroadcast source
+        // recovers independently: its dedicated socket is likewise torn down by the
+        // keepalive watchdog, ending the native stream so it rebuilds on a fresh
+        // session.
+        await this.ensureConnected();
+        this.simpleEventLastReceivedAt = Date.now();
+        this.simpleEventWatchdogRecoveryAttempts = 0;
+        (this.logger.info ?? this.logger.log).call(
+          this.logger,
+          `[ReolinkBaichuanApi] event watchdog: full reconnect successful`,
+        );
+      } catch (e: unknown) {
+        (this.logger.debug ?? this.logger.log).call(
+          this.logger,
+          `[ReolinkBaichuanApi] event watchdog: full reconnect attempt #${this.simpleEventWatchdogRecoveryAttempts} failed`,
+          formatErrorForLog(e),
+        );
+      }
       return;
     }
 
