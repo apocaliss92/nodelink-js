@@ -66,6 +66,10 @@ import {
 } from "./email-push-server.js";
 import { resolveEmailPushCameraId } from "./email-push-resolver.js";
 import {
+  startProcessDiagnostics,
+  stopProcessDiagnostics,
+} from "./process-diagnostics.js";
+import {
   startBackchannelServer,
   stopBackchannelServer,
 } from "./backchannel-manager.js";
@@ -918,6 +922,9 @@ app.get("*", (req, res, next) => {
 async function shutdown() {
   appLogger.info("Shutting down server...", { source: "server" });
 
+  // Stop the periodic process diagnostics timer.
+  stopProcessDiagnostics();
+
   // Disconnect MQTT
   try {
     await disconnectMqtt();
@@ -1009,6 +1016,11 @@ process.on("unhandledRejection", (reason) => {
 // Start server
 server.listen(PORT, async () => {
   appLogger.info(`Server started on port ${PORT}`, { source: "server" });
+
+  // Periodic process resource diagnostics (handles/fd, memory, SMTP status).
+  // Used to trace whether a process-wide fd leak (BCUDP/RTSP churn) is what
+  // eventually wedges the email-push SMTP intake ("dies after a few days").
+  startProcessDiagnostics();
 
   const rtspPort = Number(process.env.RTSP_PORT) || settings.localRtsp?.port || 8554;
   const VITE_PORT = Number(process.env.VITE_PORT) || 5173;

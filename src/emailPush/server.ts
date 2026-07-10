@@ -243,6 +243,17 @@ export function createEmailPushServer(
       disabledCommands: config.requireAuth ? [] : ["AUTH"],
       allowInsecureAuth: !config.tls,
       size: config.maxMessageBytes,
+      // Bound concurrent SMTP sessions. Cameras deliver one message and hang
+      // up, so real fan-in is tiny; this caps file-descriptor growth if a
+      // batch of half-open sessions ever piles up (default is UNLIMITED) and
+      // keeps the intake from contributing to a process-wide EMFILE.
+      maxClients: 50,
+      // Pin the reap timers explicitly (these match the smtp-server defaults,
+      // but making them visible guards against a future default change): a
+      // battery camera that powers off mid-delivery leaves a half-open socket
+      // that is reclaimed after socketTimeout instead of lingering for days.
+      socketTimeout: 60_000,
+      closeTimeout: 30_000,
       // smtp-server invokes its internal logger as
       //   logger.info(metadata, formatString, ...args)
       // where `metadata` is an opaque session/connection object and
@@ -384,7 +395,32 @@ export function createEmailPushServer(
 
     next.on("error", (err: NodeJS.ErrnoException) => {
       status.lastErrorMessage = err.message;
-      log.error(`Email push server error: ${err.message}`);
+      log.error(`Email push server error: ${err.code ?? ""} ${err.message}`);
+      // Self-heal: a lost listening socket (e.g. a transient EMFILE/ENFILE
+      // during accept when the process runs low on file descriptors) otherwise
+      // leaves the SMTP intake dead until a manual process restart — the
+      // reported "SMTP dies after a few days" symptom. Per-connection errors
+      // keep the underlying net.Server listening, so this only re-arms on a
+      // real listener loss. `SMTPServer` wraps the net.Server in `.server`
+      // (not surfaced by its public types, hence the cast).
+      const netServer = (next as unknown as { server?: { listening?: boolean } })
+        .server;
+      if (server === next && netServer && netServer.listening === false) {
+        status.running = false;
+        setTimeout(() => {
+          if (server !== next) return; // superseded by stop()/restart()
+          try {
+            next.listen(config.port, config.bindHost, () => {
+              status.running = true;
+              log.warn(
+                `Email push SMTP re-listened on ${config.bindHost}:${config.port} after error`,
+              );
+            });
+          } catch (e) {
+            log.error(`Email push re-listen failed: ${(e as Error).message}`);
+          }
+        }, 5_000).unref?.();
+      }
     });
 
     await new Promise<void>((resolve, reject) => {
