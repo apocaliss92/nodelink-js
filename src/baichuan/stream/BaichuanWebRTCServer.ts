@@ -6,7 +6,8 @@
  *
  * Architecture:
  * - Camera → Baichuan native stream → H.264/H.265 frames → RTP → WebRTC
- * - Browser mic → WebRTC DataChannel → ADPCM encoding → Baichuan Talk → Camera speaker
+ * - Browser mic → WebRTC DataChannel (PCM or ADPCM) → encodeImaAdpcm as needed
+ *   → Baichuan Talk → Camera speaker
  *
  * Usage:
  * ```typescript
@@ -36,6 +37,7 @@ import type { StreamProfile } from "../../reolink/baichuan/types";
 import type { ReolinkBaichuanApi } from "../../reolink/baichuan/ReolinkBaichuanApi";
 import type { NativeVideoStreamVariant } from "../../reolink/baichuan/types";
 import { createNativeStream, Intercom } from "../../rfc/helpers";
+import { encodeImaAdpcm } from "../../reolink/baichuan/utils/imaAdpcm";
 import { detectVideoCodecFromNal } from "./BcMediaAnnexBDecoder";
 import { AacToOpusTranscoder } from "./AacToOpusTranscoder";
 import {
@@ -43,6 +45,67 @@ import {
   isH264KeyframeAnnexB,
   splitAnnexBToNalPayloads as splitH264AnnexBToNalPayloads,
 } from "./H264Converter";
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+/**
+ * Normalize a WebRTC DataChannel binary payload to a Node Buffer.
+ *
+ * - Browser `RTCDataChannel` with `binaryType = "arraybuffer"` → ArrayBuffer
+ * - werift (Node) delivers binary messages as Buffer
+ * - TypedArray views (e.g. Int16Array PCM from the Manager UI)
+ *
+ * Returning null means the message is not binary audio and should be ignored.
+ */
+export function normalizeIntercomPayload(data: unknown): Buffer | null {
+  if (Buffer.isBuffer(data)) return data;
+  if (data instanceof ArrayBuffer) return Buffer.from(data);
+  if (ArrayBuffer.isView(data)) {
+    return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+  }
+  return null;
+}
+
+/**
+ * Reolink TalkAbility default: lengthPerEncoder=1024 → blockSize 512 ADPCM
+ * payload bytes + 4-byte IMA header = 516-byte full blocks.
+ */
+const REOLINK_TALK_ADPCM_BLOCK_SIZE = 512;
+const REOLINK_TALK_FULL_BLOCK_SIZE = REOLINK_TALK_ADPCM_BLOCK_SIZE + 4;
+
+/**
+ * Convert an intercom DataChannel payload into ADPCM full blocks for
+ * `Intercom.sendAudio()`.
+ *
+ * Preferred path (Manager UI): raw PCM Int16 LE, 1024 samples (2048 bytes) or
+ * 1025 samples (2050 bytes). Encoded with {@link encodeImaAdpcm} so framing
+ * matches Reolink (first sample as predictor, step index 0 per block).
+ *
+ * Legacy paths:
+ * - 512-byte nibble-only ADPCM → prepend zero header (best-effort)
+ * - 516-byte (or multiple) full blocks → pass through
+ */
+export function prepareIntercomAudioForTalk(audioData: Buffer): Buffer {
+  // PCM Int16 LE from the browser (TalkAbility lengthPerEncoder samples).
+  if (audioData.length === 2048 || audioData.length === 2050) {
+    const pcm = new Int16Array(
+      audioData.buffer,
+      audioData.byteOffset,
+      audioData.length / 2,
+    );
+    return encodeImaAdpcm(pcm, REOLINK_TALK_ADPCM_BLOCK_SIZE);
+  }
+  // Legacy: packed ADPCM nibbles without IMA header.
+  if (audioData.length === REOLINK_TALK_ADPCM_BLOCK_SIZE) {
+    const block = Buffer.alloc(REOLINK_TALK_FULL_BLOCK_SIZE);
+    audioData.copy(block, 4);
+    return block;
+  }
+  // Already full block(s).
+  return audioData;
+}
 
 // ============================================================================
 // Types
@@ -397,15 +460,26 @@ export class BaichuanWebRTCServer extends EventEmitter {
       };
 
       dataChannel.onmessage = async (event: any) => {
-        // Handle incoming audio from browser for intercom
-        if (session.intercom && event.data instanceof ArrayBuffer) {
-          try {
-            const audioData = Buffer.from(event.data);
-            await session.intercom.sendAudio(audioData);
-            session.stats.intercomBytesSent += audioData.length;
-          } catch (err) {
-            this.log("error", `Failed to send intercom audio: ${err}`);
+        // Handle incoming audio from browser for intercom.
+        // werift delivers binary DC messages as Node Buffers (not ArrayBuffer);
+        // browsers may send ArrayBuffer / TypedArray (PCM Int16 or ADPCM).
+        if (!session.intercom) return;
+        try {
+          const raw = normalizeIntercomPayload(event.data);
+          if (!raw) {
+            this.log(
+              "warn",
+              `Ignoring intercom DC message of unsupported type: ${
+                event.data == null ? "null" : typeof event.data
+              }`,
+            );
+            return;
           }
+          const audioData = prepareIntercomAudioForTalk(raw);
+          await session.intercom.sendAudio(audioData);
+          session.stats.intercomBytesSent += audioData.length;
+        } catch (err) {
+          this.log("error", `Failed to send intercom audio: ${err}`);
         }
       };
 
