@@ -1,18 +1,15 @@
 /**
- * Pure-JS IMA-ADPCM encoder, used to compress the browser's microphone PCM
- * before sending it over the WebRTC `intercom` DataChannel to the camera.
+ * Pure-JS IMA-ADPCM helpers for browser-side audio.
  *
- * Reolink cameras (per their TalkAbility response) expect 16-bit signed PCM
- * at 16 kHz mono, encoded into IMA-ADPCM nibbles (4 bits per input sample,
- * two samples per output byte). The state machine here is the standard
- * IMA ADPCM described in the Intel Indeo specification — same one used by
- * WAV codecs and most embedded talk-back stacks.
+ * Manager native intercom does **not** encode ADPCM in the browser anymore:
+ * `WebRTCInlinePlayer` sends raw PCM Int16 over the DataChannel and the
+ * library encodes with `encodeImaAdpcm` (correct Reolink block framing).
+ * {@link floatToPcm16} is what the player uses.
  *
- * Usage:
- *   const enc = new ImaAdpcmEncoder();
- *   const adpcmBytes = enc.encode(int16PcmSamples);
- *   // ... send to camera ...
- *   enc.reset(); // start a new utterance
+ * {@link ImaAdpcmEncoder} remains for experiments / alternate clients. Note
+ * that a naive "nibble stream + optional 4-byte header from encoder state"
+ * does **not** match Reolink TalkSession blocks (first sample as predictor,
+ * step index reset per block) — prefer server-side `encodeImaAdpcm`.
  */
 
 const STEP_TABLE: number[] = [
