@@ -10,7 +10,7 @@ import {
   Minimize,
 } from "lucide-react";
 import { trpcMutation } from "../../api";
-import { ImaAdpcmEncoder, floatToPcm16 } from "./utils/imaAdpcm";
+import { floatToPcm16 } from "./utils/imaAdpcm";
 
 /**
  * WebRTC player driven by the in-process `BaichuanWebRTCServer` via the
@@ -18,10 +18,10 @@ import { ImaAdpcmEncoder, floatToPcm16 } from "./utils/imaAdpcm";
  * knows the camera codec); the browser answers and trickles its own ICE.
  *
  * The server also opens a bidirectional `intercom` DataChannel on demand:
- * the browser captures the mic, encodes IMA-ADPCM at 16 kHz mono, and ships
- * chunks of 1024 samples to the server which forwards them as BcMedia ADPCM
- * Talk frames to the camera. Downstream audio (camera → browser) already
- * flows on the standard Opus RTP track.
+ * the browser captures the mic at 16 kHz mono and ships raw PCM Int16 chunks
+ * (1024 samples) over the DC. The server encodes them with library
+ * `encodeImaAdpcm` into Reolink 516-byte talk blocks. Downstream audio
+ * (camera → browser) already flows on the standard Opus RTP track.
  */
 type Profile = "main" | "sub" | "ext";
 
@@ -84,11 +84,10 @@ export function WebRTCInlinePlayer({
   const audioContextRef = useRef<AudioContext | null>(null);
   const workletNodeRef = useRef<AudioWorkletNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const adpcmEncoderRef = useRef<ImaAdpcmEncoder | null>(null);
   /**
    * PCM accumulator: AudioWorklet posts ~128-sample bursts; we batch them
-   * to INTERCOM_CHUNK_SAMPLES before encoding so the camera receives
-   * predictably-sized BcMedia frames.
+   * to INTERCOM_CHUNK_SAMPLES before sending so the server receives
+   * predictably-sized PCM frames for encodeImaAdpcm.
    */
   const pcmBufferRef = useRef<Float32Array | null>(null);
   const pcmBufferLenRef = useRef(0);
@@ -126,7 +125,6 @@ export function WebRTCInlinePlayer({
     }
     pcmBufferRef.current = null;
     pcmBufferLenRef.current = 0;
-    adpcmEncoderRef.current?.reset();
     setMicActive(false);
   }, []);
 
@@ -473,22 +471,26 @@ export function WebRTCInlinePlayer({
           .webkitAudioContext);
       const ctx = new AudioCtx({ sampleRate: INTERCOM_SAMPLE_RATE });
       audioContextRef.current = ctx;
-      await ctx.audioWorklet.addModule("/worklets/pcm-tap.js");
+      // Served under /static/… in production (express.static). Dev Vite may
+      // still expose /worklets via publicDir — try static first, fall back.
+      try {
+        await ctx.audioWorklet.addModule("/static/worklets/pcm-tap.js");
+      } catch {
+        await ctx.audioWorklet.addModule("/worklets/pcm-tap.js");
+      }
       const source = ctx.createMediaStreamSource(ms);
       const node = new AudioWorkletNode(ctx, "pcm-tap", {
         numberOfInputs: 1,
         numberOfOutputs: 0,
         channelCount: 1,
       });
-      adpcmEncoderRef.current = new ImaAdpcmEncoder();
       pcmBufferRef.current = new Float32Array(INTERCOM_CHUNK_SAMPLES);
       pcmBufferLenRef.current = 0;
       node.port.onmessage = (ev: MessageEvent<Float32Array>) => {
         const samples = ev.data;
         const buf = pcmBufferRef.current;
-        const enc = adpcmEncoderRef.current;
         const dc = intercomChannelRef.current;
-        if (!buf || !enc || !dc || dc.readyState !== "open") return;
+        if (!buf || !dc || dc.readyState !== "open") return;
         let i = 0;
         while (i < samples.length) {
           const room = INTERCOM_CHUNK_SAMPLES - pcmBufferLenRef.current;
@@ -497,9 +499,16 @@ export function WebRTCInlinePlayer({
           pcmBufferLenRef.current += take;
           i += take;
           if (pcmBufferLenRef.current >= INTERCOM_CHUNK_SAMPLES) {
+            // Send raw PCM Int16 LE. The library WebRTC server encodes with
+            // encodeImaAdpcm so Reolink receives correct 516-byte talk blocks.
+            // Client-side ADPCM (even with a 4-byte header) does not match
+            // the camera's per-block framing and plays as silence.
             const pcm16 = floatToPcm16(buf);
-            const adpcm = enc.encode(pcm16);
-            try { dc.send(adpcm); } catch { /* drop on error */ }
+            try {
+              dc.send(pcm16);
+            } catch {
+              /* drop on error */
+            }
             pcmBufferLenRef.current = 0;
           }
         }

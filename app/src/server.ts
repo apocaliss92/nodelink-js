@@ -394,6 +394,10 @@ appLogger.debug(`__dirname: ${__dirname}`, { source: "server" });
 appLogger.debug(`publicPath: ${publicPath}`, { source: "server" });
 if (hasBuiltUi) {
   app.use("/static", express.static(publicPath));
+  // AudioWorklet modules must be loaded by absolute URL. Older clients request
+  // /worklets/pcm-tap.js while production static assets live under /static/.
+  // Mount both so reverse proxies and cached UIs keep working.
+  app.use("/worklets", express.static(path.join(publicPath, "worklets")));
   appLogger.info(`Serving static files from: ${publicPath}`, {
     source: "server",
   });
@@ -906,6 +910,7 @@ app.get("*", (req, res, next) => {
     req.path.startsWith("/api") ||
     req.path.startsWith("/panel") ||
     req.path.startsWith("/static") ||
+    req.path.startsWith("/worklets") ||
     req.path.startsWith("/ws")
   ) {
     return next();
