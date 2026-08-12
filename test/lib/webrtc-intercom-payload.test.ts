@@ -74,4 +74,29 @@ describe("prepareIntercomAudioForTalk", () => {
     const full = Buffer.alloc(516, 0xab);
     expect(prepareIntercomAudioForTalk(full).equals(full)).toBe(true);
   });
+
+  it("encodes PCM sitting at an odd byteOffset without throwing", () => {
+    // werift hands us subarrays of pooled / SCTP-reassembled buffers, so
+    // byteOffset is arbitrary. `new Int16Array(buf.buffer, byteOffset, …)`
+    // requires a 2-byte-aligned offset and throws RangeError otherwise —
+    // swallowed by the caller's try/catch, so the mic goes silent again with
+    // nothing but an error line to show for it.
+    const pcm = new Int16Array(1024);
+    for (let i = 0; i < pcm.length; i++) {
+      pcm[i] = Math.round(4000 * Math.sin((2 * Math.PI * i) / 40));
+    }
+    const aligned = Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+
+    // Same bytes, shifted one byte into a larger backing buffer.
+    const backing = Buffer.alloc(aligned.length + 1);
+    aligned.copy(backing, 1);
+    const misaligned = backing.subarray(1);
+    expect(misaligned.byteOffset % 2).toBe(1);
+    expect(misaligned.equals(aligned)).toBe(true);
+
+    const out = prepareIntercomAudioForTalk(misaligned);
+    expect(out.length).toBe(516);
+    // Byte-identical to the aligned path — the copy must not reinterpret.
+    expect(out.equals(prepareIntercomAudioForTalk(aligned))).toBe(true);
+  });
 });

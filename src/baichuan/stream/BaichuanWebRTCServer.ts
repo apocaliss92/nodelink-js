@@ -90,10 +90,17 @@ const REOLINK_TALK_FULL_BLOCK_SIZE = REOLINK_TALK_ADPCM_BLOCK_SIZE + 4;
 export function prepareIntercomAudioForTalk(audioData: Buffer): Buffer {
   // PCM Int16 LE from the browser (TalkAbility lengthPerEncoder samples).
   if (audioData.length === 2048 || audioData.length === 2050) {
+    // `new Int16Array(buffer, byteOffset, …)` requires a 2-byte-aligned
+    // offset. werift hands us subarrays of pooled / SCTP-reassembled buffers,
+    // so the offset is arbitrary — an odd one throws RangeError, which the
+    // DataChannel handler swallows, and the mic silently goes dead. Copy into
+    // a fresh aligned buffer in that case; the common path stays zero-copy.
+    const aligned =
+      audioData.byteOffset % 2 === 0 ? audioData : Buffer.from(audioData);
     const pcm = new Int16Array(
-      audioData.buffer,
-      audioData.byteOffset,
-      audioData.length / 2,
+      aligned.buffer,
+      aligned.byteOffset,
+      aligned.length / 2,
     );
     return encodeImaAdpcm(pcm, REOLINK_TALK_ADPCM_BLOCK_SIZE);
   }
