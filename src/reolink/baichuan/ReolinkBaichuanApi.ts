@@ -384,6 +384,7 @@ import {
   listRecordingsViaFileInfoList,
 } from "./utils/recordingsFileInfoList";
 import { parseChannelStreamMetadataFromGetEncXml } from "./utils/streamMetadata";
+import { TtlCache } from "./utils/ttlCache";
 import {
   buildTalkSessionInfoFromAbility,
   sendTalkConfigWithReset,
@@ -1110,6 +1111,8 @@ export class ReolinkBaichuanApi {
     DeviceCapabilitiesCacheEntry
   >();
   private static readonly CAPABILITIES_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+  /** Matches the capabilities cache: long enough to absorb reconnect storms, short enough that camera-side changes surface on their own. */
+  private static readonly VIDEO_STREAM_OPTIONS_CACHE_TTL_MS = 5 * 60 * 1000;
 
   /**
    * Dedupe key for battery push events (cmd_id 252), per channel.
@@ -1583,13 +1586,24 @@ export class ReolinkBaichuanApi {
   /**
    * Cache for buildVideoStreamOptions.
    *
-   * IMPORTANT: only the first non-empty result is cached per key.
-   * Empty results are considered transient (common on NVR/Hub) and won't overwrite a good cache.
+   * Building the options reads the encoder config off the camera (GetEnc), and
+   * on a battery camera that command wakes it. The manager calls this on every
+   * API (re)connection via `onApiConnected → getAvailableProfiles`, so without
+   * a real cache a camera whose connection cycles gets woken on every cycle —
+   * measured as the battery drain in issue #35.
+   *
+   * This used to be read but never returned early: it only served to stop an
+   * empty answer from overwriting a good one, so the camera was hit on every
+   * single call regardless. It is now a genuine TTL cache, with the stale
+   * value still available for that empty-answer fallback.
+   *
+   * Invalidated by {@link setEncXml} so a user changing stream settings sees
+   * the change immediately rather than after the TTL.
    */
-  private readonly videoStreamOptionsCache = new Map<
-    string,
-    ReolinkVideoStreamOptionsResult
-  >();
+  private readonly videoStreamOptionsCache =
+    new TtlCache<ReolinkVideoStreamOptionsResult>(
+      ReolinkBaichuanApi.VIDEO_STREAM_OPTIONS_CACHE_TTL_MS,
+    );
 
   /**
    * Process recordings queue sequentially to prevent socket crashes from concurrent requests.
@@ -5411,6 +5425,10 @@ export class ReolinkBaichuanApi {
     const encXml =
       typeof channelOrEncXml === "number" ? encXmlMaybe! : channelOrEncXml;
     await this.sendXml({ cmdId: 57, channel: ch, payloadXml: encXml });
+    // The encoder config is exactly what buildVideoStreamOptions derives its
+    // answer from, so drop the cache rather than serve a stale resolution or
+    // frame rate for up to the TTL after the user changes stream settings.
+    this.videoStreamOptionsCache.clear();
   }
 
   /**
@@ -12584,12 +12602,18 @@ export class ReolinkBaichuanApi {
       lens: lensVariant,
     });
 
-    const cached = this.videoStreamOptionsCache.get(cacheKey);
-
     const isNonEmpty = (r: ReolinkVideoStreamOptionsResult) =>
       r.nativeStreams.length > 0 ||
       r.rtspStreams.length > 0 ||
       r.rtmpStreams.length > 0;
+
+    // Serve a fresh cached answer without touching the camera. This is the
+    // whole point: every miss below issues a GetEnc, which wakes a sleeping
+    // battery camera (issue #35).
+    const fresh = this.videoStreamOptionsCache.get(cacheKey);
+    if (fresh && isNonEmpty(fresh)) {
+      return fresh;
+    }
 
     const cacheOrFallback = (result: ReolinkVideoStreamOptionsResult) => {
       // Never overwrite a good cached value with empty/transient results.
@@ -12598,8 +12622,9 @@ export class ReolinkBaichuanApi {
         return result;
       }
 
-      if (cached && isNonEmpty(cached)) {
-        return cached;
+      const stale = this.videoStreamOptionsCache.getStale(cacheKey);
+      if (stale && isNonEmpty(stale)) {
+        return stale;
       }
 
       return result;
