@@ -35,6 +35,7 @@ import {
   AsyncBoundedQueue,
   type BoundedQueueOverflow,
 } from "./asyncBoundedQueue";
+import { resolveProfileStreamMetadata } from "./streamMetadataCache";
 import { convertToAnnexB as convertH264ToAnnexB } from "./H264Converter";
 import {
   convertToAnnexB as convertH265ToAnnexB,
@@ -1616,29 +1617,32 @@ export class BaichuanRtspServer extends EventEmitter<{
       udpSockAudio: dgram.Socket | null,
     ) => void,
   ): Promise<void> {
-    // Re-fetch stream metadata to ensure we have the correct frame rate for this profile
-    let streamMetadata = this.streamMetadata;
-    if (!streamMetadata || !streamMetadata.frameRate) {
-      try {
-        const metadata = await this.api.getStreamMetadata(this.channel);
-        const stream = metadata.streams.find((s) => s.profile === this.profile);
-        if (stream) {
-          streamMetadata = {
-            frameRate: stream.frameRate || 25,
-            width: stream.width,
-            height: stream.height,
-          };
-          this.rtspDebugLog(
-            `Fetched metadata for profile ${this.profile}: ${streamMetadata.frameRate} fps`,
-          );
-        }
-      } catch (error) {
-        this.logger.warn(
-          `[BaichuanRtspServer] Could not fetch stream metadata: ${error}`,
-        );
-        streamMetadata = { frameRate: 25 };
-      }
+    // Resolve the frame rate for this profile, reading the camera only when we
+    // do not already know it.
+    //
+    // This used to assign the fetched value to a local variable only, so
+    // `this.streamMetadata` stayed empty and every DESCRIBE issued another
+    // getEncXml to the camera. In `lazyMetadata` mode — which the manager
+    // enables for every camera — the eager path in start() that populates the
+    // cache is skipped entirely, so the cache was never filled at all.
+    //
+    // On a battery camera each of those reads wakes it, once per client
+    // reconnect. A consumer that reconnects on a timer therefore kept the
+    // camera permanently awake, which is the exact opposite of what
+    // `lazyMetadata` exists to achieve (issue #35).
+    const resolved = await resolveProfileStreamMetadata(
+      this.streamMetadata,
+      this.profile,
+      () => this.api.getStreamMetadata(this.channel),
+      {
+        onWarn: (m) => this.logger.warn(m),
+        onDebug: (m) => this.rtspDebugLog(m),
+      },
+    );
+    if (resolved.cacheable) {
+      this.streamMetadata = resolved.metadata;
     }
+    const streamMetadata = resolved.metadata;
 
     const ffmpegFormat = this.flow.ffmpegFormat;
 
