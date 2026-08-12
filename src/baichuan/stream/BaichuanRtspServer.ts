@@ -35,7 +35,10 @@ import {
   AsyncBoundedQueue,
   type BoundedQueueOverflow,
 } from "./asyncBoundedQueue";
-import { resolveProfileStreamMetadata } from "./streamMetadataCache";
+import {
+  resolveProfileStreamMetadata,
+  sharedStreamMetadataKey,
+} from "./streamMetadataCache";
 import { convertToAnnexB as convertH264ToAnnexB } from "./H264Converter";
 import {
   convertToAnnexB as convertH265ToAnnexB,
@@ -280,6 +283,24 @@ export interface BaichuanRtspServerOptions {
   audioPrimingMs?: PrimingTimeoutOption;
 
   /**
+   * Cache for per-profile stream metadata, supplied by the caller so it can
+   * outlive this server.
+   *
+   * Resolving metadata reads the encoder config off the camera, which wakes a
+   * battery camera. This server is rebuilt on every camera reconnect, so a
+   * cache held on the instance is always cold and the camera pays for it each
+   * time — the residual half of issue #35. Pass a shared cache (keyed via
+   * `sharedStreamMetadataKey`) and a rebuilt server reuses what its
+   * predecessor already fetched.
+   *
+   * Optional: without it the behaviour is unchanged, just per-instance.
+   */
+  streamMetadataCache?: {
+    get(key: string): { frameRate: number; width?: number; height?: number } | undefined;
+    set(key: string, value: { frameRate: number; width?: number; height?: number }): void;
+  };
+
+  /**
    * Always-on continuous stream (battery cameras). When `enabled`, the server
    * sources video from a {@link ContinuousVideoStream} (real frames during
    * event-driven live windows, a low-fps placeholder while the camera sleeps)
@@ -341,6 +362,9 @@ export class BaichuanRtspServer extends EventEmitter<{
   private readonly NONCE_TIMEOUT_MS = 300000; // 5 minutes
   private readonly lazyMetadata: boolean;
   private readonly videoPrimingMs: PrimingTimeoutOption | undefined;
+  private readonly sharedStreamMetadataCache:
+    | BaichuanRtspServerOptions["streamMetadataCache"]
+    | undefined;
   private readonly audioPrimingMs: PrimingTimeoutOption | undefined;
 
   // Client tracking
@@ -672,6 +696,7 @@ export class BaichuanRtspServer extends EventEmitter<{
     this.AUTH_REALM = options.authRealm ?? "BaichuanRtspServer";
     this.lazyMetadata = options.lazyMetadata ?? false;
     this.videoPrimingMs = options.videoPrimingMs;
+    this.sharedStreamMetadataCache = options.streamMetadataCache;
     this.audioPrimingMs = options.audioPrimingMs;
     this.alwaysOnOptions = options.alwaysOn;
 
@@ -1630,8 +1655,17 @@ export class BaichuanRtspServer extends EventEmitter<{
     // reconnect. A consumer that reconnects on a timer therefore kept the
     // camera permanently awake, which is the exact opposite of what
     // `lazyMetadata` exists to achieve (issue #35).
+    // The per-instance field is not enough on its own: this server is rebuilt
+    // whenever the camera reconnects, so it starts cold every time and the
+    // camera is read again. Fall back to the caller-supplied shared cache,
+    // which survives the rebuild.
+    const sharedKey = sharedStreamMetadataKey(
+      this.deviceId ?? "rtsp-server",
+      this.channel,
+      this.profile,
+    );
     const resolved = await resolveProfileStreamMetadata(
-      this.streamMetadata,
+      this.streamMetadata ?? this.sharedStreamMetadataCache?.get(sharedKey),
       this.profile,
       () => this.api.getStreamMetadata(this.channel),
       {
@@ -1641,6 +1675,7 @@ export class BaichuanRtspServer extends EventEmitter<{
     );
     if (resolved.cacheable) {
       this.streamMetadata = resolved.metadata;
+      this.sharedStreamMetadataCache?.set(sharedKey, resolved.metadata);
     }
     const streamMetadata = resolved.metadata;
 

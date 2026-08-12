@@ -29,7 +29,10 @@ import * as net from "net";
 import * as crypto from "crypto";
 import { releaseStreamsByCamera } from "./stream-pool.js";
 import { sanitizeCameraName } from "./camera-name.js";
-import { availableProfilesCache } from "./available-profiles-cache.js";
+import {
+  availableProfilesCache,
+  streamMetadataCache,
+} from "./available-profiles-cache.js";
 
 
 // ---------------------------------------------------------------------------
@@ -431,7 +434,10 @@ function attachConnectionListeners(
   const cameraName = cam?.name || cam?.host || cameraId;
   const cameraLogger = createSourceLogger(`camera:${cameraName}`, cameraId);
 
-  conn.api.client.on("error", (err: unknown) => {
+  // Subscribed on the api, not on api.client: reconnectGeneralSocket()
+  // replaces the client instance and strips its listeners, so a direct
+  // client subscription goes deaf after the first in-place reconnect.
+  conn.api.onGeneralSocketError((err: unknown) => {
     const msg =
       (err as any)?.message || (err as any)?.toString?.() || String(err);
     if (
@@ -446,7 +452,7 @@ function attachConnectionListeners(
     cameraLogger.error(`Connection error: ${msg}`);
   });
 
-  conn.api.client.on("close", async () => {
+  conn.api.onGeneralSocketClose(async () => {
     // Only handle if this is still the current connection for this camera
     const current = apiConnections.get(cameraId);
     if (!current || current !== conn || conn.cleanupInProgress) {
@@ -1334,6 +1340,9 @@ export async function startRtspServer(
         rtspNativeIdleOpts.nativeStreamIdleStopMs > 0
           ? rtspNativeIdleOpts.nativeStreamIdleStopMs
           : 30_000,
+      // Shared so a server rebuilt after a reconnect does not re-read (and
+      // thereby wake) the camera. See issue #35.
+      streamMetadataCache,
       videoPrimingMs: {
         tcp: settings.localRtsp.priming.videoTcpMs,
         udp: settings.localRtsp.priming.videoUdpMs,

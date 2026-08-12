@@ -18,6 +18,22 @@
  * happened to be asleep once would be worse than retrying.
  */
 
+/**
+ * Cache key for stream metadata that must outlive a single RTSP server.
+ *
+ * The server is rebuilt whenever a camera reconnects, so anything cached on
+ * the instance starts cold every time and the camera is read — and woken —
+ * again. Keying by device/channel/profile lets a rebuilt server find the
+ * answer its predecessor already paid for.
+ */
+export function sharedStreamMetadataKey(
+  deviceId: string,
+  channel: number,
+  profile: string,
+): string {
+  return `${deviceId}:${channel}:${profile}`;
+}
+
 /** The subset of stream metadata the RTSP server actually consumes. */
 export interface ProfileStreamMetadata {
   frameRate: number;

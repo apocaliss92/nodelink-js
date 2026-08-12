@@ -31,6 +31,23 @@ export const availableProfilesCache = new TtlCache<AvailableProfile[]>(
   AVAILABLE_PROFILES_TTL_MS,
 );
 
+/**
+ * Per-profile stream metadata, shared across RTSP server instances.
+ *
+ * `BaichuanRtspServer` caches this on itself, but the manager rebuilds the
+ * server whenever the camera reconnects, so that cache is always cold and the
+ * camera is read — and woken — again. Handing the server this cache lets a
+ * rebuilt instance reuse what its predecessor already fetched.
+ *
+ * Same ttl and the same invalidation hook as the profile list: both are
+ * derived from the camera's encoder configuration.
+ */
+export const streamMetadataCache = new TtlCache<{
+  frameRate: number;
+  width?: number;
+  height?: number;
+}>(AVAILABLE_PROFILES_TTL_MS);
+
 /** Drop the cached profiles for one camera, leaving every other camera alone. */
 export function invalidateAvailableProfiles(cameraId: string): void {
   availableProfilesCache.delete(cameraId);
