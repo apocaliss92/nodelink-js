@@ -298,8 +298,35 @@ async function publishEntityState(
 // Initial control state seeding
 // ---------------------------------------------------------------------------
 
-async function seedControlStates(cam: RegisteredCamera): Promise<void> {
+/**
+ * Cameras whose control states have already been read recently.
+ *
+ * Seeding issues ~8 Baichuan commands (white LED, floodlight, siren, PIR,
+ * autotracking, wifi, PTZ presets, capabilities), and on a battery camera
+ * every one of them is a wake. It runs on each registerCamera(), i.e. on each
+ * camera connect, and on every rediscoverAll() — so a camera whose connection
+ * cycles paid the full burst each time. Measured at +11 commands per connect
+ * on a real Argus 3E (issue #35).
+ */
+const seededAt = new Map<string, number>();
+const SEED_TTL_MS = 30 * 60 * 1000;
+
+/** Forget a camera's seed so the next registration reads it fresh. */
+export function invalidateSeededControlStates(cameraId: string): void {
+  seededAt.delete(cameraId);
+}
+
+async function seedControlStates(
+  cam: RegisteredCamera,
+  opts?: { force?: boolean },
+): Promise<void> {
   const { api, channel, cameraId, entities } = cam;
+
+  const last = seededAt.get(cameraId);
+  if (!opts?.force && last !== undefined && Date.now() - last < SEED_TTL_MS) {
+    return;
+  }
+  seededAt.set(cameraId, Date.now());
   const has = (name: string) => entities.some((e) => e.entity === name);
 
   if (has("floodlight")) {
