@@ -39,6 +39,11 @@ export class TtlCache<T> {
     this.entries.set(key, { value, at: Date.now() });
   }
 
+  /** Drop a single entry, leaving the rest untouched. */
+  delete(key: string): void {
+    this.entries.delete(key);
+  }
+
   /** Drop everything — call when the underlying camera config has changed. */
   clear(): void {
     this.entries.clear();

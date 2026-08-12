@@ -12,6 +12,7 @@ import {
 import { hashPassword } from "./password.js";
 import { migrateLegacyBatteryCamera } from "./camera-traits.js";
 import { atomicWriteFileSync, readWithBackupFallback } from "./atomic-write.js";
+import { invalidateAvailableProfiles } from "./available-profiles-cache.js";
 
 export const RTSP_DIGEST_REALM = "RTSP Proxy";
 
@@ -462,6 +463,10 @@ export function updateCamera(
 ): CameraConfig | null {
   const index = settings.cameras.findIndex((c) => c.id === id);
   if (index === -1) return null;
+
+  // Reconfiguring a camera can change which stream profiles it exposes, so the
+  // cached answer must go — the ttl alone would leave it stale for far too long.
+  invalidateAvailableProfiles(id);
 
   const updated = { ...settings.cameras[index]!, ...updates };
   settings.cameras = [

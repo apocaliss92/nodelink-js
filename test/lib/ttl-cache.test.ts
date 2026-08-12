@@ -45,6 +45,16 @@ describe("TtlCache", () => {
     }
   });
 
+  it("deletes one key without disturbing the others", () => {
+    const c = new TtlCache<number>(1000);
+    c.set("a", 1);
+    c.set("b", 2);
+    c.delete("a");
+    expect(c.get("a")).toBeUndefined();
+    expect(c.getStale("a")).toBeUndefined();
+    expect(c.get("b")).toBe(2);
+  });
+
   it("clears everything on invalidate", () => {
     const c = new TtlCache<number>(1000);
     c.set("a", 1);

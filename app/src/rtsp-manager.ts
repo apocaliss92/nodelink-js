@@ -29,6 +29,7 @@ import * as net from "net";
 import * as crypto from "crypto";
 import { releaseStreamsByCamera } from "./stream-pool.js";
 import { sanitizeCameraName } from "./camera-name.js";
+import { availableProfilesCache } from "./available-profiles-cache.js";
 
 
 // ---------------------------------------------------------------------------
@@ -1107,6 +1108,15 @@ export async function disconnectNvr(nvrId: string): Promise<void> {
 async function getAvailableProfiles(
   cameraId: string,
 ): Promise<Array<"main" | "sub" | "ext">> {
+  // Answering this reads the encoder config off the camera, which wakes a
+  // battery camera. It runs on every reconnect via onApiConnected, and the
+  // library's own cache is rebuilt cold each time the API instance is, so
+  // without a cache keyed by *camera* a cycling connection means a wake per
+  // cycle (issue #35). Profiles only change when the camera is reconfigured,
+  // and that path invalidates this explicitly.
+  const cached = availableProfilesCache.get(cameraId);
+  if (cached) return cached;
+
   try {
     const config = getConfig();
     const camera = config.cameras.find((c) => c.id === cameraId);
@@ -1121,7 +1131,15 @@ async function getAvailableProfiles(
       .filter((p: string): p is "main" | "sub" | "ext" =>
         p === "main" || p === "sub" || p === "ext",
       );
-    return profiles.length > 0 ? [...new Set(profiles)] : ["main", "sub"];
+    const resolved: Array<"main" | "sub" | "ext"> =
+      profiles.length > 0 ? [...new Set(profiles)] : ["main", "sub"];
+    // Only cache a real answer. The ["main","sub"] fallback is a guess made
+    // when the camera said nothing useful — caching it would pin a sleeping
+    // battery camera to that guess for the whole ttl.
+    if (profiles.length > 0) {
+      availableProfilesCache.set(cameraId, resolved);
+    }
+    return resolved;
   } catch {
     return ["main", "sub"];
   }

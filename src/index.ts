@@ -140,6 +140,9 @@ export type { FloodlightTaskState } from "./reolink/baichuan/utils/whiteLed";
 // that the RTSP Backchannel bridge needs to translate RTP PCMU / PCMA payloads
 // into the 16 kHz mono PCM that Reolink's TalkAbility advertises.
 export { encodeImaAdpcm } from "./reolink/baichuan/utils/imaAdpcm";
+// Exported so the manager app can cache camera lookups across API instances —
+// every Baichuan read wakes a battery camera, so avoiding one matters.
+export { TtlCache } from "./reolink/baichuan/utils/ttlCache";
 export {
   mulawToPcm16,
   alawToPcm16,
