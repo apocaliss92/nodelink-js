@@ -113,6 +113,12 @@ type Settings = {
   localRtsp?: {
     port: number;
     bindHost: string;
+    priming?: {
+      videoTcpMs: number;
+      videoUdpMs: number;
+      audioTcpMs: number;
+      audioUdpMs: number;
+    };
   };
   frigate?: {
     host: string;
@@ -169,6 +175,47 @@ type Metrics = {
     freeMem: number;
   };
 };
+
+// ---------------------------------------------------------------------------
+// DESCRIBE priming windows
+// ---------------------------------------------------------------------------
+
+/** Mirrors the `localRtsp.priming` defaults in `app/src/settings-store.ts`. */
+const DEFAULT_PRIMING = {
+  videoTcpMs: 3000,
+  videoUdpMs: 4000,
+  audioTcpMs: 2000,
+  audioUdpMs: 3000,
+} as const;
+
+type PrimingKey = keyof typeof DEFAULT_PRIMING;
+
+const PRIMING_FIELDS: ReadonlyArray<{
+  key: PrimingKey;
+  label: string;
+  hint: string;
+}> = [
+  {
+    key: "videoTcpMs",
+    label: "Video — TCP (ms)",
+    hint: "Wired / mains-powered cameras. Default 3000.",
+  },
+  {
+    key: "videoUdpMs",
+    label: "Video — UDP (ms)",
+    hint: "Battery cameras on BCUDP; raise if SPS/PPS times out. Default 4000.",
+  },
+  {
+    key: "audioTcpMs",
+    label: "Audio — TCP (ms)",
+    hint: "Wait for the first AAC frame. Default 2000.",
+  },
+  {
+    key: "audioUdpMs",
+    label: "Audio — UDP (ms)",
+    hint: "Battery cameras on BCUDP. Default 3000.",
+  },
+];
 
 // ---------------------------------------------------------------------------
 // Shared Tailwind class strings
@@ -1294,6 +1341,62 @@ export default function SettingsPage() {
               </div>
               <div className="mt-1 text-xs text-[var(--color-foreground-muted)]">
                 Restart the server after changing the port or bind host.
+              </div>
+            </div>
+
+            {/* DESCRIBE priming windows. Battery cameras on BCUDP have to wake
+                up before they emit anything, so the built-in windows are often
+                too short for them — see issue #40. */}
+            <div className={cardCls}>
+              <span className={labelCls}>Stream priming (DESCRIBE)</span>
+              <div className="text-[var(--color-foreground-muted)] text-xs mb-3">
+                How long a DESCRIBE waits for the camera before answering
+                anyway. <strong>Video</strong> waits for the parameter sets
+                (SPS/PPS) that go into <code>sprop-parameter-sets</code> —
+                without them ffmpeg/Frigate may hang on first load.{" "}
+                <strong>Audio</strong> waits for the first AAC frame so the
+                track is advertised on the first DESCRIBE instead of the
+                second. Raise the <strong>UDP</strong> values for battery
+                cameras, which must wake up first. <code>0</code> answers
+                immediately without waiting.
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                {PRIMING_FIELDS.map(({ key, label, hint }) => (
+                  <div key={key}>
+                    <span className={labelCls} style={{ fontSize: 12 }}>
+                      {label}
+                    </span>
+                    <input
+                      type="number"
+                      value={settings.localRtsp?.priming?.[key] ?? DEFAULT_PRIMING[key]}
+                      min={0}
+                      max={60000}
+                      step={500}
+                      disabled={!canEditSettings}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          localRtsp: {
+                            ...(settings.localRtsp ?? {
+                              port: 8554,
+                              bindHost: "0.0.0.0",
+                            }),
+                            priming: {
+                              ...DEFAULT_PRIMING,
+                              ...(settings.localRtsp?.priming ?? {}),
+                              [key]: Number(e.target.value),
+                            },
+                          },
+                        })
+                      }
+                      className={inputCls}
+                      style={{ width: 140 }}
+                    />
+                    <div className="text-[var(--color-foreground-muted)] text-xs mt-1">
+                      {hint}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
 

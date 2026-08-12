@@ -1316,6 +1316,14 @@ export async function startRtspServer(
         rtspNativeIdleOpts.nativeStreamIdleStopMs > 0
           ? rtspNativeIdleOpts.nativeStreamIdleStopMs
           : 30_000,
+      videoPrimingMs: {
+        tcp: settings.localRtsp.priming.videoTcpMs,
+        udp: settings.localRtsp.priming.videoUdpMs,
+      },
+      audioPrimingMs: {
+        tcp: settings.localRtsp.priming.audioTcpMs,
+        udp: settings.localRtsp.priming.audioUdpMs,
+      },
     });
 
     await baichuanServer.start();

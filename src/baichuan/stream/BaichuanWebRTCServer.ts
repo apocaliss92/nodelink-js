@@ -114,6 +114,39 @@ export interface WebRTCIceCandidate {
   sdpMLineIndex?: number;
 }
 
+/**
+ * werift's `RTCIceCandidate` constructor takes a **single init object** and
+ * copies it onto the instance (`Object.assign(this, props)`) — it is not the
+ * positional `(candidate, sdpMid)` form of the browser API. Passing the
+ * candidate string positionally spreads it into numeric keys, leaves
+ * `.candidate` undefined, and `IceCandidate.fromJSON()` then throws inside a
+ * swallowed try/catch, so every trickled candidate is dropped without a trace.
+ *
+ * `sdpMLineIndex` matters too: werift routes candidates via
+ * `getTransportByMLineIndex` and only honours a **number**. With just an
+ * `sdpMid` string it silently falls back to `iceTransports[0]`, which is wrong
+ * for any session with more than one m-line. When the caller omits it we
+ * recover it from a numeric `sdpMid`.
+ */
+export function toWeriftIceCandidateInit(
+  candidate: Readonly<WebRTCIceCandidate>,
+): { candidate: string; sdpMid: string; sdpMLineIndex?: number } {
+  const sdpMid = candidate.sdpMid ?? "0";
+  const parsedMid = Number.parseInt(sdpMid, 10);
+  const sdpMLineIndex =
+    candidate.sdpMLineIndex ??
+    (Number.isInteger(parsedMid) && String(parsedMid) === sdpMid
+      ? parsedMid
+      : undefined);
+
+  return {
+    candidate: candidate.candidate,
+    sdpMid,
+    // Omit rather than pass undefined (`exactOptionalPropertyTypes`).
+    ...(sdpMLineIndex === undefined ? {} : { sdpMLineIndex }),
+  };
+}
+
 interface WebRTCSession {
   id: string;
   peerConnection: any; // RTCPeerConnection from werift
@@ -256,7 +289,7 @@ export class BaichuanWebRTCServer extends EventEmitter {
   /**
    * Initialize werift module (lazy load to avoid requiring it if not used)
    */
-  private async loadWerift(): Promise<any> {
+  private async loadWerift(): Promise<typeof import("werift")> {
     if (this.weriftModule) return this.weriftModule;
 
     try {
@@ -301,9 +334,18 @@ export class BaichuanWebRTCServer extends EventEmitter {
     // Create peer connection with H.264 codec
     const peerConnection = new RTCPeerConnection({
       iceServers,
-      icePortRange: this.options.icePortRange,
-      iceAdditionalHostAddresses: this.options.iceAdditionalHostAddresses,
-      iceTransportPolicy: this.options.iceTransportPolicy,
+      // `exactOptionalPropertyTypes` is on: werift's PeerConfig does not accept
+      // an explicit `undefined`, so omit these keys entirely when unset rather
+      // than passing undefined through.
+      ...(this.options.icePortRange
+        ? { icePortRange: this.options.icePortRange }
+        : {}),
+      ...(this.options.iceAdditionalHostAddresses
+        ? { iceAdditionalHostAddresses: this.options.iceAdditionalHostAddresses }
+        : {}),
+      ...(this.options.iceTransportPolicy
+        ? { iceTransportPolicy: this.options.iceTransportPolicy }
+        : {}),
       codecs: {
         video: [
           new RTCRtpCodecParameters({
@@ -513,7 +555,7 @@ export class BaichuanWebRTCServer extends EventEmitter {
     const { RTCIceCandidate } = werift;
 
     await session.peerConnection.addIceCandidate(
-      new RTCIceCandidate(candidate.candidate, candidate.sdpMid ?? "0"),
+      new RTCIceCandidate(toWeriftIceCandidateInit(candidate)),
     );
   }
 

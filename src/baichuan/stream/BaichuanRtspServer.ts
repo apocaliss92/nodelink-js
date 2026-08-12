@@ -24,6 +24,12 @@ import { ContinuousVideoStream } from "./ContinuousVideoStream";
 import { AlwaysOnController } from "./AlwaysOnController";
 import type { AlwaysOnOptions } from "./alwaysOnTypes";
 import { createRtspFlow, type RtspFlow, type RtspVideoType } from "./rtspFlow";
+import {
+  DEFAULT_AUDIO_PRIMING_MS,
+  DEFAULT_VIDEO_PRIMING_MS,
+  resolvePrimingMs,
+  type PrimingTimeoutOption,
+} from "./primingTimeouts";
 import { deriveRtpVideoTimestamp } from "./rtpVideoTimestamp";
 import { convertToAnnexB as convertH264ToAnnexB } from "./H264Converter";
 import {
@@ -280,6 +286,30 @@ export interface BaichuanRtspServerOptions {
   lazyMetadata?: boolean;
 
   /**
+   * How long a DESCRIBE waits for video parameter sets (SPS/PPS for H.264,
+   * VPS/SPS/PPS for H.265) before answering with an SDP that lacks
+   * `sprop-parameter-sets`.
+   *
+   * Accepts a single value for every transport, or `{ tcp, udp }` to raise it
+   * only for battery/BCUDP cameras, which have to wake up first and routinely
+   * exceed the default. `0` answers immediately without waiting.
+   *
+   * Default: `{ tcp: 3000, udp: 4000 }`. Capped at 60000.
+   */
+  videoPrimingMs?: PrimingTimeoutOption;
+
+  /**
+   * How long a DESCRIBE waits for the first AAC frame once video parameter
+   * sets are ready, so the SDP can advertise the audio track instead of
+   * latching it only on the second DESCRIBE.
+   *
+   * Same shape and clamping as `videoPrimingMs`.
+   *
+   * Default: `{ tcp: 2000, udp: 3000 }`.
+   */
+  audioPrimingMs?: PrimingTimeoutOption;
+
+  /**
    * Always-on continuous stream (battery cameras). When `enabled`, the server
    * sources video from a {@link ContinuousVideoStream} (real frames during
    * event-driven live windows, a low-fps placeholder while the camera sleeps)
@@ -340,6 +370,8 @@ export class BaichuanRtspServer extends EventEmitter<{
   private readonly AUTH_REALM: string;
   private readonly NONCE_TIMEOUT_MS = 300000; // 5 minutes
   private readonly lazyMetadata: boolean;
+  private readonly videoPrimingMs: PrimingTimeoutOption | undefined;
+  private readonly audioPrimingMs: PrimingTimeoutOption | undefined;
 
   // Client tracking
   private connectedClients = new Set<string>(); // Set of client IDs (IP:port)
@@ -663,6 +695,8 @@ export class BaichuanRtspServer extends EventEmitter<{
     this.requireAuth = options.requireAuth ?? this.authCredentials.length > 0;
     this.AUTH_REALM = options.authRealm ?? "BaichuanRtspServer";
     this.lazyMetadata = options.lazyMetadata ?? false;
+    this.videoPrimingMs = options.videoPrimingMs;
+    this.audioPrimingMs = options.audioPrimingMs;
     this.alwaysOnOptions = options.alwaysOn;
 
     // Default flow is conservative (tcp+h264); it will be refined from metadata or first frames.
@@ -1203,12 +1237,17 @@ export class BaichuanRtspServer extends EventEmitter<{
             const { hasParamSets } = this.flow.getFmtp();
             if (!hasParamSets) {
               // Wait for SPS/PPS to arrive before sending DESCRIBE response.
-              // TCP cameras typically deliver first keyframe within ~1-2s; use 3000ms to give
-              // slower or 4K cameras enough time. Without param sets, go2rtc/ffmpeg must wait
-              // for in-band SPS/PPS which causes the visible "hang at first load".
-              // UDP transport is already slower to start, so keep 4000ms.
-              const primingMs =
-                this.api.client.getTransport() === "udp" ? 4000 : 3000;
+              // TCP cameras typically deliver first keyframe within ~1-2s; the
+              // default 3000ms gives slower or 4K cameras enough time, and UDP
+              // (battery) gets 4000ms since it starts slower. Without param
+              // sets, go2rtc/ffmpeg must wait for in-band SPS/PPS which causes
+              // the visible "hang at first load". Battery cameras that have to
+              // wake up can need much longer — override via `videoPrimingMs`.
+              const primingMs = resolvePrimingMs(
+                this.videoPrimingMs,
+                this.api.client.getTransport() === "udp" ? "udp" : "tcp",
+                DEFAULT_VIDEO_PRIMING_MS,
+              );
               const primingStart = Date.now();
               this.logger.info(
                 `[rebroadcast] DESCRIBE priming: waiting up to ${primingMs}ms for SPS/PPS  client=${clientId} path=${this.path}`,
@@ -1245,8 +1284,11 @@ export class BaichuanRtspServer extends EventEmitter<{
           // soon as firstAudioPromise fires, so cameras with audio incur no
           // extra latency, and audio-less cameras still hit the cap once.
           if (!this.hasAudio && this.firstAudioPromise) {
-            const audioPrimingMs =
-              this.api.client.getTransport() === "udp" ? 3000 : 2000;
+            const audioPrimingMs = resolvePrimingMs(
+              this.audioPrimingMs,
+              this.api.client.getTransport() === "udp" ? "udp" : "tcp",
+              DEFAULT_AUDIO_PRIMING_MS,
+            );
             const audioPrimingStart = Date.now();
             try {
               await Promise.race([

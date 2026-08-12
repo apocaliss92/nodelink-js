@@ -163,6 +163,26 @@ export const SettingsSchema = z.object({
       bindHost: z.string().default("0.0.0.0"),
       /** Require HTTP Basic/Digest auth on RTSP clients. Default: mirrors rtspRequireAuth. */
       requireAuth: z.boolean().optional(),
+      /**
+       * How long a DESCRIBE waits for the camera to deliver what the SDP
+       * needs before answering anyway.
+       *
+       * Video = SPS/PPS (H.264) or VPS/SPS/PPS (H.265); without them the SDP
+       * has no `sprop-parameter-sets` and ffmpeg/Frigate may hang on first
+       * load. Audio = first AAC frame, so the track is advertised on the
+       * first DESCRIBE rather than the second.
+       *
+       * Battery cameras on BCUDP must wake up first and routinely exceed the
+       * defaults — raise the `udp` values for them. `0` = answer immediately.
+       */
+      priming: z
+        .object({
+          videoTcpMs: z.number().int().min(0).max(60_000).default(3000),
+          videoUdpMs: z.number().int().min(0).max(60_000).default(4000),
+          audioTcpMs: z.number().int().min(0).max(60_000).default(2000),
+          audioUdpMs: z.number().int().min(0).max(60_000).default(3000),
+        })
+        .default({}),
     })
     .default({}),
 
