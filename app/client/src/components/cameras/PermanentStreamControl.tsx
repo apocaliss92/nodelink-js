@@ -11,6 +11,8 @@ interface PermanentStreamControlProps {
 }
 
 const DEFAULT_WINDOW_SECONDS = 15;
+/** Mirrors ALWAYS_ON_DEFAULTS.idleFps in the library. */
+const DEFAULT_IDLE_FPS = 1;
 const DEFAULT_PLACEHOLDER_TEXT = 'Sleeping';
 const DEFAULT_PLACEHOLDER_OPACITY = 0.5;
 
@@ -130,6 +132,24 @@ export function PermanentStreamControl({ cameraId, value }: PermanentStreamContr
               />
             </div>
           </div>
+
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] text-[var(--color-foreground-muted)]">Idle FPS</span>
+            <div className="w-24">
+              <NumberInput
+                value={config.idleFps ?? DEFAULT_IDLE_FPS}
+                min={0.1}
+                max={30}
+                step={0.1}
+                onChange={(v) => persist({ ...config, idleFps: v })}
+              />
+            </div>
+          </div>
+          <span className="-mt-1 text-[10px] text-[var(--color-foreground-subtle)]">
+            How often the “Sleeping” placeholder is repeated while the camera is
+            asleep. Higher values keep fussy consumers fed at the cost of a
+            little CPU; they do not wake the camera.
+          </span>
 
           <div className="flex items-center justify-between gap-2">
             <span className="text-[11px] text-[var(--color-foreground-muted)]">Placeholder text</span>

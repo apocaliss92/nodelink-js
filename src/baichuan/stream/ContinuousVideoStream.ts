@@ -97,7 +97,17 @@ export class ContinuousVideoStream extends EventEmitter<{
     if (this.stopped) return;
     this.idlePlaceholder = await this.renderer.render(this.lastKeyframe);
     if (!this.idlePlaceholder || !this.lastKeyframe) {
-      this.logger?.debug?.("[ContinuousVideoStream] no keyframe yet; idle loop deferred");
+      // The placeholder is rendered *from* the last real keyframe, so until the
+      // camera has delivered one there is nothing to repeat — a continuous
+      // stream that is not actually continuous. Downstream this looks like a
+      // dead stream: the consumer starves, disconnects and reconnects, and on a
+      // battery camera every reconnect wakes it again. Warn rather than debug,
+      // because at default log level this state was invisible and made the
+      // resulting battery drain undiagnosable from user logs.
+      this.logger?.warn?.(
+        "[ContinuousVideoStream] no keyframe cached yet — idle placeholder loop deferred; " +
+          "no frames will be emitted until the camera delivers its first keyframe",
+      );
       return;
     }
     const stepUs = Math.round(1_000_000 / this.idleFps);

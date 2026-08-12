@@ -31,60 +31,16 @@ import {
   type PrimingTimeoutOption,
 } from "./primingTimeouts";
 import { deriveRtpVideoTimestamp } from "./rtpVideoTimestamp";
+import {
+  AsyncBoundedQueue,
+  type BoundedQueueOverflow,
+} from "./asyncBoundedQueue";
 import { convertToAnnexB as convertH264ToAnnexB } from "./H264Converter";
 import {
   convertToAnnexB as convertH265ToAnnexB,
   isH265Irap,
   splitAnnexBToNalPayloads,
 } from "./H265Converter";
-
-class AsyncBoundedQueue<T> {
-  private readonly maxItems: number;
-  private readonly queue: T[] = [];
-  private waiting:
-    | {
-        resolve: (r: IteratorResult<T>) => void;
-      }
-    | undefined;
-  private closed = false;
-
-  constructor(maxItems: number) {
-    this.maxItems = Math.max(1, maxItems | 0);
-  }
-
-  push(item: T): void {
-    if (this.closed) return;
-    if (this.waiting) {
-      const { resolve } = this.waiting;
-      this.waiting = undefined;
-      resolve({ value: item, done: false });
-      return;
-    }
-    this.queue.push(item);
-    if (this.queue.length > this.maxItems) {
-      this.queue.splice(0, this.queue.length - this.maxItems);
-    }
-  }
-
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    if (this.waiting) {
-      const { resolve } = this.waiting;
-      this.waiting = undefined;
-      resolve({ value: undefined as any, done: true });
-    }
-  }
-
-  async next(): Promise<IteratorResult<T>> {
-    if (this.closed) return { value: undefined as any, done: true };
-    const item = this.queue.shift();
-    if (item !== undefined) return { value: item, done: false };
-    return await new Promise<IteratorResult<T>>((resolve) => {
-      this.waiting = { resolve };
-    });
-  }
-}
 
 type FanoutOptions<T> = {
   maxQueueItems: number;
@@ -93,6 +49,17 @@ type FanoutOptions<T> = {
   onError?: (error: unknown) => void;
   /** Called when the pump ends, whether by error or natural stream end. */
   onEnd?: () => void;
+  /**
+   * Called when a subscriber's backlog overflows and frames are evicted.
+   * This is the one place where a client can lose frames that the camera
+   * actually delivered, so it must never go unobserved — it is the
+   * difference between "the source is clean" and "the client got clean
+   * frames".
+   */
+  onSubscriberOverflow?: (
+    subscriberId: string,
+    overflow: BoundedQueueOverflow<T>,
+  ) => void;
 };
 
 class NativeStreamFanout<T> {
@@ -136,7 +103,9 @@ class NativeStreamFanout<T> {
   }
 
   subscribe(id: string): AsyncGenerator<T, void, unknown> {
-    const q = new AsyncBoundedQueue<T>(this.opts.maxQueueItems);
+    const q = new AsyncBoundedQueue<T>(this.opts.maxQueueItems, (overflow) =>
+      this.opts.onSubscriberOverflow?.(id, overflow),
+    );
     this.queues.set(id, q);
     const self = this;
     return (async function* () {
@@ -521,6 +490,12 @@ export class BaichuanRtspServer extends EventEmitter<{
    * client is dead or far too slow to keep up with the live stream.
    */
   static readonly MAX_CLIENT_BUFFERED_BYTES = 8 * 1024 * 1024;
+
+  /** Throttle for the per-client backlog-overflow warning. */
+  static readonly BACKLOG_OVERFLOW_LOG_INTERVAL_MS = 5000;
+
+  /** Last time a backlog-overflow warning was logged, per client. */
+  private readonly lastBacklogOverflowLogMs = new Map<string, number>();
 
   /**
    * Pure backpressure decision: should the client socket be disconnected
@@ -1021,8 +996,20 @@ export class BaichuanRtspServer extends EventEmitter<{
       const sessionDurationMs = Date.now() - connectTime;
       const res = this.clientResources.get(clientId) as any;
       const framesSent: number = res?.framesSent ?? 0;
+      // Always report backlog loss on the summary line. A client that shows
+      // `frames=N dropped=0` proves the delivery path was clean, which is the
+      // one thing the source-side stream analyzer can never tell us.
+      const framesDropped: number = res?.framesDropped ?? 0;
+      const keyframesDropped: number = res?.keyframesDropped ?? 0;
+      const dropSummary =
+        framesDropped > 0
+          ? ` dropped=${framesDropped} (keyframes=${keyframesDropped}, ${(
+              (framesDropped / Math.max(1, framesSent + framesDropped)) *
+              100
+            ).toFixed(1)}%)`
+          : " dropped=0";
       this.logger.info(
-        `[rebroadcast] client disconnected  client=${clientId} path=${this.path} profile=${this.profile} duration=${sessionDurationMs}ms frames=${framesSent}`,
+        `[rebroadcast] client disconnected  client=${clientId} path=${this.path} profile=${this.profile} duration=${sessionDurationMs}ms frames=${framesSent}${dropSummary}`,
       );
       this.removeClient(clientId);
 
@@ -2969,6 +2956,8 @@ export class BaichuanRtspServer extends EventEmitter<{
     // This avoids starting/stopping multiple camera streams (especially fragile on BCUDP/battery).
     this.nativeFanout = new NativeStreamFanout({
       maxQueueItems: 200,
+      onSubscriberOverflow: (subscriberId, overflow) =>
+        this.onSubscriberBacklogOverflow(subscriberId, overflow),
       createSource: (signal) =>
         this.alwaysOnOptions?.enabled
           ? this.createContinuousSource(dedicatedClient, signal)
@@ -3237,7 +3226,53 @@ export class BaichuanRtspServer extends EventEmitter<{
    * Uses a grace period so rapid reconnects (e.g. Frigate polling) reuse the running stream
    * and benefit from the prebuffer instead of waiting for a fresh keyframe.
    */
+  /**
+   * A subscriber's backlog overflowed and frames the camera actually
+   * delivered were evicted before reaching that client.
+   *
+   * This is the blind spot behind long-running "Frigate reports dropped
+   * frames but the stream analyzer says the source is clean" reports: the
+   * analyzer measures what arrives *from the camera*, while loss here happens
+   * *towards the client* and used to leave no trace at all.
+   *
+   * Losing a keyframe is called out separately because it is far more
+   * damaging than losing inter frames — the consumer then decodes a GOP with
+   * no IDR to anchor it, which is what turns into visible corruption and
+   * ffmpeg errors rather than a barely perceptible stutter.
+   */
+  private onSubscriberBacklogOverflow(
+    subscriberId: string,
+    overflow: BoundedQueueOverflow<{ audio: boolean; isKeyframe?: boolean }>,
+  ): void {
+    const videoDropped = overflow.dropped.filter((f) => !f.audio);
+    const keyframesDropped = videoDropped.filter((f) => f.isKeyframe).length;
+
+    const res = this.clientResources.get(subscriberId) as any;
+    if (res) {
+      res.framesDropped = (res.framesDropped ?? 0) + videoDropped.length;
+      res.keyframesDropped = (res.keyframesDropped ?? 0) + keyframesDropped;
+    }
+
+    // At 20 fps a sustained stall would log on every frame, so throttle to one
+    // line per client per BACKLOG_OVERFLOW_LOG_INTERVAL_MS. The cumulative
+    // totals in the message mean nothing is hidden by the throttling, and the
+    // disconnect summary always reports the full count.
+    const now = Date.now();
+    const lastLogged = this.lastBacklogOverflowLogMs.get(subscriberId) ?? 0;
+    if (now - lastLogged < BaichuanRtspServer.BACKLOG_OVERFLOW_LOG_INTERVAL_MS)
+      return;
+    this.lastBacklogOverflowLogMs.set(subscriberId, now);
+
+    this.logger.warn(
+      `[rebroadcast] client backlog overflow: dropping frames for client=${subscriberId} path=${this.path} ` +
+        `— consumer is not keeping up (total dropped=${res?.framesDropped ?? videoDropped.length}, ` +
+        `keyframes=${res?.keyframesDropped ?? keyframesDropped}). ` +
+        `Downstream will report choppy/dropped frames even though the camera feed is fine.`,
+    );
+  }
+
   private removeClient(clientId: string): void {
+    this.lastBacklogOverflowLogMs.delete(clientId);
     if (this.connectedClients.has(clientId)) {
       this.connectedClients.delete(clientId);
       this.emit("clientDisconnected", clientId);
