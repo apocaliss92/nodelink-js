@@ -384,6 +384,7 @@ import {
   listRecordingsViaFileInfoList,
 } from "./utils/recordingsFileInfoList";
 import { parseChannelStreamMetadataFromGetEncXml } from "./utils/streamMetadata";
+import { resolveTransportDerivedDefaults } from "./utils/transportDefaults";
 import { TtlCache } from "./utils/ttlCache";
 import {
   buildTalkSessionInfoFromAbility,
@@ -722,6 +723,9 @@ export class ReolinkBaichuanApi {
 
     // Login with the new socket
     await this.client.login();
+    // The replacement socket may have negotiated a different transport than
+    // the original; re-derive before the periodic work restarts.
+    this.applyTransportDerivedDefaults();
 
     this.logger.log?.(
       "[ReolinkBaichuanApi] General socket reconnected successfully",
@@ -760,6 +764,32 @@ export class ReolinkBaichuanApi {
    */
   private setupGeneralClientListeners(): void {
     const client = this.client; // cache to avoid repeated getter look-ups
+
+    // Re-attach the api-level subscribers to whichever client is current.
+    // This runs on every reconnect, which is what keeps them alive across the
+    // client swap that removeAllListeners() would otherwise sever.
+    client.on("close", () => {
+      for (const h of this.generalCloseHandlers) {
+        try {
+          h();
+        } catch (e) {
+          this.logger?.debug?.(
+            `[ReolinkBaichuanApi] general close handler threw: ${e}`,
+          );
+        }
+      }
+    });
+    client.on("error", (err: unknown) => {
+      for (const h of this.generalErrorHandlers) {
+        try {
+          h(err);
+        } catch (e) {
+          this.logger?.debug?.(
+            `[ReolinkBaichuanApi] general error handler threw: ${e}`,
+          );
+        }
+      }
+    });
 
     // Dispatch parsed events in a minimal, stable shape.
     client.on("event", (event) => {
@@ -1025,6 +1055,71 @@ export class ReolinkBaichuanApi {
    * end up on UDP at runtime get the safer behaviour even if the flag
    * was left default-on.
    */
+  private configuredTransport: string | undefined;
+  private explicitResubscribeOverride: boolean | undefined;
+  private explicitWatchdogResubscribeOverride: boolean | undefined;
+
+  /**
+   * Re-derive the transport-gated behaviours from the transport the
+   * connection actually negotiated.
+   *
+   * Called after the connection is up, because a camera configured "auto"
+   * only reveals itself as BCUDP at that point — and until this runs it is
+   * being treated as TCP, i.e. renewing its event subscription every 5
+   * minutes and letting the silence watchdog force full reconnects. On a
+   * battery camera each of those is a wake (issue #35).
+   */
+  /**
+   * Subscribers to the *general socket's* close/error, registered against the
+   * api rather than against a particular client instance.
+   *
+   * `reconnectGeneralSocket()` calls `removeAllListeners()` on the old client
+   * and swaps a new one into the pool. Anything that had done
+   * `api.client.on("close", ...)` was therefore silently unsubscribed after
+   * the first in-place reconnect and never heard from the camera again — the
+   * manager stopped seeing disconnects, so its own cleanup and logging went
+   * quiet exactly when things started going wrong (issue #35).
+   */
+  private readonly generalCloseHandlers = new Set<() => void>();
+  private readonly generalErrorHandlers = new Set<(err: unknown) => void>();
+
+  /** Subscribe to general-socket close; survives client replacement. */
+  onGeneralSocketClose(handler: () => void): () => void {
+    this.generalCloseHandlers.add(handler);
+    return () => this.generalCloseHandlers.delete(handler);
+  }
+
+  /** Subscribe to general-socket errors; survives client replacement. */
+  onGeneralSocketError(handler: (err: unknown) => void): () => void {
+    this.generalErrorHandlers.add(handler);
+    return () => this.generalErrorHandlers.delete(handler);
+  }
+
+  private applyTransportDerivedDefaults(): void {
+    const resolved = this.client.getTransport?.();
+    const next = resolveTransportDerivedDefaults({
+      configuredTransport: this.configuredTransport,
+      resolvedTransport: resolved,
+      explicitResubscribe: this.explicitResubscribeOverride,
+      explicitWatchdogResubscribe: this.explicitWatchdogResubscribeOverride,
+    });
+    const changed =
+      next.eventResubscribeEnabled !== this.eventResubscribeEnabled ||
+      next.eventWatchdogSilenceResubscribeEnabled !==
+        this.eventWatchdogSilenceResubscribeEnabled;
+    this.eventResubscribeEnabled = next.eventResubscribeEnabled;
+    this.eventWatchdogSilenceResubscribeEnabled =
+      next.eventWatchdogSilenceResubscribeEnabled;
+    if (changed) {
+      this.logger.info(
+        `[ReolinkBaichuanApi] transport resolved to ${next.effectiveTransport} ` +
+          `(configured ${this.configuredTransport ?? "auto"}) — event resubscribe=` +
+          `${this.eventResubscribeEnabled}, watchdog resubscribe=` +
+          `${this.eventWatchdogSilenceResubscribeEnabled}`,
+      );
+    }
+  }
+
   private eventResubscribeEnabled: boolean = true;
 
   // Event watchdog: auto-recovery when events stop flowing or subscription fails
@@ -2465,6 +2560,13 @@ export class ReolinkBaichuanApi {
     // Periodic event-subscription renewal — defaults to enabled on non-UDP
     // transports and disabled on UDP (battery cameras). See field doc on
     // `eventResubscribeEnabled` for the rationale.
+    // Remembered so the decision can be re-made once the connection tells us
+    // which transport it actually negotiated — "auto" that lands on UDP must
+    // behave as UDP (issue #35). See applyTransportDerivedDefaults().
+    this.configuredTransport = opts.transport;
+    this.explicitResubscribeOverride = opts.enableEventResubscribe;
+    this.explicitWatchdogResubscribeOverride =
+      opts.enableEventWatchdogSilenceResubscribe;
     const explicitResubscribe = opts.enableEventResubscribe;
     if (typeof explicitResubscribe === "boolean") {
       this.eventResubscribeEnabled = explicitResubscribe;
@@ -4081,6 +4183,10 @@ export class ReolinkBaichuanApi {
     maxEncryption?: import("../../client/BaichuanClient.js").MaxEncryption,
   ): Promise<void> {
     await this.client.login(maxEncryption);
+    // The transport is only known for certain once the connection is up: a
+    // camera configured "auto" reveals itself as BCUDP here. Re-derive the
+    // behaviours gated on it before anything periodic can start.
+    this.applyTransportDerivedDefaults();
   }
 
   /**
