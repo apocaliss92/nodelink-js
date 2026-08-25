@@ -1,9 +1,40 @@
 // src/baichuan/stream/PlaceholderRenderer.ts
 import { spawn } from "node:child_process";
-import { Jimp, JimpMime, loadFont, measureText, measureTextHeight } from "jimp";
-import { SANS_32_WHITE, SANS_64_WHITE, SANS_128_WHITE } from "jimp/fonts";
 import type { PlaceholderOptions } from "./alwaysOnTypes";
 import { ALWAYS_ON_DEFAULTS } from "./alwaysOnTypes";
+
+/**
+ * jimp is loaded on first use, never at module scope.
+ *
+ * This class is re-exported from the package barrel, so a static `import
+ * "jimp"` here made every consumer of the library evaluate jimp just by
+ * importing the package — including consumers that never render a placeholder.
+ *
+ * That was not merely wasteful, it was fatal once bundled. `@jimp/plugin-print`
+ * computes its font directory at module scope from `import.meta.url`, and a
+ * bundler inlines that as the *build machine's* absolute path. On Windows,
+ * `fileURLToPath("file:///Users/...")` throws ERR_INVALID_FILE_URL_PATH,
+ * because getPathFromURLWin32 requires a drive letter and rejects a POSIX path.
+ * The throw aborted the barrel's initialization part-way, and since a bundler
+ * runtime caches the partial exports, every later import saw
+ * `ReolinkBaichuanApi === undefined` — reported downstream as
+ * "pu is not a constructor" on Windows only, from the first release that
+ * shipped this file onward.
+ *
+ * Keeping the import inside the one function that needs it means the font-path
+ * computation only ever runs when a placeholder is actually rendered.
+ */
+type JimpModule = typeof import("jimp");
+type JimpFontsModule = typeof import("jimp/fonts");
+
+let jimpPromise: Promise<{ jimp: JimpModule; fonts: JimpFontsModule }> | undefined;
+
+function loadJimp(): Promise<{ jimp: JimpModule; fonts: JimpFontsModule }> {
+  jimpPromise ??= Promise.all([import("jimp"), import("jimp/fonts")]).then(
+    ([jimp, fonts]) => ({ jimp, fonts }),
+  );
+  return jimpPromise;
+}
 
 export interface CachedKeyframe {
   data: Buffer;
@@ -121,6 +152,11 @@ export class PlaceholderRenderer {
 
   /** Dims the still and prints the overlay text using jimp, returning a JPEG buffer. */
   private async decorate(jpeg: Buffer): Promise<Buffer> {
+    const {
+      jimp: { Jimp, JimpMime, loadFont, measureText, measureTextHeight },
+      fonts: { SANS_32_WHITE, SANS_64_WHITE, SANS_128_WHITE },
+    } = await loadJimp();
+
     const image = await Jimp.read(jpeg);
     // Dim the still by multiplying each RGB channel by `opacity` (0.5 = 50%
     // brightness). NOTE: do NOT use jimp's brightness() — in jimp v1 its

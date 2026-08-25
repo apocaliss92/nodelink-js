@@ -310,7 +310,24 @@ import {
   parseSystemGeneralFromXml,
 } from "./utils/systemGeneral";
 
-import { Jimp, JimpMime } from "jimp";
+/**
+ * jimp is loaded on first use, never at module scope — see the note in
+ * PlaceholderRenderer.ts. A static import here is the more damaging of the two,
+ * because this is the module that defines ReolinkBaichuanApi: when jimp's
+ * top-level font-path computation throws (as it does on Windows once bundled),
+ * this module aborts before the class is assigned, and consumers end up with
+ * `ReolinkBaichuanApi === undefined`.
+ *
+ * Only the composite-snapshot path below needs it.
+ */
+type JimpModule = typeof import("jimp");
+
+let jimpPromise: Promise<JimpModule> | undefined;
+
+function loadJimp(): Promise<JimpModule> {
+  jimpPromise ??= import("jimp");
+  return jimpPromise;
+}
 import type { CompositeStreamPipOptions } from "../../multifocal/compositeStream";
 import {
   ReolinkCgiApi,
@@ -6135,6 +6152,8 @@ export class ReolinkBaichuanApi {
         streamType,
         timeoutMs,
       });
+
+      const { Jimp, JimpMime } = await loadJimp();
 
       let wideImg: Awaited<ReturnType<typeof Jimp.read>>;
       let teleImg: Awaited<ReturnType<typeof Jimp.read>>;
