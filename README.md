@@ -102,6 +102,22 @@ For single-owner consumers that already manage their own bridge (e.g. a custom r
 
 ---
 
+## Wired Power Mode for Battery Cameras & Doorbells
+
+Battery cameras and battery doorbells can be forced onto their transformer/adapter — what the Reolink app calls **Wired Power**. The app performs a power-settings read before offering the toggle, so on some firmwares the switch is unreachable from the UI while the device is actually wired. The library sends the underlying command (Baichuan cmd 805 `SwitchBatteryAdapterMode`) directly:
+
+```typescript
+// Doorbell on channel 1 of an NVR/Hub — validate, then apply
+if (await api.probePowerSourceSwitchSupport("adapter", { channel: 1 })) {
+  await api.switchPowerSource("adapter", { channel: 1 });
+  console.log(await api.getPowerSource(1)); // "adapter"
+}
+```
+
+This is distinct from the wired *working* mode (Continuous). Only switch to `adapter` when the transformer meets the device's spec. See [documentation/baichuan-api/battery.md — Power Source](./documentation/baichuan-api/battery.md#power-source-wired-vs-battery) for support detection and the full reference.
+
+---
+
 ## Always-On Stream for Battery Cameras
 
 Battery cameras sleep between events, breaking continuous consumers like Frigate. Both `createRfc4571TcpServer` and `BaichuanRtspServer` accept an `alwaysOn` option that keeps the stream alive: the real feed is served during motion windows; while the camera sleeps the last keyframe is repeated at a low rate, optionally decorated with a dimmed placeholder overlay.

@@ -58,6 +58,7 @@ import {
   BC_CMD_ID_GET_AUDIO_CFG,
   BC_CMD_ID_GET_AUDIO_TASK,
   BC_CMD_ID_GET_BATTERY_INFO,
+  BC_CMD_ID_SWITCH_BATTERY_ADAPTER_MODE,
   BC_CMD_ID_GET_BATTERY_INFO_LIST,
   BC_CMD_ID_GET_DAY_NIGHT_THRESHOLD,
   BC_CMD_ID_GET_DAY_RECORDS,
@@ -191,6 +192,9 @@ import type {
   BaichuanWifi,
   BaichuanWifiSignal,
   BatteryInfo,
+  BatteryPowerSourceMode,
+  SwitchPowerSourceOptions,
+  SwitchPowerSourceResult,
   ChannelPushCacheEntry,
   ChannelPushDataEntry,
   ChannelStreamMetadata,
@@ -428,6 +432,11 @@ import {
   parseHardwiredChimeFromXml,
   parseWirelessChimeSilentFromXml,
 } from "./utils/chime";
+import {
+  buildSwitchBatteryAdapterModeXml,
+  parseSwitchBatteryAdapterModeResponse,
+  powerSourceFromBatteryInfo,
+} from "./utils/powerSource";
 import { parseEventsFromGetEventsXml } from "./utils/eventsGetEvents";
 import { parsePirInfoFromXml } from "./utils/pir";
 import { discoverDeviceUidForRecordings as discoverDeviceUidForRecordingsUtil } from "./utils/uidRecordings";
@@ -10964,6 +10973,96 @@ export class ReolinkBaichuanApi {
     Object.assign(result, this.parseBatteryInfoXml(xml, ch));
 
     return result;
+  }
+
+  /**
+   * Read which power source the device is currently running on, derived from
+   * BatteryInfo (`adapterStatus`).
+   *
+   * @param channel - Channel number (0-based)
+   * @returns `"adapter"` when mains/transformer powered, `"battery"` otherwise,
+   *          or `undefined` when the firmware does not report `adapterStatus`.
+   */
+  async getPowerSource(
+    channel?: number,
+  ): Promise<BatteryPowerSourceMode | undefined> {
+    const battery = await this.getBatteryInfo(channel);
+    return powerSourceFromBatteryInfo(battery);
+  }
+
+  /**
+   * Switch a battery camera / battery doorbell between battery and wired
+   * (adapter) power. cmd_id: 805 (SwitchBatteryAdapterMode).
+   *
+   * This is NOT the "wired working mode" (Continuous) setting — it is what the
+   * Reolink app shows as "Wired Power" vs "Battery Power". The app reads the
+   * power settings before offering the switch, so on firmwares where that read
+   * fails the switch is unreachable from the UI; sending cmd 805 directly works
+   * around it.
+   *
+   * On an NVR/Hub, address the hub and pass the camera's channel.
+   *
+   * Successful firmwares answer with responseCode 200 and an empty body, so
+   * `accepted: true` with no `rspCode` is the normal result. Verify with
+   * `getPowerSource()` afterwards.
+   *
+   * Only switch to `adapter` when the transformer actually meets the device's
+   * spec — the camera will stop managing its battery as the primary source.
+   *
+   * @param mode - `"adapter"` for wired power, `"battery"` to go back
+   * @param options - channel, dryRun (validate without applying), timeoutMs
+   */
+  async switchPowerSource(
+    mode: BatteryPowerSourceMode,
+    options?: SwitchPowerSourceOptions,
+  ): Promise<SwitchPowerSourceResult> {
+    const ch = this.normalizeChannel(options?.channel);
+    const dryRun = options?.dryRun === true;
+    const payloadXml = buildSwitchBatteryAdapterModeXml(mode, dryRun);
+
+    const req: {
+      cmdId: number;
+      channel: number;
+      payloadXml: string;
+      timeoutMs?: number;
+    } = {
+      cmdId: BC_CMD_ID_SWITCH_BATTERY_ADAPTER_MODE,
+      channel: ch,
+      payloadXml,
+    };
+    if (options?.timeoutMs != null) req.timeoutMs = options.timeoutMs;
+
+    // retry=0: a 400 here means "unsupported/rejected", not a stale session.
+    // Retrying would only re-send a power-mode write.
+    const xml = await this.sendXml(req, 0);
+    return parseSwitchBatteryAdapterModeResponse(xml, mode, dryRun);
+  }
+
+  /**
+   * Ask the device whether it would accept a power-source switch, without
+   * applying it (cmd 805 with `<dryRun>1</dryRun>`).
+   *
+   * This is the authoritative support check: `DeviceCapabilities.hasPowerSourceSwitch`
+   * is only a hint derived from `support.items[].batteryMode`.
+   *
+   * @param mode - Mode to validate (defaults to `"adapter"`)
+   * @param options - channel / timeoutMs (`dryRun` is forced on)
+   * @returns true when the device accepted the dry run
+   */
+  async probePowerSourceSwitchSupport(
+    mode: BatteryPowerSourceMode = "adapter",
+    options?: Omit<SwitchPowerSourceOptions, "dryRun">,
+  ): Promise<boolean> {
+    try {
+      const result = await this.switchPowerSource(mode, {
+        ...(options ?? {}),
+        dryRun: true,
+      });
+      return result.accepted;
+    } catch {
+      // Unsupported commands answer 400 (usually with an empty body).
+      return false;
+    }
   }
 
   /**

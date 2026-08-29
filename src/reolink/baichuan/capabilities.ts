@@ -170,6 +170,40 @@ export function getSupportItemForChannel(
   return candidates.sort((a, b) => score(b) - score(a))[0];
 }
 
+/**
+ * Bit observed in `support.items[].batteryMode` on devices that accept
+ * SwitchBatteryAdapterMode (cmd 805). Captured on a Reolink Home Hub channel
+ * hosting a battery camera (`battery=1, batteryMode=32`); every non-switchable
+ * battery cam in the fixture set reports `batteryMode=0`.
+ */
+export const SUPPORT_BATTERY_MODE_BIT_POWER_SOURCE_SWITCH = 32;
+
+/**
+ * Whether a device advertises the battery/adapter power-source switch
+ * (SwitchBatteryAdapterMode, cmd 805).
+ *
+ * Conservative on purpose: firmwares that never report `batteryMode` are
+ * treated as unsupported even though they may accept the command. The only
+ * authoritative check is sending cmd 805 with `<dryRun>1</dryRun>`
+ * (`ReolinkBaichuanApi.probePowerSourceSwitchSupport()`).
+ */
+export function supportsPowerSourceSwitch(
+  supportItem: SupportItem | undefined,
+): boolean {
+  if (!supportItem) return false;
+  const anyItem = supportItem as Record<string, unknown>;
+  if (!isTruthyNumberLike(anyItem.battery)) return false;
+  const raw = anyItem.batteryMode;
+  const batteryMode = typeof raw === "string" ? Number(raw) : raw;
+  if (typeof batteryMode !== "number" || !Number.isFinite(batteryMode)) {
+    return false;
+  }
+  return (
+    (batteryMode & SUPPORT_BATTERY_MODE_BIT_POWER_SOURCE_SWITCH) ===
+    SUPPORT_BATTERY_MODE_BIT_POWER_SOURCE_SWITCH
+  );
+}
+
 export function computeDeviceCapabilities(params: {
   channel: number;
   /** Device model name/type (best-effort). Used for heuristic capability detection. */
@@ -383,6 +417,7 @@ export function computeDeviceCapabilities(params: {
         finalHasZoom ||
         finalHasPresets,
     hasBattery,
+    hasPowerSourceSwitch: hasBattery && supportsPowerSourceSwitch(supportItem),
     hasIntercom: hasIntercomFromSupport,
     hasSiren: hasSirenFromSupport || hasSirenFromAbilities,
     // lightType >= 2 indicates controllable white LED / floodlight (1 = IR only).

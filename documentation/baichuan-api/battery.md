@@ -8,6 +8,11 @@ Methods for managing battery cameras and sleep mode.
   - [getBatteryStatus](#getbatterystatus)
   - [getBatteryInfo](#getbatteryinfo)
   - [getAllChannelsBatteryInfo](#getallchannelsbatteryinfo)
+- [Power Source (Wired vs Battery)](#power-source-wired-vs-battery)
+  - [getPowerSource](#getpowersource)
+  - [switchPowerSource](#switchpowersource)
+  - [probePowerSourceSwitchSupport](#probepowersourceswitchsupport)
+  - [Detecting support](#detecting-support)
 - [Sleep Management](#sleep-management)
   - [isSleeping](#issleeping)
   - [getSleepState](#getsleepstate)
@@ -140,6 +145,179 @@ const lowBattery = Array.from(batteries).filter(
 for (const [channel, info] of lowBattery) {
   console.log(`⚠️ Channel ${channel} has low battery: ${info.batteryPercent}%`);
 }
+```
+
+---
+
+## Power Source (Wired vs Battery)
+
+Battery cameras and battery doorbells can be told to run permanently on a
+transformer/adapter instead of the battery — what the Reolink app calls
+**Wired Power** vs **Battery Power**.
+
+This is **not** the "wired working mode" (Continuous) setting. It is a separate
+Baichuan command:
+
+| cmd_id | Message                    | Payload                                               |
+| ------ | -------------------------- | ----------------------------------------------------- |
+| 805    | `SwitchBatteryAdapterMode` | `<mode>battery\|adapter</mode><dryRun>0\|1</dryRun>` |
+
+The Reolink app reads the power/battery settings *before* offering the switch,
+so on firmwares where that read fails while the device is wired, the toggle is
+unreachable from the UI. Sending cmd 805 directly bypasses that check.
+
+On an NVR/Hub, address the hub and pass the camera's channel.
+
+---
+
+### getPowerSource
+
+Reads which source the device is currently running on, derived from
+`BatteryInfo.adapterStatus`.
+
+```typescript
+const source = await api.getPowerSource(channel?: number);
+```
+
+### Returns
+
+`Promise<"adapter" | "battery" | undefined>` — `"adapter"` when mains powered,
+`"battery"` otherwise (including `solarPanel`, which charges but is not wired
+mode), `undefined` when the firmware does not report `adapterStatus`.
+
+---
+
+### switchPowerSource
+
+Switches the device between battery and wired (adapter) power.
+
+```typescript
+const result = await api.switchPowerSource(
+  mode: "battery" | "adapter",
+  options?: { channel?: number; dryRun?: boolean; timeoutMs?: number },
+);
+```
+
+### Parameters
+
+| Parameter           | Type      | Required | Default | Description                                        |
+| ------------------- | --------- | -------- | ------- | -------------------------------------------------- |
+| `mode`              | `string`  | YES      | —       | `"adapter"` for wired power, `"battery"` to revert |
+| `options.channel`   | `number`  | NO       | `0`     | Channel number (camera channel on an NVR/Hub)      |
+| `options.dryRun`    | `boolean` | NO       | `false` | Validate the switch without applying it            |
+| `options.timeoutMs` | `number`  | NO       | —       | Request timeout                                    |
+
+### Returns
+
+`Promise<SwitchPowerSourceResult>`
+
+```typescript
+interface SwitchPowerSourceResult {
+  /** Mode echoed by the device when available, otherwise the requested one. */
+  mode: "battery" | "adapter";
+  dryRun: boolean;
+  /** False when the firmware answered with a non-zero rspCode. */
+  accepted: boolean;
+  /** Present only when the firmware returned a body with <rspCode>. */
+  rspCode?: number;
+}
+```
+
+> Firmwares observed so far answer **200 with an empty body** on success, so
+> `{ accepted: true }` with no `rspCode` is the normal result — it is not a
+> sign that nothing happened. Confirm with `getPowerSource()`.
+
+### Example
+
+```typescript
+// Doorbell on channel 1 of an NVR: dry-run first, then apply.
+const probe = await api.switchPowerSource("adapter", {
+  channel: 1,
+  dryRun: true,
+});
+
+if (probe.accepted) {
+  await api.switchPowerSource("adapter", { channel: 1 });
+  console.log(await api.getPowerSource(1)); // "adapter"
+}
+
+// Back to battery
+await api.switchPowerSource("battery", { channel: 1 });
+```
+
+> WARNING: only switch to `adapter` when the transformer actually meets the
+> device's spec. In wired mode the device stops treating the battery as its
+> primary source.
+
+---
+
+### probePowerSourceSwitchSupport
+
+Authoritative support check — sends cmd 805 with `<dryRun>1</dryRun>` and
+reports whether the device accepted it. Nothing is applied.
+
+```typescript
+const supported = await api.probePowerSourceSwitchSupport(
+  mode?: "battery" | "adapter",   // default "adapter"
+  options?: { channel?: number; timeoutMs?: number },
+);
+```
+
+### Returns
+
+`Promise<boolean>` — `false` when the device rejects the command (unsupported
+firmwares answer responseCode 400, usually with an empty body).
+
+---
+
+### Detecting support
+
+Two levels, cheap-to-authoritative:
+
+1. **Capability hint** — `getDeviceCapabilities()` exposes
+   `hasPowerSourceSwitch`, derived from the `Support` XML (cmd 199):
+   `support.items[].battery > 0` **and** `batteryMode & 32`.
+
+   ```typescript
+   const { capabilities } = await api.getDeviceCapabilities(channel);
+   if (capabilities.hasPowerSourceSwitch) {
+     // device advertises the battery/adapter switch
+   }
+   ```
+
+   The bit was captured on a Reolink Home Hub channel hosting a battery camera
+   (`battery=1, batteryMode=32`); every non-switchable battery camera in the
+   fixture set reports `batteryMode=0`. Firmwares that never emit `batteryMode`
+   fall through as `false` even though they may still accept cmd 805 — the flag
+   is deliberately conservative.
+
+2. **Runtime probe** — `probePowerSourceSwitchSupport()`. Use this when the hint
+   is `false` but the device is a battery cam/doorbell, or before exposing the
+   switch in a UI.
+
+Observed values in the captured fixture set (`test/fixtures/models/`):
+
+| Device                             | `battery` | `batteryMode` | Hint    |
+| ---------------------------------- | --------- | ------------- | ------- |
+| Reolink Video Doorbell (battery)    | 2         | *not emitted* | `false` → probe |
+| Home Hub channel with battery cam   | 1         | 32            | `true`  |
+| Argus 3E / Argus PT Ultra           | 2         | 0 / not emitted | `false` |
+| Video Doorbell WiFi / PoE (wired)   | 0         | *not emitted* | `false` |
+
+Note the first row: firmware `v3.0.0.5298` on the battery Video Doorbell never
+emits `batteryMode`, so the hint is `false` on exactly the device class this
+command targets. Always fall back to the dry-run probe for battery doorbells.
+
+Helper for raw `Support` items:
+
+```typescript
+import {
+  getSupportItemForChannel,
+  supportsPowerSourceSwitch,
+} from "@apocaliss92/nodelink-js";
+
+const support = await api.getSupportInfo();
+supportsPowerSourceSwitch(getSupportItemForChannel(support, 1)); // boolean
 ```
 
 ---

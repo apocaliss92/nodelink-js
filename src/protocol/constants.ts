@@ -101,6 +101,12 @@ export const BC_CMD_ID_SET_ZOOM_FOCUS = 295; // MSG_ID_SET_ZOOM_FOCUS - Write zo
 export const BC_CMD_ID_GET_BATTERY_INFO_LIST = 252; // MSG_ID_BATTERY_INFO_LIST
 export const BC_CMD_ID_GET_BATTERY_INFO = 253; // MSG_ID_BATTERY_INFO
 
+// Power-source switching for battery cameras / battery doorbells.
+// <SwitchBatteryAdapterMode><mode>battery|adapter</mode><dryRun>0|1</dryRun></SwitchBatteryAdapterMode>
+// Distinct from the "wired working mode" (Continuous) setting: this is what the
+// Reolink app calls "Wired Power" vs "Battery Power". Answers 200 + empty body on success.
+export const BC_CMD_ID_SWITCH_BATTERY_ADAPTER_MODE = 805; // SwitchBatteryAdapterMode
+
 // UDP Keep Alive command ID
 // Battery cameras (BCUDP) periodically send this and expect a 200 response.
 export const BC_CMD_ID_UDP_KEEP_ALIVE = 234; // MSG_ID_UDP_KEEP_ALIVE

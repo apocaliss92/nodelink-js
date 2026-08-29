@@ -671,6 +671,55 @@ export const baichuanRouter = router({
       return await api.getBatteryInfo(input.channel);
     }),
 
+  getPowerSource: publicProcedure
+    .meta({
+      description:
+        "Get the power source the device is currently running on (derived from BatteryInfo.adapterStatus): 'adapter' when mains/transformer powered, 'battery' otherwise, undefined when not reported.",
+    })
+    .input(ConnectionWithChannel)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return { mode: await api.getPowerSource(input.channel) };
+    }),
+
+  probePowerSourceSwitchSupport: publicProcedure
+    .meta({
+      description:
+        "Check whether the device accepts the battery/adapter power-source switch (cmd 805 SwitchBatteryAdapterMode) by sending a dry run. Nothing is applied.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        mode: z.enum(["battery", "adapter"]).default("adapter"),
+      }),
+    )
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return {
+        supported: await api.probePowerSourceSwitchSupport(input.mode, {
+          channel: input.channel,
+        }),
+      };
+    }),
+
+  switchPowerSource: publicProcedure
+    .meta({
+      description:
+        "Switch a battery camera / battery doorbell between battery and wired (adapter) power via cmd 805 (SwitchBatteryAdapterMode). This is NOT the wired working mode (Continuous) setting. Use dryRun to validate without applying. Only switch to 'adapter' when the transformer meets the device spec.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        mode: z.enum(["battery", "adapter"]),
+        dryRun: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.switchPowerSource(input.mode, {
+        channel: input.channel,
+        ...(input.dryRun !== undefined ? { dryRun: input.dryRun } : {}),
+      });
+    }),
+
   // ============ OSD ============
 
   getOsd: publicProcedure

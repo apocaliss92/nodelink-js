@@ -94,6 +94,33 @@ export interface BatteryInfo {
 }
 
 /**
+ * Power source a battery camera / battery doorbell is told to run on
+ * (`SwitchBatteryAdapterMode`, cmd_id 805).
+ *
+ * - `battery` — normal battery operation
+ * - `adapter` — permanently wired to a transformer/adapter ("Wired Power" in the app)
+ */
+export type BatteryPowerSourceMode = "battery" | "adapter";
+
+export interface SwitchPowerSourceOptions {
+  /** Channel (0-based). On an NVR/Hub use the camera's channel. */
+  channel?: number;
+  /** Ask the device to validate the switch without applying it. */
+  dryRun?: boolean;
+  timeoutMs?: number;
+}
+
+export interface SwitchPowerSourceResult {
+  /** Mode echoed by the device when available, otherwise the requested one. */
+  mode: BatteryPowerSourceMode;
+  dryRun: boolean;
+  /** False when the firmware answered with a non-zero rspCode. */
+  accepted: boolean;
+  /** Present only when the firmware returned a body with <rspCode>. */
+  rspCode?: number;
+}
+
+/**
  * Minimal per-channel device summary returned by `ReolinkBaichuanApi.getDevicesInfo()`.
  *
  * This is optimized for speed and returns only common identity + battery/doorbell hints.
@@ -878,6 +905,12 @@ export interface SupportItem {
   autoFocus?: number;
   videoClip?: number;
   battery?: number;
+  /**
+   * Bitmask describing extra battery power features. Bit 5 (32) has been
+   * observed on devices that accept SwitchBatteryAdapterMode (cmd 805).
+   */
+  batteryMode?: number;
+  largeBattery?: number;
   ispCfg?: number;
   osdCfg?: number;
   batAnalysis?: number;
@@ -925,6 +958,15 @@ export interface DeviceCapabilities {
   hasPresets: boolean;
   hasPtz: boolean;
   hasBattery: boolean;
+  /**
+   * True when the device advertises the battery/adapter power-source switch
+   * (SwitchBatteryAdapterMode, cmd 805) via support.items[].batteryMode.
+   *
+   * Heuristic hint only: firmwares that do not report `batteryMode` may still
+   * accept the command. Use `probePowerSourceSwitchSupport()` for a definitive
+   * answer.
+   */
+  hasPowerSourceSwitch: boolean;
   hasIntercom: boolean;
   hasSiren: boolean;
   hasFloodlight: boolean;

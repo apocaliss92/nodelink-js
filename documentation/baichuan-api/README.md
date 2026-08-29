@@ -62,7 +62,7 @@ Also available: **[CGI HTTP API](../cgi-api/README.md)** for HTTP-based configur
 
 - **[Detection Settings](./detection.md)** - Motion, AI, PIR, autotracking
 - **[Lights & Accessories](./lights.md)** - Spotlight, floodlight, siren, chime/DingDong
-- **[Battery & Sleep](./battery.md)** - Battery status, wake-up
+- **[Battery & Sleep](./battery.md)** - Battery status, wired/battery power source, wake-up
 - **[OSD & Display](./osd.md)** - On-screen display, camera name
 - **[Network & System](./network.md)** - Ports, WiFi, storage, reboot
 - **[Email & Email Push](./email.md)** - SMTP config, schedule, manager-side intake, auto-configure

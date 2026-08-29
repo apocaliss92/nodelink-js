@@ -24,6 +24,7 @@
 
 ### Features
 
+- New **power source switch** for battery cameras and battery doorbells: `api.switchPowerSource("adapter" | "battery", { channel, dryRun })` wraps Baichuan cmd **805 `SwitchBatteryAdapterMode`** — the command the Reolink app uses for "Wired Power" vs "Battery Power" (distinct from the wired *working* mode / Continuous setting). Useful when the app fails its pre-flight power read while the device is wired and never reaches the switch. Companion helpers: `api.getPowerSource()` (current source from `BatteryInfo.adapterStatus`), `api.probePowerSourceSwitchSupport()` (authoritative dry-run probe) and the new `DeviceCapabilities.hasPowerSourceSwitch` hint (`support.items[].battery > 0 && batteryMode & 32`). Successful firmwares answer 200 with an empty body — verify with `getPowerSource()`. See [documentation/baichuan-api/battery.md](./documentation/baichuan-api/battery.md#power-source-wired-vs-battery).
 - Stream **analyzer** now scores server-side health deterministically. Each report gains:
   - `video.droppedFrames` / `video.duplicatedFrames` (parsed from ffmpeg's `dup=` / `drop=` counters in the progress line — previously not captured)
   - `video.expectedFps` (from the camera's own `getStreamMetadata.frameRate` for the analyzed profile)
