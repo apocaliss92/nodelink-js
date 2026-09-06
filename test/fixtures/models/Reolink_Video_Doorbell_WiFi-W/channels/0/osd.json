@@ -1,13 +1,25 @@
 {
   "channel": 0,
-  "osdChannel": {
-    "enable": 1,
-    "name": "",
-    "pos": ""
+  "channelName": {
+    "enable": true,
+    "name": "Front Door",
+    "topLeftX": 65536,
+    "topLeftY": 65536,
+    "position": {
+      "kind": "corner",
+      "corner": "bottom-right"
+    },
+    "enWatermark": false,
+    "enBgcolor": false
   },
-  "osdTime": {
-    "enable": 0,
-    "pos": ""
-  },
-  "watermark": 0
+  "datetime": {
+    "enable": true,
+    "topLeftX": 65537,
+    "topLeftY": 1,
+    "position": {
+      "kind": "corner",
+      "corner": "top-right"
+    },
+    "language": "English"
+  }
 }

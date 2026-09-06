@@ -17,6 +17,24 @@ export * from "./reolink/baichuan/recordingFileName";
 export * from "./reolink/baichuan/endpoints-server";
 export * from "./reolink/baichuan/capabilities";
 export {
+  coordsForOsdCorner,
+  formatOsdCoords,
+  isOsdCorner,
+  OSD_CORNER_LABELS,
+  OSD_CORNERS,
+  OSD_POSITION_EDGE_TOLERANCE,
+  OSD_POSITION_MAX,
+  OSD_POSITION_MIN,
+  readOsdPosition,
+  type OsdCoords,
+  type OsdCorner,
+  type OsdPositionReading,
+} from "./reolink/baichuan/utils/osdPosition";
+export {
+  applyOsdDatetimePatch,
+  parseOsdDatetimeXml,
+} from "./reolink/baichuan/utils/osdXml";
+export {
   decideSleepInferenceTransition,
   type SleepInferencePending,
   type SleepInferenceInput,

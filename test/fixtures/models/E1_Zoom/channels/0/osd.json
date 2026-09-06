@@ -1,13 +1,25 @@
 {
   "channel": 0,
-  "osdChannel": {
-    "enable": 1,
-    "name": "",
-    "pos": ""
+  "channelName": {
+    "enable": false,
+    "name": "Studio",
+    "topLeftX": 65536,
+    "topLeftY": 65536,
+    "position": {
+      "kind": "corner",
+      "corner": "bottom-right"
+    },
+    "enWatermark": false,
+    "enBgcolor": false
   },
-  "osdTime": {
-    "enable": 0,
-    "pos": ""
-  },
-  "watermark": 0
+  "datetime": {
+    "enable": true,
+    "topLeftX": 1,
+    "topLeftY": 1,
+    "position": {
+      "kind": "corner",
+      "corner": "top-left"
+    },
+    "language": "English"
+  }
 }

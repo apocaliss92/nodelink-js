@@ -213,6 +213,8 @@ import type {
   NativeVideoStreamVariant,
   NvrChannelsSummaryCacheEntry,
   OsdConfig,
+  OsdDatetimePatch,
+  OsdPatch,
   PirState,
   PlaybackSnapshotStreamInfo,
   PtzCommand,
@@ -414,6 +416,14 @@ import {
 import { createBufferedTalkSession } from "./utils/talkSession";
 import { discoverPerChannelUidViaCgiChannelstatus } from "./utils/uidDiscovery";
 import { getXmlBlocks, getXmlTexts, parseTalkAbilityXml } from "./xmlUtils";
+import {
+  applyOsdDatetimePatch,
+  parseOsdDatetimeXml,
+} from "./utils/osdXml";
+import {
+  coordsForOsdCorner,
+  readOsdPosition,
+} from "./utils/osdPosition";
 
 import { parseRecordingFileName } from "./recordingFileName";
 import {
@@ -5874,65 +5884,100 @@ export class ReolinkBaichuanApi {
   }
 
   /**
-   * GetOsd via Baichuan.
-   * cmd_id: 26 (GetImage - includes OSD settings)
+   * Read the OSD overlays of a channel.
+   *
+   * cmd_id: **44 (GetOsdDatetime)** — the command that actually carries the
+   * overlays. Until 0.6.x this method sent cmd_id 26 (`GetImage`, the ISP
+   * block) and text-grepped the reply for `enable` / `name` / `pos` /
+   * `timeEnable` / `watermark`; `GetImage` contains none of those tags, so
+   * every camera in a fleet answered with the same fabricated tuple. It is
+   * a thin, corner-decoded view over {@link getOsdDatetime}.
    */
-  async getOsd(channel?: number): Promise<OsdConfig> {
+  async getOsd(
+    channel?: number,
+    options?: { timeoutMs?: number },
+  ): Promise<OsdConfig> {
     const ch = this.normalizeChannel(channel);
-    const cmdId = 26; // GetImage (includes OSD)
-    const xml = await this.sendXml({ cmdId, channel: ch });
-    // Parse OSD XML structure from VideoInput/OsdChannel and OsdTime
-    // This is a placeholder - actual parsing depends on XML structure
+    const reply = await this.getOsdDatetime(ch, options);
+    const name = reply.osdChannelName;
+    const time = reply.osdDatetime;
     return {
       channel: ch,
-      osdChannel: {
-        enable: Number(getXmlText(xml, "enable") ?? "0"),
-        name: getXmlText(xml, "name") ?? "",
-        pos: getXmlText(xml, "pos") ?? "",
+      channelName: {
+        enable: name?.enable ?? null,
+        name: name?.name ?? null,
+        topLeftX: name?.topLeftX ?? null,
+        topLeftY: name?.topLeftY ?? null,
+        position: readOsdPosition(name?.topLeftX, name?.topLeftY),
+        // The watermark flag is a member of the channel-name block on the wire.
+        enWatermark: name?.enWatermark ?? null,
+        enBgcolor: name?.enBgcolor ?? null,
       },
-      osdTime: {
-        enable: Number(getXmlText(xml, "timeEnable") ?? "0"),
-        pos: getXmlText(xml, "timePos") ?? "",
+      datetime: {
+        enable: time?.enable ?? null,
+        topLeftX: time?.topLeftX ?? null,
+        topLeftY: time?.topLeftY ?? null,
+        position: readOsdPosition(time?.topLeftX, time?.topLeftY),
+        language: time?.language ?? null,
       },
-      watermark: Number(getXmlText(xml, "watermark") ?? "0"),
     };
   }
 
   /**
-   * SetOsd via Baichuan.
-   * cmd_id: 25 (SetImage - includes OSD settings)
+   * Update the OSD overlays of a channel.
+   *
+   * cmd_id: **45 (SetOsdDatetime)**. Until 0.6.x this method posted an
+   * `<Osd>` body to cmd_id 25 (`SetImage`), which the firmware ignores —
+   * the writes never landed. Positions are given as corners and encoded to
+   * the camera's 16.16 coordinates; every field not named in the patch is
+   * preserved by the read-modify-write in {@link setOsdDatetime}.
    */
-  async setOsd(osd: OsdConfig, channel?: number): Promise<void>;
-  async setOsd(channel: number, osd: OsdConfig): Promise<void>;
   async setOsd(
-    channelOrOsd: number | OsdConfig,
-    osdMaybe?: OsdConfig | number,
+    channel: number,
+    patch: OsdPatch,
+    options?: { timeoutMs?: number },
   ): Promise<void> {
-    const ch =
-      typeof channelOrOsd === "number"
-        ? this.normalizeChannel(channelOrOsd)
-        : this.normalizeChannel(osdMaybe as number | undefined);
-    const osd =
-      typeof channelOrOsd === "number" ? (osdMaybe as OsdConfig) : channelOrOsd;
-    const cmdId = 25; // SetImage (includes OSD)
-    const xml =
-      `<?xml version="1.0" encoding="UTF-8" ?>` +
-      `<body>` +
-      `<Osd version="1.1">` +
-      `<channel>${ch}</channel>` +
-      `<osdChannel>` +
-      `<enable>${osd.osdChannel.enable}</enable>` +
-      `<name>${xmlEscape(osd.osdChannel.name)}</name>` +
-      `<pos>${xmlEscape(osd.osdChannel.pos)}</pos>` +
-      `</osdChannel>` +
-      `<osdTime>` +
-      `<enable>${osd.osdTime.enable}</enable>` +
-      `<pos>${xmlEscape(osd.osdTime.pos)}</pos>` +
-      `</osdTime>` +
-      `<watermark>${osd.watermark}</watermark>` +
-      `</Osd>` +
-      `</body>`;
-    await this.sendXml({ cmdId, channel: ch, payloadXml: xml });
+    const ch = this.normalizeChannel(channel);
+    const datetime: NonNullable<OsdDatetimePatch["datetime"]> = {};
+    const channelName: NonNullable<OsdDatetimePatch["channelName"]> = {};
+
+    if (patch.datetime?.enable !== undefined)
+      datetime.enable = patch.datetime.enable;
+    if (patch.datetime?.language !== undefined)
+      datetime.language = patch.datetime.language;
+    if (patch.datetime?.position !== undefined) {
+      const coords = coordsForOsdCorner(patch.datetime.position);
+      datetime.topLeftX = coords.x;
+      datetime.topLeftY = coords.y;
+    }
+
+    if (patch.channelName?.enable !== undefined)
+      channelName.enable = patch.channelName.enable;
+    if (patch.channelName?.name !== undefined)
+      channelName.name = patch.channelName.name;
+    if (patch.channelName?.enWatermark !== undefined)
+      channelName.enWatermark = patch.channelName.enWatermark;
+    if (patch.channelName?.enBgcolor !== undefined)
+      channelName.enBgcolor = patch.channelName.enBgcolor;
+    if (patch.channelName?.position !== undefined) {
+      const coords = coordsForOsdCorner(patch.channelName.position);
+      channelName.topLeftX = coords.x;
+      channelName.topLeftY = coords.y;
+    }
+
+    const hasDatetime = Object.keys(datetime).length > 0;
+    const hasChannelName = Object.keys(channelName).length > 0;
+    // Nothing to write: never burn a round-trip (and never blank the overlay).
+    if (!hasDatetime && !hasChannelName) return;
+
+    await this.setOsdDatetime(
+      ch,
+      {
+        ...(hasDatetime ? { datetime } : {}),
+        ...(hasChannelName ? { channelName } : {}),
+      },
+      options,
+    );
   }
 
   /**
@@ -14680,84 +14725,35 @@ export class ReolinkBaichuanApi {
    * read-modify-write so any extension fields the camera sent are
    * preserved.
    *
-   * Position is in **camera pixel coordinates** (e.g. (1,1) for top-left,
-   * not preset strings). Set `enable=0` to hide the overlay; the camera
-   * keeps the stored position so re-enabling later restores it.
+   * `topLeftX` / `topLeftY` are **not pixels and not preset strings**: each
+   * axis is a normalised 16.16 fixed-point coordinate where `0` (some
+   * firmwares echo `1`) is the start edge and `65536` the far edge. So
+   * (0|1, 0|1) is top-left and (65536, 65536) is bottom-right — observed on
+   * live cameras, see `utils/osdPosition`. Prefer {@link setOsd}, which
+   * takes corners and encodes them for you.
+   *
+   * The Reolink watermark flag is `enWatermark` **inside `channelName`** —
+   * it is not a top-level OSD field.
+   *
+   * Set `enable=0` to hide the overlay; the camera keeps the stored position
+   * so re-enabling later restores it.
    */
   async setOsdDatetime(
     channel: number,
-    patch: {
-      datetime?: {
-        enable?: boolean | 0 | 1;
-        topLeftX?: number;
-        topLeftY?: number;
-        language?: string;
-      };
-      channelName?: {
-        name?: string;
-        enable?: boolean | 0 | 1;
-        topLeftX?: number;
-        topLeftY?: number;
-        enWatermark?: boolean | 0 | 1;
-        enBgcolor?: boolean | 0 | 1;
-      };
-    },
+    patch: OsdDatetimePatch,
     options?: { timeoutMs?: number },
   ): Promise<void> {
     const ch = this.normalizeChannel(channel);
     const timeoutOpts =
       options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {};
-    let xml = await this.sendPcapDerivedSettingsGetXml({
+    // Read-modify-write: the firmware needs the whole block back, so we patch
+    // its OWN reply rather than composing one from the fields we know about.
+    const rawXml = await this.sendPcapDerivedSettingsGetXml({
       cmdId: BC_CMD_ID_GET_OSD_DATETIME,
       channel: ch,
       ...timeoutOpts,
     });
-
-    const patchBlock = (block: "OsdDatetime" | "OsdChannelName", fields: Record<string, unknown>) => {
-      const start = xml.indexOf(`<${block}`);
-      if (start < 0) return;
-      const end = xml.indexOf(`</${block}>`, start);
-      if (end < 0) return;
-      let body = xml.slice(start, end);
-      for (const [tag, value] of Object.entries(fields)) {
-        if (value === undefined) continue;
-        const raw =
-          typeof value === "boolean" ? (value ? "1" : "0") : String(value);
-        const escaped = raw
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;");
-        if (body.includes(`<${tag}>`)) {
-          body = body.replace(
-            new RegExp(`<${tag}>[^<]*<\\/${tag}>`),
-            `<${tag}>${escaped}</${tag}>`,
-          );
-        } else {
-          // Tag wasn't in the GET response — append it just before </block>.
-          body += `<${tag}>${escaped}</${tag}>`;
-        }
-      }
-      xml = xml.slice(0, start) + body + xml.slice(end);
-    };
-
-    if (patch.datetime) {
-      patchBlock("OsdDatetime", {
-        enable: patch.datetime.enable,
-        topLeftX: patch.datetime.topLeftX,
-        topLeftY: patch.datetime.topLeftY,
-        language: patch.datetime.language,
-      });
-    }
-    if (patch.channelName) {
-      patchBlock("OsdChannelName", {
-        name: patch.channelName.name,
-        enable: patch.channelName.enable,
-        topLeftX: patch.channelName.topLeftX,
-        topLeftY: patch.channelName.topLeftY,
-        enWatermark: patch.channelName.enWatermark,
-        enBgcolor: patch.channelName.enBgcolor,
-      });
-    }
+    const xml = applyOsdDatetimePatch(rawXml, patch);
 
     await this.sendXml({
       cmdId: BC_CMD_ID_SET_OSD_DATETIME,
@@ -14777,59 +14773,7 @@ export class ReolinkBaichuanApi {
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
 
-    const osdBlock = getXmlBlocks(rawXml, "OsdDatetime")[0];
-    const nameBlock = getXmlBlocks(rawXml, "OsdChannelName")[0];
-
-    const osdDatetime: BaichuanOsdDatetime | undefined = osdBlock
-      ? (() => {
-          const channelId = parseNumber(getXmlText(osdBlock, "channelId"));
-          const enable = parseBoolean01(getXmlText(osdBlock, "enable"));
-          const topLeftX = parseNumber(getXmlText(osdBlock, "topLeftX"));
-          const topLeftY = parseNumber(getXmlText(osdBlock, "topLeftY"));
-          const width = parseNumber(getXmlText(osdBlock, "width"));
-          const height = parseNumber(getXmlText(osdBlock, "height"));
-          const language = getXmlText(osdBlock, "language")?.trim();
-
-          return {
-            ...(channelId != null ? { channelId } : {}),
-            ...(enable != null ? { enable } : {}),
-            ...(topLeftX != null ? { topLeftX } : {}),
-            ...(topLeftY != null ? { topLeftY } : {}),
-            ...(width != null ? { width } : {}),
-            ...(height != null ? { height } : {}),
-            ...(language ? { language } : {}),
-          };
-        })()
-      : undefined;
-
-    const osdChannelName: BaichuanOsdChannelName | undefined = nameBlock
-      ? (() => {
-          const channelId = parseNumber(getXmlText(nameBlock, "channelId"));
-          const name = getXmlText(nameBlock, "name")?.trim();
-          const enable = parseBoolean01(getXmlText(nameBlock, "enable"));
-          const topLeftX = parseNumber(getXmlText(nameBlock, "topLeftX"));
-          const topLeftY = parseNumber(getXmlText(nameBlock, "topLeftY"));
-          const enWatermark = parseBoolean01(
-            getXmlText(nameBlock, "enWatermark"),
-          );
-          const enBgcolor = parseBoolean01(getXmlText(nameBlock, "enBgcolor"));
-
-          return {
-            ...(channelId != null ? { channelId } : {}),
-            ...(name ? { name } : {}),
-            ...(enable != null ? { enable } : {}),
-            ...(topLeftX != null ? { topLeftX } : {}),
-            ...(topLeftY != null ? { topLeftY } : {}),
-            ...(enWatermark != null ? { enWatermark } : {}),
-            ...(enBgcolor != null ? { enBgcolor } : {}),
-          };
-        })()
-      : undefined;
-
-    return {
-      ...(osdDatetime ? { osdDatetime } : {}),
-      ...(osdChannelName ? { osdChannelName } : {}),
-    };
+    return parseOsdDatetimeXml(rawXml);
   }
 
   async getRecordCfg(

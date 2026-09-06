@@ -3,23 +3,93 @@
  * Based on Reolink API documentation.
  */
 
-export interface OsdChannel {
-  enable: number;
-  name: string;
-  pos: string;
+import type { OsdCorner, OsdPositionReading } from "./utils/osdPosition";
+
+/**
+ * OSD overlay state as the camera actually reports it over cmd_id 44
+ * (`GetOsdDatetime`). `null` means the camera did not report the field —
+ * it must never be collapsed into a default, because "unknown" and "off"
+ * are different answers.
+ *
+ * Positions are 16.16 normalised coordinates, not pixels and not preset
+ * strings: see {@link OsdPositionReading} and `readOsdPosition`.
+ */
+export interface OsdChannelNameOverlay {
+  enable: boolean | null;
+  name: string | null;
+  topLeftX: number | null;
+  topLeftY: number | null;
+  /** `topLeftX`/`topLeftY` decoded into a corner (or `custom`/`unknown`). */
+  position: OsdPositionReading;
+  /** The Reolink watermark flag — it lives in THIS block on the wire. */
+  enWatermark: boolean | null;
+  enBgcolor: boolean | null;
 }
 
-export interface OsdTime {
-  enable: number;
-  pos: string;
+/** Timestamp overlay state, as reported by cmd_id 44. */
+export interface OsdDatetimeOverlay {
+  enable: boolean | null;
+  topLeftX: number | null;
+  topLeftY: number | null;
+  position: OsdPositionReading;
+  language: string | null;
 }
 
+/**
+ * The full OSD overlay state of one channel.
+ *
+ * **Breaking change in 0.7.0.** Until 0.6.x this type modelled a `<Osd>`
+ * block with `osdChannel` / `osdTime` / `watermark` and loose `pos` strings.
+ * No Reolink firmware ever answered that shape: `getOsd` was reading cmd_id
+ * 26 (`GetImage`, the ISP block) and text-grepping it for tags that block
+ * does not contain, so every camera returned the same fabricated tuple.
+ * The real overlay lives in cmd_id 44/45 and is modelled here.
+ */
 export interface OsdConfig {
   channel: number;
-  osdChannel: OsdChannel;
-  osdTime: OsdTime;
-  watermark: number;
-  bgcolor?: number;
+  channelName: OsdChannelNameOverlay;
+  datetime: OsdDatetimeOverlay;
+}
+
+/**
+ * A partial OSD update, expressed in the corner vocabulary. Only the fields
+ * present are written; everything else the camera holds is preserved by the
+ * read-modify-write in `setOsd`.
+ */
+export interface OsdPatch {
+  datetime?: {
+    enable?: boolean;
+    position?: OsdCorner;
+    language?: string;
+  };
+  channelName?: {
+    enable?: boolean;
+    name?: string;
+    position?: OsdCorner;
+    enWatermark?: boolean;
+    enBgcolor?: boolean;
+  };
+}
+
+/**
+ * The low-level patch accepted by `setOsdDatetime`, in raw camera fields.
+ * Prefer {@link OsdPatch} + `setOsd` unless you need a non-corner position.
+ */
+export interface OsdDatetimePatch {
+  datetime?: {
+    enable?: boolean | 0 | 1;
+    topLeftX?: number;
+    topLeftY?: number;
+    language?: string;
+  };
+  channelName?: {
+    name?: string;
+    enable?: boolean | 0 | 1;
+    topLeftX?: number;
+    topLeftY?: number;
+    enWatermark?: boolean | 0 | 1;
+    enBgcolor?: boolean | 0 | 1;
+  };
 }
 
 export interface AIDetectionState {
