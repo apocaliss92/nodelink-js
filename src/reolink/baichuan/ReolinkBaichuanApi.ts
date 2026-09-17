@@ -73,6 +73,8 @@ import {
   BC_CMD_ID_SET_OSD_DATETIME,
   BC_CMD_ID_GET_PIR_INFO,
   BC_CMD_ID_GET_PTZ_POSITION,
+  BC_CMD_ID_GET_PTZ_GUARD,
+  BC_CMD_ID_PTZ_GUARD,
   BC_CMD_ID_GET_PTZ_PRESET,
   BC_CMD_ID_GET_REC_ENC_CFG,
   BC_CMD_ID_GET_RECORD,
@@ -462,6 +464,13 @@ import {
 } from "./utils/whiteLed";
 import { parseFloodlightStatusListPushXml } from "./utils/whiteLedStatusPush";
 import { parseSirenStatusListPushXml } from "./utils/sirenStatusPush";
+import {
+  buildPtzGuardExtensionXml,
+  buildPtzGuardGoXml,
+  buildPtzGuardSetXml,
+  parsePtzGuardXml,
+  type PtzGuardStatus,
+} from "./ptzGuard";
 import {
   mapEmailPushInferredType,
   onEmailPushEvent,
@@ -10437,6 +10446,84 @@ export class ReolinkBaichuanApi {
     }
 
     return result;
+  }
+
+  /**
+   * Read the PTZ guard point ("monitoring point" in the app).
+   *
+   * cmd_id: 332
+   *
+   * Returns `null` when the camera has no readable guard configuration — never
+   * a fabricated "none", because that answer is what a consumer uses to decide
+   * whether to move the head.
+   */
+  async getPtzGuard(channel?: number): Promise<PtzGuardStatus | null> {
+    const ch = this.normalizeChannel(channel);
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_PTZ_GUARD,
+      channel: ch,
+      channelIdOverride: ch,
+      extensionXml: buildPtzGuardExtensionXml(ch, "read"),
+      messageClass: BC_CLASS_MODERN_24,
+      streamType: 0,
+    });
+    return parsePtzGuardXml(xml);
+  }
+
+  /**
+   * Configure the PTZ guard point.
+   *
+   * cmd_id: 331 with `<command>setGrd</command>`
+   *
+   * `setPosition` pins the guard point to the head's CURRENT position. Leave it
+   * false when only changing the timeout or the enable flag: re-sending it
+   * would silently move a point the operator had already placed.
+   */
+  async setPtzGuard(
+    options: {
+      enabled: boolean;
+      timeoutSeconds: number;
+      setPosition?: boolean;
+    },
+    channel?: number,
+  ): Promise<void> {
+    const ch = this.normalizeChannel(channel);
+    await this.sendXml({
+      cmdId: BC_CMD_ID_PTZ_GUARD,
+      channel: ch,
+      channelIdOverride: ch,
+      extensionXml: buildPtzGuardExtensionXml(ch, "write"),
+      payloadXml: buildPtzGuardSetXml({
+        channelId: ch,
+        enabled: options.enabled,
+        timeoutSeconds: options.timeoutSeconds,
+        setPosition: options.setPosition === true,
+      }),
+      messageClass: BC_CLASS_MODERN_24,
+      streamType: 0,
+    });
+  }
+
+  /**
+   * Send the head to the guard point NOW.
+   *
+   * cmd_id: 331 with `<command>toGrd</command>`
+   *
+   * This is the closest thing Baichuan has to a "go home": the guard point is
+   * an operator-placed position, unlike preset slot 0 which merely happens to
+   * be first.
+   */
+  async goToPtzGuard(channel?: number): Promise<void> {
+    const ch = this.normalizeChannel(channel);
+    await this.sendXml({
+      cmdId: BC_CMD_ID_PTZ_GUARD,
+      channel: ch,
+      channelIdOverride: ch,
+      extensionXml: buildPtzGuardExtensionXml(ch, "write"),
+      payloadXml: buildPtzGuardGoXml(ch),
+      messageClass: BC_CLASS_MODERN_24,
+      streamType: 0,
+    });
   }
 
   /**

@@ -91,6 +91,16 @@ export const BC_CMD_ID_PTZ_CONTROL_PRESET = 19; // MSG_ID_PTZ_CONTROL_PRESET - S
 export const BC_CMD_ID_GET_PTZ_PRESET = 190; // MSG_ID_GET_PTZ_PRESET - Get preset list
 export const BC_CMD_ID_GET_PTZ_POSITION = 433; // Get current PTZ position
 
+// PTZ guard point — the "monitoring point" of the official app. A position the
+// camera returns to on its own after a timeout, AND one it can be SENT to on
+// command, which makes it this vendor's real "home".
+//
+// Both verbs ride 331 and differ only in the <command> element: `setGrd`
+// configures, `toGrd` goes there now. Captured from the official app against an
+// E1 Outdoor PoE (firmware v3.1.0.5223) on 2026-09-17.
+export const BC_CMD_ID_PTZ_GUARD = 331; // MSG_ID_PTZ_GUARD - setGrd / toGrd
+export const BC_CMD_ID_GET_PTZ_GUARD = 332; // Read the guard point back
+
 // PTZ Zoom/Focus command IDs
 export const BC_CMD_ID_GET_ZOOM_FOCUS = 294; // MSG_ID_GET_ZOOM_FOCUS - Read zoom/focus min/max/current
 export const BC_CMD_ID_SET_ZOOM_FOCUS = 295; // MSG_ID_SET_ZOOM_FOCUS - Write zoom/focus position
