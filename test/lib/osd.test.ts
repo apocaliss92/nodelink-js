@@ -112,6 +112,54 @@ describe("OSD position codec (16.16 normalised, not pixels)", () => {
    * channel-name overlay, and a camera reporting the start edge is at the
    * start edge however it spells it.
    */
+  /**
+   * `65537` is the CENTRE, not a right-edge variant.
+   *
+   * Captured on 2026-09-19 on a standalone camera while the operator put the
+   * timestamp TOP-CENTRE and the channel name BOTTOM-CENTRE:
+   *
+   * ```
+   * OsdDatetime    enable=1  (65537, 1)       ← centre, top
+   * OsdChannelName enable=1  (65537, 65536)   ← centre, bottom
+   * ```
+   *
+   * The axis is therefore not a continuous 0..65536 normalised coordinate with
+   * a tolerance band: it is a small vocabulary — start edge (`0` or `1`), far
+   * edge (`65536`), centre (`65537`). Reading it as a coordinate is what made
+   * `isEndEdge(65537)` true and turned every centred overlay into a
+   * right/bottom one: the earlier Home Hub capture holds eight
+   * `OsdChannelName (65537, 65536)` writes that this library would have
+   * reported as "bottom-right".
+   *
+   * Only the x axis has been OBSERVED centred. A `65537` on y is not invented
+   * here — an unobserved placement stays `custom`, which is what that state is
+   * for.
+   */
+  it("decodes 65537 as the centre, not as the right edge", () => {
+    expect(readOsdPosition(65_537, 1)).toEqual({
+      kind: "corner",
+      corner: "top-center",
+    });
+    expect(readOsdPosition(65_537, 65_536)).toEqual({
+      kind: "corner",
+      corner: "bottom-center",
+    });
+  });
+
+  it("writes the centre the app writes", () => {
+    expect(coordsForOsdCorner("top-center")).toEqual({ x: 65_537, y: 1 });
+    expect(coordsForOsdCorner("bottom-center")).toEqual({
+      x: 65_537,
+      y: 65_536,
+    });
+  });
+
+  it("offers the centre in the vocabulary", () => {
+    expect([...OSD_CORNERS]).toContain("top-center");
+    expect([...OSD_CORNERS]).toContain("bottom-center");
+    expect(isOsdCorner("top-center")).toBe(true);
+  });
+
   it("writes the start edge the app writes", () => {
     expect(coordsForOsdCorner("top-left")).toEqual({ x: 1, y: 1 });
     expect(coordsForOsdCorner("top-right")).toEqual({ x: 65536, y: 1 });

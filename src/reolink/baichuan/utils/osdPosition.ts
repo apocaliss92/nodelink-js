@@ -67,10 +67,31 @@ export const OSD_POSITION_START_WRITE = 1;
  */
 export const OSD_POSITION_EDGE_TOLERANCE = 16;
 
+/**
+ * The CENTRE of an axis.
+ *
+ * Not a coordinate — a vocabulary entry, one past the far edge. Captured on
+ * 2026-09-19 while the operator placed the timestamp top-centre and the
+ * channel name bottom-centre:
+ *
+ * ```
+ * OsdDatetime    (65537, 1)       ← centre, top
+ * OsdChannelName (65537, 65536)   ← centre, bottom
+ * ```
+ *
+ * It must be tested BEFORE the far edge: `65537` sits inside
+ * {@link OSD_POSITION_EDGE_TOLERANCE} of `65536`, so a naive edge test reads
+ * every centred overlay as right/bottom — which is exactly what this library
+ * did to the eight `(65537, 65536)` writes in the Home Hub capture.
+ */
+export const OSD_POSITION_CENTER = 65_537;
+
 export const OSD_CORNERS = [
   "top-left",
+  "top-center",
   "top-right",
   "bottom-left",
+  "bottom-center",
   "bottom-right",
 ] as const;
 
@@ -109,7 +130,17 @@ export function readOsdPosition(
 ): OsdPositionReading {
   if (typeof x !== "number" || typeof y !== "number") return { kind: "unknown" };
   if (!Number.isFinite(x) || !Number.isFinite(y)) return { kind: "unknown" };
-  const horizontal = isStartEdge(x) ? "left" : isEndEdge(x) ? "right" : null;
+  // Centre FIRST: 65537 is within the edge tolerance of 65536 and would
+  // otherwise read as the far edge. Only the x axis has been observed
+  // centred; a centred y stays `custom` rather than being invented.
+  const horizontal =
+    x === OSD_POSITION_CENTER
+      ? "center"
+      : isStartEdge(x)
+        ? "left"
+        : isEndEdge(x)
+          ? "right"
+          : null;
   const vertical = isStartEdge(y) ? "top" : isEndEdge(y) ? "bottom" : null;
   if (horizontal === null || vertical === null)
     return { kind: "custom", x, y };
@@ -122,9 +153,11 @@ export function readOsdPosition(
  * constant for the camera that accepted a `0`, stored it, and ignored it.
  */
 export function coordsForOsdCorner(corner: OsdCorner): OsdCoords {
-  const x = corner.endsWith("-right")
-    ? OSD_POSITION_MAX
-    : OSD_POSITION_START_WRITE;
+  const x = corner.endsWith("-center")
+    ? OSD_POSITION_CENTER
+    : corner.endsWith("-right")
+      ? OSD_POSITION_MAX
+      : OSD_POSITION_START_WRITE;
   const y = corner.startsWith("bottom-")
     ? OSD_POSITION_MAX
     : OSD_POSITION_START_WRITE;
@@ -147,7 +180,9 @@ export function formatOsdCoords(x: number, y: number): string {
 /** Operator-facing corner labels. */
 export const OSD_CORNER_LABELS: Readonly<Record<OsdCorner, string>> = {
   "top-left": "Top left",
+  "top-center": "Top centre",
   "top-right": "Top right",
   "bottom-left": "Bottom left",
+  "bottom-center": "Bottom centre",
   "bottom-right": "Bottom right",
 };
