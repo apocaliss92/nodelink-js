@@ -5,8 +5,9 @@
  * The camera anchors each overlay with `topLeftX` / `topLeftY`. These are
  * **not** pixels and not preset strings: each axis is a NORMALISED 16.16
  * fixed-point coordinate whose far edge is `65536` (= 1.0) and whose start
- * edge is `0` — several firmwares echo `1` for the start edge, which is the
- * same edge one unit in.
+ * edge is reported as `0` or `1` — the same edge, one unit apart. We READ both
+ * and WRITE `1`, because a camera that was handed `0` stored it and refused to
+ * render it (see `OSD_POSITION_START_WRITE`).
  *
  * That is not a guess. It was read off live cameras against placements the
  * operator had configured by hand in the Reolink app:
@@ -28,8 +29,31 @@
 /** The far edge of either axis — 1.0 in the camera's 16.16 space. */
 export const OSD_POSITION_MAX = 65_536;
 
-/** The start edge. Cameras echo `0` or `1`; both render at the same edge. */
+/**
+ * The start edge as a camera REPORTS it. Cameras echo `0` or `1`, and both
+ * mean the same edge — this is the floor the reader measures tolerance from.
+ * What we WRITE is {@link OSD_POSITION_START_WRITE}, which is not the same
+ * question.
+ */
 export const OSD_POSITION_MIN = 0;
+
+/**
+ * The start edge we WRITE.
+ *
+ * Reading and writing are not symmetric here, and assuming they were cost a
+ * real defect. Measured on device 3825 (a Home Hub child) on 2026-09-19:
+ * writing `top-right` as `(65536, 0)` was ACCEPTED and STORED — cmd 44 echoed
+ * the pair back across a sleep/wake cycle — and the overlay never moved, not
+ * in the live encoder session and not in a fresh one after teardown.
+ *
+ * Every `OsdDatetime` pair this fleet's firmware or app has produced uses `1`
+ * for the start edge (3825 `(65536,1)`, 592 `(1,1)`, 618 `(1,1)`, 640
+ * `(1,1)`; 4263 even echoes `65537`). `0` is a value only WE write, and it is
+ * the one that does not render. So we write the edge the firmware writes, and
+ * keep reading `0` because a camera reporting the start edge is at the start
+ * edge however it spells it.
+ */
+export const OSD_POSITION_START_WRITE = 1;
 
 /**
  * How far from an edge a coordinate may sit and still BE that edge. The
@@ -88,10 +112,18 @@ export function readOsdPosition(
   return { kind: "corner", corner: `${vertical}-${horizontal}` };
 }
 
-/** The coordinate pair to WRITE for a corner. */
+/**
+ * The coordinate pair to WRITE for a corner. The start edge is
+ * {@link OSD_POSITION_START_WRITE}, not {@link OSD_POSITION_MIN} — see that
+ * constant for the camera that accepted a `0`, stored it, and ignored it.
+ */
 export function coordsForOsdCorner(corner: OsdCorner): OsdCoords {
-  const x = corner.endsWith("-right") ? OSD_POSITION_MAX : OSD_POSITION_MIN;
-  const y = corner.startsWith("bottom-") ? OSD_POSITION_MAX : OSD_POSITION_MIN;
+  const x = corner.endsWith("-right")
+    ? OSD_POSITION_MAX
+    : OSD_POSITION_START_WRITE;
+  const y = corner.startsWith("bottom-")
+    ? OSD_POSITION_MAX
+    : OSD_POSITION_START_WRITE;
   return { x, y };
 }
 

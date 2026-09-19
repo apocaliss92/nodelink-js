@@ -93,6 +93,42 @@ describe("OSD position codec (16.16 normalised, not pixels)", () => {
     }
   });
 
+  /**
+   * A round trip proves the decoder is the inverse of the encoder. It does NOT
+   * prove the encoder writes what the FIRMWARE expects, and that gap cost a
+   * real defect.
+   *
+   * Measured on device 3825 (a Home Hub child) on 2026-09-19: CamStack wrote
+   * `top-right` as `(65536, 0)`, the camera STORED it (cmd 44 echoed the pair
+   * back across a sleep/wake cycle), and the overlay never moved — not in the
+   * live encoder session, not in a fresh one after teardown. The timestamp
+   * stayed where the Reolink app had last put it.
+   *
+   * Every OsdDatetime pair this fleet's firmware or app has ever produced uses
+   * `1` for the start edge (3825 `(65536,1)`, 592 `(1,1)`, 618 `(1,1)`,
+   * 640 `(1,1)`; 4263 even echoes `65537`). `0` is a value only WE write, and
+   * it is the one that does not render. So we write the edge the firmware
+   * itself writes.
+   *
+   * The reader stays tolerant of `0` — device 618 echoes a hard `0` on its
+   * channel-name overlay, and a camera reporting the start edge is at the
+   * start edge however it spells it.
+   */
+  it("writes the start edge the firmware itself writes, not a bare zero", () => {
+    expect(coordsForOsdCorner("top-left")).toEqual({ x: 1, y: 1 });
+    expect(coordsForOsdCorner("top-right")).toEqual({ x: 65536, y: 1 });
+    expect(coordsForOsdCorner("bottom-left")).toEqual({ x: 1, y: 65536 });
+    expect(coordsForOsdCorner("bottom-right")).toEqual({ x: 65536, y: 65536 });
+  });
+
+  it("still reads a bare zero as the start edge", () => {
+    expect(readOsdPosition(0, 0)).toEqual({ kind: "corner", corner: "top-left" });
+    expect(readOsdPosition(65536, 0)).toEqual({
+      kind: "corner",
+      corner: "top-right",
+    });
+  });
+
   it("narrows only the offered vocabulary", () => {
     expect(isOsdCorner("bottom-right")).toBe(true);
     expect(isOsdCorner("custom")).toBe(false);
@@ -261,8 +297,11 @@ describe("getOsd / setOsd speak the OSD commands", () => {
     });
     const body = sent[1]?.payloadXml ?? "";
     const parsed = parseOsdDatetimeXml(body);
-    expect(parsed.osdChannelName?.topLeftX).toBe(0);
-    expect(parsed.osdChannelName?.topLeftY).toBe(0);
+    // `1`, not `0`: the start edge we WRITE is the one the firmware itself
+    // writes. A camera that was handed `0` stored it and never rendered it —
+    // see OSD_POSITION_START_WRITE.
+    expect(parsed.osdChannelName?.topLeftX).toBe(1);
+    expect(parsed.osdChannelName?.topLeftY).toBe(1);
     expect(parsed.osdChannelName?.enWatermark).toBe(true);
     // The timestamp overlay was not named in the patch — it must be untouched.
     expect(parsed.osdDatetime?.topLeftX).toBe(65536);
