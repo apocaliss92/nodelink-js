@@ -98,23 +98,21 @@ describe("OSD position codec (16.16 normalised, not pixels)", () => {
    * prove the encoder writes what the FIRMWARE expects, and that gap cost a
    * real defect.
    *
-   * Measured on device 3825 (a Home Hub child) on 2026-09-19: CamStack wrote
-   * `top-right` as `(65536, 0)`, the camera STORED it (cmd 44 echoed the pair
-   * back across a sleep/wake cycle), and the overlay never moved — not in the
-   * live encoder session, not in a fresh one after teardown. The timestamp
-   * stayed where the Reolink app had last put it.
+   * A packet capture of the Reolink app on 2026-09-19 (Home Hub, Magicam on
+   * channel 3) shows the app sweeping all four corners and writing top-left as
+   * `(0,0)` on one save and `(1,1)` on the next — both took effect. So `0` is
+   * NOT broken, and the earlier belief that it was has been retired: the reason
+   * those writes did nothing was ADDRESSING, not the coordinate (see the
+   * Extension test below).
    *
-   * Every OsdDatetime pair this fleet's firmware or app has ever produced uses
-   * `1` for the start edge (3825 `(65536,1)`, 592 `(1,1)`, 618 `(1,1)`,
-   * 640 `(1,1)`; 4263 even echoes `65537`). `0` is a value only WE write, and
-   * it is the one that does not render. So we write the edge the firmware
-   * itself writes.
+   * We pin `1` because it is what the app writes and there is no reason to
+   * differ.
    *
    * The reader stays tolerant of `0` — device 618 echoes a hard `0` on its
    * channel-name overlay, and a camera reporting the start edge is at the
    * start edge however it spells it.
    */
-  it("writes the start edge the firmware itself writes, not a bare zero", () => {
+  it("writes the start edge the app writes", () => {
     expect(coordsForOsdCorner("top-left")).toEqual({ x: 1, y: 1 });
     expect(coordsForOsdCorner("top-right")).toEqual({ x: 65536, y: 1 });
     expect(coordsForOsdCorner("bottom-left")).toEqual({ x: 1, y: 65536 });
@@ -208,6 +206,7 @@ interface SentFrame {
   cmdId: number;
   channel?: number;
   payloadXml?: string;
+  extensionXml?: string;
 }
 
 /**
@@ -307,6 +306,37 @@ describe("getOsd / setOsd speak the OSD commands", () => {
     expect(parsed.osdDatetime?.topLeftX).toBe(65536);
     expect(parsed.osdDatetime?.topLeftY).toBe(1);
     expect(parsed.osdDatetime?.language).toBe("English");
+  });
+
+  /**
+   * The channel lives in the `<Extension>`, and a write without one is
+   * unaddressed.
+   *
+   * Captured off the wire on 2026-09-19 (Home Hub, Magicam on channel 3), the
+   * Reolink app's own traffic: EVERY cmd 44 and EVERY cmd 45 carries
+   *
+   * ```xml
+   * <Extension version="1.1"><channelId>3</channelId></Extension>
+   * ```
+   *
+   * and the frame HEADER's channelId is not a channel at all — it walks
+   * 12,13,14,… on the reads and 94,97,99,… on the writes, i.e. a message
+   * counter. 39 of 39 reads and 18 of 18 writes carried the Extension; the
+   * header never once held the channel.
+   *
+   * `setOsdDatetime` sent no Extension and put the channel in the header. The
+   * READ path got away with it because `sendPcapDerivedSettingsGetXml` probes
+   * several addressings on an NVR until one answers — the WRITE path has no
+   * such probe, so on a hub child every OSD write went out unaddressed. That
+   * is why nothing about the overlay worked on that camera, the plain
+   * `enable` toggle included: no value can matter if the write never names
+   * the channel it is for.
+   */
+  it("addresses the channel in the Extension, as the app does", async () => {
+    const { api, sent } = makeApi(RAW_3825_CH3);
+    await api.setOsdDatetime(3, { datetime: { enable: true } });
+    const set = sent.find((f) => f.cmdId === BC_CMD_ID_SET_OSD_DATETIME);
+    expect(set?.extensionXml).toContain("<channelId>3</channelId>");
   });
 
   it("sends nothing at all for an empty patch", async () => {

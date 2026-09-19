@@ -14864,9 +14864,24 @@ export class ReolinkBaichuanApi {
     });
     const xml = applyOsdDatetimePatch(rawXml, patch);
 
+    // The channel lives in the Extension, not in the frame header.
+    //
+    // Captured off the wire on 2026-09-19 (Home Hub, Magicam on channel 3):
+    // every one of the Reolink app's 39 cmd-44 reads and 18 cmd-45 writes
+    // carried `<Extension version="1.1"><channelId>3</channelId></Extension>`,
+    // while the header's channelId walked 12,13,14,... and 94,97,99,... — a
+    // message counter, never a channel.
+    //
+    // This write used to send no Extension at all. The READ path got away with
+    // the same omission because `sendPcapDerivedSettingsGetXml` probes several
+    // addressings on an NVR until one answers; a write has no such probe, so
+    // on a hub child every OSD write went out unaddressed. That is why nothing
+    // about the overlay worked on that camera — the plain `enable` toggle
+    // included. No value can matter if the write never names its channel.
     await this.sendXml({
       cmdId: BC_CMD_ID_SET_OSD_DATETIME,
       channel: ch,
+      extensionXml: buildChannelExtensionXml(ch),
       payloadXml: ensureXmlHeader(xml),
       ...timeoutOpts,
     });

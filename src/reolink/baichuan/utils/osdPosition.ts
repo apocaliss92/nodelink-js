@@ -40,18 +40,22 @@ export const OSD_POSITION_MIN = 0;
 /**
  * The start edge we WRITE.
  *
- * Reading and writing are not symmetric here, and assuming they were cost a
- * real defect. Measured on device 3825 (a Home Hub child) on 2026-09-19:
- * writing `top-right` as `(65536, 0)` was ACCEPTED and STORED — cmd 44 echoed
- * the pair back across a sleep/wake cycle — and the overlay never moved, not
- * in the live encoder session and not in a fresh one after teardown.
+ * `1` is what the Reolink app writes most of the time, so it is the safest
+ * value to send — but be clear about what that is and is not.
  *
- * Every `OsdDatetime` pair this fleet's firmware or app has produced uses `1`
- * for the start edge (3825 `(65536,1)`, 592 `(1,1)`, 618 `(1,1)`, 640
- * `(1,1)`; 4263 even echoes `65537`). `0` is a value only WE write, and it is
- * the one that does not render. So we write the edge the firmware writes, and
- * keep reading `0` because a camera reporting the start edge is at the start
- * edge however it spells it.
+ * It was briefly believed that `0` was the reason an overlay would not move:
+ * device 3825 stored a `(65536, 0)` and never rendered it. **A packet capture
+ * of the app's own traffic on 2026-09-19 disproved that.** Sweeping the
+ * timestamp through all four corners, the app wrote top-left as `(0,0)` on one
+ * save and `(1,1)` on the next, and both took effect. `0` and `1` are the same
+ * edge to this firmware, exactly as {@link OSD_POSITION_MIN} always said.
+ *
+ * The real reason those writes did nothing was addressing: cmd 45 carried no
+ * `<Extension><channelId>`, so on a hub child it named no channel. See
+ * `setOsdDatetime`.
+ *
+ * We keep writing `1` because it is what the app writes and there is no reason
+ * to differ — not because `0` is broken.
  */
 export const OSD_POSITION_START_WRITE = 1;
 
