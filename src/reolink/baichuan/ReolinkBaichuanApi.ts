@@ -4343,10 +4343,31 @@ export class ReolinkBaichuanApi {
       await this.client.login();
     }
 
+    // A channel-scoped command names its channel in the EXTENSION.
+    //
+    // Two captures on 2026-09-19 — a Home Hub (channel 3) and a standalone
+    // camera (channel 0), different transports and firmwares — agree without
+    // exception: every per-channel command carries
+    // `<Extension><channelId>N</channelId></Extension>`, every device-global
+    // one carries none, and the frame HEADER's channelId is a message counter
+    // in both (it walks 12,13,14,… and 94,97,99,…).
+    //
+    // This library put the channel in the header and sent no Extension on 77
+    // of its calls, 43 of them writes. The first one caught was the OSD: on a
+    // hub child NOTHING about the overlay worked — the plain `enable` toggle
+    // included — because the write never named the channel it was for.
+    //
+    // Applied here, once, rather than at 77 call sites. A caller that builds
+    // its own Extension still wins.
+    const addressed =
+      params.channel != null && params.extensionXml == null
+        ? { ...params, extensionXml: buildChannelExtensionXml(params.channel) }
+        : params;
+
     // Use sendFrame to check responseCode and handle 400 errors with retry
-    const frame = await this.client.sendFrame(params);
+    const frame = await this.client.sendFrame(addressed);
     if (frame.header.responseCode === 400) {
-      return await this.handleSendXml400(params, frame, retry);
+      return await this.handleSendXml400(addressed, frame, retry);
     }
 
     // Decrypt and return XML
