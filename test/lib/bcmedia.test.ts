@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { parseBcMedia } from "../../src/baichuan/stream/BcMediaParser";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -112,5 +113,48 @@ describe("BcMedia stream frame analysis", () => {
       // Main (4K) should have much larger frames than sub (360p)
       expect(mainAvg).toBeGreaterThan(subAvg * 2);
     });
+  });
+});
+
+/**
+ * A chunk boundary inside the video header must WAIT, not throw.
+ *
+ * `parseIframe` / `parsePframe` guarded `buf.length < 20` — the fixed header,
+ * magic(4) + videoType(4) + payloadSize(4) + additionalHeaderSize(4) +
+ * microseconds(4) — and then immediately read `readUInt32LE(20)` for
+ * `unknown`, which needs bytes 20..23. A buffer holding exactly 20 to 23 bytes
+ * passed the guard and threw out of range.
+ *
+ * It was unreachable while a whole recording arrived as ONE push, which is why
+ * it survived: it takes a boundary landing inside those four bytes. `onChunk`
+ * (0.8.0) feeds the parser chunk by chunk and can, so a clip could die
+ * mid-transfer on a split nobody controls.
+ */
+describe("a video header split across chunks", () => {
+  const header = (magic: string): Buffer => {
+    const b = Buffer.alloc(24);
+    b.write(magic, 0, "utf8");
+    b.write("H264", 4, "utf8");
+    b.writeUInt32LE(16, 8); // payloadSize
+    b.writeUInt32LE(0, 12); // additionalHeaderSize
+    b.writeUInt32LE(1234, 16); // microseconds
+    b.writeUInt32LE(0, 20); // unknown — the four bytes the old guard skipped
+    return b;
+  };
+
+  for (const magic of ["\x30\x30\x64\x63", "\x31\x30\x64\x63"]) {
+    for (let len = 20; len <= 23; len++) {
+      it(`returns null on ${len} bytes rather than throwing (magic ${magic.charCodeAt(1)})`, () => {
+        // The whole point: an incomplete header is "come back with more",
+        // never an exception that kills the transfer.
+        const slice = header(magic).subarray(0, len);
+        expect(() => parseBcMedia(slice)).not.toThrow();
+        expect(parseBcMedia(slice)).toBeNull();
+      });
+    }
+  }
+
+  it("still parses once the 24th byte arrives", () => {
+    expect(() => parseBcMedia(header("\x30\x30\x64\x63"))).not.toThrow();
   });
 });

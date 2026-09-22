@@ -184,7 +184,17 @@ function parseInfoV2(buf: Buffer): { media: BcMediaInfoV2; consumed: number } | 
 }
 
 function parseIframe(buf: Buffer): { media: BcMediaIframe; consumed: number } | null {
-  if (buf.length < 20) return null;
+  // 24, not 20. The fixed header is magic(4) + videoType(4) + payloadSize(4) +
+  // additionalHeaderSize(4) + microseconds(4) = 20, and the very next read
+  // below is `readUInt32LE(20)` for `unknown` — which needs bytes 20..23. A
+  // buffer holding exactly 20-23 bytes passed the guard and THREW out of
+  // range, instead of returning null and waiting for the rest.
+  //
+  // Unreachable while a whole recording arrives as one push, which is why it
+  // survived: it takes a chunk boundary landing inside those four bytes. The
+  // `onChunk` path added in 0.8.0 feeds the parser chunk by chunk and can, so
+  // a clip could die mid-transfer on a boundary nobody controls.
+  if (buf.length < 24) return null;
 
   // Magic (4) + "H264"/"H265" (4) = 8 bytes minimum
   const videoTypeStr = buf.toString("utf8", 4, 8);
@@ -235,7 +245,17 @@ function parseIframe(buf: Buffer): { media: BcMediaIframe; consumed: number } | 
 }
 
 function parsePframe(buf: Buffer): { media: BcMediaPframe; consumed: number } | null {
-  if (buf.length < 20) return null;
+  // 24, not 20. The fixed header is magic(4) + videoType(4) + payloadSize(4) +
+  // additionalHeaderSize(4) + microseconds(4) = 20, and the very next read
+  // below is `readUInt32LE(20)` for `unknown` — which needs bytes 20..23. A
+  // buffer holding exactly 20-23 bytes passed the guard and THREW out of
+  // range, instead of returning null and waiting for the rest.
+  //
+  // Unreachable while a whole recording arrives as one push, which is why it
+  // survived: it takes a chunk boundary landing inside those four bytes. The
+  // `onChunk` path added in 0.8.0 feeds the parser chunk by chunk and can, so
+  // a clip could die mid-transfer on a boundary nobody controls.
+  if (buf.length < 24) return null;
 
   // Magic (4) + "H264"/"H265" (4) = 8 bytes minimum
   const videoTypeStr = buf.toString("utf8", 4, 8);

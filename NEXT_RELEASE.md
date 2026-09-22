@@ -10,6 +10,8 @@
   - Stream combination testing in diagnostics dump
 
   ### Fixes
+
+- **A video header split across chunks waits instead of throwing.** `parseIframe` / `parsePframe` guarded `buf.length < 20` — the fixed header — and then immediately read `readUInt32LE(20)` for `unknown`, which needs bytes 20..23. A buffer holding exactly 20 to 23 bytes passed the guard and threw out of range. Unreachable while a whole recording arrives as ONE push, which is why it survived; `onChunk` feeds the parser chunk by chunk and a boundary landing inside those four bytes killed the transfer. Guard is now `< 24`, pinned for both magics at every length 20–23.
   - Fixed false PTZ detection on RLC-510WA (ptzControl ≠ physical PTZ)
   - Fixed D340W doorbell falsely detected as having floodlight
 -->
