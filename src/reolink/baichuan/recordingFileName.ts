@@ -1,3 +1,4 @@
+import { dateFromWallClock } from "./utils/wallClock";
 import type {
   ParsedRecordingFileName,
   RecordingDevType,
@@ -158,6 +159,7 @@ function decodeKnownFlags(
 function parseDateTimeLocal(
   yyyymmdd: string,
   hhmmss: string,
+  timeZone?: string,
 ): Date | undefined {
   if (!/^\d{8}$/.test(yyyymmdd)) return undefined;
   if (!/^\d{6}$/.test(hhmmss)) return undefined;
@@ -169,12 +171,12 @@ function parseDateTimeLocal(
   const second = Number.parseInt(hhmmss.slice(4, 6), 10);
   if (![year, month, day, hour, minute, second].every(Number.isFinite))
     return undefined;
-  // IMPORTANT: Parse as LOCAL TIME because the camera stores timestamps in local time in the filename.
-  // When we create a Date object with new Date(year, month, day, hour, minute, second), JavaScript
-  // interprets these values as local time and stores the date internally as UTC timestamp.
-  // This means getTime() will return the correct UTC timestamp that represents that local time moment.
-  // This is correct because the filename values represent the actual local time shown on the camera.
-  return new Date(year, month - 1, day, hour, minute, second);
+  // The file name carries the CAMERA's wall clock; `timeZone` names it
+  // (host local when omitted — the pre-0.7.8 behaviour).
+  return dateFromWallClock(
+    { year, month, day, hour, minute, second },
+    timeZone,
+  );
 }
 
 /**
@@ -188,9 +190,16 @@ function parseDateTimeLocal(
  * - 0120260107000000 (numeric identifier format: [channel][YYYYMMDD][HHMMSS])
  * - 829_0_900_510_033C8200000000_184C8B5.mp4 (NVR compact format)
  */
+export interface ParseRecordingFileNameOptions {
+  /** IANA zone the camera's wall clock is in. Host local when omitted. */
+  timeZone?: string;
+}
+
 export function parseRecordingFileName(
   fileName: string,
+  options?: ParseRecordingFileNameOptions,
 ): ParsedRecordingFileName | undefined {
+  const timeZone = options?.timeZone;
   // Try numeric identifier format first (e.g., "0120260107000000")
   // Format: [channel][YYYYMMDD][HHMMSS] where channel is 2 digits, date is 8 digits, time is 6 digits
   const numericMatch = /^(\d{2})(\d{8})(\d{6})$/.exec(fileName);
@@ -199,7 +208,7 @@ export function parseRecordingFileName(
     const dateStr = numericMatch[2];
     const timeStr = numericMatch[3];
     if (channelStr && dateStr && timeStr) {
-      const start = parseDateTimeLocal(dateStr, timeStr);
+      const start = parseDateTimeLocal(dateStr, timeStr, timeZone);
       if (start) {
         // For numeric format, assume 20 second duration (common for motion detection clips)
         const end = new Date(start.getTime() + 20_000);
@@ -315,10 +324,12 @@ export function parseRecordingFileName(
   }
 
   startDate = startDate.toLowerCase().replace("dst", "");
-  const start = parseDateTimeLocal(startDate, startTime);
+  const start = parseDateTimeLocal(startDate, startTime, timeZone);
   if (!start) return undefined;
   const end =
-    endTime === "000000" ? start : parseDateTimeLocal(startDate, endTime);
+    endTime === "000000"
+      ? start
+      : parseDateTimeLocal(startDate, endTime, timeZone);
   if (!end) return undefined;
 
   const durationMs = Math.max(0, end.getTime() - start.getTime());

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<FileInfoList version="1.1">
+<FileInfo>
+<uid>9527000HUBCHILD1</uid>
+<searchAITrack>1</searchAITrack>
+<channelId>1</channelId>
+<logicChnBitmap>255</logicChnBitmap>
+<streamType>subStream</streamType>
+<recordType>manual, sched, io, md, people, face, vehicle, dog_cat, visitor, other, package</recordType>
+<startTime><year>2026</year><month>9</month><day>19</day><hour>0</hour><minute>0</minute><second>0</second></startTime>
+<endTime><year>2026</year><month>9</month><day>19</day><hour>23</hour><minute>59</minute><second>59</second></endTime>
+</FileInfo>
+</FileInfoList>
+</body>

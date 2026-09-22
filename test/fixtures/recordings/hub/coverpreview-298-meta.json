@@ -1,0 +1,24 @@
+{
+ "topology": "hub",
+ "request": {
+  "cmdId": 298,
+  "channelIdOverride": 1,
+  "msgNumOverride": 0,
+  "messageClass": 25620,
+  "streamType": 0,
+  "timeoutMs": 20000
+ },
+ "parsed": {
+  "encoding": "H264",
+  "frameLength": 24184,
+  "streamInfo": {
+   "width": 896,
+   "height": 512,
+   "frameRate": 30
+  },
+  "frameTime": 1789852827,
+  "frameHead": "0000000167640029ac1514a0e010640000000168ee3cb000000001658880020001ff5a0bfb93ff6fe125b1dd6d5c495a3d564b1803e3da07ebf9cb7eec7b8af4"
+ },
+ "sanitised": "bytes 112..24248 zeroed (picture content removed); stream header, frame wrapper and the first 48 bytes of the SPS/PPS NAL kept",
+ "zeroLengthWindowRejected": null
+}

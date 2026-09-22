@@ -2271,12 +2271,24 @@ export const baichuanRouter = router({
   getDayRecords: publicProcedure
     .meta({
       description:
-        "Get the recording-days bitmap for the current month — which days have recordings available.",
+        "Recording calendar (cmd 142): which days of a month have footage on one channel. Defaults to the current month.",
     })
-    .input(ConnectionWithChannel)
+    .input(
+      ConnectionWithChannel.extend({
+        year: z.number().int().optional(),
+        month: z.number().int().min(1).max(12).optional(),
+        uid: z.string().optional(),
+      }),
+    )
     .query(async ({ input }) => {
       const api = await getApi(input);
-      return await api.getDayRecords(input.channel);
+      const now = new Date();
+      return await api.getDayRecords({
+        year: input.year ?? now.getFullYear(),
+        month: input.month ?? now.getMonth() + 1,
+        ...(input.channel !== undefined ? { channel: input.channel } : {}),
+        ...(input.uid !== undefined ? { uid: input.uid } : {}),
+      });
     }),
 
   getDayNightThreshold: publicProcedure

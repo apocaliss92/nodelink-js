@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<FileInfoList version="1.1">
+<FileInfo>
+<channelId>0</channelId>
+<handle>18</handle>
+<name></name>
+<containsAudio>0</containsAudio>
+<fileType>h264</fileType>
+<recordType>manual,io,md,sched,people,vehicle,face,other,dog_cat</recordType>
+<supportSub>1</supportSub>
+<sizeL>0</sizeL>
+<sizeH>0</sizeH>
+<startTime>
+<year>2026</year>
+<month>9</month>
+<day>19</day>
+<hour>0</hour>
+<minute>0</minute>
+<second>0</second>
+</startTime>
+<endTime>
+<year>2026</year>
+<month>9</month>
+<day>19</day>
+<hour>23</hour>
+<minute>59</minute>
+<second>59</second>
+</endTime>
+</FileInfo>
+</FileInfoList>
+</body>

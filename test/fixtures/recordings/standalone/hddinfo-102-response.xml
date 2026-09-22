@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<HddInfoList version="1.1">
+<HddInfo>
+<number>0</number>
+<capacity>238</capacity>
+<capacityM>271</capacityM>
+<format>1</format>
+<mount>1</mount>
+<remainSize>1</remainSize>
+<remainSizeM>0</remainSizeM>
+</HddInfo>
+</HddInfoList>
+</body>

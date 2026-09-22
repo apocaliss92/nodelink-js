@@ -1,0 +1,4032 @@
+{
+ "topology": "standalone",
+ "clipDurationS": 14,
+ "bytesAssembled": 294576,
+ "returnedAfterMs": 15183,
+ "lastDataAtMs": 122,
+ "frames": [
+  {
+   "dtMs": 0,
+   "responseCode": 200,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 32,
+   "extensionLen": 106
+  },
+  {
+   "dtMs": 5,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 17064,
+   "extensionLen": 136
+  },
+  {
+   "dtMs": 5,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 6,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 272,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 6,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 6,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 272,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 7,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 7,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 232,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 7,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 7,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 336,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 7,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 7,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 352,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 7,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 8,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 376,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 8,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 8,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 440,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 8,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 8,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 400,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 10,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 10,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 10,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 296,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 10,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 424,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 10,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 10,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 368,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 10,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 11,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 424,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 12,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 12,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 392,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 12,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 12,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 12,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 424,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 12,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 12,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 344,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 13,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 360,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 13,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 13,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 13,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 328,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 13,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 13,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 280,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 13,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 14,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 288,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 14,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 14,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 312,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 14,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 14,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 240,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 14,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 14,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 320,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 14,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 15,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 320,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 15,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 15,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 232,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 15,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 15,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 304,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 15,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 15,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 256,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 15,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 15,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 280,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 15,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 15,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 264,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 15,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 15,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 288,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 15,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 15,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 336,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 16,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 16,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 360,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 16,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 16,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 344,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 16,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 26,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 26,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 328,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 26,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 344,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 26,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 26,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 304,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 26,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 27,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 27,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 256,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 27,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 328,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 27,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 27,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 27,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 280,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 27,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 27,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 232,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 27,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 304,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 27,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 27,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 27,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 272,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 27,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 272,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 27,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 27,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 27,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 272,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 27,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 27,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 288,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 27,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 27,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 352,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 27,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 28,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 304,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 28,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 28,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 352,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 28,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 28,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 28,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 296,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 28,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 360,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 28,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 28,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 28,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 416,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 28,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 28,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 328,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 28,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 28,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 488,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 28,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 28,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 464,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 28,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 28,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 328,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 28,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 28,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 440,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 28,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 33,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 368,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 33,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 33,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 440,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 34,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 34,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 504,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 34,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 34,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 480,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 34,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 37,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 17064,
+   "extensionLen": 136
+  },
+  {
+   "dtMs": 37,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 37,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 400,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 37,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 37,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 400,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 37,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 37,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 344,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 38,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 38,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 584,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 38,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 38,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 680,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 38,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 38,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 42,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 440,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 42,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 648,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 43,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 43,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 928,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 43,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 43,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 43,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 536,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 43,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 808,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 43,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 43,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 43,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 552,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 43,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 848,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 43,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 43,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 920,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 43,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 44,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 44,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 880,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 45,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 45,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 648,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 45,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 45,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 928,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 45,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 45,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 736,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 45,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 45,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 608,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 45,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 46,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 752,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 46,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 46,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 960,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 46,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 46,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 624,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 46,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 46,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 1024,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 46,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 46,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 880,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 46,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 46,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 46,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 46,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 720,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 46,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 46,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 512,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 46,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 47,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 792,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 47,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 48,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 1040,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 48,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 48,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 1280,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 48,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 48,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 50,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 696,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 50,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 944,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 50,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 50,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 936,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 50,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 50,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 50,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 632,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 50,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 912,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 50,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 51,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 51,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 888,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 51,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 51,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 688,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 51,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 1104,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 51,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 51,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 51,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 952,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 51,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 52,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 664,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 52,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 52,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 864,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 52,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 52,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 880,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 53,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 1056,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 54,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 54,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 54,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 728,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 54,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 54,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 960,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 54,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 74,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 74,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 74,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 856,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 74,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 74,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 1032,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 75,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 75,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 760,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 75,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 75,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 1240,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 75,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 75,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 75,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 1184,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 75,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 75,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 768,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 75,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 78,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 1240,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 78,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 78,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 824,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 78,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 78,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 496,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 78,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 78,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 696,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 78,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 78,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 536,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 78,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 78,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 696,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 78,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 78,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 616,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 79,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 79,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 592,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 79,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 80,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 16016,
+   "extensionLen": 136
+  },
+  {
+   "dtMs": 80,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 80,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 480,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 80,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 80,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 592,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 80,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 80,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 83,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 448,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 83,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 552,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 84,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 84,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 496,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 84,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 84,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 84,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 360,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 84,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 640,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 84,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 84,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 84,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 496,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 84,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 84,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 304,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 84,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 488,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 84,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 84,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 84,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 328,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 84,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 472,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 84,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 84,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 84,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 424,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 85,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 85,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 616,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 85,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 85,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 344,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 85,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 85,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 464,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 85,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 85,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 608,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 85,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 85,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 544,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 85,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 85,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 832,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 85,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 85,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 784,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 85,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 85,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 472,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 85,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 85,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 648,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 85,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 85,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 688,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 86,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 86,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 496,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 86,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 86,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 640,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 86,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 86,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 488,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 86,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 86,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 616,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 86,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 86,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 504,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 86,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 86,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 704,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 86,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 86,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 89,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 464,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 89,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 624,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 89,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 89,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 89,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 592,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 89,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 89,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 512,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 90,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 632,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 90,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 90,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 90,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 552,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 91,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 91,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 336,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 91,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 92,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 544,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 92,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 92,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 664,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 92,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 92,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 456,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 92,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 92,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 688,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 92,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 92,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 464,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 92,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 92,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 536,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 92,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 92,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 504,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 92,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 92,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 816,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 92,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 92,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 568,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 92,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 92,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 576,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 92,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 93,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 536,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 93,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 93,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 392,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 93,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 93,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 384,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 93,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 93,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 408,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 93,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 93,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 93,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 288,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 93,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 424,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 93,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 93,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 93,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 384,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 93,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 93,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 280,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 93,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 96,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 424,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 96,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 96,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 336,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 96,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 96,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 384,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 96,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 96,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 376,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 96,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 96,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 360,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 96,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 96,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 112,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 17192,
+   "extensionLen": 136
+  },
+  {
+   "dtMs": 112,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 256,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 112,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 113,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 264,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 113,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 114,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 114,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 200,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 114,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 272,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 115,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 115,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 115,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 280,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 115,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 115,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 248,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 115,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 304,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 115,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 115,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 115,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 320,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 115,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 115,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 232,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 115,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 115,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 320,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 115,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 115,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 200,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 115,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 304,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 115,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 115,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 115,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 384,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 115,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 115,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 312,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 115,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 115,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 304,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 118,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 118,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 328,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 118,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 119,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 336,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 119,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 119,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 296,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 119,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 119,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 296,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 119,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 119,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 208,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 119,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 119,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 312,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 119,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 119,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 304,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 119,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 119,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 304,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 119,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 119,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 119,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 224,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 119,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 296,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 119,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 119,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 280,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 119,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 119,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 312,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 119,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 119,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 368,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 122,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 122,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 122,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 312,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 122,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 122,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 232,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 122,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 384,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 122,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 122,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 122,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 392,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 122,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 122,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 344,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 122,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 122,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 328,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 122,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 122,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 344,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 122,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 122,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 232,
+   "extensionLen": 134
+  },
+  {
+   "dtMs": 122,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 528,
+   "extensionLen": 135
+  },
+  {
+   "dtMs": 122,
+   "responseCode": 0,
+   "msgNum": 0,
+   "channelId": 28,
+   "streamType": 0,
+   "payloadLen": 328,
+   "extensionLen": 134
+  }
+ ]
+}

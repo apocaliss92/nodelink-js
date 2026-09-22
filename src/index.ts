@@ -15,6 +15,73 @@ export * from "./reolink/baichuan/HlsSessionManager";
 export * from "./reolink/AutodiscoveryClient";
 export * from "./reolink/baichuan/types";
 export * from "./reolink/baichuan/recordingFileName";
+export {
+  dateFromWallClock,
+  endOfWallClockDay,
+  isKnownTimeZone,
+  wallClockParts,
+  type WallClockParts,
+} from "./reolink/baichuan/utils/wallClock";
+export {
+  buildDayRecordsXml,
+  daysInMonth,
+  parseDayRecordsXml,
+  type DayRecordDay,
+  type DayRecordsChannelEntry,
+  type DayRecordsChannelResult,
+  type DayRecordsResult,
+} from "./reolink/baichuan/utils/dayRecords";
+export {
+  DEFAULT_RECORDING_SEARCH_FILE_RECORD_TYPES,
+  DEFAULT_RECORDING_SEARCH_RECORD_TYPES,
+} from "./reolink/baichuan/utils/recordingsFileInfoList";
+export {
+  buildFindAlarmVideoExtensionXml,
+  buildFindAlarmVideoOpenXml,
+  buildFindAlarmVideoPageXml,
+  DEFAULT_ALARM_VIDEO_SEARCH_ALARM_TYPES,
+  DEFAULT_ALARM_VIDEO_SEARCH_EVENT_ALARM_TYPES,
+  parseAlarmVideoPageXml,
+  parseFindAlarmVideoHandle,
+  searchAlarmVideosViaFindAlarmVideo,
+  type AlarmVideoPage,
+  type AlarmVideoSearchHandle,
+  type AlarmVideoWindow,
+  type BuildFindAlarmVideoOpenParams,
+} from "./reolink/baichuan/utils/alarmVideoSearch";
+export {
+  ADTS_HEADER_BYTES,
+  ADTS_PROFILES,
+  ADTS_SAMPLE_RATES,
+  ADTS_SAMPLES_PER_FRAME,
+  buildRecordingAudioTrack,
+  parseAdtsHeader,
+  type AdtsFrameHeader,
+  type RecordingAudioFormat,
+  type RecordingAudioTrack,
+} from "./reolink/baichuan/utils/recordingAudio";
+export {
+  estimateVideoTiming,
+  roundRecordingFps,
+  type RecordingFpsSource,
+  type RecordingVideoTiming,
+} from "./reolink/baichuan/utils/recordingTiming";
+export {
+  buildFindEventLogCloseXml,
+  buildFindEventLogGetXml,
+  buildFindEventLogOpenXml,
+  DEFAULT_EVENT_LOG_MAX_EVENT_COUNT,
+  DEFAULT_EVENT_LOG_SEARCH_ALARM_TYPES,
+  DEFAULT_EVENT_LOG_SEARCH_EVENT_ALARM_TYPES,
+  parseEventLogPageXml,
+  parseFindEventLogOpenXml,
+  searchEventLogViaFindEventLog,
+  type BuildFindEventLogOpenParams,
+  type EventLogDevice,
+  type EventLogEntry,
+  type EventLogPage,
+  type EventLogSearchHandle,
+} from "./reolink/baichuan/utils/eventLogSearch";
 export * from "./reolink/baichuan/endpoints-server";
 export * from "./reolink/baichuan/capabilities";
 export {

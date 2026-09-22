@@ -1,3 +1,5 @@
+import { dateFromWallClock } from "./utils/wallClock";
+import type { ParseRecordingFileNameOptions } from "./recordingFileName";
 import { getXmlText } from "../../protocol/xml";
 import type { RecordingDetectionClass, RecordingFile } from "./types";
 import { parseRecordingFileName } from "./recordingFileName";
@@ -75,7 +77,14 @@ export const getXmlBlocks = (xml: string, tagName: string): string[] => {
   return out;
 };
 
-export const parseXmlDateTimeBlock = (block: string): Date | undefined => {
+/**
+ * Parse a `<startTime>`-style block. The camera writes its own wall clock;
+ * `timeZone` (IANA) names that clock, host local when omitted.
+ */
+export const parseXmlDateTimeBlock = (
+  block: string,
+  timeZone?: string,
+): Date | undefined => {
   const year = Number.parseInt(getXmlText(block, "year") ?? "", 10);
   const month = Number.parseInt(getXmlText(block, "month") ?? "", 10);
   const day = Number.parseInt(getXmlText(block, "day") ?? "", 10);
@@ -84,11 +93,10 @@ export const parseXmlDateTimeBlock = (block: string): Date | undefined => {
   const second = Number.parseInt(getXmlText(block, "second") ?? "", 10);
 
   if ([year, month, day, hour, minute, second].every(Number.isFinite)) {
-    // Parse as LOCAL TIME because camera timestamps represent local time on the camera.
-    // When the camera says "08:30:00", it means 8:30 AM in the camera's configured timezone.
-    // By parsing as local time (assuming server and camera share the same timezone),
-    // the Date object will correctly represent that moment in time.
-    return new Date(year, month - 1, day, hour, minute, second);
+    return dateFromWallClock(
+      { year, month, day, hour, minute, second },
+      timeZone,
+    );
   }
 
   // Some firmwares encode the timestamp as plain text instead of nested tags.
@@ -104,10 +112,24 @@ export const parseXmlDateTimeBlock = (block: string): Date | undefined => {
   const mi = Number.parseInt(m[5] ?? "0", 10);
   const se = Number.parseInt(m[6] ?? "0", 10);
   if (![y, mo, da, ho, mi, se].every(Number.isFinite)) return undefined;
-  return new Date(y, mo - 1, da, ho, mi, se);
+  return dateFromWallClock(
+    { year: y, month: mo, day: da, hour: ho, minute: mi, second: se },
+    timeZone,
+  );
 };
 
-export const parseRecordingFilesFromXml = (xml: string): RecordingFile[] => {
+export interface ParseRecordingFilesOptions {
+  /** IANA zone the camera's wall clock is in. Host local when omitted. */
+  timeZone?: string;
+}
+
+export const parseRecordingFilesFromXml = (
+  xml: string,
+  options?: ParseRecordingFilesOptions,
+): RecordingFile[] => {
+  const timeZone = options?.timeZone;
+  const fileNameOptions: ParseRecordingFileNameOptions | undefined =
+    timeZone !== undefined ? { timeZone } : undefined;
   const out: RecordingFile[] = [];
 
   // FileInfoList commonly returns <FileInfo> blocks with <name> and/or <Id>.
@@ -136,16 +158,19 @@ export const parseRecordingFilesFromXml = (xml: string): RecordingFile[] => {
 
     const start = getXmlBlocks(b, "startTime")[0];
     const end = getXmlBlocks(b, "endTime")[0];
-    const startDt = start ? parseXmlDateTimeBlock(start) : undefined;
-    const endDt = end ? parseXmlDateTimeBlock(end) : undefined;
+    const startDt = start ? parseXmlDateTimeBlock(start, timeZone) : undefined;
+    const endDt = end ? parseXmlDateTimeBlock(end, timeZone) : undefined;
     if (startDt) item.startTime = startDt;
     if (endDt) item.endTime = endDt;
 
-    const parsed = parseRecordingFileName(item.name ?? item.fileName);
+    const parsed = parseRecordingFileName(
+      item.name ?? item.fileName,
+      fileNameOptions,
+    );
     // Also try parsing the full fileName path if it has the real filename with size info
     const parsedFromPath =
       item.fileName !== item.name
-        ? parseRecordingFileName(item.fileName)
+        ? parseRecordingFileName(item.fileName, fileNameOptions)
         : undefined;
     // Use the parsed result that has sizeBytes, preferring parsedFromPath
     const bestParsed =
@@ -188,12 +213,12 @@ export const parseRecordingFilesFromXml = (xml: string): RecordingFile[] => {
       item.sizeBytes = sizeBytes;
     if (recordType != null) item.recordType = recordType;
 
-    const startDt = start ? parseXmlDateTimeBlock(start) : undefined;
-    const endDt = end ? parseXmlDateTimeBlock(end) : undefined;
+    const startDt = start ? parseXmlDateTimeBlock(start, timeZone) : undefined;
+    const endDt = end ? parseXmlDateTimeBlock(end, timeZone) : undefined;
     if (startDt) item.startTime = startDt;
     if (endDt) item.endTime = endDt;
 
-    const parsed = parseRecordingFileName(item.fileName);
+    const parsed = parseRecordingFileName(item.fileName, fileNameOptions);
     if (parsed) {
       item.parsedFileName = parsed;
       if (!item.startTime) item.startTime = parsed.start;
@@ -222,7 +247,7 @@ export const parseRecordingFilesFromXml = (xml: string): RecordingFile[] => {
       seenNames.add(fileName);
 
       const item: RecordingFile = { fileName };
-      const parsed = parseRecordingFileName(fileName);
+      const parsed = parseRecordingFileName(fileName, fileNameOptions);
       if (parsed) {
         item.parsedFileName = parsed;
         item.startTime = parsed.start;
@@ -262,8 +287,10 @@ export const parseRecordingFilesFromXml = (xml: string): RecordingFile[] => {
       const alarmType = getXmlText(b, "alarmType")?.trim();
       const start = getXmlBlocks(b, "startTime")[0];
       const end = getXmlBlocks(b, "endTime")[0];
-      const startDt = start ? parseXmlDateTimeBlock(start) : undefined;
-      const endDt = end ? parseXmlDateTimeBlock(end) : undefined;
+      const startDt = start
+        ? parseXmlDateTimeBlock(start, timeZone)
+        : undefined;
+      const endDt = end ? parseXmlDateTimeBlock(end, timeZone) : undefined;
 
       const target = byName.get(fileName) ?? { fileName };
       if (alarmId && !target.id) target.id = alarmId;
@@ -272,7 +299,7 @@ export const parseRecordingFilesFromXml = (xml: string): RecordingFile[] => {
       if (endDt) target.endTime = endDt;
 
       if (!target.parsedFileName) {
-        const parsed = parseRecordingFileName(target.fileName);
+        const parsed = parseRecordingFileName(target.fileName, fileNameOptions);
         if (parsed) {
           target.parsedFileName = parsed;
           if (!target.startTime) target.startTime = parsed.start;

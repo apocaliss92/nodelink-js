@@ -11,18 +11,64 @@ import { xmlDateTimePayload } from "./recordings";
 export type SendXmlLike = (params: {
   cmdId: number;
   channel?: number;
+  /**
+   * `<Extension><channelId>N</channelId></Extension>`. cmd 14/15/16 send
+   * none (see the header rule below); cmd 272/273/274 do.
+   */
+  extensionXml?: string;
   payloadXml?: string;
   timeoutMs?: number;
 }) => Promise<string>;
+
+/**
+ * The record-type filter the official app sends on a FileInfoList search
+ * (captured 2026-09-20 on an E1 Outdoor PoE v3.1.0.5223 and a Home Hub
+ * v3.3.0.456; identical on both). A narrower list silently returns fewer
+ * files, which reads as a camera with less footage. Until 0.7.8 the default
+ * was the first eleven types with spaces after the commas.
+ */
+export const DEFAULT_RECORDING_SEARCH_RECORD_TYPES =
+  "manual,sched,io,md,people,face,vehicle,dog_cat,visitor,other,package,crossline,intrusion,loitering,legacy,loss";
+
+/** The `<fileRecordType>` item list the app sends beside `recordType`. */
+export const DEFAULT_RECORDING_SEARCH_FILE_RECORD_TYPES: readonly string[] = [
+  "manual",
+  "sched",
+  "io",
+  "md",
+  "people",
+  "face",
+  "vehicle",
+  "dog_cat",
+  "visitor",
+  "other",
+  "package",
+  "crossline",
+  "intrusion",
+  "loitering",
+  "legacy",
+  "loss",
+  "answer",
+  "nonmotorveh",
+  "IPCInputOutput",
+];
 
 export const buildFileInfoListOpenXml = (params: {
   uid: string;
   channel: number;
   streamType: RecordingStreamType;
   recordType: string;
+  /** Emits `<fileRecordType><i>…</i></fileRecordType>` after `recordType` when given. */
+  fileRecordTypes?: readonly string[];
   start: Date;
   end: Date;
+  /** IANA zone of the camera's wall clock. Host local when omitted. */
+  timeZone?: string;
 }): string => {
+  const fileRecordType =
+    params.fileRecordTypes !== undefined && params.fileRecordTypes.length > 0
+      ? `\n<fileRecordType>${params.fileRecordTypes.map((t) => `<i>${xmlEscape(t)}</i>`).join("")}</fileRecordType>`
+      : "";
   return `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <FileInfoList version="1.1">
@@ -32,9 +78,9 @@ export const buildFileInfoListOpenXml = (params: {
 <channelId>${params.channel}</channelId>
 <logicChnBitmap>255</logicChnBitmap>
 <streamType>${xmlEscape(params.streamType)}</streamType>
-<recordType>${xmlEscape(params.recordType)}</recordType>
-${xmlDateTimePayload("startTime", params.start)}
-${xmlDateTimePayload("endTime", params.end)}
+<recordType>${xmlEscape(params.recordType)}</recordType>${fileRecordType}
+${xmlDateTimePayload("startTime", params.start, params.timeZone)}
+${xmlDateTimePayload("endTime", params.end, params.timeZone)}
 </FileInfo>
 </FileInfoList>
 </body>`;
@@ -87,10 +133,13 @@ export const listRecordingsViaFileInfoList = async (params: {
   uid: string;
   streamType: RecordingStreamType;
   recordType: string;
+  fileRecordTypes?: readonly string[];
   start: Date;
   end: Date;
   maxIterations: number;
   timeoutMs?: number;
+  /** IANA zone of the camera's wall clock. Host local when omitted. */
+  timeZone?: string;
 }): Promise<RecordingFile[]> => {
   const timeoutMs = params.timeoutMs ?? 15_000;
 
@@ -99,14 +148,21 @@ export const listRecordingsViaFileInfoList = async (params: {
     channel: params.channel,
     streamType: params.streamType,
     recordType: params.recordType,
+    ...(params.fileRecordTypes !== undefined
+      ? { fileRecordTypes: params.fileRecordTypes }
+      : {}),
     start: params.start,
     end: params.end,
+    ...(params.timeZone !== undefined ? { timeZone: params.timeZone } : {}),
   });
 
-  // NOTE: For FileInfoList, we do NOT pass channel to sendXml for header calculation.
-  // The channel is only passed inside the XML payload (<channelId>).
-  // Passing channel causes channelId=channel+1 in the Baichuan header, which NVRs reject (400).
-  // Without channel, sendXml uses hostChannelId (250) which is correct.
+  // THE HEADER RULE for cmd 14/15/16: the channel travels ONLY in the XML
+  // payload (<channelId>). `channel` is never handed to sendXml, so the frame
+  // header carries hostChannelId (250) on every topology; passing it makes the
+  // header channelId=channel+1, which NVRs reject with 400. Verified live
+  // 2026-09-20 on an E1 Outdoor PoE (v3.1.0.5223, ch 0) and a Home Hub
+  // (v3.3.0.456, ch 0/1/3): header 250, <channelId>N</channelId> in the body,
+  // every listing answered. test/lib/recordings-fileinfolist.test.ts pins it.
   const openResp = await params.sendXml({
     cmdId: BC_CMD_ID_FILE_INFO_LIST_OPEN,
     // channel is NOT passed here - only in XML payload
@@ -141,7 +197,12 @@ export const listRecordingsViaFileInfoList = async (params: {
         throw e;
       }
 
-      const pageFiles = parseRecordingFilesFromXml(resp);
+      const pageFiles = parseRecordingFilesFromXml(
+        resp,
+        params.timeZone !== undefined
+          ? { timeZone: params.timeZone }
+          : undefined,
+      );
       files.push(...pageFiles);
 
       const bFinishedText =

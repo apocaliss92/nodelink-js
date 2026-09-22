@@ -1,0 +1,30 @@
+{
+ "topology": "hub",
+ "sequence": [
+  {
+   "cmdId": 14,
+   "ms": 42,
+   "channelPassedToSendXml": null,
+   "channelIdOverride": null,
+   "responseBytes": 623,
+   "error": null
+  },
+  {
+   "cmdId": 15,
+   "ms": 65,
+   "channelPassedToSendXml": null,
+   "channelIdOverride": null,
+   "responseBytes": 2777,
+   "error": null
+  },
+  {
+   "cmdId": 16,
+   "ms": 40,
+   "channelPassedToSendXml": null,
+   "channelIdOverride": null,
+   "responseBytes": 0,
+   "error": null
+  }
+ ],
+ "pagesSeen": 1
+}

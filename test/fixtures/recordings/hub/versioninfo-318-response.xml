@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<VersionInfo version="1.1">
+<channelId>0</channelId>
+<name>Camera 0</name>
+<type>Argus 3E</type>
+<serialNumber>000000000000000</serialNumber>
+<buildDay>build 24060675</buildDay>
+<hardwareVersion>BIPC_NT1BNO23MPW3C10H</hardwareVersion>
+<cfgVersion>v3.0.0.0</cfgVersion>
+<firmwareVersion>v3.0.0.3623_24060675</firmwareVersion>
+<detail>BIPC_NT1BNO23MPW3C10HS26E0WB110</detail>
+<IEClient>IEClient</IEClient>
+<cc3200Version>0528_513_5268</cc3200Version>
+<spVersion></spVersion>
+<pakSuffix>pak</pakSuffix>
+<helpVersion>blackPointsLevel=0</helpVersion>
+</VersionInfo>
+</body>

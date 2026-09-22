@@ -1,0 +1,31 @@
+{
+ "topology": "hub",
+ "device": "Reolink Home Hub v3.3.0.456, child channel 0 (a wired camera)",
+ "capturedAt": "2026-09-20",
+ "source": "api.downloadRecording({ channel: 0, uid: <child>, fileName: '/mnt/sda/U10<uid>-<name>/Mp4Record/2026-09-20/RecM04_DST20260920_172235_172318_*.mp4' }) — cmd 5 FileInfoList replay download, read-only probe",
+ "wholeDownload": {
+  "listedSizeBytes": 11922199,
+  "receivedBytes": 11680272,
+  "elapsedMs": 9074,
+  "packets": 1350,
+  "videoPackets": 661,
+  "keyframes": 23,
+  "audioPackets": 688,
+  "audioBytes": 357072,
+  "videoType": "H265",
+  "audioType": "Aac",
+  "infoHeader": "InfoV1 2304x1296 fps=30 (the access-unit timestamps give 15.019 — the info fps is NOT the delivered rate)"
+ },
+ "fixture": {
+  "packets": 40,
+  "infoPackets": 1,
+  "videoPackets": 19,
+  "keyframes": 1,
+  "audioPackets": 20,
+  "audioBytesPerFrame": 519,
+  "adtsFirstHeader": "fff1604040fffc",
+  "adts": { "profile": "AAC LC", "sampleRate": 16000, "channels": 1, "frameLength": 519 }
+ },
+ "bcMediaHeaderLiesAboutTheCodec": "Every I/P packet of this hub child declares \"H264\" in its BcMedia header while the payload is H.265. detectVideoCodecFromNal is what gets it right.",
+ "sanitised": "Every BcMedia header is the captured wire, byte for byte. AAC: the 7-byte ADTS header of each frame is kept, the 512 compressed bytes after it are zeroed. Video: each I/P packet keeps its header and additionalHeader and its payload is replaced by a 64-byte synthetic Annex-B NAL of the DETECTED codec, so no picture bytes ship."
+}

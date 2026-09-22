@@ -21,12 +21,13 @@ import {
   BC_CMD_ID_CHANNEL_INFO_ALL,
   BC_CMD_ID_FILE_INFO_LIST_CLOSE,
   BC_CMD_ID_FILE_INFO_LIST_REPLAY,
+  DEFAULT_RECORDING_DOWNLOAD_IDLE_MS,
   BC_CMD_ID_FILE_INFO_LIST_DOWNLOAD,
   BC_CMD_ID_FILE_INFO_LIST_GET,
   BC_CMD_ID_FILE_INFO_LIST_OPEN,
-  BC_CMD_ID_FIND_REC_VIDEO_CLOSE,
-  BC_CMD_ID_FIND_REC_VIDEO_GET,
-  BC_CMD_ID_FIND_REC_VIDEO_OPEN,
+  BC_CMD_ID_FIND_ALARM_VIDEO_CLOSE,
+  BC_CMD_ID_FIND_ALARM_VIDEO_GET,
+  BC_CMD_ID_FIND_ALARM_VIDEO_OPEN,
   BC_CMD_ID_LOGOUT,
   BC_CMD_ID_PING,
   BC_CMD_ID_TALK,
@@ -359,9 +360,9 @@ export class BaichuanClient extends EventEmitter<{
     BC_CMD_ID_FILE_INFO_LIST_OPEN,
     BC_CMD_ID_FILE_INFO_LIST_GET,
     BC_CMD_ID_FILE_INFO_LIST_CLOSE,
-    BC_CMD_ID_FIND_REC_VIDEO_OPEN,
-    BC_CMD_ID_FIND_REC_VIDEO_GET,
-    BC_CMD_ID_FIND_REC_VIDEO_CLOSE,
+    BC_CMD_ID_FIND_ALARM_VIDEO_OPEN,
+    BC_CMD_ID_FIND_ALARM_VIDEO_GET,
+    BC_CMD_ID_FIND_ALARM_VIDEO_CLOSE,
   ]);
 
   enc: EncryptionProtocol = { kind: "none" }; // Public to allow ReolinkBaichuanApi to access for audio decryption
@@ -3141,6 +3142,17 @@ export class BaichuanClient extends EventEmitter<{
     streamType?: number;
     encryption?: EncryptionProtocol;
     timeoutMs?: number;
+    /**
+     * cmd 5 (FileInfoList replay) only: the transfer is complete once no
+     * chunk has arrived for this long. See `DEFAULT_RECORDING_DOWNLOAD_IDLE_MS`.
+     */
+    idleTimeoutMs?: number;
+    /**
+     * cmd 5 only: called with each decrypted chunk as it arrives, so a caller
+     * can start work before the transfer completes. The returned Buffer is
+     * unchanged either way.
+     */
+    onChunk?: (chunk: Buffer) => void;
     /** Internal operations should not count as user activity for idle disconnect. */
     internal?: boolean;
   }): Promise<Buffer> {
@@ -3606,6 +3618,13 @@ export class BaichuanClient extends EventEmitter<{
     streamType?: number;
     encryption?: EncryptionProtocol;
     timeoutMs?: number;
+    idleTimeoutMs?: number;
+    /**
+     * Called with each decrypted chunk as it arrives, before it is
+     * accumulated. Optional: absent means the historical buffered behaviour,
+     * byte for byte.
+     */
+    onChunk?: (chunk: Buffer) => void;
   }): Promise<Buffer> {
     await this.connect();
 
@@ -3644,10 +3663,15 @@ export class BaichuanClient extends EventEmitter<{
     const wire = Buffer.concat([header, bodyBytes]);
 
     const timeoutMs = params.timeoutMs ?? 120_000;
-    // Idle timeout: finish after no data received for this duration.
-    // Cameras may send data in bursts with pauses between GOP boundaries.
-    // Use longer timeout to ensure full file is received.
-    const idleTimeoutMs = 15_000;
+    // Completion is an idle window: nothing on the wire marks the end of a
+    // cmd 5 transfer. Measured 2026-09-20 (E1 Outdoor PoE v3.1.0.5223 and
+    // Home Hub v3.3.0.456): responseCode 200 on the 32-byte stream header,
+    // 0 on every chunk, never 201; no trailing frame of any cmdId; a 101 s /
+    // 1.8 MB clip landed in 1 702 ms with a 59 ms largest gap — and the old
+    // fixed 15 s window then made every download cost ~15 s. A `responseCode
+    // 201` still finishes early if a firmware ever sends one.
+    const idleTimeoutMs =
+      params.idleTimeoutMs ?? DEFAULT_RECORDING_DOWNLOAD_IDLE_MS;
     const chunks: Buffer[] = [];
     let streamMsgNum: number | undefined;
     let lockedChannelId: number | undefined;
@@ -3856,6 +3880,19 @@ export class BaichuanClient extends EventEmitter<{
             lockedStreamType = frame.header.streamType;
           }
 
+          // HAND IT ON AS IT ARRIVES, then accumulate.
+          //
+          // Every download API above this returns `Promise<Buffer>`, so a clip
+          // could not begin to play until its last byte had landed — measured
+          // on a Reolink hub child, 7.9 s for 1.8 MB. The chunks were already
+          // here, decrypted, one frame at a time; nothing exposed them.
+          //
+          // `onChunk` is additive and the accumulation is unchanged: a caller
+          // that does not pass one gets exactly the Buffer it always got, and
+          // a caller that does can start work on the first frame. It is called
+          // INSIDE the try, so a throwing consumer fails the transfer loudly
+          // rather than being swallowed into a half-download nobody notices.
+          params.onChunk?.(decrypted);
           chunks.push(decrypted);
           armIdleFinish();
 

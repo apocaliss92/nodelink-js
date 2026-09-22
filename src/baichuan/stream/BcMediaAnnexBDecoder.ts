@@ -290,14 +290,15 @@ export class BcMediaAnnexBDecoder {
         this.stats.audioType = media.type;
       }
 
-      // Emit audio frame if callback is registered
-      if (this.onAudioFrame) {
-        this.stats.audioBytesOut += audioMedia.data.length;
-        this.onAudioFrame({
-          audioType: media.type,
-          data: audioMedia.data,
-        });
-      }
+      // Count the bytes whether or not anyone is listening: a statistic that
+      // only exists when a callback is attached cannot answer "did this clip
+      // have sound?".
+      this.stats.audioBytesOut += audioMedia.data.length;
+
+      this.onAudioFrame?.({
+        audioType: media.type,
+        data: audioMedia.data,
+      });
       return;
     }
 

@@ -1,0 +1,134 @@
+{
+ "topology": "standalone",
+ "sequence": [
+  {
+   "cmdId": 14,
+   "ms": 72,
+   "channelPassedToSendXml": null,
+   "channelIdOverride": null,
+   "responseBytes": 633,
+   "error": null
+  },
+  {
+   "cmdId": 15,
+   "ms": 75,
+   "channelPassedToSendXml": null,
+   "channelIdOverride": null,
+   "responseBytes": 25895,
+   "error": null
+  },
+  {
+   "cmdId": 15,
+   "ms": 108,
+   "channelPassedToSendXml": null,
+   "channelIdOverride": null,
+   "responseBytes": 25869,
+   "error": null
+  },
+  {
+   "cmdId": 15,
+   "ms": 103,
+   "channelPassedToSendXml": null,
+   "channelIdOverride": null,
+   "responseBytes": 25955,
+   "error": null
+  },
+  {
+   "cmdId": 15,
+   "ms": 128,
+   "channelPassedToSendXml": null,
+   "channelIdOverride": null,
+   "responseBytes": 25970,
+   "error": null
+  },
+  {
+   "cmdId": 15,
+   "ms": 97,
+   "channelPassedToSendXml": null,
+   "channelIdOverride": null,
+   "responseBytes": 26020,
+   "error": null
+  },
+  {
+   "cmdId": 15,
+   "ms": 102,
+   "channelPassedToSendXml": null,
+   "channelIdOverride": null,
+   "responseBytes": 25947,
+   "error": null
+  },
+  {
+   "cmdId": 15,
+   "ms": 124,
+   "channelPassedToSendXml": null,
+   "channelIdOverride": null,
+   "responseBytes": 26005,
+   "error": null
+  },
+  {
+   "cmdId": 15,
+   "ms": 94,
+   "channelPassedToSendXml": null,
+   "channelIdOverride": null,
+   "responseBytes": 26084,
+   "error": null
+  },
+  {
+   "cmdId": 15,
+   "ms": 99,
+   "channelPassedToSendXml": null,
+   "channelIdOverride": null,
+   "responseBytes": 26104,
+   "error": null
+  },
+  {
+   "cmdId": 15,
+   "ms": 118,
+   "channelPassedToSendXml": null,
+   "channelIdOverride": null,
+   "responseBytes": 26015,
+   "error": null
+  },
+  {
+   "cmdId": 15,
+   "ms": 117,
+   "channelPassedToSendXml": null,
+   "channelIdOverride": null,
+   "responseBytes": 26270,
+   "error": null
+  },
+  {
+   "cmdId": 15,
+   "ms": 112,
+   "channelPassedToSendXml": null,
+   "channelIdOverride": null,
+   "responseBytes": 26169,
+   "error": null
+  },
+  {
+   "cmdId": 15,
+   "ms": 140,
+   "channelPassedToSendXml": null,
+   "channelIdOverride": null,
+   "responseBytes": 26062,
+   "error": null
+  },
+  {
+   "cmdId": 15,
+   "ms": 90,
+   "channelPassedToSendXml": null,
+   "channelIdOverride": null,
+   "responseBytes": 16903,
+   "error": null
+  },
+  {
+   "cmdId": 16,
+   "ms": 27,
+   "channelPassedToSendXml": null,
+   "channelIdOverride": null,
+   "responseBytes": 0,
+   "error": null
+  }
+ ],
+ "pagesSeen": 14
+}

@@ -210,6 +210,9 @@ import type {
   DualLensChannelInfo,
   Events,
   GetRecordingVideoResult,
+  DownloadRecordingDemuxedResult,
+  GetDayRecordsForChannelsParams,
+  GetDayRecordsParams,
   GetVideoclipsParams,
   LastSleepProbe,
   NativeVideoStreamVariant,
@@ -241,6 +244,9 @@ import type {
   RtspCreateOptions,
   RunAllDiagnosticsConsecutivelyResult,
   RunMultifocalDiagnosticsConsecutivelyResult,
+  SearchAlarmVideosParams,
+  SearchEventLogDevice,
+  SearchEventLogParams,
   SirenState,
   SleepStatus,
   StreamMetadata,
@@ -395,6 +401,8 @@ import {
   parseVideoInputPushXml,
 } from "./utils/pushSettings";
 import { buildFileInfoListDownloadXml } from "./utils/recordingDownload";
+import { buildRecordingAudioTrack } from "./utils/recordingAudio";
+import { estimateVideoTiming } from "./utils/recordingTiming";
 import {
   buildFileInfoListReplayByIdXml,
   buildFileInfoListReplayByNameXml,
@@ -403,7 +411,23 @@ import {
   type RecordingReplayStreamType,
 } from "./utils/recordingReplay";
 import { sleepMs } from "./utils/recordings";
+import { endOfWallClockDay, wallClockParts } from "./utils/wallClock";
 import {
+  buildDayRecordsXml,
+  parseDayRecordsXml,
+  type DayRecordsChannelResult,
+} from "./utils/dayRecords";
+import {
+  searchAlarmVideosViaFindAlarmVideo,
+  type AlarmVideoWindow,
+} from "./utils/alarmVideoSearch";
+import {
+  searchEventLogViaFindEventLog,
+  type EventLogEntry,
+} from "./utils/eventLogSearch";
+import {
+  DEFAULT_RECORDING_SEARCH_FILE_RECORD_TYPES,
+  DEFAULT_RECORDING_SEARCH_RECORD_TYPES,
   dedupeRecordingFiles,
   downloadRecordingViaFileInfoListPaged,
   listRecordingsViaFileInfoList,
@@ -575,6 +599,8 @@ export class ReolinkBaichuanApi {
   private readonly httpClient: ReolinkHttpClient;
   private readonly cgiApi: ReolinkCgiApi;
   private readonly nativeOnly: boolean;
+  /** IANA zone of the camera's wall clock for the recordings surface; host local when undefined. */
+  private readonly recordingsTimeZone: string | undefined;
   private readonly host: string;
   private readonly username: string;
   private readonly password: string;
@@ -2465,6 +2491,15 @@ export class ReolinkBaichuanApi {
       /** If true, avoid using HTTP/CGI fallbacks and discovery paths (native Baichuan only). */
       nativeOnly?: boolean;
       /**
+       * IANA zone (`Europe/Rome`) of the camera's wall clock, used by every
+       * recordings call (`getVideoclips`, `getVideoclipThumbnail*`) to write
+       * request windows and read timestamps. Reolink carries local time with
+       * no offset; without this the HOST's zone is assumed, which is only
+       * right when the process runs where the camera does. A per-call
+       * `timeZone` overrides it.
+       */
+      recordingsTimeZone?: string;
+      /**
        * Enable the periodic session-count guard: every 60s the lib polls
        * `getOnlineUserList` (cmd_id 120) and triggers a device reboot if
        * sessions from our IP exceed `maxDedicatedSessionsBeforeReboot`.
@@ -2585,6 +2620,7 @@ export class ReolinkBaichuanApi {
     this.password = opts.password;
     this.uid = opts.uid;
     this.nativeOnly = opts.nativeOnly ?? false;
+    this.recordingsTimeZone = opts.recordingsTimeZone;
     this.httpClient = new ReolinkHttpClient({
       host: opts.host,
       username: opts.username,
@@ -6415,23 +6451,16 @@ export class ReolinkBaichuanApi {
       const logger = this.logger;
 
       const channel = this.normalizeChannel(params.channel ?? 0);
+      const timeZone = params.timeZone ?? this.recordingsTimeZone;
 
       // Discover UID: try explicit -> channel-specific (NVR) -> device-level (standalone)
       const uid = await this.ensureUidForRecordings(channel, params.uid);
 
-      // Reolink cameras organize recordings per-day.
-      // Ensure start and end are always on the same day by forcing end to 23:59:59 of start's day.
+      // Reolink answers one CAMERA-LOCAL day per search: clamp `end` to
+      // 23:59:59.999 of `start`'s day in the camera's zone. A multi-day range
+      // is the caller's loop, one call per day.
       const start = params.start;
-      const endOfStartDay = new Date(
-        start.getFullYear(),
-        start.getMonth(),
-        start.getDate(),
-        23,
-        59,
-        59,
-        999,
-      );
-      // Use the earlier of params.end or end-of-start-day
+      const endOfStartDay = endOfWallClockDay(start, timeZone);
       const end =
         params.end.getTime() > endOfStartDay.getTime()
           ? endOfStartDay
@@ -6452,30 +6481,35 @@ export class ReolinkBaichuanApi {
       );
 
       const streamType = params.streamType ?? "subStream";
+      // The app's full filter (16 types + the <fileRecordType> item list). A
+      // narrower list silently returns fewer files.
       const recordType =
-        params.recordType ??
-        "manual, sched, io, md, people, face, vehicle, dog_cat, visitor, other, package";
+        params.recordType ?? DEFAULT_RECORDING_SEARCH_RECORD_TYPES;
+      const fileRecordTypes =
+        params.fileRecordTypes ??
+        (params.recordType === undefined
+          ? DEFAULT_RECORDING_SEARCH_FILE_RECORD_TYPES
+          : undefined);
       const maxIterations = params.maxIterations ?? 50;
 
-      const headerChannelIdOverride =
-        this.resolveHeaderChannelIdForLogicalChannel(channel);
-
+      // No header channelId override here, on purpose: cmd 14/15/16 carry the
+      // channel in the XML body and the header stays hostChannelId (250) on
+      // every topology (verified live 2026-09-20, standalone and Home Hub —
+      // see the rule in `listRecordingsViaFileInfoList`). An override keyed
+      // on `p.channel` sat here until 0.7.8 and could never fire, because the
+      // helper never passes `channel` to `sendXml`.
       const files = await listRecordingsViaFileInfoList({
-        sendXml: (p) =>
-          this.sendXml({
-            ...p,
-            ...(headerChannelIdOverride != null && p.channel != null
-              ? { channelIdOverride: headerChannelIdOverride }
-              : {}),
-          }),
+        sendXml: (p) => this.sendXml(p),
         channel,
         uid,
         streamType,
         recordType,
+        ...(fileRecordTypes !== undefined ? { fileRecordTypes } : {}),
         start,
         end,
         maxIterations,
         ...(params.timeoutMs != null ? { timeoutMs: params.timeoutMs } : {}),
+        ...(timeZone !== undefined ? { timeZone } : {}),
       });
 
       const unique = dedupeRecordingFiles(files);
@@ -6487,6 +6521,212 @@ export class ReolinkBaichuanApi {
       );
       return unique;
     });
+  }
+
+  /**
+   * cmd 272/273/274 `<findAlarmVideo>` — the alarm WINDOWS inside one
+   * camera's recordings, for one camera-local day.
+   *
+   * This is not a second `getVideoclips`. A FileInfoList search answers with
+   * FILES; this answers with the alarm windows INSIDE those files, each with
+   * its own class and its own start/end. Measured 2026-09-20 on a standalone
+   * E1 Outdoor PoE, day 20: 387 windows over 167 files, 1-10 per file, every
+   * window contained in its file's own window, and the union of a file's
+   * `alarmType`s equal to the file's `recordType` on 164 of the 167 — the
+   * three that differ are `sched` files that carry no event.
+   *
+   * Join the two surfaces on `fileName`: `getVideoclips` gives the file to
+   * download, this gives where inside it the events are and what they were.
+   *
+   * THE WINDOW IS ONE CAMERA-LOCAL DAY, and the firmware enforces it by
+   * DROPPING the rest: measured 2026-09-20, an 18→19 September window
+   * answered 462 windows all dated 18 September on the standalone, and the
+   * same on a hub child. So `end` is clamped to 23:59:59.999 of `start`'s
+   * day in the camera's zone — exactly like `getVideoclips` — and the clamp
+   * is logged. A wider range is the caller's loop, one call per day.
+   *
+   * `streamType` is NUMERIC on this family and it SELECTS THE FILE SET:
+   * measured 2026-09-20 on the standalone, `0` returned the 539 main-stream
+   * names (539/539 of the cmd 14 `mainStream` listing) and `1` the 539
+   * sub-stream ones. The official app sends `0`. Default 0.
+   */
+  async searchAlarmVideos(
+    params: SearchAlarmVideosParams,
+  ): Promise<AlarmVideoWindow[]> {
+    return await this.enqueueRecordingsOperation(async () => {
+      const dbg = this.client.getDebugConfig?.();
+      const logger = this.logger;
+      const channel = this.normalizeChannel(params.channel ?? 0);
+      const timeZone = params.timeZone ?? this.recordingsTimeZone;
+      const uid = await this.ensureUidForRecordings(channel, params.uid);
+
+      // One camera-local day per search, enforced by the firmware: a wider
+      // window silently answers with the START day only (measured
+      // 2026-09-20, standalone and hub child). Clamp it where the caller can
+      // see it happen rather than losing rows in the device.
+      const start = params.start;
+      const endOfStartDay = endOfWallClockDay(start, timeZone);
+      const end =
+        params.end.getTime() > endOfStartDay.getTime()
+          ? endOfStartDay
+          : params.end;
+      if (end !== params.end) {
+        recordingsTraceLog(
+          dbg,
+          logger,
+          "searchAlarmVideos",
+          `Window clamped to one camera-local day: ${params.end.toISOString()} → ${end.toISOString()} (the firmware answers the START day only)`,
+        );
+      }
+
+      const windows = await searchAlarmVideosViaFindAlarmVideo({
+        sendXml: (p) => this.sendXml(p),
+        channel,
+        uid,
+        start,
+        end,
+        ...(params.streamType != null
+          ? { streamType: params.streamType }
+          : {}),
+        ...(params.logicChnBitmap != null
+          ? { logicChnBitmap: params.logicChnBitmap }
+          : {}),
+        ...(params.notSearchVideo != null
+          ? { notSearchVideo: params.notSearchVideo }
+          : {}),
+        ...(params.alarmType !== undefined
+          ? { alarmType: params.alarmType }
+          : {}),
+        ...(params.eventAlarmTypes !== undefined
+          ? { eventAlarmTypes: params.eventAlarmTypes }
+          : {}),
+        ...(timeZone !== undefined ? { timeZone } : {}),
+        maxPages: params.maxPages ?? 200,
+        ...(params.timeoutMs != null ? { timeoutMs: params.timeoutMs } : {}),
+      });
+
+      recordingsTraceLog(
+        dbg,
+        logger,
+        "searchAlarmVideos",
+        `findAlarmVideo complete: ${windows.length} windows over ${new Set(windows.map((w) => w.fileName)).size} files (channel=${channel})`,
+      );
+      return windows;
+    });
+  }
+
+  /**
+   * cmd 516/517/518 `<findEventLog>` — the Home Hub's CROSS-CHANNEL event
+   * list, one search for every child at once.
+   *
+   * HUB ONLY. A standalone camera answers the open with an empty body and
+   * this throws naming that, rather than returning an empty list — a camera
+   * that cannot answer must not look like a camera with nothing to say.
+   *
+   * THE WINDOW MUST BE WRITTEN BACKWARDS. The app sends the later instant
+   * as `startTime` and the earlier one as `endTime`, and that is not a
+   * stylistic choice: measured 2026-09-20 on the hub, the same window
+   * written FORWARDS answered ZERO rows in 191 ms. So this method always
+   * writes it backwards and rows come back newest first; `desc` stays 0 (it
+   * is not what orders them).
+   *
+   * The channel selection travels as the `<devices>` list, not through
+   * `chnbits`: measured the same day, `chnbits: 3` changed nothing (59
+   * events either way) while dropping to ONE device changed 59 events into
+   * 10, all from that child.
+   *
+   * Rows carry `hasRecFile`, and it is often false — 515 of 1 886 events
+   * over 20 days on this hub. An event is NOT a promise of a clip.
+   *
+   * Rows are deduped on (uid, logicChn, startTime, alarmType): the device
+   * repeated 5 rows across ~32 page boundaries on that 1 886-event pass,
+   * and the merge across children is not perfectly monotonic at a boundary
+   * either — the order is left as the device gave it, only the repeats go.
+   */
+  async searchEventLog(
+    params: SearchEventLogParams,
+  ): Promise<EventLogEntry[]> {
+    return await this.enqueueRecordingsOperation(async () => {
+      const dbg = this.client.getDebugConfig?.();
+      const logger = this.logger;
+      const timeZone = params.timeZone ?? this.recordingsTimeZone;
+      const devices = params.devices ?? this.eventLogDevicesFromPushCache();
+      if (devices.length === 0) {
+        throw new Error(
+          "findEventLog: no devices to search. Pass `devices` explicitly, or wait for the cmd 145 channel push to populate the hub's child UIDs.",
+        );
+      }
+
+      // Backwards, always: a forward window answered 0 rows live.
+      const startTime = params.end;
+      const endTime = params.start;
+
+      const events = await searchEventLogViaFindEventLog({
+        sendXml: (p) => this.sendXml(p),
+        startTime,
+        endTime,
+        devices,
+        ...(params.alarmType !== undefined
+          ? { alarmType: params.alarmType }
+          : {}),
+        ...(params.eventAlarmTypes !== undefined
+          ? { eventAlarmTypes: params.eventAlarmTypes }
+          : {}),
+        ...(params.maxEventCount != null
+          ? { maxEventCount: params.maxEventCount }
+          : {}),
+        ...(params.logTypeBits != null
+          ? { logTypeBits: params.logTypeBits }
+          : {}),
+        ...(params.notSearchVideo != null
+          ? { notSearchVideo: params.notSearchVideo }
+          : {}),
+        ...(params.onlySearchCluster != null
+          ? { onlySearchCluster: params.onlySearchCluster }
+          : {}),
+        ...(params.desc != null ? { desc: params.desc } : {}),
+        ...(params.chnbits != null ? { chnbits: params.chnbits } : {}),
+        ...(timeZone !== undefined ? { timeZone } : {}),
+        maxPages: params.maxPages ?? 100,
+        ...(params.timeoutMs != null ? { timeoutMs: params.timeoutMs } : {}),
+      });
+
+      const seen = new Set<string>();
+      const unique = events.filter((e) => {
+        const key = `${e.uid}|${e.logicChn}|${e.startTime?.getTime() ?? "?"}|${e.alarmType}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+
+      recordingsTraceLog(
+        dbg,
+        logger,
+        "searchEventLog",
+        `findEventLog complete: ${unique.length} events over ${devices.length} device(s) (${events.length - unique.length} repeated across pages), ${unique.filter((e) => !e.hasRecFile).length} without a recording file`,
+      );
+      return unique;
+    });
+  }
+
+  /**
+   * The children the cmd 145 push has named a UID for — what
+   * `searchEventLog` asks about when the caller names no devices. Each UID
+   * appears once; a hub pushes one per child, not per logical channel.
+   */
+  private eventLogDevicesFromPushCache(): SearchEventLogDevice[] {
+    const seen = new Set<string>();
+    const out: SearchEventLogDevice[] = [];
+    for (const entry of this.channelPushData.values()) {
+      const uid = entry.uid?.trim();
+      if (!uid || seen.has(uid)) continue;
+      if ((entry.stateLower ?? entry.state ?? "").toLowerCase() === "none") {
+        continue;
+      }
+      seen.add(uid);
+      out.push({ uid });
+    }
+    return out;
   }
 
   /**
@@ -7044,6 +7284,16 @@ export class ReolinkBaichuanApi {
     }
 
     if (this.nativeOnly) {
+      const viaGetUid = await this.discoverUidViaGetUidNative(channel);
+      if (viaGetUid) {
+        recordingsTraceLog(
+          dbg,
+          logger,
+          "ensureUidForRecordings",
+          `Using device UID from cmd 114 GetUid: ${viaGetUid}`,
+        );
+        return viaGetUid;
+      }
       recordingsTraceLog(
         dbg,
         logger,
@@ -7151,6 +7401,43 @@ export class ReolinkBaichuanApi {
     return undefined;
   }
 
+  /**
+   * Native-only UID for a STANDALONE camera: cmd 114 `GetUid` answers the
+   * device's own UID in one round-trip (7 ms measured, E1 Outdoor PoE
+   * v3.1.0.5223, 2026-09-20). Never used on an NVR/Hub: there cmd 114 is the
+   * hub's own UID, and a child channel's UID comes only from the cmd 145
+   * push or the caller. The answer is cached in `this.uid`.
+   */
+  private async discoverUidViaGetUidNative(
+    channel: number,
+  ): Promise<string | undefined> {
+    const dbg = this.client.getDebugConfig?.();
+    const trace = (message: string): void =>
+      recordingsTraceLog(dbg, this.logger, "ensureUidForRecordings", message);
+    let isNvr: boolean | undefined = this._isNvr;
+    if (isNvr === undefined) {
+      try {
+        isNvr = await this.isNvrDevice();
+      } catch (e) {
+        trace(`cmd 114 skipped: NVR detection failed (${formatErrorForLog(e)})`);
+        return undefined;
+      }
+    }
+    if (isNvr) {
+      trace(`cmd 114 skipped on NVR/Hub (channel=${channel}): it would answer the hub's UID`);
+      return undefined;
+    }
+    try {
+      const uid = (await this.getUid({ timeoutMs: 8_000 })).trim();
+      if (!uid) return undefined;
+      this.uid = uid;
+      return uid;
+    } catch (e) {
+      trace(`cmd 114 GetUid failed: ${formatErrorForLog(e)}`);
+      return undefined;
+    }
+  }
+
   private async discoverDeviceUidForRecordings(
     channel: number,
   ): Promise<string | undefined> {
@@ -7212,6 +7499,8 @@ export class ReolinkBaichuanApi {
     timeoutMs?: number;
     /** Explicitly specify if this is an NVR device. If omitted, auto-detects. */
     isNvr?: boolean;
+    /** IANA zone of the camera's wall clock; defaults to `recordingsTimeZone`, then host local. */
+    timeZone?: string;
   }): Promise<VideoclipThumbnailResult> {
     // If no request in flight, execute immediately
     if (!this.videoclipThumbnailInFlight) {
@@ -7272,6 +7561,7 @@ export class ReolinkBaichuanApi {
     uid?: string;
     timeoutMs?: number;
     isNvr?: boolean;
+    timeZone?: string;
   }): Promise<VideoclipThumbnailResult> {
     await this.client.login();
 
@@ -7295,9 +7585,18 @@ export class ReolinkBaichuanApi {
       ? (this.resolveHeaderChannelIdForLogicalChannel(channel) ?? 250)
       : undefined;
 
-    // CoverPreview requires a time range
-    // PCAP shows the app uses the full recording range, not just time + 10 seconds
-    const endTime = params.endTime ?? new Date(time.getTime() + 10_000);
+    // CoverPreview requires a time range; the app sends the full recording
+    // range. A window whose end is not after its start is refused with 400
+    // (verified 2026-09-20, E1 Outdoor PoE v3.1.0.5223, on a 0 s clip), so
+    // such a window is widened to the 10 s default instead of forwarded.
+    const requestedEnd = params.endTime;
+    const endTime =
+      requestedEnd !== undefined && requestedEnd.getTime() > time.getTime()
+        ? requestedEnd
+        : new Date(time.getTime() + 10_000);
+    const timeZone = params.timeZone ?? this.recordingsTimeZone;
+    const startParts = wallClockParts(time, timeZone);
+    const endParts = wallClockParts(endTime, timeZone);
 
     // For NVR devices, we need to include the camera UID in the CoverPreview XML.
     // PCAP analysis shows: NVR requests always include <uid> element after <channelId>.
@@ -7326,9 +7625,11 @@ export class ReolinkBaichuanApi {
     // Build CoverPreview XML exactly as seen in working PCAP capture:
     // - <channelId> = logical channel (0-based)
     // - <uid> = device identifier (required for NVR, omit for standalone cameras)
-    // - NO <desc> tag (PCAP shows it's not present in working requests!)
+    // - <desc> is NOT sent. The official app's hub request carries <desc>0</desc>
+    //   (2026-09-20 capture, Home Hub v3.3.0.456); the camera answers both
+    //   shapes, and this one is verified on both topologies.
     // - streamType = "subStream" or "mainStream"
-    // NOTE: uses LOCAL time (not UTC) for timestamps
+    // Timestamps are the CAMERA's wall clock (see `utils/wallClock.ts`).
     const xml = `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <CoverPreview version="1.1">
@@ -7340,20 +7641,20 @@ export class ReolinkBaichuanApi {
     }
 <streamType>${snapStreamType}</streamType>
 <startTime>
-<year>${time.getFullYear()}</year>
-<month>${time.getMonth() + 1}</month>
-<day>${time.getDate()}</day>
-<hour>${time.getHours()}</hour>
-<minute>${time.getMinutes()}</minute>
-<second>${time.getSeconds()}</second>
+<year>${startParts.year}</year>
+<month>${startParts.month}</month>
+<day>${startParts.day}</day>
+<hour>${startParts.hour}</hour>
+<minute>${startParts.minute}</minute>
+<second>${startParts.second}</second>
 </startTime>
 <endTime>
-<year>${endTime.getFullYear()}</year>
-<month>${endTime.getMonth() + 1}</month>
-<day>${endTime.getDate()}</day>
-<hour>${endTime.getHours()}</hour>
-<minute>${endTime.getMinutes()}</minute>
-<second>${endTime.getSeconds()}</second>
+<year>${endParts.year}</year>
+<month>${endParts.month}</month>
+<day>${endParts.day}</day>
+<hour>${endParts.hour}</hour>
+<minute>${endParts.minute}</minute>
+<second>${endParts.second}</second>
 </endTime>
 <frameList>
 <frameNo>1</frameNo>
@@ -7634,6 +7935,16 @@ export class ReolinkBaichuanApi {
     ffmpegPath?: string;
     /** Explicitly specify if this is an NVR device. If omitted, auto-detects. */
     isNvr?: boolean;
+    /**
+     * Child UID for an NVR/Hub channel. Until 0.7.8 this wrapper had no way
+     * to carry it, so on a hub whose cmd 145 push had not arrived the
+     * CoverPreview went out without `<uid>` and the hub answered 400 while
+     * the raw `getVideoclipThumbnail({ uid })` succeeded (Home Hub
+     * v3.3.0.456, ch 0 and 1, 2026-09-20).
+     */
+    uid?: string;
+    /** IANA zone of the camera's wall clock; defaults to `recordingsTimeZone`, then host local. */
+    timeZone?: string;
   }): Promise<Buffer> {
     const timeoutMs = params.timeoutMs ?? 30_000;
     const ffmpegPath = params.ffmpegPath ?? "ffmpeg";
@@ -7645,6 +7956,8 @@ export class ReolinkBaichuanApi {
       snapType?: "main" | "sub";
       timeoutMs?: number;
       isNvr?: boolean;
+      uid?: string;
+      timeZone?: string;
     } = {
       time: params.time,
       timeoutMs,
@@ -7653,6 +7966,8 @@ export class ReolinkBaichuanApi {
     if (params.endTime !== undefined) snapParams.endTime = params.endTime;
     if (params.snapType !== undefined) snapParams.snapType = params.snapType;
     if (params.isNvr !== undefined) snapParams.isNvr = params.isNvr;
+    if (params.uid !== undefined) snapParams.uid = params.uid;
+    if (params.timeZone !== undefined) snapParams.timeZone = params.timeZone;
 
     const snap = await this.getVideoclipThumbnail(snapParams);
 
@@ -8244,6 +8559,18 @@ export class ReolinkBaichuanApi {
     /** Optional UID; if omitted, the library will attempt to infer/discover it. */
     uid?: string;
     timeoutMs?: number;
+    /** Idle window that completes the transfer; see `DownloadRecordingParams`. */
+    idleTimeoutMs?: number;
+    /**
+     * Called with each decrypted chunk as it arrives.
+     *
+     * The whole download API of this library is `Promise<Buffer>`, which means
+     * a consumer cannot begin until the last byte has landed. This is the one
+     * seam that lets it: the chunks were always there, one frame at a time,
+     * and nothing exposed them. Optional — absent is the historical behaviour
+     * byte for byte.
+     */
+    onChunk?: (chunk: Buffer) => void;
   }): Promise<Buffer> {
     await this.client.login();
 
@@ -8313,6 +8640,10 @@ export class ReolinkBaichuanApi {
         payloadXml,
         streamType: 0,
         timeoutMs,
+        ...(params.idleTimeoutMs != null
+          ? { idleTimeoutMs: params.idleTimeoutMs }
+          : {}),
+        ...(params.onChunk ? { onChunk: params.onChunk } : {}),
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -8346,6 +8677,9 @@ export class ReolinkBaichuanApi {
           uid,
           fileName,
           ...(params.timeoutMs != null ? { timeoutMs: params.timeoutMs } : {}),
+          ...(params.idleTimeoutMs != null
+            ? { idleTimeoutMs: params.idleTimeoutMs }
+            : {}),
         });
       } catch (e) {
         replayErr = e;
@@ -8433,46 +8767,60 @@ export class ReolinkBaichuanApi {
    * @param params - Download parameters
    * @returns Demuxed recording with Annex-B video data and stats
    */
-  async downloadRecordingDemuxed(params: DownloadRecordingParams): Promise<{
-    /** Concatenated video frames in Annex-B format (H.264 or H.265) */
-    annexB: Buffer;
-    /** Detected video codec */
-    videoType: BcMediaVideoType | null;
-    /** Statistics about the demuxed recording */
-    stats: {
-      bytesIn: number;
-      bytesOut: number;
-      packets: number;
-      videoPackets: number;
-      audioPackets: number;
-      keyframes: number;
-    };
-  }> {
+  async downloadRecordingDemuxed(
+    params: DownloadRecordingParams,
+  ): Promise<DownloadRecordingDemuxedResult> {
     const raw = await this.downloadRecording(params);
 
     const frames: Buffer[] = [];
+    const timestampsUs: number[] = [];
+    const audioFrames: Buffer[] = [];
     const decoder = new BcMediaAnnexBDecoder({
       strict: false,
       logger: this.logger,
-      onVideoAccessUnit: ({ annexB }) => {
+      onVideoAccessUnit: ({ annexB, microseconds }) => {
         frames.push(annexB);
+        timestampsUs.push(microseconds);
+      },
+      onAudioFrame: ({ data }) => {
+        audioFrames.push(data);
       },
     });
 
     decoder.push(raw);
 
     const stats = decoder.getStats();
+    const audio = buildRecordingAudioTrack({
+      codec: stats.audioType,
+      frames: audioFrames,
+    });
+    const timing = estimateVideoTiming({
+      timestampsUs,
+      infoFps: stats.infos[0]?.fps ?? null,
+    });
+
+    if (audio == null) {
+      this.logger?.debug?.(
+        `[downloadRecordingDemuxed] no audio packet in ${stats.packets} BcMedia packets (${stats.bytesIn} bytes) for ${params.fileName}`,
+      );
+    }
 
     return {
       annexB: Buffer.concat(frames),
       videoType: stats.videoType,
+      audio,
       stats: {
         bytesIn: stats.bytesIn,
         bytesOut: stats.bytesOut,
         packets: stats.packets,
         videoPackets: stats.videoPackets,
         audioPackets: stats.audioPackets,
+        audioBytes: stats.audioBytesOut,
         keyframes: stats.keyframes,
+        fps: timing.fps,
+        durationSeconds: timing.durationSeconds,
+        infoFps: timing.infoFps,
+        fpsSource: timing.fpsSource,
       },
     };
   }
@@ -8526,40 +8874,18 @@ export class ReolinkBaichuanApi {
     const decoderStats = decoder.getStats();
     const videoCodec = decoderStats.videoType ?? "H264";
 
-    // Determine FPS - prefer timestamps over info FPS for correct audio sync
-    // The info FPS tells what the camera records at, but the actual frames transmitted
-    // may be subsampled (e.g., 30fps recording -> 15fps transmission for bandwidth)
-    // Using timestamps ensures video duration matches audio duration
-    let fps: number;
-    let durationSeconds: number;
-
-    if (videoFrames.length >= 2) {
-      const firstTs = videoFrames[0]!.microseconds;
-      const lastTs = videoFrames[videoFrames.length - 1]!.microseconds;
-      const durationUs = lastTs - firstTs;
-
-      if (durationUs > 0) {
-        // Calculate from timestamps - most reliable for A/V sync
-        durationSeconds = durationUs / 1_000_000;
-        fps = (videoFrames.length - 1) / durationSeconds;
-      } else {
-        // Fallback to info FPS if timestamps are invalid
-        const infoFps = decoderStats.infos[0]?.fps;
-        fps = infoFps && infoFps > 0 ? infoFps : 15;
-        durationSeconds = videoFrames.length / fps;
-      }
-    } else {
-      // Not enough frames, use info FPS
-      const infoFps = decoderStats.infos[0]?.fps;
-      fps = infoFps && infoFps > 0 ? infoFps : 15;
-      durationSeconds = videoFrames.length / fps;
-    }
-
-    // Round FPS to common values if close
-    if (fps > 14 && fps < 16) fps = 15;
-    else if (fps > 23 && fps < 26) fps = 25;
-    else if (fps > 29 && fps < 31) fps = 30;
-    else fps = Math.round(fps * 100) / 100;
+    // Prefer the access-unit timestamps over the info FPS: the info header is
+    // the FILE's nominal rate and a Home Hub child overstates it 2x, which
+    // would make the video half as long as its own audio. See
+    // `estimateVideoTiming`.
+    const timing = estimateVideoTiming({
+      timestampsUs: videoFrames.map((f) => f.microseconds),
+      infoFps: decoderStats.infos[0]?.fps ?? null,
+    });
+    // Nothing on the wire said: 15 is the historical last resort of this call.
+    const fps = timing.fps ?? 15;
+    const durationSeconds =
+      timing.durationSeconds ?? videoFrames.length / fps;
 
     const videoData = Buffer.concat(videoFrames.map((f) => f.annexB));
     const audioData =
@@ -15303,16 +15629,72 @@ export class ReolinkBaichuanApi {
     return parseXmlFragmentToJson<HddInfoListConfig>(xml);
   }
 
+  /**
+   * cmd 142 `<DayRecords>` — which days of a month have footage, for one
+   * channel. The calendar the official app draws.
+   *
+   * Wire shape captured from the app 2026-09-20 (standalone E1 Outdoor PoE
+   * v3.1.0.5223; Home Hub v3.3.0.456, child channel 0) and verified live on
+   * hub channels 0, 1 and 3: a calendar-month window plus one
+   * `<DayRecord>{ index, channelId, uid }` per channel, sent as a body with
+   * NO Extension (the header channelId is whatever the session uses; 250 is
+   * accepted). The reply lists `<dayType>{ index, type }` where `index` is
+   * the day of month minus one and a day with no footage is absent; an empty
+   * month answers `<dayTypeList/>`. `type` is an open vocabulary (`normal`
+   * observed). Until 0.7.8 this was sent with no body and answered 400.
+   *
+   * On a Hub the UID selects the camera and the channel is echoed; on a
+   * standalone camera the UID is ignored. Nothing is converted between time
+   * zones — a calendar month is a calendar month on the camera's clock.
+   */
   async getDayRecords(
-    channel?: number,
-    options?: { timeoutMs?: number },
-  ): Promise<XmlJsonValue> {
-    const xml = await this.sendPcapDerivedSettingsGetXml({
-      cmdId: BC_CMD_ID_GET_DAY_RECORDS,
-      ...(channel != null ? { channel } : {}),
-      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    params: GetDayRecordsParams,
+  ): Promise<DayRecordsChannelResult> {
+    const channel = this.normalizeChannel(params.channel ?? 0);
+    const uid = await this.ensureUidForRecordings(channel, params.uid);
+    const result = await this.getDayRecordsForChannels({
+      year: params.year,
+      month: params.month,
+      entries: [{ channel, uid }],
+      ...(params.timeoutMs != null ? { timeoutMs: params.timeoutMs } : {}),
     });
-    return parseXmlFragmentToJson(xml);
+    const one = result.get(channel);
+    if (one === undefined) {
+      throw new Error(
+        `DayRecords: reply carried no record for channel ${channel}`,
+      );
+    }
+    return one;
+  }
+
+  /**
+   * cmd 142 for several channels of an NVR/Hub in ONE request — verified
+   * live 2026-09-20 on a Home Hub v3.3.0.456 with channels 0, 1 and 3
+   * (393 ms). Every entry needs its child UID; the answer is keyed by the
+   * channel the device echoed, in request order.
+   */
+  async getDayRecordsForChannels(
+    params: GetDayRecordsForChannelsParams,
+  ): Promise<Map<number, DayRecordsChannelResult>> {
+    const payloadXml = buildDayRecordsXml({
+      year: params.year,
+      month: params.month,
+      entries: params.entries.map((e) => ({
+        channel: this.normalizeChannel(e.channel),
+        uid: e.uid,
+      })),
+    });
+    // Body-addressed like FileInfoList (cmd 14/15/16): no `channel`, so no
+    // Extension and the header stays at the session's default.
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_DAY_RECORDS,
+      payloadXml,
+      ...(params.timeoutMs != null ? { timeoutMs: params.timeoutMs } : {}),
+    });
+    const parsed = parseDayRecordsXml(xml);
+    const out = new Map<number, DayRecordsChannelResult>();
+    for (const rec of parsed.records) out.set(rec.channelId, rec);
+    return out;
   }
 
   async getEmailTask(
@@ -16393,8 +16775,16 @@ ${scheduleItems}
   async getVideoclipThumbnailJpegRaw(params: {
     channel?: number;
     time: Date;
+    /** Full clip range; a window not after `time` is widened to 10 s. */
+    endTime?: Date;
     snapType?: "main" | "sub";
     timeoutMs?: number;
+    /** Child UID for an NVR/Hub channel (see `getVideoclipThumbnailJpeg`). */
+    uid?: string;
+    /** Explicitly specify if this is an NVR device. If omitted, auto-detects. */
+    isNvr?: boolean;
+    /** IANA zone of the camera's wall clock. */
+    timeZone?: string;
     /** 2..31 (lower = better quality). Default: 2 */
     jpegQuality?: number;
   }): Promise<{

@@ -54,17 +54,49 @@ export const BC_CMD_ID_VIDEO_STOP = 4; // MSG_ID_VIDEO_STOP - ID used to stop th
 
 // Replay / recordings / file list
 export const BC_CMD_ID_FILE_INFO_LIST_REPLAY = 5; // <FileInfoList> (replay)
-export const BC_CMD_ID_FILE_INFO_LIST_STOP = 7; // <FileInfoList> (stop)
+export const BC_CMD_ID_FILE_INFO_LIST_STOP = 7;
+/**
+ * Idle window that completes a cmd 5 recording download (no end marker on the
+ * wire). 2 000 ms is ~34x the largest inter-chunk gap measured on a LAN
+ * (59 ms, 101 s clip); raise it per call (`idleTimeoutMs`) on a slow link.
+ */
+export const DEFAULT_RECORDING_DOWNLOAD_IDLE_MS = 2_000; // <FileInfoList> (stop)
 export const BC_CMD_ID_FILE_INFO_LIST_DL_VIDEO = 8; // <FileInfoList> (DL Video)
 export const BC_CMD_ID_FILE_INFO_LIST_DOWNLOAD = 13; // <FileInfoList> (download)
 export const BC_CMD_ID_FILE_INFO_LIST_OPEN = 14; // <FileInfoList> (open/list)
 export const BC_CMD_ID_FILE_INFO_LIST_GET = 15; // <FileInfoList> (get/list page)
 export const BC_CMD_ID_FILE_INFO_LIST_CLOSE = 16; // <FileInfoList> (close)
 
-// Recording search (alarm video list)
-export const BC_CMD_ID_FIND_REC_VIDEO_OPEN = 272; // <findAlarmVideo> (open)
-export const BC_CMD_ID_FIND_REC_VIDEO_GET = 273; // <findAlarmVideo> (get)
-export const BC_CMD_ID_FIND_REC_VIDEO_CLOSE = 274; // <findAlarmVideo> (close)
+/**
+ * `<findAlarmVideo>` open / get / close (272/273/274) — the ALARM WINDOWS
+ * inside one camera's recordings for one camera-local day, NOT a second file
+ * listing: several rows name the same `fileName`, each with its own
+ * `alarmType` and its own start/end (387 windows over 167 files on one
+ * standalone day, 2026-09-20).
+ *
+ * Unlike cmd 14/15/16 this family carries an
+ * `<Extension><channelId>N</channelId></Extension>`. Open: `{ channelId,
+ * uid, logicChnBitmap, streamType (NUMERIC), notSearchVideo, startTime,
+ * endTime, alarmType CSV, eventAlarmType items }` → `{ channelId,
+ * fileHandle }`. Get and close send the same `{ channelId, fileHandle }`
+ * body; a get answers `<alarmVideoInfo>{ channelId, fileHandle, bFinished,
+ * alarmVideoList }`. Captured from the official app 2026-09-20 on an E1
+ * Outdoor PoE (v3.1.0.5223) and a Home Hub (v3.3.0.456, child ch 0).
+ * See `utils/alarmVideoSearch.ts`.
+ */
+export const BC_CMD_ID_FIND_ALARM_VIDEO_OPEN = 272;
+export const BC_CMD_ID_FIND_ALARM_VIDEO_GET = 273;
+export const BC_CMD_ID_FIND_ALARM_VIDEO_CLOSE = 274;
+/**
+ * @deprecated Use {@link BC_CMD_ID_FIND_ALARM_VIDEO_OPEN}. The body is
+ * `<findAlarmVideo>` and it answers alarm WINDOWS, not "rec video"; the old
+ * name said the opposite of what the command does.
+ */
+export const BC_CMD_ID_FIND_REC_VIDEO_OPEN = BC_CMD_ID_FIND_ALARM_VIDEO_OPEN;
+/** @deprecated Use {@link BC_CMD_ID_FIND_ALARM_VIDEO_GET}. */
+export const BC_CMD_ID_FIND_REC_VIDEO_GET = BC_CMD_ID_FIND_ALARM_VIDEO_GET;
+/** @deprecated Use {@link BC_CMD_ID_FIND_ALARM_VIDEO_CLOSE}. */
+export const BC_CMD_ID_FIND_REC_VIDEO_CLOSE = BC_CMD_ID_FIND_ALARM_VIDEO_CLOSE;
 
 // CoverPreview / Thumbnail commands
 // cmd_id=298: CoverPreview for NVR/HomeHub (XML-based, returns I-frame)
@@ -210,7 +242,34 @@ export const BC_CMD_ID_GET_HDD_INFO_LIST = 102; // <HddInfoList>
 export const BC_CMD_ID_GET_WIFI_SIGNAL = 115; // <WifiSignal>
 export const BC_CMD_ID_GET_WIFI = 116; // <Wifi>
 export const BC_CMD_ID_GET_ONLINE_USER_LIST = 120; // <OnlineUserList> - active user sessions
-export const BC_CMD_ID_GET_DAY_RECORDS = 142; // <DayRecords>
+// <DayRecords> — the recording calendar: one month, one <DayRecord> per
+// channel (channelId + uid), answered with the days that have footage
+// (index = day − 1, absent = none). Sent as a body with no Extension; a
+// request without the body answers 400. Captured from the official app
+// 2026-09-20 (E1 Outdoor PoE v3.1.0.5223; Home Hub v3.3.0.456 child ch 0)
+// and verified live on hub channels 0/1/3, three channels in one call.
+// See `utils/dayRecords.ts`.
+export const BC_CMD_ID_GET_DAY_RECORDS = 142;
+/**
+ * Network configuration block: `<Dhcp>`, `<AutoDns>`, `<Ip>` (ip, mask, mac,
+ * gateway), `<Dns>`. Seen once per session in every 2026-09-20 app capture;
+ * no api method (`getNetPort` covers the port block, not this one).
+ */
+export const BC_CMD_ID_GET_NETWORK_CONFIG = 76;
+/**
+ * Seen once per session in every 2026-09-20 app capture, right after login:
+ * request and reply both carry an EMPTY body (reply 200). Purpose unknown;
+ * recorded so the command map does not silently omit it.
+ */
+export const BC_CMD_ID_CMD_192_OPAQUE = 192;
+/**
+ * Per-channel <VersionInfo> (name, type, serialNumber, buildDay,
+ * hardwareVersion, cfgVersion, firmwareVersion, detail), addressed by an
+ * Extension `{ channelId, chnType }`. The app asks it per hub channel
+ * (39-51 times per session). `getChannelInfo` / `getDevInfo(channel)` already
+ * send it as a literal; this names it.
+ */
+export const BC_CMD_ID_GET_CHANNEL_VERSION_INFO = 318;
 export const BC_CMD_ID_GET_STREAM_INFO_LIST = 146; // <StreamInfoList>
 export const BC_CMD_ID_GET_LED_STATE = 208; // <LedState>
 export const BC_CMD_ID_GET_EMAIL_TASK = 217; // <EmailTask>
@@ -221,6 +280,23 @@ export const BC_CMD_ID_GET_TIMELAPSE_CFG = 319; // <timelapseCfg>
 export const BC_CMD_ID_GET_AI_DENOISE = 439; // <aiDenoise>
 export const BC_CMD_ID_GET_KIT_AP_CFG = 481; // <kitApCfg>
 export const BC_CMD_ID_GET_REC_ENC_CFG = 507; // <RecEncCfg>
+/**
+ * <findEventLog> open / get / close — the Hub's EVENT list (516/517/518).
+ * Observed 2026-09-20 on a Home Hub v3.3.0.456 only. Open carries
+ * `logTypeBits`, `notSearchVideo`, `onlySearchCluster`, `desc`, `chnbits`
+ * (0 in both captures), `alarmType`, `eventAlarmType`, a DESCENDING time
+ * window (startTime later than endTime — newest first, multi-day) and a
+ * `<devices>` list of `{ uid, logicChnBitmap }` — the channel selection
+ * travels as UIDs, not as `chnbits`. Reply `{ handle, maxEventCount }` (60).
+ * Get takes `{ handle, maxEventCount }` and pages `<eventLog>` rows of
+ * `{ uid, logicChn, bHasRecFile, bEncrypted, bDeleted, alarmType,
+ * startTime, endTime }` with `bFinished`; close takes `{ handle }`.
+ * A standalone camera answers the open with an EMPTY BODY. Implemented by
+ * `utils/eventLogSearch.ts` / `api.searchEventLog`.
+ */
+export const BC_CMD_ID_FIND_EVENT_LOG_OPEN = 516;
+export const BC_CMD_ID_FIND_EVENT_LOG_GET = 517;
+export const BC_CMD_ID_FIND_EVENT_LOG_CLOSE = 518;
 export const BC_CMD_ID_GET_ACCESS_USER_LIST = 511; // <accessUserList>
 export const BC_CMD_ID_GET_SLEEP_STATE = 574; // <sleepState>
 
@@ -318,7 +394,14 @@ export const BC_CMD_ID_SET_AUTO_REBOOT = 100;
 // referenced the cmd_id directly. New callers should use the semantic
 // names above.
 /** @deprecated Use {@link BC_CMD_ID_SET_LED_STATE} (209). */
-export const BC_CMD_ID_CMD_123 = 123;
+/**
+ * <ReplaySeek> — `{ channelId, seq, seekTime }`: seek an open cmd 5 replay to
+ * a wall-clock instant. Six to eight per playback session in every 2026-09-20
+ * app capture (standalone and hub); the reply is 200 with an empty body.
+ */
+export const BC_CMD_ID_REPLAY_SEEK = 123;
+/** @deprecated use BC_CMD_ID_REPLAY_SEEK */
+export const BC_CMD_ID_CMD_123 = BC_CMD_ID_REPLAY_SEEK;
 /** @deprecated Use {@link BC_CMD_ID_SET_LED_STATE} (209). */
 export const BC_CMD_ID_CMD_209 = 209;
 /** @deprecated Use {@link BC_CMD_ID_SET_AUDIO_CFG} (265). */

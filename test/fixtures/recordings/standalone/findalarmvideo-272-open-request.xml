@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<Extension version="1.1">
+<channelId>0</channelId>
+</Extension>
+<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<findAlarmVideo version="1.1">
+<channelId>0</channelId>
+<uid>9527000STANDALON</uid>
+<logicChnBitmap>255</logicChnBitmap>
+<streamType>0</streamType>
+<notSearchVideo>0</notSearchVideo>
+<startTime>
+<year>2026</year>
+<month>9</month>
+<day>20</day>
+<hour>0</hour>
+<minute>0</minute>
+<second>0</second>
+</startTime>
+<endTime>
+<year>2026</year>
+<month>9</month>
+<day>20</day>
+<hour>23</hour>
+<minute>59</minute>
+<second>59</second>
+</endTime>
+<alarmType>md, pir, other, package, io, people, face, vehicle, dog_cat, visitor, cry, crossline, intrude, loitering, legacy, loss, answer</alarmType>
+<eventAlarmType>
+<i>md</i>
+<i>pir</i>
+<i>other</i>
+<i>io</i>
+<i>people</i>
+<i>face</i>
+<i>vehicle</i>
+<i>dog_cat</i>
+<i>visitor</i>
+<i>cry</i>
+<i>crossline</i>
+<i>intrude</i>
+<i>loitering</i>
+<i>legacy</i>
+<i>loss</i>
+<i>answer</i>
+<i>nonmotorveh</i>
+<i>tamper</i>
+<i>lmsg</i>
+</eventAlarmType>
+</findAlarmVideo>
+</body>

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<CoverPreview version="1.1">
+<channelId>1</channelId>
+<uid>9527000HUBCHILD1</uid>
+<streamType>subStream</streamType>
+<startTime>
+<year>2026</year>
+<month>9</month>
+<day>19</day>
+<hour>21</hour>
+<minute>20</minute>
+<second>27</second>
+</startTime>
+<endTime>
+<year>2026</year>
+<month>9</month>
+<day>19</day>
+<hour>21</hour>
+<minute>20</minute>
+<second>42</second>
+</endTime>
+<frameList>
+<frameNo>1</frameNo>
+</frameList>
+</CoverPreview>
+</body>

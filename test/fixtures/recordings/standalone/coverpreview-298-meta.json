@@ -1,0 +1,23 @@
+{
+ "topology": "standalone",
+ "request": {
+  "cmdId": 298,
+  "msgNumOverride": 0,
+  "messageClass": 25620,
+  "streamType": 0,
+  "timeoutMs": 20000
+ },
+ "parsed": {
+  "encoding": "H264",
+  "frameLength": 16794,
+  "streamInfo": {
+   "width": 640,
+   "height": 360,
+   "frameRate": 15
+  },
+  "frameTime": 1789822154,
+  "frameHead": "0000000167640033ac1514a0a02ff9500000000168ee3cb000000001658880020000bf8e4bf804eeffc1f1ff82724e51fb03ad1e20ff95affffd6cd023790483"
+ },
+ "sanitised": "bytes 344..17096 zeroed (picture content removed); stream header, frame wrapper and the first 48 bytes of the SPS/PPS NAL kept",
+ "zeroLengthWindowRejected": "Baichuan CoverPreview request rejected (cmdId=298 reqChannelId=26 rspChannelId=26 reqStreamType=0 rspStreamType=0 msgNum=0 responseCode=400 payloadOffset=0)"
+}

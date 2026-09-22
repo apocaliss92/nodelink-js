@@ -4,6 +4,9 @@
  */
 
 import type { OsdCorner, OsdPositionReading } from "./utils/osdPosition";
+import type { RecordingAudioTrack } from "./utils/recordingAudio";
+import type { RecordingFpsSource } from "./utils/recordingTiming";
+import type { BcMediaVideoType } from "../../baichuan/stream/BcMediaAnnexBDecoder";
 
 /**
  * OSD overlay state as the camera actually reports it over cmd_id 44
@@ -369,6 +372,7 @@ export interface WhiteLedState {
 }
 
 import type { XmlJsonValue } from "./utils/xml";
+import type { EventLogDevice } from "./utils/eventLogSearch";
 
 /** Public snapshot entry returned by `ReolinkBaichuanApi.getChannelInfoFromPushCache()`. */
 export type ChannelPushCacheEntry = {
@@ -1195,7 +1199,16 @@ export interface DownloadRecordingParams {
   uid?: string;
   /** Recording identifier (usually one of the `fileName` returned by getVideoclips). */
   fileName: string;
+  /** Ceiling on the whole transfer. Default 120 000 ms. */
   timeoutMs?: number;
+  /**
+   * The download is complete once no chunk has arrived for this long.
+   * Nothing on the wire marks the end of a cmd 5 transfer — no 201, no
+   * trailing frame, no size that matches `sizeL` — so completion is an idle
+   * window. Default `DEFAULT_RECORDING_DOWNLOAD_IDLE_MS` (2 000 ms); the
+   * largest inter-chunk gap measured on a 101 s / 1.8 MB clip was 59 ms.
+   */
+  idleTimeoutMs?: number;
 }
 
 export type RecordingPlaybackUrls = {
@@ -1332,6 +1345,48 @@ export interface GetRecordingVideoStats {
   hasAudio: boolean;
 }
 
+/** Counters of one `downloadRecordingDemuxed` pass. */
+export interface DownloadRecordingDemuxedStats {
+  /** BcMedia bytes fed to the demuxer. */
+  bytesIn: number;
+  /** Annex-B video bytes produced. */
+  bytesOut: number;
+  packets: number;
+  videoPackets: number;
+  audioPackets: number;
+  /** Audio bytes produced — counted whether or not a track was asked for. */
+  audioBytes: number;
+  keyframes: number;
+  /**
+   * The delivered frame rate — what `ffmpeg -r` must be given. Measured from
+   * the access-unit timestamps; `null` when nothing on the wire said.
+   */
+  fps: number | null;
+  /** Seconds spanned by the access units, or `null` when unknown. */
+  durationSeconds: number | null;
+  /** The info header's nominal rate, which is NOT the delivered one. */
+  infoFps: number | null;
+  /** Where `fps` came from, so a guess never looks like a measurement. */
+  fpsSource: RecordingFpsSource;
+}
+
+/**
+ * Result of downloadRecordingDemuxed(): the video as Annex-B and, since
+ * 0.7.10, the audio the same download has always carried.
+ *
+ * `audio` is `null` only when no audio packet arrived — an absent track and a
+ * silent one are different answers.
+ */
+export interface DownloadRecordingDemuxedResult {
+  /** Concatenated video access units in Annex-B form (H.264 or H.265). */
+  annexB: Buffer;
+  /** Detected video codec — detected from the NALs, not from the BcMedia header, which lies on a Home Hub child. */
+  videoType: BcMediaVideoType | null;
+  /** The audio track, ready to be a second ffmpeg input. */
+  audio: RecordingAudioTrack | null;
+  stats: DownloadRecordingDemuxedStats;
+}
+
 /**
  * Result of getRecordingVideo() - a fully muxed MP4 with stats.
  */
@@ -1345,6 +1400,134 @@ export interface GetRecordingVideoResult {
 /**
  * Parameters for getVideoclips() recording search.
  */
+/** cmd 142 — one channel's recording calendar for one month. */
+export interface GetDayRecordsParams {
+  /** Gregorian year. */
+  year: number;
+  /** 1-12. The window is the whole calendar month in the camera's wall clock. */
+  month: number;
+  /** Logical channel. Default 0. */
+  channel?: number;
+  /**
+   * Device UID (standalone) or child UID (NVR/Hub). On a Hub the UID is what
+   * selects the camera. Resolved like `getVideoclips` when omitted: cmd 145
+   * push cache on a Hub, cmd 114 on a standalone camera.
+   */
+  uid?: string;
+  timeoutMs?: number;
+}
+
+/** cmd 142 for several channels of an NVR/Hub in ONE request. */
+export interface GetDayRecordsForChannelsParams {
+  year: number;
+  month: number;
+  /** One entry per channel; every entry needs its child UID. */
+  entries: ReadonlyArray<{ channel: number; uid: string }>;
+  timeoutMs?: number;
+}
+
+/**
+ * cmd 272/273/274 `<findAlarmVideo>` — the alarm WINDOWS inside one camera's
+ * recordings. Not a file listing: several windows can name the same file.
+ */
+export interface SearchAlarmVideosParams {
+  /** Logical channel. Default 0. */
+  channel?: number;
+  /**
+   * Device UID (standalone) or child UID (NVR/Hub). Resolved like
+   * `getVideoclips` when omitted.
+   */
+  uid?: string;
+  /** Start of the window, in the camera's wall clock. */
+  start: Date;
+  /**
+   * End of the window. Clamped to 23:59:59.999 of `start`'s camera-local
+   * day: the firmware answers the START day only and drops the rest.
+   */
+  end: Date;
+  /**
+   * NUMERIC on this family, unlike `getVideoclips`'s `subStream` /
+   * `mainStream` string — and it selects the file set: `0` returns the
+   * MAIN-stream names, `1` the SUB-stream ones (measured, 539/539 either
+   * way). The official app sends 0. Default 0.
+   */
+  streamType?: number;
+  /** Default 255, as the app sends. */
+  logicChnBitmap?: number;
+  /** Default 0, as the app sends. */
+  notSearchVideo?: number;
+  /**
+   * Comma-separated alarm types. Default the app's 17-type list
+   * (`DEFAULT_ALARM_VIDEO_SEARCH_ALARM_TYPES`). A narrower list silently
+   * returns fewer windows.
+   */
+  alarmType?: string;
+  /**
+   * `<eventAlarmType>` items sent beside `alarmType`. Default the app's
+   * 19 items; an empty array omits the element.
+   */
+  eventAlarmTypes?: readonly string[];
+  /** IANA zone of the camera's wall clock. Defaults to `recordingsTimeZone`. */
+  timeZone?: string;
+  /** Paging bound. Default 200 (one busy standalone day needed 145 pages). */
+  maxPages?: number;
+  timeoutMs?: number;
+}
+
+/**
+ * One child of a Home Hub, as a `<findEventLog>` open names it. One shape,
+ * defined once next to the wire it belongs to.
+ */
+export type SearchEventLogDevice = EventLogDevice;
+
+/**
+ * cmd 516/517/518 `<findEventLog>` — the Home Hub's cross-channel event
+ * list. HUB ONLY: a standalone camera answers the open with an empty body.
+ */
+export interface SearchEventLogParams {
+  /**
+   * The children to search. When omitted, every channel the cmd 145 push
+   * cache knows a UID for is asked; a hub that has pushed nothing yet is a
+   * refusal, not an empty result.
+   */
+  devices?: readonly SearchEventLogDevice[];
+  /** Start of the window (the EARLIER instant). */
+  start: Date;
+  /**
+   * End of the window (the LATER instant). The wire carries the window
+   * BACKWARDS — that is not a choice: a forward window answered zero rows
+   * live. Rows come back newest first.
+   */
+  end: Date;
+  /** CSV; default `DEFAULT_EVENT_LOG_SEARCH_ALARM_TYPES` (six types). */
+  alarmType?: string;
+  /** `<eventAlarmType>` items; default the app's six. */
+  eventAlarmTypes?: readonly string[];
+  /** Rows per page. Defaults to the `maxEventCount` the open reply grants. */
+  maxEventCount?: number;
+  /** Default 1, as the app sends. */
+  logTypeBits?: number;
+  /** Default 1 — the app asks for the log, not the video. */
+  notSearchVideo?: number;
+  /** Default 0. */
+  onlySearchCluster?: number;
+  /**
+   * Default 0. NOT the sort order: the app left it at 0 and got newest-first
+   * rows from the backwards window.
+   */
+  desc?: number;
+  /**
+   * Default 0. Measured inert: `3` answered exactly what `0` did while
+   * `devices` was what changed the result. Never derived from `devices`.
+   */
+  chnbits?: number;
+  /** IANA zone of the hub's wall clock. Defaults to `recordingsTimeZone`. */
+  timeZone?: string;
+  /** Paging bound. Default 100 pages of `maxEventCount` rows. */
+  maxPages?: number;
+  timeoutMs?: number;
+}
+
 export interface GetVideoclipsParams {
   /** Channel number (0-based). Optional for standalone cameras, required for NVR. */
   channel?: number;
@@ -1354,14 +1537,31 @@ export interface GetVideoclipsParams {
   end: Date;
   /** Stream type. Default: "subStream" */
   streamType?: RecordingStreamType;
-  /** Comma-separated record types. Default includes all types. */
+  /**
+   * Comma-separated record types. Default: the official app's 16-type list
+   * (`DEFAULT_RECORDING_SEARCH_RECORD_TYPES`). A narrower list returns fewer
+   * files silently.
+   */
   recordType?: string;
+  /**
+   * `<fileRecordType>` item list sent beside `recordType`. Default: the app's
+   * 19 items when `recordType` is also defaulted; omitted when a custom
+   * `recordType` is given and this is not.
+   */
+  fileRecordTypes?: readonly string[];
   /** Explicit UID (skip auto-discovery if provided) */
   uid?: string;
   /** Per-request timeout in ms. Default: 15000 */
   timeoutMs?: number;
   /** Max pagination iterations. Default: 50 */
   maxIterations?: number;
+  /**
+   * IANA zone of the camera's wall clock (e.g. `Europe/Rome`). Every
+   * recording timestamp on the wire is the camera's local time with no
+   * offset; this says how to read and write it. Defaults to the api-level
+   * `recordingsTimeZone`, then to the host's local zone.
+   */
+  timeZone?: string;
 }
 
 // ============================================================================

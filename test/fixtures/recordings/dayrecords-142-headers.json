@@ -1,0 +1,63 @@
+{
+ "note": "cmd 142 frame headers from the official app captures, 2026-09-20. lavanderia = Reolink Home Hub v3.3.0.456 connection, child channel 0 (Argus 3E); cameretta = standalone E1 Outdoor PoE v3.1.0.5223. The header channelId is a session counter; no Extension is sent.",
+ "hub-ch0": [
+  {
+   "direction": "c2s",
+   "msgNum": 0,
+   "channelId": 89,
+   "streamType": 0,
+   "responseCode": 0,
+   "messageClass": 25620,
+   "bodyLen": 476
+  },
+  {
+   "direction": "s2c",
+   "msgNum": 0,
+   "channelId": 89,
+   "streamType": 0,
+   "responseCode": 200,
+   "messageClass": 0,
+   "bodyLen": 1529
+  }
+ ],
+ "standalone-sep": [
+  {
+   "direction": "c2s",
+   "msgNum": 0,
+   "channelId": 27,
+   "streamType": 0,
+   "responseCode": 0,
+   "messageClass": 25620,
+   "bodyLen": 476
+  },
+  {
+   "direction": "s2c",
+   "msgNum": 0,
+   "channelId": 27,
+   "streamType": 0,
+   "responseCode": 200,
+   "messageClass": 0,
+   "bodyLen": 1589
+  }
+ ],
+ "standalone-aug": [
+  {
+   "direction": "c2s",
+   "msgNum": 0,
+   "channelId": 36,
+   "streamType": 0,
+   "responseCode": 0,
+   "messageClass": 25620,
+   "bodyLen": 476
+  },
+  {
+   "direction": "s2c",
+   "msgNum": 0,
+   "channelId": 36,
+   "streamType": 0,
+   "responseCode": 200,
+   "messageClass": 0,
+   "bodyLen": 464
+  }
+ ]
+}

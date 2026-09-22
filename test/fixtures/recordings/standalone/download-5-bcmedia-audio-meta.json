@@ -1,0 +1,30 @@
+{
+ "topology": "standalone",
+ "device": "Reolink E1 Outdoor PoE (IPC_560SD88MP) v3.1.0.5223",
+ "capturedAt": "2026-09-20",
+ "source": "api.downloadRecording({ channel: 0, fileName: '/mnt/sda/Mp4Record/2026-09-20/RecM03_DST20260920_053449_053451_*.mp4' }) — cmd 5 FileInfoList replay download, read-only probe",
+ "wholeDownload": {
+  "listedSizeBytes": 2208022,
+  "receivedBytes": 1967336,
+  "elapsedMs": 2662,
+  "packets": 84,
+  "videoPackets": 51,
+  "keyframes": 2,
+  "audioPackets": 32,
+  "audioBytes": 16608,
+  "videoType": "H264",
+  "audioType": "Aac",
+  "infoHeader": "InfoV2 3840x2160 fps=25 (the FILE's nominal rate; the access-unit timestamps give 24.704)"
+ },
+ "fixture": {
+  "packets": 40,
+  "infoPackets": 1,
+  "videoPackets": 24,
+  "keyframes": 1,
+  "audioPackets": 15,
+  "audioBytesPerFrame": 519,
+  "adtsFirstHeader": "fff1604040fffc",
+  "adts": { "profile": "AAC LC", "sampleRate": 16000, "channels": 1, "frameLength": 519 }
+ },
+ "sanitised": "Every BcMedia header is the captured wire, byte for byte. AAC: the 7-byte ADTS header of each frame is kept, the 512 compressed bytes after it are zeroed. Video: each I/P packet keeps its header and additionalHeader and its payload is replaced by a 64-byte synthetic Annex-B NAL of the DETECTED codec, so no picture bytes ship."
+}

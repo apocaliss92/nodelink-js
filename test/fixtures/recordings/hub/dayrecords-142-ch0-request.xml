@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<DayRecords version="1.1">
+<startTime>
+<year>2026</year>
+<month>9</month>
+<day>1</day>
+<hour>0</hour>
+<minute>0</minute>
+<second>0</second>
+</startTime>
+<endTime>
+<year>2026</year>
+<month>9</month>
+<day>30</day>
+<hour>23</hour>
+<minute>59</minute>
+<second>59</second>
+</endTime>
+<DayRecordList>
+<DayRecord>
+<index>0</index>
+<channelId>0</channelId>
+<uid>9527000HUBCHILD0</uid>
+</DayRecord>
+</DayRecordList>
+</DayRecords>
+</body>
