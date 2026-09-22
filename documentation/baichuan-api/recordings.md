@@ -770,3 +770,46 @@ const schedule = await api.getRecordSchedule(channel?: number);
 ---
 
 [← Back to Baichuan API](./README.md)
+
+## Replay is a SESSION, and what the Reolink app really does (capture, 2026-09-22)
+
+Captured off the app against a standalone (`Cameretta Daniel`, 158 s, 5 937
+cmd-5 frames). Four questions were asked of it; the answers change what a
+consumer can build.
+
+**1. There is no in-session seek, and no time-addressed replay.** Eight replay
+requests in the whole session, each naming a full FILE path in `<Id>`, always
+`mainStream`. The `01YYYYMMDDHHMMSS` shape appears **only** in the 591 *stop*
+payloads, as the name of the session being closed — never as a replay target.
+
+**2. The single timeline is built by the APP.** It maps a timeline position to
+the file that contains that instant and opens a replay on it. Moving far
+backwards or forwards is simply a replay on a different file:
+
+```
+1  speed=1   RecM03_…_051358_051559   (121 s)
+2  speed=1   RecM03_…_045646_045711   ← backwards = another file
+3  speed=1   RecM03_…_052404_052604   ← forwards  = another file
+4  speed=1   RecM03_…_061242_061442
+5  speed=8   RecM03_…_061242_061442   ← SAME file, reopened at speed 8
+```
+
+It reads as continuous because the files are **120–300 s**: choosing the right
+file *is* the seek, with an error the eye does not catch. **The camera's own
+files are the index** — a consumer that wants a scrubbable timeline does not
+need to build one.
+
+**3. `playSpeed` is real and we never used it.** Row 5 is the same file
+reopened at **8**. Both builders here hardcode `<playSpeed>1</playSpeed>`.
+Fast scrub in the app is this, not I-frame replay.
+
+**4. `bIframeReplay` / `iIframeReplay` were never sent.** Zero occurrences.
+The library exposes them (`iframeReplay`) and the app does not use them; they
+remain untested against a real firmware.
+
+### What this forbids
+
+Seeking *inside* one recording is not something the camera offers. A consumer
+that wants it must keep the bytes it has already received — the protocol will
+not replay from an offset. Forward-only playback plus `playSpeed` is what the
+wire actually supports.
