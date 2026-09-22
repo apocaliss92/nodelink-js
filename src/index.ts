@@ -32,6 +32,30 @@ export {
   type DayRecordsResult,
 } from "./reolink/baichuan/utils/dayRecords";
 export {
+  BaichuanRecordConfigError,
+  buildRecordCfgSetXml,
+  buildRecordScheduleSetXml,
+  diffRecordCfg,
+  diffRecordSchedule,
+  isWeeklyMask,
+  parseRecordCfgLimits,
+  parseRecordScheduleRows,
+  RECORD_WEEKLY_MASK_LENGTH,
+  validateRecordCfgPatch,
+  validateRecordSchedulePatch,
+  type BaichuanRecordCfgLimits,
+  type BaichuanRecordCfgPatch,
+  type BaichuanRecordScheduleEntryPatch,
+  type BaichuanRecordSchedulePatch,
+  type BaichuanRecordScheduleRow,
+  type BaichuanRecordWriteOutcome,
+  type BaichuanRecordWriteResult,
+} from "./reolink/baichuan/utils/recordConfig";
+export {
+  parseHddInfoListXml,
+  type BaichuanHddInfo,
+} from "./reolink/baichuan/utils/hddInfo";
+export {
   DEFAULT_RECORDING_SEARCH_FILE_RECORD_TYPES,
   DEFAULT_RECORDING_SEARCH_RECORD_TYPES,
 } from "./reolink/baichuan/utils/recordingsFileInfoList";

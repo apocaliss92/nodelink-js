@@ -1,0 +1,3 @@
+# Verbatim camera captures. Never normalise line endings: a round-trip test
+# compares what we send against what the camera sent, byte for byte.
+* -text

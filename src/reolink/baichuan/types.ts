@@ -2092,18 +2092,52 @@ export interface FtpTaskConfig {
 }
 
 /**
- * HDD info list response.
+ * One `<HddInfo>` record, as `fast-xml-parser` hands back the cmd 102 reply.
+ *
+ * Until 0.9.0 this library declared `item[{ id, size, used }]` here. No
+ * firmware sends any of those names — a reader written against the old
+ * declaration found nothing, and found it silently. The names below were
+ * measured on E1 Outdoor PoE v3.1.0.5223, E1 Outdoor Pro v3.1.0.5714 and
+ * Reolink Home Hub v3.3.0.456 on 2026-09-22.
+ *
+ * `capacity` is whole GIGABYTES and `capacityM` is the megabyte remainder —
+ * 238 + 271 is 238.26 GB, and either half alone is wrong. `capacityV2` /
+ * `remainSizeV2` are exact byte counts and only newer firmwares send them.
+ *
+ * Prefer {@link BaichuanHddInfo} via `getHddInfo()`, which does that
+ * arithmetic once and reports an unread size as null rather than zero.
+ */
+export interface RawHddInfo {
+  number?: number | undefined;
+  /** Whole gigabytes. */
+  capacity?: number | undefined;
+  /** Megabyte remainder of `capacity`. */
+  capacityM?: number | undefined;
+  /** Exact bytes, newer firmwares only. */
+  capacityV2?: number | undefined;
+  remainSize?: number | undefined;
+  remainSizeM?: number | undefined;
+  remainSizeV2?: number | undefined;
+  /** 1 = formatted. */
+  format?: number | undefined;
+  /** 1 = mounted; 0 = no card. */
+  mount?: number | undefined;
+  type?: number | undefined;
+  index?: number | undefined;
+  [key: string]: unknown;
+}
+
+/**
+ * HDD info list response (cmd 102).
+ *
+ * `HddInfo` is a single object when the device has one volume and an array
+ * when it has several — that is the XML parser's convention, not a choice
+ * this library makes.
  */
 export interface HddInfoListConfig {
   body?: {
     HddInfoList?: {
-      itemNum?: number | undefined;
-      item?: Array<{
-        id?: number | undefined;
-        size?: number | undefined;
-        used?: number | undefined;
-        [key: string]: unknown;
-      }>;
+      HddInfo?: RawHddInfo | RawHddInfo[];
       [key: string]: unknown;
     };
   };

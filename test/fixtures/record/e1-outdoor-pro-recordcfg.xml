@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<RecordCfg version="1.1">
+<channelId>0</channelId>
+<cycle>1</cycle>
+<recordDelayTime>15</recordDelayTime>
+<preRecordTime>10</preRecordTime>
+<packageTime>5</packageTime>
+<cyclelist>
+<item>0</item>
+<item>1</item>
+</cyclelist>
+</RecordCfg>
+</body>

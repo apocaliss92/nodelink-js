@@ -78,6 +78,8 @@ import {
   BC_CMD_ID_GET_PTZ_PRESET,
   BC_CMD_ID_GET_REC_ENC_CFG,
   BC_CMD_ID_GET_RECORD,
+  BC_CMD_ID_SET_RECORD,
+  BC_CMD_ID_SET_RECORD_CFG,
   BC_CMD_ID_GET_VERSION_INFO,
   BC_CMD_ID_GET_RECORD_CFG,
   BC_CMD_ID_GET_SIREN_STATUS,
@@ -147,6 +149,25 @@ import {
   BC_CMD_ID_GET_AUTO_REBOOT,
   BC_CMD_ID_SET_AUTO_REBOOT,
 } from "../../protocol/constants";
+import {
+  type BaichuanHddInfo,
+  parseHddInfoListXml,
+} from "./utils/hddInfo";
+import {
+  type BaichuanRecordCfgLimits,
+  type BaichuanRecordCfgPatch,
+  type BaichuanRecordSchedulePatch,
+  type BaichuanRecordScheduleRow,
+  type BaichuanRecordWriteResult,
+  buildRecordCfgSetXml,
+  buildRecordScheduleSetXml,
+  diffRecordCfg,
+  diffRecordSchedule,
+  parseRecordCfgLimits,
+  parseRecordScheduleRows,
+  validateRecordCfgPatch,
+  validateRecordSchedulePatch,
+} from "./utils/recordConfig";
 import {
   applyStreamPatch,
   applyXmlTagPatch,
@@ -15444,6 +15465,147 @@ export class ReolinkBaichuanApi {
     return value;
   }
 
+  /**
+   * The limits THIS camera states for `<RecordCfg>` (cmd 54), read from its
+   * own reply — `<cyclelist>`, `<timeList>`, whether pre-record exists at all.
+   *
+   * Read this before offering a control: a firmware that stops accepting a
+   * value stops listing it, and {@link setRecordCfg} refuses against the same
+   * facts.
+   */
+  async getRecordCfgLimits(
+    channel: number,
+    options?: { timeoutMs?: number },
+  ): Promise<BaichuanRecordCfgLimits> {
+    const rawXml = await this.sendPcapDerivedSettingsGetXml({
+      cmdId: BC_CMD_ID_GET_RECORD_CFG,
+      channel,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+    return parseRecordCfgLimits(rawXml);
+  }
+
+  /**
+   * SetRecCfg (cmd 55) — write the onboard recording configuration.
+   *
+   * Read-modify-write over the camera's own cmd 54 document, then a re-read to
+   * find out what it actually kept. Both halves are load-bearing, because this
+   * command **never reports a bad value**: measured on 2026-09-22, a
+   * `preRecordTime` of 9999 and a `cycle` outside the camera's own
+   * `<cyclelist>` were each answered `200` and discarded. The returned
+   * {@link BaichuanRecordWriteResult} is the only honest answer to "did that
+   * work", so callers should look at `allApplied` rather than at the absence
+   * of a thrown error.
+   *
+   * Values the camera would certainly drop are refused BEFORE the wire with a
+   * {@link BaichuanRecordConfigError}.
+   *
+   * `preRecordEnabled` is a boolean on purpose — see `utils/recordConfig.ts`.
+   *
+   * Verified live: `packageTime` 5 → 10 and `recordDelayTime` 15 → 30 on E1
+   * Outdoor PoE v3.1.0.5223, `recordDelayTime` 15 → 30 → 20 on a Home Hub
+   * v3.3.0.456 channel 0, each read back and restored.
+   */
+  async setRecordCfg(
+    channel: number,
+    patch: BaichuanRecordCfgPatch,
+    options?: { timeoutMs?: number },
+  ): Promise<BaichuanRecordWriteResult> {
+    const ch = this.normalizeChannel(channel);
+    const timeoutOpts =
+      options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {};
+
+    const currentXml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_RECORD_CFG,
+      channel: ch,
+      ...timeoutOpts,
+    });
+    const limits = parseRecordCfgLimits(currentXml);
+    validateRecordCfgPatch(patch, limits);
+
+    // The `<body>` wrapper is REQUIRED: the same document sent without it was
+    // answered 400 with an empty body.
+    await this.sendXml({
+      cmdId: BC_CMD_ID_SET_RECORD_CFG,
+      channel: ch,
+      payloadXml: ensureXmlHeader(buildRecordCfgSetXml(currentXml, patch, limits)),
+      ...timeoutOpts,
+    });
+
+    const afterXml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_RECORD_CFG,
+      channel: ch,
+      ...timeoutOpts,
+    });
+    return diffRecordCfg(patch, afterXml);
+  }
+
+  /**
+   * The schedule rows THIS camera lists (cmd 81), `(type, index)` and the
+   * current mask for each.
+   *
+   * `<index>` matters: an E1 Outdoor Pro lists `crossline`, `intrude` and
+   * `loitering` three times each, one row per configured rule, and a write
+   * addressed by `type` alone would overwrite all three.
+   */
+  async getRecordScheduleRows(
+    channel: number,
+    options?: { timeoutMs?: number },
+  ): Promise<readonly BaichuanRecordScheduleRow[]> {
+    const rawXml = await this.sendPcapDerivedSettingsGetXml({
+      cmdId: BC_CMD_ID_GET_RECORD,
+      channel,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+    return parseRecordScheduleRows(rawXml);
+  }
+
+  /**
+   * SetRec (cmd 82) — write the weekly recording schedule.
+   *
+   * Same contract as {@link setRecordCfg}: refuse what is certainly bad before
+   * the wire, then verify by re-reading. A 167-character mask and a `<type>`
+   * the camera does not have were each answered `200` and dropped, and the
+   * drop is **per item** — one document carrying a bad `Normal` mask and a
+   * good `MD` mask applied the `MD` one and discarded the other. So a caller
+   * cannot treat this write as atomic, and the per-field
+   * {@link BaichuanRecordWriteResult} says which rows landed.
+   *
+   * Verified live on E1 Outdoor PoE v3.1.0.5223: `Normal` hour 0 flipped on
+   * and restored, via both a full document and a one-item document (the camera
+   * merges per row and leaves the other rows alone).
+   */
+  async setRecordSchedule(
+    channel: number,
+    patch: BaichuanRecordSchedulePatch,
+    options?: { timeoutMs?: number },
+  ): Promise<BaichuanRecordWriteResult> {
+    const ch = this.normalizeChannel(channel);
+    const timeoutOpts =
+      options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {};
+
+    const currentXml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_RECORD,
+      channel: ch,
+      ...timeoutOpts,
+    });
+    validateRecordSchedulePatch(patch, parseRecordScheduleRows(currentXml));
+
+    await this.sendXml({
+      cmdId: BC_CMD_ID_SET_RECORD,
+      channel: ch,
+      payloadXml: ensureXmlHeader(buildRecordScheduleSetXml(currentXml, patch)),
+      ...timeoutOpts,
+    });
+
+    const afterXml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_RECORD,
+      channel: ch,
+      ...timeoutOpts,
+    });
+    return diffRecordSchedule(patch, afterXml);
+  }
+
   async getWifiSignal(
     channel: number,
     options?: { timeoutMs?: number },
@@ -15736,6 +15898,26 @@ export class ReolinkBaichuanApi {
       ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
     return parseXmlFragmentToJson<HddInfoListConfig>(xml);
+  }
+
+  /**
+   * cmd 102 `<HddInfoList>`, typed — one record per volume with the size
+   * arithmetic already done.
+   *
+   * Prefer this over {@link getHddInfoList}. The raw reply splits size across
+   * `capacity` (whole GB) and `capacityM` (MB remainder), and newer firmwares
+   * add exact byte counts in `capacityV2` / `remainSizeV2`; `capacityMb` and
+   * `remainMb` fold whichever pair the camera sent, and are **null when it
+   * sent neither** rather than 0.
+   */
+  async getHddInfo(options?: {
+    timeoutMs?: number;
+  }): Promise<readonly BaichuanHddInfo[]> {
+    const xml = await this.sendXml({
+      cmdId: BC_CMD_ID_GET_HDD_INFO_LIST,
+      ...(options?.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
+    });
+    return parseHddInfoListXml(xml);
   }
 
   /**
