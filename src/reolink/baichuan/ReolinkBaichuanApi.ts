@@ -6861,7 +6861,7 @@ export class ReolinkBaichuanApi {
       if (tornDown) return;
       tornDown = true;
 
-      const stopName = buildReplayStopNameFromFileName(params.fileName);
+      const stopName = buildReplayStopNameFromFileName(params.fileName, channel);
       if (started && stopName) {
         try {
           const stopXml = buildFileInfoListStopXml({
@@ -7057,7 +7057,7 @@ export class ReolinkBaichuanApi {
       if (tornDown) return;
       tornDown = true;
 
-      const stopName = buildReplayStopNameFromFileName(params.fileName);
+      const stopName = buildReplayStopNameFromFileName(params.fileName, channel);
       if (started && stopName) {
         try {
           const stopXml = buildFileInfoListStopXml({
@@ -8569,8 +8569,21 @@ export class ReolinkBaichuanApi {
      * seam that lets it: the chunks were always there, one frame at a time,
      * and nothing exposed them. Optional — absent is the historical behaviour
      * byte for byte.
+     *
+     * Throwing from here is how a consumer ABANDONS a transfer. The session is
+     * now closed at the camera on the way out (cmd 7 + drain), so a later
+     * replay on this socket inherits nothing from it.
      */
     onChunk?: (chunk: Buffer) => void;
+    /**
+     * Pin the header channelId instead of minting one per transfer.
+     *
+     * Escape hatch for a firmware that rejects a minted session handle. It
+     * removes the only per-transfer discriminator the protocol has, so two
+     * transfers on this socket become indistinguishable on the wire; they stay
+     * separable only because each one is stopped and drained.
+     */
+    headerChannelIdOverride?: number;
   }): Promise<Buffer> {
     await this.client.login();
 
@@ -8630,11 +8643,31 @@ export class ReolinkBaichuanApi {
       `download: channel=${channel} uid=${uid || "(missing)"} ident=${ident} streamType=${streamType} isNvr=${isNvr} timeoutMs=${timeoutMs}`,
     );
 
+    // The header channelId is MINTED per transfer, on every topology.
+    //
+    // This used to pin it to the hub/NVR header channel, which made two cmd 5
+    // transfers on one socket indistinguishable: abandon the first, open the
+    // second 1 ms later, and the second was handed the first's in-flight
+    // frames (+5 access units, +5 audio frames, duration short by 3.69 s in
+    // the field report; reproduced here with `REPRO_PIN`). The Reolink app
+    // mints a fresh channelId for every replay through a hub too — measured
+    // 2026-09-20 on children "Videocamera lavanderia" (105, 111, 124) and
+    // "porta retro" (170), each answered `rc=200` with 254–468 data frames.
+    // The channel travels in the XML `<channelId>` and in the file path.
+    //
+    // `headerChannelIdOverride` remains available for a firmware that turns
+    // out to need it; such a transfer has no discriminator on the wire and is
+    // safe only because of the stop below.
+    const pinnedHeaderChannelId = params.headerChannelIdOverride;
+    let abandoned = false;
+
     try {
       return await this.client.sendBinary({
         cmdId: BC_CMD_ID_FILE_INFO_LIST_REPLAY,
         channel,
-        ...(isNvr ? { channelIdOverride: headerChannelIdOverride ?? 82 } : {}),
+        ...(pinnedHeaderChannelId != null
+          ? { channelIdOverride: pinnedHeaderChannelId }
+          : {}),
         msgNumOverride: 0,
         messageClass: BC_CLASS_MODERN_24,
         payloadXml,
@@ -8648,7 +8681,83 @@ export class ReolinkBaichuanApi {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       trace(`download failed: ${msg}`);
+      abandoned = true;
       throw e;
+    } finally {
+      // END THE SESSION AT THE CAMERA. A cmd 5 replay is a session and nothing
+      // in the data stream closes it: a consumer that lets go (today, by
+      // throwing from `onChunk`) leaves the camera sending. Measured live on
+      // 192.168.50.226 (303 s clip, mainStream): abandoned with no stop, the
+      // camera sent 8 126 more frames over 3 475 ms; with the cmd 7 stop —
+      // `rc=200` in 67 ms — exactly zero followed.
+      await this.stopFileInfoListReplay({
+        channel,
+        fileName: ident,
+        streamType,
+        // A transfer that COMPLETED did so by going quiet for a whole idle
+        // window, so there is nothing left to drain and the wait would be pure
+        // added latency on the common path. An ABANDONED one is exactly the
+        // case where the camera is still mid-clip.
+        drain: abandoned,
+      });
+    }
+  }
+
+  /**
+   * Close a cmd 5 replay session at the camera (cmd 7) and wait for the wire to
+   * go quiet.
+   *
+   * Best-effort by design: a session that has already ended answers with an
+   * error on some firmwares and there is nothing to do about it. The DRAIN is
+   * not best-effort — the ack comes back before the camera has finished
+   * sending (the Reolink app's own capture shows 26–91 further frames after
+   * four of eleven stops), and the next replay must not be opened into that
+   * tail.
+   */
+  private async stopFileInfoListReplay(params: {
+    channel: number;
+    fileName: string;
+    streamType: RecordingReplayStreamType;
+    /** Wait for the wire to go quiet after the ack. See `drainReplayFrames`. */
+    drain: boolean;
+  }): Promise<void> {
+    const stopName = buildReplayStopNameFromFileName(
+      params.fileName,
+      params.channel,
+    );
+    if (!stopName) {
+      this.logger?.debug?.(
+        `[stopFileInfoListReplay] no stop name derivable from ${params.fileName}; ` +
+          `the session is left to time out at the camera`,
+      );
+      return;
+    }
+    try {
+      await this.client.sendXml({
+        cmdId: BC_CMD_ID_FILE_INFO_LIST_STOP,
+        channel: params.channel,
+        payloadXml: buildFileInfoListStopXml({
+          channel: params.channel,
+          name: stopName,
+          streamType: params.streamType,
+        }),
+        messageClass: BC_CLASS_MODERN_24,
+        timeoutMs: 4_000,
+        internal: true,
+      });
+    } catch (e) {
+      this.logger?.debug?.(
+        `[stopFileInfoListReplay] stop <name>${stopName}</name> failed: ` +
+          `${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    if (!params.drain) return;
+    const drained = await this.client.drainReplayFrames();
+    if (drained > 0) {
+      this.logger?.debug?.(
+        `[stopFileInfoListReplay] ${drained} cmd 5 frame(s) still arrived after the stop ` +
+          `(<name>${stopName}</name>); drained before releasing the socket`,
+      );
     }
   }
 

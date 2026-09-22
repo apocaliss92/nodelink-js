@@ -61,6 +61,21 @@ export const BC_CMD_ID_FILE_INFO_LIST_STOP = 7;
  * (59 ms, 101 s clip); raise it per call (`idleTimeoutMs`) on a slow link.
  */
 export const DEFAULT_RECORDING_DOWNLOAD_IDLE_MS = 2_000; // <FileInfoList> (stop)
+/**
+ * After a cmd 7 stop, how long the wire must stay quiet of cmd 5 frames before
+ * the transfer is considered really over at the CAMERA.
+ *
+ * A stop is acknowledged `responseCode 200` long before the camera stops
+ * sending. Measured on a Reolink app capture (2026-09-22, standalone): four of
+ * eleven stopped sessions were still delivering when the ack came back — 26,
+ * 49, 91 and 91 further frames. Measured live on the same model with this
+ * library (192.168.50.226, mainStream, 303 s clip): the stop came back
+ * `rc=200` in 67 ms and **zero** frames followed it, where the same transfer
+ * abandoned WITHOUT a stop kept 8 126 more frames coming for 3 475 ms.
+ */
+export const DEFAULT_REPLAY_STOP_DRAIN_QUIET_MS = 300;
+/** Upper bound on the post-stop drain, so a firmware that never goes quiet cannot hang a caller. */
+export const DEFAULT_REPLAY_STOP_DRAIN_MAX_MS = 4_000;
 export const BC_CMD_ID_FILE_INFO_LIST_DL_VIDEO = 8; // <FileInfoList> (DL Video)
 export const BC_CMD_ID_FILE_INFO_LIST_DOWNLOAD = 13; // <FileInfoList> (download)
 export const BC_CMD_ID_FILE_INFO_LIST_OPEN = 14; // <FileInfoList> (open/list)

@@ -12,17 +12,28 @@ export const parseRecStartParamIfPresent = (
 };
 
 /**
- * Some firmwares want a stop <name> like: 01YYYYMMDDHHMMSS (derived from Rec*_YYYYMMDD_HHMMSS).
- * If the caller already has a 01xxxxxxxxxxxxxx name, keep it.
+ * The name of the replay session to stop: `CCYYYYMMDDHHMMSS`, where `CC` is the
+ * two-digit 1-based channel and the rest is the recording's start instant.
+ *
+ * Measured off the Reolink app. Standalone (capture 2026-09-22): eleven cmd 7
+ * stops, every one `01` + the `Rec*_YYYYMMDD_HHMMSS` start of the file being
+ * replayed. Hub (capture 2026-09-20): the same shape, but the SECOND child —
+ * XML `<channelId>1</channelId>`, file under `…-Videocamera porta retro/` —
+ * was stopped with `0220260918181308`, while the first child's stops were
+ * `01…`. The prefix is the channel, not a constant.
+ *
+ * If the caller already holds a `CCxxxxxxxxxxxxxx` name, it is kept as-is.
  */
 export const buildReplayStopNameFromFileName = (
   fileName: string,
+  channel = 0,
 ): string | undefined => {
   const trimmed = (fileName ?? "").trim();
-  if (/^01\d{14}$/.test(trimmed)) return trimmed;
+  if (/^\d{2}\d{14}$/.test(trimmed)) return trimmed;
   const start = parseRecStartParamIfPresent(fileName);
   if (!start) return undefined;
-  return `01${start}`;
+  const prefix = String(channel + 1).padStart(2, "0");
+  return `${prefix}${start}`;
 };
 
 export const buildFileInfoListReplayByIdXml = (params: {

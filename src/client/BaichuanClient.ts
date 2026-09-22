@@ -22,6 +22,8 @@ import {
   BC_CMD_ID_FILE_INFO_LIST_CLOSE,
   BC_CMD_ID_FILE_INFO_LIST_REPLAY,
   DEFAULT_RECORDING_DOWNLOAD_IDLE_MS,
+  DEFAULT_REPLAY_STOP_DRAIN_MAX_MS,
+  DEFAULT_REPLAY_STOP_DRAIN_QUIET_MS,
   BC_CMD_ID_FILE_INFO_LIST_DOWNLOAD,
   BC_CMD_ID_FILE_INFO_LIST_GET,
   BC_CMD_ID_FILE_INFO_LIST_OPEN,
@@ -133,6 +135,34 @@ export type MaxEncryption = "none" | "bc" | "aes" | "full_aes";
 
 type PendingKey = `${number}:${number}`; // cmdId:msgNum
 
+/**
+ * How a cmd 5 replay transfer tells its own frames from another transfer's.
+ *
+ * `minted` — this library allocated the header channelId for this transfer, so
+ * it is unique on the socket and can be locked BEFORE the first frame arrives.
+ * This is what the Reolink app does for every replay, on every topology.
+ *
+ * `pinned` — a caller supplied the header channelId. Two transfers can then
+ * carry the same one and the wire cannot tell them apart; such a transfer is
+ * only safe behind a stop-and-drain of its predecessor.
+ */
+export type ReplayDiscriminator =
+  | { kind: "minted"; channelId: number }
+  | { kind: "pinned"; channelId: number };
+
+/** Why a cmd 5 frame was refused by a transfer. */
+export type ReplayDropReason = "superseded" | "foreign-channel";
+
+interface ReplaySession {
+  readonly id: number;
+  readonly discriminator: ReplayDiscriminator;
+  superseded: boolean;
+  acceptedFrames: number;
+  droppedFrames: number;
+  readonly droppedChannelIds: Set<number>;
+  reportedDrop: boolean;
+}
+
 export class BaichuanClient extends EventEmitter<{
   frame: [BaichuanFrame];
   push: [BaichuanFrame];
@@ -225,6 +255,18 @@ export class BaichuanClient extends EventEmitter<{
    * Impact: Snapshots are ~0–50ms slower per camera (negligible for users).
    */
   private snapshotQueueTail: Promise<void> = Promise.resolve();
+
+  /**
+   * Live cmd 5 replay transfers on this socket.
+   *
+   * Opening a replay SUPERSEDES every earlier one: nothing on the wire ends a
+   * cmd 5 transfer, so an abandoned one keeps delivering (measured: 8 126
+   * further frames over 3 475 ms after the consumer let go) and its successor
+   * used to adopt them. A superseded session now refuses every frame and
+   * counts it.
+   */
+  private readonly replaySessions = new Set<ReplaySession>();
+  private replaySessionSeq = 0;
 
   private readonly opts: BaichuanClientOptions;
   private readonly debugCfg: DebugConfig;
@@ -2603,6 +2645,113 @@ export class BaichuanClient extends EventEmitter<{
     return out;
   }
 
+  /**
+   * Register a cmd 5 replay transfer and supersede every earlier one on this
+   * socket.
+   */
+  private openReplaySession(
+    discriminator: ReplayDiscriminator,
+  ): ReplaySession {
+    for (const prev of this.replaySessions) {
+      if (prev.superseded) continue;
+      prev.superseded = true;
+      this.logger?.warn?.(
+        `[BaichuanClient] cmd 5 replay session #${prev.id} (channelId=${prev.discriminator.channelId}, ` +
+          `${prev.discriminator.kind}) superseded by #${this.replaySessionSeq + 1} after ${prev.acceptedFrames} accepted frame(s). ` +
+          `Frames still in flight for #${prev.id} will be dropped, not handed to its successor.`,
+      );
+    }
+    const session: ReplaySession = {
+      id: ++this.replaySessionSeq,
+      discriminator,
+      superseded: false,
+      acceptedFrames: 0,
+      droppedFrames: 0,
+      droppedChannelIds: new Set<number>(),
+      reportedDrop: false,
+    };
+    this.replaySessions.add(session);
+    return session;
+  }
+
+  private closeReplaySession(session: ReplaySession): void {
+    this.replaySessions.delete(session);
+    if (session.droppedFrames > 0) {
+      this.logger?.debug?.(
+        `[BaichuanClient] cmd 5 replay session #${session.id} (channelId=${session.discriminator.channelId}) ` +
+          `ended: ${session.acceptedFrames} frame(s) accepted, ${session.droppedFrames} dropped ` +
+          `from channelId ${[...session.droppedChannelIds].join(",")}.`,
+      );
+    }
+  }
+
+  /**
+   * Count a cmd 5 frame this transfer refused, and say so the first time.
+   *
+   * Silence here is what made the original defect invisible: the successor
+   * transfer simply returned a few extra access units and a short duration,
+   * with nothing anywhere saying a frame had changed hands.
+   */
+  private countReplayDrop(
+    session: ReplaySession,
+    frame: BaichuanFrame,
+    reason: ReplayDropReason,
+  ): void {
+    session.droppedFrames++;
+    session.droppedChannelIds.add(frame.header.channelId);
+    if (!session.reportedDrop) {
+      session.reportedDrop = true;
+      this.logger?.warn?.(
+        `[BaichuanClient] cmd 5 replay session #${session.id} dropping frames (${reason}): ` +
+          `frame channelId=${frame.header.channelId} streamType=${frame.header.streamType} ` +
+          `msgNum=${frame.header.msgNum} vs session channelId=${session.discriminator.channelId} ` +
+          `(${session.discriminator.kind}). Further drops for this session are counted, not logged.`,
+      );
+    }
+  }
+
+  /**
+   * Wait until the socket has gone quiet of cmd 5 frames.
+   *
+   * A cmd 7 stop is acknowledged `rc=200` before the camera has finished
+   * sending: four of eleven stopped sessions in the Reolink app's own capture
+   * were still delivering when the ack came back (26–91 further frames). A
+   * caller that opens the next replay the instant the ack lands is racing that
+   * tail; this is how it waits for it instead.
+   *
+   * @returns how many cmd 5 frames arrived during the drain.
+   */
+  async drainReplayFrames(options?: {
+    quietMs?: number;
+    maxMs?: number;
+  }): Promise<number> {
+    const quietMs = options?.quietMs ?? DEFAULT_REPLAY_STOP_DRAIN_QUIET_MS;
+    const maxMs = options?.maxMs ?? DEFAULT_REPLAY_STOP_DRAIN_MAX_MS;
+    let drained = 0;
+    await new Promise<void>((resolve) => {
+      let quiet: NodeJS.Timeout | undefined;
+      const hard = setTimeout(() => settle(), maxMs);
+      const onFrame = (frame: BaichuanFrame): void => {
+        if (frame.header.cmdId !== BC_CMD_ID_FILE_INFO_LIST_REPLAY) return;
+        drained++;
+        if (quiet) clearTimeout(quiet);
+        quiet = setTimeout(() => settle(), quietMs);
+      };
+      let settled = false;
+      const settle = (): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(hard);
+        if (quiet) clearTimeout(quiet);
+        this.off("frame", onFrame);
+        resolve();
+      };
+      this.on("frame", onFrame);
+      quiet = setTimeout(() => settle(), quietMs);
+    });
+    return drained;
+  }
+
   private nextMsgNum(): number {
     this.msgNum = (this.msgNum + 1) & 0xffff;
     return this.msgNum;
@@ -3629,12 +3778,29 @@ export class BaichuanClient extends EventEmitter<{
     await this.connect();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
-    // PCAP analysis shows: channelId in header is a SESSION COUNTER that increments,
-    // similar to CoverPreview (cmdId=298). Some H265 cameras reject channelId=0 or
-    // channel+1 with responseCode=400 but accept a session counter value.
-    // Use a separate session counter for channelId (independent from msgNum).
+    // The header channelId is the REPLAY SESSION HANDLE, and it is the only
+    // per-transfer discriminator this protocol has.
+    //
+    // Measured off the Reolink app (capture 2026-09-22, 5 937 cmd 5 frames,
+    // standalone; and 2026-09-20 against hub children "Videocamera lavanderia"
+    // / "porta retro"): `msgNum` is **0 on every cmd 5 frame in both
+    // directions**, on every topology — it discriminates nothing and the app
+    // does not use it that way. The app instead mints a fresh, strictly
+    // increasing channelId for EVERY replay (40, 47, 53, 56, 61, … on the
+    // standalone; 105, 111, 124, 142, 163, 170 through the hub) and the camera
+    // echoes it on the reply and on every binary chunk. The logical channel
+    // travels in the XML `<channelId>` and in the file path, never here.
+    //
+    // So: mint one per transfer unless a caller explicitly pins one. A pinned
+    // channelId leaves two transfers on one socket indistinguishable on the
+    // wire, which is how a superseded transfer's frames used to be handed to
+    // its successor.
     const sessionCounter = this.nextMsgNum();
     const channelId = params.channelIdOverride ?? sessionCounter;
+    const discriminator: ReplayDiscriminator =
+      params.channelIdOverride == null
+        ? { kind: "minted", channelId }
+        : { kind: "pinned", channelId };
     // PCAP shows msgNum is always 0 for FileInfoListReplay (cmdId=5), like CoverPreview.
     const msgNum = params.msgNumOverride ?? 0;
     const cmdId = params.cmdId;
@@ -3674,9 +3840,15 @@ export class BaichuanClient extends EventEmitter<{
       params.idleTimeoutMs ?? DEFAULT_RECORDING_DOWNLOAD_IDLE_MS;
     const chunks: Buffer[] = [];
     let streamMsgNum: number | undefined;
-    let lockedChannelId: number | undefined;
+    // A MINTED transfer knows its channelId before the first frame arrives, so
+    // it locks on what it ASKED FOR. The old code locked on the first frame it
+    // happened to see, which is why a superseded transfer's in-flight frames
+    // were adopted by its successor — see `replay-contamination` test.
+    let lockedChannelId: number | undefined =
+      discriminator.kind === "minted" ? discriminator.channelId : undefined;
     let lockedStreamType: number | undefined;
     let idleTimer: NodeJS.Timeout | undefined;
+    const session = this.openReplaySession(discriminator);
     const looksLikeXml = (buf: Buffer): boolean => {
       let i = 0;
       while (
@@ -3775,6 +3947,7 @@ export class BaichuanClient extends EventEmitter<{
         this.off("frame", onFrame);
         if (timeout) clearTimeout(timeout);
         if (idleTimer) clearTimeout(idleTimer);
+        this.closeReplaySession(session);
       };
 
       const finish = (buf: Buffer) => {
@@ -3801,6 +3974,13 @@ export class BaichuanClient extends EventEmitter<{
       const onFrame = (frame: BaichuanFrame) => {
         if (frame.header.cmdId !== cmdId) return;
 
+        // A transfer that has been SUPERSEDED (a later replay opened on this
+        // client) must not keep eating frames: its successor owns the wire now.
+        if (session.superseded) {
+          this.countReplayDrop(session, frame, "superseded");
+          return;
+        }
+
         // Some firmwares reply with a different streamType than the request.
         // Lock streamType once we see the stream header / first binary chunk.
         if (
@@ -3810,12 +3990,16 @@ export class BaichuanClient extends EventEmitter<{
           return;
         }
 
-        // Some NVR firmwares reply with a different channelId than the request.
-        // Lock channelId once we see the first binary chunk.
+        // A frame carrying somebody else's session handle is somebody else's
+        // frame. For a minted transfer this is pre-locked (see above), so the
+        // in-flight tail of an abandoned transfer is REJECTED here instead of
+        // being adopted — and it is counted, because a branch that discards
+        // work has to say how much.
         if (
           lockedChannelId !== undefined &&
           frame.header.channelId !== lockedChannelId
         ) {
+          this.countReplayDrop(session, frame, "foreign-channel");
           return;
         }
 
@@ -3876,9 +4060,14 @@ export class BaichuanClient extends EventEmitter<{
 
           if (streamMsgNum === undefined) {
             streamMsgNum = frame.header.msgNum;
+            // A minted transfer already locked its channelId from the request.
+            // A PINNED one has no discriminator on the wire, so it still has to
+            // learn one from the first frame it accepts — that path is only
+            // safe because the caller stops and drains the previous transfer.
             lockedChannelId = frame.header.channelId;
             lockedStreamType = frame.header.streamType;
           }
+          session.acceptedFrames++;
 
           // HAND IT ON AS IT ARRIVES, then accumulate.
           //
@@ -3909,9 +4098,16 @@ export class BaichuanClient extends EventEmitter<{
           finish(Buffer.concat(chunks));
           return;
         }
+        // Say what DID arrive. A transfer that saw plenty of cmd 5 frames and
+        // accepted none of them is a discriminator problem, not a dead camera,
+        // and the channelIds it rejected name the transfer they belonged to.
+        const seen =
+          session.droppedFrames > 0
+            ? ` (rejected ${session.droppedFrames} cmd ${cmdId} frame(s) on channelId ${[...session.droppedChannelIds].join(",")})`
+            : "";
         fail(
           new Error(
-            `Baichuan timeout waiting FileInfoList replay binary chunks cmdId=${cmdId} channelId=${channelId} streamType=${expectedStreamType}`,
+            `Baichuan timeout waiting FileInfoList replay binary chunks cmdId=${cmdId} channelId=${channelId} streamType=${expectedStreamType}${seen}`,
           ),
         );
       }, timeoutMs);

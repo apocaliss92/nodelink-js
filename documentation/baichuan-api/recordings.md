@@ -771,45 +771,106 @@ const schedule = await api.getRecordSchedule(channel?: number);
 
 [← Back to Baichuan API](./README.md)
 
-## Replay is a SESSION, and what the Reolink app really does (capture, 2026-09-22)
+## Replay is a SESSION (captures 2026-09-20 hub, 2026-09-22 standalone)
 
-Captured off the app against a standalone (`Cameretta Daniel`, 158 s, 5 937
-cmd-5 frames). Four questions were asked of it; the answers change what a
-consumer can build.
+Re-derived frame by frame from the captures themselves on 2026-09-22. The
+standalone session is 158 s, 7 255 frames, of which **5 937 are cmd 5**. An
+earlier reading of it said "eight replay requests" and "591 stop payloads";
+both are wrong and the corrected numbers are below.
 
-**1. There is no in-session seek, and no time-addressed replay.** Eight replay
-requests in the whole session, each naming a full FILE path in `<Id>`, always
-`mainStream`. The `01YYYYMMDDHHMMSS` shape appears **only** in the 591 *stop*
-payloads, as the name of the session being closed — never as a replay target.
+### The shape of a session
 
-**2. The single timeline is built by the APP.** It maps a timeline position to
-the file that contains that instant and opens a replay on it. Moving far
-backwards or forwards is simply a replay on a different file:
+Every replay in every capture is the same four-step exchange, and the app never
+opens one before closing the last:
 
 ```
-1  speed=1   RecM03_…_051358_051559   (121 s)
-2  speed=1   RecM03_…_045646_045711   ← backwards = another file
-3  speed=1   RecM03_…_052404_052604   ← forwards  = another file
-4  speed=1   RecM03_…_061242_061442
-5  speed=8   RecM03_…_061242_061442   ← SAME file, reopened at speed 8
+cmd 123  ReplaySeek   <seq> + <seekTime>{y,m,d,h,m,s}      -> rc 200
+cmd 5    FileInfoList <Id> = a FILE path [+ <playSpeed>]   -> rc 200, then N binary frames
+   …                                                          (N = 94 … 1 106)
+cmd 7    FileInfoList <name> = CCYYYYMMDDHHMMSS            -> rc 200
 ```
 
-It reads as continuous because the files are **120–300 s**: choosing the right
-file *is* the seek, with an error the eye does not catch. **The camera's own
-files are the index** — a consumer that wants a scrubbable timeline does not
-need to build one.
+Standalone capture: **12 replays, 11 stops, 12 seeks** (the counts in the cmd
+summary — 5937 / 22 / 24 — include the server's replies).
 
-**3. `playSpeed` is real and we never used it.** Row 5 is the same file
-reopened at **8**. Both builders here hardcode `<playSpeed>1</playSpeed>`.
-Fast scrub in the app is this, not I-frame replay.
+### The header channelId is the session handle
 
-**4. `bIframeReplay` / `iIframeReplay` were never sent.** Zero occurrences.
-The library exposes them (`iframeReplay`) and the app does not use them; they
-remain untested against a real firmware.
+This is the only per-transfer discriminator the protocol has.
+
+- **`msgNum` is `0` on every cmd 5 frame, in both directions, in every
+  capture** — standalone and hub alike. It discriminates nothing and the app
+  never uses it that way. A library that pins it to 0 loses nothing; a library
+  that hopes to tell two transfers apart by it has nothing to hope with.
+- **The header `channelId` is minted fresh for every request** and echoed by
+  the camera on the reply and on every binary chunk. Standalone: replays on
+  40, 47, 53, 56, 61, 65, 71, 75, 79, 83, 87, 91 — with the seeks and stops
+  drawing from the same monotonic counter (39, 45, 46, 51, 52, 54, …). Through
+  a **hub**: 105, 111, 124 for "Videocamera lavanderia" and 142, 163, 170
+  across two children. **The app mints on a hub too** — the logical channel
+  travels in the XML `<channelId>` and in the file path, never in the header.
+- Data frames per session ranged 94–1 106 and **not one frame ever carried a
+  handle other than its own session's**.
+
+### The stop is real, and it is not instant
+
+`cmd 7` with `<name>CCYYYYMMDDHHMMSS</name>` + `<streamType>`, answered
+`rc 200`. **`CC` is the two-digit 1-based channel**, not a constant: the hub's
+second child (`<channelId>1</channelId>`, files under `…-Videocamera porta
+retro/`) is stopped with `0220260918181308` while the first child's stops are
+`01…`.
+
+Measured live against a mains standalone (192.168.50.226, 303 s clip,
+`mainStream`), abandoning a transfer mid-flight:
+
+| | frames after the abandon | for |
+| --- | --- | --- |
+| no stop sent | **8 126** | 3 475 ms |
+| cmd 7 stop (`rc 200` in 67 ms) | **0** | — |
+
+But the ack is not the end at the camera. In the app's own capture, four of the
+eleven stopped sessions were **still delivering when the ack came back** — 26,
+49, 91 and 91 further frames. A consumer that opens the next replay on the ack
+is racing that tail; wait for the wire to go quiet
+(`BaichuanClient.drainReplayFrames`).
+
+### Seek is time-addressed, and it precedes the replay
+
+`cmd 123 <ReplaySeek version="1.1">` carries `<channelId>`, a `<seq>` (the
+client's wall clock in Unix seconds, one per request) and a `<seekTime>` broken
+into `year/month/day/hour/minute/second`. The app sends **one before every
+replay**, naming the instant the user landed on; the replay that follows names
+the file containing it.
+
+What the seek does **not** do is move within an open session: every one of the
+12 is immediately followed by a cmd 5 on a fresh handle. So the single timeline
+is still the app's own construction — it maps a position to the file that holds
+it — but the camera is told the instant, not just the file:
+
+```
+seek 05:14:37 -> replay RecM03_…_051358_051559 speed=1   (1 106 frames)
+seek 04:56:46 -> replay RecM03_…_045646_045711 speed=1   (  913)   backwards
+seek 05:25:30 -> replay RecM03_…_052404_052604 speed=1   (  279)   forwards
+seek 06:13:54 -> replay RecM03_…_061242_061442 speed=1   (  635)
+seek 06:14:02 -> replay RecM03_…_061242_061442 speed=8   (  109)   SAME file, speed 8
+seek 06:14:38 -> replay RecM03_…_061242_061442 (no playSpeed tag) (94)
+```
+
+Files are 120–300 s, so choosing the right one is most of the seek and the
+error is one the eye does not catch. **The camera's own files are the index** —
+a consumer that wants a scrubbable timeline does not need to build one.
+
+### `playSpeed`, and the tags the app never sends
+
+- **`playSpeed` is real.** Row 5 above is the same file reopened at **8**. The
+  builders here hardcode `<playSpeed>1</playSpeed>`; fast scrub in the app is
+  this, not I-frame replay. The tag is also simply **omitted** on some requests
+  (rows 6–9), which the firmware accepts.
+- **`bIframeReplay` / `iIframeReplay` were never sent** — zero occurrences in
+  any capture. The library exposes them (`iframeReplay`) and they remain
+  untested against a real firmware.
 
 ### What this forbids
 
-Seeking *inside* one recording is not something the camera offers. A consumer
-that wants it must keep the bytes it has already received — the protocol will
-not replay from an offset. Forward-only playback plus `playSpeed` is what the
-wire actually supports.
+Seeking *inside* an open replay is not something the camera offers: a new
+position is a new session. A consumer that wants to keep what it already has
+must keep the bytes — the protocol will not replay from an offset.

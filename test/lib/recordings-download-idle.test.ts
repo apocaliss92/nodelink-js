@@ -107,6 +107,12 @@ async function replay(
       cmdId: 5,
       payloadXml: "<body/>",
       timeoutMs: 120_000,
+      // The capture's frames carry the header channelId the REAL transfer
+      // minted (28 standalone, 1 hub). A cmd 5 transfer now locks the handle it
+      // asked for rather than the one the first frame happened to carry, so the
+      // replay has to ask for the captured one — otherwise these frames belong
+      // to somebody else, which is exactly the point.
+      channelIdOverride: capture.frames[0]?.channelId ?? 0,
       ...opts,
     })
     .then((b) => {
