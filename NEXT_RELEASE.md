@@ -18,6 +18,20 @@
 
   ### Fixes
 
+- **A superseded cmd 5 replay is ENDED, not merely silenced.** 0.9.0 made a
+  transfer refuse every frame once a later replay opened on the same socket —
+  correct, and it stopped one transfer being handed another's bytes. But
+  nothing failed it: the idle timer completes only a transfer that already had
+  chunks, so a session superseded BEFORE its first byte could no longer settle
+  by any path. No error, no timeout, no log line — the caller simply waited.
+  Measured on the live fleet 2026-09-23: every Reolink clip stopped playing,
+  because opening a second clip silently killed the first, and the first is the
+  one the player was waiting on. Downstream it was worse than a hang, because
+  in-flight fetches are deduplicated per clip: one dead promise wedged that
+  clip for the life of the process, and retrying joined the same corpse. A
+  superseded transfer now completes with the bytes it has, or rejects naming
+  what superseded it — promptly, without waiting for the idle window.
+
 - **The declared shape of `<HddInfoList>` (cmd 102) was wrong, and wrong silently.** `HddInfoListConfig` declared `body.HddInfoList.item[{ id, size, used }]`. No firmware sends any of those names — the wire sends `body.HddInfoList.HddInfo` with `number`, `capacity`, `capacityM`, `format`, `mount`, `remainSize`, `remainSizeM`. A reader written against the declaration found nothing and said nothing, which is how a healthy card gets reported as absent. The interface now names the real fields (`RawHddInfo`), and prefer `getHddInfo()` over it. Two traps the old type also hid: **size is split across two fields** — E1 Outdoor PoE answers `capacity` 238 + `capacityM` 271, i.e. 238.26 GB, and either half alone is a wrong number — and `number` is an id, not an ordinal (a Home Hub calls its card 17).
 
 - **A video header split across chunks waits instead of throwing.** `parseIframe` / `parsePframe` guarded `buf.length < 20` — the fixed header — and then immediately read `readUInt32LE(20)` for `unknown`, which needs bytes 20..23. A buffer holding exactly 20 to 23 bytes passed the guard and threw out of range. Unreachable while a whole recording arrives as ONE push, which is why it survived; `onChunk` feeds the parser chunk by chunk and a boundary landing inside those four bytes killed the transfer. Guard is now `< 24`, pinned for both magics at every length 20–23.

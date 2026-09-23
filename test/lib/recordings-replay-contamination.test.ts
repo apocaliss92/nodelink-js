@@ -254,6 +254,48 @@ describe("a superseded cmd 5 replay does not contaminate its successor", () => {
     await expect(a.result).resolves.toHaveLength(64);
     await b.result.catch(() => undefined);
   });
+
+  it("FAILS a transfer superseded before its first byte, instead of hanging", async () => {
+    // The regression this file's own fix introduced, measured on the live
+    // fleet 2026-09-23: a superseded session refuses every frame, and the
+    // idle timer only ever completes a transfer that already had chunks — so
+    // a session superseded before its first byte could no longer settle by
+    // ANY path. Nothing was logged and nothing threw; the caller simply
+    // waited. Downstream that wedged every later read of the same clip,
+    // because in-flight fetches are deduplicated per clip and each new one
+    // was handed the same dead promise.
+    const client = makeClient();
+    const a = startTransfer(client, { channelIdOverride: 82 });
+    await vi.advanceTimersByTimeAsync(50);
+
+    // A has seen NOTHING when its successor opens.
+    const b = startTransfer(client, { channelIdOverride: 82 });
+    await vi.advanceTimersByTimeAsync(0);
+
+    await expect(a.result).rejects.toThrow(/superseded by a later transfer/);
+    // B is left in flight on purpose: under fake timers it settles only when
+    // its own 120 s budget is advanced, and awaiting it here would hang the
+    // test for a reason that has nothing to do with what it pins.
+    void b.result.catch(() => undefined);
+  });
+
+  it("does not wait for the idle window to say so", async () => {
+    // Promptness is the point: the caller is a player with a person in front
+    // of it. Settled with NO timer advanced at all.
+    const client = makeClient();
+    const a = startTransfer(client, { channelIdOverride: 82 });
+    await vi.advanceTimersByTimeAsync(0);
+    startTransfer(client, { channelIdOverride: 82 });
+    let settled = false;
+    void a.result.catch(() => {
+      settled = true;
+    });
+    // No timer advanced — only microtasks drained. The rejection crosses two
+    // awaits (the inner promise, then `sendBinary`), so it needs a couple of
+    // turns, and NOT the 500 ms idle window the old path depended on.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(true);
+  });
 });
 
 describe("the stop names the channel, not a constant 01", () => {

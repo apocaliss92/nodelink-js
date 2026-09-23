@@ -157,6 +157,17 @@ interface ReplaySession {
   readonly id: number;
   readonly discriminator: ReplayDiscriminator;
   superseded: boolean;
+  /**
+   * Fail the transfer this session belongs to, set once its `fail` exists.
+   *
+   * A superseded session refuses every frame. Without this it also refuses to
+   * END: the idle timer only completes a transfer that already had chunks, so
+   * a session superseded before its first byte never settles, and its caller
+   * waits for ever with nothing logged. Measured 2026-09-23 — every Reolink
+   * clip on the fleet, because opening a second clip silently killed the
+   * first and the first is the one the player was waiting on.
+   */
+  onSuperseded?: (reason: Error) => void;
   acceptedFrames: number;
   droppedFrames: number;
   readonly droppedChannelIds: Set<number>;
@@ -2660,6 +2671,17 @@ export class BaichuanClient extends EventEmitter<{
           `${prev.discriminator.kind}) superseded by #${this.replaySessionSeq + 1} after ${prev.acceptedFrames} accepted frame(s). ` +
           `Frames still in flight for #${prev.id} will be dropped, not handed to its successor.`,
       );
+      // And the transfer is ENDED, not merely silenced. Dropping its frames
+      // without failing it leaves the caller awaiting a promise that can no
+      // longer settle: the idle timer completes only a transfer that already
+      // had chunks. One superseded-before-first-byte transfer wedged every
+      // later read of that clip, because the caller deduplicates in-flight
+      // fetches by clip and handed every one the same dead promise.
+      prev.onSuperseded?.(
+        new Error(
+          `cmd 5 replay session #${prev.id} was superseded by a later transfer on this socket after ${prev.acceptedFrames} accepted frame(s)`,
+        ),
+      );
     }
     const session: ReplaySession = {
       id: ++this.replaySessionSeq,
@@ -3962,6 +3984,21 @@ export class BaichuanClient extends EventEmitter<{
         done = true;
         cleanup();
         reject(e instanceof Error ? e : new Error(String(e)));
+      };
+
+      // Now that `finish`/`fail` exist, a supersede can END this transfer
+      // instead of merely silencing it. Assigned here rather than at
+      // `openReplaySession`, which runs before them.
+      //
+      // A transfer that already has bytes keeps the behaviour it has always
+      // had — it completes with what it got, which is what the idle timer
+      // would have done a moment later. A transfer superseded BEFORE its
+      // first byte has nothing to complete with, and that is the case that
+      // used to hang: the idle timer only ever finishes a transfer with
+      // chunks, so the promise could no longer settle by any path.
+      session.onSuperseded = (reason) => {
+        if (chunks.length > 0) finish(Buffer.concat(chunks));
+        else fail(reason);
       };
 
       const armIdleFinish = () => {
