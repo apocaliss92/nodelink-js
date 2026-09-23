@@ -56,6 +56,12 @@ export {
   type BaichuanHddInfo,
 } from "./reolink/baichuan/utils/hddInfo";
 export {
+  buildReplaySeekXml,
+  readFirstIframeWallClock,
+  REPLAY_SEEK_MAX_DRIFT_MS,
+  type ReplaySeekOutcome,
+} from "./reolink/baichuan/utils/recordingReplay";
+export {
   DEFAULT_RECORDING_SEARCH_FILE_RECORD_TYPES,
   DEFAULT_RECORDING_SEARCH_RECORD_TYPES,
 } from "./reolink/baichuan/utils/recordingsFileInfoList";

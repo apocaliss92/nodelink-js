@@ -455,7 +455,19 @@ describe("fileInfoListReplayBinaryDownload ends the session at the camera", () =
     // A completed transfer went quiet for a whole idle window to finish, so
     // there is nothing to drain; waiting would be latency on the common path.
     expect(h.drains).toBe(0);
-    expect(h.order).toEqual(["binary:5", "xml:7"]);
+    // The cmd 123 ahead of the replay is new in 0.11.0 and is the point of
+    // it: a `<ReplaySeek>` is STICKY for the life of the connection, so a
+    // download that asked for no offset must still RESET the position or it
+    // inherits whoever seeked last and comes back silently short. Pinned by
+    // content as well as by order — a reset that pointed somewhere else would
+    // be worse than no reset at all.
+    expect(h.order).toEqual(["xml:123", "binary:5", "xml:7"]);
+    const seek = h.xml.find((c) => c.cmdId === 123);
+    expect(seek?.payloadXml).toContain("<ReplaySeek version=\"1.1\">");
+    // The clip's OWN start, out of its file name: …_20260922_051358_…
+    expect(seek?.payloadXml).toContain("<hour>5</hour>");
+    expect(seek?.payloadXml).toContain("<minute>13</minute>");
+    expect(seek?.payloadXml).toContain("<second>58</second>");
   });
 
   it("sends the cmd 7 stop when the consumer ABANDONS the transfer", async () => {

@@ -1,4 +1,52 @@
-import { BC_MAGIC, BC_MAGIC_REV, bcHeaderHasPayloadOffset } from "./constants";
+import {
+  BC_MAGIC,
+  BC_MAGIC_REV,
+  BC_MIN_PLAUSIBLE_PAYLOAD_OFFSET,
+  bcHeaderHasPayloadOffset,
+  bcHeaderIsKnown20,
+} from "./constants";
+
+/**
+ * How long this frame's header is: 20 bytes, or 24 with a `payloadOffset`.
+ *
+ * A known class answers on its own, exactly as it always has. An UNKNOWN class
+ * is decided by looking at bytes [20..24) and asking whether they could be a
+ * payloadOffset for this body.
+ *
+ * ## Why an allow-list was not enough
+ *
+ * `messageClass` is not always a class. Measured 2026-09-23 on an E1 Outdoor
+ * PoE (v3.1.0.5223) and a Home Hub (v3.3.0.456): after a `<ReplaySeek>`
+ * (cmd 123) the camera stamps every cmd 5 frame's `[responseCode|messageClass]`
+ * u32 with a WALL-CLOCK SECOND — `0x6ab3_7cfc` = 1 790 128 892, whose high half
+ * `0x6ab3` then lands in `messageClass`. It changes every second, so no
+ * allow-list can ever contain it. Read as a 20-byte header those frames come
+ * out shifted by four bytes: the extension/payload split is lost, `encryptLen`
+ * is never seen, and the first 1 024 bytes of every chunk stay encrypted. That
+ * is why in-clip seek looked impossible.
+ *
+ * A false positive needs four body bytes that read as a u32 in
+ * `[20, bodyLen]` — on the order of 1e-5 for a 40 KB body of ciphertext — and
+ * it can only happen on a class we have never seen, which today is decoded to
+ * garbage anyway. A false NEGATIVE is the old behaviour exactly.
+ */
+export function bcHeaderLen(
+  messageClass: number,
+  buf: AnyBuffer,
+  bodyLen: number,
+): 20 | 24 {
+  if (bcHeaderHasPayloadOffset(messageClass)) return 24;
+  if (bcHeaderIsKnown20(messageClass)) return 20;
+  if (buf.length < 24) {
+    // Undecidable yet. Ask the caller for the four bytes that decide it; the
+    // stream parser already treats this as "wait for 24".
+    throw new Error("not enough data for Baichuan header (needs 24 bytes)");
+  }
+  const candidate = buf.readUInt32LE(20);
+  return candidate >= BC_MIN_PLAUSIBLE_PAYLOAD_OFFSET && candidate <= bodyLen
+    ? 24
+    : 20;
+}
 
 export type AnyBuffer = Buffer<ArrayBufferLike>;
 
@@ -66,7 +114,7 @@ export function decodeHeader(buf: AnyBuffer): { header: BaichuanHeader; headerLe
   const responseCode = buf.readUInt16LE(16);
   const messageClass = buf.readUInt16LE(18);
 
-  const headerLen = bcHeaderHasPayloadOffset(messageClass) ? 24 : 20;
+  const headerLen = bcHeaderLen(messageClass, buf, bodyLen);
   if (buf.length < headerLen) throw new Error("not enough data for Baichuan header (needs 24 bytes)");
 
   const messageKey = buf.readUInt32LE(12);

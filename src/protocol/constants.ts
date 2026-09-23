@@ -33,6 +33,29 @@ export function bcHeaderHasPayloadOffset(messageClass: number): boolean {
 }
 
 /**
+ * The classes we have MEASURED to carry a 20-byte header (no `payloadOffset`).
+ *
+ * This is deliberately a list of what is known, not "everything else": a
+ * messageClass we have never seen is decided by inspecting the header, not by
+ * assuming the short form. See `bcHeaderLen` in `framing.ts`.
+ */
+export function bcHeaderIsKnown20(messageClass: number): boolean {
+  return (
+    messageClass === BC_CLASS_LEGACY || messageClass === BC_CLASS_MODERN_20
+  );
+}
+
+/**
+ * Smallest `payloadOffset` we will believe from an UNKNOWN message class.
+ *
+ * A real extension is an XML document; the shortest one this library has
+ * captured is 106 bytes (`<?xml …?><Extension version="1.1"><binaryData>1
+ * </binaryData></Extension>`). 20 is far below that and still rules out the
+ * small integers that dominate binary payload data.
+ */
+export const BC_MIN_PLAUSIBLE_PAYLOAD_OFFSET = 20;
+
+/**
  * Baichuan command IDs for login/logout.
  *
  * Values:

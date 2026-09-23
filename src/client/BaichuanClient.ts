@@ -4047,12 +4047,67 @@ export class BaichuanClient extends EventEmitter<{
           return;
         }
 
-        // PCAP: replay binary chunks can use responseCode=60052 (and similar 60k codes).
-        // Only treat classic 4xx/5xx-like codes as a hard error, and prefer tying it to
-        // the request msgNum to avoid cross-talk from other in-flight attempts.
+        // The extension says what this frame IS, so it is read before the
+        // frame is judged. Decoded once, here, and reused below.
+        let markedBinary = false;
+        let encryptLen: number | undefined;
+        if (frame.extension.length > 0) {
+          try {
+            const extDec = this.tryDecryptXml(
+              frame.extension,
+              frame.header.channelId,
+              enc,
+            );
+            if (extDec.includes("<binaryData>1</binaryData>")) {
+              markedBinary = true;
+            }
+            // Extract encryptLen if present - only first N bytes of payload are encrypted
+            const encryptLenMatch = extDec.match(
+              /<encryptLen>(\d+)<\/encryptLen>/i,
+            );
+            if (encryptLenMatch && encryptLenMatch[1]) {
+              encryptLen = parseInt(encryptLenMatch[1], 10);
+            }
+          } catch {
+            // ignore
+          }
+        }
+
+        // A REFUSAL CAN ONLY ARRIVE BEFORE THE STREAM OPENS.
+        //
+        // This used to be `rc >= 400 && rc < 60_000` — a range guess on a
+        // field the camera does not always use as a status. Measured
+        // 2026-09-23 on an E1 Outdoor PoE (v3.1.0.5223) and a Home Hub
+        // (v3.3.0.456): once a replay has been positioned with a
+        // `<ReplaySeek>` (cmd 123), every cmd 5 chunk carries a WALL-CLOCK
+        // SECOND spread across `[responseCode|messageClass]` — responseCode
+        // 31996 on a perfectly healthy 4K stream, one higher each second. No
+        // band can separate that from a 4xx, because next second it is a
+        // different number. The official app's own capture shows the same
+        // thing (`cap-muchgow3-97ecb9`, lastResponseCode 19859) — every app
+        // replay is preceded by a seek, so every app replay is stamped.
+        //
+        // The discriminator that does work is structural, and it is the shape
+        // of the exchange rather than the value of a byte: the camera answers
+        // the request with a `200` stream header and only then streams. So a
+        // frame is a refusal when it is ON OUR REQUEST, the stream has NOT
+        // opened yet, it does not announce binary data, and its code is not a
+        // success code. After the stream opens, `responseCode` is opaque.
+        //
+        // What this gives up: a camera that fails MID-transfer no longer
+        // throws. Such a frame is XML without `<binaryData>1</binaryData>`,
+        // so it is skipped below and the idle window finishes the transfer
+        // with the bytes that did arrive — a short clip rather than an
+        // exception. That is the better failure of the two, and it is the
+        // only way to keep a stamped stream.
         const rc = frame.header.responseCode;
-        const isHardError = rc >= 400 && rc < 60_000;
-        if (isHardError && frame.header.msgNum === msgNum) {
+        const isSuccessCode = rc === 0 || rc === 200 || rc === 201;
+        if (
+          streamMsgNum === undefined &&
+          !markedBinary &&
+          !isSuccessCode &&
+          frame.header.msgNum === msgNum
+        ) {
           fail(
             new Error(
               `Baichuan FileInfoList replay rejected (cmdId=${cmdId} reqChannelId=${channelId} rspChannelId=${frame.header.channelId} streamType=${expectedStreamType} msgNum=${frame.header.msgNum} responseCode=${rc})`,
@@ -4062,30 +4117,6 @@ export class BaichuanClient extends EventEmitter<{
         }
 
         try {
-          let markedBinary = false;
-          let encryptLen: number | undefined;
-          if (frame.extension.length > 0) {
-            try {
-              const extDec = this.tryDecryptXml(
-                frame.extension,
-                frame.header.channelId,
-                enc,
-              );
-              if (extDec.includes("<binaryData>1</binaryData>")) {
-                markedBinary = true;
-              }
-              // Extract encryptLen if present - only first N bytes of payload are encrypted
-              const encryptLenMatch = extDec.match(
-                /<encryptLen>(\d+)<\/encryptLen>/i,
-              );
-              if (encryptLenMatch && encryptLenMatch[1]) {
-                encryptLen = parseInt(encryptLenMatch[1], 10);
-              }
-            } catch {
-              // ignore
-            }
-          }
-
           const decrypted = decryptBinaryForReplay(
             frame.payload,
             frame.header.channelId,

@@ -46,6 +46,7 @@ import {
   BC_CMD_ID_FILE_INFO_LIST_GET,
   BC_CMD_ID_FILE_INFO_LIST_OPEN,
   BC_CMD_ID_FILE_INFO_LIST_REPLAY,
+  BC_CMD_ID_REPLAY_SEEK,
   BC_CMD_ID_FILE_INFO_LIST_STOP,
   BC_CMD_ID_FLOODLIGHT_STATUS_LIST,
   BC_CMD_ID_GET_ABILITY_SUPPORT,
@@ -428,11 +429,21 @@ import {
   buildFileInfoListReplayByIdXml,
   buildFileInfoListReplayByNameXml,
   buildFileInfoListStopXml,
+  buildReplaySeekXml,
   buildReplayStopNameFromFileName,
+  parseRecStartParamIfPresent,
+  readFirstIframeWallClock,
+  REPLAY_SEEK_MAX_DRIFT_MS,
   type RecordingReplayStreamType,
+  type ReplaySeekOutcome,
 } from "./utils/recordingReplay";
 import { sleepMs } from "./utils/recordings";
-import { endOfWallClockDay, wallClockParts } from "./utils/wallClock";
+import {
+  dateFromWallClock,
+  endOfWallClockDay,
+  wallClockParts,
+  type WallClockParts,
+} from "./utils/wallClock";
 import {
   buildDayRecordsXml,
   parseDayRecordsXml,
@@ -8605,6 +8616,26 @@ export class ReolinkBaichuanApi {
      * separable only because each one is stopped and drained.
      */
     headerChannelIdOverride?: number;
+    /**
+     * Start the replay at this instant INSIDE the recording, instead of at
+     * its beginning (cmd 123 `<ReplaySeek>` — see {@link ReolinkBaichuanApi#replaySeek}).
+     *
+     * The instant delivered is the nearest keyframe, up to one GOP (~2 s)
+     * either side; `onSeekOutcome` reports which one actually arrived. An
+     * instant outside the recording is the camera's business, not ours — it
+     * answers with whatever it holds and the outcome says where that was.
+     */
+    seekTo?: Date;
+    /** IANA zone of the camera's wall clock; defaults to `recordingsTimeZone`. */
+    timeZone?: string;
+    /**
+     * Where the stream REALLY began, once the first I-frame has been read
+     * back. Always called exactly once, before this promise settles — with
+     * `seekApplied: false` and a reason when the camera would not take the
+     * seek, so a caller can tell "played from the top" from "played from
+     * where I asked".
+     */
+    onSeekOutcome?: (outcome: ReplaySeekOutcome) => void;
   }): Promise<Buffer> {
     await this.client.login();
 
@@ -8682,8 +8713,80 @@ export class ReolinkBaichuanApi {
     const pinnedHeaderChannelId = params.headerChannelIdOverride;
     let abandoned = false;
 
+    // POSITION THE REPLAY — ALWAYS, even when the caller asked for no offset.
+    //
+    // A `<ReplaySeek>` is STICKY for the life of the connection. Measured
+    // 2026-09-23 on both topologies: seek to +40 s, replay (starts at +40 s),
+    // then replay AGAIN asking for nothing — and the second transfer still
+    // started at +40 s. A clip downloaded after somebody else's seek would be
+    // silently short, with no error anywhere. The official app has the same
+    // discipline for the same reason: in its capture, every single cmd 5 is
+    // preceded by a cmd 123, including the first.
+    //
+    // So the seek is not an optional extra here, it is how the position is
+    // made KNOWN. With no `seekTo` we send the recording's own start, which
+    // is a no-op on a clean connection and a repair on a dirty one.
+    const timeZone = params.timeZone ?? this.recordingsTimeZone;
+    const clipStart = this.replayStartInstantOf(ident, timeZone);
+    const requestedAt = params.seekTo ?? clipStart;
+    const outcome: ReplaySeekOutcome = {
+      requestedAt: params.seekTo ?? null,
+      deliveredAt: null,
+      driftMs: null,
+      seekApplied: false,
+    };
+    if (requestedAt) {
+      outcome.seekApplied = await this.replaySeek({
+        channel,
+        at: requestedAt,
+        ...(timeZone !== undefined ? { timeZone } : {}),
+      });
+      if (!outcome.seekApplied) {
+        // DEGRADE, NEVER FAIL. A firmware without cmd 123 must still download.
+        // Without the reset we cannot promise the position, so say so rather
+        // than let a caller believe a number we did not verify.
+        outcome.reason =
+          "camera did not accept cmd 123 <ReplaySeek>; the transfer runs unpositioned";
+        trace(`seek not applied for ${ident}: ${outcome.reason}`);
+      }
+    } else {
+      outcome.reason = `no start instant derivable from ${ident}; the transfer runs unpositioned`;
+      trace(outcome.reason);
+    }
+
+    // READ THE POSITION BACK. The camera answers 200 to a seek it then rounds
+    // by a keyframe — and 592 rounds up while the hub child rounds down — so
+    // the only honest position is the one in the bytes that arrive.
+    let deliveredParts: WallClockParts | undefined;
+    const observeChunk = (chunk: Buffer): void => {
+      if (deliveredParts === undefined) {
+        deliveredParts = readFirstIframeWallClock(chunk);
+      }
+    };
+    const settleOutcome = (): void => {
+      if (deliveredParts !== undefined) {
+        outcome.deliveredAt = dateFromWallClock(deliveredParts, timeZone);
+        if (outcome.requestedAt) {
+          outcome.driftMs =
+            outcome.deliveredAt.getTime() - outcome.requestedAt.getTime();
+          if (Math.abs(outcome.driftMs) > REPLAY_SEEK_MAX_DRIFT_MS) {
+            // Not an error: a branch that accepted work and produced
+            // something else has to say so, or nobody ever learns.
+            this.logger?.warn?.(
+              `[fileInfoListReplayBinaryDownload] seek drift ${outcome.driftMs} ms for ${ident}: ` +
+                `asked ${outcome.requestedAt.toISOString()}, delivered ${outcome.deliveredAt.toISOString()} ` +
+                `(> ${REPLAY_SEEK_MAX_DRIFT_MS} ms — the camera did not honour the position)`,
+            );
+          }
+        }
+      } else if (outcome.reason === undefined) {
+        outcome.reason = "no I-frame in the transfer; delivered position unknown";
+      }
+      params.onSeekOutcome?.(outcome);
+    };
+
     try {
-      return await this.client.sendBinary({
+      const buf = await this.client.sendBinary({
         cmdId: BC_CMD_ID_FILE_INFO_LIST_REPLAY,
         channel,
         ...(pinnedHeaderChannelId != null
@@ -8697,14 +8800,22 @@ export class ReolinkBaichuanApi {
         ...(params.idleTimeoutMs != null
           ? { idleTimeoutMs: params.idleTimeoutMs }
           : {}),
-        ...(params.onChunk ? { onChunk: params.onChunk } : {}),
+        // The position is read off the bytes BEFORE the consumer sees them:
+        // `onChunk` throwing is how a consumer abandons a transfer, and even
+        // an abandoned transfer must be able to say where it started.
+        onChunk: (chunk: Buffer) => {
+          observeChunk(chunk);
+          params.onChunk?.(chunk);
+        },
       });
+      return buf;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       trace(`download failed: ${msg}`);
       abandoned = true;
       throw e;
     } finally {
+      settleOutcome();
       // END THE SESSION AT THE CAMERA. A cmd 5 replay is a session and nothing
       // in the data stream closes it: a consumer that lets go (today, by
       // throwing from `onChunk`) leaves the camera sending. Measured live on
@@ -8721,6 +8832,92 @@ export class ReolinkBaichuanApi {
         // case where the camera is still mid-clip.
         drain: abandoned,
       });
+    }
+  }
+
+  /**
+   * The instant a recording begins, read out of its own file name.
+   *
+   * `Rec*_YYYYMMDD_HHMMSS_…` is the camera's wall clock with no offset on the
+   * wire, so it is resolved through the same zone as every other recording
+   * timestamp. `undefined` for a name that does not carry one — an identifier
+   * this library did not get from a FileInfoList listing, for instance.
+   */
+  private replayStartInstantOf(
+    fileName: string,
+    timeZone: string | undefined,
+  ): Date | undefined {
+    const stamp = parseRecStartParamIfPresent(fileName);
+    if (!stamp) return undefined;
+    return dateFromWallClock(
+      {
+        year: Number(stamp.slice(0, 4)),
+        month: Number(stamp.slice(4, 6)),
+        day: Number(stamp.slice(6, 8)),
+        hour: Number(stamp.slice(8, 10)),
+        minute: Number(stamp.slice(10, 12)),
+        second: Number(stamp.slice(12, 14)),
+      },
+      timeZone,
+    );
+  }
+
+  /**
+   * Position the NEXT replay of this channel — cmd 123 `<ReplaySeek>`.
+   *
+   * The camera can replay one recording from an arbitrary instant inside it,
+   * and this is how the official app asks: a wall-clock second, sent BEFORE
+   * the cmd 5 that opens the stream. Measured 2026-09-23 — asked +40 s into a
+   * 75 s clip, the first I-frame delivered was the clip's start +40 s, on an
+   * E1 Outdoor PoE (v3.1.0.5223) and on a Home Hub child (v3.3.0.456).
+   *
+   * Two things a caller must know:
+   *
+   * - **The granularity is a KEYFRAME, not a second.** The stream begins at
+   *   the I-frame nearest the instant asked for — 592 rounded up, the hub
+   *   child rounded down, both by up to one GOP (~2 s). Read the position back
+   *   (`fileInfoListReplayBinaryDownload` reports it) rather than assuming it.
+   * - **The position is STICKY for the life of the connection.** Measured: a
+   *   seek, then a replay, then ANOTHER replay that asked for no seek — and
+   *   the second one still started at the seek point. This is why
+   *   `fileInfoListReplayBinaryDownload` always sends a `<ReplaySeek>`, to the
+   *   clip's own start when the caller asked for no offset. Calling this
+   *   method directly leaves that discipline to you.
+   *
+   * Returns `true` when the camera accepted the command. A camera that does
+   * not support cmd 123 returns `false` rather than throwing, because a seek
+   * is an enhancement to a download and must never be the reason one fails.
+   */
+  async replaySeek(params: {
+    channel: number;
+    /** An absolute instant; converted to the camera's wall clock. */
+    at: Date;
+    /** IANA zone of the camera's wall clock; defaults to `recordingsTimeZone`. */
+    timeZone?: string;
+    timeoutMs?: number;
+  }): Promise<boolean> {
+    const channel = this.normalizeChannel(params.channel);
+    const timeZone = params.timeZone ?? this.recordingsTimeZone;
+    const payloadXml = buildReplaySeekXml({
+      channel,
+      parts: wallClockParts(params.at, timeZone),
+    });
+    try {
+      await this.client.sendXml({
+        cmdId: BC_CMD_ID_REPLAY_SEEK,
+        // The app sends cmd 123 with NO extension (`payloadOffset` 0) and the
+        // channel in the XML instead. Passing `channel` here would add one.
+        extensionXml: "",
+        payloadXml,
+        timeoutMs: params.timeoutMs ?? 8_000,
+      });
+      return true;
+    } catch (e) {
+      this.logger?.warn?.(
+        `[replaySeek] channel=${channel} at=${params.at.toISOString()} not applied: ` +
+          `${e instanceof Error ? e.message : String(e)}`,
+      );
+      return false;
     }
   }
 
