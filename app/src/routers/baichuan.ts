@@ -2865,6 +2865,47 @@ export const baichuanRouter = router({
       return await api.setupEmailPushToManager(params, input.channel);
     }),
 
+  setupBaichuanWebhookToManager: publicProcedure
+    .meta({
+      description:
+        "Arm Baichuan HaCfg webhook push (cmd 807) so the camera POSTs wake/sleep events to the given URL. Verifies with cmd 806. Independent of Email Push / Support.webhook.",
+    })
+    .input(
+      ConnectionWithChannel.extend({
+        url: z.string().url(),
+        verifyCert: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const api = await getApi(input);
+      return await api.setupBaichuanWebhookToManager({
+        url: input.url,
+        ...(input.verifyCert !== undefined
+          ? { verifyCert: input.verifyCert }
+          : {}),
+      });
+    }),
+
+  probeBaichuanWebhookSupport: publicProcedure
+    .meta({
+      description:
+        "Probe whether the device supports Baichuan HaCfg webhook (GET cmd 806 with parseable <HaCfg>).",
+    })
+    .input(OptionalConnectionInput)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      const supported = await api.probeBaichuanWebhookSupport();
+      return { supported };
+    }),
+
+  getHaCfg: publicProcedure
+    .meta({ description: "Read Baichuan HaCfg webhook config (cmd 806)." })
+    .input(OptionalConnectionInput)
+    .query(async ({ input }) => {
+      const api = await getApi(input);
+      return (await api.getHaCfg()) ?? null;
+    }),
+
   setAutoReboot: publicProcedure
     .meta({
       description:

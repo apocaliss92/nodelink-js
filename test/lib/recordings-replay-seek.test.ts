@@ -438,15 +438,70 @@ describe("fileInfoListReplayBinaryDownload positions every transfer", () => {
     return b;
   };
 
-  it("sends a <ReplaySeek> even when the caller asked for no offset", async () => {
-    // A seek is sticky for the life of the connection, so "no offset" has to
-    // mean "back to the start", not "leave whatever is there".
+  it("sends NO <ReplaySeek> on a connection that has never been seeked", async () => {
+    /**
+     * This asserted the opposite until 2026-09-23, and the opposite was a
+     * measured regression.
+     *
+     * The reasoning was sound — a seek is sticky for the life of the
+     * connection, so "no offset" must mean "back to the start" rather than
+     * "leave whatever is there" — but positioning a replay is not free. On
+     * 592 (E1 Outdoor PoE v3.1.0.5223), same file, same connection,
+     * `playSpeed` 1, decoded with the library's own demuxer:
+     *
+     *   sub twin, 39.855 s of media   with <ReplaySeek> 33 591 ms (1.2x)
+     *                                 without             418 ms (95.3x)
+     *   main twin                     with               1.37x
+     *                                 without           3 137 ms (12.7x)
+     *
+     * The command does not merely position the replay, it puts the channel
+     * into a PACED playback mode: supply collapses by ~80x and the transfer
+     * stops being a download. Downstream, a consumer that finishes a transfer
+     * after an idle window then cuts the clip at a GOP boundary — the operator
+     * saw every clip truncated to 4.0 s (60 access units at 15 fps) with rows
+     * reading 24-41 s.
+     *
+     * So the reset is sent only where it can actually repair something: a
+     * channel THIS connection has really seeked. A clean one has nothing
+     * sticky to undo.
+     */
     const h = makeApi();
     await h.api.fileInfoListReplayBinaryDownload({ channel: 0, fileName: CLIP });
-    expect(h.seekOf()).toBeDefined();
-    expect(h.seekOf()?.payloadXml).toContain("<hour>5</hour>");
-    expect(h.seekOf()?.payloadXml).toContain("<minute>13</minute>");
-    expect(h.seekOf()?.payloadXml).toContain("<second>58</second>");
+    expect(h.seekOf()).toBeUndefined();
+  });
+
+  it("RESETS a channel it has already seeked, so the stickiness is still undone", async () => {
+    // The half that must survive: once this connection has positioned the
+    // channel, the next unpositioned transfer would inherit it, and that is
+    // the defect the always-on seek was added for.
+    const h = makeApi();
+    await h.api.fileInfoListReplayBinaryDownload({
+      channel: 0,
+      fileName: CLIP,
+      seekTo: new Date(clipStart.getTime() + 40_000),
+    });
+    const afterSeek = h.xml.filter((c) => c.cmdId === 123).length;
+    expect(afterSeek).toBe(1);
+    await h.api.fileInfoListReplayBinaryDownload({ channel: 0, fileName: CLIP });
+    const resets = h.xml.filter((c) => c.cmdId === 123);
+    expect(resets).toHaveLength(2);
+    // …and the reset goes to the clip's own start, not to the old position.
+    expect(resets[1]?.payloadXml).toContain("<hour>5</hour>");
+    expect(resets[1]?.payloadXml).toContain("<minute>13</minute>");
+    expect(resets[1]?.payloadXml).toContain("<second>58</second>");
+  });
+
+  it("does not reset a DIFFERENT channel because a sibling was seeked", async () => {
+    // Stickiness is per channel; resetting channel 1 because channel 0 moved
+    // would pay the pacing cost on a channel that never needed it.
+    const h = makeApi();
+    await h.api.fileInfoListReplayBinaryDownload({
+      channel: 0,
+      fileName: CLIP,
+      seekTo: new Date(clipStart.getTime() + 40_000),
+    });
+    await h.api.fileInfoListReplayBinaryDownload({ channel: 1, fileName: CLIP });
+    expect(h.xml.filter((c) => c.cmdId === 123)).toHaveLength(1);
   });
 
   it("sends the instant the caller asked for", async () => {

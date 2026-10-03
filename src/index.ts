@@ -138,6 +138,10 @@ export {
   type SleepInferenceInput,
   type SleepInferenceDecision,
 } from "./reolink/baichuan/utils/sleepInference";
+export {
+  mapToSimpleEvent,
+  shouldAcceptSleepPushSource,
+} from "./reolink/baichuan/utils/events";
 // DeviceAbilities is already exported via export * above
 export * from "./rtsp/urls";
 export * from "./rtsp/server";
@@ -290,3 +294,17 @@ export type {
 // plugin, manager app, integration tests) can stand up an instance
 // without depending on app/-only modules.
 export * from "./emailPush/index";
+export * from "./baichuanWebhook/index";
+export {
+  buildHaCfgXml,
+  parseHaCfgXml,
+  isHaCfgSupportedResponse,
+  type HaCfgConfig,
+} from "./reolink/baichuan/utils/haCfg";
+export {
+  powerSourceFromBatteryInfo,
+  isMainsAdapterStatus,
+  isBatteryAdapterCharging,
+  buildSwitchBatteryAdapterModeXml,
+  parseSwitchBatteryAdapterModeResponse,
+} from "./reolink/baichuan/utils/powerSource";

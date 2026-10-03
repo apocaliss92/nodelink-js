@@ -719,6 +719,10 @@ export async function getOrCreateApiConnection(
         ? {
             emailPushCameraId: camera.id,
             emailPushChannel: camera.rtspChannel ?? 0,
+            // Parallel HaCfg webhook bus bridge (cmd 806/807). Same
+            // cameraId key the intake uses in `/webhook/<cameraId>`.
+            baichuanWebhookCameraId: camera.id,
+            baichuanWebhookChannel: camera.rtspChannel ?? 0,
           }
         : {}),
       logger: {

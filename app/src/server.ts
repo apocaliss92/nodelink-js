@@ -66,6 +66,10 @@ import {
 } from "./email-push-server.js";
 import { resolveEmailPushCameraId } from "./email-push-resolver.js";
 import {
+  startBaichuanWebhookServer,
+  stopBaichuanWebhookServer,
+} from "./baichuan-webhook-server.js";
+import {
   startProcessDiagnostics,
   stopProcessDiagnostics,
 } from "./process-diagnostics.js";
@@ -979,6 +983,15 @@ async function shutdown() {
     });
   }
 
+  // Stop Baichuan HaCfg webhook HTTP server.
+  try {
+    await stopBaichuanWebhookServer();
+  } catch (error) {
+    appLogger.error(`Error stopping Baichuan webhook server: ${error}`, {
+      source: "server",
+    });
+  }
+
   // Stop the RTSP backchannel listener so its port is released on restart.
   try {
     await stopBackchannelServer();
@@ -1092,6 +1105,18 @@ server.listen(PORT, async () => {
     }
   } catch (error) {
     appLogger.error(`Error initializing email push server: ${error}`, {
+      source: "server",
+    });
+  }
+
+  // Baichuan HaCfg webhook intake — parallel to Email Push for battery
+  // firmwares that support cmd 806/807.
+  try {
+    if (settings.baichuanWebhook?.enabled) {
+      await startBaichuanWebhookServer();
+    }
+  } catch (error) {
+    appLogger.error(`Error initializing Baichuan webhook server: ${error}`, {
       source: "server",
     });
   }

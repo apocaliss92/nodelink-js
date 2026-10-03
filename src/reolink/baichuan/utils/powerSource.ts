@@ -78,12 +78,43 @@ export const parseSwitchBatteryAdapterModeResponse = (
 };
 
 /**
+ * True when `adapterStatus` names a mains/transformer adapter.
+ *
+ * Firmwares disagree on the exact token (`adapter`, `ACAdapter`, …); any
+ * case-insensitive substring match on `"adapter"` counts. `solarPanel` is
+ * intentionally excluded — solar charges the battery but is not wired mode.
+ */
+export const isMainsAdapterStatus = (
+  adapterStatus: string | undefined | null,
+): boolean => {
+  if (adapterStatus == null || adapterStatus === "") return false;
+  return adapterStatus.toLowerCase().includes("adapter");
+};
+
+/**
+ * True when the battery payload indicates the device is on a charger
+ * (mains adapter, solar panel, or an in-progress/complete charge cycle).
+ *
+ * Used by consumers (Scrypted Charger / prebuffer) that need a broader
+ * "is charging" signal than {@link powerSourceFromBatteryInfo}.
+ */
+export const isBatteryAdapterCharging = (
+  battery: Pick<BatteryInfo, "adapterStatus" | "chargeStatus">,
+): boolean => {
+  if (isMainsAdapterStatus(battery.adapterStatus)) return true;
+  const adapter = (battery.adapterStatus ?? "").toLowerCase();
+  if (adapter === "solarpanel") return true;
+  const charge = (battery.chargeStatus ?? "").toLowerCase();
+  return charge === "charging" || charge === "chargecomplete";
+};
+
+/**
  * Derive the power source currently in use from a BatteryInfo payload.
  *
  * `adapterStatus` is the firmware's own view of the charging port:
- * - `adapter`     → mains/transformer powered (wired mode)
- * - `solarPanel`  → solar charging, still battery powered
- * - `none`        → running on battery
+ * - any token containing `"adapter"` (e.g. `adapter`, `ACAdapter`) → wired mode
+ * - `solarPanel` → solar charging, still battery powered
+ * - `none` → running on battery
  *
  * Returns `undefined` when the device does not report `adapterStatus`.
  */
@@ -92,5 +123,5 @@ export const powerSourceFromBatteryInfo = (
 ): BatteryPowerSourceMode | undefined => {
   const status = battery.adapterStatus;
   if (status == null || status === "") return undefined;
-  return status.toLowerCase() === "adapter" ? "adapter" : "battery";
+  return isMainsAdapterStatus(status) ? "adapter" : "battery";
 };

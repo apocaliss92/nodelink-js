@@ -85,6 +85,7 @@ describe("ReolinkBaichuanApi email-push auto-bridge", () => {
       type: "motion",
       channel: 0,
       timestamp: 100,
+      source: "email",
     });
 
     await api.close();

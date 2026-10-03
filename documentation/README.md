@@ -18,6 +18,7 @@ Full project overview, installation, and examples: **[Main README](../README.md)
 | [Detection](./baichuan-api/detection.md)     | Motion, AI, PIR, autotracking settings       |
 | [Lights](./baichuan-api/lights.md)           | Spotlight, floodlight, siren, chime/DingDong |
 | [Battery](./baichuan-api/battery.md)         | Battery status, sleep/wake management        |
+| [Webhook (HaCfg)](./baichuan-api/webhook.md) | Baichuan HTTP wake/sleep push (cmd 806/807)  |
 | [OSD](./baichuan-api/osd.md)                 | On-screen display configuration              |
 | [Network](./baichuan-api/network.md)         | Network, WiFi, storage, system settings      |
 

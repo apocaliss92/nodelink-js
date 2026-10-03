@@ -66,6 +66,7 @@ Also available: **[CGI HTTP API](../cgi-api/README.md)** for HTTP-based configur
 - **[OSD & Display](./osd.md)** - On-screen display, camera name
 - **[Network & System](./network.md)** - Ports, WiFi, storage, reboot
 - **[Email & Email Push](./email.md)** - SMTP config, schedule, manager-side intake, auto-configure
+- **[Baichuan HaCfg Webhook](./webhook.md)** - HTTP wake/sleep push (cmd 806/807), probe, manager + Scrypted intake
 - **[Time, NTP, DST, Auto-Reboot](./time.md)** - Clock, time zone, NTP, DST, scheduled reboot
 
 ---

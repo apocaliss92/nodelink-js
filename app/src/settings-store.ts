@@ -269,6 +269,24 @@ export const SettingsSchema = z.object({
     .default({}),
 
   /**
+   * Baichuan HaCfg webhook push (cmd 806/807): battery cameras POST
+   * wake/sleep JSON to the manager while the control socket is
+   * idle-disconnected. Parallel to Email Push — Prefer this when the
+   * firmware supports HaCfg (`probeBaichuanWebhookSupport`).
+   */
+  baichuanWebhook: z
+    .object({
+      enabled: z.boolean().default(true),
+      /** HTTP listen port. Default 9081. */
+      port: z.number().int().min(1).max(65535).default(9081),
+      /** Bind host (0.0.0.0 to accept on LAN). */
+      bindHost: z.string().default("0.0.0.0"),
+      /** Path prefix before the camera id. Final route: `${pathPrefix}/:cameraId`. */
+      pathPrefix: z.string().default("/webhook"),
+    })
+    .default({}),
+
+  /**
    * Internal: list of one-shot migration IDs that have already been applied
    * to this settings file. Read and updated by `loadSettings()` only — never
    * exposed in the UI. New IDs added here when we ship a migration so it

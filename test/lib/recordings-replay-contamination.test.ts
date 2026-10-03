@@ -38,7 +38,7 @@
 
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { BaichuanClient } from "../../src/client/BaichuanClient";
-import type { BaichuanFrame } from "../../src/protocol/framing";
+import { decodeHeader, encodeHeader, type BaichuanFrame } from "../../src/protocol/framing";
 import { buildReplayStopNameFromFileName } from "../../src/reolink/baichuan/utils/recordingReplay";
 
 const CMD_REPLAY = 5;
@@ -455,19 +455,19 @@ describe("fileInfoListReplayBinaryDownload ends the session at the camera", () =
     // A completed transfer went quiet for a whole idle window to finish, so
     // there is nothing to drain; waiting would be latency on the common path.
     expect(h.drains).toBe(0);
-    // The cmd 123 ahead of the replay is new in 0.11.0 and is the point of
-    // it: a `<ReplaySeek>` is STICKY for the life of the connection, so a
-    // download that asked for no offset must still RESET the position or it
-    // inherits whoever seeked last and comes back silently short. Pinned by
-    // content as well as by order — a reset that pointed somewhere else would
-    // be worse than no reset at all.
-    expect(h.order).toEqual(["xml:123", "binary:5", "xml:7"]);
-    const seek = h.xml.find((c) => c.cmdId === 123);
-    expect(seek?.payloadXml).toContain("<ReplaySeek version=\"1.1\">");
-    // The clip's OWN start, out of its file name: …_20260922_051358_…
-    expect(seek?.payloadXml).toContain("<hour>5</hour>");
-    expect(seek?.payloadXml).toContain("<minute>13</minute>");
-    expect(seek?.payloadXml).toContain("<second>58</second>");
+    // **No cmd 123 here, and that is the fix, not an omission.** 0.11.0 sent a
+    // `<ReplaySeek>` ahead of EVERY replay, because the position is sticky for
+    // the life of the connection and an unpositioned download would otherwise
+    // inherit whoever seeked last. The reasoning was right; the cost was
+    // unmeasured. Positioning a channel puts it into a PACED playback mode —
+    // 592, same file, same connection: 418 ms without, 33 591 ms with, a ~80x
+    // collapse in supply — and downstream that turned every clip into 4.0 s of
+    // media, because a consumer that ends a transfer on an idle window finally
+    // had idle windows to find. The reset now goes only to a channel THIS
+    // connection has really moved (`recordings-replay-seek.test.ts` owns that
+    // rule, both halves).
+    expect(h.order).toEqual(["binary:5", "xml:7"]);
+    expect(h.xml.find((c) => c.cmdId === 123)).toBeUndefined();
   });
 
   it("sends the cmd 7 stop when the consumer ABANDONS the transfer", async () => {
@@ -498,5 +498,105 @@ describe("fileInfoListReplayBinaryDownload ends the session at the camera", () =
     await h.api.fileInfoListReplayBinaryDownload({ channel: 1, fileName: child });
     const stop = h.xml.find((c) => c.cmdId === 7);
     expect(stop?.payloadXml).toContain("<name>0220260918181308</name>");
+  });
+});
+
+describe("the handle on the WIRE is one byte, and the lock must compare one byte", () => {
+  /**
+   * The defect that made every Reolink clip return zero bytes, 2026-09-23.
+   *
+   * `encodeHeader` writes the channelId with `writeUInt8(…, 12)` and
+   * `decodeHeader` reads it back with `readUInt8(12)`: **the wire field is
+   * eight bits**. The mint takes `nextMsgNum()`, which is SIXTEEN
+   * (`(this.msgNum + 1) & 0xffff`), and the lock compared the echoed byte
+   * against the unmasked mint. So the moment the shared counter passed 255,
+   * every frame of every cmd 5 replay was dropped as `foreign-channel`,
+   * forever, on that connection.
+   *
+   * Live arithmetic from the hub, three independent samples:
+   *
+   *   minted 2497 → echoed 193 ; 2497 − 193 = 2304 = 9 × 256 ; 2497 & 0xff = 193
+   *   minted 2516 → echoed 212 ; 2516 − 212 = 2304            ; 2516 & 0xff = 212
+   *   echoed   48 → minted ≡ 48 (mod 256)
+   *
+   * It read as "the camera stopped serving clips" and cost a whole evening,
+   * because a transfer that receives zero of its OWN chunks cannot be ended
+   * by the idle timer either (`armIdleFinish` only finishes when chunks have
+   * arrived), so it hung to the 120 s deadline and held the camera's lane.
+   *
+   * **Why the existing tests above could never catch it:** `frameOf` builds a
+   * `BaichuanFrame` object directly, so the encode/decode round trip — the
+   * only place the truncation happens — never runs. This block asserts the
+   * truncation against the REAL codec first, then feeds the byte the camera
+   * would really echo.
+   */
+  it("the codec really does truncate a handle above 255", () => {
+    const encoded = encodeHeader({
+      cmdId: CMD_REPLAY,
+      bodyLen: 0,
+      channelId: 2497,
+      streamType: 0,
+      msgNum: 0,
+      responseCode: 200,
+      messageClass: 0,
+      payloadOffset: 0,
+    });
+    const { header } = decodeHeader(Buffer.from(encoded as Uint8Array));
+    expect(header.channelId).toBe(193);
+    expect(header.channelId).toBe(2497 & 0xff);
+  });
+
+  // NOTE for whoever disarms this: the fix masks at the mint AND at the
+  // comparison, and those are redundant — either alone makes this pass. Only
+  // removing BOTH turns it red. That is a property of the fix, not a hole in
+  // the test: the behaviour below is what matters, and it is pinned.
+  it("ACCEPTS its own frames when the minted handle is above 255", async () => {
+    const client = makeClient();
+    // Walk the shared counter past a byte, exactly as a live connection does
+    // after a few hundred commands. Nothing else about the transfer changes.
+    const internals = client as unknown as { msgNum: number };
+    internals.msgNum = 2496;
+
+    const t = startTransfer(client, {});
+    expect(t.mintedChannelId).toBeGreaterThan(0xff);
+    await vi.advanceTimersByTimeAsync(0);
+
+    // What the camera really echoes: the byte it was sent.
+    const onTheWire = t.mintedChannelId & 0xff;
+    expect(onTheWire).not.toBe(t.mintedChannelId);
+    for (let i = 0; i < 3; i++) {
+      client.emit(
+        "frame",
+        frameOf({
+          channelId: onTheWire,
+          responseCode: i === 0 ? 200 : 0,
+          fill: 0xbb,
+          payloadLen: 64,
+        }),
+      );
+    }
+    await vi.advanceTimersByTimeAsync(600);
+    const bytes = await t.result;
+    expect(bytes.length).toBe(192);
+  });
+
+  it("still REJECTS a foreign handle that merely shares no low byte", async () => {
+    // The discriminator must survive the fix: masking to a byte narrows the
+    // space to 256, and this is the half that proves it still discriminates.
+    const client = makeClient();
+    const internals = client as unknown as { msgNum: number };
+    internals.msgNum = 2496;
+    const t = startTransfer(client, {});
+    await vi.advanceTimersByTimeAsync(0);
+    const foreign = ((t.mintedChannelId & 0xff) + 1) & 0xff;
+    client.emit(
+      "frame",
+      frameOf({ channelId: foreign, responseCode: 200, fill: 0xcc, payloadLen: 64 }),
+    );
+    // Nothing of its own ever arrives, so it can only end at the deadline —
+    // which is itself the second half of this defect's cost and why the
+    // provider's lane sat dead for 120 s per clip.
+    await vi.advanceTimersByTimeAsync(121_000);
+    await expect(t.result).rejects.toThrow();
   });
 });

@@ -14,7 +14,22 @@ A **complete web-based management interface** for camera configuration and strea
 - Real-time logs and process metrics
 - Settings for RTSP port, WebRTC ICE, MQTT broker, and Home Assistant discovery
 - Embedded SMTP intake for reliable motion alerts on battery cameras (see below)
+- Parallel Baichuan HaCfg webhook intake (HTTP POST wake/sleep) for firmwares that support cmd 806/807
 - PWA support, responsive design
+
+## Baichuan Webhook (HaCfg) for Battery Cameras
+
+Some battery firmwares (notably Video Doorbell Gen 2 Wired Power) can POST wake/sleep JSON to an HTTP URL via Baichuan `<HaCfg>` (cmd 806 get / 807 set) while the control socket is idle-disconnected. This is independent of Email Push and of CGI `Support.webhook`.
+
+### Server pane — Settings → Baichuan Webhook
+
+- Enable the intake (default port `9081`, bind host `0.0.0.0`)
+- Copy the recommended camera-facing host and arm a camera with tRPC `baichuanWebhook.setupCamera` (or the library `setupBaichuanWebhookToManager`)
+- Recent events mirror Email Push (wake/pir → motion, wake/doorbell → doorbell, sleep → sleeping)
+
+The Baichuan api constructed in `rtsp-manager` sets `baichuanWebhookCameraId: camera.id` so deliveries auto-bridge into `onSimpleEvent` like Email Push.
+
+See [../documentation/baichuan-api/webhook.md](../documentation/baichuan-api/webhook.md).
 
 ## Email Push for Battery Cameras
 

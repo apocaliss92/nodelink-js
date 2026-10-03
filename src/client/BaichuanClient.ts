@@ -174,6 +174,32 @@ interface ReplaySession {
   reportedDrop: boolean;
 }
 
+/**
+ * The channelId as it exists ON THE WIRE.
+ *
+ * `encodeHeader` writes this field with `writeUInt8(…, 12)` and `decodeHeader`
+ * reads it with `readUInt8(12)`: it is eight bits, and a camera can only echo
+ * the byte it was sent. Every value that is minted, locked or compared must
+ * pass through here, or a 16-bit mint and an 8-bit echo will disagree forever.
+ * Masking at the mint alone is not enough — an override path would re-open the
+ * same gap at the comparison.
+ *
+ * The discriminator space is therefore 256 rather than 65 536. That is ample:
+ * the app's own captures used handles in 40…170, and the space only has to
+ * separate a transfer from the in-flight tail of its immediate predecessor.
+ *
+ * **The two call sites are REDUNDANT, deliberately, and no test can pin either
+ * one alone.** Masking at the mint makes the lock's value already a byte;
+ * masking at the comparison makes an unmasked mint harmless. Disarming either
+ * on its own leaves the suite green — verified — and only disarming both
+ * fails it. Keep both anyway: the mint covers the ordinary path, the
+ * comparison covers a caller that pins a handle through `channelIdOverride`.
+ * This note exists so the next reader does not delete one as dead.
+ */
+export function toWireChannelId(channelId: number): number {
+  return channelId & 0xff;
+}
+
 export class BaichuanClient extends EventEmitter<{
   frame: [BaichuanFrame];
   push: [BaichuanFrame];
@@ -3818,7 +3844,15 @@ export class BaichuanClient extends EventEmitter<{
     // wire, which is how a superseded transfer's frames used to be handed to
     // its successor.
     const sessionCounter = this.nextMsgNum();
-    const channelId = params.channelIdOverride ?? sessionCounter;
+    // MASKED to a byte, because that is the width of the field it travels in.
+    // `encodeHeader` writes `writeUInt8(channelId & 0xff, 12)` and the camera
+    // echoes that byte; `nextMsgNum()` is 16 bits. Minting unmasked meant that
+    // the moment the shared counter passed 255 the lock below compared an
+    // echoed byte against a number that could not fit in one, and EVERY frame
+    // of EVERY cmd 5 replay was dropped as `foreign-channel` for the life of
+    // the connection. Measured live: minted 2497 → echoed 193 (2497 & 0xff),
+    // minted 2516 → echoed 212. Zero bytes, every clip, every camera.
+    const channelId = toWireChannelId(params.channelIdOverride ?? sessionCounter);
     const discriminator: ReplayDiscriminator =
       params.channelIdOverride == null
         ? { kind: "minted", channelId }
@@ -4034,7 +4068,7 @@ export class BaichuanClient extends EventEmitter<{
         // work has to say how much.
         if (
           lockedChannelId !== undefined &&
-          frame.header.channelId !== lockedChannelId
+          frame.header.channelId !== toWireChannelId(lockedChannelId)
         ) {
           this.countReplayDrop(session, frame, "foreign-channel");
           return;
@@ -4531,7 +4565,8 @@ export class BaichuanClient extends EventEmitter<{
     // - msgNum in header is always 0
     // So we use the message counter for channelId, but fix msgNum to 0.
     const sessionCounter = this.nextMsgNum();
-    const channelId = params.channelIdOverride ?? sessionCounter;
+    // Same one-byte wire field as the replay path above — see `toWireChannelId`.
+    const channelId = toWireChannelId(params.channelIdOverride ?? sessionCounter);
     const msgNum = params.msgNumOverride ?? 0; // PCAP shows msgNum is always 0 for CoverPreview
 
     const cmdId = params.cmdId;

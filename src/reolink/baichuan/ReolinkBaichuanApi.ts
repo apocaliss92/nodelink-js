@@ -60,6 +60,8 @@ import {
   BC_CMD_ID_GET_AUDIO_TASK,
   BC_CMD_ID_GET_BATTERY_INFO,
   BC_CMD_ID_SWITCH_BATTERY_ADAPTER_MODE,
+  BC_CMD_ID_GET_HA_CFG,
+  BC_CMD_ID_SET_HA_CFG,
   BC_CMD_ID_GET_BATTERY_INFO_LIST,
   BC_CMD_ID_GET_DAY_NIGHT_THRESHOLD,
   BC_CMD_ID_GET_DAY_RECORDS,
@@ -505,6 +507,12 @@ import {
   parseSwitchBatteryAdapterModeResponse,
   powerSourceFromBatteryInfo,
 } from "./utils/powerSource";
+import {
+  buildHaCfgXml,
+  parseHaCfgXml,
+  isHaCfgSupportedResponse,
+  type HaCfgConfig,
+} from "./utils/haCfg";
 import { parseEventsFromGetEventsXml } from "./utils/eventsGetEvents";
 import { parsePirInfoFromXml } from "./utils/pir";
 import { discoverDeviceUidForRecordings as discoverDeviceUidForRecordingsUtil } from "./utils/uidRecordings";
@@ -532,6 +540,11 @@ import {
   onEmailPushEvent,
   type EmailPushEvent,
 } from "../../emailPush/bus";
+import {
+  mapBaichuanWebhookToSimpleEvents,
+  onBaichuanWebhookEvent,
+  type BaichuanWebhookEvent,
+} from "../../baichuanWebhook/bus";
 
 type TalkAbility = import("./types").TalkAbility;
 type TalkSession = import("./types").TalkSession;
@@ -626,6 +639,32 @@ export const isNvrHubModel = (model?: string): boolean => {
   return NVR_HUB_MODEL_PATTERNS.some((pattern) => pattern.test(normalized));
 };
 
+/**
+ * Which channels THIS connection has actually positioned with cmd 123.
+ *
+ * Keyed by the client object, so it dies with the connection: a reconnect
+ * gets a fresh instance and therefore a clean slate, which is exactly right
+ * because the camera's stickiness lives on the connection too.
+ *
+ * It exists because positioning a replay is NOT free. Measured on 592
+ * (E1 Outdoor PoE v3.1.0.5223), same file, same connection, `playSpeed` 1,
+ * decoded with this library's own demuxer:
+ *
+ *   sub twin, 39.855 s of media   with <ReplaySeek>  33 591 ms  (1.2x)
+ *                                 without               418 ms (95.3x)
+ *   main twin                     with                         (1.37x)
+ *                                 without             3 137 ms (12.7x)
+ *
+ * The command does not merely position the replay — it puts the channel into
+ * a PACED playback mode, and supply collapses by ~80x. Sending it before every
+ * transfer, to "repair a dirty connection", therefore paid that cost on every
+ * clean one; downstream it turned every clip into 4.0 s of media because a
+ * consumer that ends a transfer on an idle window now had idle windows to find.
+ *
+ * So: reset only what was really moved.
+ */
+const SEEKED_CHANNELS = new WeakMap<object, Set<number>>();
+
 export class ReolinkBaichuanApi {
   readonly logger: Logger;
   private readonly httpClient: ReolinkHttpClient;
@@ -650,6 +689,18 @@ export class ReolinkBaichuanApi {
    * `undefined` means no bridge was requested for this api.
    */
   private emailPushAutoBridgeOff: (() => void) | undefined;
+
+  /**
+   * Off-handle for the Baichuan HaCfg webhook bus auto-bridge.
+   * Set when `baichuanWebhookCameraId` is provided; released in `close()`.
+   */
+  private baichuanWebhookAutoBridgeOff: (() => void) | undefined;
+
+  /**
+   * Cached result of {@link probeBaichuanWebhookSupport}. `undefined` until
+   * probed; merged into capability snapshots when present.
+   */
+  private baichuanWebhookSupportCache: boolean | undefined;
 
   // ─────────────────────────────────────────────────────────────────────────────
   // SOCKET POOL - Tag-based socket management
@@ -932,6 +983,7 @@ export class ReolinkBaichuanApi {
           type: "battery",
           channel,
           timestamp: Date.now(),
+          source: "baichuan",
           battery,
         });
       } catch (e: unknown) {
@@ -2583,6 +2635,16 @@ export class ReolinkBaichuanApi {
       /** Channel reported on the synthesised event. Default 0. */
       emailPushChannel?: number;
       /**
+       * When set, the api auto-subscribes to the global Baichuan HaCfg
+       * webhook bus and translates each matching delivery into
+       * `dispatchSimpleEvent` (wake/pir → motion, wake/doorbell →
+       * doorbell, sleep/wake → sleeping/awake). Survives idle
+       * disconnects; released by `close()`.
+       */
+      baichuanWebhookCameraId?: string;
+      /** Channel reported on synthesised HaCfg webhook events. Default 0. */
+      baichuanWebhookChannel?: number;
+      /**
        * Enable the watchdog's silence-based resubscribe path (Case 1
        * in `simpleEventWatchdogTick`): when no event arrives for 5
        * minutes the lib forces an `ensureSimpleEventSubscribed` call.
@@ -2738,6 +2800,13 @@ export class ReolinkBaichuanApi {
       this.emailPushAutoBridgeOff = this.subscribeEmailPushEvents({
         cameraId: opts.emailPushCameraId,
         channel: opts.emailPushChannel ?? 0,
+      });
+    }
+
+    if (opts.baichuanWebhookCameraId) {
+      this.baichuanWebhookAutoBridgeOff = this.subscribeBaichuanWebhookEvents({
+        cameraId: opts.baichuanWebhookCameraId,
+        channel: opts.baichuanWebhookChannel ?? 0,
       });
     }
   }
@@ -3381,6 +3450,7 @@ export class ReolinkBaichuanApi {
         type: mapEmailPushInferredType(event.inferredType),
         channel,
         timestamp: event.receivedAtMs,
+        source: "email",
       });
       // When the camera carries an AI sub-type, also fan out a generic
       // "motion" so motion-only consumers still see it — mirrors how
@@ -3394,6 +3464,7 @@ export class ReolinkBaichuanApi {
           type: "motion",
           channel,
           timestamp: event.receivedAtMs,
+          source: "email",
         });
       }
       // Expose the raw event last so the onSimpleEvent listeners run
@@ -3405,6 +3476,57 @@ export class ReolinkBaichuanApi {
         } catch (err) {
           this.logger.warn?.(
             `[ReolinkBaichuanApi] subscribeEmailPushEvents onEvent threw: ${err instanceof Error ? err.message : err}`,
+          );
+        }
+      }
+    });
+    return off;
+  }
+
+  /**
+   * Bridge Baichuan HaCfg webhook bus events into `onSimpleEvent`.
+   *
+   * Same lifetime guarantees as {@link subscribeEmailPushEvents}: pure JS
+   * fan-out that survives idle-disconnect / TCP reconnect.
+   */
+  subscribeBaichuanWebhookEvents(
+    params:
+      | {
+          cameraId: string;
+          channel?: number;
+          onEvent?: (event: BaichuanWebhookEvent) => void;
+        }
+      | {
+          match: (event: BaichuanWebhookEvent) => boolean;
+          channel?: number;
+          onEvent?: (event: BaichuanWebhookEvent) => void;
+        },
+  ): () => void {
+    const channel = (params as { channel?: number }).channel ?? 0;
+    const onEvent = (
+      params as { onEvent?: (e: BaichuanWebhookEvent) => void }
+    ).onEvent;
+    const matches: (event: BaichuanWebhookEvent) => boolean =
+      "match" in params
+        ? params.match
+        : (event) => event.cameraId === params.cameraId;
+    const off = onBaichuanWebhookEvent((event) => {
+      if (!matches(event)) return;
+      const types = mapBaichuanWebhookToSimpleEvents(event);
+      for (const type of types) {
+        this.dispatchSimpleEvent({
+          type,
+          channel,
+          timestamp: event.receivedAtMs,
+          source: "baichuanWebhook",
+        });
+      }
+      if (onEvent) {
+        try {
+          onEvent(event);
+        } catch (err) {
+          this.logger.warn?.(
+            `[ReolinkBaichuanApi] subscribeBaichuanWebhookEvents onEvent threw: ${err instanceof Error ? err.message : err}`,
           );
         }
       }
@@ -4347,6 +4469,12 @@ export class ReolinkBaichuanApi {
         this.emailPushAutoBridgeOff();
       } catch {}
       this.emailPushAutoBridgeOff = undefined;
+    }
+    if (this.baichuanWebhookAutoBridgeOff) {
+      try {
+        this.baichuanWebhookAutoBridgeOff();
+      } catch {}
+      this.baichuanWebhookAutoBridgeOff = undefined;
     }
 
     // Stop periodic session guard
@@ -8735,7 +8863,12 @@ export class ReolinkBaichuanApi {
       driftMs: null,
       seekApplied: false,
     };
-    if (requestedAt) {
+    // A clean channel has nothing to undo, and positioning it would throttle
+    // the transfer ~80x (see SEEKED_CHANNELS). So the reset is sent only when
+    // the caller asked for an offset, or when THIS connection has really moved
+    // THIS channel before.
+    const dirty = SEEKED_CHANNELS.get(this.client as object)?.has(channel) === true;
+    if (requestedAt && (params.seekTo !== undefined || dirty)) {
       outcome.seekApplied = await this.replaySeek({
         channel,
         at: requestedAt,
@@ -8749,9 +8882,19 @@ export class ReolinkBaichuanApi {
           "camera did not accept cmd 123 <ReplaySeek>; the transfer runs unpositioned";
         trace(`seek not applied for ${ident}: ${outcome.reason}`);
       }
-    } else {
+    } else if (!requestedAt) {
       outcome.reason = `no start instant derivable from ${ident}; the transfer runs unpositioned`;
       trace(outcome.reason);
+    } else {
+      // Skipped deliberately. NOT a `reason`: that field explains an outcome
+      // that went less well than asked, and this one went better — the
+      // transfer runs from the file's own start at full rate. Putting it there
+      // would mask the position-unknown reason set further down, which is a
+      // real degradation. Traced instead, so the skip is still visible.
+      trace(
+        `channel ${String(channel)} never seeked on this connection; ` +
+          `${ident} runs unpositioned at full rate`,
+      );
     }
 
     // READ THE POSITION BACK. The camera answers 200 to a seek it then rounds
@@ -8911,6 +9054,13 @@ export class ReolinkBaichuanApi {
         payloadXml,
         timeoutMs: params.timeoutMs ?? 8_000,
       });
+      // Remembered so the NEXT unpositioned transfer on this channel knows it
+      // has something sticky to undo — and so every other one does not pay for
+      // a repair it does not need.
+      const client: object = this.client;
+      const seeked = SEEKED_CHANNELS.get(client) ?? new Set<number>();
+      seeked.add(channel);
+      SEEKED_CHANNELS.set(client, seeked);
       return true;
     } catch (e) {
       this.logger?.warn?.(
@@ -10003,6 +10153,7 @@ export class ReolinkBaichuanApi {
           type: "motion",
           channel,
           timestamp: Date.now(),
+          source: "baichuan",
         };
         this.dispatchSimpleEvent(event);
       }
@@ -10192,6 +10343,7 @@ export class ReolinkBaichuanApi {
           type: decision.emit,
           channel,
           timestamp: Date.now(),
+          source: "baichuan",
         });
       }
     };
@@ -11872,6 +12024,120 @@ export class ReolinkBaichuanApi {
   }
 
   /**
+   * Read the Baichuan HaCfg webhook configuration (cmd 806).
+   *
+   * Returns `undefined` when the firmware does not support HaCfg (empty
+   * body / no `<HaCfg>`). Independent of Support.webhook (CGI developer push).
+   */
+  async getHaCfg(options?: { timeoutMs?: number }): Promise<HaCfgConfig | undefined> {
+    const req: { cmdId: number; timeoutMs?: number } = {
+      cmdId: BC_CMD_ID_GET_HA_CFG,
+    };
+    if (options?.timeoutMs != null) req.timeoutMs = options.timeoutMs;
+    try {
+      const xml = await this.sendXml(req, 0);
+      const cfg = parseHaCfgXml(xml);
+      if (cfg) this.baichuanWebhookSupportCache = true;
+      return cfg;
+    } catch {
+      this.baichuanWebhookSupportCache = false;
+      return undefined;
+    }
+  }
+
+  /**
+   * Write the Baichuan HaCfg webhook configuration (cmd 807).
+   *
+   * Pass `enable: false` (or empty url) to disarm. After a successful SET,
+   * reolink_aio also sends cmd 31; callers that want push while connected
+   * should call {@link subscribeEvents} themselves.
+   */
+  async setHaCfg(
+    cfg: { enable: boolean; url: string; verifyCert?: boolean },
+    options?: { timeoutMs?: number },
+  ): Promise<HaCfgConfig | undefined> {
+    const payloadXml = buildHaCfgXml(cfg);
+    const req: {
+      cmdId: number;
+      payloadXml: string;
+      timeoutMs?: number;
+    } = {
+      cmdId: BC_CMD_ID_SET_HA_CFG,
+      payloadXml,
+    };
+    if (options?.timeoutMs != null) req.timeoutMs = options.timeoutMs;
+    await this.sendXml(req, 0);
+    return await this.getHaCfg(options);
+  }
+
+  /**
+   * Authoritative HaCfg webhook support probe (GET cmd 806).
+   *
+   * Caches the result on the api instance and returns true when the body
+   * contains a parseable `<HaCfg>` block. `DeviceCapabilities.hasBaichuanWebhook`
+   * stays false until this probe (or a successful {@link getHaCfg}) succeeds —
+   * Support XML cannot advertise this feature.
+   */
+  async probeBaichuanWebhookSupport(options?: {
+    timeoutMs?: number;
+  }): Promise<boolean> {
+    try {
+      const xml = await this.sendXml(
+        {
+          cmdId: BC_CMD_ID_GET_HA_CFG,
+          ...(options?.timeoutMs != null
+            ? { timeoutMs: options.timeoutMs }
+            : {}),
+        },
+        0,
+      );
+      const supported = isHaCfgSupportedResponse(xml);
+      this.baichuanWebhookSupportCache = supported;
+      return supported;
+    } catch {
+      this.baichuanWebhookSupportCache = false;
+      return false;
+    }
+  }
+
+  /**
+   * Arm HaCfg so the camera POSTs wake/sleep events to `url`.
+   *
+   * Verifies the SET by re-reading cmd 806 (same contract as reolink_aio).
+   * Does not start a local HTTP server — the consumer must already be
+   * listening at `url` (manager intake or Scrypted webhook).
+   */
+  async setupBaichuanWebhookToManager(
+    params: { url: string; verifyCert?: boolean },
+    options?: { timeoutMs?: number },
+  ): Promise<{ setHaCfg: { applied: true; url: string }; verified: boolean }> {
+    const url = params.url?.trim();
+    if (!url) {
+      throw new Error("setupBaichuanWebhookToManager: url is required");
+    }
+    const after = await this.setHaCfg(
+      {
+        enable: true,
+        url,
+        verifyCert: params.verifyCert === true,
+      },
+      options,
+    );
+    const verified = after?.enable === true && after.url === url;
+    if (!verified) {
+      throw new Error(
+        `setupBaichuanWebhookToManager: set webhook URL '${url}' did not match response '${after?.url ?? ""}' (enable=${after?.enable ?? false})`,
+      );
+    }
+    return { setHaCfg: { applied: true, url }, verified: true };
+  }
+
+  /** Cached HaCfg support flag from the last probe/get, if any. */
+  getBaichuanWebhookSupportCached(): boolean | undefined {
+    return this.baichuanWebhookSupportCache;
+  }
+
+  /**
    * Wake up a sleeping battery camera by sending a "waking command".
    * WAKING_COMMANDS like GetEnc (cmd_id 56) can wake up sleeping cameras.
    *
@@ -12965,6 +13231,11 @@ export class ReolinkBaichuanApi {
       ...(support != null && { support }),
       ...(abilities != null && { abilities }),
     });
+
+    // HaCfg webhook support is probe-only (Support.webhook is unrelated CGI).
+    if (this.baichuanWebhookSupportCache === true) {
+      capabilities.hasBaichuanWebhook = true;
+    }
 
     // Floodlight post-processing: override computeDeviceCapabilities result for special cases
     // - NVR: ledCtrl > 0 indicates LED control capabilities for connected camera

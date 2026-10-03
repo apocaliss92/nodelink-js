@@ -58,6 +58,7 @@ export const computeChannelPushUpdateFromEntry = (params: {
       type: entry.inferredOnline ? "online" : "offline",
       channel: entry.channel,
       timestamp: nowMs,
+      source: "baichuan",
     });
   }
 
@@ -67,6 +68,7 @@ export const computeChannelPushUpdateFromEntry = (params: {
       type: entry.inferredSleep ? "sleeping" : "awake",
       channel: entry.channel,
       timestamp: nowMs,
+      source: "baichuan",
     });
   }
 

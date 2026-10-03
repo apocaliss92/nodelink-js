@@ -11,6 +11,7 @@ import { diagnosticsRouter } from "./routers/diagnostics.js";
 import { webrtcRouter } from "./routers/webrtc.js";
 import { captureRouter } from "./routers/capture.js";
 import { emailPushRouter } from "./routers/email-push.js";
+import { baichuanWebhookRouter } from "./routers/baichuan-webhook.js";
 import { talkRouter } from "./routers/talk.js";
 export const appRouter = router({
   capture: captureRouter,
@@ -25,6 +26,7 @@ export const appRouter = router({
   diagnostics: diagnosticsRouter,
   webrtc: webrtcRouter,
   emailPush: emailPushRouter,
+  baichuanWebhook: baichuanWebhookRouter,
   talk: talkRouter,
 });
 

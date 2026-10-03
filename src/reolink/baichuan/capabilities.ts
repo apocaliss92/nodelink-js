@@ -418,6 +418,10 @@ export function computeDeviceCapabilities(params: {
         finalHasPresets,
     hasBattery,
     hasPowerSourceSwitch: hasBattery && supportsPowerSourceSwitch(supportItem),
+    // HaCfg webhook (cmd 806/807) cannot be inferred from Support XML —
+    // Support.webhook is the unrelated CGI developer push. Default false;
+    // call probeBaichuanWebhookSupport() for the authoritative answer.
+    hasBaichuanWebhook: false,
     hasIntercom: hasIntercomFromSupport,
     hasSiren: hasSirenFromSupport || hasSirenFromAbilities,
     // lightType >= 2 indicates controllable white LED / floodlight (1 = IR only).

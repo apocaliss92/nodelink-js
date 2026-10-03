@@ -4,6 +4,8 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildSwitchBatteryAdapterModeXml,
+  isBatteryAdapterCharging,
+  isMainsAdapterStatus,
   parseSwitchBatteryAdapterModeResponse,
   powerSourceFromBatteryInfo,
 } from "../../src/reolink/baichuan/utils/powerSource.js";
@@ -106,6 +108,13 @@ describe("Current power source from BatteryInfo", () => {
     );
   });
 
+  it("adapterStatus=ACAdapter → wired (Doorbell Gen2 firmware token)", () => {
+    expect(powerSourceFromBatteryInfo({ adapterStatus: "ACAdapter" })).toBe(
+      "adapter",
+    );
+    expect(isMainsAdapterStatus("ACAdapter")).toBe(true);
+  });
+
   it("adapterStatus=solarPanel → battery (solar charges, it is not wired mode)", () => {
     expect(powerSourceFromBatteryInfo({ adapterStatus: "solarPanel" })).toBe(
       "battery",
@@ -120,6 +129,43 @@ describe("Current power source from BatteryInfo", () => {
 
   it("missing adapterStatus → undefined (unknown)", () => {
     expect(powerSourceFromBatteryInfo({})).toBeUndefined();
+  });
+});
+
+describe("isBatteryAdapterCharging", () => {
+  it("treats ACAdapter / adapter as charging", () => {
+    expect(isBatteryAdapterCharging({ adapterStatus: "ACAdapter" })).toBe(true);
+    expect(isBatteryAdapterCharging({ adapterStatus: "adapter" })).toBe(true);
+  });
+
+  it("treats solarPanel as charging", () => {
+    expect(isBatteryAdapterCharging({ adapterStatus: "solarPanel" })).toBe(
+      true,
+    );
+  });
+
+  it("treats chargeStatus charging/chargeComplete as charging", () => {
+    expect(
+      isBatteryAdapterCharging({
+        adapterStatus: "none",
+        chargeStatus: "charging",
+      }),
+    ).toBe(true);
+    expect(
+      isBatteryAdapterCharging({
+        adapterStatus: "none",
+        chargeStatus: "chargeComplete",
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false when on battery with no charge cycle", () => {
+    expect(
+      isBatteryAdapterCharging({
+        adapterStatus: "none",
+        chargeStatus: "none",
+      }),
+    ).toBe(false);
   });
 });
 

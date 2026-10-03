@@ -833,10 +833,27 @@ export type ReolinkSimpleEventType =
   | "battery"
   | "other";
 
+/**
+ * Which transport produced a {@link ReolinkSimpleEvent}.
+ *
+ * - `baichuan` — native Baichuan TCP/UDP push (cmd 31/33, battery push, …)
+ * - `email` — SMTP Email Push intake bridged into `onSimpleEvent`
+ * - `baichuanWebhook` — HaCfg HTTP webhook (cmd 806/807) intake bridged
+ */
+export type ReolinkSimpleEventSource =
+  | "baichuan"
+  | "email"
+  | "baichuanWebhook";
+
 export interface ReolinkSimpleEvent {
   type: ReolinkSimpleEventType;
   channel: number;
   timestamp: number;
+  /**
+   * Transport that produced this event. Consumers that arm both Email Push
+   * and HaCfg webhook can filter duplicates with this field.
+   */
+  source?: ReolinkSimpleEventSource;
   /** Present when type === "battery" — pushed by the camera via cmdId 252. */
   battery?: Partial<BatteryInfo>;
 }
@@ -1041,6 +1058,13 @@ export interface DeviceCapabilities {
    * answer.
    */
   hasPowerSourceSwitch: boolean;
+  /**
+   * True when the device answered Baichuan HaCfg GET (cmd 806) with a
+   * parseable `<HaCfg>` body. Independent of Support.webhook (CGI developer
+   * push). Default `false` until `probeBaichuanWebhookSupport()` succeeds;
+   * Support XML cannot advertise this feature reliably.
+   */
+  hasBaichuanWebhook: boolean;
   hasIntercom: boolean;
   hasSiren: boolean;
   hasFloodlight: boolean;

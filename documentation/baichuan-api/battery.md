@@ -185,6 +185,16 @@ const source = await api.getPowerSource(channel?: number);
 `"battery"` otherwise (including `solarPanel`, which charges but is not wired
 mode), `undefined` when the firmware does not report `adapterStatus`.
 
+Matching is case-insensitive **substring** on `"adapter"` so firmware values
+like `ACAdapter` (Doorbell Gen 2) and `adapter` both count as wired. Prefer
+`isBatteryAdapterCharging(batteryInfo)` when you need the Scrypted-style
+“charging / adapter present” boolean (also treats `solarPanel` and
+`chargeStatus` of `charging` / `chargeComplete`).
+
+While sleeping, battery cameras may drop the Baichuan control socket. For
+motion that must survive idle-disconnect, prefer [HaCfg webhook push](./webhook.md)
+and/or [Email Push](./email.md) in parallel with native cmd 31/33 events.
+
 ---
 
 ### switchPowerSource

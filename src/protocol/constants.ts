@@ -187,6 +187,14 @@ export const BC_CMD_ID_GET_BATTERY_INFO = 253; // MSG_ID_BATTERY_INFO
 // Reolink app calls "Wired Power" vs "Battery Power". Answers 200 + empty body on success.
 export const BC_CMD_ID_SWITCH_BATTERY_ADAPTER_MODE = 805; // SwitchBatteryAdapterMode
 
+// Baichuan HaCfg webhook push (battery cameras / doorbells).
+// Distinct from the CGI developer webhook (Support.webhook / GetWebHook):
+// the camera POSTs wake/sleep JSON to a consumer URL while the control
+// socket is idle-disconnected. Home Assistant reolink_aio uses the same
+// pair as `bc_webhook` (probe = successful GET 806 with <HaCfg>).
+export const BC_CMD_ID_GET_HA_CFG = 806; // Get HaCfg (webhook URL)
+export const BC_CMD_ID_SET_HA_CFG = 807; // Set HaCfg (webhook URL)
+
 // UDP Keep Alive command ID
 // Battery cameras (BCUDP) periodically send this and expect a 200 response.
 export const BC_CMD_ID_UDP_KEEP_ALIVE = 234; // MSG_ID_UDP_KEEP_ALIVE

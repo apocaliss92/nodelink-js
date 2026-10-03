@@ -102,6 +102,17 @@ For single-owner consumers that already manage their own bridge (e.g. a custom r
 
 ---
 
+## Baichuan HaCfg Webhook (Battery Push)
+
+Alternative to Email Push when the firmware supports Baichuan `<HaCfg>` (cmd 806/807). The camera POSTs wake/sleep JSON to your URL while idle-disconnected — same path Home Assistant uses for battery doorbells.
+
+1. Start the intake: manager **Settings → Baichuan Webhook** (port `9081`), or `createBaichuanWebhookServer(...)`.
+2. Arm the camera: `setupBaichuanWebhookToManager({ url })` / manager `baichuanWebhook.setupCamera` / Scrypted auto-arms battery cams that pass `probeBaichuanWebhookSupport()`.
+3. Events land on `onSimpleEvent` (`motion` / `doorbell` / `awake` / `sleeping`).
+
+Support is **probe-based** (GET 806 returns `<HaCfg>`). Do not use `Support.webhook`. See [documentation/baichuan-api/webhook.md](./documentation/baichuan-api/webhook.md).
+
+
 ## Wired Power Mode for Battery Cameras & Doorbells
 
 Battery cameras and battery doorbells can be forced onto their transformer/adapter — what the Reolink app calls **Wired Power**. The app performs a power-settings read before offering the toggle, so on some firmwares the switch is unreachable from the UI while the device is actually wired. The library sends the underlying command (Baichuan cmd 805 `SwitchBatteryAdapterMode`) directly:

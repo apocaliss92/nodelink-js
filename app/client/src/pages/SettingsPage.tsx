@@ -3,6 +3,7 @@ import { fetchUpdates, trpcMutation, trpcQuery, type UpdateInfo } from "../api";
 import { useAuth } from "../auth";
 import { getStoredAuthToken, setStoredAuthToken } from "../authToken";
 import { EmailPushSettingsSection } from "../components/EmailPushSettingsSection";
+import { BaichuanWebhookSettingsSection } from "../components/BaichuanWebhookSettingsSection";
 import { useEmailPushFeature } from "../hooks/useEmailPushFeature";
 
 /**
@@ -299,7 +300,8 @@ export default function SettingsPage() {
     | "webrtc"
     | "proxy"
     | "metrics"
-    | "email-push";
+    | "email-push"
+    | "baichuan-webhook";
   const [activeTab, setActiveTab] = useState<TabId>("general");
   const emailPushFeature = useEmailPushFeature();
 
@@ -694,6 +696,7 @@ export default function SettingsPage() {
                 ...(emailPushFeature.enabled
                   ? ([["email-push", "Email Push"]] as const)
                   : ([] as const)),
+                ["baichuan-webhook", "Baichuan Webhook"],
               ] as const
             ).map(([id, label]) => (
               <button
@@ -2364,6 +2367,10 @@ export default function SettingsPage() {
           {/* Metrics tab */}
           {activeTab === "email-push" ? (
             <EmailPushSettingsSection />
+          ) : null}
+
+          {activeTab === "baichuan-webhook" ? (
+            <BaichuanWebhookSettingsSection />
           ) : null}
 
           {activeTab === "metrics" ? (
