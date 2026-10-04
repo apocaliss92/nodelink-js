@@ -54,6 +54,7 @@
 - **HaCfg cmd 33 AlarmEvent mapping** — Wired Power doorbells forward cmd 33 instead of wake/sleep. `mapBaichuanWebhookParsedToSimpleEvents` / `mapBaichuanWebhookAlarmXmlToSimpleEvents` treat `AItype=other` (+ `status=none`) as motion (reolink_aio-compatible). `auto` keeps Email Push until the first real HaCfg delivery.
 - **Email Push classifier** — `Motion Detected from Doorbell at …` is no longer mis-classified as a doorbell press (camera name in subject).
 - **`powerSourceFromBatteryInfo` / `isBatteryAdapterCharging` recognise `ACAdapter`.** Doorbell Gen 2 reports `adapterStatus: "ACAdapter"`; exact `"adapter"` equality treated it as battery/not-charging. Match is now case-insensitive substring on `"adapter"`, with a shared charging helper for Scrypted Charger / HSV prebuffer.
+- **TCP connect no longer hangs forever after `close()` mid-handshake.** `doConnectTcp` rejected only on `connect`/`error`, so a `destroy()` during reconnect left `tcpConnectPromise` pending; every later `sendXml` awaited that promise *before* starting its 10s timeout — Scrypted `getVideoStream` never reached “Selected stream”. Now reject on `close`, bound the handshake (10s), and fold `connect()` into the `sendXml`/`sendFrame` deadline.
 
 ### Breaking changes
 

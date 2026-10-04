@@ -355,6 +355,14 @@ export class BaichuanClient extends EventEmitter<{
    */
   private tcpConnectPromise: Promise<void> | undefined;
 
+  /**
+   * Bound for a single TCP handshake. Without this (and without rejecting on
+   * `close`), a socket destroyed mid-connect left `tcpConnectPromise` pending
+   * forever — every later `sendXml`/`connect` that joined the same promise
+   * hung past its request timeout (which only started AFTER connect resolved).
+   */
+  private static readonly TCP_CONNECT_TIMEOUT_MS = 10_000;
+
   private msgNum = 0;
   loggedIn = false; // Public to allow ReolinkBaichuanApi to check login status
   subscribed = false; // Public to allow ReolinkBaichuanApi to check subscription status
@@ -1325,6 +1333,37 @@ export class BaichuanClient extends EventEmitter<{
     }
   }
 
+  /**
+   * Connect, but fail if the handshake does not settle within `timeoutMs`.
+   * Returns remaining ms so callers can apply the rest of their budget to the
+   * request itself (request timers used to start only AFTER connect resolved,
+   * so a wedged `tcpConnectPromise` made every send hang forever).
+   */
+  private async connectWithDeadline(
+    timeoutMs: number,
+    label: string,
+  ): Promise<number> {
+    const started = Date.now();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.connect(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            reject(
+              new Error(
+                `Baichuan connect timeout after ${timeoutMs}ms (${label})`,
+              ),
+            );
+          }, Math.max(1, timeoutMs));
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    return Math.max(1, timeoutMs - (Date.now() - started));
+  }
+
   async connect(): Promise<void> {
     const desired = this.opts.transport ?? "tcp";
     if (desired === "tcp") {
@@ -1532,8 +1571,41 @@ export class BaichuanClient extends EventEmitter<{
     });
 
     await new Promise<void>((resolve, reject) => {
-      sock.once("connect", () => resolve());
-      sock.once("error", (e) => reject(e));
+      let settled = false;
+      const settle = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        sock.off("connect", onConnect);
+        sock.off("error", onError);
+        sock.off("close", onClose);
+        fn();
+      };
+      const onConnect = () => settle(() => resolve());
+      const onError = (e: Error) => settle(() => reject(e));
+      // destroy()/close() during handshake does NOT always emit `error` —
+      // only `close`. Without this, tcpConnectPromise never settles.
+      const onClose = () =>
+        settle(() =>
+          reject(new Error("Baichuan TCP connect aborted: socket closed")),
+        );
+      const timer = setTimeout(() => {
+        settle(() => {
+          try {
+            if (!sock.destroyed) sock.destroy();
+          } catch {
+            // ignore
+          }
+          reject(
+            new Error(
+              `TCP connection timeout after ${BaichuanClient.TCP_CONNECT_TIMEOUT_MS}ms`,
+            ),
+          );
+        });
+      }, BaichuanClient.TCP_CONNECT_TIMEOUT_MS);
+      sock.once("connect", onConnect);
+      sock.once("error", onError);
+      sock.once("close", onClose);
     });
 
     const sid = this.socketSessionId;
@@ -3027,7 +3099,11 @@ export class BaichuanClient extends EventEmitter<{
   }): Promise<string> {
     const internal = params.internal === true;
     if (!internal) this.touchUserActivity(`sendXml cmdId=${params.cmdId}`);
-    await this.connect();
+    const timeoutMs = params.timeoutMs ?? 10_000;
+    const remainingMs = await this.connectWithDeadline(
+      timeoutMs,
+      `sendXml cmdId=${params.cmdId}`,
+    );
     if (!internal) this.kickIdleDisconnectTimer();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
@@ -3063,14 +3139,13 @@ export class BaichuanClient extends EventEmitter<{
     const bodyBytes = this.encodeBodyXml(extXml, payloadXml, channelId, enc);
     const wire = Buffer.concat([header, bodyBytes]);
 
-    const timeoutMs = params.timeoutMs ?? 10_000;
     let rejectFn: ((e: Error) => void) | undefined;
     const framePromise = new Promise<BaichuanFrame>((resolve, reject) => {
       rejectFn = reject;
       const t = setTimeout(() => {
         this.pending.delete(pendingKey);
         reject(new Error(`Baichuan timeout cmdId=${cmdId} msgNum=${msgNum}`));
-      }, timeoutMs);
+      }, remainingMs);
       this.pending.set(pendingKey, {
         resolve: (f) => {
           clearTimeout(t);
@@ -3190,7 +3265,11 @@ export class BaichuanClient extends EventEmitter<{
   }): Promise<BaichuanFrame> {
     const internal = params.internal === true;
     if (!internal) this.touchUserActivity(`sendFrame cmdId=${params.cmdId}`);
-    await this.connect();
+    const timeoutMs = params.timeoutMs ?? 10_000;
+    const remainingMs = await this.connectWithDeadline(
+      timeoutMs,
+      `sendFrame cmdId=${params.cmdId}`,
+    );
     if (!internal) this.kickIdleDisconnectTimer();
 
     const channel = params.channel ?? this.opts.channel ?? 0;
@@ -3226,14 +3305,13 @@ export class BaichuanClient extends EventEmitter<{
     const bodyBytes = this.encodeBodyXml(extXml, payloadXml, channelId, enc);
     const wire = Buffer.concat([header, bodyBytes]);
 
-    const timeoutMs = params.timeoutMs ?? 10_000;
     let rejectFn: ((e: Error) => void) | undefined;
     const framePromise = new Promise<BaichuanFrame>((resolve, reject) => {
       rejectFn = reject;
       const t = setTimeout(() => {
         this.pending.delete(pendingKey);
         reject(new Error(`Baichuan timeout cmdId=${cmdId} msgNum=${msgNum}`));
-      }, timeoutMs);
+      }, remainingMs);
       this.pending.set(pendingKey, {
         resolve: (f) => {
           clearTimeout(t);
