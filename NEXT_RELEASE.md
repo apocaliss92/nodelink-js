@@ -50,7 +50,9 @@
 ### Features
 
 - **Baichuan HaCfg webhook push (cmd 806/807) — parallel to Email Push for battery cameras.** Firmwares that support `<HaCfg>` can POST wake/sleep JSON (`reason=pir|doorbell`) to a consumer URL while the control socket is idle-disconnected, so motion is not lost on Doorbell Gen 2 Wired Power / Argus sleep. Discriminant is a live probe of cmd 806 (parseable `<HaCfg>`), **not** Support.webhook (CGI developer push). Library: `getHaCfg` / `setHaCfg` / `probeBaichuanWebhookSupport` / `setupBaichuanWebhookToManager`, plus `src/baichuanWebhook/` HTTP intake + bus auto-bridged into `onSimpleEvent` via `baichuanWebhookCameraId`. Manager: Settings → Baichuan Webhook (default port 9081) and `baichuanWebhook.setupCamera`. See [documentation/baichuan-api/webhook.md](./documentation/baichuan-api/webhook.md).
-- **`ReolinkSimpleEvent.source`** — `"baichuan" | "email" | "baichuanWebhook"` so consumers can filter duplicates when both SMTP and HaCfg are configured. Helper: `shouldAcceptSleepPushSource(source, preference, webhookSupported)`.
+- **`ReolinkSimpleEvent.source`** — `"baichuan" | "email" | "baichuanWebhook"` so consumers can filter duplicates when both SMTP and HaCfg are configured. Helper: `shouldAcceptSleepPushSource(source, preference, { webhookSupported, webhookDeliverySeen? })`.
+- **HaCfg cmd 33 AlarmEvent mapping** — Wired Power doorbells forward cmd 33 instead of wake/sleep. `mapBaichuanWebhookParsedToSimpleEvents` / `mapBaichuanWebhookAlarmXmlToSimpleEvents` treat `AItype=other` (+ `status=none`) as motion (reolink_aio-compatible). `auto` keeps Email Push until the first real HaCfg delivery.
+- **Email Push classifier** — `Motion Detected from Doorbell at …` is no longer mis-classified as a doorbell press (camera name in subject).
 - **`powerSourceFromBatteryInfo` / `isBatteryAdapterCharging` recognise `ACAdapter`.** Doorbell Gen 2 reports `adapterStatus: "ACAdapter"`; exact `"adapter"` equality treated it as battery/not-charging. Match is now case-insensitive substring on `"adapter"`, with a shared charging helper for Scrypted Charger / HSV prebuffer.
 
 ### Breaking changes

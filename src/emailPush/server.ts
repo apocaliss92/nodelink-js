@@ -24,6 +24,7 @@ import {
   loadEmailPushTls,
   type EmailPushTlsOptions,
 } from "./tls.js";
+import { classifyEmailPushMessage } from "./classify.js";
 
 export interface EmailPushServerConfig {
   /** SMTP listen port. */
@@ -112,16 +113,10 @@ async function defaultLoadTls(
 }
 
 function classifyMessage(parsed: ParsedMail): EmailPushInferredType {
-  const haystack =
-    `${parsed.subject ?? ""} ${parsed.text ?? ""}`.toLowerCase();
-  if (/person|people|human/.test(haystack)) return "people";
-  if (/vehicle|car|truck/.test(haystack)) return "vehicle";
-  if (/dog[_\s-]?cat|pet|animal/.test(haystack)) return "animal";
-  if (/face/.test(haystack)) return "face";
-  if (/package|parcel/.test(haystack)) return "package";
-  if (/doorbell|ring(?:ing)?\s+button/.test(haystack)) return "doorbell";
-  if (/motion|alarm|alert|detect/.test(haystack)) return "motion";
-  return "other";
+  return classifyEmailPushMessage({
+    subject: parsed.subject ?? null,
+    text: parsed.text ?? null,
+  });
 }
 
 /** Build the recipient address assigned to a given camera. */

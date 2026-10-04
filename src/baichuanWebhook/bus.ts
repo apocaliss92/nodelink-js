@@ -8,6 +8,8 @@
  */
 
 import { EventEmitter } from "node:events";
+import type { ReolinkSimpleEventType } from "../reolink/baichuan/types.js";
+import { mapBaichuanWebhookAlarmXmlToSimpleEvents } from "./alarmXml.js";
 import type {
   BaichuanWebhookEventName,
   BaichuanWebhookParsed,
@@ -18,7 +20,13 @@ export type BaichuanWebhookSimpleType =
   | "motion"
   | "doorbell"
   | "awake"
-  | "sleeping";
+  | "sleeping"
+  | "people"
+  | "vehicle"
+  | "animal"
+  | "face"
+  | "package"
+  | "other";
 
 export interface BaichuanWebhookEvent {
   cameraId: string;
@@ -89,6 +97,22 @@ export function mapBaichuanWebhookToSimpleEvents(
   if (reason === "doorbell") return ["doorbell", "awake"];
   if (reason === "pir") return ["motion", "awake"];
   return ["awake"];
+}
+
+/**
+ * Map any parsed HaCfg POST (wake/sleep envelope OR cmd 33 AlarmEvent XML)
+ * onto `ReolinkSimpleEvent` types.
+ */
+export function mapBaichuanWebhookParsedToSimpleEvents(
+  parsed: BaichuanWebhookParsed,
+): ReolinkSimpleEventType[] {
+  if (parsed.kind === "event") {
+    return mapBaichuanWebhookToSimpleEvents(parsed);
+  }
+  if (parsed.cmdId === 33) {
+    return mapBaichuanWebhookAlarmXmlToSimpleEvents(parsed.xml);
+  }
+  return [];
 }
 
 export function _resetBaichuanWebhookBusForTests(): void {

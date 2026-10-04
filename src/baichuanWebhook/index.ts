@@ -14,10 +14,13 @@ export {
   getRecentBaichuanWebhookEvents,
   getLastBaichuanWebhookEvent,
   mapBaichuanWebhookToSimpleEvents,
+  mapBaichuanWebhookParsedToSimpleEvents,
   _resetBaichuanWebhookBusForTests,
   type BaichuanWebhookEvent,
   type BaichuanWebhookSimpleType,
 } from "./bus.js";
+
+export { mapBaichuanWebhookAlarmXmlToSimpleEvents } from "./alarmXml.js";
 
 export {
   parseBaichuanWebhookBody,

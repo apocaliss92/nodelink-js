@@ -26,3 +26,8 @@ export {
   type EmailPushTlsOptions,
   type LoadTlsParams,
 } from "./tls.js";
+
+export {
+  classifyEmailPushMessage,
+  type EmailPushClassifyInput,
+} from "./classify.js";

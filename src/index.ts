@@ -141,6 +141,7 @@ export {
 export {
   mapToSimpleEvent,
   shouldAcceptSleepPushSource,
+  type ShouldAcceptSleepPushOptions,
 } from "./reolink/baichuan/utils/events";
 // DeviceAbilities is already exported via export * above
 export * from "./rtsp/urls";

@@ -541,7 +541,7 @@ import {
   type EmailPushEvent,
 } from "../../emailPush/bus";
 import {
-  mapBaichuanWebhookToSimpleEvents,
+  mapBaichuanWebhookParsedToSimpleEvents,
   onBaichuanWebhookEvent,
   type BaichuanWebhookEvent,
 } from "../../baichuanWebhook/bus";
@@ -3512,10 +3512,29 @@ export class ReolinkBaichuanApi {
         : (event) => event.cameraId === params.cameraId;
     const off = onBaichuanWebhookEvent((event) => {
       if (!matches(event)) return;
-      const types = mapBaichuanWebhookToSimpleEvents(event);
+      const types = mapBaichuanWebhookParsedToSimpleEvents(event.raw);
       for (const type of types) {
         this.dispatchSimpleEvent({
           type,
+          channel,
+          timestamp: event.receivedAtMs,
+          source: "baichuanWebhook",
+        });
+      }
+      // Fan out motion for AI object types (mirrors email-push bridge).
+      if (
+        types.some(
+          (t) =>
+            t !== "motion" &&
+            t !== "doorbell" &&
+            t !== "awake" &&
+            t !== "sleeping" &&
+            t !== "other",
+        ) &&
+        !types.includes("motion")
+      ) {
+        this.dispatchSimpleEvent({
+          type: "motion",
           channel,
           timestamp: event.receivedAtMs,
           source: "baichuanWebhook",

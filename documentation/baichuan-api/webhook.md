@@ -104,6 +104,23 @@ Manager UI: **Settings → Baichuan Webhook**. Per-camera arming: `baichuanWebho
 
 The Scrypted plugin exposes `webhook/baichuan/{deviceId}` on its existing `HttpRequestHandler`. HaCfg is armed only via the per-camera **Auto-configure Baichuan Webhook** button (never on init), so another consumer’s URL (e.g. Home Assistant) is not overwritten. **Battery sleep push → Notification method** (`auto` / `webhook` / `email`) filters which transport Scrypted considers; events carry `source: "baichuan" | "email" | "baichuanWebhook"` on `ReolinkSimpleEvent`.
 
+### Wired Power Mode (Doorbell Gen 2)
+
+In adapter / Wired Power Mode the doorbell often **never sleeps**, so it does not POST `wake`/`sleep`. Instead HaCfg forwards normal Baichuan **cmd 33** (`AlarmEventList`) JSON:
+
+`{ "cmd": 33, "xml": "<AlarmEventList>…</AlarmEventList>", "uid": "…" }`
+
+Use `mapBaichuanWebhookParsedToSimpleEvents` / `mapBaichuanWebhookAlarmXmlToSimpleEvents`:
+
+| Camera report | Mapped type |
+|---------------|-------------|
+| `status=none`, `AItype=other` | `motion` |
+| `status=none`, `AItype=people` | `people` |
+| `status=visitor` | `doorbell` |
+| `status=none`, `AItype=none` | _(ignore)_ |
+
+In `auto` mode, E-mail Push is kept until the first non-empty HaCfg delivery arrives (probe alone must not silence SMTP).
+
 ## Related
 
 - [Email Push](./email.md) — SMTP alternative for firmwares without HaCfg
