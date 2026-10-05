@@ -819,6 +819,17 @@ second child (`<channelId>1</channelId>`, files under `…-Videocamera porta
 retro/`) is stopped with `0220260918181308` while the first child's stops are
 `01…`.
 
+Home Hub (v3.3.0.456) specifics, measured against cancelled downloads:
+
+- **No channel Extension.** Like cmd 123, cmd 7 must go out with
+  `payloadOffset` 0 (`extensionXml: ""`). With the Extension present the hub
+  answers `rc 400` and keeps streaming.
+- **Replay and stop must name the same channel.** The replay XML's
+  `<channelId>` has to match the stop's `<channelId>` / stop-name prefix.
+  Hardcoding `<channelId>0</channelId>` in the replay while stopping channel 1
+  as `02…` / `1` is answered `rc 200` but leaves the session open. Sending the
+  real channel in the replay is byte-identical for completed downloads.
+
 Measured live against a mains standalone (192.168.50.226, 303 s clip,
 `mainStream`), abandoning a transfer mid-flight:
 

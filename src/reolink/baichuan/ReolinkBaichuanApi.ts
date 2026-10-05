@@ -6957,11 +6957,12 @@ export class ReolinkBaichuanApi {
     const uid = await this.ensureUidForRecordings(channel, undefined);
 
     // Build payload XML - standalone uses filename (name attribute)
-    // Include UID like the working download method does
-    // For standalone cameras, use xmlChannelId=0 explicitly
+    // Include UID like the working download method does.
+    // xmlChannelId must match the stop's <channelId> / stop-name prefix
+    // (Home Hub rejects a mismatched stop; see #43).
     const payloadXml = buildFileInfoListReplayByNameXml({
       channel,
-      xmlChannelId: 0, // PCAP-verified: xmlChannelId=0 for standalone
+      xmlChannelId: channel,
       name: params.fileName,
       uid,
       streamType,
@@ -7051,6 +7052,8 @@ export class ReolinkBaichuanApi {
 
           await dedicatedClient.sendXml({
             cmdId: BC_CMD_ID_FILE_INFO_LIST_STOP,
+            // Hub rejects cmd 7 when it carries the channel Extension (#43).
+            extensionXml: "",
             channel,
             payloadXml: stopXml,
             messageClass: BC_CLASS_MODERN_24,
@@ -7149,11 +7152,13 @@ export class ReolinkBaichuanApi {
     const headerChannelIdOverride =
       this.resolveHeaderChannelIdForLogicalChannel(channel);
 
-    // Build payload XML - NVR uses id (path) attribute
-    // PCAP (fileInfoListReplayBinaryDownload): xmlChannelId=0 works for NVR
+    // Build payload XML - NVR uses id (path) attribute.
+    // xmlChannelId must match the stop's <channelId> / stop-name prefix
+    // (Home Hub rejects a mismatched stop; see #43). Download bytes are
+    // identical with 0 or the real channel on hub firmware v3.3.0.456.
     const payloadXml = buildFileInfoListReplayByIdXml({
       channel,
-      xmlChannelId: 0, // PCAP-verified: xmlChannelId=0 works for NVR
+      xmlChannelId: channel,
       id: params.fileName,
       ...(uid ? { uid } : {}),
       streamType,
@@ -7247,6 +7252,8 @@ export class ReolinkBaichuanApi {
 
           await dedicatedClient.sendXml({
             cmdId: BC_CMD_ID_FILE_INFO_LIST_STOP,
+            // Hub rejects cmd 7 when it carries the channel Extension (#43).
+            extensionXml: "",
             channel,
             payloadXml: stopXml,
             messageClass: BC_CLASS_MODERN_24,
@@ -8820,17 +8827,21 @@ export class ReolinkBaichuanApi {
     // PCAP Analysis (2025-06): The Reolink app uses the standard FileInfoList format with
     // <FileInfo><Id>...</Id><supportSub>0</supportSub><playSpeed>1</playSpeed><streamType>mainStream</streamType></FileInfo>
     // For standalone cameras (non-NVR), do NOT include <uid> in the XML.
+    // xmlChannelId must match the stop's <channelId> / stop-name prefix.
+    // Hardcoding 0 left hub channel 1 stops naming a different session (#43);
+    // with the real channel, cancelled downloads drain within one in-flight
+    // frame and completed downloads stay byte-identical.
     const payloadXml = ident.includes("/")
       ? buildFileInfoListReplayByIdXml({
           channel,
-          xmlChannelId: 0, // PCAP-verified: xmlChannelId=0 works
+          xmlChannelId: channel,
           id: ident,
           ...(uid ? { uid } : {}),
           streamType,
         })
       : buildFileInfoListReplayByNameXml({
           channel,
-          xmlChannelId: 0,
+          xmlChannelId: channel,
           name: ident,
           ...(uid ? { uid } : {}),
           streamType,
@@ -9122,6 +9133,9 @@ export class ReolinkBaichuanApi {
     try {
       await this.client.sendXml({
         cmdId: BC_CMD_ID_FILE_INFO_LIST_STOP,
+        // Like cmd 123: no channel Extension. Home Hub returns rc 400 and
+        // keeps streaming when the Extension is present (#43).
+        extensionXml: "",
         channel: params.channel,
         payloadXml: buildFileInfoListStopXml({
           channel: params.channel,

@@ -39,7 +39,14 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { BaichuanClient } from "../../src/client/BaichuanClient";
 import { decodeHeader, encodeHeader, type BaichuanFrame } from "../../src/protocol/framing";
-import { buildReplayStopNameFromFileName } from "../../src/reolink/baichuan/utils/recordingReplay";
+import { BC_CMD_ID_FILE_INFO_LIST_STOP } from "../../src/protocol/constants";
+import { ReolinkBaichuanApi } from "../../src/reolink/baichuan/ReolinkBaichuanApi";
+import {
+  buildFileInfoListReplayByIdXml,
+  buildFileInfoListReplayByNameXml,
+  buildFileInfoListStopXml,
+  buildReplayStopNameFromFileName,
+} from "../../src/reolink/baichuan/utils/recordingReplay";
 
 const CMD_REPLAY = 5;
 
@@ -316,6 +323,92 @@ describe("the stop names the channel, not a constant 01", () => {
   });
 });
 
+describe("Home Hub cmd 7 stop matches the replay channel (#43)", () => {
+  // Measured on Home Hub v3.3.0.456: a stop with the channel Extension is
+  // rejected (rc 400) and the replay keeps streaming; a stop whose
+  // <channelId> / stop-name prefix does not match the replay's XML
+  // <channelId> is answered rc 200 but does not end the session.
+  const file =
+    "/mnt/sda/U10952700093ABW14UB-Videocamera porta retro/Mp4Record/2026-09-18/RecS04_DST20260918_181308_181323_0_380_200_033C8000000000_15D980.mp4";
+
+  it("replay XML uses the logical channel, not a hardcoded 0", () => {
+    const byId = buildFileInfoListReplayByIdXml({
+      channel: 1,
+      xmlChannelId: 1,
+      id: file,
+      streamType: "mainStream",
+    });
+    const byName = buildFileInfoListReplayByNameXml({
+      channel: 1,
+      xmlChannelId: 1,
+      name: "RecS04_DST20260918_181308_181323_0_380_200_033C8000000000_15D980.mp4",
+      streamType: "mainStream",
+    });
+    expect(byId).toContain("<channelId>1</channelId>");
+    expect(byId).not.toContain("<channelId>0</channelId>");
+    expect(byName).toContain("<channelId>1</channelId>");
+  });
+
+  it("stop XML names the same channel as the replay", () => {
+    const stopName = buildReplayStopNameFromFileName(file, 1);
+    const stopXml = buildFileInfoListStopXml({
+      channel: 1,
+      name: stopName!,
+      streamType: "mainStream",
+    });
+    expect(stopName).toBe("0220260918181308");
+    expect(stopXml).toContain("<channelId>1</channelId>");
+    expect(stopXml).toContain(`<name>${stopName}</name>`);
+  });
+
+  it("cmd 7 is sent with an empty extension (no channel Extension)", async () => {
+    const api = new ReolinkBaichuanApi({
+      host: "127.0.0.1",
+      port: 65535,
+      username: "u",
+      password: "p",
+    });
+    const sendXml = vi.fn(async () => "");
+    const drainReplayFrames = vi.fn(async () => 0);
+    const client = api.client as unknown as {
+      sendXml: typeof sendXml;
+      drainReplayFrames: typeof drainReplayFrames;
+    };
+    client.sendXml = sendXml;
+    client.drainReplayFrames = drainReplayFrames;
+
+    await (
+      api as unknown as {
+        stopFileInfoListReplay: (p: {
+          channel: number;
+          fileName: string;
+          streamType: "mainStream";
+          drain: boolean;
+        }) => Promise<void>;
+      }
+    ).stopFileInfoListReplay({
+      channel: 1,
+      fileName: file,
+      streamType: "mainStream",
+      drain: true,
+    });
+
+    expect(sendXml).toHaveBeenCalledTimes(1);
+    const args = sendXml.mock.calls[0]![0] as {
+      cmdId: number;
+      extensionXml: string;
+      channel: number;
+      payloadXml: string;
+    };
+    expect(args.cmdId).toBe(BC_CMD_ID_FILE_INFO_LIST_STOP);
+    expect(args.extensionXml).toBe("");
+    expect(args.channel).toBe(1);
+    expect(args.payloadXml).toContain("<channelId>1</channelId>");
+    expect(args.payloadXml).toContain("<name>0220260918181308</name>");
+    expect(drainReplayFrames).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("drainReplayFrames waits for the camera, not for the ack", () => {
   it("returns once cmd 5 frames have stopped, counting what arrived", async () => {
     const client = makeClient();
@@ -352,8 +445,6 @@ describe("drainReplayFrames waits for the camera, not for the ack", () => {
 // The download path: the session is ended at the CAMERA, and the header
 // channelId is minted rather than pinned to the hub's channel.
 // ---------------------------------------------------------------------------
-
-import { ReolinkBaichuanApi } from "../../src/reolink/baichuan/ReolinkBaichuanApi";
 
 interface BinaryCall {
   cmdId: number;
