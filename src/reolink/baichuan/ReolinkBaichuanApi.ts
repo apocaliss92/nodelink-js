@@ -13237,15 +13237,17 @@ export class ReolinkBaichuanApi {
     // Find the best SupportItem for this channel
     const supportItem = getSupportItemForChannel(support, ch);
 
-    // The model name is the only doorbell signal some firmwares give us: the
-    // Reolink Video Doorbell PoE (issue #25) reports no `doorbellVersion` in
-    // SupportInfo at all, so `isDoorbellFromSupport` cannot see it. Best-effort
-    // — a device that will not name itself simply falls back to the support
-    // flag, exactly as before. The NVR channel path already does this
-    // (see `getChannelCapabilities`); this is the standalone twin.
+    const isNvr = await this.isNvrDevice();
+
+    // Some doorbells report doorbellVersion=0 or omit it entirely. Look up
+    // the camera model as a fallback: cmd 318 for an NVR/Hub channel, cmd 80
+    // for a standalone camera (which may not support channel-specific info).
     let model: string | undefined;
     try {
-      const info = await this.getInfo(undefined, { timeoutMs: 5000 });
+      const info = await this.getInfo(isNvr ? ch : undefined, {
+        tags: ["type"],
+        timeoutMs: 5000,
+      });
       model = typeof info?.type === "string" ? info.type : undefined;
     } catch (e) {
       this.logger.debug(
@@ -13279,9 +13281,6 @@ export class ReolinkBaichuanApi {
     const ptzType = item?.ptzType as number | undefined;
     const supportVolume = item?.supportVolume as number | undefined;
     const supportPirSch = item?.supportPirSch as number | undefined;
-
-    // Track if device is NVR for debug info
-    const isNvr = await this.isNvrDevice();
 
     // For NVR: use ledCtrl > 0 as indicator (reliable for battery cameras like Argus)
     // For standalone: lightType >= 2 or probe if undefined
