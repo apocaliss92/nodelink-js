@@ -571,6 +571,8 @@ export interface Rfc4571Client {
 }
 
 export class Rfc4571Muxer {
+  private static readonly MAX_CLIENT_BUFFERED_BYTES = 8 * 1024 * 1024;
+
   private clients = new Set<Rfc4571Client>();
   private closed = false;
 
@@ -755,6 +757,20 @@ export class Rfc4571Muxer {
 
   private writeRtpPacketToClient(client: Rfc4571Client, pkt: Buffer) {
     if (client.socket.destroyed || !client.socket.writable) return;
+
+    const bufferedBytes = client.socket.writableLength;
+    // Tolerate keyframe bursts above the high-water mark, but never let a
+    // stalled consumer buffer indefinitely or pause the shared camera feed.
+    if (bufferedBytes + 2 + pkt.length > Rfc4571Muxer.MAX_CLIENT_BUFFERED_BYTES) {
+      this.clients.delete(client);
+      client.socket.destroy();
+      this.logger.warn(
+        `[rfc4571] backpressure: disconnecting client ` +
+          `(buffered=${bufferedBytes} packet=${pkt.length + 2} ` +
+          `limit=${Rfc4571Muxer.MAX_CLIENT_BUFFERED_BYTES} bytes)`,
+      );
+      return;
+    }
 
     const header = Buffer.alloc(2);
     header.writeUInt16BE(pkt.length & 0xffff, 0);
