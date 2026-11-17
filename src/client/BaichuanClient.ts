@@ -133,6 +133,18 @@ export type BaichuanClientOptions = {
 
 export type MaxEncryption = "none" | "bc" | "aes" | "full_aes";
 
+/** Options for `BaichuanClient.login`. */
+export interface BaichuanLoginOptions {
+  /**
+   * How many times the login handshake is attempted before the last error is
+   * thrown (default 3). A caller that only asks "do these credentials work",
+   * such as a connection test, passes 1 so a refused password is sent once.
+   */
+  maxAttempts?: number;
+}
+
+const DEFAULT_LOGIN_MAX_ATTEMPTS = 3;
+
 type PendingKey = `${number}:${number}`; // cmdId:msgNum
 
 /**
@@ -5053,10 +5065,19 @@ export class BaichuanClient extends EventEmitter<{
   /**
    * Login flow: legacy "upgrade" -> receive nonce/encryption -> modern login.
    */
-  async login(maxEncryption: MaxEncryption = "full_aes"): Promise<void> {
+  async login(
+    maxEncryption: MaxEncryption = "full_aes",
+    options: BaichuanLoginOptions = {},
+  ): Promise<void> {
     if (this.loggedIn) return;
 
-    const maxAttempts = 3;
+    const requested = options.maxAttempts ?? DEFAULT_LOGIN_MAX_ATTEMPTS;
+    if (!Number.isInteger(requested) || requested < 1) {
+      throw new RangeError(
+        `login maxAttempts must be a positive integer, got ${requested}`,
+      );
+    }
+    const maxAttempts = requested;
     let lastError: unknown;
 
     // Some NVR/HomeHub firmwares are picky about encryption negotiation.

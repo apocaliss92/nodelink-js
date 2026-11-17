@@ -4435,8 +4435,9 @@ export class ReolinkBaichuanApi {
 
   async login(
     maxEncryption?: import("../../client/BaichuanClient.js").MaxEncryption,
+    options?: import("../../client/BaichuanClient.js").BaichuanLoginOptions,
   ): Promise<void> {
-    await this.client.login(maxEncryption);
+    await this.client.login(maxEncryption, options);
     // The transport is only known for certain once the connection is up: a
     // camera configured "auto" reveals itself as BCUDP here. Re-derive the
     // behaviours gated on it before anything periodic can start.
