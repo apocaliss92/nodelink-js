@@ -1,5 +1,6 @@
 import { router, publicProcedure } from "../trpc.js";
 import { z } from "zod";
+import { OSD_CORNERS } from "@apocaliss92/nodelink-js";
 import {
   getConnection,
   setActiveCredentials,
@@ -780,23 +781,30 @@ export const baichuanRouter = router({
   setOsd: publicProcedure
     .meta({
       description:
-        "Set OSD overlay (channel name + position, datetime visibility, watermark).",
+        "Update OSD overlays (cmd_45) in the corner vocabulary: datetime (enable, position, language) and channel name (enable, name, position, watermark, background). Only the fields given are written; the rest is preserved.",
     })
     .input(
+      // Mirrors the library's `OsdPatch` (0.7.0+). The old `<Osd>` shape
+      // (osdChannel / osdTime / watermark, free `pos` strings) was never
+      // answered by any firmware and is gone from the library.
       ConnectionWithChannel.extend({
         osd: z.object({
-          channel: z.number().int().min(0),
-          osdChannel: z.object({
-            enable: z.union([z.literal(0), z.literal(1)]),
-            name: z.string(),
-            pos: z.string(),
-          }),
-          osdTime: z.object({
-            enable: z.union([z.literal(0), z.literal(1)]),
-            pos: z.string(),
-          }),
-          watermark: z.union([z.literal(0), z.literal(1)]),
-          bgcolor: z.union([z.literal(0), z.literal(1)]).optional(),
+          datetime: z
+            .object({
+              enable: z.boolean().optional(),
+              position: z.enum(OSD_CORNERS).optional(),
+              language: z.string().optional(),
+            })
+            .optional(),
+          channelName: z
+            .object({
+              enable: z.boolean().optional(),
+              name: z.string().optional(),
+              position: z.enum(OSD_CORNERS).optional(),
+              enWatermark: z.boolean().optional(),
+              enBgcolor: z.boolean().optional(),
+            })
+            .optional(),
         }),
       }),
     )

@@ -19,9 +19,9 @@ import {
  * sentinel some firmwares use for "hidden". The OSD tab edits both blocks
  * in one form.
  *
- * Note: the library also exposes a legacy `setOsd` (cmd_25, write-through
- * via the Image config) which we keep for older firmwares. This tab uses
- * `setOsdDatetime` which is what current Reolink builds expect.
+ * Note: the library's `setOsd` also writes cmd_45, but in a six-corner
+ * vocabulary. This tab edits free pixel coordinates, so it uses the raw
+ * `setOsdDatetime`.
  */
 type OsdDatetimeResult = {
   osdDatetime?: {
