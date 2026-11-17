@@ -37,6 +37,9 @@ interface CapturedFrame {
   payloadLen: number;
   extensionLen: number;
 }
+type TransferOutcome =
+  | { ok: true; value: Buffer }
+  | { ok: false; error: unknown };
 interface Capture {
   frames: CapturedFrame[];
   bytesAssembled: number;
@@ -102,7 +105,11 @@ async function replay(
   client: BaichuanClient,
   capture: Capture,
   onChunk?: (chunk: Buffer) => void,
-): Promise<{ result: Promise<Buffer>; seenAt: () => number[] }> {
+): Promise<{
+  result: Promise<Buffer>;
+  outcome: Promise<TransferOutcome>;
+  seenAt: () => number[];
+}> {
   const seenAt: number[] = [];
   let clock = 0;
   const result = client.sendBinary({
@@ -126,6 +133,15 @@ async function replay(
         }
       : {}),
   });
+  // Observe the outcome NOW, before a single frame is driven. A transfer can
+  // settle mid-replay (a throwing consumer rejects it on the first chunk); a
+  // caller that only attaches its handler after the replay returns has left a
+  // rejected promise unobserved for that whole window — an unhandledRejection
+  // in any Node process, and an error that fails the vitest run.
+  const outcome: Promise<TransferOutcome> = result.then(
+    (value) => ({ ok: true, value }),
+    (error: unknown) => ({ ok: false, error }),
+  );
   await vi.advanceTimersByTimeAsync(0);
   for (const f of capture.frames) {
     await vi.advanceTimersByTimeAsync(f.dtMs - clock);
@@ -133,7 +149,7 @@ async function replay(
     client.emit("frame", frameOf(f));
   }
   await vi.advanceTimersByTimeAsync(400);
-  return { result, seenAt: () => seenAt };
+  return { result, outcome, seenAt: () => seenAt };
 }
 
 beforeEach(() => {
@@ -199,10 +215,29 @@ describe("a throwing consumer fails the transfer loudly", () => {
     // `onChunk` is called inside the collector's try, deliberately. A consumer
     // that throws — a full queue, a closed sink — must not leave the caller
     // holding a truncated Buffer that looks complete.
-    const client = makeClient();
-    const { result } = await replay(client, capture, () => {
-      throw new Error("sink closed");
-    });
-    await expect(result).rejects.toThrow(/sink closed/);
+    const unhandled: unknown[] = [];
+    const recordUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", recordUnhandled);
+    try {
+      const client = makeClient();
+      const { outcome } = await replay(client, capture, () => {
+        throw new Error("sink closed");
+      });
+      const settled = await outcome;
+      expect(settled.ok).toBe(false);
+      expect(settled.ok ? undefined : settled.error).toBeInstanceOf(Error);
+      expect(String(settled.ok ? "" : settled.error)).toMatch(/sink closed/);
+
+      // Let Node's rejection tracking run on a REAL macrotask turn: an
+      // unobserved rejection is reported only after the microtask queue
+      // drains, which fake timers never yield to.
+      vi.useRealTimers();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", recordUnhandled);
+    }
   });
 });
