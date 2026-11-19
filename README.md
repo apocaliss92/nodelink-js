@@ -1,12 +1,21 @@
+> [!IMPORTANT]
+> **The Manager UI (web dashboard) is no longer being developed.**
+> Its development has stopped in favour of [CamStack](https://camstack-docs.zentik.app), which now
+> covers camera management, live streaming, events and recordings for Reolink devices, built on top
+> of this same library. The Manager UI stays in the repository as-is and receives no new features
+> or fixes.
+> The **library** (`@apocaliss92/nodelink-js`) is still actively maintained.
+> Reolink in CamStack: https://camstack-docs.zentik.app/docs/camera-settings/reolink
+
 <p align="center">
   <img src="app/client/public/brand/logo-wide-light.svg" alt="Nodelink.js" width="420">
   <br><br>
-  A TypeScript library for interacting with Reolink IP cameras and NVRs using the proprietary Baichuan protocol and CGI API. Includes a full-featured web-based Manager UI.
+  A TypeScript library for interacting with Reolink IP cameras and NVRs using the proprietary Baichuan protocol and CGI API. Includes a web-based Manager UI (no longer developed, see above).
 </p>
 
 ## Components
 
-### [Manager UI (Web Dashboard)](./app/README.md)
+### [Manager UI (Web Dashboard)](./app/README.md) — discontinued
 
 A complete web-based management interface for camera configuration and live streaming — no code required. Docker deployment, native RTSP + WebRTC, real-time events, MQTT, Home Assistant integration.
 
