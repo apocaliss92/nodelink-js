@@ -5,6 +5,7 @@ import { useThemeMode } from '@camstack/ui-library';
 import { useAuth } from '../../auth';
 import { NodelinkIcon } from './NodelinkIcon';
 import { NavSidebarItem } from './NavSidebarItem';
+import { DiscontinuedNotice } from './DiscontinuedNotice';
 import { BottomNav } from './BottomNav';
 import { visibleNavItems } from './nav-items';
 import { NewsModal } from '../../news/NewsModal';
@@ -64,6 +65,8 @@ export function AppLayout({
 
           {/* Spacer */}
           <div className="flex-1" />
+
+          <DiscontinuedNotice />
 
           {/* Bottom controls */}
           <div className="flex flex-col gap-1 border-t border-[var(--color-border)] pt-3 mt-2 px-2.5">

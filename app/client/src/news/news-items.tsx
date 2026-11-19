@@ -22,6 +22,33 @@ export interface NewsItem {
 
 export const NEWS_ITEMS: NewsItem[] = [
   {
+    id: "2026-11-19-manager-discontinued",
+    date: "2026-11-19",
+    title: "The Manager UI is no longer developed",
+    body: (
+      <div className="space-y-2 text-sm text-[var(--color-foreground-muted)]">
+        <p>
+          Development of this Manager UI has stopped. Camera management, live streaming, events
+          and recordings for Reolink devices continue in CamStack, built on the same library.
+        </p>
+        <p>
+          This version keeps working as it is, but it will receive no new features or fixes.
+          The library (<code>@apocaliss92/nodelink-js</code>) is still actively maintained.
+        </p>
+        <p>
+          <a
+            href="https://camstack-docs.zentik.app/docs/camera-settings/reolink"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[var(--color-brand)] hover:underline"
+          >
+            Reolink in CamStack →
+          </a>
+        </p>
+      </div>
+    ),
+  },
+  {
     id: "2026-06-14-permanent-stream",
     date: "2026-06-14",
     title: "Permanent stream for battery cameras (always-on)",
