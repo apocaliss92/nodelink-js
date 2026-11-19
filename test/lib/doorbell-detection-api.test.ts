@@ -1,8 +1,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { ReolinkBaichuanApi } from "../../src/reolink/baichuan/ReolinkBaichuanApi";
+import type { SupportInfo } from "../../src/reolink/baichuan/types";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(
@@ -31,7 +32,9 @@ interface Harness {
  * reaches for is replaced by the fixture, EXCEPT the model lookup, which is
  * the thing under test.
  */
-function harness(opts: { model?: string } = {}): Harness {
+function harness(
+  opts: { model?: string; isNvr?: boolean; support?: SupportInfo } = {},
+): Harness {
   const api = new ReolinkBaichuanApi({
     host: "127.0.0.1",
     port: 65535,
@@ -43,13 +46,14 @@ function harness(opts: { model?: string } = {}): Harness {
   let sawDoorbell: boolean | undefined;
   const stub = api as unknown as Record<string, unknown>;
 
-  stub.getSupportInfo = async () => load("support-info.json");
+  stub.getSupportInfo = async () => opts.support ?? load("support-info.json");
   stub.getAbilityInfo = async () => load("ability-info.json");
   stub.getInfo = async () =>
     opts.model === undefined ? {} : { type: opts.model };
-  stub.isNvrDevice = async () => false;
+  stub.isNvrDevice = async () => opts.isNvr ?? false;
   stub.probeFloodlightSupportByCmd289 = async () => false;
   stub.getAiDetectTypes = async () => ["people", "vehicle"];
+  stub.getPtzPresets = async () => [];
   stub.getDingDongList = async () => [];
   stub.getDingDongCfg = async () => [];
   stub.probeAutotrackingSupport = async (
@@ -98,5 +102,67 @@ describe("getDeviceCapabilities — doorbell by model (issue #25)", () => {
     const result = await api.getDeviceCapabilities(0);
     expect(result.capabilities).toBeDefined();
     expect(result.capabilities.isDoorbell).toBe(false);
+  });
+});
+
+describe("getDeviceCapabilities — doorbells behind an NVR", () => {
+  const support: SupportInfo = {
+    channelNum: 8,
+    items: [
+      { chnID: 0, channelType: "ipc", doorbellVersion: 0 },
+      { chnID: 3, channelType: "Doorbell", doorbellVersion: 0 },
+      { chnID: 4, channelType: "ipc", doorbellVersion: 0 },
+    ],
+  };
+
+  it("recognizes channel 3's explicit type even if model lookup fails", async () => {
+    const h = harness({ isNvr: true, support });
+    vi.spyOn(h.api, "getInfo").mockRejectedValue(new Error("unsupported"));
+
+    const doorbell = await h.api.getDeviceCapabilities(3);
+    expect(doorbell.capabilities.isDoorbell).toBe(true);
+    expect(h.autotrackingSawDoorbell()).toBe(true);
+    const camera = await h.api.getDeviceCapabilities(4);
+    expect(camera.capabilities.isDoorbell).toBe(false);
+  });
+
+  it("looks up each channel's model rather than the recorder's model", async () => {
+    const h = harness({
+      isNvr: true,
+      support: {
+        channelNum: 8,
+        items: support.items.map((item) => ({ ...item, channelType: "ipc" })),
+      },
+    });
+    const getInfo = vi.spyOn(h.api, "getInfo").mockImplementation(async (channel) => {
+      if (channel === undefined) return { type: "NVR" };
+      return { type: channel === 3 ? "Reolink Video Doorbell PoE" : "RLC-810A" };
+    });
+
+    const doorbell = await h.api.getDeviceCapabilities(3);
+    expect(doorbell.capabilities.isDoorbell).toBe(true);
+    expect(h.autotrackingSawDoorbell()).toBe(true);
+    const camera = await h.api.getDeviceCapabilities(0);
+    expect(camera.capabilities.isDoorbell).toBe(false);
+    for (const channel of [3, 0]) {
+      expect(getInfo).toHaveBeenCalledWith(
+        channel,
+        expect.objectContaining({ timeoutMs: 5000 }),
+      );
+    }
+
+    await h.api.getDeviceCapabilities(3);
+    expect(getInfo).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps using host info for standalone devices", async () => {
+    const { api } = harness({ model: "Reolink Video Doorbell PoE" });
+    const getInfo = vi.spyOn(api, "getInfo");
+    const result = await api.getDeviceCapabilities();
+    expect(result.capabilities.isDoorbell).toBe(true);
+    expect(getInfo).toHaveBeenCalledWith(
+      undefined,
+      expect.objectContaining({ timeoutMs: 5000 }),
+    );
   });
 });

@@ -2,7 +2,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
-import { computeDeviceCapabilities } from "../../src/reolink/baichuan/capabilities";
+import {
+  computeDeviceCapabilities,
+  parseSupportXml,
+} from "../../src/reolink/baichuan/capabilities";
 import type {
   DeviceAbilities,
   SupportInfo,
@@ -56,6 +59,33 @@ const NON_DOORBELLS = [
 ];
 
 describe("doorbell detection", () => {
+  describe("NVR channel type", () => {
+    const support = parseSupportXml(`<Support><channelNum>8</channelNum>
+      <item><chnID>3</chnID><channelType>Doorbell</channelType><doorbellVersion>0</doorbellVersion></item>
+      <item><chnID>4</chnID><channelType>ipc</channelType><doorbellVersion>0</doorbellVersion></item>
+    </Support>`);
+
+    it("recognizes Doorbell with doorbellVersion=0 after parsing SupportInfo", () => {
+      expect(computeDeviceCapabilities({ channel: 3, support }).isDoorbell).toBe(true);
+    });
+
+    it("does not apply another channel's type", () => {
+      expect(computeDeviceCapabilities({ channel: 4, support }).isDoorbell).toBe(false);
+      expect(computeDeviceCapabilities({ channel: 2, support }).isDoorbell).toBe(false);
+    });
+
+    it.each(["doorbell", "DOORBELL", " Doorbell "])(
+      "accepts channelType %j",
+      (channelType) => {
+        const caps = computeDeviceCapabilities({
+          channel: 3,
+          support: { items: [{ chnID: 3, channelType, doorbellVersion: 0 }] },
+        });
+        expect(caps.isDoorbell).toBe(true);
+      },
+    );
+  });
+
   describe("Reolink Video Doorbell PoE (issue #25)", () => {
     // DB_566128M5MP_P, fw v3.0.0.2033_23041302. Standalone TCP, not on an NVR.
     // Its SupportInfo carries no `doorbellVersion` at all, so the model name is

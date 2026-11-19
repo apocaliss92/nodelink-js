@@ -267,6 +267,11 @@ export function computeDeviceCapabilities(params: {
     : isTruthyNumberLike(doorbellVersionRaw);
   const isDoorbellFromModel =
     typeof params.model === "string" && /doorbell/i.test(params.model);
+  // NVRs can explicitly identify the camera even with doorbellVersion=0.
+  const channelType = supportItem?.channelType;
+  const isDoorbellFromChannelType =
+    typeof channelType === "string" &&
+    channelType.trim().toLowerCase() === "doorbell";
 
   // Some firmwares expose an explicit lightType in SupportInfo items.
   // Observed values:
@@ -388,7 +393,8 @@ export function computeDeviceCapabilities(params: {
   // Wireless chime: paired Reolink Chime receiver (cmd 609/610 getDingDongSilent/setDingDongSilent).
   // All doorbells can potentially support wireless chime; some may not expose dingDong abilities
   // in XML but still support the chime commands. Use getDingDongList() to check for paired chimes.
-  const isDoorbell = isDoorbellFromSupport || isDoorbellFromModel;
+  const isDoorbell =
+    isDoorbellFromSupport || isDoorbellFromModel || isDoorbellFromChannelType;
   const hasWirelessChimeFromAbilities = abilitiesHasAny(flat, /dingDong|dingdong/i);
 
   const hasPan = hasPanTiltFromSupport || hasPanTiltFromAbilities;
