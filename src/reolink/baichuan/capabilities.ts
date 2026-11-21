@@ -358,12 +358,12 @@ export function computeDeviceCapabilities(params: {
   // - rfCfg (older)
   // - newRfCfg (common)
   // - rfVersion (present even when *Cfg is 0)
-  // Additionally, many battery cams are PIR-based; treat battery>0 as a weak hint.
+  // A battery is NOT a PIR hint: battery cameras without a PIR sensor exist and answer
+  // SetPirInfo with 400; real PIR battery models advertise rfAlarm_rw or rfVersion.
   const hasPirFromSupport = supportItem
     ? isTruthyNumberLike((supportItem as any).rfCfg) ||
       isTruthyNumberLike((supportItem as any).newRfCfg) ||
-      isTruthyNumberLike((supportItem as any).rfVersion) ||
-      isTruthyNumberLike((supportItem as any).battery)
+      isTruthyNumberLike((supportItem as any).rfVersion)
     : false;
 
   // Autotracking (smartTrack) support.
