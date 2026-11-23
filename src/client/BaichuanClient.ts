@@ -559,6 +559,24 @@ export class BaichuanClient extends EventEmitter<{
     return `${transport}-${short}`;
   }
 
+  /**
+   * Re-emit a socket error to consumers. EventEmitter throws when an `error`
+   * event has no listener, and the constructor's safety listener is gone once
+   * a caller runs `removeAllListeners()` on a client it is discarding. A late
+   * reset on that discarded socket must stay a log line, never a thrown
+   * exception out of the socket's event handler.
+   */
+  private emitSocketError(err: Error): void {
+    if (this.listenerCount("error") === 0) {
+      this.logFixed("error_no_listener", {
+        message: err?.message ?? String(err),
+        code: (err as any)?.code,
+      });
+      return;
+    }
+    this.emit("error", err);
+  }
+
   private logFixed(event: string, data?: unknown): void {
     const prefix = "[BaichuanClient]";
     const msg = `${prefix} ${event}`;
@@ -1579,7 +1597,7 @@ export class BaichuanClient extends EventEmitter<{
           code,
         },
       });
-      this.emit("error", err);
+      this.emitSocketError(err);
     });
 
     await new Promise<void>((resolve, reject) => {
