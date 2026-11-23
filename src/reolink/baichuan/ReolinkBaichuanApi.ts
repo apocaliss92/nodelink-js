@@ -2480,13 +2480,45 @@ export class ReolinkBaichuanApi {
   ): Promise<{
     client: BaichuanClient;
     release: () => Promise<void>;
+    invalidate: (reason: string) => Promise<void>;
   }> {
     const tag = this.resolveSocketTag(sessionKey);
     const log = logger ?? this.logger;
     log?.debug?.(
       `[SocketPool] createDedicatedSession sessionKey=${sessionKey} → tag=${tag}`,
     );
-    return await this.acquirePooledSocket(tag, logger);
+    const acquired = await this.acquirePooledSocket(tag, logger);
+
+    // The pool is keyed by tag and several streams share one tag (main and sub
+    // of a channel ride the same socket). A holder that outlives its socket —
+    // a sibling discarded it, or the camera dropped it and a new one was
+    // opened under the same tag — must not touch the socket that replaced it:
+    // releasing by tag alone would take a reference away from the new holder.
+    const stillHoldsPooledSocket = (): boolean =>
+      this.socketPool.get(tag)?.client === acquired.client;
+    let settled = false;
+
+    return {
+      client: acquired.client,
+      release: async () => {
+        if (settled) return;
+        settled = true;
+        if (!stillHoldsPooledSocket()) return;
+        await acquired.release();
+      },
+      // Discards the socket instead of returning it: a session the firmware
+      // stopped serving (silent stream, unanswered stream request) answers
+      // nothing when reused, so the next acquire must open a new one.
+      invalidate: async (reason: string) => {
+        if (settled) return;
+        settled = true;
+        if (!stillHoldsPooledSocket()) return;
+        log?.warn?.(
+          `[SocketPool] Discarding socket for tag=${tag} (sessionKey=${sessionKey}): ${reason}`,
+        );
+        await this.forceClosePooledSocket(tag, logger);
+      },
+    };
   }
 
   /**

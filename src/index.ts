@@ -198,6 +198,16 @@ export * from "./baichuan/stream/alwaysOnTypes";
 export { PlaceholderRenderer } from "./baichuan/stream/PlaceholderRenderer";
 export { ContinuousVideoStream } from "./baichuan/stream/ContinuousVideoStream";
 export type { ContinuousVideoStreamOptions } from "./baichuan/stream/ContinuousVideoStream";
+export {
+  ResilientVideoStream,
+  RESILIENT_STREAM_DEFAULTS,
+} from "./baichuan/stream/ResilientVideoStream";
+export type {
+  ResilientVideoStreamOptions,
+  ResilientStreamSession,
+  ResilientInnerStream,
+  ResilientRecoveryInfo,
+} from "./baichuan/stream/ResilientVideoStream";
 export { AlwaysOnController } from "./baichuan/stream/AlwaysOnController";
 export type { AlwaysOnControllerOptions } from "./baichuan/stream/AlwaysOnController";
 export type { DebugOptions, DebugConfig } from "./debug/DebugConfig";

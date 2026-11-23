@@ -6,6 +6,10 @@ import type { StreamProfile } from "../reolink/baichuan/types";
 import type { BaichuanClient } from "../client/BaichuanClient";
 import { BaichuanVideoStream } from "../baichuan/stream/BaichuanVideoStream";
 import { ContinuousVideoStream } from "../baichuan/stream/ContinuousVideoStream";
+import {
+  ResilientVideoStream,
+  RESILIENT_STREAM_DEFAULTS,
+} from "../baichuan/stream/ResilientVideoStream";
 import { AlwaysOnController } from "../baichuan/stream/AlwaysOnController";
 import {
   CompositeStream,
@@ -74,6 +78,20 @@ export interface Rfc4571TcpServerOptions {
   /** Optional: auto-close when no clients are connected for a while. */
   idleTeardownMs?: number;
 
+  /**
+   * Self-healing of a native live stream that has a dedicated session
+   * (`deviceId` set). When the camera drops the transport, goes silent or
+   * stops answering, the server discards that session, opens a new one and
+   * asks for the stream again — the connected clients stay connected and see
+   * a pause followed by a keyframe. `uptimeRestartMs` is then the media
+   * silence that declares the source lost, and the client-dropping uptime
+   * restart is not used.
+   *
+   * Default: enabled. `maxRecoveryMs` bounds one outage (default 10 min);
+   * past it the server closes as it did before.
+   */
+  resilience?: { enabled?: boolean; maxRecoveryMs?: number };
+
   /** If true (default), closes the passed API when tearing down. */
   closeApiOnTeardown?: boolean;
   username: string;
@@ -129,9 +147,35 @@ export interface Rfc4571TcpServer {
   password: string;
 
   server: net.Server;
-  videoStream: BaichuanVideoStream | CompositeStream | ContinuousVideoStream;
+  videoStream:
+    | BaichuanVideoStream
+    | CompositeStream
+    | ContinuousVideoStream
+    | ResilientVideoStream;
 
   close: (reason?: unknown) => Promise<void>;
+}
+
+/** How long server creation waits for the frame-rate hint. */
+const STREAM_METADATA_DEADLINE_MS = 5_000;
+
+function withDeadline<T>(
+  work: Promise<T>,
+  deadlineMs: number,
+  what: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${what} not answered in ${deadlineMs}ms`)),
+      deadlineMs,
+    );
+  });
+  // The late answer, if it ever comes, has nobody waiting for it.
+  work.catch(() => {});
+  return Promise.race([work, deadline]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 
 export async function createRfc4571TcpServer(
@@ -449,6 +493,7 @@ async function createRfc4571TcpServerInternal(
     | {
         client: BaichuanClient;
         release: () => Promise<void>;
+        invalidate: (reason: string) => Promise<void>;
       }
     | undefined;
 
@@ -467,9 +512,19 @@ async function createRfc4571TcpServerInternal(
 
   // For composite (ffmpeg) streams, avoid over-aggressive restarts: a short burst of
   // backpressure or a long GOP on join can look like "no activity" even though the pipeline is alive.
-  const uptimeRestartMs = alwaysOnEnabled
-    ? 0
-    : (uptimeRestartMsOpt ?? (isComposite ? 60_000 : 10_000));
+  // A native stream on a dedicated session heals itself (ResilientVideoStream):
+  // it owns silence detection, so the RFC-level uptime restart — which drops
+  // every client and re-asks the SAME session — is not used for it.
+  const resilienceEnabled =
+    !isComposite &&
+    !alwaysOnEnabled &&
+    Boolean(options.deviceId) &&
+    options.resilience?.enabled !== false;
+  const sourceSilenceMs = uptimeRestartMsOpt ?? 10_000;
+  const uptimeRestartMs =
+    alwaysOnEnabled || resilienceEnabled
+      ? 0
+      : (uptimeRestartMsOpt ?? (isComposite ? 60_000 : 10_000));
   const variantSuffix =
     variant && variant !== "default" ? ` variant=${variant}` : "";
   const logPrefix = isComposite
@@ -498,7 +553,11 @@ async function createRfc4571TcpServerInternal(
     `starting (host=${host} videoPT=${videoPayloadType} audioPT=${audioPayloadType} expectedVideoType=${expectedVideoType ?? "n/a"} keyframeTimeoutMs=${keyframeTimeoutMs} uptimeRestartMs=${uptimeRestartMs} idleTeardownMs=${idleTeardownMs} composite=${isComposite})`,
   );
 
-  let videoStream: BaichuanVideoStream | CompositeStream | ContinuousVideoStream;
+  let videoStream:
+    | BaichuanVideoStream
+    | CompositeStream
+    | ContinuousVideoStream
+    | ResilientVideoStream;
   let isCompositeStream = false;
   let alwaysOnController: AlwaysOnController | undefined;
 
@@ -728,9 +787,9 @@ async function createRfc4571TcpServerInternal(
     // so commands go to the correct socket.
     const deviceId = options.deviceId;
     let streamClient: BaichuanClient;
+    const sessionKey = `live:${deviceId}:ch${ch}:${profile}${variant && variant !== "default" ? `:${variant}` : ""}`;
 
     if (deviceId) {
-      const sessionKey = `live:${deviceId}:ch${ch}:${profile}${variant && variant !== "default" ? `:${variant}` : ""}`;
       dedicatedSession = await baseApi.createDedicatedSession(
         sessionKey,
         logger,
@@ -783,6 +842,70 @@ async function createRfc4571TcpServerInternal(
       videoStream = cvs;
       log(
         `always-on stream started (ch=${ch} profile=${profile}${deviceId ? ` dedicated=${deviceId}` : ""})`,
+      );
+    } else if (resilienceEnabled && dedicatedSession) {
+      // The session opened above carries the first attempt; every later one
+      // gets a session of its own, opened only after the previous was
+      // discarded.
+      let firstSession: typeof dedicatedSession | undefined = dedicatedSession;
+      const resilient = new ResilientVideoStream({
+        label: `ch=${ch} profile=${profile}`,
+        silenceMs: sourceSilenceMs,
+        ...(options.resilience?.maxRecoveryMs !== undefined
+          ? { maxRecoveryMs: options.resilience.maxRecoveryMs }
+          : {}),
+        logger,
+        openSession: async () => {
+          const session =
+            firstSession ??
+            (await baseApi.createDedicatedSession(sessionKey, logger));
+          firstSession = undefined;
+          return {
+            stream: new BaichuanVideoStream({
+              client: session.client,
+              api: baseApi,
+              channel: ch,
+              profile,
+              variant,
+              logger,
+            }),
+            release: session.release,
+            invalidate: session.invalidate,
+          };
+        },
+      });
+      // Between the discarded session and the next one no stream is
+      // registered for the device, which is exactly when the command socket
+      // would idle-disconnect — and take the recovery down a reconnect of its
+      // own. Hold it open for the length of the outage, no longer.
+      let releaseRecoveryPermit: (() => void) | undefined;
+      const dropRecoveryPermit = () => {
+        const release = releaseRecoveryPermit;
+        releaseRecoveryPermit = undefined;
+        try {
+          release?.();
+        } catch {
+          // best-effort
+        }
+      };
+      resilient.on("recovering", () => {
+        dropRecoveryPermit();
+        try {
+          releaseRecoveryPermit = baseApi.client.acquirePermit?.(
+            options.resilience?.maxRecoveryMs ??
+              RESILIENT_STREAM_DEFAULTS.maxRecoveryMs,
+            `stream-recovery:${sessionKey}`,
+          );
+        } catch {
+          // best-effort
+        }
+      });
+      resilient.on("recovered", dropRecoveryPermit);
+      resilient.on("close", dropRecoveryPermit);
+      await resilient.start();
+      videoStream = resilient;
+      log(
+        `stream started (ch=${ch} profile=${profile} dedicated=${deviceId} self-healing silenceMs=${sourceSilenceMs})`,
       );
     } else {
       const live = await createLiveStream();
@@ -1014,6 +1137,7 @@ async function createRfc4571TcpServerInternal(
 
     throw e;
   }
+  log(`keyframe received (video=${keyframe.videoType})`);
   if (expectedVideoType && keyframe.videoType !== expectedVideoType) {
     log(
       `expectedVideoType mismatch (expected=${expectedVideoType} actual=${keyframe.videoType})`,
@@ -1022,6 +1146,7 @@ async function createRfc4571TcpServerInternal(
 
   // Best-effort framerate for raw elementary-stream input.
   let fps = 25;
+  const metadataStartedAt = Date.now();
   try {
     if (isComposite) {
       // For composite stream, get framerate from wider stream
@@ -1059,7 +1184,15 @@ async function createRfc4571TcpServerInternal(
       const fr = Number(stream?.frameRate);
       if (Number.isFinite(fr) && fr > 0) fps = fr;
     } else {
-      const metadata: any = await baseApi.getStreamMetadata(channel!);
+      // The frame rate is a hint for the SDP, read on the command socket.
+      // That socket can be mid-reconnect while the stream is already
+      // flowing, and an answer that never comes must not hold the creation
+      // open forever: a caller waiting on it would never be told.
+      const metadata: any = await withDeadline(
+        baseApi.getStreamMetadata(channel!),
+        STREAM_METADATA_DEADLINE_MS,
+        "stream metadata",
+      );
       const streams: any[] = Array.isArray(metadata)
         ? metadata
         : Array.isArray(metadata?.streams)
@@ -1069,8 +1202,10 @@ async function createRfc4571TcpServerInternal(
       const fr = Number(stream?.frameRate);
       if (Number.isFinite(fr) && fr > 0) fps = fr;
     }
-  } catch {
-    // ignore
+  } catch (e) {
+    log(
+      `stream metadata unavailable after ${Date.now() - metadataStartedAt}ms, keeping fps=${fps} (${e instanceof Error ? e.message : String(e)})`,
+    );
   }
 
   // Prime audio: prefer ADTS (self-describing), but support raw AAC by using a hint/default config.
