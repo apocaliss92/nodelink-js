@@ -229,6 +229,65 @@ describe("ResilientVideoStream", () => {
     await stream.stop();
   });
 
+  it("silence after an ACCEPTED restart backs off: growing delays, bounded attempts", async () => {
+    const sessions: FakeSession[] = [];
+    // Every reopened session is accepted but never delivers (a sleeping camera).
+    const openSession = vi.fn(async () => {
+      const s = makeSession();
+      sessions.push(s);
+      return s;
+    });
+    const stream = new ResilientVideoStream({
+      openSession,
+      silenceMs: 1_000,
+      retryDelayMs: 1_000,
+      maxRetryDelayMs: 8_000,
+      maxRecoveryMs: 120_000,
+    });
+    consume(stream);
+    await stream.start();
+    sessions[0]!.stream.emit("videoAccessUnit", frame(true, 1));
+
+    const opensAt: number[] = [];
+    const t0 = Date.now();
+    openSession.mockImplementation(async () => {
+      opensAt.push(Date.now() - t0);
+      const s = makeSession();
+      sessions.push(s);
+      return s;
+    });
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    // Gaps between consecutive reopens never shrink and reach the cap.
+    const gaps = opensAt.slice(1).map((t, i) => t - opensAt[i]!);
+    for (let i = 1; i < gaps.length; i++) {
+      expect(gaps[i]!).toBeGreaterThanOrEqual(gaps[i - 1]!);
+    }
+    expect(Math.max(...gaps)).toBeGreaterThanOrEqual(8_000);
+    // A fixed 1 s silence window would be ~110 attempts in 120 s.
+    expect(opensAt.length).toBeLessThan(25);
+    await stream.stop();
+  });
+
+  it("stop() while the first stream start is in flight does not arm the silence watch", async () => {
+    const session = makeSession();
+    let finishStart!: () => void;
+    session.stream.start = vi.fn(
+      () => new Promise<void>((r) => (finishStart = r)),
+    );
+    const openSession = vi.fn(async () => session);
+    const stream = new ResilientVideoStream({ openSession, silenceMs: 1_000 });
+    const starting = stream.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await stream.stop();
+    finishStart();
+    await starting.catch(() => {});
+
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(openSession).toHaveBeenCalledTimes(1);
+  });
+
   it("is bounded: tells the consumer once the recovery budget is spent", async () => {
     const sessions: FakeSession[] = [];
     const openSession = vi.fn(async () => {

@@ -140,6 +140,8 @@ This is distinct from the wired *working* mode (Continuous). Only switch to `ada
 
 ## Always-On Stream for Battery Cameras
 
+**Self-healing streams.** `createRfc4571TcpServer` with a `deviceId` recovers a lost native stream (transport loss, media silence, unanswered request) on a new dedicated session while the server and its clients stay up, with a 1 s to 15 s backoff and a 10 min budget. It is on by default; pass `resilience: { enabled: false }` to opt out (`resilience.maxRecoveryMs` bounds one outage).
+
 Battery cameras sleep between events, breaking continuous consumers like Frigate. Both `createRfc4571TcpServer` and `BaichuanRtspServer` accept an `alwaysOn` option that keeps the stream alive: the real feed is served during motion windows; while the camera sleeps the last keyframe is repeated at a low rate, optionally decorated with a dimmed placeholder overlay.
 
 ```typescript

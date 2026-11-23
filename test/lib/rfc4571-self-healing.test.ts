@@ -201,6 +201,46 @@ describe("RFC4571 server — native stream lost mid-stream", () => {
   );
 
   it(
+    "the recovery permit is released when the server is closed mid-outage",
+    async () => {
+      const { server, consumer, camera, permits } = await openConsumer(
+        "heal-permit-close",
+        { uptimeRestartMs: 400 },
+      );
+      camera.pause();
+      await until(() => permits.held === 1, "the permit taken for the outage");
+
+      camera.off();
+      consumer.destroy();
+      await server.close();
+      expect(permits.held).toBe(0);
+      expect(permits.taken).toBe(1);
+    },
+    SLOW,
+  );
+
+  it(
+    "the recovery permit is released when recovery gives up",
+    async () => {
+      const { server, consumer, camera, permits } = await openConsumer(
+        "heal-permit-giveup",
+        { uptimeRestartMs: 400, resilience: { maxRecoveryMs: 1_500 } },
+      );
+      camera.pause();
+      await until(() => permits.held === 1, "the permit taken for the outage");
+      // The budget is spent: the wrapper gives up and the permit goes back
+      // without anyone calling close() on the server.
+      await until(() => permits.held === 0, "the permit released on give-up", 15_000);
+      expect(permits.taken).toBeGreaterThanOrEqual(1);
+
+      camera.off();
+      consumer.destroy();
+      await server.close();
+    },
+    SLOW,
+  );
+
+  it(
     "creation is not held open by a frame-rate read that is never answered",
     async () => {
       const { api } = buildApi();

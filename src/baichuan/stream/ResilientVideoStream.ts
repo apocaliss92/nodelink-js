@@ -168,6 +168,9 @@ export class ResilientVideoStream extends EventEmitter<{
     if (this.stopped) throw new Error("ResilientVideoStream is stopped");
     if (this.started) return;
     await this.openAndStart();
+    // stop() during the await above already tore everything down: do not
+    // arm a watch nobody will clear.
+    if (this.stopped) return;
     this.started = true;
     this.lastMediaAt = Date.now();
     this.startSilenceWatch();
@@ -285,6 +288,8 @@ export class ResilientVideoStream extends EventEmitter<{
       if (silentFor < this.silenceMs) return;
       this.sourceLost(`no media for ${silentFor}ms`);
     }, tickMs);
+    // The watch must never keep the process alive on its own.
+    this.silenceTimer.unref?.();
   }
 
   private stopSilenceWatch(): void {
@@ -308,7 +313,39 @@ export class ResilientVideoStream extends EventEmitter<{
         `${this.prefix} still no video after attempt ${this.outage.attempts} (${reason}); retrying`,
       );
     }
-    void this.reopen(reason);
+    // A session that was accepted but delivers nothing (a sleeping battery
+    // camera) must not be re-requested every silence window: that keeps the
+    // camera awake. Every attempt after the first waits the same growing
+    // delay a refused attempt does; it resets only with a real keyframe
+    // (the outage ends and its attempt counter goes with it).
+    const delay =
+      this.outage.attempts > 0 ? this.backoffDelay(this.outage.attempts) : 0;
+    if (delay === 0) {
+      void this.reopen(reason);
+      return;
+    }
+    this.logger?.warn?.(
+      `${this.prefix} next attempt in ${delay}ms (silence after attempt ${this.outage.attempts})`,
+    );
+    // Do not leave the silent session open while waiting: an open session
+    // is itself a reason for the camera to stay up.
+    void this.dropSession(true, reason);
+    this.scheduleReopen(reason, delay);
+  }
+
+  private backoffDelay(attempts: number): number {
+    return Math.min(
+      this.maxRetryDelayMs,
+      this.retryDelayMs * 2 ** Math.min(Math.max(attempts - 1, 0), 10),
+    );
+  }
+
+  private scheduleReopen(reason: string, delay: number): void {
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      void this.reopen(reason);
+    }, delay);
+    this.retryTimer.unref?.();
   }
 
   private async reopen(reason: string): Promise<void> {
@@ -333,17 +370,11 @@ export class ResilientVideoStream extends EventEmitter<{
         );
       } catch (e) {
         if (this.stopped) return;
-        const delay = Math.min(
-          this.maxRetryDelayMs,
-          this.retryDelayMs * 2 ** Math.min(outage.attempts - 1, 10),
-        );
+        const delay = this.backoffDelay(outage.attempts);
         this.logger?.warn?.(
           `${this.prefix} attempt ${outage.attempts} failed (${errorMessage(e)}); next in ${delay}ms`,
         );
-        this.retryTimer = setTimeout(() => {
-          this.retryTimer = null;
-          void this.reopen(reason);
-        }, delay);
+        this.scheduleReopen(reason, delay);
       }
     } finally {
       this.reopening = false;

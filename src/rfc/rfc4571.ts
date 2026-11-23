@@ -802,7 +802,7 @@ export class Rfc4571Muxer {
       state.untrustedDeltaCount++;
       if (now - state.lastUntrustedDeltaLogMs < intervalMs) return;
       state.lastUntrustedDeltaLogMs = now;
-      this.logger.warn(
+      this.logger?.warn?.(
         `[rfc4571] video timing: ${message} (untrustedDeltaCount=${state.untrustedDeltaCount})`,
       );
       return;
@@ -811,7 +811,7 @@ export class Rfc4571Muxer {
       state.wrapCount++;
       if (now - state.lastWrapLogMs < intervalMs) return;
       state.lastWrapLogMs = now;
-      this.logger.warn(
+      this.logger?.warn?.(
         `[rfc4571] video timing: ${message} (wrapCount=${state.wrapCount})`,
       );
       return;
@@ -819,7 +819,7 @@ export class Rfc4571Muxer {
     state.resetCount++;
     if (now - state.lastResetLogMs < intervalMs) return;
     state.lastResetLogMs = now;
-    this.logger.warn(
+    this.logger?.warn?.(
       `[rfc4571] video timing: ${message} (resetCount=${state.resetCount})`,
     );
   }
