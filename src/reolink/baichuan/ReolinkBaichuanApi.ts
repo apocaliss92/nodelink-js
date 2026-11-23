@@ -844,6 +844,14 @@ export class ReolinkBaichuanApi {
     const oldEntry = this.socketPool.get("general");
     if (oldEntry) {
       oldEntry.client.removeAllListeners();
+      // Keep late errors from the discarded socket visible instead of silent.
+      oldEntry.client.on("error", (err) => {
+        (this.logger.debug ?? this.logger.log)?.call(
+          this.logger,
+          "general socket (discarded) late error",
+          { message: err?.message ?? String(err), code: (err as any)?.code },
+        );
+      });
       if (oldEntry.idleCloseTimer) clearTimeout(oldEntry.idleCloseTimer);
       if (oldEntry.generalPermitRelease) {
         try {
