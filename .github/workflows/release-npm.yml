@@ -77,7 +77,8 @@ jobs:
                 # Stable → stable: bump patch (0.4.1 → 0.4.2)
                 VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
               fi
-              NPM_TAG="latest"
+              # Maintenance branch: never move `latest` (0.13.x owns it).
+              NPM_TAG="release-0.12"
               IS_PRERELEASE="false"
               ;;
             minor)
@@ -140,8 +141,8 @@ jobs:
             echo "Release ${TAG} already exists"; exit 0
           fi
 
-          PREV_TAG=$(git tag --list 'v*' --sort=-creatordate | grep -v "^${TAG}$" | head -n 1 || true)
-          NOTES_ARGS=(-f tag_name="${TAG}" -f target_commitish="main")
+          PREV_TAG=$(git tag --list 'v0.12.*' --sort=-v:refname | grep -v "^${TAG}$" | head -n 1 || true)
+          NOTES_ARGS=(-f tag_name="${TAG}" -f target_commitish="${GITHUB_REF_NAME}")
           [ -n "$PREV_TAG" ] && NOTES_ARGS+=(-f previous_tag_name="${PREV_TAG}")
           NOTES=$(gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" "${NOTES_ARGS[@]}" --jq .body)
 
@@ -149,4 +150,4 @@ jobs:
 
           PRERELEASE_FLAG=""
           [ "${{ steps.version.outputs.is_prerelease }}" == "true" ] && PRERELEASE_FLAG="--prerelease"
-          gh release create "${TAG}" --title "Release ${TAG}" --notes-file release_notes.md ${PRERELEASE_FLAG}
+          gh release create "${TAG}" --target "${GITHUB_REF_NAME}" --title "Release ${TAG}" --notes-file release_notes.md ${PRERELEASE_FLAG}
