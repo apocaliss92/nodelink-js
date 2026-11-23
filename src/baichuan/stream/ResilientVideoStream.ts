@@ -49,6 +49,12 @@ export interface ResilientStreamSession {
   release: () => Promise<void>;
   /** Discard the session: its transport must never be handed out again. */
   invalidate: (reason: string) => Promise<void>;
+  /**
+   * Identity of the transport the session rides on. Streams that share one
+   * (main and sub of a channel) pass the same object, so a stream that lost
+   * its video can tell a dead transport from one still carrying a sibling.
+   */
+  transport?: object;
 }
 
 export interface ResilientStreamLogger {
@@ -92,6 +98,9 @@ export const RESILIENT_STREAM_DEFAULTS = {
 
 type Outage = { reason: string; lostAt: number; attempts: number };
 
+/** When each shared transport last delivered video, to any stream on it. */
+const transportLastVideoAt = new WeakMap<object, number>();
+
 export class ResilientVideoStream extends EventEmitter<{
   videoAccessUnit: [AccessUnit];
   additionalHeader: [unknown];
@@ -117,6 +126,8 @@ export class ResilientVideoStream extends EventEmitter<{
   /** True while a recovery attempt (teardown + reopen) is in flight. */
   private reopening = false;
   private lastMediaAt = 0;
+  /** Last video from the current session only (0 until it delivers). */
+  private lastVideoAt = 0;
   private silenceTimer: ReturnType<typeof setInterval> | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private recoveries = 0;
@@ -181,6 +192,7 @@ export class ResilientVideoStream extends EventEmitter<{
       throw new Error("ResilientVideoStream stopped while opening a session");
     }
     this.session = session;
+    this.lastVideoAt = 0;
     this.attach(session.stream);
     try {
       await this.startWithDeadline(session.stream);
@@ -237,9 +249,31 @@ export class ResilientVideoStream extends EventEmitter<{
     if (!session) return;
     this.session = null;
     this.detach(session.stream);
+    // Decided before the stop: stopping takes time a sibling keeps using.
+    const discard = invalidate && !this.siblingStillFlowing(session);
+    if (invalidate && !discard) {
+      this.logger?.warn?.(
+        `${this.prefix} the transport still carries another stream; keeping it and asking again on it`,
+      );
+    }
     await session.stream.stop().catch(() => {});
-    if (invalidate) await session.invalidate(reason).catch(() => {});
+    if (discard) await session.invalidate(reason).catch(() => {});
     else await session.release().catch(() => {});
+  }
+
+  /**
+   * A transport that delivered video to another stream after this one last
+   * saw any is alive: only this stream's request is stuck, and closing the
+   * transport would cut the stream that works.
+   */
+  private siblingStillFlowing(session: ResilientStreamSession): boolean {
+    if (!session.transport) return false;
+    const transportAt = transportLastVideoAt.get(session.transport);
+    if (transportAt === undefined) return false;
+    const window = this.silenceMs > 0 ? this.silenceMs : 10_000;
+    return (
+      transportAt > this.lastVideoAt && Date.now() - transportAt < window
+    );
   }
 
   private startSilenceWatch(): void {
@@ -330,6 +364,9 @@ export class ResilientVideoStream extends EventEmitter<{
   private onAccessUnit = (...args: unknown[]): void => {
     const au = args[0] as AccessUnit;
     this.lastMediaAt = Date.now();
+    this.lastVideoAt = this.lastMediaAt;
+    const transport = this.session?.transport;
+    if (transport) transportLastVideoAt.set(transport, this.lastMediaAt);
     const outage = this.outage;
     if (outage) {
       // A new session starts mid-GOP as far as the consumer's decoder is

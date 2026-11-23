@@ -262,6 +262,48 @@ describe("ResilientVideoStream", () => {
     expect(openSession).toHaveBeenCalledTimes(attempts);
   });
 
+  it("keeps a shared transport that still carries the other profile, and asks again on it", async () => {
+    const transport = {};
+    const open = (into: FakeSession[]) => async () => {
+      const s = { ...makeSession(), transport };
+      into.push(s);
+      return s;
+    };
+    const mainSessions: FakeSession[] = [];
+    const subSessions: FakeSession[] = [];
+    const main = new ResilientVideoStream({ openSession: open(mainSessions), silenceMs: 10_000 });
+    const sub = new ResilientVideoStream({ openSession: open(subSessions), silenceMs: 10_000 });
+    const seenMain = consume(main);
+    consume(sub);
+
+    await main.start();
+    await sub.start();
+    mainSessions[0]!.stream.emit("videoAccessUnit", frame(true, 1));
+    subSessions[0]!.stream.emit("videoAccessUnit", frame(true, 1));
+
+    // Only sub stops; main keeps flowing on the same transport.
+    for (let t = 0; t < 12; t++) {
+      await vi.advanceTimersByTimeAsync(1_000);
+      mainSessions[0]!.stream.emit("videoAccessUnit", frame(false, 2 + t));
+    }
+
+    expect(subSessions).toHaveLength(2);
+    expect(subSessions[0]!.invalidate).not.toHaveBeenCalled();
+    expect(subSessions[0]!.release).toHaveBeenCalledOnce();
+    expect(mainSessions).toHaveLength(1);
+    expect(seenMain.closed).toBe(0);
+
+    // Both silent: the transport itself is dead and is discarded.
+    await vi.advanceTimersByTimeAsync(11_000);
+    expect(
+      mainSessions[0]!.invalidate.mock.calls.length +
+        subSessions[1]!.invalidate.mock.calls.length,
+    ).toBeGreaterThanOrEqual(1);
+
+    await main.stop();
+    await sub.stop();
+  });
+
   it("does not reopen anything after stop()", async () => {
     const sessions: FakeSession[] = [];
     const openSession = vi.fn(async () => {

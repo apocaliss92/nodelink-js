@@ -871,6 +871,8 @@ async function createRfc4571TcpServerInternal(
             }),
             release: session.release,
             invalidate: session.invalidate,
+            // Main and sub of a channel ride the same pooled socket.
+            transport: session.client,
           };
         },
       });
