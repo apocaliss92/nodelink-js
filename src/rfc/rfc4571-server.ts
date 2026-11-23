@@ -9,6 +9,7 @@ import { ContinuousVideoStream } from "../baichuan/stream/ContinuousVideoStream"
 import {
   ResilientVideoStream,
   RESILIENT_STREAM_DEFAULTS,
+  type ResilientRecoveryVerdict,
 } from "../baichuan/stream/ResilientVideoStream";
 import { AlwaysOnController } from "../baichuan/stream/AlwaysOnController";
 import {
@@ -89,8 +90,20 @@ export interface Rfc4571TcpServerOptions {
    *
    * Default: enabled. `maxRecoveryMs` bounds one outage (default 10 min);
    * past it the server closes as it did before.
+   *
+   * Recovery never wakes a camera on its own. `sleeps: true` (a battery
+   * camera) refuses every recovery: a lost source ends the stream, its session
+   * is discarded, and dialling again is the caller's decision. `sleeps: false`
+   * always recovers. Unset: a BCUDP camera (almost always battery-powered) is
+   * treated as one that sleeps. `recoveryGuard` overrides all of that and is
+   * asked before every attempt.
    */
-  resilience?: { enabled?: boolean; maxRecoveryMs?: number };
+  resilience?: {
+    enabled?: boolean;
+    maxRecoveryMs?: number;
+    sleeps?: boolean;
+    recoveryGuard?: () => ResilientRecoveryVerdict;
+  };
 
   /** If true (default), closes the passed API when tearing down. */
   closeApiOnTeardown?: boolean;
@@ -851,6 +864,9 @@ async function createRfc4571TcpServerInternal(
       const resilient = new ResilientVideoStream({
         label: `ch=${ch} profile=${profile}`,
         silenceMs: sourceSilenceMs,
+        recoveryGuard: resolveRecoveryGuard(options.resilience, () =>
+          baseApi.client.getTransport?.(),
+        ),
         ...(options.resilience?.maxRecoveryMs !== undefined
           ? { maxRecoveryMs: options.resilience.maxRecoveryMs }
           : {}),
@@ -2321,4 +2337,32 @@ export async function createRfc4571TcpServerForReplay(
   });
 
   return result;
+}
+
+const SLEEPER_REFUSAL: ResilientRecoveryVerdict = {
+  allowed: false,
+  reason:
+    "the camera sleeps: a new session would wake it, so dialling again is the caller's decision",
+};
+const ALWAYS_RECOVER: ResilientRecoveryVerdict = { allowed: true };
+
+/** The part of the `resilience` option that decides whether recovery may run. */
+export interface RecoveryGuardOptions {
+  sleeps?: boolean;
+  recoveryGuard?: () => ResilientRecoveryVerdict;
+}
+
+/**
+ * The recovery guard a self-healing stream gets: the caller's own guard, else
+ * the caller's `sleeps` declaration, else the transport (BCUDP is a battery
+ * camera's transport, so it is treated as one that sleeps).
+ */
+export function resolveRecoveryGuard(
+  resilience: RecoveryGuardOptions | undefined,
+  transport: () => string | undefined,
+): () => ResilientRecoveryVerdict {
+  if (resilience?.recoveryGuard) return resilience.recoveryGuard;
+  if (resilience?.sleeps === true) return () => SLEEPER_REFUSAL;
+  if (resilience?.sleeps === false) return () => ALWAYS_RECOVER;
+  return () => (transport() === "udp" ? SLEEPER_REFUSAL : ALWAYS_RECOVER);
 }

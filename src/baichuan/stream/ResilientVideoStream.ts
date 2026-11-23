@@ -21,6 +21,13 @@ import { EventEmitter } from "node:events";
  *
  * Recovery is bounded (`maxRecoveryMs`) and every step is logged. Only when the
  * budget is spent does the consumer see `error` + `close`.
+ *
+ * Recovery never wakes a camera on its own. A battery camera ends its session
+ * or goes silent when it falls asleep, and reopening a session then is a wake
+ * nobody asked for — repeated for the whole budget, so the camera would never
+ * sleep again. Before EVERY attempt the stream asks `recoveryGuard`; a refusal
+ * (or a guard that throws) discards the session and ends the consumer's stream
+ * with `error` + `close`. Dialling again is the consumer's decision.
  */
 
 type AccessUnit = {
@@ -64,9 +71,20 @@ export interface ResilientStreamLogger {
   debug?: (...args: unknown[]) => void;
 }
 
+/** Whether a recovery attempt may open a session right now. */
+export type ResilientRecoveryVerdict =
+  | { allowed: true }
+  | { allowed: false; reason: string };
+
 export interface ResilientVideoStreamOptions {
   /** Opens a session and returns an UN-started stream on it. */
   openSession: () => Promise<ResilientStreamSession>;
+  /**
+   * Asked before every recovery attempt. Refuse when opening a session would
+   * wake a camera that is asleep (or may be). Absent: recovery is always
+   * allowed (a camera that never sleeps).
+   */
+  recoveryGuard?: () => ResilientRecoveryVerdict;
   /** Media silence after which the source is declared lost. 0 disables. */
   silenceMs?: number;
   /** How long one `start()` may take before the session is discarded. */
@@ -298,10 +316,53 @@ export class ResilientVideoStream extends EventEmitter<{
     this.silenceTimer = null;
   }
 
+  /**
+   * The guard's verdict, with a throw read as a refusal: not knowing whether
+   * the camera sleeps is not permission to wake it.
+   */
+  private recoveryVerdict(): ResilientRecoveryVerdict {
+    const guard = this.opts.recoveryGuard;
+    if (!guard) return { allowed: true };
+    try {
+      return guard();
+    } catch (e) {
+      return {
+        allowed: false,
+        reason: `sleep state unknown (${errorMessage(e)})`,
+      };
+    }
+  }
+
+  /** Ends the stream without reopening: the camera must not be woken by us. */
+  private async refuseRecovery(lost: string, refusal: string): Promise<void> {
+    if (this.stopped) return;
+    this.stopped = true;
+    this.stopSilenceWatch();
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    this.logger?.warn?.(
+      `${this.prefix} source lost (${lost}); not recovering: ${refusal}`,
+    );
+    // The session is dead or belongs to a camera going to sleep: never reuse it.
+    await this.dropSession(true, lost);
+    const err = new Error(
+      `${this.prefix} source lost (${lost}); recovery refused: ${refusal}`,
+    );
+    if (this.listenerCount("error") > 0) this.emit("error", err);
+    this.emit("close");
+  }
+
   /** Entry point for every way the source can be lost. */
   private sourceLost(reason: string): void {
     if (this.stopped || !this.started) return;
     if (this.reopening || this.retryTimer) return;
+    const verdict = this.recoveryVerdict();
+    if (!verdict.allowed) {
+      void this.refuseRecovery(reason, verdict.reason);
+      return;
+    }
     if (!this.outage) {
       this.outage = { reason, lostAt: Date.now(), attempts: 0 };
       this.logger?.warn?.(
@@ -357,6 +418,13 @@ export class ResilientVideoStream extends EventEmitter<{
       if (this.stopped) return;
       if (Date.now() - outage.lostAt >= this.maxRecoveryMs) {
         this.giveUp(outage);
+        return;
+      }
+      // The camera may have fallen asleep during the wait.
+      const verdict = this.recoveryVerdict();
+      if (!verdict.allowed) {
+        this.reopening = false;
+        await this.refuseRecovery(reason, verdict.reason);
         return;
       }
       outage.attempts++;

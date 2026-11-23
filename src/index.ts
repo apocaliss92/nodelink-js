@@ -207,6 +207,7 @@ export type {
   ResilientStreamSession,
   ResilientInnerStream,
   ResilientRecoveryInfo,
+  ResilientRecoveryVerdict,
 } from "./baichuan/stream/ResilientVideoStream";
 export { AlwaysOnController } from "./baichuan/stream/AlwaysOnController";
 export type { AlwaysOnControllerOptions } from "./baichuan/stream/AlwaysOnController";
