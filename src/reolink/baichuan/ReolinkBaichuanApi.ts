@@ -12429,6 +12429,14 @@ export class ReolinkBaichuanApi {
       );
     }
 
+    // Some firmwares (MagiCam) report a garbage negative <maxAlarmTime> and answer 400 when it
+    // is echoed back; the camera ignores the field on write, so drop it unless it is sane.
+    modifiedXml = modifiedXml.replace(
+      /<maxAlarmTime>\s*([^<]*?)\s*<\/maxAlarmTime>/,
+      (match: string, raw: string) =>
+        /^\d+$/.test(raw) && Number.isSafeInteger(Number(raw)) ? match : "",
+    );
+
     await this.sendXml({
       cmdId: BC_CMD_ID_SET_PIR_INFO,
       channel: ch,
