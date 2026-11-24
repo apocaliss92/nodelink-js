@@ -256,7 +256,53 @@ describe("ResilientVideoStream renewal (make-before-break)", () => {
     expect(seen.renewed).toBe(0);
     await stream.stop();
   });
+
+  it("asks again when the guard refuses at renewal time, and renews once it allows", async () => {
+    let allowed = false;
+    const sessions: FakeSession[] = [];
+    const stream = new ResilientVideoStream({
+      silenceMs: 0,
+      renewAfterMs: RENEW_MS,
+      renewRetryDelayMs: 10_000,
+      recoveryGuard: () =>
+        allowed ? { allowed: true } : { allowed: false, reason: "probing" },
+      openSession: async () => {
+        const s = makeSession();
+        sessions.push(s);
+        return s;
+      },
+    });
+    await stream.start();
+    await vi.advanceTimersByTimeAsync(RENEW_MS);
+    expect(sessions).toHaveLength(1); // refused, not forgotten
+    allowed = true;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(sessions).toHaveLength(2);
+    // Past the camera's deadline the retry stops.
+    await stream.stop();
+  });
+
+  it("stops asking once the session is past the renewal window", async () => {
+    const sessions: FakeSession[] = [];
+    const stream = new ResilientVideoStream({
+      silenceMs: 0,
+      renewAfterMs: RENEW_MS,
+      renewRetryDelayMs: 10_000,
+      recoveryGuard: () => ({ allowed: false, reason: "asleep" }),
+      openSession: async () => {
+        const s = makeSession();
+        sessions.push(s);
+        return s;
+      },
+    });
+    await stream.start();
+    await vi.advanceTimersByTimeAsync(RENEW_MS + 200_000);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(sessions).toHaveLength(1);
+    await stream.stop();
+  });
 });
+
 
 describe("resolveRenewAfterMs", () => {
   it("defaults to 27 min on BCUDP and to never on TCP; the option wins", () => {

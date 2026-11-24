@@ -851,7 +851,15 @@ export class ReolinkBaichuanApi {
   private generalRecycleMaxPerHour = 6;
   private readonly generalRecycleAtMs: number[] = [];
 
-  /** Configure recycling of a general session that stays silently dead. */
+  /**
+   * Configure recycling of a general session that stays silently dead.
+   *
+   * Without a `guard`, a camera is recycled only when known awake, or when it
+   * shows no battery signal. That signal is a received battery push or a BCUDP
+   * transport, so a TCP battery camera that has not pushed battery info yet
+   * looks wired and CAN be woken by the login. Consumers that know battery
+   * status should pass a `guard` (`true` = always on, `false` = never).
+   */
   setGeneralSessionRecycling(opts: {
     enabled?: boolean;
     guard?: (() => boolean) | undefined;

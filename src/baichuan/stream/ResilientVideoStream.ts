@@ -584,9 +584,14 @@ export class ResilientVideoStream extends EventEmitter<{
     }
     const verdict = this.recoveryVerdict();
     if (!verdict.allowed) {
+      // A refusal can be transient (a sleep probe in flight): ask again
+      // shortly, until the camera's own ~30 min deadline is past, after which
+      // normal recovery owns the outcome.
+      const retry = this.withinRenewWindow();
       this.logger?.warn?.(
-        `${this.prefix} session renewal skipped: ${verdict.reason}`,
+        `${this.prefix} session renewal refused: ${verdict.reason}${retry ? `; asking again in ${this.renewRetryDelayMs}ms` : "; past the renewal window, leaving it to recovery"}`,
       );
+      if (retry) this.scheduleRenewal(this.renewRetryDelayMs);
       return;
     }
     const age = Date.now() - this.sessionOpenedAt;
@@ -736,11 +741,23 @@ export class ResilientVideoStream extends EventEmitter<{
     this.scheduleRenewal(this.renewRetryDelayMs);
   }
 
+  /**
+   * Renewal is pointless once the session is well past the age at which the
+   * camera ends it (~30 min against a 27 min default): +3 min of margin.
+   */
+  private withinRenewWindow(): boolean {
+    return Date.now() - this.sessionOpenedAt < this.renewAfterMs + 180_000;
+  }
+
   /** Planned break-before-make renewal, entered right after a keyframe. */
   private proactiveReopen(): void {
     if (this.stopped || this.reopening || this.outage || this.retryTimer) return;
     const verdict = this.recoveryVerdict();
-    if (!verdict.allowed) return;
+    if (!verdict.allowed) {
+      // Transient refusal: try again at the next keyframe, inside the window.
+      this.renewFallbackArmed = this.withinRenewWindow();
+      return;
+    }
     const reason = `proactive session renewal at age=${Date.now() - this.sessionOpenedAt}ms`;
     this.outage = { reason, lostAt: Date.now(), attempts: 0 };
     this.logger?.warn?.(`${this.prefix} ${reason}; reopening on a new session`);
