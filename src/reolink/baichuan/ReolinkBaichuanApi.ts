@@ -836,22 +836,67 @@ export class ReolinkBaichuanApi {
   }
 
   /**
-   * Optional consumer veto on recycling a stalled general session. A consumer
-   * that knows the camera sleeps (battery) returns false: logging in again
-   * would wake it. Default: recycle unless the api last inferred "sleeping".
+   * Consumer decision on recycling a stalled general session. `true` asserts
+   * the camera is awake and always on (a recycle logs in, which wakes a
+   * sleeper); `false` forbids it. Without a guard only a camera KNOWN to be
+   * awake, or one with no battery signal at all (wired TCP), is recycled.
    */
   private generalRecycleGuard: (() => boolean) | undefined;
   /** `false` disables recycling entirely (default: enabled). */
   private generalRecycleEnabled = true;
   private generalRecycling = false;
+  /** Minimum time between two recycles: a camera that logs in but never answers must not loop. */
+  private generalRecycleMinIntervalMs = 5 * 60_000;
+  /** Recycles allowed in any rolling hour. */
+  private generalRecycleMaxPerHour = 6;
+  private readonly generalRecycleAtMs: number[] = [];
 
   /** Configure recycling of a general session that stays silently dead. */
   setGeneralSessionRecycling(opts: {
     enabled?: boolean;
-    guard?: () => boolean;
+    guard?: (() => boolean) | undefined;
+    minIntervalMs?: number;
+    maxPerHour?: number;
   }): void {
     if (opts.enabled !== undefined) this.generalRecycleEnabled = opts.enabled;
     if ("guard" in opts) this.generalRecycleGuard = opts.guard;
+    if (opts.minIntervalMs !== undefined)
+      this.generalRecycleMinIntervalMs = Math.max(0, opts.minIntervalMs);
+    if (opts.maxPerHour !== undefined)
+      this.generalRecycleMaxPerHour = Math.max(0, opts.maxPerHour);
+  }
+
+  /**
+   * Whether a recycle may log in without waking a sleeping camera. The sleep
+   * state is only known once inference ran (UDP) or a probe answered, so an
+   * unknown state on a camera that may be battery-powered is a refusal.
+   */
+  private generalRecycleSleepVerdict(): { ok: boolean; why: string } {
+    if (this.generalRecycleGuard) {
+      let v = false;
+      try {
+        v = this.generalRecycleGuard();
+      } catch {
+        v = false;
+      }
+      return { ok: v, why: v ? "guard allows" : "consumer guard refuses" };
+    }
+    const states = Array.from(this.udpLastInferredSleepStateByChannel.values());
+    if (states.includes("sleeping")) return { ok: false, why: "camera is asleep" };
+    const probe = this.lastSleepProbe;
+    if (probe && Date.now() - probe.atMs < 120_000) {
+      if (probe.status.state === "sleeping")
+        return { ok: false, why: "camera is asleep" };
+      if (probe.status.state === "awake") return { ok: true, why: "awake" };
+    }
+    if (states.length > 0 && states.every((x) => x === "awake"))
+      return { ok: true, why: "awake" };
+    const mayBeBattery =
+      this.lastBatteryPushKey.size > 0 ||
+      this.client?.getTransport?.() === "udp";
+    if (mayBeBattery)
+      return { ok: false, why: "sleep state unknown on a camera that may be battery-powered" };
+    return { ok: true, why: "no battery signal" };
   }
 
   /**
@@ -870,21 +915,33 @@ export class ReolinkBaichuanApi {
     if (this._closed || !this.generalRecycleEnabled || this.generalRecycling)
       return;
     if (this.socketPool.get("general")?.client !== client) return;
-    const sleeping = Array.from(
-      this.udpLastInferredSleepStateByChannel.values(),
-    ).includes("sleeping");
-    let allowed = !sleeping;
-    try {
-      if (allowed && this.generalRecycleGuard) allowed = this.generalRecycleGuard();
-    } catch {
-      allowed = false;
-    }
-    if (!allowed) {
+    const verdict = this.generalRecycleSleepVerdict();
+    if (!verdict.ok) {
       this.logger.warn?.(
-        `[ReolinkBaichuanApi] general session stalled (${info.consecutiveTimeouts} consecutive timeouts, age=${info.sessionAgeMs}ms) but recycling is refused (camera may be asleep)`,
+        `[ReolinkBaichuanApi] general session stalled (${info.consecutiveTimeouts} consecutive timeouts, age=${info.sessionAgeMs}ms) but not recycled: ${verdict.why}`,
       );
       return;
     }
+    const now = Date.now();
+    while (
+      this.generalRecycleAtMs.length > 0 &&
+      now - this.generalRecycleAtMs[0]! >= 3_600_000
+    )
+      this.generalRecycleAtMs.shift();
+    const last = this.generalRecycleAtMs[this.generalRecycleAtMs.length - 1];
+    if (last !== undefined && now - last < this.generalRecycleMinIntervalMs) {
+      this.logger.warn?.(
+        `[ReolinkBaichuanApi] general session stalled again ${now - last}ms after the last recycle; not recycling before ${this.generalRecycleMinIntervalMs}ms`,
+      );
+      return;
+    }
+    if (this.generalRecycleAtMs.length >= this.generalRecycleMaxPerHour) {
+      this.logger.warn?.(
+        `[ReolinkBaichuanApi] general session recycle bound hit (${this.generalRecycleAtMs.length} in the last hour); giving up on recycling until it clears`,
+      );
+      return;
+    }
+    this.generalRecycleAtMs.push(now);
     this.generalRecycling = true;
     try {
       this.logger.warn?.(

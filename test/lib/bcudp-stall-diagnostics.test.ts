@@ -35,16 +35,22 @@ describe("BcUdpStream stall diagnostics", () => {
     expect(warn.mock.calls[0]![0]).toContain(`sessionAgeMs=${29 * 60_000}`);
   });
 
-  it("reports silence from the camera and exposes the diagnostics snapshot", () => {
+  it("an idle silent session is not a stall; silence with requests outstanding is, and is reported", () => {
     const { s, i, warn } = make();
     const t0 = 2_000_000;
     i.connectedAtMs = t0 - 60_000;
-    i.lastRxAtMs = t0 - 6_000;
+    i.lastRxAtMs = t0 - 60_000;
+    i.checkStalls(t0); // idle: nothing outstanding
+    expect(warn).not.toHaveBeenCalled();
+    i.sent.set(1, { packetId: 1, buf: Buffer.alloc(1), ts: t0 - 6_000 });
     i.checkStalls(t0);
-    expect(warn.mock.calls[0]![0]).toContain("nothing received");
+    expect(warn.mock.calls.map((c) => String(c[0])).join("\n")).toContain(
+      "camera silent while requests are outstanding",
+    );
     expect(s.getSessionDiagnostics(t0)).toMatchObject({
       sessionAgeMs: 60_000,
-      lastRxAgoMs: 6_000,
+      lastRxAgoMs: 60_000,
+      unackedPackets: 1,
       discFromCamera: false,
     });
   });

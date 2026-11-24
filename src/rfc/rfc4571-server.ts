@@ -879,11 +879,10 @@ async function createRfc4571TcpServerInternal(
       const resilient = new ResilientVideoStream({
         label: `ch=${ch} profile=${profile}`,
         silenceMs: sourceSilenceMs,
-        renewAfterMs:
-          options.resilience?.renewAfterMs ??
-          (baseApi.client.getTransport?.() === "udp"
-            ? UDP_SESSION_RENEW_AFTER_MS
-            : 0),
+        renewAfterMs: resolveRenewAfterMs(
+          options.resilience,
+          baseApi.client.getTransport?.(),
+        ),
         recoveryGuard: resolveRecoveryGuard(options.resilience, () =>
           baseApi.client.getTransport?.(),
         ),
@@ -2371,6 +2370,19 @@ const SLEEPER_REFUSAL: ResilientRecoveryVerdict = {
     "the camera sleeps: a new session would wake it, so dialling again is the caller's decision",
 };
 const ALWAYS_RECOVER: ResilientRecoveryVerdict = { allowed: true };
+
+/**
+ * Session age at which a self-healing stream renews its session: the caller's
+ * value, else the BCUDP default (cameras end those sessions at ~30 min), else
+ * never (TCP sessions are not ended on a schedule).
+ */
+export function resolveRenewAfterMs(
+  resilience: { renewAfterMs?: number } | undefined,
+  transport: string | undefined,
+): number {
+  if (resilience?.renewAfterMs !== undefined) return resilience.renewAfterMs;
+  return transport === "udp" ? UDP_SESSION_RENEW_AFTER_MS : 0;
+}
 
 /** The part of the `resilience` option that decides whether recovery may run. */
 export interface RecoveryGuardOptions {

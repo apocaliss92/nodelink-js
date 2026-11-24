@@ -4,7 +4,9 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
+import { resolveRenewAfterMs } from "../../src/rfc/rfc4571-server";
 import {
+  UDP_SESSION_RENEW_AFTER_MS,
   ResilientVideoStream,
   type ResilientOpenContext,
   type ResilientStreamSession,
@@ -84,7 +86,8 @@ describe("ResilientVideoStream renewal (make-before-break)", () => {
 
     // First keyframe of the new session: switch, then close the old.
     fresh.stream.emit("videoAccessUnit", frame(true, 1000));
-    expect(seen.frames).toEqual([1, 2, 1000]);
+    // continues the old timeline: last emitted (2) + one default 40 ms frame
+    expect(seen.frames).toEqual([1, 2, 40002]);
     expect(seen.renewed).toBe(1);
     expect(seen.recovering).toBe(0);
     await vi.advanceTimersByTimeAsync(0);
@@ -95,7 +98,7 @@ describe("ResilientVideoStream renewal (make-before-break)", () => {
     // Frames from the retired session no longer reach the consumer.
     old!.stream.emit("videoAccessUnit", frame(true, 5));
     fresh.stream.emit("videoAccessUnit", frame(false, 1001));
-    expect(seen.frames).toEqual([1, 2, 1000, 1001]);
+    expect(seen.frames).toEqual([1, 2, 40002, 40003]);
 
     await stream.stop();
   });
@@ -149,5 +152,117 @@ describe("ResilientVideoStream renewal (make-before-break)", () => {
     await vi.advanceTimersByTimeAsync(RENEW_MS * 2);
     expect(sessions).toHaveLength(1);
     await stream.stop();
+  });
+
+  it("hands the consumer the new session's header before its keyframe and continues the timeline", async () => {
+    const { stream, sessions } = setup();
+    const events: string[] = [];
+    stream.on("additionalHeader", (h) =>
+      events.push(`header:${(h as { microseconds: number }).microseconds}`),
+    );
+    stream.on("videoAccessUnit", (au) => events.push(`au:${au.microseconds}`));
+    await stream.start();
+    const [old] = sessions;
+    old!.stream.emit("videoAccessUnit", frame(true, 1_000_000));
+    old!.stream.emit("videoAccessUnit", frame(false, 1_040_000));
+    await vi.advanceTimersByTimeAsync(RENEW_MS);
+    const fresh = sessions[1]!;
+    events.length = 0;
+    // The second session runs on its own, much earlier camera clock, and its
+    // header fires BEFORE the keyframe, while the candidate is still pending.
+    fresh.stream.emit("additionalHeader", { microseconds: 500, raw: Buffer.alloc(0) });
+    expect(events).toEqual([]);
+    fresh.stream.emit("videoAccessUnit", frame(true, 500));
+    fresh.stream.emit("additionalHeader", { microseconds: 40_500 });
+    fresh.stream.emit("videoAccessUnit", frame(false, 40_500));
+    // header replayed first, on the old timeline (last 1_040_000 + one 40 ms frame)
+    expect(events).toEqual([
+      "header:1080000",
+      "au:1080000",
+      "header:1120000",
+      "au:1120000",
+    ]);
+    await stream.stop();
+  });
+
+  it("forces the old transport to be discarded in the proactive-reopen fallback, even when a sibling stream still flows on it", async () => {
+    const transport = {};
+    const sessions: FakeSession[] = [];
+    const stream = new ResilientVideoStream({
+      silenceMs: 0,
+      renewAfterMs: RENEW_MS,
+      renewRetryDelayMs: 10_000,
+      maxRenewAttempts: 2,
+      openSession: async (ctx) => {
+        if (ctx?.purpose === "renewal") throw new Error("refused");
+        const s = makeSession();
+        s.transport = transport;
+        sessions.push(s);
+        return s;
+      },
+    });
+    await stream.start();
+    const [old] = sessions;
+    old!.stream.emit("videoAccessUnit", frame(true, 1));
+    // A sibling stream on the same transport delivered video after ours: an
+    // ordinary recovery would release() the transport and re-ask on it.
+    const sibling = new ResilientVideoStream({
+      silenceMs: 0,
+      openSession: async () => {
+        const s = makeSession();
+        s.transport = transport;
+        return s;
+      },
+    });
+    await sibling.start();
+    const siblingSession = (sibling as unknown as { session: FakeSession })
+      .session;
+    await vi.advanceTimersByTimeAsync(RENEW_MS);
+    await vi.advanceTimersByTimeAsync(10_000);
+    // The sibling delivers video right after ours does, a moment before the
+    // fallback decides what to do with the transport.
+    stream.once("videoAccessUnit", () => {
+      vi.setSystemTime(Date.now() + 1);
+      siblingSession.stream.emit("videoAccessUnit", frame(true, 9));
+    });
+    old!.stream.emit("videoAccessUnit", frame(true, 3));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(old!.invalidate).toHaveBeenCalledTimes(1);
+    expect(old!.release).not.toHaveBeenCalled();
+    await stream.stop();
+    await sibling.stop();
+  });
+
+  it("an unplanned loss during a renewal abandons the candidate and recovers on one new session", async () => {
+    const { stream, sessions, seen } = setup();
+    await stream.start();
+    const [old] = sessions;
+    old!.stream.emit("videoAccessUnit", frame(true, 1));
+    await vi.advanceTimersByTimeAsync(RENEW_MS);
+    const candidate = sessions[1]!;
+    expect(sessions).toHaveLength(2);
+
+    old!.stream.emit("close"); // camera ends the old session mid-renewal
+    await vi.advanceTimersByTimeAsync(0);
+    expect(candidate.invalidate).toHaveBeenCalled();
+    expect(seen.recovering).toBe(1);
+    expect(sessions).toHaveLength(3);
+    // The abandoned candidate can no longer take over.
+    candidate.stream.emit("videoAccessUnit", frame(true, 2));
+    expect(seen.frames).toEqual([1]);
+    const recovered = sessions[2]!;
+    recovered.stream.emit("videoAccessUnit", frame(true, 3));
+    expect(seen.frames).toEqual([1, 3]);
+    expect(seen.renewed).toBe(0);
+    await stream.stop();
+  });
+});
+
+describe("resolveRenewAfterMs", () => {
+  it("defaults to 27 min on BCUDP and to never on TCP; the option wins", () => {
+    expect(resolveRenewAfterMs(undefined, "udp")).toBe(UDP_SESSION_RENEW_AFTER_MS);
+    expect(resolveRenewAfterMs(undefined, "tcp")).toBe(0);
+    expect(resolveRenewAfterMs({ renewAfterMs: 0 }, "udp")).toBe(0);
+    expect(resolveRenewAfterMs({ renewAfterMs: 60_000 }, "tcp")).toBe(60_000);
   });
 });

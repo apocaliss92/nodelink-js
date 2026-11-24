@@ -1919,12 +1919,18 @@ export class BcUdpStream extends EventEmitter<{
       this.ackWindowStallLogged = false;
     }
 
+    // Silence alone is not a fault: an idle session legitimately receives
+    // nothing. It is a stall only while we are waiting for the camera to
+    // answer something (unacked packets), which is what the ack check above
+    // already reports; here it adds the receive-side evidence to that line.
     const rxSilent =
-      diag.lastRxAgoMs !== undefined && diag.lastRxAgoMs >= BCUDP_RX_STALL_MS;
+      ackStalled &&
+      diag.lastRxAgoMs !== undefined &&
+      diag.lastRxAgoMs >= BCUDP_RX_STALL_MS;
     if (rxSilent && !this.rxSilenceStallLogged) {
       this.rxSilenceStallLogged = true;
       this.discoveryLogger?.warn?.(
-        `[BcUdpStream] nothing received from the camera for ${diag.lastRxAgoMs}ms lastDataRxPacketId=${diag.lastDataRxPacketId ?? "none"} lastAckRxPacketId=${diag.lastAckRxPacketId ?? "none"} sessionAgeMs=${age}`,
+        `[BcUdpStream] camera silent while requests are outstanding: nothing received for ${diag.lastRxAgoMs}ms lastDataRxPacketId=${diag.lastDataRxPacketId ?? "none"} lastAckRxPacketId=${diag.lastAckRxPacketId ?? "none"} sessionAgeMs=${age}`,
       );
       this.emit("debug", "rx_silence_stall", { ...diag });
     } else if (!rxSilent) {

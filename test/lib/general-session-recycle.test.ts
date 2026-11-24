@@ -60,12 +60,12 @@ describe("BaichuanClient sessionStalled", () => {
 });
 
 describe("ReolinkBaichuanApi general session recycling", () => {
-  const setup = () => {
+  const setup = (transport: "udp" | "tcp" = "udp") => {
     const api = new ReolinkBaichuanApi({
       host: "127.0.0.1",
       username: "admin",
       password: "",
-      transport: "udp",
+      transport,
     });
     const reconnect = vi.fn(async () => {});
     (api as unknown as { reconnectGeneralSocket: () => Promise<void> })
@@ -75,6 +75,7 @@ describe("ReolinkBaichuanApi general session recycling", () => {
       username: "u",
       password: "p",
     });
+    (client as unknown as { transport: string }).transport = transport;
     (
       api as unknown as { socketPool: Map<string, unknown> }
     ).socketPool.set("general", { client, refCount: 1 });
@@ -90,18 +91,74 @@ describe("ReolinkBaichuanApi general session recycling", () => {
     lastRxCmdId: 56,
     transport: "udp" as const,
   };
+  const settle = () => new Promise((r) => setTimeout(r, 10));
 
-  it("tears down and re-establishes the general session when the client reports it stalled", async () => {
-    const { client, reconnect } = setup();
+  it("recycles when the consumer's guard asserts the camera is always on", async () => {
+    const { api, client, reconnect } = setup();
+    api.setGeneralSessionRecycling({ guard: () => true });
     client.emit("sessionStalled", info);
     await vi.waitFor(() => expect(reconnect).toHaveBeenCalledTimes(1));
   });
 
-  it("does not recycle when the consumer's guard refuses (camera asleep)", async () => {
+  it("does not recycle when the consumer's guard refuses", async () => {
     const { api, client, reconnect } = setup();
     api.setGeneralSessionRecycling({ guard: () => false });
     client.emit("sessionStalled", info);
-    await new Promise((r) => setTimeout(r, 10));
+    await settle();
     expect(reconnect).not.toHaveBeenCalled();
+  });
+
+  it("does NOT recycle when the sleep state is unknown on a BCUDP camera (a login would wake a battery camera)", async () => {
+    const { client, reconnect } = setup("udp");
+    client.emit("sessionStalled", info);
+    await settle();
+    expect(reconnect).not.toHaveBeenCalled();
+  });
+
+  it("recycles a BCUDP camera that is known to be awake, never one asleep", async () => {
+    const { api, client, reconnect } = setup("udp");
+    const states = (
+      api as unknown as { udpLastInferredSleepStateByChannel: Map<number, string> }
+    ).udpLastInferredSleepStateByChannel;
+    states.set(0, "sleeping");
+    client.emit("sessionStalled", info);
+    await settle();
+    expect(reconnect).not.toHaveBeenCalled();
+    states.set(0, "awake");
+    client.emit("sessionStalled", info);
+    await vi.waitFor(() => expect(reconnect).toHaveBeenCalledTimes(1));
+  });
+
+  it("recycles a wired TCP camera with no battery signal", async () => {
+    const { client, reconnect } = setup("tcp");
+    client.emit("sessionStalled", info);
+    await vi.waitFor(() => expect(reconnect).toHaveBeenCalledTimes(1));
+  });
+
+  it("bounds the loop: a minimum interval between recycles and a per-hour cap", async () => {
+    const { api, client, reconnect } = setup("tcp");
+    api.setGeneralSessionRecycling({ minIntervalMs: 60_000, maxPerHour: 2 });
+    let now = 10_000_000;
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      client.emit("sessionStalled", info);
+      await vi.waitFor(() => expect(reconnect).toHaveBeenCalledTimes(1));
+      now += 30_000; // too soon
+      client.emit("sessionStalled", info);
+      await settle();
+      expect(reconnect).toHaveBeenCalledTimes(1);
+      now += 60_000;
+      client.emit("sessionStalled", info);
+      await vi.waitFor(() => expect(reconnect).toHaveBeenCalledTimes(2));
+      now += 60_000; // interval ok, hourly cap (2) reached
+      client.emit("sessionStalled", info);
+      await settle();
+      expect(reconnect).toHaveBeenCalledTimes(2);
+      now += 3_600_000; // window slid
+      client.emit("sessionStalled", info);
+      await vi.waitFor(() => expect(reconnect).toHaveBeenCalledTimes(3));
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

@@ -214,6 +214,14 @@ export class ResilientVideoStream extends EventEmitter<{
   /** After failed renewals: reopen proactively at the next keyframe. */
   private renewFallbackArmed = false;
   private candidate: RenewalCandidate | null = null;
+  /**
+   * Added to every `microseconds` the consumer sees, so a renewed session
+   * (its own camera clock) continues the previous one instead of jumping.
+   */
+  private tsOffsetUs = 0;
+  /** Last `microseconds` handed to the consumer, and the last frame spacing. */
+  private lastEmittedUs: number | undefined;
+  private lastFrameDeltaUs = 40_000;
 
   constructor(private readonly opts: ResilientVideoStreamOptions) {
     super();
@@ -296,6 +304,8 @@ export class ResilientVideoStream extends EventEmitter<{
     }
     this.session = session;
     this.lastVideoAt = 0;
+    this.tsOffsetUs = 0;
+    this.lastEmittedUs = undefined;
     this.attach(session.stream);
     try {
       await this.startWithDeadline(session.stream);
@@ -351,13 +361,18 @@ export class ResilientVideoStream extends EventEmitter<{
   }
 
   /** Detaches and stops the current inner stream, then returns its session. */
-  private async dropSession(invalidate: boolean, reason: string): Promise<void> {
+  private async dropSession(
+    invalidate: boolean,
+    reason: string,
+    forceDiscard = false,
+  ): Promise<void> {
     const session = this.session;
     if (!session) return;
     this.session = null;
     this.detach(session.stream);
     // Decided before the stop: stopping takes time a sibling keeps using.
-    const discard = invalidate && !this.siblingStillFlowing(session);
+    const discard =
+      invalidate && (forceDiscard || !this.siblingStillFlowing(session));
     if (invalidate && !discard) {
       this.logger?.warn?.(
         `${this.prefix} the transport still carries another stream; keeping it and asking again on it`,
@@ -501,12 +516,12 @@ export class ResilientVideoStream extends EventEmitter<{
     this.retryTimer.unref?.();
   }
 
-  private async reopen(reason: string): Promise<void> {
+  private async reopen(reason: string, forceDiscard = false): Promise<void> {
     const outage = this.outage;
     if (!outage || this.stopped || this.reopening) return;
     this.reopening = true;
     try {
-      await this.dropSession(true, reason);
+      await this.dropSession(true, reason, forceDiscard);
       if (this.stopped) return;
       if (Date.now() - outage.lostAt >= this.maxRecoveryMs) {
         this.giveUp(outage);
@@ -656,9 +671,21 @@ export class ResilientVideoStream extends EventEmitter<{
     this.lastVideoAt = 0;
     this.renewFailures = 0;
     this.attach(cand.session.stream);
-    // The consumer's decoder keeps its parameter sets; replay the new
-    // session's own header ahead of its first keyframe.
-    if (cand.header) this.emit("additionalHeader", cand.header[0]);
+    // Timestamps: each session counts `microseconds` on its own camera clock
+    // (BcMedia, per stream start), so the new session's first frame can land
+    // anywhere relative to the old one. The consumer's RTP mapping resets on
+    // a backwards jump and leaves a hole on a forward one, so continue the old
+    // timeline: the first keyframe sits one frame after the last emitted one.
+    if (this.lastEmittedUs !== undefined) {
+      this.tsOffsetUs =
+        (this.lastEmittedUs + this.lastFrameDeltaUs - au.microseconds) | 0;
+    }
+    // Parameter sets travel IN-BAND inside the keyframe's Annex-B data (the
+    // muxer learns them from the access unit), so none can be lost here.
+    // `additionalHeader` is per-frame metadata fired just before the frame's
+    // access unit; the candidate has listened since before start(), and the
+    // latest one is the keyframe's own: replay it ahead of the keyframe.
+    if (cand.header) this.emit("additionalHeader", this.rebaseHeader(cand.header[0]));
     this.onAccessUnit(au);
     this.scheduleRenewal(this.renewAfterMs);
     this.logger?.info?.(
@@ -718,7 +745,9 @@ export class ResilientVideoStream extends EventEmitter<{
     this.outage = { reason, lostAt: Date.now(), attempts: 0 };
     this.logger?.warn?.(`${this.prefix} ${reason}; reopening on a new session`);
     this.emit("recovering", { reason });
-    void this.reopen(reason);
+    // A renewal exists because this session is about to be ended by the
+    // camera: never keep its transport for a sibling, never re-ask on it.
+    void this.reopen(reason, true);
   }
 
   private giveUp(outage: Outage): void {
@@ -735,7 +764,7 @@ export class ResilientVideoStream extends EventEmitter<{
   }
 
   private onAccessUnit = (...args: unknown[]): void => {
-    const au = args[0] as AccessUnit;
+    const au = this.rebase(args[0] as AccessUnit);
     this.lastMediaAt = Date.now();
     this.lastVideoAt = this.lastMediaAt;
     const transport = this.session?.transport;
@@ -758,6 +787,7 @@ export class ResilientVideoStream extends EventEmitter<{
       );
       this.emit("recovered", info);
     }
+    this.trackEmittedUs(au.microseconds);
     this.emit("videoAccessUnit", au);
     if (this.renewFallbackArmed && au.isKeyframe && !this.outage) {
       this.renewFallbackArmed = false;
@@ -766,8 +796,29 @@ export class ResilientVideoStream extends EventEmitter<{
   };
 
   private onAdditionalHeader = (...args: unknown[]): void => {
-    this.emit("additionalHeader", args[0]);
+    this.emit("additionalHeader", this.rebaseHeader(args[0]));
   };
+
+  private rebase(au: AccessUnit): AccessUnit {
+    if (this.tsOffsetUs === 0) return au;
+    return { ...au, microseconds: ((au.microseconds + this.tsOffsetUs) >>> 0) };
+  }
+
+  private rebaseHeader(h: unknown): unknown {
+    if (this.tsOffsetUs === 0 || typeof h !== "object" || h === null) return h;
+    const us = (h as { microseconds?: unknown }).microseconds;
+    if (typeof us !== "number") return h;
+    return { ...h, microseconds: (us + this.tsOffsetUs) >>> 0 };
+  }
+
+  private trackEmittedUs(us: number): void {
+    if (this.lastEmittedUs !== undefined) {
+      const d = (us - this.lastEmittedUs) >>> 0;
+      // Plausible frame spacing only (1 ms .. 1 s); anything else is a gap.
+      if (d >= 1_000 && d <= 1_000_000) this.lastFrameDeltaUs = d;
+    }
+    this.lastEmittedUs = us;
+  }
 
   private onAudioFrame = (...args: unknown[]): void => {
     if (this.outage) return;
