@@ -212,6 +212,16 @@ export function toWireChannelId(channelId: number): number {
   return channelId & 0xff;
 }
 
+/** Payload of the `sessionStalled` event. */
+export interface SessionStalledInfo {
+  consecutiveTimeouts: number;
+  sessionAgeMs: number | undefined;
+  /** Time since any frame was last received (undefined: never). */
+  lastRxAgoMs: number | undefined;
+  lastRxCmdId: number | undefined;
+  transport: "tcp" | "udp" | undefined;
+}
+
 export class BaichuanClient extends EventEmitter<{
   frame: [BaichuanFrame];
   push: [BaichuanFrame];
@@ -222,6 +232,13 @@ export class BaichuanClient extends EventEmitter<{
   channelInfo: [string]; // Channel info XML from cmd_id 145 push
   batteryPush: [BaichuanFrame]; // Battery info push from cmd_id 252
   d2c_disc: [{ host: string; atMs: number }]; // Camera-initiated session termination
+  /**
+   * The session looks dead while its transport still looks alive: several
+   * consecutive requests timed out and nothing at all was received since.
+   * The owner of a long-lived (general) session should tear it down and
+   * log in again.
+   */
+  sessionStalled: [SessionStalledInfo];
 }> {
   /**
    * Process-wide streaming activity registry.
@@ -379,6 +396,20 @@ export class BaichuanClient extends EventEmitter<{
   loggedIn = false; // Public to allow ReolinkBaichuanApi to check login status
   subscribed = false; // Public to allow ReolinkBaichuanApi to check subscription status
 
+  /**
+   * Consecutive request timeouts with no received frame in between, after
+   * which the session is declared stalled (`sessionStalled`). 3 because one
+   * timeout is a lost packet or a slow command, two happen on a lossy radio
+   * link, but three with total receive silence (see
+   * {@link BaichuanClient.SESSION_STALL_MIN_SILENCE_MS}) is a dead session.
+   */
+  static readonly SESSION_STALL_TIMEOUTS = 3;
+  /** Receive silence required on top of the timeout count (ignored-command guard). */
+  static readonly SESSION_STALL_MIN_SILENCE_MS = 20_000;
+  private consecutiveRequestTimeouts = 0;
+  private sessionStalledEmitted = false;
+  /** When the current socket session was opened (age base for diagnostics). */
+  private sessionStartedAtMs: number | undefined;
   private keepAliveTimer: NodeJS.Timeout | undefined;
   private keepAlivePingInFlight = false;
   // Consecutive TCP keepalive (PING) failures with no response. A half-open
@@ -575,6 +606,68 @@ export class BaichuanClient extends EventEmitter<{
       return;
     }
     this.emit("error", err);
+  }
+
+  /**
+   * Fields appended to the `disconnected` line so a session that dies on a
+   * schedule (e.g. every ~30 min) can be told apart from a camera that ends it
+   * (`discFromCamera=true`) and from silent loss (`lastRxAgoMs` large).
+   */
+  private describeSessionForDisconnect(
+    udp: ReturnType<BcUdpStream["getSessionDiagnostics"]> | undefined,
+  ): string[] {
+    const now = Date.now();
+    const parts: string[] = [];
+    const age =
+      this.sessionStartedAtMs !== undefined
+        ? now - this.sessionStartedAtMs
+        : udp?.sessionAgeMs;
+    if (age !== undefined) parts.push(`sessionAgeMs=${age}`);
+    if (this.lastRxAtMs) parts.push(`lastRxAgoMs=${now - this.lastRxAtMs}`);
+    if (udp) {
+      parts.push(`lastRxPktId=${udp.lastDataRxPacketId ?? "none"}`);
+      parts.push(`lastAckPktId=${udp.lastAckRxPacketId ?? "none"}`);
+      parts.push(`unackedPkts=${udp.unackedPackets}`);
+      parts.push(`discFromCamera=${udp.discFromCamera}`);
+    }
+    if (this.consecutiveRequestTimeouts > 0)
+      parts.push(`consecutiveTimeouts=${this.consecutiveRequestTimeouts}`);
+    return parts;
+  }
+
+  private resetStallTracking(): void {
+    this.consecutiveRequestTimeouts = 0;
+    this.sessionStalledEmitted = false;
+  }
+
+  /**
+   * Called by every request path when its reply did not arrive in time.
+   * Emits `sessionStalled` once per session when the run of timeouts is long
+   * enough AND the session has received nothing for a while.
+   */
+  private noteRequestTimeout(): void {
+    this.consecutiveRequestTimeouts++;
+    if (this.sessionStalledEmitted) return;
+    if (this.consecutiveRequestTimeouts < BaichuanClient.SESSION_STALL_TIMEOUTS)
+      return;
+    const now = Date.now();
+    const lastRxAgo = this.lastRxAtMs ? now - this.lastRxAtMs : undefined;
+    if (
+      lastRxAgo !== undefined &&
+      lastRxAgo < BaichuanClient.SESSION_STALL_MIN_SILENCE_MS
+    )
+      return;
+    this.sessionStalledEmitted = true;
+    this.emit("sessionStalled", {
+      consecutiveTimeouts: this.consecutiveRequestTimeouts,
+      sessionAgeMs:
+        this.sessionStartedAtMs !== undefined
+          ? now - this.sessionStartedAtMs
+          : undefined,
+      lastRxAgoMs: lastRxAgo,
+      lastRxCmdId: this.lastRxInfo?.cmdId,
+      transport: this.transport,
+    });
   }
 
   private logFixed(event: string, data?: unknown): void {
@@ -1507,6 +1600,8 @@ export class BaichuanClient extends EventEmitter<{
     this.socketClosed = false;
     this.consecutiveKeepalivePingFailures = 0;
     this.socketSessionId = this.newSocketSessionId("tcp");
+    this.sessionStartedAtMs = Date.now();
+    this.resetStallTracking();
 
     // TCP keep-alive at OS level (helps prevent idle disconnects from NAT/camera).
     try {
@@ -1562,6 +1657,7 @@ export class BaichuanClient extends EventEmitter<{
         tcpDisconnectParts.push(`lastRxCmdId=${this.lastRxInfo.cmdId}`);
       if (this.lastTxInfo?.cmdId != null)
         tcpDisconnectParts.push(`lastTxCmdId=${this.lastTxInfo.cmdId}`);
+      tcpDisconnectParts.push(...this.describeSessionForDisconnect(undefined));
       this.logFixed("disconnected", tcpDisconnectParts.join(" "));
 
       // End socket session.
@@ -1709,6 +1805,8 @@ export class BaichuanClient extends EventEmitter<{
     this.transport = "udp";
     this.socketClosed = false;
     this.socketSessionId = this.newSocketSessionId("udp");
+    this.sessionStartedAtMs = Date.now();
+    this.resetStallTracking();
 
     sock.on("data", (chunk) => {
       const frames = this.parser.push(chunk);
@@ -1719,6 +1817,8 @@ export class BaichuanClient extends EventEmitter<{
         udpConnected: sock.isConnected?.(),
       });
       const sid = this.socketSessionId;
+      // Read before removeAllListeners/teardown: the socket keeps its counters.
+      const udpDiag = sock.getSessionDiagnostics?.();
       // Ensure socket is completely cleaned up
       if (sock === this.udpSocket) {
         this.udpSocket = undefined;
@@ -1757,6 +1857,7 @@ export class BaichuanClient extends EventEmitter<{
         udpDisconnectParts.push(`lastRxCmdId=${this.lastRxInfo.cmdId}`);
       if (this.lastTxInfo?.cmdId != null)
         udpDisconnectParts.push(`lastTxCmdId=${this.lastTxInfo.cmdId}`);
+      udpDisconnectParts.push(...this.describeSessionForDisconnect(udpDiag));
       this.logFixed("disconnected", udpDisconnectParts.join(" "));
 
       // End socket session.
@@ -2094,6 +2195,7 @@ export class BaichuanClient extends EventEmitter<{
   private handleFrame(frame: BaichuanFrame): void {
     const now = Date.now();
     this.lastRxAtMs = now;
+    this.consecutiveRequestTimeouts = 0;
     this.lastRxInfo = {
       atMs: now,
       cmdId: frame.header.cmdId,
@@ -3174,6 +3276,7 @@ export class BaichuanClient extends EventEmitter<{
       rejectFn = reject;
       const t = setTimeout(() => {
         this.pending.delete(pendingKey);
+        this.noteRequestTimeout();
         reject(new Error(`Baichuan timeout cmdId=${cmdId} msgNum=${msgNum}`));
       }, remainingMs);
       this.pending.set(pendingKey, {
@@ -3340,6 +3443,7 @@ export class BaichuanClient extends EventEmitter<{
       rejectFn = reject;
       const t = setTimeout(() => {
         this.pending.delete(pendingKey);
+        this.noteRequestTimeout();
         reject(new Error(`Baichuan timeout cmdId=${cmdId} msgNum=${msgNum}`));
       }, remainingMs);
       this.pending.set(pendingKey, {
@@ -3534,6 +3638,7 @@ export class BaichuanClient extends EventEmitter<{
       rejectFn = reject;
       const t = setTimeout(() => {
         this.pending.delete(pendingKey);
+        this.noteRequestTimeout();
         reject(new Error(`Baichuan timeout cmdId=${cmdId} msgNum=${msgNum}`));
       }, timeoutMs);
       this.pending.set(pendingKey, {

@@ -836,6 +836,81 @@ export class ReolinkBaichuanApi {
   }
 
   /**
+   * Optional consumer veto on recycling a stalled general session. A consumer
+   * that knows the camera sleeps (battery) returns false: logging in again
+   * would wake it. Default: recycle unless the api last inferred "sleeping".
+   */
+  private generalRecycleGuard: (() => boolean) | undefined;
+  /** `false` disables recycling entirely (default: enabled). */
+  private generalRecycleEnabled = true;
+  private generalRecycling = false;
+
+  /** Configure recycling of a general session that stays silently dead. */
+  setGeneralSessionRecycling(opts: {
+    enabled?: boolean;
+    guard?: () => boolean;
+  }): void {
+    if (opts.enabled !== undefined) this.generalRecycleEnabled = opts.enabled;
+    if ("guard" in opts) this.generalRecycleGuard = opts.guard;
+  }
+
+  /**
+   * Tear down a general session the client declared stalled and open a new one.
+   * `client` is the one that raised the event: a late event from an already
+   * replaced client is ignored.
+   */
+  private async recycleStalledGeneralSession(
+    client: BaichuanClient,
+    info: {
+      consecutiveTimeouts: number;
+      sessionAgeMs: number | undefined;
+      lastRxAgoMs: number | undefined;
+    },
+  ): Promise<void> {
+    if (this._closed || !this.generalRecycleEnabled || this.generalRecycling)
+      return;
+    if (this.socketPool.get("general")?.client !== client) return;
+    const sleeping = Array.from(
+      this.udpLastInferredSleepStateByChannel.values(),
+    ).includes("sleeping");
+    let allowed = !sleeping;
+    try {
+      if (allowed && this.generalRecycleGuard) allowed = this.generalRecycleGuard();
+    } catch {
+      allowed = false;
+    }
+    if (!allowed) {
+      this.logger.warn?.(
+        `[ReolinkBaichuanApi] general session stalled (${info.consecutiveTimeouts} consecutive timeouts, age=${info.sessionAgeMs}ms) but recycling is refused (camera may be asleep)`,
+      );
+      return;
+    }
+    this.generalRecycling = true;
+    try {
+      this.logger.warn?.(
+        `[ReolinkBaichuanApi] recycling general session: ${info.consecutiveTimeouts} consecutive command timeouts, nothing received for ${info.lastRxAgoMs ?? "?"}ms, session age=${info.sessionAgeMs ?? "?"}ms`,
+      );
+      if (!this._ensureConnectedPromise) {
+        this._ensureConnectedPromise = this.reconnectGeneralSocket();
+      }
+      try {
+        await this._ensureConnectedPromise;
+      } finally {
+        this._ensureConnectedPromise = undefined;
+      }
+      this.logger.warn?.(
+        `[ReolinkBaichuanApi] general session recycled (previous age=${info.sessionAgeMs ?? "?"}ms)`,
+      );
+    } catch (e) {
+      this.logger.warn?.(
+        `[ReolinkBaichuanApi] recycling the general session failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    } finally {
+      this.generalRecycling = false;
+    }
+  }
+
+  /**
    * Internal: destroy the current general socket (if any), create a new one,
    * login, and re-attach all listeners.
    */
@@ -951,6 +1026,13 @@ export class ReolinkBaichuanApi {
           );
         }
       }
+    });
+
+    // A general session that keeps timing out while nothing at all arrives is
+    // dead even though its transport looks alive (a BCUDP session the camera
+    // abandoned silently). Nothing else would ever replace it.
+    client.on("sessionStalled", (info) => {
+      void this.recycleStalledGeneralSession(client, info);
     });
 
     // Dispatch parsed events in a minimal, stable shape.
@@ -1934,6 +2016,14 @@ export class ReolinkBaichuanApi {
       const deviceId = replayMatch[1];
       const channel = replayMatch[2] ?? "0";
       return `replay:${deviceId}:ch${channel}`;
+    }
+
+    // A make-before-break renewal session (`...#renew0|1`) runs next to the
+    // live one and must not reuse its pooled socket: the base tag plus a
+    // renewal suffix gives it a socket of its own.
+    const renewMatch = sessionKey.match(/^(.*)#renew(\d+)$/);
+    if (renewMatch && renewMatch[1]) {
+      return `${this.resolveSocketTag(renewMatch[1])}:renew${renewMatch[2]}`;
     }
 
     // Parse live stream keys: live:deviceId:ch{N}:{profile}

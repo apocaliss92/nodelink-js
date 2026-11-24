@@ -9,6 +9,7 @@ import { ContinuousVideoStream } from "../baichuan/stream/ContinuousVideoStream"
 import {
   ResilientVideoStream,
   RESILIENT_STREAM_DEFAULTS,
+  UDP_SESSION_RENEW_AFTER_MS,
   type ResilientRecoveryVerdict,
 } from "../baichuan/stream/ResilientVideoStream";
 import { AlwaysOnController } from "../baichuan/stream/AlwaysOnController";
@@ -103,6 +104,19 @@ export interface Rfc4571TcpServerOptions {
     maxRecoveryMs?: number;
     sleeps?: boolean;
     recoveryGuard?: () => ResilientRecoveryVerdict;
+    /**
+     * Media silence (ms) that declares the source lost. Overrides
+     * `uptimeRestartMs` for the self-healing stream; default 10 s. Raise it
+     * for always-on streams whose firmware pauses media for longer.
+     */
+    silenceMs?: number;
+    /**
+     * Replace the session proactively at this age (ms), make-before-break.
+     * BCUDP sessions are ended by the camera ~30 min after they open, so the
+     * default on BCUDP is 27 min ({@link UDP_SESSION_RENEW_AFTER_MS}); on TCP
+     * it is off. 0 disables.
+     */
+    renewAfterMs?: number;
   };
 
   /** If true (default), closes the passed API when tearing down. */
@@ -533,7 +547,8 @@ async function createRfc4571TcpServerInternal(
     !alwaysOnEnabled &&
     Boolean(options.deviceId) &&
     options.resilience?.enabled !== false;
-  const sourceSilenceMs = uptimeRestartMsOpt ?? 10_000;
+  const sourceSilenceMs =
+    options.resilience?.silenceMs ?? uptimeRestartMsOpt ?? 10_000;
   const uptimeRestartMs =
     alwaysOnEnabled || resilienceEnabled
       ? 0
@@ -864,6 +879,11 @@ async function createRfc4571TcpServerInternal(
       const resilient = new ResilientVideoStream({
         label: `ch=${ch} profile=${profile}`,
         silenceMs: sourceSilenceMs,
+        renewAfterMs:
+          options.resilience?.renewAfterMs ??
+          (baseApi.client.getTransport?.() === "udp"
+            ? UDP_SESSION_RENEW_AFTER_MS
+            : 0),
         recoveryGuard: resolveRecoveryGuard(options.resilience, () =>
           baseApi.client.getTransport?.(),
         ),
@@ -871,10 +891,16 @@ async function createRfc4571TcpServerInternal(
           ? { maxRecoveryMs: options.resilience.maxRecoveryMs }
           : {}),
         logger,
-        openSession: async () => {
+        openSession: async (ctx) => {
+          // A renewal session runs NEXT TO the live one, so it needs a pool
+          // tag of its own (the live key's tag would hand back the live socket).
+          const key =
+            ctx?.purpose === "renewal"
+              ? `${sessionKey}#renew${ctx.renewalId ?? 0}`
+              : sessionKey;
           const session =
             firstSession ??
-            (await baseApi.createDedicatedSession(sessionKey, logger));
+            (await baseApi.createDedicatedSession(key, logger));
           firstSession = undefined;
           return {
             stream: new BaichuanVideoStream({

@@ -355,6 +355,25 @@ export function _clearP2pLookupDedupForTests(): void {
   negCachedP2pLookups.clear();
 }
 
+/** Oldest unacked packet age that counts as an ack-window stall. */
+export const BCUDP_ACK_STALL_MS = 5_000;
+/** Receive silence (any datagram) that counts as a stall. */
+export const BCUDP_RX_STALL_MS = 5_000;
+
+/** Health snapshot of a BCUDP session (see `getSessionDiagnostics`). */
+export interface BcUdpSessionDiagnostics {
+  sessionAgeMs: number | undefined;
+  lastRxAgoMs: number | undefined;
+  lastDataRxPacketId: number | undefined;
+  lastDataRxAgoMs: number | undefined;
+  lastAckRxPacketId: number | undefined;
+  lastAckRxAgoMs: number | undefined;
+  unackedPackets: number;
+  oldestUnackedAgeMs?: number;
+  /** True when the camera sent D2C_DISC (it ended the session). */
+  discFromCamera: boolean;
+}
+
 /**
  * Implements BCUDP as a reliable "byte stream" (ACK + resend).
  */
@@ -402,6 +421,23 @@ export class BcUdpStream extends EventEmitter<{
 
   private ackScheduled = false;
   private ackLatency = new AckLatency();
+
+  // --- Session diagnostics (why does a session die after ~30 min?) ---
+  /** When the data phase started (timers armed); the session's age base. */
+  private connectedAtMs: number | undefined;
+  /** Last datagram of any kind received from the camera. */
+  private lastRxAtMs: number | undefined;
+  /** Last DATA packet received from the camera, and its packet id. */
+  private lastDataRxAtMs: number | undefined;
+  private lastDataRxPacketId: number | undefined;
+  /** Last ACK from the camera (acknowledging OUR packets), and its id. */
+  private lastAckRxAtMs: number | undefined;
+  private lastAckRxPacketId: number | undefined;
+  /** Set when the camera sent D2C_DISC (it, not us, ended the session). */
+  private discFromCameraAtMs: number | undefined;
+  /** One log per stall; re-armed when the stalled condition clears. */
+  private ackWindowStallLogged = false;
+  private rxSilenceStallLogged = false;
 
   // Pattern: compute the ACK payload when state changes (on data receive),
   // but send the latest ACK on a tight interval. This keeps the send path cheap,
@@ -1680,6 +1716,10 @@ export class BcUdpStream extends EventEmitter<{
       throw new Error("BCUDP not ready");
     }
 
+    this.connectedAtMs = Date.now();
+    this.ackWindowStallLogged = false;
+    this.rxSilenceStallLogged = false;
+
     // Initialize ACK packet (empty)
     this.updateAckPacket();
 
@@ -1699,6 +1739,7 @@ export class BcUdpStream extends EventEmitter<{
     this.resendTimer = setIntervalNode(() => {
       try {
         this.resendOutstanding();
+        this.checkStalls(Date.now());
       } catch (e) {
         this.emit("error", e instanceof Error ? e : new Error(String(e)));
       }
@@ -1827,6 +1868,70 @@ export class BcUdpStream extends EventEmitter<{
     }
   }
 
+  /**
+   * Snapshot of the session's health, for the disconnect log of the owner.
+   * Packet ids are the camera's (rx) and ours acknowledged by the camera (ack).
+   */
+  getSessionDiagnostics(now = Date.now()): BcUdpSessionDiagnostics {
+    let oldestUnackedAgeMs: number | undefined;
+    for (const entry of this.sent.values()) {
+      const age = now - entry.ts;
+      if (oldestUnackedAgeMs === undefined || age > oldestUnackedAgeMs)
+        oldestUnackedAgeMs = age;
+    }
+    return {
+      sessionAgeMs:
+        this.connectedAtMs !== undefined ? now - this.connectedAtMs : undefined,
+      lastRxAgoMs:
+        this.lastRxAtMs !== undefined ? now - this.lastRxAtMs : undefined,
+      lastDataRxPacketId: this.lastDataRxPacketId,
+      lastDataRxAgoMs:
+        this.lastDataRxAtMs !== undefined ? now - this.lastDataRxAtMs : undefined,
+      lastAckRxPacketId: this.lastAckRxPacketId,
+      lastAckRxAgoMs:
+        this.lastAckRxAtMs !== undefined ? now - this.lastAckRxAtMs : undefined,
+      unackedPackets: this.sent.size,
+      ...(oldestUnackedAgeMs !== undefined ? { oldestUnackedAgeMs } : {}),
+      discFromCamera: this.discFromCameraAtMs !== undefined,
+    };
+  }
+
+  /**
+   * Logs (once per stall) when the camera stops acknowledging our packets or
+   * stops sending anything at all, with the session's age. Runs on the 500 ms
+   * resend tick; purely diagnostic, it never closes the session.
+   */
+  private checkStalls(now: number): void {
+    const age =
+      this.connectedAtMs !== undefined ? now - this.connectedAtMs : undefined;
+
+    const diag = this.getSessionDiagnostics(now);
+    const ackStalled =
+      diag.oldestUnackedAgeMs !== undefined &&
+      diag.oldestUnackedAgeMs >= BCUDP_ACK_STALL_MS;
+    if (ackStalled && !this.ackWindowStallLogged) {
+      this.ackWindowStallLogged = true;
+      this.discoveryLogger?.warn?.(
+        `[BcUdpStream] ack window stalled: ${diag.unackedPackets} packet(s) unacked, oldest ${diag.oldestUnackedAgeMs}ms, lastAckRxPacketId=${diag.lastAckRxPacketId ?? "none"} sessionAgeMs=${age}`,
+      );
+      this.emit("debug", "ack_window_stall", { ...diag });
+    } else if (!ackStalled) {
+      this.ackWindowStallLogged = false;
+    }
+
+    const rxSilent =
+      diag.lastRxAgoMs !== undefined && diag.lastRxAgoMs >= BCUDP_RX_STALL_MS;
+    if (rxSilent && !this.rxSilenceStallLogged) {
+      this.rxSilenceStallLogged = true;
+      this.discoveryLogger?.warn?.(
+        `[BcUdpStream] nothing received from the camera for ${diag.lastRxAgoMs}ms lastDataRxPacketId=${diag.lastDataRxPacketId ?? "none"} lastAckRxPacketId=${diag.lastAckRxPacketId ?? "none"} sessionAgeMs=${age}`,
+      );
+      this.emit("debug", "rx_silence_stall", { ...diag });
+    } else if (!rxSilent) {
+      this.rxSilenceStallLogged = false;
+    }
+  }
+
   private resendOutstanding(): void {
     if (!this.sock || !this.remote) return;
     for (const [, entry] of this.sent) {
@@ -1917,10 +2022,13 @@ export class BcUdpStream extends EventEmitter<{
     };
 
     if (!this.remote) updateRemote("first_packet");
+    this.lastRxAtMs = Date.now();
 
     if (p.kind === "ack") {
       if (this.clientId != null && p.connectionId === this.clientId) {
         updateRemote("ack");
+        this.lastAckRxAtMs = Date.now();
+        this.lastAckRxPacketId = p.packetId;
         this.handleAckFromCamera(p.packetId, p.payload);
       }
       return;
@@ -1929,6 +2037,8 @@ export class BcUdpStream extends EventEmitter<{
     if (p.kind === "data") {
       if (this.clientId != null && p.connectionId === this.clientId) {
         updateRemote("data");
+        this.lastDataRxAtMs = Date.now();
+        this.lastDataRxPacketId = p.packetId;
         // this.ackLatency.feed(); // Removed: latency is calculated from ACKs
         if (p.packetId >= this.packetsWant) {
           this.received.set(p.packetId, p.payload);
@@ -2057,6 +2167,7 @@ export class BcUdpStream extends EventEmitter<{
           rport,
         });
         // Camera terminated the session.
+        this.discFromCameraAtMs = Date.now();
         this.emit(
           "error",
           new Error(

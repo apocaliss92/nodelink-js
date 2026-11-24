@@ -201,9 +201,11 @@ export type { ContinuousVideoStreamOptions } from "./baichuan/stream/ContinuousV
 export {
   ResilientVideoStream,
   RESILIENT_STREAM_DEFAULTS,
+  UDP_SESSION_RENEW_AFTER_MS,
 } from "./baichuan/stream/ResilientVideoStream";
 export type {
   ResilientVideoStreamOptions,
+  ResilientOpenContext,
   ResilientStreamSession,
   ResilientInnerStream,
   ResilientRecoveryInfo,

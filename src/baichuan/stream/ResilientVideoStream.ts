@@ -19,6 +19,16 @@ import { EventEmitter } from "node:events";
  * the same object and the same listeners; it sees a pause, then video that
  * resumes on a keyframe.
  *
+ * A BCUDP session can also be ended on a schedule (observed: ~30 min after it
+ * opens, on cameras that never sleep). `renewAfterMs` replaces the session
+ * BEFORE that, make-before-break: a second session is opened and started while
+ * the first keeps delivering, and the consumer is switched over on the second
+ * session's first keyframe; only then is the first closed. If a second session
+ * cannot be obtained (the camera refuses a concurrent one, or it never
+ * delivers a keyframe) the renewal falls back to a proactive reopen at the
+ * next keyframe of the old session (a short gap instead of the ~16 s of an
+ * unplanned loss plus rediscovery).
+ *
  * Recovery is bounded (`maxRecoveryMs`) and every step is logged. Only when the
  * budget is spent does the consumer see `error` + `close`.
  *
@@ -64,6 +74,12 @@ export interface ResilientStreamSession {
   transport?: object;
 }
 
+export interface ResilientOpenContext {
+  purpose: "initial" | "recovery" | "renewal";
+  /** Alternates 0/1 per renewal so two live sessions never share a key. */
+  renewalId?: number;
+}
+
 export interface ResilientStreamLogger {
   info?: (...args: unknown[]) => void;
   log?: (...args: unknown[]) => void;
@@ -77,8 +93,13 @@ export type ResilientRecoveryVerdict =
   | { allowed: false; reason: string };
 
 export interface ResilientVideoStreamOptions {
-  /** Opens a session and returns an UN-started stream on it. */
-  openSession: () => Promise<ResilientStreamSession>;
+  /**
+   * Opens a session and returns an UN-started stream on it. `ctx.purpose`
+   * is "renewal" when the session will run NEXT TO the live one (make-before-
+   * break): it must not be the pooled session the live stream rides on, so the
+   * opener needs a distinct session key (`ctx.renewalId` alternates 0/1).
+   */
+  openSession: (ctx?: ResilientOpenContext) => Promise<ResilientStreamSession>;
   /**
    * Asked before every recovery attempt. Refuse when opening a session would
    * wake a camera that is asleep (or may be). Absent: recovery is always
@@ -94,6 +115,17 @@ export interface ResilientVideoStreamOptions {
   /** First retry delay; doubles per failed attempt up to `maxRetryDelayMs`. */
   retryDelayMs?: number;
   maxRetryDelayMs?: number;
+  /**
+   * Replace the session proactively once it is this old (ms). 0 or absent:
+   * never. Meant for transports whose sessions the camera ends on a schedule.
+   */
+  renewAfterMs?: number;
+  /** How long a renewal session may take to deliver its first keyframe. */
+  renewKeyframeTimeoutMs?: number;
+  /** Wait before retrying a failed renewal. */
+  renewRetryDelayMs?: number;
+  /** Failed renewals tolerated before falling back to a proactive reopen. */
+  maxRenewAttempts?: number;
   /** Prefix for log lines (e.g. `ch=0 profile=main`). */
   label?: string;
   logger?: ResilientStreamLogger;
@@ -112,7 +144,25 @@ export const RESILIENT_STREAM_DEFAULTS = {
   maxRecoveryMs: 10 * 60_000,
   retryDelayMs: 1_000,
   maxRetryDelayMs: 15_000,
+  renewKeyframeTimeoutMs: 15_000,
+  renewRetryDelayMs: 30_000,
+  maxRenewAttempts: 2,
 } as const;
+
+/** Session age at which a BCUDP stream is renewed by default (cameras end it at ~30 min). */
+export const UDP_SESSION_RENEW_AFTER_MS = 27 * 60_000;
+
+/** A second session being brought up next to the live one. */
+type RenewalCandidate = {
+  session: ResilientStreamSession;
+  openedAt: number;
+  /** Last parameter-set header it announced; replayed on switch-over. */
+  header: unknown[] | undefined;
+  onAccessUnit: Listener;
+  onHeader: Listener;
+  onFail: Listener;
+  deadline: ReturnType<typeof setTimeout> | null;
+};
 
 type Outage = { reason: string; lostAt: number; attempts: number };
 
@@ -127,6 +177,7 @@ export class ResilientVideoStream extends EventEmitter<{
   close: [];
   recovering: [{ reason: string }];
   recovered: [ResilientRecoveryInfo];
+  renewed: [{ previousAgeMs: number }];
 }> {
   private readonly silenceMs: number;
   private readonly startTimeoutMs: number;
@@ -150,6 +201,20 @@ export class ResilientVideoStream extends EventEmitter<{
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private recoveries = 0;
 
+  private readonly renewAfterMs: number;
+  private readonly renewKeyframeTimeoutMs: number;
+  private readonly renewRetryDelayMs: number;
+  private readonly maxRenewAttempts: number;
+  /** When the live session was opened (its age base). */
+  private sessionOpenedAt = 0;
+  private renewTimer: ReturnType<typeof setTimeout> | null = null;
+  private renewing = false;
+  private renewalCount = 0;
+  private renewFailures = 0;
+  /** After failed renewals: reopen proactively at the next keyframe. */
+  private renewFallbackArmed = false;
+  private candidate: RenewalCandidate | null = null;
+
   constructor(private readonly opts: ResilientVideoStreamOptions) {
     super();
     const d = RESILIENT_STREAM_DEFAULTS;
@@ -160,6 +225,19 @@ export class ResilientVideoStream extends EventEmitter<{
     this.maxRetryDelayMs = Math.max(
       this.retryDelayMs,
       opts.maxRetryDelayMs ?? d.maxRetryDelayMs,
+    );
+    this.renewAfterMs = Math.max(0, opts.renewAfterMs ?? 0);
+    this.renewKeyframeTimeoutMs = Math.max(
+      1,
+      opts.renewKeyframeTimeoutMs ?? d.renewKeyframeTimeoutMs,
+    );
+    this.renewRetryDelayMs = Math.max(
+      1,
+      opts.renewRetryDelayMs ?? d.renewRetryDelayMs,
+    );
+    this.maxRenewAttempts = Math.max(
+      1,
+      opts.maxRenewAttempts ?? d.maxRenewAttempts,
     );
     this.logger = opts.logger;
     this.prefix = `[ResilientVideoStream${opts.label ? ` ${opts.label}` : ""}]`;
@@ -198,6 +276,8 @@ export class ResilientVideoStream extends EventEmitter<{
     if (this.stopped) return;
     this.stopped = true;
     this.stopSilenceWatch();
+    this.clearRenewTimer();
+    await this.abandonCandidate("stopped");
     if (this.retryTimer) {
       clearTimeout(this.retryTimer);
       this.retryTimer = null;
@@ -206,8 +286,10 @@ export class ResilientVideoStream extends EventEmitter<{
     this.emit("close");
   }
 
-  private async openAndStart(): Promise<void> {
-    const session = await this.opts.openSession();
+  private async openAndStart(
+    purpose: "initial" | "recovery" = "initial",
+  ): Promise<void> {
+    const session = await this.opts.openSession({ purpose });
     if (this.stopped) {
       await session.release().catch(() => {});
       throw new Error("ResilientVideoStream stopped while opening a session");
@@ -223,6 +305,10 @@ export class ResilientVideoStream extends EventEmitter<{
       await this.dropSession(true, `start failed: ${errorMessage(e)}`);
       throw e;
     }
+    this.sessionOpenedAt = Date.now();
+    this.renewFallbackArmed = false;
+    this.renewFailures = 0;
+    this.scheduleRenewal(this.renewAfterMs);
   }
 
   private async startWithDeadline(stream: ResilientInnerStream): Promise<void> {
@@ -338,6 +424,8 @@ export class ResilientVideoStream extends EventEmitter<{
     if (this.stopped) return;
     this.stopped = true;
     this.stopSilenceWatch();
+    this.clearRenewTimer();
+    await this.abandonCandidate("recovery refused");
     if (this.retryTimer) {
       clearTimeout(this.retryTimer);
       this.retryTimer = null;
@@ -358,6 +446,10 @@ export class ResilientVideoStream extends EventEmitter<{
   private sourceLost(reason: string): void {
     if (this.stopped || !this.started) return;
     if (this.reopening || this.retryTimer) return;
+    // The live session is gone: an unplanned recovery takes over from any
+    // renewal in flight (one new session at a time).
+    this.clearRenewTimer();
+    void this.abandonCandidate(`source lost (${reason})`);
     const verdict = this.recoveryVerdict();
     if (!verdict.allowed) {
       void this.refuseRecovery(reason, verdict.reason);
@@ -429,7 +521,7 @@ export class ResilientVideoStream extends EventEmitter<{
       }
       outage.attempts++;
       try {
-        await this.openAndStart();
+        await this.openAndStart("recovery");
         // Video must follow within the silence window, or this attempt
         // counts as failed and the watch opens the next one.
         this.lastMediaAt = Date.now();
@@ -449,6 +541,186 @@ export class ResilientVideoStream extends EventEmitter<{
     }
   }
 
+  // --- renewal (make-before-break) ---
+
+  private clearRenewTimer(): void {
+    if (!this.renewTimer) return;
+    clearTimeout(this.renewTimer);
+    this.renewTimer = null;
+  }
+
+  /** Arms the renewal for when the live session reaches `renewAfterMs`. */
+  private scheduleRenewal(delayMs: number): void {
+    this.clearRenewTimer();
+    if (this.renewAfterMs <= 0 || this.stopped) return;
+    this.renewTimer = setTimeout(() => {
+      this.renewTimer = null;
+      void this.renewSession();
+    }, Math.max(0, delayMs));
+    this.renewTimer.unref?.();
+  }
+
+  private async renewSession(): Promise<void> {
+    if (this.stopped || !this.started) return;
+    if (this.renewing || this.candidate) return;
+    if (this.reopening || this.retryTimer || this.outage) {
+      // An unplanned recovery owns the session right now; it opens a fresh one.
+      return;
+    }
+    const verdict = this.recoveryVerdict();
+    if (!verdict.allowed) {
+      this.logger?.warn?.(
+        `${this.prefix} session renewal skipped: ${verdict.reason}`,
+      );
+      return;
+    }
+    const age = Date.now() - this.sessionOpenedAt;
+    this.renewing = true;
+    this.logger?.info?.(
+      `${this.prefix} renewing session at age=${age}ms (make-before-break)`,
+    );
+    const renewalId = this.renewalCount++ % 2;
+    let session: ResilientStreamSession;
+    try {
+      session = await this.opts.openSession({ purpose: "renewal", renewalId });
+    } catch (e) {
+      this.renewing = false;
+      this.renewalFailed(`could not open a second session: ${errorMessage(e)}`);
+      return;
+    }
+    if (this.stopped || this.outage) {
+      this.renewing = false;
+      await session.invalidate("renewal no longer needed").catch(() => {});
+      return;
+    }
+    const cand: RenewalCandidate = {
+      session,
+      openedAt: Date.now(),
+      header: undefined,
+      onAccessUnit: (...args) => this.onCandidateAccessUnit(cand, args[0] as AccessUnit),
+      onHeader: (...args) => {
+        cand.header = args;
+      },
+      onFail: (...args) => {
+        void this.abandonCandidate(
+          `renewal session failed: ${errorMessage(args[0])}`,
+        ).then(() =>
+          this.renewalFailed(`renewal session failed: ${errorMessage(args[0])}`),
+        );
+      },
+      deadline: null,
+    };
+    this.candidate = cand;
+    session.stream.on("videoAccessUnit", cand.onAccessUnit);
+    session.stream.on("additionalHeader", cand.onHeader);
+    session.stream.on("error", cand.onFail);
+    session.stream.on("close", cand.onFail);
+    try {
+      await this.startWithDeadline(session.stream);
+    } catch (e) {
+      this.renewing = false;
+      if (this.candidate !== cand) return;
+      await this.abandonCandidate("start failed");
+      this.renewalFailed(`second session did not start: ${errorMessage(e)}`);
+      return;
+    }
+    this.renewing = false;
+    if (this.candidate !== cand) return;
+    cand.deadline = setTimeout(() => {
+      cand.deadline = null;
+      void this.abandonCandidate("no keyframe in time").then(() =>
+        this.renewalFailed(
+          `second session delivered no keyframe in ${this.renewKeyframeTimeoutMs}ms`,
+        ),
+      );
+    }, this.renewKeyframeTimeoutMs);
+    cand.deadline.unref?.();
+  }
+
+  /** First keyframe of the candidate: switch the consumer over, then close the old one. */
+  private onCandidateAccessUnit(cand: RenewalCandidate, au: AccessUnit): void {
+    if (this.candidate !== cand || !au.isKeyframe) return;
+    const old = this.session;
+    this.candidate = null;
+    if (cand.deadline) clearTimeout(cand.deadline);
+    cand.deadline = null;
+    this.detachCandidate(cand);
+    if (this.stopped) {
+      void cand.session.invalidate("stopped").catch(() => {});
+      return;
+    }
+    const previousAgeMs = Date.now() - this.sessionOpenedAt;
+    if (old) this.detach(old.stream);
+    this.session = cand.session;
+    this.sessionOpenedAt = cand.openedAt;
+    this.lastVideoAt = 0;
+    this.renewFailures = 0;
+    this.attach(cand.session.stream);
+    // The consumer's decoder keeps its parameter sets; replay the new
+    // session's own header ahead of its first keyframe.
+    if (cand.header) this.emit("additionalHeader", cand.header[0]);
+    this.onAccessUnit(au);
+    this.scheduleRenewal(this.renewAfterMs);
+    this.logger?.info?.(
+      `${this.prefix} switched to the renewed session (previous age=${previousAgeMs}ms); closing the old one`,
+    );
+    this.emit("renewed", { previousAgeMs });
+    if (old) {
+      void (async () => {
+        await old.stream.stop().catch(() => {});
+        // Aged out: never hand this socket to anyone again.
+        await old.invalidate("session renewed").catch(() => {});
+      })();
+    }
+  }
+
+  private detachCandidate(cand: RenewalCandidate): void {
+    cand.session.stream.off("videoAccessUnit", cand.onAccessUnit);
+    cand.session.stream.off("additionalHeader", cand.onHeader);
+    cand.session.stream.off("error", cand.onFail);
+    cand.session.stream.off("close", cand.onFail);
+  }
+
+  /** Discards a candidate that never took over. The live session is untouched. */
+  private async abandonCandidate(reason: string): Promise<void> {
+    const cand = this.candidate;
+    if (!cand) return;
+    this.candidate = null;
+    if (cand.deadline) clearTimeout(cand.deadline);
+    cand.deadline = null;
+    this.detachCandidate(cand);
+    await cand.session.stream.stop().catch(() => {});
+    await cand.session.invalidate(reason).catch(() => {});
+  }
+
+  private renewalFailed(why: string): void {
+    if (this.stopped) return;
+    this.renewFailures++;
+    if (this.renewFailures >= this.maxRenewAttempts) {
+      this.logger?.warn?.(
+        `${this.prefix} session renewal failed ${this.renewFailures}x (${why}); falling back to a proactive reopen at the next keyframe`,
+      );
+      this.renewFallbackArmed = true;
+      return;
+    }
+    this.logger?.warn?.(
+      `${this.prefix} session renewal failed (${why}); retrying in ${this.renewRetryDelayMs}ms`,
+    );
+    this.scheduleRenewal(this.renewRetryDelayMs);
+  }
+
+  /** Planned break-before-make renewal, entered right after a keyframe. */
+  private proactiveReopen(): void {
+    if (this.stopped || this.reopening || this.outage || this.retryTimer) return;
+    const verdict = this.recoveryVerdict();
+    if (!verdict.allowed) return;
+    const reason = `proactive session renewal at age=${Date.now() - this.sessionOpenedAt}ms`;
+    this.outage = { reason, lostAt: Date.now(), attempts: 0 };
+    this.logger?.warn?.(`${this.prefix} ${reason}; reopening on a new session`);
+    this.emit("recovering", { reason });
+    void this.reopen(reason);
+  }
+
   private giveUp(outage: Outage): void {
     const err = new Error(
       `${this.prefix} source not recovered after ${Date.now() - outage.lostAt}ms and ${outage.attempts} attempt(s) (${outage.reason})`,
@@ -456,6 +728,8 @@ export class ResilientVideoStream extends EventEmitter<{
     this.logger?.warn?.(err.message);
     this.stopped = true;
     this.stopSilenceWatch();
+    this.clearRenewTimer();
+    void this.abandonCandidate("gave up");
     if (this.listenerCount("error") > 0) this.emit("error", err);
     this.emit("close");
   }
@@ -485,6 +759,10 @@ export class ResilientVideoStream extends EventEmitter<{
       this.emit("recovered", info);
     }
     this.emit("videoAccessUnit", au);
+    if (this.renewFallbackArmed && au.isKeyframe && !this.outage) {
+      this.renewFallbackArmed = false;
+      this.proactiveReopen();
+    }
   };
 
   private onAdditionalHeader = (...args: unknown[]): void => {
