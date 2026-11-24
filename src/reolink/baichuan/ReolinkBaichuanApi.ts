@@ -1,4 +1,10 @@
 import { spawn } from "node:child_process";
+import {
+  AwakeDiscBackoff,
+  describeCooldownReason,
+  isAwakeFlap,
+  type D2cDiscCooldownReason,
+} from "./d2cDiscPolicy";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { PassThrough, type Readable } from "node:stream";
@@ -1546,8 +1552,11 @@ export class ReolinkBaichuanApi {
       failureCount: number;
       lastFailureAt: number;
       cooldownUntil: number;
+      /** Why the host is refused; absent means repeated login failures. */
+      reason?: D2cDiscCooldownReason;
     }
   >();
+  private readonly awakeDiscBackoff = new AwakeDiscBackoff();
 
   /** Base cooldown duration (ms) for socket failures. */
   private static readonly SOCKET_POOL_BASE_COOLDOWN_MS = 5_000;
@@ -2134,7 +2143,12 @@ export class ReolinkBaichuanApi {
    * pool socket receives the disconnect.
    */
   private attachD2cDiscListener(client: BaichuanClient): void {
-    client.on("d2c_disc", () => this.notifyD2cDisc());
+    // Session age at drop time separates a flapping link (young session on an
+    // awake camera) from a camera going to sleep.
+    const sessionStartedAtMs = Date.now();
+    client.on("d2c_disc", () =>
+      this.notifyD2cDisc(Date.now() - sessionStartedAtMs),
+    );
     // Safety-net "error" listener: Node's EventEmitter throws if "error" is
     // emitted with no listeners. Sockets routinely receive ECONNRESET / EPIPE
     // (camera reboot, WiFi drop, scheduled wake) and consumer-side error
@@ -2182,9 +2196,10 @@ export class ReolinkBaichuanApi {
         const isD2cDisc =
           this.lastD2cDiscAtMs > 0 &&
           now - this.lastD2cDiscAtMs < 120_000;
-        const reason = isD2cDisc
-          ? "D2C_DISC (camera sleeping)"
-          : "repeated login failures";
+        const reason = describeCooldownReason(
+          cooldownEntry.reason ??
+            (isD2cDisc ? "d2c-disc-sleep" : "login-failures"),
+        );
         const error = new Error(
           `[SocketPool] Host ${this.host} is in cooldown for ${Math.ceil(remainingMs / 1000)}s due to ${reason}. tag=${tag}`,
         );
@@ -11724,13 +11739,21 @@ export class ReolinkBaichuanApi {
   /**
    * Called when any BaichuanClient for this device receives a D2C_DISC.
    *
-   * Two-tier response:
+   * An AWAKE camera whose young session was dropped (flapping link) gets a
+   * short capped backoff (10 s, then 30 s) and never the storm cooldown.
+   * Anything else (asleep, unknown, old session) keeps the sleep-safe tiers:
    *  1. **Immediate**: every D2C_DISC applies a short socket pool cooldown
    *     (10 s) to prevent reconnect attempts while the camera transitions to sleep.
    *  2. **Storm**: ≥3 D2C_DISCs within 60 s triggers extended cooldown (120 s).
    */
-  private notifyD2cDisc(): void {
+  private notifyD2cDisc(sessionAgeMs: number): void {
     const now = Date.now();
+    // Sleep inference must be read BEFORE this disconnect is recorded:
+    // getSleepStatus() treats a fresh D2C_DISC as "sleeping".
+    const awakeFlap = isAwakeFlap({
+      camState: this.getSleepStatus().state,
+      sessionAgeMs,
+    });
     this.lastD2cDiscAtMs = now;
 
     // ─── Force-close all streaming sockets ───
@@ -11750,6 +11773,25 @@ export class ReolinkBaichuanApi {
       }
     }
 
+    if (awakeFlap) {
+      const backoffMs = this.awakeDiscBackoff.next(now);
+      const awakeUntil = now + backoffMs;
+      const prev = this.socketPoolCooldowns.get(this.host);
+      // Never shorten a sleep cooldown that is already running.
+      if (!prev || prev.cooldownUntil <= awakeUntil) {
+        this.socketPoolCooldowns.set(this.host, {
+          failureCount: prev?.failureCount ?? 1,
+          lastFailureAt: now,
+          cooldownUntil: awakeUntil,
+          reason: "d2c-disc-awake-backoff",
+        });
+      }
+      this.logger?.log?.(
+        `[D2C_DISC] Awake camera, young session (${Math.round(sessionAgeMs / 1000)}s): redial backoff ${backoffMs / 1000}s`,
+      );
+      return;
+    }
+
     // ─── Tier 1: immediate cooldown on every D2C_DISC ───
     const immediateCooldownUntil =
       now + ReolinkBaichuanApi.D2C_DISC_IMMEDIATE_COOLDOWN_MS;
@@ -11759,6 +11801,7 @@ export class ReolinkBaichuanApi {
         failureCount: existing?.failureCount ?? 1,
         lastFailureAt: now,
         cooldownUntil: immediateCooldownUntil,
+        reason: "d2c-disc-sleep",
       });
       this.logger?.log?.(
         `[D2C_DISC] Immediate cooldown: socket pool blocked for ${ReolinkBaichuanApi.D2C_DISC_IMMEDIATE_COOLDOWN_MS / 1000}s`,
@@ -11787,6 +11830,7 @@ export class ReolinkBaichuanApi {
           failureCount: this.d2cDiscTimestamps.length,
           lastFailureAt: now,
           cooldownUntil: stormCooldownUntil,
+          reason: "d2c-disc-sleep",
         });
         this.logger?.warn?.(
           `[D2C_DISC] Storm detected: ${this.d2cDiscTimestamps.length} disconnects in ${ReolinkBaichuanApi.D2C_DISC_STORM_WINDOW_MS / 1000}s → socket pool cooldown ${ReolinkBaichuanApi.D2C_DISC_STORM_COOLDOWN_MS / 1000}s`,
