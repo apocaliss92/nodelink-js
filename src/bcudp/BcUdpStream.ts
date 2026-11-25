@@ -360,6 +360,15 @@ export const BCUDP_ACK_STALL_MS = 5_000;
 /** Receive silence (any datagram) that counts as a stall. */
 export const BCUDP_RX_STALL_MS = 5_000;
 
+/**
+ * How long the first missing data packet may stay missing, while later packets
+ * are already buffered, before it is reported as a head-of-line stall. BCUDP is
+ * a reliable in-order byte stream: nothing after a missing packet is delivered
+ * until the camera retransmits it, and there is no skip, so the media is
+ * withheld for as long as the gap lasts.
+ */
+export const BCUDP_HOL_STALL_MS = 1_500;
+
 /** Health snapshot of a BCUDP session (see `getSessionDiagnostics`). */
 export interface BcUdpSessionDiagnostics {
   sessionAgeMs: number | undefined;
@@ -372,6 +381,15 @@ export interface BcUdpSessionDiagnostics {
   oldestUnackedAgeMs?: number;
   /** True when the camera sent D2C_DISC (it ended the session). */
   discFromCamera: boolean;
+  /**
+   * How long delivery has been blocked by a missing packet while later packets
+   * are buffered (head-of-line); undefined when nothing is blocked.
+   */
+  holBlockedMs?: number;
+  /** Packets received but withheld behind the missing one. */
+  holBufferedPackets: number;
+  /** The missing packet id (next id the in-order delivery waits for). */
+  holMissingPacketId?: number;
 }
 
 /**
@@ -408,6 +426,9 @@ export class BcUdpStream extends EventEmitter<{
   private sent = new Map<number, SendEntry>();
 
   private ackTimer: NodeJS.Timeout | undefined;
+  /** When delivery first became blocked by a missing packet (head-of-line). */
+  private holSinceMs: number | undefined;
+  private holStallLogged = false;
   private resendTimer: NodeJS.Timeout | undefined;
   private hbTimer: NodeJS.Timeout | undefined;
   private discoveryTid: number | undefined;
@@ -1893,6 +1914,13 @@ export class BcUdpStream extends EventEmitter<{
       unackedPackets: this.sent.size,
       ...(oldestUnackedAgeMs !== undefined ? { oldestUnackedAgeMs } : {}),
       discFromCamera: this.discFromCameraAtMs !== undefined,
+      ...(this.holSinceMs !== undefined && this.received.size > 0
+        ? {
+            holBlockedMs: now - this.holSinceMs,
+            holMissingPacketId: this.packetsWant,
+          }
+        : {}),
+      holBufferedPackets: this.received.size,
     };
   }
 
@@ -1906,6 +1934,22 @@ export class BcUdpStream extends EventEmitter<{
       this.connectedAtMs !== undefined ? now - this.connectedAtMs : undefined;
 
     const diag = this.getSessionDiagnostics(now);
+
+    // Head-of-line: data keeps arriving but a missing packet withholds all of
+    // it. Not an ack stall (our side is fine) and not silence (rx is flowing),
+    // so neither check above sees it, yet the consumer gets no media.
+    const holStalled =
+      diag.holBlockedMs !== undefined && diag.holBlockedMs >= BCUDP_HOL_STALL_MS;
+    if (holStalled && !this.holStallLogged) {
+      this.holStallLogged = true;
+      this.discoveryLogger?.warn?.(
+        `[BcUdpStream] head-of-line stall: packet ${diag.holMissingPacketId} missing for ${diag.holBlockedMs}ms, ${diag.holBufferedPackets} later packet(s) withheld, lastDataRxAgoMs=${diag.lastDataRxAgoMs ?? "none"} sessionAgeMs=${age}`,
+      );
+      this.emit("debug", "hol_stall", { ...diag });
+    } else if (!holStalled) {
+      this.holStallLogged = false;
+    }
+
     const ackStalled =
       diag.oldestUnackedAgeMs !== undefined &&
       diag.oldestUnackedAgeMs >= BCUDP_ACK_STALL_MS;
@@ -1990,6 +2034,15 @@ export class BcUdpStream extends EventEmitter<{
     });
   }
 
+  private trackHeadOfLine(now: number): void {
+    const blocked = this.received.size > 0 && !this.received.has(this.packetsWant);
+    if (!blocked) {
+      this.holSinceMs = undefined;
+    } else if (this.holSinceMs === undefined) {
+      this.holSinceMs = now;
+    }
+  }
+
   private flushReceived(): void {
     // Move contiguous received payloads to a pending queue (fast) and drain later.
     while (this.received.has(this.packetsWant)) {
@@ -2049,6 +2102,7 @@ export class BcUdpStream extends EventEmitter<{
         if (p.packetId >= this.packetsWant) {
           this.received.set(p.packetId, p.payload);
           this.flushReceived();
+          this.trackHeadOfLine(Date.now());
           this.updateAckPacket();
           if (this.packetsWant % 100 === 0) {
             this.emit("debug", "udp_progress", {
